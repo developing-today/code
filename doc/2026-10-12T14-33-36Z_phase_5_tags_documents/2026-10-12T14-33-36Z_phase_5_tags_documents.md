@@ -7,15 +7,15 @@
 
 ## Steps
 
-| Step                         | Track   | Status | Commits | Tests | Notes                  |
-| ---------------------------- | ------- | ------ | ------- | ----- | ---------------------- |
-| P5.1 Observed-remove tags    | tags    | todo   |         |       | S8 model               |
-| P5.2 Tag index on tuple keys | tags    | todo   |         |       |                        |
-| P5.3 Compaction              | compact | todo   |         |       |                        |
-| P5.4 Documents               | docs    | todo   |         |       |                        |
-| P5.5 Search                  | search  | todo   |         |       |                        |
-| P5.6 Content on removal      | docs    | todo   |         |       | decision 4             |
-| P5.7 Aliases as tags         | alias   | todo   |         |       | owner answers recorded |
+| Step                         | Track   | Status | Commits            | Tests | Notes                  |
+| ---------------------------- | ------- | ------ | ------------------ | ----- | ---------------------- |
+| P5.1 Observed-remove tags    | tags    | todo   |                    |       | S8 model               |
+| P5.2 Tag index on tuple keys | tags    | todo   |                    |       |                        |
+| P5.3 Compaction              | compact | todo   |                    |       |                        |
+| P5.4 Documents               | docs    | todo   |                    |       |                        |
+| P5.5 Search                  | search  | todo   |                    |       |                        |
+| P5.6 Content on removal      | docs    | done   | 781ac3b8, b3b63f1f | 7     | decision 4: kept; #195 |
+| P5.7 Aliases as tags         | alias   | todo   |                    |       | owner answers recorded |
 
 ## Decisions
 
@@ -49,16 +49,16 @@ Base: `b6f1a1d5` (phase-5). Track: `p5-bodies`. Commits, in order:
 
 ### Steps
 
-| Step                      | Status          | Commits    | Tests                                                                            |
-| ------------------------- | --------------- | ---------- | -------------------------------------------------------------------------------- |
-| P5.1 Observed-remove tags | done            | `c999190e` | S8 tests in `tests/tag_claims.rs`                                                |
-| P5.2 Tag index            | done            | `9a91339b` | `tests/tag_index.rs`                                                             |
-| #182 Body in the event    | done            | `2250f804` | `test_two_replicas_that_exchange_only_events_converge_on_the_tag_set`            |
-| P5.3 Compaction (#184)    | done, in memory | `79efff10` | `test_the_compacted_fold_agrees_with_the_causal_walk` (16 cases, 2 to 3 writers) |
-| P5.4 Documents            | todo            |            |                                                                                  |
-| P5.5 Search               | todo            |            |                                                                                  |
-| P5.6 Content on removal   | todo            |            |                                                                                  |
-| P5.7 Aliases as tags      | todo            |            |                                                                                  |
+| Step                      | Status          | Commits                | Tests                                                                            |
+| ------------------------- | --------------- | ---------------------- | -------------------------------------------------------------------------------- |
+| P5.1 Observed-remove tags | done            | `c999190e`             | S8 tests in `tests/tag_claims.rs`                                                |
+| P5.2 Tag index            | done            | `9a91339b`             | `tests/tag_index.rs`                                                             |
+| #182 Body in the event    | done            | `2250f804`             | `test_two_replicas_that_exchange_only_events_converge_on_the_tag_set`            |
+| P5.3 Compaction (#184)    | done, in memory | `79efff10`             | `test_the_compacted_fold_agrees_with_the_causal_walk` (16 cases, 2 to 3 writers) |
+| P5.4 Documents            | todo            |                        |                                                                                  |
+| P5.5 Search               | todo            |                        |                                                                                  |
+| P5.6 Content on removal   | done            | `781ac3b8`, `b3b63f1f` | `tests/content_removal.rs` (7), author-only marker, keep (#195)                  |
+| P5.7 Aliases as tags      | todo            |                        |                                                                                  |
 
 ### Red, then green
 
@@ -164,3 +164,42 @@ Both properties failed at `37a8344b`, and the cause was in the oracle side, not 
 - The regression file keeps `cc 0759f56f…`. It replays under both properties. `test_the_regression_histories_reach_the_oracle_through_every_path` runs the two histories from the task in every test run. `test_each_event_names_every_event_its_author_had_seen` checks each event's causal past against its author's record.
 - `PROPTEST_RNG_SEED` selects the runner's RNG, not the input. The `(seed, steps, writers)` triples in the task are the inputs to `history()`, and the named tests use them directly.
 - Suites after the fix: `cargo test --lib tag` 115 passed, `--test tag_claims` 12 passed (the 10 existing plus 2), `--test tag_index` 4 passed, `cargo test --lib` 1104 passed, 3 ignored. The 256-case runs of both properties pass, using a scratch copy with the case count set to 256, since the explicit `cases` in the config overrides `PROPTEST_CASES`.
+
+---
+
+## 2026-10-12T20-29-04Z Progress: content on removal (P5.6)
+
+Base: `f42c549c` (phase-5). Branch `p5-removal`. Commits, in order:
+
+- `781ac3b8` `test(rust): content on removal: event kept, author-only removal [P5.6]` (red)
+- `b3b63f1f` `feat(rust): document removal by a signed event, content kept [P5.6]`
+
+### Steps
+
+| Step                    | Status | Commits                | Tests                          |
+| ----------------------- | ------ | ---------------------- | ------------------------------ |
+| P5.6 Content on removal | done   | `781ac3b8`, `b3b63f1f` | `tests/content_removal.rs` (7) |
+
+### Red, then green
+
+- Red. `tests/content_removal.rs` did not build at `781ac3b8`: 8 errors, for the missing `REMOVAL_KIND`, the `removes` header field, and `DocumentRecord::removal`.
+- Green. All 7 pass at `b3b63f1f`.
+- Planted bug. With the author check removed, so that any author's removal marks the document, `test_only_the_documents_author_may_remove_it` fails. With the check restored, all 7 pass.
+
+### Decisions
+
+- **Decision 4 is followed: content is kept.** A removal does not refuse the blob and does not drop bytes. The brief asked for both, but decision 4 says "Content is kept", and task 10 item 4 keeps content by default and hides only behind an explicit flag. The keep behaviour is pinned by `test_a_member_may_still_fetch_the_bytes_after_removal`. Owner to confirm, see #195.
+- **Who may remove: the document's author only.** A group Admin or Manage cannot be checked yet, because documents have no group link. A removal from anyone else is stored and has no effect. The check runs when the record is read, so arrival order does not change the result.
+- **Shape.** A removal is a `document.remove` event whose header field `removes` names the document's event ID. It takes no body and no tag or document. The field is left out when `None`, so existing events and the golden vectors are unchanged. No store version bump.
+- **Ties.** If the author signed more than one removal, `DocumentRecord::removal` holds the lowest ID.
+- **Not built: "removal stops new content".** Decision 4 does not say which new content is refused. Filed as #195, with a proposed causal rule.
+
+### Test results
+
+- `cargo test --test content_removal`: 7 passed. `--test documents`: 5 passed. `--test blob_gate`: 8 passed.
+- `cargo test --lib`: 1108 passed, 0 failed, 3 ignored.
+- `cargo test --tests --no-fail-fast`: every target passes except `cli_integration::test_world_module_shared_over_iroh_and_web_presentations`. It times out waiting for the serve startup line after 30 s. The same test fails in the same way at `781ac3b8`, whose library code equals `f42c549c`, so the failure predates this track. Not investigated beyond that.
+
+### Open
+
+- #195: group removal of a document, the causal rule for "removal stops new content", and the conflict between the brief's refusal and drop with decision 4.
