@@ -133,7 +133,7 @@ Base: `37a8344b` (phase-5). Track: `p5-docs`. Commits, in order:
 
 ### Open
 
-- Two property tests fail on random seeds. Both fail the same way on `37a8344b`, checked in a scratch copy of HEAD with its own target directory. Neither is caused by this track.
+- Two property tests fail on random seeds. Resolved by the discovery section below (`0f3b7eaa`). Both fail the same way on `37a8344b`, checked in a scratch copy of HEAD with its own target directory. Neither is caused by this track.
   - `tests/tag_claims.rs::test_the_compacted_fold_agrees_with_the_causal_walk` (P5.3). Seeds `12233682913237194312` (writers 3, steps 32) and `14490625886382135617` (writers 3, steps 23).
   - `tests/tag_claims.rs::test_the_live_set_is_the_oracle_under_any_delivery_order` (P5.1). Seed `9408785462023634370` (steps 28).
   - The seeds are not in `tests/tag_claims.proptest-regressions`, which stays at HEAD. The fix belongs to the tags track, and the seeds go in as regressions with it.
@@ -154,3 +154,13 @@ Base: `37a8344b` (phase-5). Track: `p5-docs`. Commits, in order:
 - P5.6 content on removal: no code yet. `documents()` keeps a document until its record says otherwise. The removal path is not tested here.
 - P5.7 aliases are tags. The server primary alias needs a decision.
 - Still open: the blob reference index producer, and the collab-server trigger for document events.
+
+## 2026-10-12T20-04-02Z Discovery: the tag property failures were in the test history generator
+
+Both properties failed at `37a8344b`, and the cause was in the oracle side, not the fold or the store. `history()` in `tests/tag_claims.rs` shadowed the writer count with a clear's claim count, so a clear's `after` named only the first 1 to 3 writers. A writer could have seen events its clear did not name. The oracle counts everything the author had seen, but the causal past read from the parent links did not include them. The fold and the causal walk agreed on every history, including the failing ones.
+
+- Sweep over 5000 histories: with the shadow, the walk and the fold agree on all, and the fold differs from the oracle on 148. With the rename, there are no mismatches.
+- Red, then green: `a1304850` adds the regressions and fails on both properties and both named tests. `0f3b7eaa` renames the variable, and everything passes.
+- The regression file keeps `cc 0759f56f…`. It replays under both properties. `test_the_regression_histories_reach_the_oracle_through_every_path` runs the two histories from the task in every test run. `test_each_event_names_every_event_its_author_had_seen` checks each event's causal past against its author's record.
+- `PROPTEST_RNG_SEED` selects the runner's RNG, not the input. The `(seed, steps, writers)` triples in the task are the inputs to `history()`, and the named tests use them directly.
+- Suites after the fix: `cargo test --lib tag` 115 passed, `--test tag_claims` 12 passed (the 10 existing plus 2), `--test tag_index` 4 passed, `cargo test --lib` 1104 passed, 3 ignored. The 256-case runs of both properties pass, using a scratch copy with the case count set to 256, since the explicit `cases` in the config overrides `PROPTEST_CASES`.

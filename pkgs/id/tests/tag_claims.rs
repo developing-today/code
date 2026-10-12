@@ -19,7 +19,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use id::chain::{ChainExt, Event, sign};
 use id::event_store::{EventStore, Ingest, Refusal};
-use id::tag_claims::{Applied, CLEAR_KIND, SET_KIND, TagOp, compacted_claims, live_claims};
+use id::tag_claims::{
+    Applied, CLEAR_KIND, Claim, SET_KIND, TagOp, causal_past, compacted_claims, live_claims,
+};
 use id::waiting::{AuthorKey, WaitingLimits};
 use p2panda_core::{Hash, SeqNum, SigningKey};
 use proptest::prelude::*;
@@ -294,6 +296,8 @@ impl Rng {
 struct History {
     events: Vec<Sent>,
     expected: BTreeSet<[u8; 32]>,
+    /// For each event, the events its author had seen when it wrote it.
+    written: Vec<(Hash, HashSet<Hash>)>,
 }
 
 /// Writes a history of three writers, with syncs between them, sets, and clears. A clear names
@@ -317,6 +321,7 @@ fn history(seed: u64, steps: usize, count: usize) -> History {
     let mut sets: Vec<Sent> = Vec::new();
     // Each clear's named claims, and the claims its author had seen when it wrote it.
     let mut clears: Vec<(Vec<Hash>, HashSet<Hash>)> = Vec::new();
+    let mut written: Vec<(Hash, HashSet<Hash>)> = Vec::new();
 
     for _ in 0..steps {
         let w = rng.below(count);
@@ -331,8 +336,10 @@ fn history(seed: u64, steps: usize, count: usize) -> History {
                 let name = names[rng.below(names.len())];
                 let value = values[rng.below(values.len())];
                 let after = frontier(&known[w], count);
+                let seen: HashSet<Hash> = known[w].values().map(Sent::id).collect();
                 let sent = writers[w].send(&set(subject, name, value), after, w);
                 known[w].insert(*sent.id().as_bytes(), sent.clone());
+                written.push((sent.id(), seen));
                 sets.push(sent.clone());
                 events.push(sent);
             }
@@ -340,14 +347,15 @@ fn history(seed: u64, steps: usize, count: usize) -> History {
                 if sets.is_empty() {
                     continue;
                 }
-                let count = 1 + rng.below(3);
-                let named: Vec<Hash> = (0..count)
+                let named_count = 1 + rng.below(3);
+                let named: Vec<Hash> = (0..named_count)
                     .map(|_| sets[rng.below(sets.len())].id())
                     .collect();
                 let seen: HashSet<Hash> = known[w].values().map(Sent::id).collect();
                 let after = frontier(&known[w], count);
                 let sent = writers[w].send(&clear(&named), after, w);
                 known[w].insert(*sent.id().as_bytes(), sent.clone());
+                written.push((sent.id(), seen.clone()));
                 clears.push((named, seen));
                 events.push(sent);
             }
@@ -364,7 +372,31 @@ fn history(seed: u64, steps: usize, count: usize) -> History {
         .filter(|sent| !removed.contains(&sent.id()))
         .map(|sent| *sent.id().as_bytes())
         .collect();
-    History { events, expected }
+    History {
+        events,
+        expected,
+        written,
+    }
+}
+
+/// The parent links of each event: its `after` hashes and its backlink.
+fn parents_of(events: &[Sent]) -> HashMap<Hash, Vec<Hash>> {
+    events
+        .iter()
+        .map(|sent| {
+            let header = &sent.event.header;
+            (
+                sent.id(),
+                header
+                    .extensions
+                    .after
+                    .iter()
+                    .copied()
+                    .chain(header.backlink)
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 /// The latest event of each writer that `seen` holds: the frontier an author names in `after`.
@@ -440,5 +472,64 @@ proptest! {
         prop_assert_eq!(&folded, &walked);
         let folded_ids: BTreeSet<[u8; 32]> = folded.iter().map(|claim| *claim.id.as_bytes()).collect();
         prop_assert_eq!(folded_ids, history.expected.clone());
+    }
+}
+
+/// The histories that shrank the two property failures (P5.1, P5.3), as `(seed, steps, writers)`.
+const REGRESSION_HISTORIES: [(u64, usize, usize); 2] = [
+    (12_311_497_518_687_219_712, 23, 3),
+    (2_831_645_957_844_276_698, 30, 3),
+];
+
+#[test]
+fn test_each_event_names_every_event_its_author_had_seen() {
+    // The causal past of an event, read from its parent links, is the set its author had seen when
+    // it wrote it. A frontier that names too few writers leaves part of that set out of the past.
+    for (seed, steps, writers) in REGRESSION_HISTORIES {
+        let history = history(seed, steps, writers);
+        let parents = parents_of(&history.events);
+        for (id, seen) in &history.written {
+            assert_eq!(
+                causal_past(&parents[id], &parents),
+                *seen,
+                "seed {seed}, event {id:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_the_regression_histories_reach_the_oracle_through_every_path() {
+    for (seed, steps, writers) in REGRESSION_HISTORIES {
+        let history = history(seed, steps, writers);
+        let (_dir, mut store) = open();
+        for sent in &history.events {
+            deliver(&mut store, sent);
+        }
+        assert_eq!(live(&store), history.expected, "seed {seed}: the store");
+
+        let applied: Vec<Applied> = history
+            .events
+            .iter()
+            .map(|sent| Applied {
+                id: sent.id(),
+                author: sent.author,
+                op: sent.event.header.extensions.tag.clone().unwrap(),
+            })
+            .collect();
+        let parents = parents_of(&history.events);
+        let ids = |claims: Vec<Claim>| -> BTreeSet<[u8; 32]> {
+            claims.iter().map(|claim| *claim.id.as_bytes()).collect()
+        };
+        assert_eq!(
+            ids(live_claims(&applied, &parents)),
+            history.expected,
+            "seed {seed}: the causal walk"
+        );
+        assert_eq!(
+            ids(compacted_claims(&applied, &parents)),
+            history.expected,
+            "seed {seed}: the compacted fold"
+        );
     }
 }
