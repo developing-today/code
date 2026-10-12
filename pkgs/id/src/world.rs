@@ -4,6 +4,17 @@
 //! messages to it serially. This module does not open sockets or persist world
 //! state. Capability tokens are returned only at issuance and retained only as
 //! SHA-256 digests for revocation and membership checks.
+//!
+//! ## What a grant carries, and what stays local
+//!
+//! A participant capability is a bearer secret. Its digest, scopes, expiry,
+//! parent and subject are the grant, and the journal records them. Nothing
+//! about a participant grant is signed here; the signed records are the
+//! directory's artifacts (friendships and their removals). A grant carries no
+//! use count. A delegation narrows scopes and may set an expiry, nothing else.
+//! The host alone enforces a use limit, and only on a capability it issued (an
+//! invite or an account grant), by counting actions in its own journal. Those
+//! counts are local to the hosting node and need not converge across partitions.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
@@ -341,10 +352,12 @@ pub enum JournalEntry {
         /// Unix milliseconds at which the capability stops working.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_at: Option<u64>,
-        /// Committed chat and input actions the capability may take.
+        /// Committed chat and input actions the capability may take. Host-local:
+        /// only a capability the host issued has one, never a delegation.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         uses: Option<u32>,
         /// Actions already taken, written at checkpoint so counts survive compaction.
+        /// Host-local, like `uses`.
         #[serde(default)]
         used: u32,
         /// Account the capability acts for; its ceiling and friendships bound it.
@@ -610,11 +623,15 @@ pub struct WorldSnapshot {
 }
 
 /// Limits on what a capability may do before it stops working.
+///
+/// Only the host sets `uses`, on a capability it issues. A delegation may set
+/// `expires_at` and never `uses` (see [`WorldCore::attenuate`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CapabilityBounds {
     /// Unix milliseconds at which the capability stops working.
     pub expires_at: Option<u64>,
-    /// Committed chat and input actions the capability may take.
+    /// Committed chat and input actions the capability may take. Enforced by
+    /// the host alone, from its own journal.
     pub uses: Option<u32>,
 }
 
@@ -1083,8 +1100,8 @@ impl WorldCore {
 
     /// Delegate a capability: a new participant whose scopes are a subset of
     /// the delegating capability's, and which is revoked with it. Its expiry
-    /// may not be later than the delegator's, and its use limit may not exceed
-    /// what the delegator and its ancestors have left.
+    /// may not be later than the delegator's. It carries no use count: each
+    /// action it takes counts against the host-issued limit above it, if any.
     pub fn attenuate(
         &mut self,
         token: &JoinCapability,
@@ -1155,13 +1172,10 @@ impl WorldCore {
                 "this capability may not delegate a later expiry"
             );
         }
-        if let Some(uses) = bounds.uses {
-            ensure!(uses >= 1, "delegated use limit must be at least one");
-            ensure!(
-                self.uses_left(parent).is_none_or(|left| uses <= left),
-                "this capability does not have that many uses left to delegate"
-            );
-        }
+        ensure!(
+            bounds.uses.is_none(),
+            "a delegated capability carries no use count; the host's limit still applies"
+        );
         self.mint(display_name, scopes, Some(parent), subject, bounds)
     }
 
@@ -3787,7 +3801,7 @@ mod tests {
     }
 
     #[test]
-    fn use_limits_draw_down_every_ancestor() {
+    fn a_host_issued_limit_draws_down_through_every_delegation() {
         let mut core = world(8);
         let (_, owner) = core
             .issue_capability(
@@ -3799,32 +3813,135 @@ mod tests {
                 },
             )
             .unwrap();
-        let two = CapabilityBounds {
-            expires_at: None,
-            uses: Some(2),
-        };
         let (_, child) = core
-            .attenuate(&owner, WorldScopes::GUEST, two, "Bo")
+            .attenuate(
+                &owner,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Bo",
+            )
             .unwrap();
         core.chat(&child, "one").unwrap();
         core.chat(&child, "two").unwrap();
-        assert!(core.chat(&child, "three").is_err());
+        core.chat(&owner, "last").unwrap();
         assert!(
-            core.attenuate(&owner, WorldScopes::GUEST, two, "Cy")
-                .is_err(),
-            "the owner has one use left to delegate"
+            core.chat(&child, "three").is_err(),
+            "the host's limit bounds the delegate"
         );
-        let one = CapabilityBounds {
+        assert!(core.chat(&owner, "over").is_err());
+        assert!(core.snapshot(&owner).is_ok(), "reading is not a use");
+    }
+
+    #[test]
+    fn a_delegated_grant_carries_no_use_count() {
+        let mut core = world(8);
+        let delegator = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
+        let (_, owner) = core
+            .issue_capability("Ada", delegator, CapabilityBounds::default())
+            .unwrap();
+        let limited = CapabilityBounds {
             expires_at: None,
             uses: Some(1),
         };
         assert!(
-            core.attenuate(&owner, WorldScopes::GUEST, one, "Di")
-                .is_ok()
+            core.attenuate(&owner, WorldScopes::GUEST, limited, "Bo")
+                .is_err(),
+            "a delegation carries no use count"
         );
-        core.chat(&owner, "last").unwrap();
-        assert!(core.chat(&owner, "over").is_err());
-        assert!(core.snapshot(&owner).is_ok(), "reading is not a use");
+        let (child, child_token) = core
+            .attenuate(
+                &owner,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Cy",
+            )
+            .unwrap();
+        for text in ["one", "two", "three"] {
+            core.chat(&child_token, text).unwrap();
+        }
+        let record = serde_json::to_value(core.issued_entry(child.id).unwrap()).unwrap();
+        assert!(
+            record.get("uses").is_none(),
+            "the grant record has no use count: {record}"
+        );
+    }
+
+    #[test]
+    fn a_grant_without_a_bound_is_never_refused_for_count() {
+        let mut core = world(8);
+        let (_, token) = join(&mut core, "Ada");
+        for i in 0..50 {
+            core.chat(&token, &format!("m{i}")).unwrap();
+        }
+        assert!(core.snapshot(&token).is_ok());
+    }
+
+    #[test]
+    fn a_host_issued_limit_is_enforced_by_the_host_alone() {
+        let mut core = world(8);
+        let (_, token) = core
+            .issue_capability(
+                "Ada",
+                WorldScopes::GUEST,
+                CapabilityBounds {
+                    expires_at: None,
+                    uses: Some(2),
+                },
+            )
+            .unwrap();
+        core.chat(&token, "one").unwrap();
+        core.chat(&token, "two").unwrap();
+        assert!(core.chat(&token, "three").is_err());
+        assert_eq!(core.current_sequence(), 2, "a refused use commits nothing");
+    }
+
+    #[test]
+    fn use_counts_are_local_and_do_not_converge_across_partitions() {
+        let mut source = world(8);
+        let (owner, token) = source
+            .issue_capability(
+                "Ada",
+                WorldScopes::GUEST,
+                CapabilityBounds {
+                    expires_at: None,
+                    uses: Some(1),
+                },
+            )
+            .unwrap();
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "test-world".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::Issued {
+                participant: owner.clone(),
+                digest: hex_encode(&token_digest(token.expose())),
+                scopes: WorldScopes::GUEST.bits(),
+                parent: None,
+                expires_at: None,
+                uses: Some(1),
+                used: 0,
+                subject: None,
+            },
+        ];
+        // Two partitions start from the same journal and do not see each other.
+        let mut north = WorldCore::restore("test-world", WorldLimits::default(), entries.clone())
+            .unwrap()
+            .core;
+        let mut south = WorldCore::restore("test-world", WorldLimits::default(), entries)
+            .unwrap()
+            .core;
+        north.chat(&token, "north").unwrap();
+        south.chat(&token, "south").unwrap();
+        // Each side counted its own use, so the one-use grant was used twice.
+        assert!(north.chat(&token, "north again").is_err());
+        assert!(south.chat(&token, "south again").is_err());
+        // Each state is still valid: sequence and tally agree, and the grant is held.
+        for core in [&north, &south] {
+            assert_eq!(core.current_sequence(), 1);
+            assert_eq!(core.capabilities[&owner.id].used, 1);
+            assert_eq!(core.participants().len(), 1);
+        }
     }
 
     #[test]

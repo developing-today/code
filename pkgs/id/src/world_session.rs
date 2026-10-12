@@ -195,14 +195,13 @@ enum ClientFrame {
     Chat {
         text: String,
     },
-    /// Joined: mint a capability with a subset of this session's scopes.
+    /// Joined: mint a capability with a subset of this session's scopes. A
+    /// delegation carries no use count.
     Attenuate {
         name: String,
         scopes: Vec<String>,
         /// Unix milliseconds at which the delegated capability stops working.
         expires_at: Option<u64>,
-        /// Committed chat and input actions the delegated capability may take.
-        uses: Option<u32>,
     },
     /// Joined as an account: delegate a subset of its scopes to one of its friends.
     DelegateToFriend {
@@ -210,7 +209,6 @@ enum ClientFrame {
         name: String,
         scopes: Vec<String>,
         expires_at: Option<u64>,
-        uses: Option<u32>,
     },
     Input {
         data_hex: String,
@@ -1920,12 +1918,14 @@ async fn handle_client_frame<I: SessionIo>(
             name,
             scopes,
             expires_at,
-            uses,
         } => {
             let Some(scopes) = WorldScopes::from_names(scopes.iter().map(String::as_str)) else {
                 return send_error(io, "unknown scope").await;
             };
-            let bounds = CapabilityBounds { expires_at, uses };
+            let bounds = CapabilityBounds {
+                expires_at,
+                uses: None,
+            };
             let result = world.attenuate(token.clone(), scopes, bounds, name).await;
             return send_delegation(io, result).await;
         }
@@ -1934,12 +1934,14 @@ async fn handle_client_frame<I: SessionIo>(
             name,
             scopes,
             expires_at,
-            uses,
         } => {
             let Some(scopes) = WorldScopes::from_names(scopes.iter().map(String::as_str)) else {
                 return send_error(io, "unknown scope").await;
             };
-            let bounds = CapabilityBounds { expires_at, uses };
+            let bounds = CapabilityBounds {
+                expires_at,
+                uses: None,
+            };
             let result = world
                 .delegate_to_friend(token.clone(), friend, scopes, bounds, name)
                 .await;
