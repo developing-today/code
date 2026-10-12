@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
-use p2panda_core::{SigningKey, VerifyingKey};
+use p2panda_core::{Hash, SigningKey, VerifyingKey};
 use p2panda_encryption::crypto::Rng;
 use p2panda_encryption::crypto::x25519::SecretKey as IdentitySecret;
 use p2panda_encryption::data_scheme::group_secret::GroupSecretId;
@@ -17,7 +17,9 @@ use p2panda_encryption::traits::GroupMessage;
 use proptest::prelude::*;
 
 use super::*;
-use crate::groups::{Key, Policy, Scheme};
+use crate::groups::{
+    Body, Create, Event, GroupView, Key, MemberOp, Policy, Role, Scheme, Template, fold,
+};
 
 fn person(seed: u8) -> (Key, VerifyingKey) {
     let verifying = SigningKey::from_bytes(&[seed; 32]).verifying_key();
@@ -43,10 +45,24 @@ fn scheme_policy(version: u32) -> Policy {
     }
 }
 
+/// A view that lists `members` as Admins. For the checks that run before any fold.
+fn view_of(members: &BTreeSet<Key>) -> GroupView {
+    GroupView {
+        policy: scheme_policy(SCHEME_V1),
+        members: members.iter().map(|key| (*key, Role::Admin)).collect(),
+        friendship: None,
+        present: BTreeSet::new(),
+        dissolved_by: None,
+    }
+}
+
 /// Every person's keys and one session per person, all sharing one registry of bundles.
 struct Cast {
     rng: Rng,
     sessions: BTreeMap<Key, Session>,
+    /// The group's signed events, in order. The first is the create, and the group model is their
+    /// fold.
+    events: Vec<Event>,
     /// The member set the group model holds after the last operation.
     model: BTreeSet<Key>,
 }
@@ -80,6 +96,7 @@ impl Cast {
         Self {
             rng,
             sessions,
+            events: Vec::new(),
             model: BTreeSet::new(),
         }
     }
@@ -88,44 +105,101 @@ impl Cast {
         self.sessions.get(&id(who)).expect("session")
     }
 
+    /// The group's view as the fold gives it after the events so far.
+    fn view(&self) -> GroupView {
+        let create = self.events.first().expect("a create").id;
+        let projection = fold(&self.events).expect("fold");
+        projection.group(&create).expect("the group").clone()
+    }
+
+    /// Appends a membership event by `by` to the group's log, and returns the view after it.
+    fn log(&mut self, by: u8, body: Body) -> GroupView {
+        let group = self.events.first().map(|create| create.id);
+        let after = self.events.last().map(|last| last.id).into_iter().collect();
+        let name = format!("event {}", self.events.len());
+        self.events.push(Event {
+            id: Hash::digest(name.as_bytes()),
+            author: id(by),
+            after,
+            group,
+            body,
+        });
+        let view = self.view();
+        self.model = view.members.keys().copied().collect();
+        view
+    }
+
     fn create(&mut self, by: u8, members: &[u8]) -> Envelope {
-        self.model = members.iter().map(|seed| id(*seed)).collect();
-        let model = self.model.clone();
+        let others = members
+            .iter()
+            .filter(|seed| **seed != by)
+            .map(|seed| (id(*seed), Role::Admin))
+            .collect();
+        let create = Event {
+            id: Hash::digest(b"event 0"),
+            author: id(by),
+            after: Vec::new(),
+            group: None,
+            body: Body::Create(Create {
+                template: Template::Custom,
+                policy: scheme_policy(SCHEME_V1),
+                members: others,
+                admins_on_create: false,
+            }),
+        };
+        self.events = vec![create];
+        let view = self.view();
+        self.model = view.members.keys().copied().collect();
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .create(&model, &self.rng)
+            .create(&view, &self.rng)
             .expect("create")
     }
 
     fn add(&mut self, by: u8, who: u8) -> Envelope {
-        self.model.insert(id(who));
-        let model = self.model.clone();
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Add {
+                member: id(who),
+                role: Role::Admin,
+            }),
+        );
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .add(&model, id(who), &self.rng)
+            .add(&view, id(who), &self.rng)
             .expect("add")
     }
 
     fn remove(&mut self, by: u8, who: u8) -> Envelope {
-        self.model.remove(&id(who));
-        let model = self.model.clone();
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Remove {
+                member: id(who),
+                successor: None,
+            }),
+        );
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .remove(&model, id(who), &self.rng)
+            .remove(&view, id(who), &self.rng)
             .expect("remove")
     }
 
     /// A join through `add_from_join`: the add, then the immediate update.
     fn join(&mut self, by: u8, who: u8) -> Vec<Envelope> {
-        self.model.insert(id(who));
-        let model = self.model.clone();
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Add {
+                member: id(who),
+                role: Role::Admin,
+            }),
+        );
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .add_from_join(&model, id(who), &self.rng)
+            .add_from_join(&view, id(who), &self.rng)
             .expect("add_from_join")
     }
 
@@ -186,13 +260,13 @@ fn test_create_gives_every_member_the_model_roster() {
 #[test]
 fn test_create_rejects_a_device_outside_the_model() {
     let mut cast = Cast::new(&[1, 2]);
-    let model: BTreeSet<Key> = std::iter::once(id(2)).collect();
+    let view = view_of(&std::iter::once(id(2)).collect());
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .create(&model, &rng);
+        .create(&view, &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert!(
         !cast.session(1).is_welcomed(),
@@ -213,9 +287,9 @@ fn test_operations_before_create_are_rejected_without_poisoning() {
         session.update(&rng),
         Err(SchemeError::NotWelcomed)
     ));
-    let create_model: BTreeSet<Key> = [id(1), id(2)].into_iter().collect();
+    let view = view_of(&[id(1), id(2)].into_iter().collect());
     assert!(
-        session.create(&create_model, &rng).is_ok(),
+        session.create(&view, &rng).is_ok(),
         "the session still creates"
     );
 }
@@ -246,13 +320,13 @@ fn test_add_rejects_a_key_the_model_does_not_list() {
     let create = cast.create(1, &[1, 2]);
     cast.deliver(&create, &[2]);
 
-    let model = cast.model.clone();
+    let view = cast.view();
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .add(&model, id(3), &rng);
+        .add(&view, id(3), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
 }
@@ -323,13 +397,13 @@ fn test_remove_rejects_a_member_the_model_still_lists() {
     let create = cast.create(1, &[1, 2, 3]);
     cast.deliver(&create, &[2, 3]);
 
-    let model = cast.model.clone();
+    let view = cast.view();
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .remove(&model, id(3), &rng);
+        .remove(&view, id(3), &rng);
     assert!(matches!(result, Err(SchemeError::StillInModel(_))));
 }
 
@@ -456,13 +530,13 @@ fn test_from_join_rejects_a_key_the_model_does_not_list() {
     let create = cast.create(1, &[1, 2, 3]);
     cast.deliver(&create, &[2, 3, 4]);
 
-    let model = cast.model.clone();
+    let view = cast.view();
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .add_from_join(&model, id(4), &rng);
+        .add_from_join(&view, id(4), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
 }
@@ -698,6 +772,118 @@ fn test_a_stock_group_is_refused_not_migrated() {
         ),
         "a stock group is refused when the session starts"
     );
+}
+
+// --- the roster follows the fold (P4.13) ----------------------------------------------------------
+
+#[test]
+fn test_a_membership_change_through_the_group_path_updates_the_roster() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+    assert_eq!(cast.members_of(1), [id(1), id(2)].into_iter().collect());
+
+    cast.add(1, 3);
+    assert_eq!(
+        cast.members_of(1),
+        [id(1), id(2), id(3)].into_iter().collect(),
+        "an add through the fold reaches the roster"
+    );
+
+    cast.remove(1, 2);
+    assert_eq!(
+        cast.members_of(1),
+        [id(1), id(3)].into_iter().collect(),
+        "a removal through the fold reaches the roster"
+    );
+}
+
+#[test]
+fn test_a_view_that_disagrees_with_the_roster_is_refused_and_poisons_the_session() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+
+    // The fold lists 4 as well, but the crate is only asked to add 3.
+    let mut view = cast.view();
+    view.members.insert(id(3), Role::Admin);
+    view.members.insert(id(4), Role::Admin);
+    let rng = Rng::default();
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
+    assert!(
+        matches!(result, Err(SchemeError::RosterMismatch(_))),
+        "a mismatch is refused: {result:?}"
+    );
+    assert!(
+        matches!(cast.session(1).members(), Err(SchemeError::Poisoned)),
+        "the session does not keep a roster the fold disagrees with"
+    );
+    assert!(matches!(
+        cast.sessions
+            .get_mut(&id(1))
+            .expect("session")
+            .send(b"after", &rng),
+        Err(SchemeError::Poisoned)
+    ));
+}
+
+#[test]
+fn test_a_view_whose_policy_names_no_scheme_is_refused_without_poisoning() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+
+    let mut view = cast.view();
+    view.policy = Policy::default();
+    view.members.insert(id(3), Role::Admin);
+    let rng = Rng::default();
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
+    assert!(matches!(result, Err(SchemeError::NoScheme)), "{result:?}");
+    assert_eq!(
+        cast.members_of(1),
+        [id(1), id(2)].into_iter().collect(),
+        "the refused change left the roster as it was"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// Random adds, joins and removes through the group path. After each one, the creator's roster
+    /// is the set of members the fold gives.
+    #[test]
+    fn test_roster_follows_the_fold_through_random_changes(
+        ops in proptest::collection::vec((0u8..3, 2u8..6), 1..24),
+    ) {
+        let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+        let create = cast.create(1, &[1, 2]);
+        cast.deliver(&create, &[2]);
+        for (kind, who) in ops {
+            let present = cast.model.contains(&id(who));
+            match kind {
+                0 if !present => {
+                    cast.add(1, who);
+                }
+                1 if !present => {
+                    cast.join(1, who);
+                }
+                2 if present => {
+                    cast.remove(1, who);
+                }
+                _ => continue,
+            }
+            let folded: BTreeSet<Key> = cast.view().members.keys().copied().collect();
+            prop_assert_eq!(cast.members_of(1), folded, "after {} of {}", kind, who);
+        }
+    }
 }
 
 // --- property -------------------------------------------------------------------------------------
