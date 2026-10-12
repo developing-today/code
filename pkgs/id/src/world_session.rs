@@ -541,7 +541,10 @@ impl WorldService {
 
     /// Bound the programs this world runs by the admin's limits.
     #[must_use]
-    pub const fn with_runtime_limits(mut self, runtime: crate::world_limits::RuntimeLimits) -> Self {
+    pub const fn with_runtime_limits(
+        mut self,
+        runtime: crate::world_limits::RuntimeLimits,
+    ) -> Self {
         self.runtime = runtime;
         self
     }
@@ -1369,10 +1372,14 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
         let frame = match next.take() {
             Some(frame) => frame,
             None => match io.recv().await {
-                Inbound::Text(text) => if let Ok(frame) = serde_json::from_str::<ClientFrame>(&text) { frame } else {
-                    let _ = send_error(io, "invalid world frame").await;
-                    return;
-                },
+                Inbound::Text(text) => {
+                    if let Ok(frame) = serde_json::from_str::<ClientFrame>(&text) {
+                        frame
+                    } else {
+                        let _ = send_error(io, "invalid world frame").await;
+                        return;
+                    }
+                }
                 Inbound::Oversized => {
                     let _ = send_error(io, "world frame is too large").await;
                     return;

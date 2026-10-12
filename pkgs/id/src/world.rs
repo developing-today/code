@@ -523,8 +523,7 @@ pub fn parse_records(text: &str) -> Result<Records> {
             !key.chars().any(char::is_control),
             "record key {key:?} contains a control character"
         );
-        let size = serde_json::to_vec(value)
-            .map_or(usize::MAX, |v| v.len());
+        let size = serde_json::to_vec(value).map_or(usize::MAX, |v| v.len());
         ensure!(
             size <= MAX_RECORD_VALUE_BYTES,
             "record {key:?} is {size} bytes; the limit is {MAX_RECORD_VALUE_BYTES}"
@@ -1828,12 +1827,7 @@ impl WorldActor {
                 return;
             }
         }
-        if self
-            .persist(JournalEntry::System {
-                event,
-            })
-            .is_ok()
-        {
+        if self.persist(JournalEntry::System { event }).is_ok() {
             self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
         }
         let _ = self.view_changed.send(self.core.sequence);

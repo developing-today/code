@@ -940,7 +940,8 @@ async fn handle_collab_socket(
 
                 // Every N pings, send empty Text instead of Ping frame
                 // This triggers client's onmessage so it can refresh cursor decorations
-                let use_text = ping_cycle.is_multiple_of(timeouts::EMPTY_TEXT_MESSAGE_EVERY_N_PINGS);
+                let use_text =
+                    ping_cycle.is_multiple_of(timeouts::EMPTY_TEXT_MESSAGE_EVERY_N_PINGS);
 
                 let result = if use_text {
                     tracing::debug!(

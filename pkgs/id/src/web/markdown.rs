@@ -572,13 +572,15 @@ fn parse_img_tag(html: &str) -> Option<Value> {
         attrs["title"] = json!(title);
     }
     if let Some(w) = attr_value(trimmed, "width")
-        && let Ok(n) = w.parse::<u64>() {
-            attrs["width"] = json!(n);
-        }
+        && let Ok(n) = w.parse::<u64>()
+    {
+        attrs["width"] = json!(n);
+    }
     if let Some(h) = attr_value(trimmed, "height")
-        && let Ok(n) = h.parse::<u64>() {
-            attrs["height"] = json!(n);
-        }
+        && let Ok(n) = h.parse::<u64>()
+    {
+        attrs["height"] = json!(n);
+    }
 
     Some(json!({
         "type": "image",

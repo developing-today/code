@@ -278,7 +278,9 @@ pub async fn compile(
         );
         let deadline = std::time::Instant::now() + timeout;
         let status = loop {
-            if let Some(status) = child.try_wait().context("wait for the compiler")? { break status }
+            if let Some(status) = child.try_wait().context("wait for the compiler")? {
+                break status;
+            }
             if std::time::Instant::now() >= deadline {
                 let _ = child.kill();
                 let _ = child.wait();
