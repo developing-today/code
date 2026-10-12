@@ -51,9 +51,9 @@ use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
 use super::{
-    corrupt, decode_proof, decode_stored, position_key, split_position, store_chain, store_event,
-    store_fork, Chain, EventStore, ForkProof, StoreError, CHAINS, DEPENDENTS, EVENTS, FORKS,
-    HASHES,
+    CHAINS, Chain, DEPENDENTS, EVENTS, EventStore, FORKS, ForkProof, HASHES, StoreError, corrupt,
+    decode_proof, decode_stored, position_key, split_position, store_chain, store_event,
+    store_fork,
 };
 use crate::chain::{self, Event};
 use crate::waiting::{AuthorKey, WaitRefusal};
@@ -531,7 +531,7 @@ fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::chain::{sign, ChainExt};
+    use crate::chain::{ChainExt, sign};
     use crate::waiting::WaitingLimits;
     use p2panda_core::SigningKey;
 
@@ -1257,5 +1257,77 @@ mod tests {
             states.windows(2).all(|pair| pair[0] == pair[1]),
             "the orders reach different states: {states:?}"
         );
+    }
+
+    #[test]
+    fn test_a_waiting_event_is_held_across_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let signer = key(31);
+        let events = chain_of(&signer, 2);
+        {
+            let mut store = EventStore::open(dir.path()).unwrap();
+            assert_eq!(
+                ingest(&mut store, &events[1]),
+                Ingest::Waiting { id: events[1].id }
+            );
+        }
+        let mut store = EventStore::open(dir.path()).unwrap();
+        assert_eq!(
+            store.waiting_len(),
+            1,
+            "the waiting event is still held after the restart"
+        );
+        assert_eq!(
+            ingest(&mut store, &events[0]),
+            Ingest::Accepted {
+                id: events[0].id,
+                released: vec![events[1].id],
+            }
+        );
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_fork_against_a_waiting_event_is_seen_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let signer = key(32);
+        let who = author(&signer);
+        let events = chain_of(&signer, 2);
+        {
+            let mut store = EventStore::open(dir.path()).unwrap();
+            assert_eq!(
+                ingest(&mut store, &events[1]),
+                Ingest::Waiting { id: events[1].id }
+            );
+        }
+        let mut store = EventStore::open(dir.path()).unwrap();
+        let rival = event(&signer, 1, Some(events[0].id), Vec::new(), "rival");
+        assert_eq!(
+            ingest(&mut store, &rival),
+            Ingest::Fork {
+                author: who,
+                seq: 1
+            }
+        );
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_an_expired_waiting_event_is_not_a_rival() {
+        let (_dir, store) = open();
+        let mut store = store.with_waiting_limits(WaitingLimits::new(256, 1_000));
+        let signer = key(33);
+        let events = chain_of(&signer, 2);
+        assert_eq!(
+            store.ingest(&events[1].bytes, 0).unwrap(),
+            Ingest::Waiting { id: events[1].id }
+        );
+        // The waiting event is due at 1_000, so it has expired before the rival arrives.
+        let rival = event(&signer, 1, Some(events[0].id), Vec::new(), "rival");
+        assert_eq!(
+            store.ingest(&rival.bytes, 1_000).unwrap(),
+            Ingest::Waiting { id: rival.id }
+        );
+        assert_eq!(store.waiting_len(), 1, "only the rival is held");
     }
 }
