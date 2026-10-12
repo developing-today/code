@@ -5,6 +5,7 @@
 //! to the members who may read them.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::{Hash, SigningKey, VerifyingKey};
@@ -16,6 +17,8 @@ use p2panda_encryption::key_manager::KeyManagerState;
 use p2panda_encryption::traits::GroupMessage;
 use proptest::prelude::*;
 
+use super::history::{HISTORY_WAIT, HistoryAnswer, HistoryError, ask_member};
+use super::welcome::{CHUNK_HEADER_BYTES, Reassembly, WelcomeError, split};
 use super::*;
 use crate::groups::{
     Body, Create, Event, GroupView, Key, MemberOp, Policy, Role, Scheme, Template, fold,
@@ -60,6 +63,8 @@ fn view_of(members: &BTreeSet<Key>) -> GroupView {
 struct Cast {
     rng: Rng,
     sessions: BTreeMap<Key, Session>,
+    /// Each person's identity secret, to open the answers sealed to them.
+    identities: BTreeMap<Key, IdentitySecret>,
     /// The group's signed events, in order. The first is the create, and the group model is their
     /// fold.
     events: Vec<Event>,
@@ -72,12 +77,14 @@ impl Cast {
         let rng = Rng::default();
         let mut bundles = Vec::new();
         let mut keys: BTreeMap<Key, (VerifyingKey, KeyManagerState)> = BTreeMap::new();
+        let mut identities = BTreeMap::new();
         for seed in seeds {
             let (key, verifying) = person(*seed);
             let identity = IdentitySecret::from_rng(&rng).expect("identity");
             let state = new_keys(&identity, Lifetime::default(), &rng).expect("keys");
             bundles.push((verifying, key_bundle(&state).expect("bundle")));
             keys.insert(key, (verifying, state));
+            identities.insert(key, identity);
         }
         let registry = registry(&bundles).expect("registry");
         let sessions = keys
@@ -96,6 +103,7 @@ impl Cast {
         Self {
             rng,
             sessions,
+            identities,
             events: Vec::new(),
             model: BTreeSet::new(),
         }
@@ -103,6 +111,14 @@ impl Cast {
 
     fn session(&self, who: u8) -> &Session {
         self.sessions.get(&id(who)).expect("session")
+    }
+
+    fn session_mut(&mut self, who: u8) -> &mut Session {
+        self.sessions.get_mut(&id(who)).expect("session")
+    }
+
+    fn identity(&self, who: u8) -> &IdentitySecret {
+        self.identities.get(&id(who)).expect("identity")
     }
 
     /// The group's view as the fold gives it after the events so far.
@@ -185,6 +201,22 @@ impl Cast {
             .expect("session")
             .remove(&view, id(who), &self.rng)
             .expect("remove")
+    }
+
+    /// An add that welcomes the joiner with the secrets `mode` allows.
+    fn add_with_history(&mut self, by: u8, who: u8, mode: HistoryMode) -> Envelope {
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Add {
+                member: id(who),
+                role: Role::Admin,
+            }),
+        );
+        self.sessions
+            .get_mut(&id(by))
+            .expect("session")
+            .add_with_history(&view, id(who), mode, &self.rng)
+            .expect("add_with_history")
     }
 
     /// A join through `add_from_join`: the add, then the immediate update.
@@ -329,6 +361,462 @@ fn test_add_rejects_a_key_the_model_does_not_list() {
         .add(&view, id(3), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
+}
+
+// --- history modes -------------------------------------------------------------------------------
+
+/// Every window size and epoch count: a `recent:N` welcome succeeds, the joiner holds the newest
+/// `min(N, K + 1)` epochs, and it reads a message sent after the join.
+#[test]
+fn test_recent_welcome_succeeds_for_every_window_and_epoch_count() {
+    for window in [1, 8, 32, 128, 512] {
+        for rotations in [0, 1, 5, 40] {
+            let mode = HistoryMode::Recent(window);
+            let mut cast = Cast::new(&[1, 2, 3, 4]);
+            let create = cast.create(1, &[1, 2, 3]);
+            cast.deliver(&create, &[2, 3, 4]);
+            for _ in 0..rotations {
+                let update = cast.update(1);
+                cast.deliver(&update, &[2, 3, 4]);
+            }
+
+            let add = cast.add_with_history(1, 4, mode);
+            cast.deliver(&add, &[2, 3, 4]);
+            let label = format!("{mode} after {rotations} rotations");
+            assert!(cast.session(4).is_welcomed(), "{label}: welcomed");
+            assert_eq!(cast.members_of(4), cast.model, "{label}: roster");
+            assert_eq!(cast.epoch(4), cast.epoch(1), "{label}: newest epoch");
+            let epochs = usize::try_from(window).expect("window").min(rotations + 1);
+            assert_eq!(cast.session(4).epoch_count(), epochs, "{label}: window");
+
+            let message = cast.send(2, "after the join");
+            assert_eq!(
+                cast.deliver(&message, &[1, 3, 4]),
+                vec![
+                    vec![text("after the join")],
+                    vec![text("after the join")],
+                    vec![text("after the join")]
+                ],
+                "{label}: the joiner reads after its join"
+            );
+        }
+    }
+}
+
+/// A full welcome carries every epoch, and the joiner holds all of them.
+#[test]
+fn test_full_welcome_carries_every_epoch() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+    for _ in 0..5 {
+        let update = cast.update(1);
+        cast.deliver(&update, &[2, 3, 4]);
+    }
+
+    let add = cast.add_with_history(1, 4, HistoryMode::Full);
+    cast.deliver(&add, &[2, 3, 4]);
+    assert_eq!(
+        cast.session(4).epoch_count(),
+        6,
+        "every epoch the adder holds"
+    );
+}
+
+/// Builds `rotations` epochs for the group of 1, 2 and 3, and sends one message under each epoch.
+/// Members 2 and 3 take every message as it goes. Returns every group message in send order, and
+/// the application messages alone, oldest first.
+fn history(cast: &mut Cast, rotations: usize) -> (Vec<Envelope>, Vec<Envelope>) {
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let mut all = vec![create];
+    let mut apps = Vec::new();
+    for epoch in 0..=rotations {
+        let message = cast.send(1, &format!("epoch {epoch}"));
+        cast.deliver(&message, &[2, 3]);
+        all.push(message.clone());
+        apps.push(message);
+        if epoch < rotations {
+            let update = cast.update(1);
+            cast.deliver(&update, &[2, 3]);
+            all.push(update);
+        }
+    }
+    (all, apps)
+}
+
+/// The crate's refusal, reproduced. A joiner handed its pre-welcome history with no secret check
+/// (the crate receives every message) fails its welcome whenever the window leaves an epoch out:
+/// `recent:N` with N no larger than the rotations. Round 2 saw this in 80 of 120 runs, and never
+/// in a run where the window held every epoch (P4.5, round 2 `welcome-recent` §E6).
+#[test]
+fn test_crate_refuses_the_welcome_when_pre_welcome_history_names_an_unknown_secret() {
+    let windows = [Some(1), Some(8), Some(32), Some(128), Some(512), None];
+    let mut runs = 0;
+    let mut refused = 0;
+    for rotations in [4, 20, 40] {
+        for window in windows {
+            let mode = window.map_or(HistoryMode::Full, HistoryMode::Recent);
+            let mut cast = Cast::new(&[1, 2, 3, 4]);
+            let (all, _) = history(&mut cast, rotations);
+            for message in &all {
+                cast.sessions
+                    .get_mut(&id(4))
+                    .expect("session")
+                    .process_unchecked(message)
+                    .expect("pre-welcome message");
+            }
+            let add = cast.add_with_history(1, 4, mode);
+            let welcome = cast
+                .sessions
+                .get_mut(&id(4))
+                .expect("session")
+                .process_unchecked(&add);
+
+            runs += 1;
+            let label = format!("{mode} after {rotations} rotations");
+            let expect_refused =
+                window.is_some_and(|n| usize::try_from(n).expect("window") <= rotations);
+            assert_eq!(welcome.is_err(), expect_refused, "{label}");
+            if let Err(err) = welcome {
+                refused += 1;
+                assert!(
+                    matches!(&err, SchemeError::Crate(text) if text.contains("unknown group secret")),
+                    "{label}: {err}"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        (refused, runs),
+        (6, 18),
+        "refused welcomes out of runs, by the pattern above"
+    );
+}
+
+/// A recent joiner reads the window of history it was handed before its welcome, in the order it
+/// arrived, and refuses the older messages. The welcome releases the window (P4.5). Every window
+/// and epoch count is tried.
+#[test]
+fn test_recent_joiner_reads_its_window_of_history_handed_over_before_the_welcome() {
+    for window in [1, 8, 32, 128, 512] {
+        for rotations in [0, 1, 5, 40] {
+            let mut cast = Cast::new(&[1, 2, 3, 4]);
+            let (all, apps) = history(&mut cast, rotations);
+            for message in &all {
+                cast.deliver(message, &[4]);
+            }
+
+            let add = cast.add_with_history(1, 4, HistoryMode::Recent(window));
+            let read = cast
+                .sessions
+                .get_mut(&id(4))
+                .expect("session")
+                .process(&add)
+                .expect("welcome");
+
+            let epochs = usize::try_from(window).expect("window").min(rotations + 1);
+            let label = format!("recent:{window} after {rotations} rotations");
+            let expected: Vec<Received> = (rotations + 1 - epochs..=rotations)
+                .map(|epoch| text(&format!("epoch {epoch}")))
+                .collect();
+            assert_eq!(read, expected, "{label}: the window is released");
+            if epochs <= rotations {
+                assert_eq!(
+                    cast.deliver(&apps[0], &[4]),
+                    vec![vec![Received::Withheld(apps[0].id())]],
+                    "{label}: the oldest epoch stays refused"
+                );
+            }
+        }
+    }
+}
+
+// --- lazy history ---------------------------------------------------------------------------------
+
+/// A joiner with a `recent:N` welcome asks a member for the older epochs it was handed and cannot
+/// read. The member answers, and the joiner reads them. A key sealed to someone else does not open.
+#[test]
+fn test_joiner_gets_its_older_epochs_from_a_member() {
+    let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+    let (all, _) = history(&mut cast, 10);
+    for message in &all {
+        cast.deliver(message, &[4]);
+    }
+    let add = cast.add_with_history(1, 4, HistoryMode::Recent(4));
+    cast.deliver(&add, &[4]);
+    assert_eq!(cast.session(4).epoch_count(), 4, "the window");
+
+    let request = cast.session(4).request_history().expect("older epochs");
+    assert_eq!(request.wanted.len(), 7, "epochs 0 to 6, outside the window");
+
+    let answer = cast
+        .session(1)
+        .answer_history(&request)
+        .expect("answer")
+        .expect("a member answers");
+    let outsider = cast.identity(5).clone();
+    assert!(
+        cast.session_mut(4)
+            .open_history(&request, &answer, &outsider)
+            .is_err(),
+        "an answer does not open with another identity"
+    );
+
+    let identity = cast.identity(4).clone();
+    let read = cast
+        .session_mut(4)
+        .open_history(&request, &answer, &identity)
+        .expect("open");
+    let expected: Vec<Received> = (0..=6)
+        .map(|epoch| text(&format!("epoch {epoch}")))
+        .collect();
+    assert_eq!(read, expected, "the older messages, in send order");
+    assert_eq!(cast.session(4).epoch_count(), 11, "every epoch now");
+    assert!(
+        cast.session(4).request_history().is_none(),
+        "nothing left to ask for"
+    );
+}
+
+/// Only a member answers, and only a member may ask. A device outside the group gets nothing, and a
+/// member refuses a request from outside its roster.
+#[test]
+fn test_a_non_member_gets_no_history_and_a_non_member_answers_nothing() {
+    let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+    let (all, _) = history(&mut cast, 6);
+    for message in &all {
+        cast.deliver(message, &[4, 5]);
+    }
+    let add = cast.add_with_history(1, 4, HistoryMode::Recent(2));
+    cast.deliver(&add, &[4]);
+
+    let outsider_request = cast
+        .session(5)
+        .request_history()
+        .expect("5 holds messages it cannot read");
+    assert!(
+        cast.session(1)
+            .answer_history(&outsider_request)
+            .expect("answer")
+            .is_none(),
+        "a member refuses a request from outside its roster"
+    );
+
+    let joiner_request = cast.session(4).request_history().expect("4 asks");
+    assert!(
+        cast.session(5)
+            .answer_history(&joiner_request)
+            .expect("answer")
+            .is_none(),
+        "a device outside the group answers nothing"
+    );
+}
+
+/// The answer comes back through the transport, within the wait.
+#[tokio::test]
+async fn test_a_member_answers_through_the_transport() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (all, _) = history(&mut cast, 3);
+    for message in &all {
+        cast.deliver(message, &[4]);
+    }
+    let add = cast.add_with_history(1, 4, HistoryMode::Recent(1));
+    cast.deliver(&add, &[4]);
+    let request = cast.session(4).request_history().expect("older epochs");
+
+    let member = cast.session(1);
+    let answer = ask_member(
+        request.clone(),
+        |asked| std::future::ready(member.answer_history(&asked).expect("answer")),
+        HISTORY_WAIT,
+    )
+    .await
+    .expect("answered");
+    let identity = cast.identity(4).clone();
+    let read = cast
+        .session_mut(4)
+        .open_history(&request, &answer, &identity)
+        .expect("open");
+    assert_eq!(read.len(), 3, "the three older epochs");
+}
+
+/// A member that is offline never answers, and the wait ends in a timeout rather than a hang.
+#[tokio::test]
+async fn test_a_request_with_no_answer_times_out_cleanly() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (all, _) = history(&mut cast, 2);
+    for message in &all {
+        cast.deliver(message, &[4]);
+    }
+    let request = cast.session(4).request_history().expect("older epochs");
+
+    let outcome = ask_member(
+        request,
+        |_| std::future::pending::<Option<HistoryAnswer>>(),
+        Duration::from_millis(20),
+    )
+    .await;
+    assert_eq!(
+        outcome,
+        Err(HistoryError::Timeout(Duration::from_millis(20)))
+    );
+}
+
+// --- welcome chunks -------------------------------------------------------------------------------
+
+/// A frame small enough that a welcome of a few epochs needs several chunks. A chunk is then
+/// `FRAME - CHUNK_HEADER_BYTES` bytes of payload.
+const SMALL_FRAME: usize = 512;
+
+/// The group of 1, 2 and 3 after `rotations` updates, with 4 holding every control message. Returns
+/// the full welcome for 4, and the update that was sent last.
+fn full_welcome(cast: &mut Cast, rotations: usize) -> (Envelope, Envelope) {
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+    let mut last = create;
+    for _ in 0..rotations {
+        last = cast.update(1);
+        cast.deliver(&last, &[2, 3, 4]);
+    }
+    (cast.add(1, 4), last)
+}
+
+/// A full welcome above the frame cap is split into checked chunks, reassembled, and processed.
+#[test]
+fn test_a_full_welcome_above_the_cap_is_split_and_reassembled() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+
+    let chunks = split(&add, SMALL_FRAME).expect("split");
+    assert!(chunks.len() > 1, "a full welcome above the cap is split");
+    for chunk in &chunks {
+        let encoded = encode_cbor(chunk).expect("encode").len();
+        assert!(
+            encoded <= SMALL_FRAME,
+            "chunk {} fits the frame",
+            chunk.index
+        );
+        assert!(
+            encoded - chunk.bytes.len() <= CHUNK_HEADER_BYTES,
+            "the header of chunk {} is within its budget",
+            chunk.index
+        );
+    }
+
+    let mut joiner = Reassembly::default();
+    let mut whole = None;
+    for chunk in chunks {
+        if let Some(envelope) = joiner.push(&chunk).expect("in order and intact") {
+            whole = Some(envelope);
+        }
+    }
+    let whole = whole.expect("the last chunk completes the welcome");
+    joiner.finish().expect("complete");
+
+    assert_eq!(
+        cast.sessions
+            .get_mut(&id(4))
+            .expect("session")
+            .process(&whole)
+            .expect("welcome"),
+        Vec::new()
+    );
+    assert!(
+        cast.session(4).is_welcomed(),
+        "the reassembled welcome welcomes"
+    );
+    assert_eq!(cast.session(4).epoch_count(), 21, "every epoch");
+}
+
+/// A welcome that fits one frame is one chunk, so every welcome takes the same path.
+#[test]
+fn test_a_welcome_within_one_frame_is_one_chunk() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 2);
+    let chunks = split(&add, crate::world_session::MAX_FRAME_BYTES).expect("split");
+    assert_eq!(chunks.len(), 1);
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks[0]).expect("one chunk").is_some());
+}
+
+/// A chunk whose bytes were altered in transit is refused as it arrives.
+#[test]
+fn test_a_corrupted_chunk_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    chunks[1].bytes[0] ^= 0x01;
+
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks.remove(0)).expect("chunk 0").is_none());
+    assert_eq!(
+        joiner.push(&chunks.remove(0)).err(),
+        Some(WelcomeError::AlteredChunk { index: 1 })
+    );
+}
+
+/// A missing chunk is refused: the next one that arrives is out of sequence, and a reassembly that
+/// ends early is incomplete.
+#[test]
+fn test_a_missing_chunk_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    assert!(chunks.len() >= 3, "the test needs a middle chunk");
+
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks.remove(0)).expect("chunk 0").is_none());
+    let skipped = chunks.remove(0);
+    assert_eq!(skipped.index, 1);
+    assert_eq!(
+        joiner.push(&chunks.remove(0)).err(),
+        Some(WelcomeError::OutOfSequence {
+            expected: 1,
+            got: 2
+        })
+    );
+    assert!(matches!(
+        joiner.finish(),
+        Err(WelcomeError::Incomplete { received: 1, .. })
+    ));
+}
+
+/// A chunk that checks and keeps its own digest, but carries altered bytes, passes each check and
+/// fails the whole. The welcome is refused before it is decoded.
+#[test]
+fn test_an_altered_welcome_with_consistent_checks_is_refused_before_decoding() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    let last = chunks.len() - 1;
+    chunks[last].bytes[0] ^= 0x01;
+    chunks[last].check = Hash::digest(&chunks[last].bytes);
+
+    let mut joiner = Reassembly::default();
+    let mut outcome = Ok(None);
+    for chunk in chunks {
+        outcome = joiner.push(&chunk);
+    }
+    assert_eq!(outcome.err(), Some(WelcomeError::AlteredWelcome));
+}
+
+/// A chunk of another welcome does not join this one.
+#[test]
+fn test_a_chunk_of_another_welcome_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, update) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    let other = split(&update, SMALL_FRAME).expect("split");
+
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks.remove(0)).expect("chunk 0").is_none());
+    assert_eq!(
+        joiner
+            .push(&other.into_iter().nth(1).expect("chunk 1 of the other"))
+            .err(),
+        Some(WelcomeError::OtherWelcome)
+    );
 }
 
 // --- update ---------------------------------------------------------------------------------------
