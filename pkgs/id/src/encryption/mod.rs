@@ -6,14 +6,17 @@
 //! - [`roster`]: the membership the crate keeps. The adapter checks it against the model after each
 //!   local membership change.
 //! - [`ordering`]: causal delivery, and the [`Envelope`] messages travel in.
+//! - [`history`]: the history modes a welcome is cut to (`full` or `recent:N`).
 //!
 //! A group member is the key the group model holds (`crate::groups::Key`). The crate's identity is
 //! the matching `p2panda_core::VerifyingKey`.
 
+pub mod history;
 pub mod ordering;
 pub mod roster;
 pub mod scheme;
 
+pub use history::{HistoryMode, HistoryModeError};
 pub use ordering::{Envelope, Orderer, OrdererError};
 pub use roster::Roster;
 pub use scheme::{Received, SchemeError, Session, key_bundle, key_of, new_keys, registry};

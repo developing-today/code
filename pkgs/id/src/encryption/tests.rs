@@ -100,6 +100,17 @@ impl Cast {
             .expect("remove")
     }
 
+    /// An add that welcomes the joiner with the secrets `mode` allows.
+    fn add_with_history(&mut self, by: u8, who: u8, mode: HistoryMode) -> Envelope {
+        self.model.insert(id(who));
+        let model = self.model.clone();
+        self.sessions
+            .get_mut(&id(by))
+            .expect("session")
+            .add_with_history(&model, id(who), mode, &self.rng)
+            .expect("add_with_history")
+    }
+
     /// A join through `add_from_join`: the add, then the immediate update.
     fn join(&mut self, by: u8, who: u8) -> Vec<Envelope> {
         self.model.insert(id(who));
@@ -237,6 +248,66 @@ fn test_add_rejects_a_key_the_model_does_not_list() {
         .add(&model, id(3), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
+}
+
+// --- history modes -------------------------------------------------------------------------------
+
+/// Every window size and epoch count: a `recent:N` welcome succeeds, the joiner holds the newest
+/// `min(N, K + 1)` epochs, and it reads a message sent after the join.
+#[test]
+fn test_recent_welcome_succeeds_for_every_window_and_epoch_count() {
+    for window in [1, 8, 32, 128, 512] {
+        for rotations in [0, 1, 5, 40] {
+            let mode = HistoryMode::Recent(window);
+            let mut cast = Cast::new(&[1, 2, 3, 4]);
+            let create = cast.create(1, &[1, 2, 3]);
+            cast.deliver(&create, &[2, 3, 4]);
+            for _ in 0..rotations {
+                let update = cast.update(1);
+                cast.deliver(&update, &[2, 3, 4]);
+            }
+
+            let add = cast.add_with_history(1, 4, mode);
+            cast.deliver(&add, &[2, 3, 4]);
+            let case = format!("{mode} after {rotations} rotations");
+            assert!(cast.session(4).is_welcomed(), "{case}: welcomed");
+            assert_eq!(cast.members_of(4), cast.model, "{case}: roster");
+            assert_eq!(cast.epoch(4), cast.epoch(1), "{case}: newest epoch");
+            let epochs = usize::try_from(window).expect("window").min(rotations + 1);
+            assert_eq!(cast.session(4).epoch_count(), epochs, "{case}: window");
+
+            let message = cast.send(2, "after the join");
+            assert_eq!(
+                cast.deliver(&message, &[1, 3, 4]),
+                vec![
+                    vec![text("after the join")],
+                    vec![text("after the join")],
+                    vec![text("after the join")]
+                ],
+                "{case}: the joiner reads after its join"
+            );
+        }
+    }
+}
+
+/// A full welcome carries every epoch, and the joiner holds all of them.
+#[test]
+fn test_full_welcome_carries_every_epoch() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+    for _ in 0..5 {
+        let update = cast.update(1);
+        cast.deliver(&update, &[2, 3, 4]);
+    }
+
+    let add = cast.add_with_history(1, 4, HistoryMode::Full);
+    cast.deliver(&add, &[2, 3, 4]);
+    assert_eq!(
+        cast.session(4).epoch_count(),
+        6,
+        "every epoch the adder holds"
+    );
 }
 
 // --- update ---------------------------------------------------------------------------------------

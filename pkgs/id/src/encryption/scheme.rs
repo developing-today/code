@@ -33,6 +33,7 @@ use p2panda_encryption::key_registry::{KeyRegistry, KeyRegistryState};
 use p2panda_encryption::traits::{GroupMessage, GroupMessageContent, Ordering as _, PreKeyManager};
 use thiserror::Error;
 
+use super::history::HistoryMode;
 use super::ordering::{Envelope, Orderer};
 use super::roster::Roster;
 use crate::groups::Key;
@@ -119,6 +120,11 @@ impl Session {
         self.state.as_ref()?.secrets.latest().map(GroupSecret::id)
     }
 
+    /// How many group secrets this device holds, so how many epochs it can read.
+    pub fn epoch_count(&self) -> usize {
+        self.state.as_ref().map_or(0, |y| y.secrets.len())
+    }
+
     /// The members the crate's roster holds, as group-model keys.
     pub fn members(&self) -> Result<BTreeSet<Key>, SchemeError> {
         let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
@@ -144,13 +150,32 @@ impl Session {
         added: Key,
         rng: &Rng,
     ) -> Result<Envelope, SchemeError> {
+        self.add_with_history(model, added, HistoryMode::Full, rng)
+    }
+
+    /// Adds `added`, which `model` must already list, with a welcome that carries the secrets
+    /// `mode` allows: every secret for `Full`, the newest N for `Recent(N)` (P4.5).
+    ///
+    /// The bundle is cut here, before `Dcgka::add`, so the crate never sees a secret outside the
+    /// window. The joiner then holds exactly the window and refuses older messages.
+    pub fn add_with_history(
+        &mut self,
+        model: &BTreeSet<Key>,
+        added: Key,
+        mode: HistoryMode,
+        rng: &Rng,
+    ) -> Result<Envelope, SchemeError> {
         self.ensure_welcomed()?;
         if !model.contains(&added) {
             return Err(SchemeError::NotInModel(short(added)));
         }
         let added_key = member_of(added)?;
+        let bundle = {
+            let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
+            mode.welcome_bundle(&y.secrets)
+        };
         let message = self.step(|mut y| {
-            let (dcgka, output) = Dcgka::add(y.dcgka, added_key, &y.secrets, rng)?;
+            let (dcgka, output) = Dcgka::add(y.dcgka, added_key, &bundle, rng)?;
             y.dcgka = dcgka;
             publish(y, output)
         })?;
