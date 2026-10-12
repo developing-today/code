@@ -7,20 +7,21 @@
 
 ## Steps
 
-| Step                                  | Track   | Status | Commits  | Tests                                 | Notes                                    |
-| ------------------------------------- | ------- | ------ | -------- | ------------------------------------- | ---------------------------------------- |
-| P4.1 DataScheme adapter               | adapter | todo   |          |                                       | blocks the rest                          |
-| P4.2 Our DGM and the from_join fork   | adapter | todo   |          |                                       |                                          |
-| P4.3 from_join withholding rule       | adapter | todo   |          |                                       |                                          |
-| P4.4 Scheme v1                        | scheme  | todo   |          |                                       |                                          |
-| P4.5 recent:N and full                | history | todo   |          |                                       |                                          |
-| P4.6 Lazy full history                | history | todo   |          |                                       |                                          |
-| P4.7 Heads rule                       | heads   | todo   |          |                                       |                                          |
-| P4.8 Rotation policy and PCS recovery | warn    | done   | 205a5483 | 4 rotation and recovery tests         | `Session::recover`; no CLI command yet   |
-| P4.9 Warnings                         | warn    | done   | 4b82eff2 | 11 warning tests (9 unit, 2 property) | pure evaluator; not yet wired into serve |
-| P4.10 scheme none notice              | warn    | done   | a95c52ae | 4 notice tests                        | function only; no UI yet                 |
-| P4.11 DataScheme cost measurement     | warn    | done   | 2a3de9a9 | 1 smoke test; benchmark ignored       | numbers below                            |
-| P4.12 Welcome chunking                | history | todo   |          |                                       |                                          |
+| Step                                  | Track   | Status | Commits            | Tests                                 | Notes                                    |
+| ------------------------------------- | ------- | ------ | ------------------ | ------------------------------------- | ---------------------------------------- |
+| P4.1 DataScheme adapter               | adapter | done   | a630a440           |                                       | blocks the rest                          |
+| P4.2 Our DGM and the from_join fork   | adapter | done   | e57c1223           |                                       |                                          |
+| P4.3 from_join withholding rule       | adapter | done   | daa4f200           |                                       |                                          |
+| P4.4 Scheme v1                        | scheme  | done   | d22f6987, 3b671bb4 |                                       |                                          |
+| P4.5 recent:N and full                | history | done   | 6b2a9005, 67207add |                                       |                                          |
+| P4.6 Lazy full history                | history | done   | 25d7d814           |                                       |                                          |
+| P4.7 Heads rule                       | heads   | todo   |                    |                                       |                                          |
+| P4.8 Rotation policy and PCS recovery | warn    | done   | 205a5483           | 4 rotation and recovery tests         | `Session::recover`; no CLI command yet   |
+| P4.9 Warnings                         | warn    | done   | 4b82eff2           | 11 warning tests (9 unit, 2 property) | pure evaluator; not yet wired into serve |
+| P4.10 scheme none notice              | warn    | done   | a95c52ae           | 4 notice tests                        | function only; no UI yet                 |
+| P4.11 DataScheme cost measurement     | warn    | done   | 2a3de9a9           | 1 smoke test; benchmark ignored       | numbers below                            |
+| P4.12 Welcome chunking                | history | done   | c38e6a39           |                                       |                                          |
+| P4.13 Roster follows the group fold   | scheme  | done   | a39cc834           | 11 scheme tests (incl. fold property) | mismatch poisons the session             |
 
 ## Decisions
 
