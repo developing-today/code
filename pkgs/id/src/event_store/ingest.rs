@@ -23,7 +23,8 @@
 //!
 //! Each call runs in one redb write transaction. It holds every decision the call causes: the
 //! event, each event it releases, the expiry of due events, and the waiting rows. The call
-//! commits all of them or none. A refused event and a duplicate write nothing.
+//! commits all of them or none. A refused event writes nothing. A duplicate writes nothing, except
+//! that a stored event first received without its body takes the action of the body that arrives.
 //!
 //! # Applied state and forks
 //!
@@ -299,7 +300,9 @@ fn ingest_in(
     let id = event.id;
     let author = author_of(&event);
     let rivals = held_rivals(m.pool, &event);
-    let outcome = match settle(m, event, action, &rivals, now, false)? {
+    let settled = settle(m, event, action, &rivals, now, false)?;
+    let attached = matches!(settled, Settled::Duplicate { attached: true });
+    let outcome = match settled {
         Settled::Stored { applied, released } => {
             let released = drain(m, released.into(), now)?;
             if applied {
@@ -308,7 +311,7 @@ fn ingest_in(
                 Ingest::Voided { id, released }
             }
         }
-        Settled::Duplicate => Ingest::Duplicate { id },
+        Settled::Duplicate { .. } => Ingest::Duplicate { id },
         Settled::Fork { seq, released } => {
             drain(m, released.into(), now)?;
             Ingest::Fork { author, seq }
@@ -319,7 +322,9 @@ fn ingest_in(
         }
         Settled::Refused(refusal) => Ingest::Refused(refusal),
     };
-    let changed = expired > 0 || !matches!(outcome, Ingest::Duplicate { .. } | Ingest::Refused(_));
+    let changed = expired > 0
+        || attached
+        || !matches!(outcome, Ingest::Duplicate { .. } | Ingest::Refused(_));
     Ok((outcome, changed))
 }
 
@@ -328,8 +333,9 @@ enum Settled {
     /// Stored, and applied or voided as the resolution says. `released` are the events that
     /// waited only for it, and each is due a decision.
     Stored { applied: bool, released: Vec<Event> },
-    /// Already stored, or a fork proof header. Nothing changed.
-    Duplicate,
+    /// Already stored, or a fork proof header. Nothing changed, unless `attached`: a stored event
+    /// that was first stored without its body takes the action of the body that arrived now.
+    Duplicate { attached: bool },
     /// A conflict at `seq`. The proof headers are present now, and `released` are the events
     /// that waited only for them, each due a decision.
     Fork { seq: SeqNum, released: Vec<Event> },
@@ -367,7 +373,9 @@ fn settle(
         }
         Decision::Duplicate => {
             drop_released(m, &event, from_pool)?;
-            Settled::Duplicate
+            Settled::Duplicate {
+                attached: attach_action(m.txn, &id, action)?,
+            }
         }
         Decision::Fork { seq, proof } => {
             drop_released(m, &event, from_pool)?;
@@ -454,7 +462,7 @@ fn drain(
                 queue.extend(released);
             }
             Settled::Fork { released, .. } => queue.extend(released),
-            Settled::Duplicate | Settled::Held | Settled::Skipped | Settled::Refused(_) => {}
+            Settled::Duplicate { .. } | Settled::Held | Settled::Skipped | Settled::Refused(_) => {}
         }
         queue.extend(m.pool.take_ready());
     }
@@ -560,6 +568,26 @@ fn store_action(
     let mut actions = txn.open_table(ACTIONS)?;
     actions.insert(id.as_bytes().as_slice(), encoded.as_slice())?;
     Ok(())
+}
+
+/// Attaches the action of a group operation to a stored event that has none. Such an event was
+/// first stored without its body, so it applied as content. The header commits to the body by hash
+/// and size, so the body that arrives later is the one the author signed. A stored event that has
+/// an action keeps it. Returns whether an action was attached, and then the resolution is run again.
+fn attach_action(
+    txn: &WriteTransaction,
+    id: &Hash,
+    action: Option<&GroupAction<AuthId, ()>>,
+) -> Result<bool, StoreError> {
+    let Some(action) = action else {
+        return Ok(false);
+    };
+    if !is_stored(txn, id)? || stored_action(txn, id)?.is_some() {
+        return Ok(false);
+    }
+    store_action(txn, id, action)?;
+    refresh(txn)?;
+    Ok(true)
 }
 
 /// Recomputes which stored events apply, and writes the result: the applied table, and each
