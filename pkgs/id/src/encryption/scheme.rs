@@ -24,6 +24,8 @@
 #![allow(clippy::result_large_err)]
 
 use std::collections::BTreeSet;
+use std::future::Future;
+use std::time::Duration;
 
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::{Hash, VerifyingKey};
@@ -43,7 +45,7 @@ use p2panda_encryption::traits::{
 };
 use thiserror::Error;
 
-use super::history::{HistoryAnswer, HistoryMode, HistoryRequest};
+use super::history::{HistoryAnswer, HistoryError, HistoryMode, HistoryRequest, ask_member};
 use super::ordering::{Envelope, MAX_PARENTS, Orderer};
 use super::roster::Roster;
 use crate::groups::{GroupView, Key, Policy};
@@ -125,6 +127,9 @@ pub enum SchemeError {
     /// An answer carried a secret the request did not ask for, so it is refused.
     #[error("the history answer carries a secret the request did not ask for")]
     UnaskedSecret,
+    /// A lazy history request got no answer it could use (P4.6). The held messages stay held.
+    #[error(transparent)]
+    History(#[from] HistoryError),
     /// The key is still a member in the group model, so it cannot be removed.
     #[error("{0} is still in the group model, so it cannot be removed")]
     StillInModel(String),
@@ -456,6 +461,30 @@ impl Session {
             Ok((y, ()))
         })?;
         self.release()
+    }
+
+    /// Asks a member for the secrets the held messages need, and releases the messages they unlock
+    /// (P4.6). `ask` is the transport, as in [`ask_member`]: it reaches a member and returns that
+    /// member's answer, or `None` when the member refuses. `identity` is this device's identity key,
+    /// which the answer is sealed to.
+    ///
+    /// Nothing is asked when no held message waits on a secret. A refusal or a timeout leaves the
+    /// messages held, so a later answer still releases them.
+    pub async fn fetch_history<F, Fut>(
+        &mut self,
+        identity: &SecretKey,
+        ask: F,
+        wait: Duration,
+    ) -> Result<Vec<Received>, SchemeError>
+    where
+        F: FnOnce(HistoryRequest) -> Fut,
+        Fut: Future<Output = Option<HistoryAnswer>>,
+    {
+        let Some(request) = self.request_history() else {
+            return Ok(Vec::new());
+        };
+        let answer = ask_member(request.clone(), ask, wait).await?;
+        self.open_history(&request, &answer, identity)
     }
 
     /// Whether the crate may take `message` now: a control message always, an application message
