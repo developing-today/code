@@ -7,11 +7,19 @@
 //! - [`frontier`] derives each auth operation's dependencies from its causal past (P2.1). The
 //!   result is the maximal group operations of the same group, found by walking `after` through
 //!   non-auth events. The stored `after` is never passed to p2panda-auth directly.
+//! - [`gate`] decides whether an operation may reach `GroupCrdt::process` (P2.2). It holds an
+//!   operation whose dependencies are missing and rejects one whose group does not exist at its
+//!   dependencies, which is the case where p2panda-auth panics.
+//! - [`layer`] puts the two together. It holds events whose `after` is incomplete, decides each
+//!   event once, and leaves a no-op placeholder for an event it refuses, so that its descendants
+//!   do not stall.
 //!
-//! The admission gate and the membership layer that holds events until their `after` is decided
-//! follow in P2.2.
+//! The layer takes events that the caller has already verified (signature, encoding, and
+//! `after` closure are the event store's job). It does not read the event store itself.
 
 pub mod frontier;
+pub mod gate;
+pub mod layer;
 
 use std::fmt;
 
@@ -20,6 +28,8 @@ use p2panda_auth::group::{GroupAction, GroupCrdt, GroupCrdtState};
 use p2panda_auth::traits::Operation;
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
+
+pub use layer::{CausalEvent, Membership, MembershipError, Outcome, Refusal, Role};
 
 /// The identity type of p2panda-auth. It names both members and groups, so it is one type with
 /// two kinds of value.

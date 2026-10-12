@@ -1,0 +1,590 @@
+//! The membership layer: decides each causal event once, and holds the events whose past is
+//! incomplete.
+//!
+//! [`Membership::receive`] takes one verified event. An event whose `after` hashes are not all
+//! decided is held. An event that is ready is decided: a membership operation is mapped to its
+//! auth frontier, passed through the gate, and processed by p2panda-auth. Its outcome is recorded,
+//! and every held event it releases is decided in turn.
+//!
+//! Each decided event is indexed, so a later event can name it in `after`. A refused event
+//! becomes a no-op placeholder in the auth graph when a manager stands at its dependencies, so its
+//! descendants depend on it and do not stall. Otherwise it is walked through, as a non-auth event.
+//!
+//! The final state depends only on the set of events, not on the order they arrive in. That is
+//! the property the tests in `tests/membership_properties.rs` check.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+
+use p2panda_auth::Access;
+use p2panda_auth::group::{GroupAction, GroupMember};
+use p2panda_core::Hash;
+use thiserror::Error;
+
+use super::frontier::{CausalIndex, FrontierError};
+use super::gate::{self, Admission, Rejection};
+use super::{AuthId, AuthOperation, Graph, GroupState};
+
+/// One event as the membership layer sees it. The caller has verified it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CausalEvent {
+    /// The event's ID.
+    pub id: Hash,
+    /// The event's `after` hashes, as signed.
+    pub after: Vec<Hash>,
+    /// What the event means for membership.
+    pub role: Role,
+}
+
+/// What an event means for membership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Role {
+    /// Any event other than a membership operation. It has a causal position and nothing else.
+    Other,
+    /// A membership operation by `author`. `group` is the group named in the event; it is `None`
+    /// for a create, whose group is the event's own ID.
+    Auth {
+        /// The key that signed the event.
+        author: [u8; 32],
+        /// The group the event names, if any.
+        group: Option<Hash>,
+        /// The membership change.
+        action: GroupAction<AuthId, ()>,
+    },
+}
+
+/// Why the layer refused a membership operation. A refused event changes no membership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// A non-create with no group.
+    Malformed,
+    /// The gate rejected the operation before p2panda-auth saw it.
+    Gate(Rejection),
+    /// p2panda-auth refused the operation at its position. For example, its author lacked manage
+    /// access there. The message is the crate's.
+    Invalid(String),
+}
+
+/// What became of one event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Decided and applied. An event with no membership effect is applied too.
+    Applied,
+    /// Held until these `after` hashes are decided.
+    Held(Vec<Hash>),
+    /// Refused. `placeholder` says whether a no-op stands in the auth graph in its place.
+    Refused {
+        /// Why it was refused.
+        reason: Refusal,
+        /// Whether a placeholder stands in the auth graph.
+        placeholder: bool,
+    },
+    /// Already decided or held. Nothing changed.
+    Duplicate,
+}
+
+/// A failure of the layer itself. None of these is a refusal of an event; each means the layer
+/// cannot keep its invariants.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum MembershipError {
+    /// The causal index refused a lookup or insert.
+    #[error(transparent)]
+    Frontier(#[from] FrontierError),
+    /// Rebuilding the auth graph from the accepted operations failed. Each one was accepted once,
+    /// so this means a broken invariant.
+    #[error("rebuilding the auth graph failed at {0}")]
+    Rebuild(String),
+    /// The gate admitted an operation that still names a missing dependency.
+    #[error("internal invariant broken: {0}")]
+    Internal(String),
+}
+
+/// The membership state of one store: the causal index, the held events, and the auth graph.
+#[derive(Debug, Default)]
+pub struct Membership {
+    index: CausalIndex,
+    held: HashMap<Hash, CausalEvent>,
+    /// For each `after` hash not yet decided, the held events that name it.
+    waiting_on: HashMap<Hash, Vec<Hash>>,
+    /// The auth frontier each membership operation was decided with.
+    dependencies: HashMap<Hash, Vec<Hash>>,
+    state: GroupState,
+    /// Every operation accepted into the auth graph, in order. A rebuild replays these.
+    accepted: Vec<AuthOperation>,
+}
+
+impl Membership {
+    /// An empty layer.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Takes one verified event, and returns the outcome of each event it decided, in the order
+    /// they were decided. The first entry is the event itself, unless it was a duplicate or was
+    /// held. Held events it releases follow it.
+    ///
+    /// An error means an invariant broke, and the layer's state can no longer be trusted. Discard
+    /// the layer after one.
+    pub fn receive(&mut self, event: CausalEvent) -> Result<Vec<(Hash, Outcome)>, MembershipError> {
+        if self.index.contains(&event.id) || self.held.contains_key(&event.id) {
+            return Ok(vec![(event.id, Outcome::Duplicate)]);
+        }
+        let missing: Vec<Hash> = event
+            .after
+            .iter()
+            .filter(|hash| !self.index.contains(hash))
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            for hash in &missing {
+                self.waiting_on.entry(*hash).or_default().push(event.id);
+            }
+            let id = event.id;
+            self.held.insert(id, event);
+            return Ok(vec![(id, Outcome::Held(missing))]);
+        }
+
+        let mut outcomes = Vec::new();
+        let mut ready = VecDeque::from([event]);
+        while let Some(next) = ready.pop_front() {
+            let id = next.id;
+            outcomes.push((id, self.decide(next)?));
+            for waiter in self.waiting_on.remove(&id).unwrap_or_default() {
+                let Some(held) = self.held.get(&waiter) else {
+                    continue;
+                };
+                if held.after.iter().all(|hash| self.index.contains(hash))
+                    && let Some(event) = self.held.remove(&waiter)
+                {
+                    ready.push_back(event);
+                }
+            }
+        }
+        Ok(outcomes)
+    }
+
+    /// Decides one event whose `after` hashes are all indexed.
+    fn decide(&mut self, event: CausalEvent) -> Result<Outcome, MembershipError> {
+        let CausalEvent { id, after, role } = event;
+        let Role::Auth {
+            author,
+            group,
+            action,
+        } = role
+        else {
+            self.index.insert(id, after, None)?;
+            return Ok(Outcome::Applied);
+        };
+        let group = if action.is_create() { Some(id) } else { group };
+        let Some(group) = group else {
+            self.index.insert(id, after, None)?;
+            return Ok(Outcome::Refused {
+                reason: Refusal::Malformed,
+                placeholder: false,
+            });
+        };
+
+        let dependencies = self.index.frontier(&after, group)?;
+        self.dependencies.insert(id, dependencies.clone());
+        let op = AuthOperation {
+            id,
+            author: AuthId::Key(author),
+            dependencies,
+            group_id: AuthId::Group(group),
+            action,
+        };
+        match gate::admit(&self.state, &op) {
+            Admission::Admit => {}
+            Admission::Wait(missing) => {
+                return Err(MembershipError::Internal(format!(
+                    "{id} admitted with missing dependencies {missing:?}"
+                )));
+            }
+            Admission::Reject(rejection) => {
+                return self.refuse(op, group, after, Refusal::Gate(rejection));
+            }
+        }
+        match self.process(&op)? {
+            Ok(()) => {
+                self.index.insert(id, after, Some(group))?;
+                Ok(Outcome::Applied)
+            }
+            Err(message) => self.refuse(op, group, after, Refusal::Invalid(message)),
+        }
+    }
+
+    /// Records a refusal. A placeholder stands in the graph when a manager is in the group at the
+    /// operation's dependencies. Otherwise the event is walked through.
+    fn refuse(
+        &mut self,
+        op: AuthOperation,
+        group: Hash,
+        after: Vec<Hash>,
+        reason: Refusal,
+    ) -> Result<Outcome, MembershipError> {
+        let id = op.id;
+        let placeholder = match self.manager_at(group, &op.dependencies) {
+            Some(target) => {
+                // Promoting a member who already manages changes nothing, and the crate does not
+                // check the promoter for that case. So this operation is valid whoever wrote it.
+                let noop = AuthOperation {
+                    action: GroupAction::Promote {
+                        member: GroupMember::Individual(target),
+                        access: Access::read(),
+                    },
+                    ..op
+                };
+                self.process(&noop)?.is_ok()
+            }
+            None => false,
+        };
+        self.index.insert(id, after, placeholder.then_some(group))?;
+        Ok(Outcome::Refused {
+            reason,
+            placeholder,
+        })
+    }
+
+    /// The least active manager of `group` at `dependencies`, or `None` when there is none. The
+    /// choice is deterministic, so every peer makes the same placeholder.
+    fn manager_at(&self, group: Hash, dependencies: &[Hash]) -> Option<AuthId> {
+        let heads: HashSet<Hash> = dependencies.iter().copied().collect();
+        Graph::members_at(&self.state, heads, AuthId::Group(group))
+            .ok()?
+            .into_iter()
+            .filter(|(id, access)| matches!(id, AuthId::Key(_)) && access.is_manage())
+            .map(|(id, _)| id)
+            .min()
+    }
+
+    /// Processes `op` on the auth graph and records it as accepted. `process` consumes the state,
+    /// so when the crate refuses the operation the state is rebuilt from the accepted operations.
+    /// The inner result is the crate's refusal message.
+    fn process(&mut self, op: &AuthOperation) -> Result<Result<(), String>, MembershipError> {
+        let state = std::mem::take(&mut self.state);
+        match Graph::process(state, op) {
+            Ok(next) => {
+                self.state = next;
+                self.accepted.push(op.clone());
+                Ok(Ok(()))
+            }
+            Err(error) => {
+                self.state = rebuild(&self.accepted)?;
+                Ok(Err(error.to_string()))
+            }
+        }
+    }
+
+    /// The members of `group` and their access, in the current state.
+    pub fn members(&self, group: Hash) -> Vec<(AuthId, Access<()>)> {
+        self.state.members(AuthId::Group(group))
+    }
+
+    /// The auth frontier that the layer derived for a decided membership operation. The stored
+    /// `after` of the event is never used as a dependency, so this is what the crate saw.
+    pub fn dependencies(&self, id: &Hash) -> Option<&[Hash]> {
+        self.dependencies.get(id).map(Vec::as_slice)
+    }
+
+    /// Whether the event is held, waiting for an `after` hash.
+    pub fn is_held(&self, id: &Hash) -> bool {
+        self.held.contains_key(id)
+    }
+
+    /// How many events are held.
+    pub fn held_len(&self) -> usize {
+        self.held.len()
+    }
+}
+
+/// Replays `accepted` on a fresh graph.
+fn rebuild(accepted: &[AuthOperation]) -> Result<GroupState, MembershipError> {
+    accepted.iter().try_fold(Graph::init(), |state, op| {
+        Graph::process(state, op)
+            .map_err(|error| MembershipError::Rebuild(format!("{}: {error}", op.id)))
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn key(n: u8) -> [u8; 32] {
+        [n; 32]
+    }
+
+    fn id(n: u8) -> Hash {
+        Hash::digest([n])
+    }
+
+    /// An event with no membership effect.
+    fn other(n: u8, after: &[u8]) -> CausalEvent {
+        CausalEvent {
+            id: id(n),
+            after: after.iter().map(|a| id(*a)).collect(),
+            role: Role::Other,
+        }
+    }
+
+    /// A membership operation by `author` on group `group` (`None` for a create).
+    fn auth(
+        n: u8,
+        author: u8,
+        group: Option<u8>,
+        after: &[u8],
+        action: GroupAction<AuthId, ()>,
+    ) -> CausalEvent {
+        CausalEvent {
+            id: id(n),
+            after: after.iter().map(|a| id(*a)).collect(),
+            role: Role::Auth {
+                author: key(author),
+                group: group.map(id),
+                action,
+            },
+        }
+    }
+
+    fn create(n: u8, author: u8, managers: &[u8]) -> CausalEvent {
+        let initial_members = managers
+            .iter()
+            .map(|m| {
+                (
+                    GroupMember::Individual(AuthId::Key(key(*m))),
+                    Access::manage(),
+                )
+            })
+            .collect();
+        auth(
+            n,
+            author,
+            None,
+            &[],
+            GroupAction::Create { initial_members },
+        )
+    }
+
+    fn add(member: u8, access: Access<()>) -> GroupAction<AuthId, ()> {
+        GroupAction::Add {
+            member: GroupMember::Individual(AuthId::Key(key(member))),
+            access,
+        }
+    }
+
+    fn remove(member: u8) -> GroupAction<AuthId, ()> {
+        GroupAction::Remove {
+            member: GroupMember::Individual(AuthId::Key(key(member))),
+        }
+    }
+
+    fn outcome_of(outcomes: &[(Hash, Outcome)], n: u8) -> Outcome {
+        outcomes
+            .iter()
+            .find(|(hash, _)| *hash == id(n))
+            .map(|(_, outcome)| outcome.clone())
+            .unwrap()
+    }
+
+    fn member_keys(layer: &Membership, group: u8) -> Vec<AuthId> {
+        let mut keys: Vec<AuthId> = layer
+            .members(id(group))
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn test_a_create_is_applied_and_its_group_is_its_own_id() {
+        let mut layer = Membership::new();
+        let outcomes = layer.receive(create(10, 1, &[1, 2])).unwrap();
+        assert_eq!(outcomes, vec![(id(10), Outcome::Applied)]);
+        assert_eq!(
+            member_keys(&layer, 10),
+            vec![AuthId::Key(key(1)), AuthId::Key(key(2))]
+        );
+        assert_eq!(layer.dependencies(&id(10)), Some(&[][..]));
+    }
+
+    #[test]
+    fn test_a_duplicate_changes_nothing() {
+        let mut layer = Membership::new();
+        layer.receive(create(10, 1, &[1])).unwrap();
+        let again = layer.receive(create(10, 1, &[1])).unwrap();
+        assert_eq!(again, vec![(id(10), Outcome::Duplicate)]);
+    }
+
+    #[test]
+    fn test_an_event_naming_an_undecided_hash_is_held_until_it_arrives() {
+        // Regression: an unknown `after` is held, never treated as a root. Treating it as a root
+        // would derive an empty frontier and apply the remove without the add it depends on.
+        let mut layer = Membership::new();
+        let held = layer
+            .receive(auth(12, 1, Some(10), &[99], remove(2)))
+            .unwrap();
+        assert_eq!(held, vec![(id(12), Outcome::Held(vec![id(99)]))]);
+        assert!(layer.is_held(&id(12)));
+        assert!(layer.dependencies(&id(12)).is_none());
+
+        layer.receive(create(10, 1, &[1, 2])).unwrap();
+        let released = layer.receive(other(99, &[10])).unwrap();
+        assert_eq!(released.len(), 2);
+        assert_eq!(released[0], (id(99), Outcome::Applied));
+        assert_eq!(released[1], (id(12), Outcome::Applied));
+        assert_eq!(member_keys(&layer, 10), vec![AuthId::Key(key(1))]);
+        assert_eq!(layer.held_len(), 0);
+    }
+
+    #[test]
+    fn test_held_events_are_released_in_causal_order_whatever_the_arrival_order() {
+        let mut layer = Membership::new();
+        assert!(matches!(
+            layer
+                .receive(auth(12, 1, Some(10), &[11], add(3, Access::read())))
+                .unwrap()[0]
+                .1,
+            Outcome::Held(_)
+        ));
+        assert!(matches!(
+            layer
+                .receive(auth(11, 1, Some(10), &[10], add(4, Access::read())))
+                .unwrap()[0]
+                .1,
+            Outcome::Held(_)
+        ));
+        let released = layer.receive(create(10, 1, &[1])).unwrap();
+        let order: Vec<Hash> = released.iter().map(|(hash, _)| *hash).collect();
+        assert_eq!(order, vec![id(10), id(11), id(12)]);
+        assert_eq!(layer.held_len(), 0);
+    }
+
+    #[test]
+    fn test_the_frontier_names_the_auth_operation_not_the_document_between() {
+        // Regression for the literal mapping: a remove whose `after` names a non-auth event must
+        // not name that event. p2panda-auth would hold the remove on it forever.
+        let mut layer = Membership::new();
+        layer.receive(create(10, 1, &[1, 2, 3])).unwrap();
+        layer.receive(other(11, &[10])).unwrap();
+        layer
+            .receive(auth(12, 1, Some(10), &[11], remove(3)))
+            .unwrap();
+        assert_eq!(layer.dependencies(&id(12)), Some(&[id(10)][..]));
+        assert_eq!(
+            member_keys(&layer, 10),
+            vec![AuthId::Key(key(1)), AuthId::Key(key(2))]
+        );
+    }
+
+    #[test]
+    fn test_a_refused_event_leaves_a_placeholder_so_descendants_apply() {
+        // Key 2 has read access only, so its add is refused by the crate. The placeholder keeps
+        // key 1's later add, which names the refused event, from stalling.
+        let mut layer = Membership::new();
+        layer.receive(create(10, 1, &[1])).unwrap();
+        layer
+            .receive(auth(11, 1, Some(10), &[10], add(2, Access::read())))
+            .unwrap();
+        let refused = layer
+            .receive(auth(12, 2, Some(10), &[11], add(3, Access::manage())))
+            .unwrap();
+        assert!(matches!(
+            outcome_of(&refused, 12),
+            Outcome::Refused {
+                reason: Refusal::Invalid(_),
+                placeholder: true
+            }
+        ));
+
+        let after_placeholder = layer
+            .receive(auth(13, 1, Some(10), &[12], add(4, Access::read())))
+            .unwrap();
+        assert_eq!(outcome_of(&after_placeholder, 13), Outcome::Applied);
+        assert_eq!(layer.dependencies(&id(13)), Some(&[id(12)][..]));
+        assert_eq!(
+            member_keys(&layer, 10),
+            vec![
+                AuthId::Key(key(1)),
+                AuthId::Key(key(2)),
+                AuthId::Key(key(4))
+            ]
+        );
+    }
+
+    #[test]
+    fn test_a_refused_event_with_no_manager_is_walked_through_so_descendants_do_not_stall() {
+        // No manager at all: no placeholder. The descendant names the refused event but depends
+        // on the create, and is refused by the crate, not held.
+        let mut layer = Membership::new();
+        let read_only = GroupAction::Create {
+            initial_members: vec![(GroupMember::Individual(AuthId::Key(key(2))), Access::read())],
+        };
+        layer.receive(auth(10, 1, None, &[], read_only)).unwrap();
+        let refused = layer
+            .receive(auth(11, 1, Some(10), &[10], remove(2)))
+            .unwrap();
+        assert!(matches!(
+            outcome_of(&refused, 11),
+            Outcome::Refused {
+                reason: Refusal::Invalid(_),
+                placeholder: false
+            }
+        ));
+        let descendant = layer
+            .receive(auth(12, 2, Some(10), &[11], add(3, Access::read())))
+            .unwrap();
+        assert!(matches!(
+            outcome_of(&descendant, 12),
+            Outcome::Refused {
+                reason: Refusal::Invalid(_),
+                ..
+            }
+        ));
+        assert_eq!(layer.dependencies(&id(12)), Some(&[id(10)][..]));
+        assert!(!layer.is_held(&id(12)));
+    }
+
+    #[test]
+    fn test_an_operation_for_a_group_absent_at_its_dependencies_is_refused_without_a_panic() {
+        // Regression for group/crdt/mod.rs (the expect in apply_action). Group 20 was never
+        // created, and its operation names group 10's create. The mapping finds no group-20
+        // operation in the past, so the gate refuses it before the crate can panic.
+        let mut layer = Membership::new();
+        layer.receive(create(10, 1, &[1])).unwrap();
+        let outcomes = layer
+            .receive(auth(21, 1, Some(20), &[10], add(3, Access::read())))
+            .unwrap();
+        assert_eq!(
+            outcome_of(&outcomes, 21),
+            Outcome::Refused {
+                reason: Refusal::Gate(Rejection::NoDependencies),
+                placeholder: false,
+            }
+        );
+        assert_eq!(member_keys(&layer, 10), vec![AuthId::Key(key(1))]);
+    }
+
+    #[test]
+    fn test_a_non_create_with_no_group_is_refused_as_malformed() {
+        let mut layer = Membership::new();
+        layer.receive(create(10, 1, &[1])).unwrap();
+        let outcomes = layer
+            .receive(CausalEvent {
+                id: id(11),
+                after: vec![id(10)],
+                role: Role::Auth {
+                    author: key(1),
+                    group: None,
+                    action: remove(2),
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            outcome_of(&outcomes, 11),
+            Outcome::Refused {
+                reason: Refusal::Malformed,
+                placeholder: false
+            }
+        );
+    }
+}

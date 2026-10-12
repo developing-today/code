@@ -10,7 +10,9 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use id::membership::frontier::CausalIndex;
-use id::membership::{AuthId, AuthOperation, Graph, GroupState};
+use id::membership::{
+    AuthId, AuthOperation, CausalEvent, Graph, GroupState, Membership, Outcome, Role,
+};
 use p2panda_auth::Access;
 use p2panda_auth::group::{GroupAction, GroupCrdtError, GroupMember};
 use p2panda_core::Hash;
@@ -154,7 +156,67 @@ fn members(state: &GroupState) -> Vec<(AuthId, Access<()>)> {
     list
 }
 
-/// Runs every causal order and checks each one gives `expected`.
+/// Every arrival order of `n` events, not only the causal ones.
+fn permutations(n: usize) -> Vec<Vec<usize>> {
+    fn walk(current: &mut Vec<usize>, rest: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        if rest.is_empty() {
+            out.push(current.clone());
+            return;
+        }
+        for i in 0..rest.len() {
+            let next = rest.remove(i);
+            current.push(next);
+            walk(current, rest, out);
+            current.pop();
+            rest.insert(i, next);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&mut Vec::new(), &mut (0..n).collect(), &mut out);
+    out
+}
+
+/// The membership the layer reaches when `events` arrive in `order`. The layer holds an event
+/// until its `after` is decided, so the order need not be causal.
+fn layer_members(events: &[Ev], order: &[usize]) -> Vec<(AuthId, Access<()>)> {
+    let mut layer = Membership::new();
+    for i in order {
+        let event = &events[*i];
+        let role = match &event.action {
+            None => Role::Other,
+            Some(action) => Role::Auth {
+                author: [event.author as u8; 32],
+                group: (!action.is_create()).then(|| ident(GROUP)),
+                action: action.clone(),
+            },
+        };
+        let after = event.after.iter().map(|n| ident(*n)).collect();
+        let outcomes = layer
+            .receive(CausalEvent {
+                id: ident(event.id),
+                after,
+                role,
+            })
+            .expect("the layer decides every event");
+        assert!(
+            outcomes
+                .iter()
+                .all(|(_, outcome)| !matches!(outcome, Outcome::Refused { .. })),
+            "a valid S2 event is refused in order {order:?}"
+        );
+    }
+    assert_eq!(
+        layer.held_len(),
+        0,
+        "every event is decided in order {order:?}"
+    );
+    let mut list = layer.members(ident(GROUP));
+    list.sort_by_key(|(id, _)| *id);
+    list
+}
+
+/// Runs every causal order, and every arrival order through the layer, and checks each gives
+/// `expected`.
 fn check(name: &str, events: &[Ev], expected: &[(AuthId, Access<()>)]) {
     let ops = operations(events);
     let orders = causal_orders(&ops);
@@ -162,6 +224,13 @@ fn check(name: &str, events: &[Ev], expected: &[(AuthId, Access<()>)]) {
     for order in &orders {
         let state = apply(&ops, order).expect(name);
         assert_eq!(members(&state), expected, "{name} in order {order:?}");
+    }
+    for order in permutations(events.len()) {
+        assert_eq!(
+            layer_members(events, &order),
+            expected,
+            "{name} through the layer in arrival order {order:?}"
+        );
     }
 }
 
