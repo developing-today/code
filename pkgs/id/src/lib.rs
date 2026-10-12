@@ -171,6 +171,7 @@ pub mod directory_mail;
 #[cfg(feature = "world")]
 pub mod directory_view;
 pub mod discovery;
+pub mod documents;
 #[cfg(feature = "world")]
 pub mod envelope_net;
 #[cfg(feature = "world")]
