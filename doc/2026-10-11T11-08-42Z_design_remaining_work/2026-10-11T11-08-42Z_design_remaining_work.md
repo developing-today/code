@@ -206,3 +206,22 @@ Open for the owner:
 1. User subject for tags: the user's first identity event ID, or the account key itself?
 2. Two groups claim the same alias: show both as contested, never pick one silently (recommended). Does a server config key always win locally?
 3. Official names unique per server, or not (recommended: not; aliases and config keys disambiguate)?
+
+## Owner decisions on aliases (2026-10-12)
+
+- Aliases are tag claims on the object. Each alias shows its text, its creation date, and the account that made it.
+- Two or more aliases on one object are shown as contested. Users can inspect the full set. Nothing picks one silently.
+- A server config sets a primary alias, separate from the name. Until the server sets one, the server may show its own alias as a fallback (meaning to confirm).
+- Later: sort methods (creation time, votes or popularity, a user's chosen perspective). Per-user or per-server preferred and primary aliases. Display shows the name, the preferred alias, and the other aliases.
+- Later: users can view aliases and set one as their user alias, which is the same thing as a pet name. Whether the user alias is shown by default is open.
+- Later: a group can act through its members. A group can make a tag or upload a document. The acting user is always attached, and a user can act as the group.
+- Strong removal of a user does not delete their data. It sets markers that invalidate that user's authority from the removal point.
+- No official names and no uniqueness. Only event and object IDs are unique. Users, groups, tags, and aliases may share names.
+- Disambiguation uses the shortest unique prefix of an object's ID.
+
+Open for the owner:
+
+1. Tag subject for a user: the first identity event ID (recommended), or the account key. Hashing the account key adds no privacy, because keys are already public.
+2. Server alias fallback: confirm that it shows only until the server sets its primary alias.
+3. Show the user alias by default, or only the name?
+4. Prefix or suffix for disambiguation: prefix (recommended), since prefixes sort and match like git short IDs.
