@@ -216,13 +216,17 @@ impl Mirror<'_> {
         deps.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
         deps.dedup();
         let stored_deps = if parked { Vec::new() } else { deps.clone() };
-        // The ingest call has already expired what is due at `now`, so the pool expires nothing
-        // here, and the event it holds is not due until a later call.
-        let result = if parked {
-            self.pool.park(author, id, event, now)
-        } else {
-            self.pool.insert(author, id, deps, event, now)
+        // An event that waits again keeps its first arrival time, so the age cap counts all of its
+        // waiting. A released event keeps its row until the caller decides it, and the row holds
+        // that time. An event the store has not held before arrived now.
+        let arrived_at = match get(self.txn, &id)? {
+            Some(row) => row.arrived_at,
+            None => now,
         };
+        // The ingest call has already expired what is due at `now`, and the dependencies are not
+        // present, so the pool holds the event as given: it expires nothing and releases nothing.
+        let missing = if parked { Vec::new() } else { deps };
+        let result = self.pool.restore(author, id, missing, event, arrived_at);
         match result {
             Ok(()) if self.pool.contains(&id) => {
                 let arrival = *self.arrivals;
@@ -231,7 +235,7 @@ impl Mirror<'_> {
                     id,
                     author,
                     seq,
-                    arrived_at: now,
+                    arrived_at,
                     arrival,
                     deps: stored_deps,
                     bytes,
