@@ -158,6 +158,28 @@ impl Session {
         Ok(message)
     }
 
+    /// Adds `added` by a join: a welcome that carries no earlier secret, then an immediate update.
+    ///
+    /// The joiner learns nothing the group had before the add, so it cannot read messages sent
+    /// before its join. The update gives the group a secret the joiner does learn, and it must be
+    /// delivered too. Returns the add and the update, in the order they are delivered.
+    pub fn add_from_join(
+        &mut self,
+        model: &BTreeSet<Key>,
+        added: Key,
+        rng: &Rng,
+    ) -> Result<Vec<Envelope>, SchemeError> {
+        self.ensure_welcomed()?;
+        if !model.contains(&added) {
+            return Err(SchemeError::NotInModel(short(added)));
+        }
+        let added_key = member_of(added)?;
+        let add = self.step(|y| EncryptionGroup::add_from_join(y, added_key, rng))?;
+        let update = self.step(|y| EncryptionGroup::update(y, rng))?;
+        self.check_roster(model)?;
+        Ok(vec![add, update])
+    }
+
     /// Removes `removed`, which `model` must no longer list. The removal rotates the epoch.
     pub fn remove(
         &mut self,

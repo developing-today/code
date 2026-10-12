@@ -13,6 +13,7 @@ use p2panda_encryption::data_scheme::group_secret::GroupSecretId;
 use p2panda_encryption::key_bundle::Lifetime;
 use p2panda_encryption::key_manager::KeyManagerState;
 use p2panda_encryption::traits::GroupMessage;
+use proptest::prelude::*;
 
 use super::*;
 use crate::groups::Key;
@@ -97,6 +98,17 @@ impl Cast {
             .expect("session")
             .remove(&model, id(who), &self.rng)
             .expect("remove")
+    }
+
+    /// A join through `add_from_join`: the add, then the immediate update.
+    fn join(&mut self, by: u8, who: u8) -> Vec<Envelope> {
+        self.model.insert(id(who));
+        let model = self.model.clone();
+        self.sessions
+            .get_mut(&id(by))
+            .expect("session")
+            .add_from_join(&model, id(who), &self.rng)
+            .expect("add_from_join")
     }
 
     fn update(&mut self, by: u8) -> Envelope {
@@ -416,4 +428,175 @@ fn test_five_members_converge_through_add_update_and_remove() {
         "the remaining members share an epoch"
     );
     assert_eq!(cast.members_of(5), cast.model);
+}
+
+// --- from_join (P4.3) -----------------------------------------------------------------------------
+
+#[test]
+fn test_from_join_rejects_a_key_the_model_does_not_list() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+
+    let model = cast.model.clone();
+    let rng = Rng::default();
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add_from_join(&model, id(4), &rng);
+    assert!(matches!(result, Err(SchemeError::NotInModel(_))));
+    assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
+}
+
+#[test]
+fn test_from_join_welcomes_the_joiner_into_a_new_epoch() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+    let before = cast.epoch(1);
+
+    let messages = cast.join(1, 4);
+    assert_eq!(
+        messages.len(),
+        2,
+        "the join is an add and an immediate update"
+    );
+    cast.deliver(&messages[0], &[2, 3, 4]);
+    cast.deliver(&messages[1], &[2, 3, 4]);
+
+    assert!(cast.session(4).is_welcomed(), "the joiner is welcomed");
+    assert_eq!(
+        cast.members_of(4),
+        cast.model,
+        "the joiner's roster matches the model"
+    );
+    assert_ne!(
+        cast.epoch(4),
+        before,
+        "the joiner holds the epoch the join started"
+    );
+    assert_eq!(cast.epoch(4), cast.epoch(1));
+}
+
+#[test]
+fn test_joiner_cannot_read_a_message_from_before_its_join_and_reads_one_after() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+    let before = cast.send(2, "before the join");
+    cast.deliver(&before, &[1, 3]);
+
+    let messages = cast.join(1, 4);
+    cast.deliver(&messages[0], &[2, 3, 4]);
+
+    let gap = cast.send(2, "between the add and the update");
+    assert_eq!(
+        cast.deliver(&gap, &[4]),
+        vec![vec![Received::Withheld(gap.id())]],
+        "a message sent before the update is under the old epoch, and is withheld"
+    );
+
+    cast.deliver(&messages[1], &[2, 3, 4]);
+    let after = cast.send(2, "after the update");
+    assert_eq!(
+        cast.deliver(&after, &[4]),
+        vec![vec![text("after the update")]]
+    );
+
+    assert_eq!(
+        cast.deliver(&before, &[4]),
+        vec![vec![Received::Withheld(before.id())]],
+        "the joiner does not read a message sent before its join"
+    );
+}
+
+// --- property -------------------------------------------------------------------------------------
+
+/// The seeds of the people the group model lists.
+fn current_seeds(cast: &Cast, people: &[u8]) -> Vec<u8> {
+    people
+        .iter()
+        .copied()
+        .filter(|seed| cast.model.contains(&id(*seed)))
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    /// Random joins (from_join and full add), removals, updates and sends. At the end every member
+    /// agrees on the roster and the epoch, every member reads the newest message, and every removed
+    /// member is refused it.
+    #[test]
+    fn test_random_operations_keep_members_in_agreement(
+        ops in proptest::collection::vec((0u8..5, any::<u8>()), 1..16),
+    ) {
+        const PEOPLE: [u8; 5] = [1, 2, 3, 4, 5];
+        let mut cast = Cast::new(&PEOPLE);
+        let create = cast.create(1, &[1, 2, 3]);
+        cast.deliver(&create, &[2, 3, 4, 5]);
+
+        let mut waiting: Vec<u8> = vec![4, 5];
+        let mut removed: Vec<u8> = Vec::new();
+        for (step, (kind, pick)) in ops.into_iter().enumerate() {
+            let current = current_seeds(&cast, &PEOPLE);
+            let by = current[usize::from(pick) % current.len()];
+            // Control messages reach everyone not removed, so a joiner has the history it needs.
+            let audience: Vec<u8> = PEOPLE
+                .iter()
+                .copied()
+                .filter(|seed| *seed != by && !removed.contains(seed))
+                .collect();
+            match kind {
+                0 if !waiting.is_empty() => {
+                    let who = waiting.remove(0);
+                    let messages = cast.join(by, who);
+                    cast.deliver(&messages[0], &audience);
+                    cast.deliver(&messages[1], &audience);
+                }
+                1 if !waiting.is_empty() => {
+                    let who = waiting.remove(0);
+                    let add = cast.add(by, who);
+                    cast.deliver(&add, &audience);
+                }
+                2 if current.len() > 2 => {
+                    let others: Vec<u8> = current.iter().copied().filter(|seed| *seed != by).collect();
+                    let victim = others[usize::from(pick) % others.len()];
+                    let remove = cast.remove(by, victim);
+                    cast.deliver(&remove, &audience);
+                    removed.push(victim);
+                }
+                3 => {
+                    let update = cast.update(by);
+                    cast.deliver(&update, &audience);
+                }
+                _ => {
+                    let text = format!("message {step}");
+                    let message = cast.send(by, &text);
+                    let readers: Vec<u8> = current.iter().copied().filter(|seed| *seed != by).collect();
+                    for read in cast.deliver(&message, &readers) {
+                        prop_assert_eq!(read, vec![Received::Plaintext(text.as_bytes().to_vec())]);
+                    }
+                }
+            }
+        }
+
+        let members = current_seeds(&cast, &PEOPLE);
+        for who in &members {
+            prop_assert_eq!(cast.members_of(*who), cast.model.clone(), "member {} roster", who);
+        }
+        let epochs: BTreeSet<_> = members.iter().map(|who| cast.epoch(*who)).collect();
+        prop_assert_eq!(epochs.len(), 1, "every member holds the same epoch");
+
+        let last = cast.send(members[0], "last");
+        let readers: Vec<u8> = members.iter().copied().filter(|seed| *seed != members[0]).collect();
+        for read in cast.deliver(&last, &readers) {
+            prop_assert_eq!(read, vec![text("last")]);
+        }
+        for gone in &removed {
+            let read = cast.deliver(&last, &[*gone]);
+            prop_assert_eq!(read, vec![vec![Received::Withheld(last.id())]], "removed member {}", gone);
+        }
+    }
 }
