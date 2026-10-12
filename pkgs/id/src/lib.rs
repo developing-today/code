@@ -179,6 +179,7 @@ pub mod fileops;
 pub mod helpers;
 pub mod invite;
 pub mod local;
+pub mod log_sync;
 pub mod meta_client;
 #[cfg(feature = "world")]
 pub mod petname;

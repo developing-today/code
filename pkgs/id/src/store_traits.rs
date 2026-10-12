@@ -18,7 +18,7 @@
 //!
 //! # `LogSync`
 //!
-//! `LogSync` runs over these traits in `log_sync`. It uses a vendored copy of p2panda-sync
+//! `LogSync` runs over these traits in [`crate::log_sync`]. It uses a vendored copy of p2panda-sync
 //! (`vendor/`) whose store dependency has no SQLite default, so the build has no SQLite.
 //! `test_the_lock_has_no_sqlite_with_logsync_wired` fails if SQLite returns.
 
@@ -118,7 +118,7 @@ impl SharedEventStore {
     }
 
     /// Runs `op` under the read lock.
-    fn read<T>(
+    pub(crate) fn read<T>(
         &self,
         op: impl FnOnce(&EventStore) -> Result<T, TraitStoreError>,
     ) -> Result<T, TraitStoreError> {
