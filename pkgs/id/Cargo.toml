@@ -54,6 +54,9 @@ iroh-gossip = { version = "0.101", features = ["net"] }
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
 # Store traits only. The default features would pull in SQLite (explainers section 14).
 p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false }
+# Group membership and the auth DAG (P2.1). Default features only: `test_utils` turns on
+# test-only behaviour in p2panda-core, so the test types come from our own tests.
+p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
 redb = "=4.3.0"
