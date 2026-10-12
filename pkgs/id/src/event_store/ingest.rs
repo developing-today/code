@@ -75,8 +75,7 @@ use redb::{ReadableTable, WriteTransaction};
 use super::waiting_rows::{Hold, Mirror};
 use super::{
     CHAINS, Chain, EVENTS, EventStore, FORKS, ForkProof, HASHES, PROOF_IDS, StoreError, corrupt,
-    decode_proof, decode_stored, position_key, split_position, store_chain, store_event,
-    store_fork,
+    decode_proof, decode_stored, position_key, store_chain, store_event, store_fork,
 };
 use crate::chain::{self, Event};
 use crate::waiting::{AuthorKey, WaitingPool};
@@ -422,11 +421,13 @@ fn decide_in(
         }
         return accept(txn, event, chain);
     }
-    // Ahead of the chain. The backlink must be applied first, unless it already is, at
-    // another position, and then this event can never apply.
+    // Ahead of the chain. The backlink must be applied first. A backlink that is present is never
+    // applied at this position: it is applied at another position, voided by a fork, or a proof
+    // header. Then this event can never apply, so only a backlink that has not arrived is waited
+    // for.
     let mut waits = deps;
     let missing_backlink = match event.header.backlink {
-        Some(backlink) => (!is_applied(txn, &backlink)?).then_some(backlink),
+        Some(backlink) => (!is_present(txn, &backlink)?).then_some(backlink),
         None => None,
     };
     waits.extend(missing_backlink);
@@ -578,12 +579,6 @@ fn missing_deps(txn: &WriteTransaction, after: &[Hash]) -> Result<Vec<Hash>, Sto
     Ok(missing)
 }
 
-/// Whether the event with this ID is applied: stored, at a sequence number below its
-/// author's applied prefix.
-pub(super) fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
-    applied_in(&txn.open_table(HASHES)?, &txn.open_table(CHAINS)?, hash)
-}
-
 /// Whether an `after` hash is present: the store holds the event it names, applied or voided, or
 /// the event is one of a fork's proof headers. Presence never goes away, so an event that waited
 /// for a present hash is never made to wait again.
@@ -601,26 +596,6 @@ pub(super) fn present_in(
         return Ok(true);
     }
     Ok(proof_ids.get(hash.as_bytes().as_slice())?.is_some())
-}
-
-/// [`is_applied`] over the `hashes` and `chains` tables, whether they are read or written.
-pub(super) fn applied_in(
-    hashes: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    chains: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    hash: &Hash,
-) -> Result<bool, StoreError> {
-    let position = hashes
-        .get(hash.as_bytes().as_slice())?
-        .map(|found| found.value().to_vec());
-    let Some(position) = position else {
-        return Ok(false);
-    };
-    let (author, seq) = split_position(&position)?;
-    let row = chains.get(author.as_slice())?;
-    match row {
-        Some(row) => Ok(Chain::decode(row.value())?.next_seq > seq),
-        None => Ok(false),
-    }
 }
 
 #[cfg(test)]
