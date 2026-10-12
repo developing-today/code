@@ -176,8 +176,12 @@ impl Serialize for SecretBundleState {
     where
         S: serde::Serializer,
     {
-        let mut s = serializer.serialize_seq(Some(self.secrets.len()))?;
-        for secret in self.secrets.values() {
+        // Scheme v1 (P4.4): sorted by timestamp, then ID, so the bytes do not depend on the map's
+        // iteration order. The bundle is encrypted inside the welcome, and sorting keeps it stable.
+        let mut secrets: Vec<&GroupSecret> = self.secrets.values().collect();
+        secrets.sort_by_cached_key(|secret| (secret.timestamp(), secret.id()));
+        let mut s = serializer.serialize_seq(Some(secrets.len()))?;
+        for secret in secrets {
             s.serialize_element(secret)?;
         }
         s.end()
@@ -319,9 +323,29 @@ pub enum GroupSecretError {
 
 #[cfg(test)]
 mod tests {
+    use p2panda_core::cbor::encode_cbor;
+
     use crate::Rng;
 
     use super::{GroupSecret, SecretBundle};
+
+    #[test]
+    fn bundle_bytes_do_not_depend_on_hash_map_order() {
+        // Scheme v1 (P4.4): the secrets are written sorted by (timestamp, id), so the bytes are the
+        // same whichever order the map iterates in. Each map has its own random hasher, so the
+        // unsorted encoding would differ between these builds.
+        let secrets: Vec<GroupSecret> = (1..=8u8)
+            .map(|n| GroupSecret::new([n; 32], u64::from(n % 3)))
+            .collect();
+        let mut sorted = secrets.clone();
+        sorted.sort_by_key(|secret| (secret.timestamp(), secret.id()));
+        let expected = encode_cbor(&sorted).expect("encode the sorted secrets");
+
+        for _ in 0..16 {
+            let bundle = SecretBundle::from_secrets(secrets.clone());
+            assert_eq!(bundle.to_bytes().expect("encode the bundle"), expected);
+        }
+    }
 
     #[test]
     fn group_secret_bundle() {

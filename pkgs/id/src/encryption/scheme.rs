@@ -5,6 +5,11 @@
 //! each local membership change the adapter checks the crate's roster against that set, so the two
 //! cannot drift apart without an error.
 //!
+//! The scheme version (P4.4) is the `scheme` of the group's signed policy. [`negotiate`] maps it to
+//! the version this build speaks, and the session refuses any message whose header or direct copy
+//! names another version. The stock layout (v0) is not shipped, so a stock group is refused, not
+//! migrated (scheme-serde RESULTS).
+//!
 //! An add calls `Dcgka::add` with the full secret bundle, then runs the local steps that
 //! `EncryptionGroup::add` runs. The crate keeps those steps private, and the lower-level call is
 //! what a smaller bundle (`recent:N`) needs.
@@ -35,7 +40,26 @@ use thiserror::Error;
 
 use super::ordering::{Envelope, Orderer};
 use super::roster::Roster;
-use crate::groups::Key;
+use crate::groups::{Key, Policy};
+
+/// The name the group policy gives this scheme.
+pub const DATASCHEME: &str = "datascheme";
+
+/// The scheme version this build speaks: `serde_bytes` on the two byte fields of the vendored
+/// crate (P4.4). Its welcome costs 40 bytes per epoch, where the stock layout costs 146.5.
+pub const SCHEME_V1: u32 = 1;
+
+/// The scheme version a group's signed policy names, if this build speaks it.
+pub fn negotiate(policy: &Policy) -> Result<u32, SchemeError> {
+    match &policy.scheme {
+        None => Err(SchemeError::NoScheme),
+        Some(scheme) if scheme.name == DATASCHEME && scheme.version == SCHEME_V1 => Ok(SCHEME_V1),
+        Some(scheme) => Err(SchemeError::UnsupportedScheme {
+            name: scheme.name.clone(),
+            version: scheme.version,
+        }),
+    }
+}
 
 type Pki = KeyRegistry<VerifyingKey>;
 
@@ -79,34 +103,60 @@ pub enum SchemeError {
     /// The crate's roster and the group model hold different members.
     #[error("the encryption roster disagrees with the group model: {0}")]
     RosterMismatch(String),
+    /// The group's policy names no scheme, so the group is not encrypted.
+    #[error("the group's policy names no scheme")]
+    NoScheme,
+    /// The group's policy names a scheme this build does not speak. A stock group (v0) is refused
+    /// this way, and nothing is migrated.
+    #[error("the group's policy names scheme {name} v{version}, which this build does not speak")]
+    UnsupportedScheme {
+        /// The scheme's name.
+        name: String,
+        /// The version the policy names.
+        version: u32,
+    },
+    /// A message's header or direct copy names a version other than the group's signed policy.
+    #[error("the message names scheme v{found}, but the group's signed policy names v{expected}")]
+    SchemeMismatch {
+        /// The version the signed policy names.
+        expected: u32,
+        /// The version the message names.
+        found: u32,
+    },
 }
 
 /// One device's encryption state for one group.
 #[derive(Debug)]
 pub struct Session {
     me: VerifyingKey,
+    /// The scheme version the group's signed policy names.
+    scheme: u32,
     state: Option<Group>,
 }
 
 impl Session {
     /// A device's state before it creates or joins the group. `registry` must hold the long-term
-    /// bundles of every member who may take part.
+    /// bundles of every member who may take part. `policy` is the group's signed policy, and the
+    /// session refuses a policy that names no scheme or one this build does not speak.
     pub fn init(
         me: VerifyingKey,
         keys: KeyManagerState,
         registry: KeyRegistryState<VerifyingKey>,
-    ) -> Self {
+        policy: &Policy,
+    ) -> Result<Self, SchemeError> {
+        let scheme = negotiate(policy)?;
         let state: Group = EncryptionGroup::init(
             me,
             keys,
             registry,
             Roster::initial_state(),
-            Orderer::init(me),
+            Orderer::init(me, scheme),
         );
-        Self {
+        Ok(Self {
             me,
+            scheme,
             state: Some(state),
-        }
+        })
     }
 
     /// Whether this device has created or joined the group.
@@ -212,6 +262,7 @@ impl Session {
     /// Handles a message from the group. An application message whose secret this device does not
     /// hold is withheld and not given to the crate (P4.3).
     pub fn process(&mut self, message: &Envelope) -> Result<Vec<Received>, SchemeError> {
+        self.check_scheme(message)?;
         if let GroupMessageContent::Application {
             group_secret_id, ..
         } = message.content()
@@ -247,6 +298,21 @@ impl Session {
         let (y, value) = op(y).map_err(crate_error)?;
         self.state = Some(y);
         Ok(value)
+    }
+
+    /// Refuses a message whose header or any direct copy names another version than the policy.
+    /// The check runs before the crate sees the message, so a refusal leaves the state as it was.
+    fn check_scheme(&self, message: &Envelope) -> Result<(), SchemeError> {
+        let found = std::iter::once(message.scheme())
+            .chain(message.direct_schemes())
+            .find(|found| *found != self.scheme);
+        match found {
+            None => Ok(()),
+            Some(found) => Err(SchemeError::SchemeMismatch {
+                expected: self.scheme,
+                found,
+            }),
+        }
     }
 
     fn check_roster(&self, model: &BTreeSet<Key>) -> Result<(), SchemeError> {

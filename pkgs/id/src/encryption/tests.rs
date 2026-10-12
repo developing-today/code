@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::{SigningKey, VerifyingKey};
 use p2panda_encryption::crypto::Rng;
 use p2panda_encryption::crypto::x25519::SecretKey as IdentitySecret;
@@ -16,7 +17,7 @@ use p2panda_encryption::traits::GroupMessage;
 use proptest::prelude::*;
 
 use super::*;
-use crate::groups::Key;
+use crate::groups::{Key, Policy, Scheme};
 
 fn person(seed: u8) -> (Key, VerifyingKey) {
     let verifying = SigningKey::from_bytes(&[seed; 32]).verifying_key();
@@ -29,6 +30,17 @@ fn id(seed: u8) -> Key {
 
 fn text(message: &str) -> Received {
     Received::Plaintext(message.as_bytes().to_vec())
+}
+
+/// A group policy that names the `datascheme` scheme at `version`.
+fn scheme_policy(version: u32) -> Policy {
+    Policy {
+        scheme: Some(Scheme {
+            name: DATASCHEME.to_owned(),
+            version,
+        }),
+        ..Policy::default()
+    }
 }
 
 /// Every person's keys and one session per person, all sharing one registry of bundles.
@@ -55,7 +67,13 @@ impl Cast {
         let sessions = keys
             .into_iter()
             .map(|(key, (verifying, state))| {
-                let session = Session::init(verifying, state, registry.clone());
+                let session = Session::init(
+                    verifying,
+                    state,
+                    registry.clone(),
+                    &scheme_policy(SCHEME_V1),
+                )
+                .expect("session");
                 (key, session)
             })
             .collect();
@@ -508,6 +526,177 @@ fn test_joiner_cannot_read_a_message_from_before_its_join_and_reads_one_after() 
         cast.deliver(&before, &[4]),
         vec![vec![Received::Withheld(before.id())]],
         "the joiner does not read a message sent before its join"
+    );
+}
+
+// --- wire (P4.4) ----------------------------------------------------------------------------------
+
+/// The CBOR length of the add that welcomes a fourth member after `rotations` updates. Each update
+/// adds one secret, and the welcome carries every secret the group holds.
+fn add_welcome_len(rotations: usize) -> usize {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    for _ in 0..rotations {
+        let update = cast.update(1);
+        cast.deliver(&update, &[2, 3]);
+    }
+    let add = cast.add(1, 4);
+    encode_cbor(&add).expect("encode the add").len()
+}
+
+#[test]
+fn test_each_epoch_adds_about_forty_bytes_to_the_welcome() {
+    // S12: serde_bytes on the two byte fields costs 40.0 bytes per epoch. The stock integer arrays
+    // cost 146.5.
+    let grown = add_welcome_len(110) - add_welcome_len(10);
+    assert!(
+        (3950..=4050).contains(&grown),
+        "100 epochs grew the welcome by {grown} bytes, expected about 4000"
+    );
+}
+
+#[test]
+fn test_v1_bytes_decode_and_the_joiner_reads_them() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+
+    let add = cast.add(1, 4);
+    let bytes = encode_cbor(&add).expect("encode the add");
+    let received: Envelope = decode_cbor(bytes.as_slice()).expect("decode the add");
+    cast.deliver(&received, &[4]);
+    assert!(
+        cast.session(4).is_welcomed(),
+        "the decoded welcome welcomes"
+    );
+
+    let message = cast.send(2, "over the wire");
+    let bytes = encode_cbor(&message).expect("encode the message");
+    let received: Envelope = decode_cbor(bytes.as_slice()).expect("decode the message");
+    assert_eq!(
+        cast.deliver(&received, &[4]),
+        vec![vec![text("over the wire")]]
+    );
+}
+
+#[test]
+fn test_an_envelope_re_encodes_to_the_same_bytes() {
+    // The bundle is sorted inside the welcome, so a decoded envelope is encoded again unchanged.
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    for _ in 0..3 {
+        let update = cast.update(1);
+        cast.deliver(&update, &[2, 3]);
+    }
+    let add = cast.add(1, 4);
+    let first = encode_cbor(&add).expect("encode the add");
+    let decoded: Envelope = decode_cbor(first.as_slice()).expect("decode the add");
+    assert_eq!(encode_cbor(&decoded).expect("encode again"), first);
+}
+
+#[test]
+fn test_a_welcome_with_a_v0_copy_is_refused() {
+    // A relay that rewrites the welcome's copy to the stock version. The header still names v1.
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let forged = cast.add(1, 4).with_scheme(SCHEME_V1, 0);
+
+    let result = cast
+        .sessions
+        .get_mut(&id(4))
+        .expect("session")
+        .process(&forged);
+    assert!(
+        matches!(
+            result,
+            Err(SchemeError::SchemeMismatch {
+                expected: SCHEME_V1,
+                found: 0
+            })
+        ),
+        "the welcome's copy is checked against the signed policy: {result:?}"
+    );
+    assert!(
+        !cast.session(4).is_welcomed(),
+        "the refused welcome leaves the joiner unwelcomed"
+    );
+}
+
+#[test]
+fn test_a_header_that_disagrees_with_the_policy_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let message = cast.send(1, "downgraded");
+    let forged = message.with_scheme(0, 0);
+
+    let result = cast
+        .sessions
+        .get_mut(&id(2))
+        .expect("session")
+        .process(&forged);
+    assert!(
+        matches!(
+            result,
+            Err(SchemeError::SchemeMismatch {
+                expected: SCHEME_V1,
+                found: 0
+            })
+        ),
+        "the header is checked against the signed policy: {result:?}"
+    );
+}
+
+#[test]
+fn test_the_policy_names_the_scheme_this_build_speaks() {
+    assert!(matches!(
+        negotiate(&scheme_policy(SCHEME_V1)),
+        Ok(SCHEME_V1)
+    ));
+    assert!(matches!(
+        negotiate(&Policy::default()),
+        Err(SchemeError::NoScheme)
+    ));
+    assert!(matches!(
+        negotiate(&scheme_policy(0)),
+        Err(SchemeError::UnsupportedScheme { version: 0, .. })
+    ));
+    assert!(matches!(
+        negotiate(&scheme_policy(2)),
+        Err(SchemeError::UnsupportedScheme { version: 2, .. })
+    ));
+    let other = Policy {
+        scheme: Some(Scheme {
+            name: "other".to_owned(),
+            version: SCHEME_V1,
+        }),
+        ..Policy::default()
+    };
+    assert!(matches!(
+        negotiate(&other),
+        Err(SchemeError::UnsupportedScheme { .. })
+    ));
+}
+
+#[test]
+fn test_a_stock_group_is_refused_not_migrated() {
+    // The stock layout (v0) is not shipped, so a group that names it is refused when a device
+    // starts its session. Nothing is migrated (scheme-serde RESULTS, the recommendation).
+    let (_, verifying) = person(1);
+    let rng = Rng::default();
+    let identity = IdentitySecret::from_rng(&rng).expect("identity");
+    let keys = new_keys(&identity, Lifetime::default(), &rng).expect("keys");
+    let registry = registry(&[]).expect("registry");
+    let result = Session::init(verifying, keys, registry, &scheme_policy(0));
+    assert!(
+        matches!(
+            result,
+            Err(SchemeError::UnsupportedScheme { version: 0, .. })
+        ),
+        "a stock group is refused when the session starts"
     );
 }
 
