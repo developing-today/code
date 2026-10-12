@@ -279,6 +279,25 @@ let
   rustToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile (
     lib.from-root "pkgs/id/rust-toolchain.toml"
   );
+
+  # Android SDK for building the OpenChamber mobile app (and any other Android
+  # project) straight from a shell. Composed from nixpkgs' androidenv so the
+  # components are a pinned, cached closure rather than a first-run download.
+  # Emulator, sources and system images are left out: the phone/emulator is the
+  # deployment target, not the build host, and they are hundreds of MB each.
+  #
+  # android_sdk.accept_license is set alongside nixpkgs.pkgs in
+  # nixos/nixpkgs/default.nix (nixpkgs.config is a no-op when pkgs is assigned).
+  # Keep this in sync with nix-common.nix; the dev shells and the system profile
+  # must agree on the SDK so `nix develop` and a plain login behave the same.
+  androidSdk = pkgs.androidenv.composeAndroidPackages {
+    cmdLineToolsVersion = "latest";
+    buildToolsVersions = [ "35.0.0" ];
+    platformVersions = [ "35" ];
+    includeEmulator = false;
+    includeSources = false;
+    includeSystemImages = false;
+  };
 in
 {
   nixpkgs.overlays = [
@@ -344,6 +363,15 @@ in
       # XDG_DATA_DIRS = "/usr/local/share/:/usr/share/";
       XDG_DATA_HOME = "$HOME/.local/share";
       XDG_STATE_HOME = "$HOME/.local/state";
+
+      # Android SDK + JDK 21 for the system profile. ANDROID_HOME points at the
+      # androidenv closure's conventional layout (platform-tools, build-tools,
+      # platforms, cmdline-tools); the mobile build scripts read ANDROID_HOME and
+      # fall back to a Homebrew path when JAVA_HOME is unset, so JAVA_HOME must
+      # be exported here too. See nix-common.nix for the dev-shell equivalent.
+      ANDROID_HOME = "${androidSdk.androidsdk}/libexec/android-sdk";
+      ANDROID_SDK_ROOT = "${androidSdk.androidsdk}/libexec/android-sdk";
+      JAVA_HOME = pkgs.jdk21.home;
     };
     variables = {
       EDITOR = "nvim";
@@ -663,6 +691,14 @@ in
       cargo-outdated
       cargo-machete
       cargo-edit
+
+      # --- Android (OpenChamber mobile, and any other Android project) ---
+      # The composed SDK (cmdline-tools, platform-tools, build-tools 35.0.0,
+      # platforms;android-35) plus JDK 21, which Gradle 8.x needs. android-tools
+      # (adb/fastboot) is already installed above; ANDROID_HOME/ANDROID_SDK_ROOT
+      # and JAVA_HOME are exported in environment.sessionVariables.
+      jdk21
+      androidSdk.androidsdk
     ])
     ++ (with inputs.nixpkgs-25.legacyPackages.${system}; [ activitywatch ])
     ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ ])

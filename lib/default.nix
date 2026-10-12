@@ -495,6 +495,13 @@ let
               pkgs = import inputs.nixpkgs-unstable {
                 inherit system;
                 overlays = [ (import inputs.id-rust-overlay) ];
+                # The dev shell includes the Android SDK (nix-common.nix):
+                # androidenv is unfree and its derivations are gated on license
+                # acceptance. Both are required for `nix develop` to evaluate.
+                config = {
+                  allowUnfree = true;
+                  android_sdk.accept_license = true;
+                };
               };
               # Import shared configuration (same as shell.nix)
               nixCommon = import ../nix-common.nix { inherit pkgs; };
