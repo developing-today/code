@@ -719,6 +719,49 @@ pub(crate) fn store_fork(
     Ok(())
 }
 
+impl EventStore {
+    /// The applied events of `author` with sequence numbers in `(after, until]`, in sequence
+    /// order, at most `limit` of them. `after` is exclusive and `until` is inclusive. `None`
+    /// leaves that side open. Events past a fork point are stored but not applied, so they are
+    /// not returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
+    pub fn applied_events(
+        &self,
+        author: &AuthorKey,
+        after: Option<SeqNum>,
+        until: Option<SeqNum>,
+        limit: usize,
+    ) -> Result<Vec<Event>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let chains = txn.open_table(CHAINS)?;
+        let Some(chain_row) = chains.get(author.as_slice())? else {
+            return Ok(Vec::new());
+        };
+        let Some(last) = Chain::decode(chain_row.value())?.next_seq.checked_sub(1) else {
+            return Ok(Vec::new());
+        };
+        let last = until.map_or(last, |until| until.min(last));
+        let first = match after {
+            Some(after) => after.checked_add(1),
+            None => Some(0),
+        };
+        let Some(first) = first.filter(|first| *first <= last) else {
+            return Ok(Vec::new());
+        };
+        let events = txn.open_table(EVENTS)?;
+        let (start, end) = (position_key(author, first), position_key(author, last));
+        let mut found = Vec::new();
+        for row in events.range(start.as_slice()..=end.as_slice())?.take(limit) {
+            let (_position, bytes) = row?;
+            found.push(decode_stored(bytes.value())?);
+        }
+        Ok(found)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -923,5 +966,57 @@ mod tests {
             store.check_invariants(),
             Err(StoreError::Corrupt(_))
         ));
+    }
+
+    #[test]
+    fn test_applied_events_is_the_applied_prefix_in_range() {
+        let (_dir, mut store) = open_temp();
+        let signer = key(16);
+        let who = author(&signer);
+        let events = chain_of(&signer, 4);
+        for event in &events {
+            assert!(matches!(
+                store.ingest(&event.bytes, 0).unwrap(),
+                Ingest::Accepted { .. }
+            ));
+        }
+        let seqs = |found: Vec<Event>| -> Vec<SeqNum> {
+            found.iter().map(|event| event.header.seq_num).collect()
+        };
+        assert_eq!(
+            seqs(store.applied_events(&who, None, None, 10).unwrap()),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(
+            seqs(store.applied_events(&who, Some(0), Some(2), 10).unwrap()),
+            vec![1, 2]
+        );
+        assert_eq!(
+            seqs(store.applied_events(&who, None, None, 2).unwrap()),
+            vec![0, 1]
+        );
+        assert!(
+            store
+                .applied_events(&who, Some(3), None, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .applied_events(&author(&key(17)), None, None, 10)
+                .unwrap()
+                .is_empty()
+        );
+        // A fork at seq 2 leaves seq 0 and 1 applied. Seq 3 stays stored, but it is not returned.
+        let rival = sign(&signer, 2, Some(events[1].id), None, ext("rival", None)).unwrap();
+        assert!(matches!(
+            store.ingest(&rival.bytes, 0).unwrap(),
+            Ingest::Fork { seq: 2, .. }
+        ));
+        assert_eq!(
+            seqs(store.applied_events(&who, None, None, 10).unwrap()),
+            vec![0, 1]
+        );
+        assert!(store.event(&who, 3).unwrap().is_some());
     }
 }
