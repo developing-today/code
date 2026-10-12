@@ -673,6 +673,45 @@ mod tests {
     }
 
     #[test]
+    fn test_a_create_naming_a_group_that_exists_adds_no_members() {
+        // Before P2.4 a create's group was its own ID, so no create could reach a group another
+        // had made. Now a create names its group, and a stranger's create that names it must not
+        // give the stranger access to it.
+        let mut layer = Membership::new();
+        let made = GroupAction::Create {
+            initial_members: vec![
+                (
+                    GroupMember::Individual(AuthId::Key(key(1))),
+                    Access::manage(),
+                ),
+                (
+                    GroupMember::Individual(AuthId::Key(key(2))),
+                    Access::manage(),
+                ),
+            ],
+        };
+        layer.receive(auth(10, 1, Some(30), &[], made)).unwrap();
+        let stranger = GroupAction::Create {
+            initial_members: vec![(
+                GroupMember::Individual(AuthId::Key(key(9))),
+                Access::manage(),
+            )],
+        };
+        let outcomes = layer.receive(auth(11, 9, Some(30), &[], stranger)).unwrap();
+        assert!(matches!(
+            outcome_of(&outcomes, 11),
+            Outcome::Refused {
+                reason: Refusal::Gate(Rejection::GroupExists),
+                ..
+            }
+        ));
+        assert_eq!(
+            member_keys(&layer, 30),
+            vec![AuthId::Key(key(1)), AuthId::Key(key(2))]
+        );
+    }
+
+    #[test]
     fn test_a_non_create_with_no_group_is_refused_as_malformed() {
         let mut layer = Membership::new();
         layer.receive(create(10, 1, &[1])).unwrap();

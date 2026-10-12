@@ -23,6 +23,9 @@ pub enum Rejection {
     NoDependencies,
     /// The operation's group does not exist at its dependencies. The crate would panic on it.
     GroupAbsent,
+    /// A create for a group that a create has already made. A create may name its group (P2.4),
+    /// so a second one could add members to a group it did not make. The first create stands.
+    GroupExists,
 }
 
 /// What the gate decides for one operation.
@@ -48,7 +51,16 @@ pub fn admit(state: &GroupState, op: &AuthOperation) -> Admission {
         return Admission::Wait(missing);
     }
     if op.action.is_create() {
-        return Admission::Admit;
+        let made = state
+            .inner
+            .operations
+            .values()
+            .any(|applied| applied.action.is_create() && applied.group_id == op.group_id);
+        return if made {
+            Admission::Reject(Rejection::GroupExists)
+        } else {
+            Admission::Admit
+        };
     }
     if op.dependencies.is_empty() {
         return Admission::Reject(Rejection::NoDependencies);
