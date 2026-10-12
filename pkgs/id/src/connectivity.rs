@@ -6,10 +6,10 @@
 //! policy lives in this one module. Loopback endpoints (to a running
 //! `id serve`) and test endpoints do not use it.
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use iroh::{
-    EndpointAddr,
+    EndpointAddr, RelayConfig, RelayMap,
     endpoint::{Builder, Connection, Endpoint, RelayMode, presets},
 };
 
@@ -85,6 +85,53 @@ pub async fn connect(
     .await
 }
 
+/// How long startup waits for the home relay before carrying on without one.
+pub const HOME_RELAY_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Waits until the endpoint has a connected home relay, for at most `limit`.
+///
+/// Only the home relay gates this wait. A map entry that is down must not hold
+/// startup, so no other entry is waited for. Call it only when relays are on:
+/// with [`RelayMode::Disabled`] no relay connects, and the wait ends at `limit`.
+pub async fn await_home_relay(endpoint: &Endpoint, limit: Duration) -> anyhow::Result<()> {
+    within(limit, "waiting for the home relay", async {
+        endpoint.online().await;
+        Ok(())
+    })
+    .await
+}
+
+/// How many relays iroh's address probe reaches, in map order. This is
+/// `MAX_RELAYS` in iroh's net report.
+pub const QAD_PROBE_LIMIT: usize = 5;
+
+/// Refuses a relay map with no QAD-capable relay in its first
+/// [`QAD_PROBE_LIMIT`] entries.
+///
+/// Only those entries are probed for the public address that a direct path
+/// needs, so a QAD relay past them gives none. The map cannot be reordered to fix this. iroh keeps its entries in a map
+/// keyed by URL, so their order is the URL order, not the order of insertion.
+/// The map is refused, and its URLs must change.
+pub fn check_qad_order(map: &RelayMap) -> anyhow::Result<()> {
+    let relays: Vec<Arc<RelayConfig>> = map.relays();
+    if relays.is_empty() {
+        return Ok(());
+    }
+    let probed = &relays[..relays.len().min(QAD_PROBE_LIMIT)];
+    anyhow::ensure!(
+        probed.iter().any(|relay| relay.quic.is_some()),
+        "no QAD-capable relay among the first {} of {} relays, which iroh probes: {}",
+        QAD_PROBE_LIMIT,
+        relays.len(),
+        probed
+            .iter()
+            .map(|relay| relay.url.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    Ok(())
+}
+
 /// Dials that cannot finish, for tests of the deadlines in the modules that dial.
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -136,8 +183,10 @@ pub(crate) mod silent {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use std::time::Instant;
+
     use anyhow::Context as _;
-    use iroh::TransportAddr;
+    use iroh::{RelayConfig, RelayMap, RelayUrl, TransportAddr, Watcher as _};
 
     use super::*;
 
@@ -203,6 +252,132 @@ mod tests {
                 .any(|addr| matches!(addr, TransportAddr::Relay(_))),
             "{addrs:?}"
         );
+    }
+
+    /// Adds an entry on an address nothing answers on. TEST-NET-1 is never routed,
+    /// so the entry stays dead and its handshake waits for a timeout.
+    fn with_dead_entry(map: &RelayMap) {
+        let url: RelayUrl = "https://192.0.2.1:443".parse().unwrap();
+        map.insert(url.clone(), Arc::new(RelayConfig::from(url)));
+    }
+
+    /// A map whose only entry is dead cannot give a home relay. The wait must end
+    /// at its deadline, and must not wait without one.
+    #[tokio::test]
+    async fn test_startup_wait_ends_at_the_deadline_with_only_a_dead_relay() {
+        let map = RelayMap::empty();
+        with_dead_entry(&map);
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Custom(map))
+            .bind()
+            .await
+            .unwrap();
+        let limit = Duration::from_secs(2);
+        let started = Instant::now();
+        let result =
+            tokio::time::timeout(Duration::from_secs(30), await_home_relay(&endpoint, limit))
+                .await
+                .expect("the startup wait had no deadline");
+        let elapsed = started.elapsed();
+        endpoint.close().await;
+        let err = result.expect_err("a dead relay gave a home relay");
+        assert!(err.to_string().contains("timed out"), "{err:#}");
+        assert!(elapsed < limit + Duration::from_secs(2), "{elapsed:?}");
+    }
+
+    /// The home relay alone gates startup. A dead entry beside a live relay must
+    /// not hold the wait, and the connected home relay is the live one.
+    #[tokio::test]
+    async fn test_startup_wait_is_gated_by_the_home_relay_alone() {
+        let (map, live_url, _server) = iroh::test_utils::run_relay_server().await.unwrap();
+        with_dead_entry(&map);
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Custom(map))
+            .ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify())
+            .bind()
+            .await
+            .unwrap();
+        let started = Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(60),
+            await_home_relay(&endpoint, HOME_RELAY_DEADLINE),
+        )
+        .await
+        .expect("the startup wait had no deadline");
+        let elapsed = started.elapsed();
+        let homes = endpoint.home_relay_status().get();
+        endpoint.close().await;
+        result.unwrap();
+        assert!(elapsed < HOME_RELAY_DEADLINE, "{elapsed:?}");
+        assert!(
+            homes
+                .iter()
+                .any(|home| home.is_connected() && home.url() == &live_url),
+            "{homes:?}"
+        );
+    }
+
+    /// A relay entry on a fixed host, with QUIC address discovery on or off.
+    fn relay_entry(host: &str, qad: bool) -> Arc<RelayConfig> {
+        let url: RelayUrl = format!("https://{host}").parse().unwrap();
+        let mut config = RelayConfig::from(url);
+        if !qad {
+            config.quic = None;
+        }
+        Arc::new(config)
+    }
+
+    /// A relay map from `(host, qad)` pairs. iroh orders it by URL.
+    fn relay_map(entries: &[(&str, bool)]) -> RelayMap {
+        entries
+            .iter()
+            .map(|(host, qad)| relay_entry(host, *qad))
+            .collect()
+    }
+
+    #[test]
+    fn test_qad_check_accepts_the_n0_default_map() {
+        check_qad_order(&RelayMode::Default.relay_map()).unwrap();
+    }
+
+    #[test]
+    fn test_qad_check_accepts_an_empty_map() {
+        check_qad_order(&RelayMap::empty()).unwrap();
+    }
+
+    /// The only QAD relay is sixth in URL order, so iroh's probe never reaches it.
+    /// Map order cannot be changed, so the map must be refused.
+    #[test]
+    fn test_qad_check_refuses_a_qad_relay_that_is_sixth() {
+        let map = relay_map(&[
+            ("relay-a.test", false),
+            ("relay-b.test", false),
+            ("relay-c.test", false),
+            ("relay-d.test", false),
+            ("relay-e.test", false),
+            ("relay-f.test", true),
+        ]);
+        let err = check_qad_order(&map).expect_err("a sixth-place QAD relay was accepted");
+        assert!(err.to_string().contains("QAD"), "{err:#}");
+    }
+
+    #[test]
+    fn test_qad_check_accepts_a_qad_relay_that_is_fifth() {
+        let map = relay_map(&[
+            ("relay-a.test", false),
+            ("relay-b.test", false),
+            ("relay-c.test", false),
+            ("relay-d.test", false),
+            ("relay-e.test", true),
+            ("relay-f.test", false),
+        ]);
+        check_qad_order(&map).unwrap();
+    }
+
+    #[test]
+    fn test_qad_check_refuses_a_map_with_no_qad_relay() {
+        let map = relay_map(&[("relay-a.test", false), ("relay-b.test", false)]);
+        assert!(check_qad_order(&map).is_err());
     }
 
     /// The second endpoint dials the first by node ID alone, over n0's

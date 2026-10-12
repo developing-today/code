@@ -155,6 +155,7 @@
 pub mod access;
 #[cfg(feature = "world")]
 pub mod artifact;
+pub mod blob_gate;
 pub mod chain;
 pub mod cli;
 pub mod commands;
@@ -180,6 +181,7 @@ pub mod groups;
 pub mod helpers;
 pub mod invite;
 pub mod local;
+pub mod log_sync;
 pub mod membership;
 pub mod meta_client;
 #[cfg(feature = "world")]
@@ -192,6 +194,7 @@ pub mod sandbox;
 pub mod server_config;
 pub mod store;
 pub mod store_traits;
+pub mod sync_method;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;

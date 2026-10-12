@@ -27,7 +27,7 @@ use id::event_store::{Chain, EventStore, Ingest, Refusal};
 use id::waiting::{AuthorKey, WaitingLimits};
 use p2panda_core::{Hash, Header, SeqNum, SigningKey};
 use proptest::prelude::*;
-use proptest::test_runner::TestCaseError;
+use proptest::test_runner::{RngSeed, TestCaseError};
 
 /// SplitMix64. A scenario is a pure function of its seed.
 struct Rng(u64);
@@ -52,6 +52,10 @@ impl Rng {
     }
 }
 
+/// The runner's RNG seed. A fixed seed draws the same cases on every run, so CI checks one seed
+/// set. `PROPTEST_RNG_SEED` overrides it, to search for new failures.
+const RNG_SEED: u64 = 0x1D5E_ED20_2610_1012;
+
 /// Cases per property. A debug build runs redb unoptimised, at about a second a case, so the
 /// default is small. `PROPTEST_CASES` raises it. A release run (`--release`) goes much further.
 fn config() -> ProptestConfig {
@@ -59,9 +63,14 @@ fn config() -> ProptestConfig {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(32);
+    let rng_seed = std::env::var("PROPTEST_RNG_SEED")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map_or(RngSeed::Fixed(RNG_SEED), RngSeed::Fixed);
     ProptestConfig {
         cases,
         failure_persistence: None,
+        rng_seed,
         ..ProptestConfig::default()
     }
 }
@@ -481,40 +490,61 @@ proptest! {
     /// past the age limit, so restarts also land on refusals and on expiries.
     #[test]
     fn test_restarts_at_random_points_change_no_outcome(seed in any::<u64>()) {
-        let scenario = scenario(seed);
-        let mut rng = Rng(seed ^ 0x5851_F42D_4C95_7F2D);
-        let mut all_orders = orders(&scenario.events, &mut rng);
-        let order = all_orders.swap_remove(index(&mut rng, 4));
-        let mut clock = 0_u64;
-        let times: Vec<u64> = order
-            .iter()
-            .map(|_| {
-                clock += rng.below(1_000);
-                clock
-            })
-            .collect();
-        let max_age_ms = [1_500, 6_000, u64::MAX / 2][index(&mut rng, 3)];
-        let per_author = [1, 2, 3, 256][index(&mut rng, 4)];
-        let limits = WaitingLimits::new(per_author, max_age_ms);
-        // Half the cases restart before every delivery. The rest restart before about one in three,
-        // so events are often held across a restart.
-        let every_delivery = rng.chance(2);
-        let restarts: Vec<usize> = (0..order.len())
-            .filter(|_| every_delivery || rng.chance(3))
-            .collect();
+        restarts_change_no_outcome(seed)?;
+    }
+}
 
-        let plain = {
-            let (order, times, authors) = (order.clone(), times.clone(), scenario.authors.clone());
-            within_limit(move || deliver_with_restarts(&order, &times, &[], limits, &authors))
-        };
-        let restarted = within_limit(move || {
-            deliver_with_restarts(&order, &times, &restarts, limits, &scenario.authors)
-        });
-        let (plain_outcomes, plain_state, plain_held) = plain.map_err(TestCaseError::fail)?;
-        let (outcomes, state, held) = restarted.map_err(TestCaseError::fail)?;
-        prop_assert_eq!(outcomes, plain_outcomes);
-        prop_assert_eq!(state, plain_state);
-        prop_assert_eq!(held, plain_held);
+/// The body of [`test_restarts_at_random_points_change_no_outcome`], for one seed. The pinned
+/// seeds in [`PINNED_RESTART_SEEDS`] run it on every test run.
+fn restarts_change_no_outcome(seed: u64) -> Result<(), TestCaseError> {
+    let scenario = scenario(seed);
+    let mut rng = Rng(seed ^ 0x5851_F42D_4C95_7F2D);
+    let mut all_orders = orders(&scenario.events, &mut rng);
+    let order = all_orders.swap_remove(index(&mut rng, 4));
+    let mut clock = 0_u64;
+    let times: Vec<u64> = order
+        .iter()
+        .map(|_| {
+            clock += rng.below(1_000);
+            clock
+        })
+        .collect();
+    let max_age_ms = [1_500, 6_000, u64::MAX / 2][index(&mut rng, 3)];
+    let per_author = [1, 2, 3, 256][index(&mut rng, 4)];
+    let limits = WaitingLimits::new(per_author, max_age_ms);
+    // Half the cases restart before every delivery. The rest restart before about one in three,
+    // so events are often held across a restart.
+    let every_delivery = rng.chance(2);
+    let restarts: Vec<usize> = (0..order.len())
+        .filter(|_| every_delivery || rng.chance(3))
+        .collect();
+
+    let plain = {
+        let (order, times, authors) = (order.clone(), times.clone(), scenario.authors.clone());
+        within_limit(move || deliver_with_restarts(&order, &times, &[], limits, &authors))
+    };
+    let restarted = within_limit(move || {
+        deliver_with_restarts(&order, &times, &restarts, limits, &scenario.authors)
+    });
+    let (plain_outcomes, plain_state, plain_held) = plain.map_err(TestCaseError::fail)?;
+    let (outcomes, state, held) = restarted.map_err(TestCaseError::fail)?;
+    prop_assert_eq!(outcomes, plain_outcomes);
+    prop_assert_eq!(state, plain_state);
+    prop_assert_eq!(held, plain_held);
+    Ok(())
+}
+
+/// Seeds that [`restarts_change_no_outcome`] must pass on every run, so a failure that a random
+/// draw found stays covered. The first one failed before the fix in `decide_in`, on a backlink
+/// that was present and never applied, and a restart then found it held.
+const PINNED_RESTART_SEEDS: &[u64] = &[3_392_703_367_498_350_025];
+
+#[test]
+fn test_pinned_restart_seeds_change_no_outcome() {
+    for &seed in PINNED_RESTART_SEEDS {
+        restarts_change_no_outcome(seed)
+            .map_err(|err| format!("seed {seed}: {err}"))
+            .unwrap();
     }
 }
 
@@ -784,6 +814,20 @@ fn print_ingest_seeds() {
     let a1_held = sign_event(&a, 1, Some(a0.id), vec![missing], "message");
     let a2_stray = sign_event(&a, 2, Some(missing), Vec::new(), "stray");
     let a2_on_b0 = sign_event(&a, 2, Some(b0.id), Vec::new(), "message");
+    // A fork at sequence 1 of `b` voids `b1`. An event of `c` ahead of its chain names it.
+    let c = key(3);
+    let b1 = sign_event(&b, 1, Some(b0.id), Vec::new(), "message");
+    let b1_stray = sign_event(
+        &b,
+        1,
+        Some(Hash::digest(b"not the head")),
+        Vec::new(),
+        "stray",
+    );
+    let c1_on_b1 = sign_event(&c, 1, Some(b1.id), Vec::new(), "message");
+    // A fork at sequence 0 of `b` makes `b0` a proof header. An event of `c` ahead names it.
+    let b0_rival = sign_event(&b, 0, None, Vec::new(), "rival");
+    let c1_on_b0 = sign_event(&c, 1, Some(b0.id), Vec::new(), "message");
     // Two rivals at sequence 1 whose IDs are below a1's, so that a1 is the highest of the three.
     let low_rivals: Vec<Event> = (0..16)
         .map(|n| sign_event(&a, 1, Some(a0.id), Vec::new(), &format!("rival {n}")))
@@ -885,6 +929,14 @@ fn print_ingest_seeds() {
                 low_rivals[0].bytes.clone(),
                 low_rivals[1].bytes.clone(),
             ],
+        ),
+        (
+            "an event ahead of a voided backlink is parked, not waited for",
+            vec![b0.bytes.clone(), b1.bytes, b1_stray.bytes, c1_on_b1.bytes],
+        ),
+        (
+            "an event ahead of a fork proof header is parked, not waited for",
+            vec![b0.bytes, b0_rival.bytes, c1_on_b0.bytes],
         ),
     ];
     for (name, events) in seeds {

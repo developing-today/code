@@ -24,7 +24,7 @@ use p2panda_auth::group::GroupAction;
 use p2panda_core::{Hash, SeqNum};
 use redb::ReadableTable;
 
-use super::{StoreError, corrupt, decode_proof, decode_stored};
+use super::{StoreError, corrupt, decode_proof, decode_stored, split_position};
 use crate::chain::Event;
 use crate::membership::{AuthId, CausalEvent, Membership, Role};
 use crate::waiting::AuthorKey;
@@ -212,11 +212,17 @@ fn causal_order(nodes: &[Node], position: &HashMap<Hash, usize>) -> Result<Vec<u
     Ok(order)
 }
 
-/// What [`load`] reads: the stored events, the fork points, and the fork proof headers.
+/// What [`load`] reads: the stored events, each author's lowest fork point, and every fork proof
+/// header that has ever been kept.
 pub(super) type Loaded = (Vec<Stored>, HashMap<AuthorKey, SeqNum>, Vec<Event>);
 
-/// Reads every stored event with its action, and every fork proof, from the tables.
-pub(super) fn load<T>(events: &T, actions: &T, forks: &T) -> Result<Loaded, StoreError>
+/// Reads every stored event with its action, the fork points, and the kept fork proof headers.
+pub(super) fn load<T>(
+    events: &T,
+    actions: &T,
+    forks: &T,
+    proof_headers: &T,
+) -> Result<Loaded, StoreError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
@@ -230,18 +236,19 @@ where
         };
         stored.push(Stored { event, action });
     }
-    let mut fork_points = HashMap::new();
-    let mut headers = Vec::new();
+    // An author has a row at each point it has forked at. Its fork point is the lowest of them.
+    let mut fork_points: HashMap<AuthorKey, SeqNum> = HashMap::new();
     for entry in forks.iter()? {
         let (key, value) = entry?;
+        let (author, _) = split_position(key.value())?;
         let proof = decode_proof(value.value())?;
-        let author: AuthorKey = key
-            .value()
-            .try_into()
-            .map_err(|_err| corrupt("a fork row has a short author"))?;
-        fork_points.insert(author, proof.seq);
-        headers.push(proof.first);
-        headers.push(proof.second);
+        let point = fork_points.entry(author).or_insert(proof.seq);
+        *point = (*point).min(proof.seq);
+    }
+    let mut headers = Vec::new();
+    for entry in proof_headers.iter()? {
+        let (_, value) = entry?;
+        headers.push(decode_stored(value.value())?);
     }
     Ok((stored, fork_points, headers))
 }
