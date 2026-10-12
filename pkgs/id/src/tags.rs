@@ -124,7 +124,7 @@ impl TagValue {
 }
 
 /// Check if a byte index is a UTF-8 character boundary.
-fn is_char_boundary(bytes: &[u8], index: usize) -> bool {
+const fn is_char_boundary(bytes: &[u8], index: usize) -> bool {
     if index == 0 || index >= bytes.len() {
         return true;
     }
@@ -2298,7 +2298,7 @@ mod tests {
     #[test]
     fn test_tag_value_partial_eq_str() {
         let tv = TagValue::from("hello");
-        assert!(tv == *"hello");
+        assert_eq!(tv, *"hello");
         assert!(tv != *"world");
     }
 

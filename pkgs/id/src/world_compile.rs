@@ -278,17 +278,13 @@ pub async fn compile(
         );
         let deadline = std::time::Instant::now() + timeout;
         let status = loop {
-            match child.try_wait().context("wait for the compiler")? {
-                Some(status) => break status,
-                None => {
-                    if std::time::Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        bail!("compilation timed out after {}s", timeout.as_secs());
-                    }
-                    std::thread::sleep(Duration::from_millis(25));
-                }
+            if let Some(status) = child.try_wait().context("wait for the compiler")? { break status }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("compilation timed out after {}s", timeout.as_secs());
             }
+            std::thread::sleep(Duration::from_millis(25));
         };
         let captured_err = readers.1.join().unwrap_or_default();
         let captured_out = readers.0.join().unwrap_or_default();
@@ -422,7 +418,7 @@ fn apply_rlimits() -> std::io::Result<()> {
         };
         // Safety: between fork and exec; `setrlimit` is async-signal-safe.
         #[allow(unsafe_code)]
-        if unsafe { libc::setrlimit(resource, &limits) } != 0 {
+        if unsafe { libc::setrlimit(resource, &raw const limits) } != 0 {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())

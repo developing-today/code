@@ -324,7 +324,7 @@ pub enum Decision {
 impl CapLedger {
     /// A ledger with `granted` capabilities and the given policy.
     #[must_use]
-    pub fn new(granted: BTreeSet<String>, grant_on_use: bool) -> Self {
+    pub const fn new(granted: BTreeSet<String>, grant_on_use: bool) -> Self {
         Self {
             granted,
             usage: BTreeMap::new(),

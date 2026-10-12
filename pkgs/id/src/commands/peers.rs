@@ -186,7 +186,7 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
         println!("(no peers discovered)");
     } else {
         let mut peers: Vec<_> = all_peers.into_values().collect();
-        peers.sort_by(|a, b| a.node_id.to_string().cmp(&b.node_id.to_string()));
+        peers.sort_by_key(|a| a.node_id.to_string());
         for peer in peers {
             let name = peer.name.as_deref().unwrap_or("-");
             println!(

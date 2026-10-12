@@ -527,7 +527,7 @@ impl Default for PeerDiscovery {
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::unchecked_duration_subtraction
+    clippy::unchecked_time_subtraction
 )]
 mod tests {
     use super::*;

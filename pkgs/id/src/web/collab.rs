@@ -176,13 +176,13 @@ mod timeouts {
 
     /// Close WebSocket if no pong received within this time.
     /// This detects when the page is closed or client goes offline.
-    pub const PONG_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+    pub const PONG_TIMEOUT: Duration = Duration::from_mins(30);
 
     /// Remove cursor 5 minutes after client disconnects.
-    pub const CURSOR_CLEANUP: Duration = Duration::from_secs(5 * 60);
+    pub const CURSOR_CLEANUP: Duration = Duration::from_mins(5);
 
     /// Clean up document 1 hour after last client disconnects.
-    pub const DOCUMENT_CLEANUP: Duration = Duration::from_secs(60 * 60);
+    pub const DOCUMENT_CLEANUP: Duration = Duration::from_hours(1);
 
     /// Send empty text message (instead of Ping control frame) every N pings.
     /// This triggers client's onmessage handler so it can refresh cursor decorations.
@@ -940,7 +940,7 @@ async fn handle_collab_socket(
 
                 // Every N pings, send empty Text instead of Ping frame
                 // This triggers client's onmessage so it can refresh cursor decorations
-                let use_text = ping_cycle % timeouts::EMPTY_TEXT_MESSAGE_EVERY_N_PINGS == 0;
+                let use_text = ping_cycle.is_multiple_of(timeouts::EMPTY_TEXT_MESSAGE_EVERY_N_PINGS);
 
                 let result = if use_text {
                     tracing::debug!(

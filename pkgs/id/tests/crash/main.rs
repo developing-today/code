@@ -26,9 +26,9 @@
 mod corpus;
 mod faultfs;
 mod harness;
-mod store;
 #[cfg(feature = "web")]
 mod identity;
+mod store;
 mod sweep;
 mod workload;
 

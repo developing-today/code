@@ -405,28 +405,25 @@ impl Replica {
         use iroh_blobs::store::mem::MemStore;
         use iroh_gossip::net::Gossip;
 
-        let (key, blobs, docs) = match dir {
-            Some(dir) => {
-                tokio::fs::create_dir_all(dir.join("blobs")).await?;
-                tokio::fs::create_dir_all(dir.join("docs")).await?;
-                let key_path = dir.join("node.key");
-                let key = load_or_create_keypair(&key_path.to_string_lossy()).await?;
-                let store = iroh_blobs::store::fs::FsStore::load(dir.join("blobs")).await?;
-                let blobs: iroh_blobs::api::Store = store.into();
-                (
-                    key,
-                    blobs,
-                    iroh_docs::protocol::Docs::persistent(dir.join("docs")),
-                )
-            }
-            None => {
-                let blobs: iroh_blobs::api::Store = MemStore::new().into();
-                (
-                    load_or_create_keypair(CLIENT_KEY_FILE).await?,
-                    blobs,
-                    iroh_docs::protocol::Docs::memory(),
-                )
-            }
+        let (key, blobs, docs) = if let Some(dir) = dir {
+            tokio::fs::create_dir_all(dir.join("blobs")).await?;
+            tokio::fs::create_dir_all(dir.join("docs")).await?;
+            let key_path = dir.join("node.key");
+            let key = load_or_create_keypair(&key_path.to_string_lossy()).await?;
+            let store = iroh_blobs::store::fs::FsStore::load(dir.join("blobs")).await?;
+            let blobs: iroh_blobs::api::Store = store.into();
+            (
+                key,
+                blobs,
+                iroh_docs::protocol::Docs::persistent(dir.join("docs")),
+            )
+        } else {
+            let blobs: iroh_blobs::api::Store = MemStore::new().into();
+            (
+                load_or_create_keypair(CLIENT_KEY_FILE).await?,
+                blobs,
+                iroh_docs::protocol::Docs::memory(),
+            )
         };
         let endpoint = if no_relay {
             Endpoint::builder(presets::Minimal)

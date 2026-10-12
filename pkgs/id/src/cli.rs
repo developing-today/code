@@ -410,11 +410,11 @@ pub enum Command {
         #[arg(long, default_value = "deny", requires = "world")]
         world_cap_policy: String,
         /// The Roc binary used to compile sources sent to `id world compile`
-        /// (default: $ID_ROC_BIN or `roc` from PATH).
+        /// (default: $`ID_ROC_BIN` or `roc` from PATH).
         #[arg(long, env = "ID_ROC_BIN")]
         roc_bin: Option<String>,
         /// The world platform directory used for on-the-fly compilation
-        /// (default: $ID_ROC_PLATFORM or ./examples/roc-world).
+        /// (default: $`ID_ROC_PLATFORM` or ./examples/roc-world).
         #[arg(long, env = "ID_ROC_PLATFORM")]
         roc_platform: Option<PathBuf>,
         /// Allow this node to modify the store (repeatable, comma-separated).

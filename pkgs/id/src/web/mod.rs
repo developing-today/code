@@ -115,7 +115,7 @@ impl SaveRateLimiter {
         if let Some(last) = map.get(name) {
             let elapsed = last.elapsed();
             if elapsed < self.cooldown {
-                return Err(self.cooldown - elapsed);
+                return Err(self.cooldown.checked_sub(elapsed).unwrap());
             }
         }
         Ok(())
