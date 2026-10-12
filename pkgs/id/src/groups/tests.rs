@@ -1408,3 +1408,69 @@ proptest! {
         }
     }
 }
+
+// ----- Review of Phase 2 [P2-review] -----
+
+#[test]
+fn test_a_manager_who_is_not_an_admin_may_not_remove_an_admin() {
+    // Design §5.2: Manage adds and removes members at or below its own level. Admin is above it.
+    // An Admin may remove anyone, and any member may leave.
+    for remover in [3, 4] {
+        let events = vec![
+            custom(
+                "g",
+                1,
+                &[(2, Role::Admin), (3, Role::Manage), (4, Role::Manage)],
+                Policy::default(),
+            ),
+            remove("r", remover, id("g"), 2, &["g"]),
+        ];
+        let p = project(&events);
+        assert_eq!(
+            outcome(&p, "r"),
+            Outcome::Refused(Refusal::NotAdmin),
+            "manager {remover} removing an Admin"
+        );
+        assert_eq!(role_of(&p, id("g"), 2), Some(Role::Admin));
+    }
+    let events = vec![
+        custom(
+            "g",
+            1,
+            &[(2, Role::Admin), (3, Role::Manage)],
+            Policy::default(),
+        ),
+        remove("r", 2, id("g"), 3, &["g"]),
+    ];
+    let p = project(&events);
+    assert_eq!(outcome(&p, "r"), Outcome::Applied);
+    assert_eq!(role_of(&p, id("g"), 3), None);
+}
+
+#[test]
+fn test_a_grant_by_a_member_who_was_re_added_stands_in_every_mode() {
+    // 2 is removed and re-added. Its later grant is made by a member who is valid at that
+    // position, so it stands. Under transfer it must not be treated as the removed grantor's.
+    for mode in [
+        Delegation::KeepPrior,
+        Delegation::Cascade,
+        Delegation::Transfer,
+    ] {
+        let policy = Policy {
+            delegation: Some(mode),
+            ..Policy::default()
+        };
+        let events = vec![
+            custom("g", 1, &[(2, Role::Manage), (3, Role::Manage)], policy),
+            remove("r", 1, id("g"), 2, &["g"]),
+            add("a", 1, id("g"), 2, Role::Manage, &["r"]),
+            delegate("d", 2, id("g"), 4, Role::Read, false, &["a"]),
+        ];
+        let p = project(&events);
+        assert_eq!(outcome(&p, "d"), Outcome::Applied, "{mode:?}");
+        assert!(
+            p.grant_in_force(&id("d")),
+            "{mode:?}: a grant made after the re-add stands"
+        );
+    }
+}

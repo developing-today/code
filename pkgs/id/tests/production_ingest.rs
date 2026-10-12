@@ -324,3 +324,53 @@ fn test_a_group_operation_that_arrives_without_its_body_is_content() {
     );
     assert_eq!(roster_of(&shared, &create), members(&['A', 'B', 'C']));
 }
+
+// ----- Review of Phase 2 [P2-review] -----
+
+#[test]
+fn test_a_member_of_any_access_can_leave_through_the_production_path() {
+    // Leaving is a removal by the member itself. p2panda-auth allows it for any active member, and
+    // the fold does too, so the production path must not void it by the member's access.
+    for access in [Access::pull(), Access::read(), Access::write()] {
+        let (_dir, shared) = open();
+        let mut chains = Chains::default();
+        let create = chains.create();
+        create.ingest(&shared);
+        let group = create.event.id;
+        let grant = chains.op('A', group, &[group], &add('D', access.clone()));
+        assert!(matches!(grant.ingest(&shared), Ingest::Accepted { .. }));
+        let leave = chains.op('D', group, &[grant.event.id], &remove('D'));
+        assert_eq!(
+            leave.ingest(&shared),
+            Ingest::Accepted {
+                id: leave.event.id,
+                released: Vec::new(),
+            },
+            "a member with {access:?} leaves"
+        );
+        assert_eq!(roster_of(&shared, &create), members(&['A', 'B', 'C']));
+    }
+}
+
+#[test]
+fn test_a_removal_whose_body_arrived_late_still_takes_effect() {
+    // The header commits to the body, so a later delivery with the body is the same event. A relay
+    // that strips the body on the first delivery must not make the removal content for good.
+    let (_dir, shared) = open();
+    let mut chains = Chains::default();
+    let create = chains.create();
+    create.ingest(&shared);
+    let group = create.event.id;
+    let removal = chains.op('A', group, &[group], &remove('B'));
+    assert!(matches!(
+        shared.ingest(&removal.event.bytes, None, 0).unwrap(),
+        Ingest::Accepted { .. }
+    ));
+    assert_eq!(
+        removal.ingest(&shared),
+        Ingest::Duplicate {
+            id: removal.event.id,
+        }
+    );
+    assert_eq!(roster_of(&shared, &create), members(&['A', 'C']));
+}

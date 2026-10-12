@@ -536,4 +536,47 @@ mod tests {
             }
         }
     }
+
+    /// A create by `who`, named `name`, as a user action sends it.
+    fn create_by(who: Key, name: &str) -> crate::groups::Event {
+        crate::groups::Event {
+            id: Hash::digest(name.as_bytes()),
+            author: who,
+            after: Vec::new(),
+            group: None,
+            body: Body::Create(crate::groups::Create {
+                template: crate::groups::Template::Custom,
+                policy: crate::groups::Policy::default(),
+                members: Vec::new(),
+                admins_on_create: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn test_a_create_recorded_after_the_start_meets_the_create_rule() {
+        // Only ann may create. A create by anyone else that arrives after the start is refused, as
+        // the rule refuses it at startup, and it leaves no group behind.
+        let config = ServerConfig::parse(&config("\n[create]\nusers = [\"ann\"]\n")).unwrap();
+        let mut state = Provisioned::new();
+        state.apply(&config).unwrap();
+        assert!(state.record(create_by(key(1), "by-ann")).is_ok());
+        for who in [2, 3, 4] {
+            assert!(
+                state
+                    .record(create_by(key(who), &format!("by-{who}")))
+                    .is_err(),
+                "user {who} is not listed and may not create"
+            );
+            let id = Hash::digest(format!("by-{who}").as_bytes());
+            assert!(state.projection().unwrap().group(&id).is_none());
+        }
+        assert!(
+            state
+                .projection()
+                .unwrap()
+                .group(&Hash::digest(b"by-ann"))
+                .is_some()
+        );
+    }
 }
