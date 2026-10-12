@@ -316,6 +316,15 @@ impl Membership {
             return true;
         }
         let deps: HashSet<Hash> = op.dependencies.iter().copied().collect();
+        // Leaving is a removal by the member itself. Any member may leave, so it needs no manage
+        // access, only to be a member at its position (the crate checks that, and so does the fold).
+        let leaves = matches!(
+            &op.action,
+            GroupAction::Remove { member: GroupMember::Individual(who) } if *who == op.author
+        );
+        if leaves {
+            return self.access_at(&deps, op.group_id, op.author).is_some();
+        }
         self.access_at(&deps, op.group_id, op.author)
             .is_some_and(|access| access.is_manage())
     }
