@@ -5,7 +5,7 @@
 //! to the members who may read them.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::{Hash, SigningKey, VerifyingKey};
@@ -14,6 +14,7 @@ use p2panda_encryption::crypto::x25519::SecretKey as IdentitySecret;
 use p2panda_encryption::data_scheme::group_secret::GroupSecretId;
 use p2panda_encryption::key_bundle::Lifetime;
 use p2panda_encryption::key_manager::KeyManagerState;
+use p2panda_encryption::key_registry::KeyRegistryState;
 use p2panda_encryption::traits::GroupMessage;
 use proptest::prelude::*;
 
@@ -70,6 +71,9 @@ struct Cast {
     events: Vec<Event>,
     /// The member set the group model holds after the last operation.
     model: BTreeSet<Key>,
+    /// Each person's identity and keys, kept so a device can be rebuilt with the same keys.
+    keys: BTreeMap<Key, (VerifyingKey, KeyManagerState)>,
+    registry: KeyRegistryState<VerifyingKey>,
 }
 
 impl Cast {
@@ -88,16 +92,16 @@ impl Cast {
         }
         let registry = registry(&bundles).expect("registry");
         let sessions = keys
-            .into_iter()
+            .iter()
             .map(|(key, (verifying, state))| {
                 let session = Session::init(
-                    verifying,
-                    state,
+                    *verifying,
+                    state.clone(),
                     registry.clone(),
                     &scheme_policy(SCHEME_V1),
                 )
                 .expect("session");
-                (key, session)
+                (*key, session)
             })
             .collect();
         Self {
@@ -106,7 +110,21 @@ impl Cast {
             identities,
             events: Vec::new(),
             model: BTreeSet::new(),
+            keys,
+            registry,
         }
+    }
+
+    /// A fresh session for `who` with the keys it was created with. It holds no group secret.
+    fn reinstall(&self, who: u8) -> Session {
+        let (verifying, state) = self.keys.get(&id(who)).expect("keys");
+        Session::init(
+            *verifying,
+            state.clone(),
+            self.registry.clone(),
+            &scheme_policy(SCHEME_V1),
+        )
+        .expect("session")
     }
 
     fn session(&self, who: u8) -> &Session {
@@ -895,6 +913,148 @@ fn test_remove_rejects_a_member_the_model_still_lists() {
     assert!(matches!(result, Err(SchemeError::StillInModel(_))));
 }
 
+// --- rotation (P4.8) ------------------------------------------------------------------------------
+
+#[test]
+fn test_the_epoch_rotates_on_create_update_and_remove_and_not_on_send() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let created = cast.epoch(1);
+
+    let message = cast.send(1, "no rotation");
+    cast.deliver(&message, &[2, 3]);
+    assert_eq!(cast.epoch(1), created, "a send keeps the epoch");
+
+    let update = cast.update(1);
+    cast.deliver(&update, &[2, 3]);
+    let updated = cast.epoch(1);
+    assert_ne!(updated, created, "an explicit update rotates");
+
+    let remove = cast.remove(1, 3);
+    cast.deliver(&remove, &[2, 3]);
+    assert_ne!(cast.epoch(1), updated, "a removal rotates");
+    assert_eq!(
+        cast.epoch(1),
+        cast.epoch(2),
+        "the members agree on the epoch"
+    );
+}
+
+#[test]
+fn test_an_idle_group_keeps_its_epoch_over_a_simulated_year() {
+    // The adapter takes no clock and runs no timer, so the only thing that moves an epoch is a call
+    // to create, update, add or remove. Each simulated hour below is a tick with no call at all.
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let epoch = cast.epoch(1);
+
+    for hour in 0..(24 * 365) {
+        for who in [1, 2, 3] {
+            assert_eq!(cast.epoch(who), epoch, "member {who} at hour {hour}");
+        }
+    }
+
+    let update = cast.update(1);
+    cast.deliver(&update, &[2, 3]);
+    assert_ne!(
+        cast.epoch(1),
+        epoch,
+        "the group still rotates when it is asked to"
+    );
+}
+
+#[test]
+fn test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+
+    // The attacker's copy of device 3 holds the state it had before the compromise was found.
+    let mut compromised = cast.sessions.remove(&id(3)).expect("session");
+    let before = cast.epoch(1);
+    // The fold's views after the removal and after the re-add, in that order.
+    let without = cast.log(
+        1,
+        Body::Member(MemberOp::Remove {
+            member: id(3),
+            successor: None,
+        }),
+    );
+    let with = cast.log(
+        1,
+        Body::Member(MemberOp::Add {
+            member: id(3),
+            role: Role::Admin,
+        }),
+    );
+
+    let recovery = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .recover(&without, &with, id(3), &cast.rng)
+        .expect("recover");
+    assert_eq!(recovery.epoch_before, before);
+    assert_ne!(
+        recovery.epoch_after, before,
+        "the procedure rotates the epoch"
+    );
+    assert_eq!(recovery.readd.len(), 2, "a welcome and an immediate update");
+
+    // The device comes back as a new session with its own keys and no group secret.
+    let fresh = cast.reinstall(3);
+    cast.sessions.insert(id(3), fresh);
+    cast.deliver(&create, &[3]);
+    cast.deliver(&recovery.removal, &[2, 3]);
+    cast.deliver(&recovery.readd[0], &[2, 3]);
+    cast.deliver(&recovery.readd[1], &[2, 3]);
+    assert!(
+        cast.session(3).is_welcomed(),
+        "the re-add welcomes the device"
+    );
+    assert_eq!(
+        cast.members_of(3),
+        cast.model,
+        "the device's roster matches"
+    );
+
+    let message = cast.send(1, "after the recovery");
+    assert_eq!(
+        cast.deliver(&message, &[2, 3]),
+        vec![
+            vec![text("after the recovery")],
+            vec![text("after the recovery")]
+        ]
+    );
+
+    assert_eq!(compromised.epoch(), recovery.epoch_before);
+    assert_eq!(
+        compromised.process(&message).expect("process"),
+        vec![Received::Withheld(message.id())],
+        "the compromised copy cannot read a message sent after the recovery"
+    );
+}
+
+#[test]
+fn test_recovery_rejects_a_removal_that_leaves_the_device_in_the_model() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+
+    let view = cast.view();
+    let result =
+        cast.sessions
+            .get_mut(&id(1))
+            .expect("session")
+            .recover(&view, &view, id(3), &cast.rng);
+    assert!(
+        matches!(result, Err(SchemeError::StillInModel(_))),
+        "a device the model still lists is not removed"
+    );
+}
+
 // --- integration: three members -------------------------------------------------------------------
 
 #[test]
@@ -1461,5 +1621,121 @@ proptest! {
             let read = cast.deliver(&last, &[*gone]);
             prop_assert_eq!(read, vec![vec![Received::Withheld(last.id())]], "removed member {}", gone);
         }
+    }
+}
+
+// --- cost (P4.11) ---------------------------------------------------------------------------------
+
+/// The `index`th person of a benchmark group. [`person`] takes a one-byte seed, which runs out at
+/// 256 people, so the benchmark spreads the index over the key bytes.
+fn benchmark_person(index: usize) -> (Key, VerifyingKey) {
+    let mut bytes = [0_u8; 32];
+    bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+    let verifying = SigningKey::from_bytes(&bytes).verifying_key();
+    (key_of(verifying), verifying)
+}
+
+/// The committer's cost for one group size: the create, and the mean of a few updates.
+#[derive(Debug)]
+struct UpdateCost {
+    members: usize,
+    create_bytes: usize,
+    create_ms: f64,
+    update_bytes: usize,
+    update_ms: f64,
+    updates: usize,
+}
+
+impl UpdateCost {
+    fn report(&self) -> String {
+        format!(
+            "members {:>5}: create {:>9} B in {:>9.1} ms; update {:>9} B, {:>8.2} ms (mean of {})",
+            self.members,
+            self.create_bytes,
+            self.create_ms,
+            self.update_bytes,
+            self.update_ms,
+            self.updates,
+        )
+    }
+}
+
+/// Builds a group of `members` on one committer's device, and measures the committer's side. The
+/// other members are not built, since the cost of an update is the committer's to pay: it encrypts
+/// the new secret to each member and processes its own message. The bytes are the postcard size of
+/// the envelope, which is what a transport would carry.
+fn measure_update_cost(members: usize, updates: usize) -> UpdateCost {
+    let rng = Rng::default();
+    let mut bundles = Vec::with_capacity(members);
+    let mut model = BTreeSet::new();
+    let mut committer = None;
+    for index in 0..members {
+        let (key, verifying) = benchmark_person(index);
+        let identity = IdentitySecret::from_rng(&rng).expect("identity");
+        let state = new_keys(&identity, Lifetime::default(), &rng).expect("keys");
+        bundles.push((verifying, key_bundle(&state).expect("bundle")));
+        model.insert(key);
+        if index == 0 {
+            committer = Some((verifying, state));
+        }
+    }
+    let (me, keys) = committer.expect("a committer");
+    let mut session = Session::init(
+        me,
+        keys,
+        registry(&bundles).expect("registry"),
+        &scheme_policy(SCHEME_V1),
+    )
+    .expect("session");
+
+    let started = Instant::now();
+    let create = session.create(&view_of(&model), &rng).expect("create");
+    let create_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let create_bytes = wire_bytes(&create);
+
+    // One update before the timed ones, so the first-commit cost is not counted twice.
+    session.update(&rng).expect("warm-up update");
+    let mut sent = Vec::with_capacity(updates);
+    let started = Instant::now();
+    for _ in 0..updates {
+        sent.push(session.update(&rng).expect("update"));
+    }
+    let count = f64::from(u32::try_from(updates).expect("a few updates"));
+    let update_ms = started.elapsed().as_secs_f64() * 1_000.0 / count;
+    let update_bytes = sent.iter().map(wire_bytes).sum::<usize>() / updates;
+
+    UpdateCost {
+        members,
+        create_bytes,
+        create_ms,
+        update_bytes,
+        update_ms,
+        updates,
+    }
+}
+
+fn wire_bytes(envelope: &Envelope) -> usize {
+    postcard::to_allocvec(envelope).expect("encode").len()
+}
+
+#[test]
+fn test_the_update_cost_measurement_grows_with_the_members() {
+    let small = measure_update_cost(4, 1);
+    let large = measure_update_cost(8, 1);
+    assert!(small.update_bytes > 0, "an update is sent");
+    assert!(
+        large.update_bytes > small.update_bytes,
+        "an update carries a message for each member"
+    );
+}
+
+/// P4.11: what one `DataScheme` update costs the committer at 100, 1,000 and 5,000 members, with our
+/// adapter. It records the numbers and fails on none of them. Run it in release:
+/// `cargo test --release --lib encryption::tests::bench_update_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "release benchmark for P4.11: cargo test --release --lib encryption::tests::bench_update_cost -- --ignored --nocapture"]
+fn bench_update_cost() {
+    for members in [100, 1_000, 5_000] {
+        println!("{}", measure_update_cost(members, 5).report());
     }
 }
