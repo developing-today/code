@@ -553,6 +553,102 @@ fn deliver_with_restarts(
     Ok((outcomes, state, held))
 }
 
+/// Delivers `order` to one store, which is closed and reopened before each delivery in `restarts`,
+/// and checks the waiting states after each step. Delivery `i` runs at clock `times[i]`.
+///
+/// An event that is due at a step's clock expires during that step, so it is taken out of the
+/// pending set first. The store drops it, or holds it again if it is delivered again.
+fn check_each_step(
+    order: &[Vec<u8>],
+    times: &[u64],
+    restarts: &[usize],
+    limits: WaitingLimits,
+    events: &BTreeMap<Hash, Event>,
+) -> Result<(), TestCaseError> {
+    let storage = MemStorage::default();
+    let open = |at: u64| {
+        EventStore::open_with(&storage, limits, at)
+            .map_err(|err| TestCaseError::fail(err.to_string()))
+    };
+    let mut store = open(times.first().copied().unwrap_or(0))?;
+    // Each waiting event the store acknowledged, with the clock it arrived at. Its age counts from
+    // there.
+    let mut pending: BTreeMap<Hash, (u64, Event)> = BTreeMap::new();
+    for (i, bytes) in order.iter().enumerate() {
+        let now = times[i];
+        pending.retain(|_, (arrived_at, _)| !limits.is_due(*arrived_at, now));
+        if restarts.contains(&i) {
+            drop(store);
+            store = open(now)?;
+            settle_pending(&store, &mut pending)?;
+        }
+        let outcome = store
+            .ingest(bytes, now)
+            .map_err(|err| TestCaseError::fail(err.to_string()))?;
+        if let Ingest::Waiting { id } = outcome
+            && let Some(event) = events.get(&id)
+        {
+            pending.entry(id).or_insert_with(|| (now, event.clone()));
+        }
+        store
+            .check_invariants()
+            .map_err(|err| TestCaseError::fail(err.to_string()))?;
+        settle_pending(&store, &mut pending)?;
+    }
+    Ok(())
+}
+
+/// Checks each pending waiting event. An event that is held is in one state. One that is stored
+/// has applied or been voided. One that a fork froze at or below its sequence number is refused,
+/// and leaves no row: its chain can never apply it. A fork proof header never applies, so it must
+/// stay held. Any other event that is neither held nor stored is lost, and fails the test.
+/// Settled events leave the pending set.
+fn settle_pending(
+    store: &EventStore,
+    pending: &mut BTreeMap<Hash, (u64, Event)>,
+) -> Result<(), TestCaseError> {
+    let mut settled = Vec::new();
+    for (id, (arrived_at, event)) in pending.iter() {
+        if store.is_waiting(id) {
+            continue;
+        }
+        if store
+            .event_by_id(id)
+            .map_err(|err| TestCaseError::fail(err.to_string()))?
+            .is_some()
+        {
+            settled.push(*id);
+            continue;
+        }
+        let seq = event.header.seq_num;
+        let proof = store
+            .fork_proof(&author_of(event))
+            .map_err(|err| TestCaseError::fail(err.to_string()))?;
+        let header = proof
+            .as_ref()
+            .is_some_and(|proof| proof.first.id == *id || proof.second.id == *id);
+        let frozen = proof
+            .as_ref()
+            .is_some_and(|proof| proof.seq <= seq && !header);
+        if frozen {
+            settled.push(*id);
+            continue;
+        }
+        return Err(TestCaseError::fail(format!(
+            "an acknowledged waiting event at sequence {seq} (arrived at {arrived_at}) is neither held nor stored{}",
+            if header {
+                ", and it is a fork proof header"
+            } else {
+                ""
+            }
+        )));
+    }
+    for id in settled {
+        pending.remove(&id);
+    }
+    Ok(())
+}
+
 /// Runs `run` on a helper thread. Fails if it has not returned within [`DELIVERY_LIMIT`], so a
 /// store that spins fails the test instead of hanging it.
 fn within_limit<T: Send + 'static>(
@@ -573,6 +669,39 @@ fn within_limit<T: Send + 'static>(
 
 proptest! {
     #![proptest_config(config())]
+
+    /// After every delivery and every reopen, each waiting event the store acknowledged is in one
+    /// state: held, or stored (applied or voided), or refused because a fork froze its chain at or
+    /// below it, or dropped by the age cap. Random orders, repeats, forks at any depth, small caps,
+    /// and restarts all vary the path there.
+    #[test]
+    fn test_every_step_keeps_each_acknowledged_waiting_event_in_one_state(seed in any::<u64>()) {
+        let scenario = scenario(seed);
+        let events: BTreeMap<Hash, Event> = scenario
+            .events
+            .iter()
+            .map(|event| (event.id, event.clone()))
+            .collect();
+        let mut rng = Rng(seed ^ 0x9E37_79B9_7F4A_7C15);
+        let max_age_ms = [1_500, 6_000, u64::MAX / 2][index(&mut rng, 3)];
+        let per_author = [1, 2, 3, 256][index(&mut rng, 4)];
+        let limits = WaitingLimits::new(per_author, max_age_ms);
+        for order in orders(&scenario.events, &mut rng) {
+            let mut clock = 0_u64;
+            let times: Vec<u64> = order
+                .iter()
+                .map(|_| {
+                    clock += rng.below(1_000);
+                    clock
+                })
+                .collect();
+            let every_delivery = rng.chance(2);
+            let restarts: Vec<usize> = (0..order.len())
+                .filter(|_| every_delivery || rng.chance(3))
+                .collect();
+            check_each_step(&order, &times, &restarts, limits, &events)?;
+        }
+    }
 
     /// At ingest, a header that breaks the sequence and backlink rule is refused as malformed,
     /// whatever its sequence number. It is not parked or held, so it takes no waiting slot and

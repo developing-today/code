@@ -1,6 +1,6 @@
 module github.com/dezren39/mcpx
 
-go 1.26.7
+go 1.27.2
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0

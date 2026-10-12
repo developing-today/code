@@ -48,7 +48,8 @@
 //! Held events count too. Two held events at one sequence number are a fork, though
 //! neither is applied. Held events are rows on disk, so a restart keeps them, and a conflict
 //! with an event held before the restart is still seen. An event the caps or the age limit
-//! drops is forgotten, and sync sends it again.
+//! drops is forgotten, and sync sends it again. A held event that a fork makes a proof header
+//! stays held for good: it never applies, and the proof keeps its conflicts seen.
 //!
 //! # Known limit: a rival refused by a cap
 //!
@@ -306,20 +307,20 @@ fn settle(
             }
         }
         Decision::Duplicate => {
-            drop_released(m, &id, from_pool)?;
+            drop_released(m, &event, from_pool)?;
             Settled::Duplicate
         }
         Decision::Fork { seq, proof } => {
-            drop_released(m, &id, from_pool)?;
+            drop_released(m, &event, from_pool)?;
             refresh(m.txn)?;
             let mut released = Vec::new();
             for header in proof {
-                released.extend(m.release(&header, now)?);
+                released.extend(m.present_proof(&header, now)?);
             }
             Settled::Fork { seq, released }
         }
         Decision::Refuse(refusal) => {
-            drop_released(m, &id, from_pool)?;
+            drop_released(m, &event, from_pool)?;
             Settled::Refused(refusal)
         }
         Decision::Wait(deps) => {
@@ -349,11 +350,17 @@ fn stored_action(
     row.map(|row| decode_action(row.value())).transpose()
 }
 
-fn drop_released(m: &Mirror<'_>, id: &Hash, from_pool: bool) -> Result<(), StoreError> {
-    if from_pool {
-        m.drop_row(id)?;
+/// Settles a released event that the decision does not apply. A fork proof header never applies,
+/// so it is held for good again. Any other event is refused, and its row goes.
+fn drop_released(m: &mut Mirror<'_>, event: &Event, from_pool: bool) -> Result<(), StoreError> {
+    if !from_pool {
+        return Ok(());
     }
-    Ok(())
+    if is_proof_header(m.txn, &author_of(event), &event.id)? {
+        m.park_proof(&event.id)
+    } else {
+        m.drop_row(&event.id)
+    }
 }
 
 const fn held(hold: Hold) -> Settled {
@@ -1774,6 +1781,31 @@ mod tests {
                 seq: 1
             }
         );
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_held_event_that_a_fork_makes_a_proof_header_stays_held() {
+        let (_dir, mut store) = open();
+        let signer = key(50);
+        let who = author(&signer);
+        let missing = Hash::digest(b"an event that is never delivered");
+        // Seq 1 waits for a backlink that never arrives, and its rival at seq 1 forks it.
+        let held = event(&signer, 1, Some(missing), Vec::new(), "message");
+        let rival = event(&signer, 1, Some(missing), Vec::new(), "rival");
+        assert_eq!(ingest(&mut store, &held), Ingest::Waiting { id: held.id });
+        assert!(matches!(
+            ingest(&mut store, &rival),
+            Ingest::Fork { seq: 1, .. }
+        ));
+        let proof = store.fork_proof(&who).unwrap().expect("a proof is stored");
+        assert_eq!(
+            [proof.first.id, proof.second.id],
+            sorted(&held.id, &rival.id)
+        );
+        // A proof header never applies, so it stays held for good. It is neither stored nor held
+        // if the fork drops it.
+        assert!(store.is_waiting(&held.id), "a held proof header stays held");
         store.check_invariants().unwrap();
     }
 

@@ -1691,11 +1691,11 @@
     },
     "nixpkgs-master": {
       "locked": {
-        "lastModified": 1791585830,
-        "narHash": "sha256-dzapQzX0g72M5iZ+QwIiL1gzZXzplzQPNYFlP/n+c3w=",
+        "lastModified": 1791770674,
+        "narHash": "sha256-xmWtGYdXEPQwUoWodaHQ4iBLWC0gW+BzLAw3VvyDSao=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "cfdb2236cff2a6adaace5a4ef37ea73152d710e9",
+        "rev": "c61a74e1e2c8c75d774d7883927d3d21cb7d4e90",
         "type": "github"
       },
       "original": {
@@ -1721,11 +1721,11 @@
     },
     "nixpkgs-unstable": {
       "locked": {
-        "lastModified": 1791456040,
-        "narHash": "sha256-H83yz/do+hjOO0uujHyH8RgtIQP2v7Mw+cLwcZK/xKc=",
+        "lastModified": 1791594108,
+        "narHash": "sha256-XK4KceonkwD8LuMAt/vNrz982mXJM5jeHAxMwsUXXAQ=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "e7439b6b14ad3cc35d05608ebca9bce01a25f5f8",
+        "rev": "6510408d147d8c5e6d76043e899e9251756f6a75",
         "type": "github"
       },
       "original": {
@@ -2125,11 +2125,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1791730527,
-        "narHash": "sha256-h3gQjZieuYdvPLX+Bei9iIl8MbtPvJIro0CgNia6V9o=",
+        "lastModified": 1791770002,
+        "narHash": "sha256-JVEFm+69vVoNJR4929zWY8nRNQhPh5qSdMJ6SGRe7iU=",
         "owner": "developing-today",
         "repo": "openchamber",
-        "rev": "26d2e437e61c3b55776e7442c593465e444b5c8e",
+        "rev": "a3bce4e9d98603655c0971dbe2b411fdb4bc9793",
         "type": "github"
       },
       "original": {
@@ -2143,11 +2143,11 @@
         "nixpkgs": "nixpkgs_16"
       },
       "locked": {
-        "lastModified": 1791730025,
-        "narHash": "sha256-j9b+51RvXCxbeo4R1/5eBq4VmjJyXTEZ3GGcbZjWYOk=",
+        "lastModified": 1791771553,
+        "narHash": "sha256-EG2aZweTfSVkf6qditeUi42PMB4wY2s10N6rfspurvs=",
         "owner": "developing-today",
         "repo": "opencode",
-        "rev": "635d278857aea66fdf44a4cfc977e04849db9824",
+        "rev": "b6ffb7e9ac7dcef77ec96ddda86778c15cfcb488",
         "type": "github"
       },
       "original": {
@@ -2250,7 +2250,7 @@
         ],
         "id-import-tree": "id-import-tree",
         "id-nixpkgs": [
-          "nixpkgs-master"
+          "nixpkgs-unstable"
         ],
         "id-rust-overlay": "id-rust-overlay",
         "id-systems": [

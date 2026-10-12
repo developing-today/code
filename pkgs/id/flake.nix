@@ -2,8 +2,9 @@
   description = "id - A peer-to-peer file sharing CLI built with Iroh";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs";
-    # nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Track nixos-unstable (cached on cache.nixos.org) so the id devshell and
+    # the root devshell/system all resolve the same tree.
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     systems = {
       url = "github:nix-systems/default";
     };
