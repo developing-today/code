@@ -51,8 +51,8 @@ pub enum Received {
     Plaintext(Vec<u8>),
     /// A removal that took this device out of the group.
     Removed,
-    /// An application message whose group secret this device does not hold. It was not given to the
-    /// crate, so it can be offered again later, once a welcome or an update brings the secret.
+    /// An application message whose group secret this device does not hold. The adapter keeps it,
+    /// and reads it once the secret arrives: a welcome or an update, or lazy history (P4.6).
     Withheld(Hash),
 }
 
@@ -87,6 +87,9 @@ pub enum SchemeError {
 pub struct Session {
     me: VerifyingKey,
     state: Option<Group>,
+    /// Application messages this device cannot read yet, in arrival order. They stay out of the
+    /// crate until their group secret arrives (P4.5).
+    held: Vec<Envelope>,
 }
 
 impl Session {
@@ -107,6 +110,7 @@ impl Session {
         Self {
             me,
             state: Some(state),
+            held: Vec::new(),
         }
     }
 
@@ -234,19 +238,55 @@ impl Session {
         self.step(|y| EncryptionGroup::send(y, plaintext, rng))
     }
 
-    /// Handles a message from the group. An application message whose secret this device does not
-    /// hold is withheld and not given to the crate (P4.3).
+    /// Handles a message from the group.
+    ///
+    /// An application message whose secret this device does not hold is kept here, outside the
+    /// crate, and reported as [`Received::Withheld`] (P4.3). The crate fails a whole call on a secret
+    /// it does not hold, so it is never given such a message. A welcome brings the secrets, and the
+    /// call that does so also reads the held messages it unlocks, in the order they arrived (P4.5).
     pub fn process(&mut self, message: &Envelope) -> Result<Vec<Received>, SchemeError> {
-        if let GroupMessageContent::Application {
-            group_secret_id, ..
-        } = message.content()
-        {
-            // The crate fails the whole call, and loses the state, on a secret it does not hold.
-            let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
-            if !y.secrets.contains(&group_secret_id) {
-                return Ok(vec![Received::Withheld(message.id())]);
+        let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
+        if !Self::can_read(y, message) {
+            if !self.held.iter().any(|held| held.id() == message.id()) {
+                self.held.push(message.clone());
             }
+            return Ok(vec![Received::Withheld(message.id())]);
         }
+        let mut read = self.receive(message)?;
+        read.extend(self.release()?);
+        Ok(read)
+    }
+
+    /// Whether the crate may take `message` now: a control message always, an application message
+    /// once the device holds its group secret.
+    fn can_read(y: &Group, message: &Envelope) -> bool {
+        match message.content() {
+            GroupMessageContent::Control(_) => true,
+            GroupMessageContent::Application {
+                group_secret_id, ..
+            } => y.secrets.contains(&group_secret_id),
+        }
+    }
+
+    /// Gives the crate each held message whose secret the device now holds, in arrival order.
+    fn release(&mut self) -> Result<Vec<Received>, SchemeError> {
+        let held = std::mem::take(&mut self.held);
+        let (ready, waiting): (Vec<Envelope>, Vec<Envelope>) = match self.state.as_ref() {
+            Some(y) => held
+                .into_iter()
+                .partition(|message| Self::can_read(y, message)),
+            None => (Vec::new(), held),
+        };
+        self.held = waiting;
+        let mut read = Vec::new();
+        for message in &ready {
+            read.extend(self.receive(message)?);
+        }
+        Ok(read)
+    }
+
+    /// Hands `message` to the crate and reads its outputs.
+    fn receive(&mut self, message: &Envelope) -> Result<Vec<Received>, SchemeError> {
         let outputs = self.step(|y| EncryptionGroup::receive(y, message))?;
         Ok(outputs
             .into_iter()
@@ -264,6 +304,16 @@ impl Session {
             Some(y) if !y.is_welcomed => Err(SchemeError::NotWelcomed),
             Some(_) => Ok(()),
         }
+    }
+
+    /// Hands `message` to the crate with no secret check. The check is what keeps pre-welcome history
+    /// out of the crate (P4.5), so only the reproduction of the crate's refusal uses this.
+    #[cfg(test)]
+    pub(super) fn process_unchecked(
+        &mut self,
+        message: &Envelope,
+    ) -> Result<Vec<Received>, SchemeError> {
+        self.receive(message)
     }
 
     /// Runs one crate call. On error the state is gone, so the session is poisoned.

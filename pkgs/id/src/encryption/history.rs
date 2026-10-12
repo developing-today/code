@@ -19,7 +19,7 @@ use thiserror::Error;
 use crate::groups::policy::History;
 
 /// The window of a preset that keeps a join small: 32 epochs (5.3 KB per join with the stock
-/// encoding, 1.7 KB with serde_bytes, at 1,000 rotations; round 2 `welcome-recent`).
+/// encoding, 1.7 KB with `serde_bytes`, at 1,000 rotations; round 2 `welcome-recent`).
 pub const RECENT_SMALL: u32 = 32;
 
 /// The window of a preset for churn-heavy worlds that want a longer memory: 128 epochs.
@@ -86,7 +86,7 @@ impl FromStr for HistoryMode {
         let epochs = text
             .strip_prefix("recent:")
             .and_then(|count| count.parse::<u32>().ok())
-            .ok_or_else(|| HistoryModeError::Unknown(text.to_string()))?;
+            .ok_or_else(|| HistoryModeError::Unknown(text.to_owned()))?;
         Self::recent(epochs)
     }
 }

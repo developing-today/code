@@ -269,12 +269,12 @@ fn test_recent_welcome_succeeds_for_every_window_and_epoch_count() {
 
             let add = cast.add_with_history(1, 4, mode);
             cast.deliver(&add, &[2, 3, 4]);
-            let case = format!("{mode} after {rotations} rotations");
-            assert!(cast.session(4).is_welcomed(), "{case}: welcomed");
-            assert_eq!(cast.members_of(4), cast.model, "{case}: roster");
-            assert_eq!(cast.epoch(4), cast.epoch(1), "{case}: newest epoch");
+            let label = format!("{mode} after {rotations} rotations");
+            assert!(cast.session(4).is_welcomed(), "{label}: welcomed");
+            assert_eq!(cast.members_of(4), cast.model, "{label}: roster");
+            assert_eq!(cast.epoch(4), cast.epoch(1), "{label}: newest epoch");
             let epochs = usize::try_from(window).expect("window").min(rotations + 1);
-            assert_eq!(cast.session(4).epoch_count(), epochs, "{case}: window");
+            assert_eq!(cast.session(4).epoch_count(), epochs, "{label}: window");
 
             let message = cast.send(2, "after the join");
             assert_eq!(
@@ -284,7 +284,7 @@ fn test_recent_welcome_succeeds_for_every_window_and_epoch_count() {
                     vec![text("after the join")],
                     vec![text("after the join")]
                 ],
-                "{case}: the joiner reads after its join"
+                "{label}: the joiner reads after its join"
             );
         }
     }
@@ -308,6 +308,115 @@ fn test_full_welcome_carries_every_epoch() {
         6,
         "every epoch the adder holds"
     );
+}
+
+/// Builds `rotations` epochs for the group of 1, 2 and 3, and sends one message under each epoch.
+/// Members 2 and 3 take every message as it goes. Returns every group message in send order, and
+/// the application messages alone, oldest first.
+fn history(cast: &mut Cast, rotations: usize) -> (Vec<Envelope>, Vec<Envelope>) {
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let mut all = vec![create];
+    let mut apps = Vec::new();
+    for epoch in 0..=rotations {
+        let message = cast.send(1, &format!("epoch {epoch}"));
+        cast.deliver(&message, &[2, 3]);
+        all.push(message.clone());
+        apps.push(message);
+        if epoch < rotations {
+            let update = cast.update(1);
+            cast.deliver(&update, &[2, 3]);
+            all.push(update);
+        }
+    }
+    (all, apps)
+}
+
+/// The crate's refusal, reproduced. A joiner handed its pre-welcome history with no secret check
+/// (the crate receives every message) fails its welcome whenever the window leaves an epoch out:
+/// `recent:N` with N no larger than the rotations. Round 2 saw this in 80 of 120 runs, and never
+/// in a run where the window held every epoch (P4.5, round 2 `welcome-recent` §E6).
+#[test]
+fn test_crate_refuses_the_welcome_when_pre_welcome_history_names_an_unknown_secret() {
+    let windows = [Some(1), Some(8), Some(32), Some(128), Some(512), None];
+    let mut runs = 0;
+    let mut refused = 0;
+    for rotations in [4, 20, 40] {
+        for window in windows {
+            let mode = window.map_or(HistoryMode::Full, HistoryMode::Recent);
+            let mut cast = Cast::new(&[1, 2, 3, 4]);
+            let (all, _) = history(&mut cast, rotations);
+            for message in &all {
+                cast.sessions
+                    .get_mut(&id(4))
+                    .expect("session")
+                    .process_unchecked(message)
+                    .expect("pre-welcome message");
+            }
+            let add = cast.add_with_history(1, 4, mode);
+            let welcome = cast
+                .sessions
+                .get_mut(&id(4))
+                .expect("session")
+                .process_unchecked(&add);
+
+            runs += 1;
+            let label = format!("{mode} after {rotations} rotations");
+            let expect_refused =
+                window.is_some_and(|n| usize::try_from(n).expect("window") <= rotations);
+            assert_eq!(welcome.is_err(), expect_refused, "{label}");
+            if let Err(err) = welcome {
+                refused += 1;
+                assert!(
+                    matches!(&err, SchemeError::Crate(text) if text.contains("unknown group secret")),
+                    "{label}: {err}"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        (refused, runs),
+        (6, 18),
+        "refused welcomes out of runs, by the pattern above"
+    );
+}
+
+/// A recent joiner reads the window of history it was handed before its welcome, in the order it
+/// arrived, and refuses the older messages. The welcome releases the window (P4.5). Every window
+/// and epoch count is tried.
+#[test]
+fn test_recent_joiner_reads_its_window_of_history_handed_over_before_the_welcome() {
+    for window in [1, 8, 32, 128, 512] {
+        for rotations in [0, 1, 5, 40] {
+            let mut cast = Cast::new(&[1, 2, 3, 4]);
+            let (all, apps) = history(&mut cast, rotations);
+            for message in &all {
+                cast.deliver(message, &[4]);
+            }
+
+            let add = cast.add_with_history(1, 4, HistoryMode::Recent(window));
+            let read = cast
+                .sessions
+                .get_mut(&id(4))
+                .expect("session")
+                .process(&add)
+                .expect("welcome");
+
+            let epochs = usize::try_from(window).expect("window").min(rotations + 1);
+            let label = format!("recent:{window} after {rotations} rotations");
+            let expected: Vec<Received> = (rotations + 1 - epochs..=rotations)
+                .map(|epoch| text(&format!("epoch {epoch}")))
+                .collect();
+            assert_eq!(read, expected, "{label}: the window is released");
+            if epochs <= rotations {
+                assert_eq!(
+                    cast.deliver(&apps[0], &[4]),
+                    vec![vec![Received::Withheld(apps[0].id())]],
+                    "{label}: the oldest epoch stays refused"
+                );
+            }
+        }
+    }
 }
 
 // --- update ---------------------------------------------------------------------------------------
