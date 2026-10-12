@@ -185,6 +185,7 @@ pub mod helpers;
 pub mod invite;
 pub mod invites;
 pub mod local;
+pub mod local_events;
 pub mod log_sync;
 pub mod membership;
 pub mod meta_client;

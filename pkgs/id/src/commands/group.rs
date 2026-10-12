@@ -38,7 +38,7 @@ async fn author() -> Result<Key> {
 }
 
 /// An account or ID as its 64 hex characters.
-fn hex(bytes: &Key) -> String {
+pub(super) fn hex(bytes: &Key) -> String {
     Hash::from_bytes(*bytes).to_hex()
 }
 
@@ -59,7 +59,7 @@ fn text(value: &Value) -> String {
 }
 
 /// The fields as `key=value` tokens.
-fn tokens(fields: &[(&str, Value)]) -> String {
+pub(super) fn tokens(fields: &[(&str, Value)]) -> String {
     fields
         .iter()
         .map(|(key, value)| format!("{key}={}", text(value)))
@@ -68,7 +68,7 @@ fn tokens(fields: &[(&str, Value)]) -> String {
 }
 
 /// The fields as one JSON object.
-fn object(fields: &[(&str, Value)]) -> Value {
+pub(super) fn object(fields: &[(&str, Value)]) -> Value {
     let map: Map<String, Value> = fields
         .iter()
         .map(|(key, value)| ((*key).to_owned(), value.clone()))

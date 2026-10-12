@@ -177,6 +177,13 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     pub groups_log: Option<PathBuf>,
 
+    /// The event store that `doc` and `claim` read and append to.
+    ///
+    /// Defaults to `events` in the data directory. A relative path is relative to the data
+    /// directory, so a store shared by several nodes is best given as an absolute path.
+    #[arg(long, global = true, value_name = "DIR")]
+    pub event_store: Option<PathBuf>,
+
     /// The subcommand to execute.
     ///
     /// If `None`, the REPL is started.
@@ -1037,6 +1044,47 @@ pub enum Command {
     Delegate(DelegateArgs),
     /// Revoke a delegation by its grant's event ID, as `delegate` printed it (P6.7b).
     Revoke(RevokeArgs),
+    /// Documents: publish a file, and list a document's events, frontier and history (P6.7c).
+    ///
+    /// Each action signs one event into the event store and prints one line, or one JSON object
+    /// with `--json`. The store stands in for sync: nodes that share it see each other's events.
+    /// Lists print one line per row, or one JSON array with `--json`.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id doc publish notes.md --media-type text/markdown --tag topic=plans
+    /// id doc history DOCUMENT
+    /// id doc frontier --json
+    /// ```
+    Doc {
+        /// Print JSON instead of lines.
+        #[arg(long, global = true)]
+        json: bool,
+        /// The document action to run.
+        #[command(subcommand)]
+        command: DocCommand,
+    },
+    /// Tag claims on any subject: set, clear, list, and search (P6.7c).
+    ///
+    /// A claim is a signed `tag.set` event, and `clear` removes the live claims it names. These are
+    /// the event-backed tags. The file tags of `id tag` are a separate store.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id claim set DOCUMENT topic plans
+    /// id claim clear DOCUMENT topic
+    /// id claim search topic plans --json
+    /// ```
+    Claim {
+        /// Print JSON instead of lines (one array for `list` and `search`).
+        #[arg(long, global = true)]
+        json: bool,
+        /// The claim action to run.
+        #[command(subcommand)]
+        command: ClaimCommand,
+    },
     /// Migrate existing files to have name/file auto-tags.
     ///
     /// Scans all blob tags in the store and adds `name` and `file`
@@ -1632,6 +1680,70 @@ pub enum WorldCommand {
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
+    },
+}
+
+/// Subcommands for `id doc`. A document is a `document.put` event over the content's hash.
+#[derive(Subcommand, Debug)]
+pub enum DocCommand {
+    /// Publish a file as a document, and set a tag for each `--tag`.
+    ///
+    /// Prints `publish document=<ID>`, the document's event ID. The file's bytes are hashed, and
+    /// the event names their hash and size. The bytes are not stored in the event.
+    Publish {
+        /// The file to publish.
+        file: PathBuf,
+        /// The media type of the file, for example `text/markdown`.
+        #[arg(long, value_name = "TYPE")]
+        media_type: String,
+        /// A tag to set on the document, as `name` or `name=value`. Repeat for more.
+        #[arg(long = "tag", value_name = "NAME[=VALUE]")]
+        tags: Vec<String>,
+    },
+    /// List the tags and removal on a document, in causal order.
+    Events {
+        /// The document's event ID, as `publish` printed it.
+        document: String,
+    },
+    /// List the head of each author's chain: the latest event each author has recorded.
+    Frontier,
+    /// List a document's events in causal order, its `document.put` first.
+    History {
+        /// The document's event ID, as `publish` printed it.
+        document: String,
+    },
+}
+
+/// Subcommands for `id claim`. A claim is the event that sets a tag on a subject.
+#[derive(Subcommand, Debug)]
+pub enum ClaimCommand {
+    /// Set a tag on a subject, which is any event ID, such as a document's.
+    Set {
+        /// The subject's event ID.
+        subject: String,
+        /// The tag name.
+        name: String,
+        /// The tag value. Without one, the tag is bare.
+        value: Option<String>,
+    },
+    /// Clear the live claims with this name on a subject, whoever set them.
+    Clear {
+        /// The subject's event ID.
+        subject: String,
+        /// The tag name.
+        name: String,
+    },
+    /// List the live claims with this name, and value if given, on any subject.
+    Search {
+        /// The tag name.
+        name: String,
+        /// The tag value to match as a whole. Without one, any value and a bare tag match.
+        value: Option<String>,
+    },
+    /// List the live claims on a subject.
+    List {
+        /// The subject's event ID.
+        subject: String,
     },
 }
 
