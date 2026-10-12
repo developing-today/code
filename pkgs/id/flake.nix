@@ -68,6 +68,9 @@
         # Pre-fetch cargo dependencies for sandbox builds (no network access)
         cargoDeps = pkgs.rustPlatform.importCargoLock {
           lockFile = ./Cargo.lock;
+          outputHashes = {
+            "p2panda-core-0.7.1" = "sha256-t1FDJkQ6B43clPF0lD36I+Uxav0YbqJ2e/UwWUoI6fk=";
+          };
         };
 
         # Pre-fetch bun dependencies for sandbox builds (no network access)
@@ -573,6 +576,9 @@
 
             cargoLock = {
               lockFile = ./Cargo.lock;
+              outputHashes = {
+                "p2panda-core-0.7.1" = "sha256-t1FDJkQ6B43clPF0lD36I+Uxav0YbqJ2e/UwWUoI6fk=";
+              };
             };
 
             inherit buildInputs;
@@ -631,6 +637,9 @@
 
             cargoLock = {
               lockFile = ./Cargo.lock;
+              outputHashes = {
+                "p2panda-core-0.7.1" = "sha256-t1FDJkQ6B43clPF0lD36I+Uxav0YbqJ2e/UwWUoI6fk=";
+              };
             };
 
             # Disable default web feature for lib-only build
