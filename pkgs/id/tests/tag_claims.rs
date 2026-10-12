@@ -74,6 +74,7 @@ impl Writer {
             after,
             tag: Some(op.clone()),
             document: None,
+            removes: None,
         };
         let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
         self.seq += 1;
@@ -259,6 +260,7 @@ fn test_a_tag_event_whose_operation_does_not_fit_its_kind_is_not_signed() {
         after: vec![],
         tag: Some(set(subject, "city", None)),
         document: None,
+        removes: None,
     };
     assert!(sign(&a.key, 0, None, None, mismatch).is_err());
     let missing = ChainExt {
@@ -267,6 +269,7 @@ fn test_a_tag_event_whose_operation_does_not_fit_its_kind_is_not_signed() {
         after: vec![],
         tag: None,
         document: None,
+        removes: None,
     };
     assert!(sign(&a.key, 0, None, None, missing).is_err());
 }

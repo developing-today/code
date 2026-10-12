@@ -22,7 +22,7 @@ use p2panda_core::{AnyHeader, Hash, Header, HeaderError, SeqNum, SigningKey};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
-use crate::documents::{DocumentRef, is_document_kind};
+use crate::documents::{DocumentRef, is_document_kind, is_removal_kind};
 use crate::tag_claims::{TagOp, check_op, is_tag_kind};
 
 /// The domain tag every `ChainExt` carries, so this header type cannot be
@@ -112,11 +112,14 @@ pub struct ChainExt {
     /// The document of a `document.put`, and `None` for every other kind. It names the content by
     /// hash and size, and the bytes are a blob (P5.4). It is signed with the header.
     pub document: Option<DocumentRef>,
+    /// The ID of the `document.put` a `document.remove` removes, and `None` for every other kind.
+    /// It is signed with the header (P5.6).
+    pub removes: Option<Hash>,
 }
 
 /// The wire form of [`ChainExt`]: the same fields, plus the domain tag. Keys
-/// this form does not name are refused. `tag` and `document` are left out when
-/// they are `None`, so events of other kinds keep their encoding.
+/// this form does not name are refused. `tag`, `document` and `removes` are left
+/// out when they are `None`, so events of other kinds keep their encoding.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Wire {
@@ -128,6 +131,8 @@ struct Wire {
     tag: Option<TagOp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     document: Option<DocumentRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    removes: Option<Hash>,
 }
 
 impl From<ChainExt> for Wire {
@@ -139,6 +144,7 @@ impl From<ChainExt> for Wire {
             after: ext.after,
             tag: ext.tag,
             document: ext.document,
+            removes: ext.removes,
         }
     }
 }
@@ -156,6 +162,7 @@ impl TryFrom<Wire> for ChainExt {
             after: wire.after,
             tag: wire.tag,
             document: wire.document,
+            removes: wire.removes,
         };
         ext.validate()?;
         Ok(ext)
@@ -173,7 +180,9 @@ impl ChainExt {
     /// `kind` that is not NFC. A tag kind must carry a tag operation that fits
     /// its kind, and any other kind must carry none. A document kind must carry
     /// a document that passes [`DocumentRef::check`], and any other kind must
-    /// carry none.
+    /// carry none. A removal kind must name the document it removes, and any
+    /// other kind must name none. A removal carries no tag and no document, as
+    /// any kind that is not a tag or a document kind must not.
     pub fn validate(&self) -> Result<(), ChainError> {
         if self.after.len() > MAX_AFTER {
             return Err(ChainError::TooManyAfter(self.after.len()));
@@ -226,6 +235,22 @@ impl ChainExt {
                     .check()
                     .map_err(|err| ChainError::Extension(err.to_string()))?;
             }
+        }
+        match (is_removal_kind(&self.kind), &self.removes) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} names a removed document",
+                    self.kind
+                )));
+            }
+            (true, None) => {
+                return Err(ChainError::Extension(format!(
+                    "kind {:?} needs the document it removes",
+                    self.kind
+                )));
+            }
+            (true, Some(_)) => {}
         }
         Ok(())
     }
@@ -378,6 +403,7 @@ mod tests {
             after,
             tag: None,
             document: None,
+            removes: None,
         }
     }
 
@@ -854,6 +880,7 @@ mod golden {
                 after: vec![Hash::digest(b"a"), Hash::digest(b"b")],
                 tag: None,
                 document: None,
+                removes: None,
             },
         )
         .unwrap();
@@ -869,6 +896,7 @@ mod golden {
                 after: vec![first.id],
                 tag: None,
                 document: None,
+                removes: None,
             },
         )
         .unwrap();

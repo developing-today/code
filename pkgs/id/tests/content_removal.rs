@@ -271,12 +271,7 @@ fn test_the_removal_leaves_the_tags_and_their_fold_unchanged() {
 #[test]
 fn test_replicas_agree_on_the_event_set_and_the_record_in_any_order() {
     let s = story();
-    let all = [
-        &s.published,
-        &s.kind,
-        &s.project,
-        &s.removal,
-    ];
+    let all = [&s.published, &s.kind, &s.project, &s.removal];
 
     // One replica gets the events in order, the other in reverse, so the removal arrives first.
     let (_forward_dir, mut forward) = open();
@@ -289,8 +284,14 @@ fn test_replicas_agree_on_the_event_set_and_the_record_in_any_order() {
     }
 
     for event in all {
-        assert!(forward.event_applied(&event.id).unwrap(), "forward: {event:?}");
-        assert!(reverse.event_applied(&event.id).unwrap(), "reverse: {event:?}");
+        assert!(
+            forward.event_applied(&event.id).unwrap(),
+            "forward: {event:?}"
+        );
+        assert!(
+            reverse.event_applied(&event.id).unwrap(),
+            "reverse: {event:?}"
+        );
     }
     assert_eq!(reverse.documents().unwrap(), forward.documents().unwrap());
     assert_eq!(reverse.tag_claims().unwrap(), forward.tag_claims().unwrap());
@@ -306,7 +307,9 @@ fn test_only_the_documents_author_may_remove_it() {
     let mut s = story();
     // The other writer names the document in a removal of their own. It is stored, and it has
     // no effect, since the other writer did not publish the document.
-    let other_removal = s.other.send(removal_ext(s.published.id, vec![s.project.id]));
+    let other_removal = s
+        .other
+        .send(removal_ext(s.published.id, vec![s.project.id]));
 
     let (_dir, mut store) = open();
     for event in before_removal(&s) {

@@ -554,6 +554,7 @@ mod tests {
             after: Vec::new(),
             tag: None,
             document: None,
+            removes: None,
         };
         sign(signer, seq, backlink, body, ext).unwrap()
     }
