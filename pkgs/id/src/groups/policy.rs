@@ -4,10 +4,13 @@
 //! a `group.policy` event by an Admin. A template is a named preset that a create event names, and
 //! the record must be one that template admits.
 
+use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
+
 use super::Role;
 
 /// Who may join a group, and how.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Join {
     /// A manager adds members.
     ManagerAdd,
@@ -20,7 +23,7 @@ pub enum Join {
 }
 
 /// What a removal does to the group as a whole.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OnMemberRemoved {
     /// The group goes on without the removed member.
     Continue,
@@ -30,7 +33,7 @@ pub enum OnMemberRemoved {
 
 /// How a removal takes effect (design §6). Strong is the default. The rules belong to the voiding
 /// track; this module only records the setting.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Removal {
     /// Strong remove, the default.
     #[default]
@@ -40,9 +43,10 @@ pub enum Removal {
 }
 
 /// What happens to a removed member's grants (design §7.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum Delegation {
     /// Grants made before the removal stand. Grants made concurrently with it are void.
+    #[value(name = "keep_prior")]
     KeepPrior,
     /// A grant stands only while its grantor still holds the scope. The default.
     Cascade,
@@ -52,7 +56,7 @@ pub enum Delegation {
 }
 
 /// What a joiner may see of earlier history (design §8.3).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum History {
     /// The whole history.
     #[default]
@@ -67,7 +71,7 @@ pub enum History {
 }
 
 /// A key-agreement scheme and its version (design §8.7). A policy with no scheme has `None`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scheme {
     /// The scheme's name.
     pub name: String,
@@ -77,14 +81,14 @@ pub struct Scheme {
 
 /// Which role may change roles and the policy record. Only Admin may, so the field is a rule and
 /// not a choice: [`Policy::is_valid`] refuses any other value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleRules {
     /// The least role that may change roles and policy.
     pub change: Role,
 }
 
 /// A group's policy record.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Policy {
     /// The most members the group may have. `None` means no cap. Only an Admin may change it.
     pub member_cap: Option<usize>,
@@ -156,7 +160,7 @@ impl Policy {
 
 /// A named preset that a create event names. The create's policy record is written in full, and
 /// [`Template::admits`] checks it against the preset.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Template {
     /// Two members who ask and accept each other (design §5.4).
     Friendship,
