@@ -12,15 +12,15 @@
 
 ## Steps
 
-| Step  | Track    | Status  | Commits | Tests | Notes                                                                     |
-| ----- | -------- | ------- | ------- | ----- | ------------------------------------------------------------------------- |
-| P6.1  | seitan   | todo    |         |       | verify accept-message bytes and the Keybase admin handler before shipping |
-| P6.2  | seitan   | todo    |         |       |                                                                           |
-| P6.3  | invites  | todo    |         |       |                                                                           |
-| P6.4  | invites  | todo    |         |       |                                                                           |
-| P6.5  | pull     | todo    |         |       |                                                                           |
-| P6.6  | recovery | todo    |         |       |                                                                           |
-| P6.7a | cli      | todo    |         |       |                                                                           |
-| P6.7b | cli      | todo    |         |       |                                                                           |
-| P6.7c | cli      | blocked |         |       | needs Phase 5                                                             |
-| P6.8  | recovery | todo    |         |       |                                                                           |
+| Step  | Track    | Status               | Commits  | Tests         | Notes                                                                                                                                                                          |
+| ----- | -------- | -------------------- | -------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| P6.1  | seitan   | done, open item #194 | 3eafe3b3 | 25            | Keybase V2 vectors match (stretch, invite ID, Ed25519 key). Accept bytes and admin handler read, not run; the server side, old-style invites and a real accept are open (#194) |
+| P6.2  | seitan   | done                 | 065a29b9 | 6 (31 seitan) | N23: created - W <= ctime <= min(now + W, expires). Default 5 minutes; set per inviter, world, or server; the most specific wins                                               |
+| P6.3  | invites  | todo                 |          |               |                                                                                                                                                                                |
+| P6.4  | invites  | todo                 |          |               |                                                                                                                                                                                |
+| P6.5  | pull     | todo                 |          |               |                                                                                                                                                                                |
+| P6.6  | recovery | todo                 |          |               |                                                                                                                                                                                |
+| P6.7a | cli      | todo                 |          |               |                                                                                                                                                                                |
+| P6.7b | cli      | todo                 |          |               |                                                                                                                                                                                |
+| P6.7c | cli      | blocked              |          |               | needs Phase 5                                                                                                                                                                  |
+| P6.8  | recovery | todo                 |          |               |                                                                                                                                                                                |
