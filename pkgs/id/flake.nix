@@ -90,7 +90,11 @@
           name = "id-integration-test-runner";
           src = ./.;
           inherit buildInputs;
-          nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+          nativeBuildInputs = nativeBuildInputs ++ [
+            bun2nixPkg.hook
+            pkgs.rustPlatform.cargoSetupHook
+          ];
+          inherit cargoDeps;
           inherit (opensslEnv) OPENSSL_DIR;
           inherit (opensslEnv) OPENSSL_LIB_DIR;
           inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -111,16 +115,6 @@
 
             # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
             export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-            # Configure cargo to use vendored dependencies (nix sandbox has no network)
-            cat >> .cargo/config.toml << EOF
-
-            [source.crates-io]
-            replace-with = "vendored-sources"
-
-            [source.vendored-sources]
-            directory = "${cargoDeps}"
-            EOF
 
             # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
             (cd web && bun run build)
