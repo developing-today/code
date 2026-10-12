@@ -362,7 +362,10 @@ mod tests {
             author: key(1),
             after: vec![last],
             group: Some(team),
-            body: Body::Member(MemberOp::Remove { member: key(2) }),
+            body: Body::Member(MemberOp::Remove {
+                member: key(2),
+                successor: None,
+            }),
         };
         let projection = state.record(remove_bo).unwrap();
         assert_eq!(projection.outcome(&remove_id), Some(&Outcome::Applied));
