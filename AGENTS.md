@@ -26,3 +26,9 @@ When retrieving public web content with `curl`, `wget`, Python HTTP clients, or 
 - Do not block the main thread on a long wait. Use short waits, a few minutes at most, and do other useful work between checks. Never default to a 30-minute wait.
 - Run long commands as background shells and wait on them in short steps. Keep the main thread free to start or check other work.
 - Use subagents whenever a task can run on its own. They notify you when they finish. To read their progress, use `subagents_read`. To follow up, continue a finished subagent by its session id. Do not cancel a running subagent just to send it an update.
+- **Velocity, selective testing, and unblocking:**
+  - Move fast: unblock yourself and make the best judgment calls rather than waiting for human confirmation.
+  - Perform quick or selective tests during iteration. Only run full exhaustive test suites preemptively for very large changes or known critical issues.
+  - It is acceptable to push and merge code that has been validated with targeted tests without running every single test upfront.
+  - Run long test suites or CI in the background while progressing on other work in parallel. If background jobs or CI fail, double back and address failures while continuing forward.
+  - Document unresolved ambiguities, design concerns, or known gaps by creating GitHub issues instead of blocking progress.
