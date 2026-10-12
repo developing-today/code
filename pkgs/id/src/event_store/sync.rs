@@ -77,6 +77,7 @@ struct Tally {
     waiting: usize,
     refused: usize,
     forks: usize,
+    voided: usize,
 }
 
 impl Tally {
@@ -87,6 +88,7 @@ impl Tally {
             Ingest::Fork { .. } => self.forks += 1,
             Ingest::Waiting { .. } => self.waiting += 1,
             Ingest::Refused(_) => self.refused += 1,
+            Ingest::Voided { .. } => self.voided += 1,
         }
     }
 }

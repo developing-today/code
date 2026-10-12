@@ -255,7 +255,9 @@ impl EventStore {
             let mut outcomes = Vec::with_capacity(events.len());
             let mut changed = false;
             for event in events {
-                let (outcome, did_change) = ingest_in(mirror, event, now_ms)?;
+                // Batches come from sync, which carries no bodies. A group operation's action is
+                // attached later, when its body arrives (`attach_action`).
+                let (outcome, did_change) = ingest_in(mirror, event, None, now_ms)?;
                 changed |= did_change;
                 outcomes.push(outcome);
             }

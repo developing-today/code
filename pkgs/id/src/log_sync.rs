@@ -110,6 +110,9 @@ pub struct Tally {
     pub refused: u32,
     /// Events that named a fork. The conflicting headers are stored as the proof.
     pub forks: u32,
+    /// Events stored but voided by the membership layer. They do not apply, and they still count
+    /// as present.
+    pub voided: u32,
 }
 
 impl Tally {
@@ -120,6 +123,7 @@ impl Tally {
             Ingest::Fork { .. } => self.forks += 1,
             Ingest::Waiting { .. } => self.held += 1,
             Ingest::Refused(_) => self.refused += 1,
+            Ingest::Voided { .. } => self.voided += 1,
         }
     }
 }
@@ -301,7 +305,7 @@ async fn run_log_sync(
                     tally.refused += 1;
                 } else {
                     let outcome = store
-                        .ingest(header, unix_ms())
+                        .ingest(header, None, unix_ms())
                         .map_err(|error| SyncError::Store(error.to_string()))?;
                     tally.record(&outcome);
                 }
@@ -461,7 +465,7 @@ mod tests {
 
     fn ingest_all(store: &SharedEventStore, events: &[Event]) {
         for event in events {
-            let outcome = store.ingest(&event.bytes, 0).unwrap();
+            let outcome = store.ingest(&event.bytes, None, 0).unwrap();
             assert!(
                 matches!(outcome, Ingest::Accepted { .. }),
                 "expected an accepted event, got {outcome:?}"
@@ -673,7 +677,7 @@ mod tests {
         };
         let rival = sign(alice, 1, Some(honest[0].id), None, rival_ext).unwrap();
         assert!(matches!(
-            store.ingest(&rival.bytes, 0).unwrap(),
+            store.ingest(&rival.bytes, None, 0).unwrap(),
             Ingest::Fork { seq: 1, .. }
         ));
         (dir, store, honest, rival)
