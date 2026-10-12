@@ -48,7 +48,7 @@ let
     # Formatters and linters (keep in sync with treefmt.toml)
     biome
     prettier # nodepackages remoed 2026-04-03
-    nixfmt
+    nixfmt-rfc-style
     statix
     shfmt
     shellcheck
