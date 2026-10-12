@@ -5,6 +5,7 @@
 //! to the members who may read them.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use p2panda_core::{SigningKey, VerifyingKey};
 use p2panda_encryption::crypto::Rng;
@@ -740,5 +741,115 @@ proptest! {
             let read = cast.deliver(&last, &[*gone]);
             prop_assert_eq!(read, vec![vec![Received::Withheld(last.id())]], "removed member {}", gone);
         }
+    }
+}
+
+// --- cost (P4.11) ---------------------------------------------------------------------------------
+
+/// The `index`th person of a benchmark group. [`person`] takes a one-byte seed, which runs out at
+/// 256 people, so the benchmark spreads the index over the key bytes.
+fn benchmark_person(index: usize) -> (Key, VerifyingKey) {
+    let mut bytes = [0_u8; 32];
+    bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+    let verifying = SigningKey::from_bytes(&bytes).verifying_key();
+    (key_of(verifying), verifying)
+}
+
+/// The committer's cost for one group size: the create, and the mean of a few updates.
+#[derive(Debug)]
+struct UpdateCost {
+    members: usize,
+    create_bytes: usize,
+    create_ms: f64,
+    update_bytes: usize,
+    update_ms: f64,
+    updates: usize,
+}
+
+impl UpdateCost {
+    fn report(&self) -> String {
+        format!(
+            "members {:>5}: create {:>9} B in {:>9.1} ms; update {:>9} B, {:>8.2} ms (mean of {})",
+            self.members,
+            self.create_bytes,
+            self.create_ms,
+            self.update_bytes,
+            self.update_ms,
+            self.updates,
+        )
+    }
+}
+
+/// Builds a group of `members` on one committer's device, and measures the committer's side. The
+/// other members are not built, since the cost of an update is the committer's to pay: it encrypts
+/// the new secret to each member and processes its own message. The bytes are the postcard size of
+/// the envelope, which is what a transport would carry.
+fn measure_update_cost(members: usize, updates: usize) -> UpdateCost {
+    let rng = Rng::default();
+    let mut bundles = Vec::with_capacity(members);
+    let mut model = BTreeSet::new();
+    let mut committer = None;
+    for index in 0..members {
+        let (key, verifying) = benchmark_person(index);
+        let identity = IdentitySecret::from_rng(&rng).expect("identity");
+        let state = new_keys(&identity, Lifetime::default(), &rng).expect("keys");
+        bundles.push((verifying, key_bundle(&state).expect("bundle")));
+        model.insert(key);
+        if index == 0 {
+            committer = Some((verifying, state));
+        }
+    }
+    let (me, keys) = committer.expect("a committer");
+    let mut session = Session::init(me, keys, registry(&bundles).expect("registry"));
+
+    let started = Instant::now();
+    let create = session.create(&model, &rng).expect("create");
+    let create_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let create_bytes = wire_bytes(&create);
+
+    // One update before the timed ones, so the first-commit cost is not counted twice.
+    session.update(&rng).expect("warm-up update");
+    let mut sent = Vec::with_capacity(updates);
+    let started = Instant::now();
+    for _ in 0..updates {
+        sent.push(session.update(&rng).expect("update"));
+    }
+    let count = f64::from(u32::try_from(updates).expect("a few updates"));
+    let update_ms = started.elapsed().as_secs_f64() * 1_000.0 / count;
+    let update_bytes = sent.iter().map(wire_bytes).sum::<usize>() / updates;
+
+    UpdateCost {
+        members,
+        create_bytes,
+        create_ms,
+        update_bytes,
+        update_ms,
+        updates,
+    }
+}
+
+fn wire_bytes(envelope: &Envelope) -> usize {
+    postcard::to_allocvec(envelope).expect("encode").len()
+}
+
+#[test]
+fn test_the_update_cost_measurement_grows_with_the_members() {
+    let small = measure_update_cost(4, 1);
+    let large = measure_update_cost(8, 1);
+    assert!(small.update_bytes > 0, "an update is sent");
+    assert!(
+        large.update_bytes > small.update_bytes,
+        "an update carries a message for each member"
+    );
+}
+
+/// P4.11: what one `DataScheme` update costs the committer at 100, 1,000 and 5,000 members, with our
+/// adapter. It records the numbers and fails on none of them. Run it in release:
+/// `cargo test --release --lib encryption::tests::bench_update_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "release benchmark for P4.11: cargo test --release --lib encryption::tests::bench_update_cost -- --ignored --nocapture"]
+fn bench_update_cost() {
+    for members in [100, 1_000, 5_000] {
+        println!("{}", measure_update_cost(members, 5).report());
     }
 }
