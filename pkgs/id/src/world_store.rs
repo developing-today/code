@@ -646,10 +646,7 @@ mod tests {
             .attenuate(
                 owner_token.clone(),
                 WorldScopes::JOIN.union(WorldScopes::DELEGATE),
-                CapabilityBounds {
-                    expires_at: None,
-                    uses: Some(3),
-                },
+                CapabilityBounds::default(),
                 "bo",
             )
             .await

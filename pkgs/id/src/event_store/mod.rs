@@ -58,6 +58,7 @@ use crate::chain::{self, Event};
 
 mod ingest;
 pub mod range;
+mod resolve;
 pub mod sync;
 mod waiting_rows;
 
@@ -74,7 +75,7 @@ pub const FILE_NAME: &str = "events.redb";
 pub const TEMP_NAME: &str = "events.redb.tmp";
 
 /// The format row in `meta`. A store with another format is refused.
-const FORMAT: &[u8] = b"id.events.store.v4";
+const FORMAT: &[u8] = b"id.events.store.v5";
 const FORMAT_KEY: &[u8] = b"format";
 
 const EVENTS: TableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -93,6 +94,13 @@ const WAITING: TableDefinition<'static, &'static [u8], &'static [u8]> =
 const WAITING_BY_DEP: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
     MultimapTableDefinition::new("waiting_by_dep");
 const META: TableDefinition<'static, &'static [u8], &'static [u8]> = TableDefinition::new("meta");
+/// Each group operation's encoded action, by event ID. Written when the event arrives, held or
+/// stored, so a release reads it back without the caller. The resolution reads it again.
+const ACTIONS: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("actions");
+/// The IDs of the applied events, with an empty value. Written by the resolution.
+const APPLIED: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("applied");
 
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
@@ -397,6 +405,36 @@ impl EventStore {
         let chains = txn.open_table(CHAINS)?;
         let row = chains.get(author.as_slice())?;
         row.map(|row| Chain::decode(row.value())).transpose()
+    }
+
+    /// Whether the event with this ID applies, in the resolved state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails.
+    pub fn event_applied(&self, id: &Hash) -> Result<bool, StoreError> {
+        let txn = self.db.begin_read()?;
+        let applied = txn.open_table(APPLIED)?;
+        let found = applied.get(id.as_bytes().as_slice())?.is_some();
+        Ok(found)
+    }
+
+    /// The keys that are members of `group` in the resolved state, sorted. A member with access
+    /// at the end of the causal history is listed, and a removed member is not.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the read fails, or [`StoreError::Corrupt`].
+    pub fn roster(&self, group: &Hash) -> Result<Vec<AuthorKey>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let (stored, forks, headers) = {
+            let events = txn.open_table(EVENTS)?;
+            let actions = txn.open_table(ACTIONS)?;
+            let forks = txn.open_table(FORKS)?;
+            resolve::load(&events, &actions, &forks)?
+        };
+        let resolved = resolve::resolve(&stored, &forks, &headers)?;
+        Ok(resolve::roster_of(&resolved, group))
     }
 
     /// The stored event at `(author, seq)`, applied or not.
@@ -781,6 +819,8 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     txn.open_table(PROOF_IDS)?;
     txn.open_table(WAITING)?;
     txn.open_multimap_table(WAITING_BY_DEP)?;
+    txn.open_table(ACTIONS)?;
+    txn.open_table(APPLIED)?;
     let mut meta = txn.open_table(META)?;
     meta.insert(FORMAT_KEY, FORMAT)?;
     drop(meta);
@@ -800,6 +840,8 @@ fn verify_schema(db: &Database) -> Result<(), StoreError> {
     txn.open_table(PROOF_IDS).map_err(missing)?;
     txn.open_table(WAITING).map_err(missing)?;
     txn.open_multimap_table(WAITING_BY_DEP).map_err(missing)?;
+    txn.open_table(ACTIONS).map_err(missing)?;
+    txn.open_table(APPLIED).map_err(missing)?;
     let meta = txn.open_table(META).map_err(missing)?;
     match meta.get(FORMAT_KEY)? {
         Some(found) if found.value() == FORMAT => Ok(()),
@@ -989,27 +1031,30 @@ impl EventStore {
         limit: usize,
     ) -> Result<Vec<Event>, StoreError> {
         let txn = self.db.begin_read()?;
-        let chains = txn.open_table(CHAINS)?;
-        let Some(chain_row) = chains.get(author.as_slice())? else {
-            return Ok(Vec::new());
-        };
-        let Some(last) = Chain::decode(chain_row.value())?.next_seq.checked_sub(1) else {
-            return Ok(Vec::new());
-        };
-        let last = until.map_or(last, |until| until.min(last));
         let first = match after {
             Some(after) => after.checked_add(1),
             None => Some(0),
         };
-        let Some(first) = first.filter(|first| *first <= last) else {
+        let Some(first) = first else {
             return Ok(Vec::new());
         };
+        let last = until.unwrap_or(SeqNum::MAX);
+        if first > last {
+            return Ok(Vec::new());
+        }
+        let applied = txn.open_table(APPLIED)?;
         let events = txn.open_table(EVENTS)?;
         let (start, end) = (position_key(author, first), position_key(author, last));
         let mut found = Vec::new();
-        for row in events.range(start.as_slice()..=end.as_slice())?.take(limit) {
+        for row in events.range(start.as_slice()..=end.as_slice())? {
+            if found.len() >= limit {
+                break;
+            }
             let (_position, bytes) = row?;
-            found.push(decode_stored(bytes.value())?);
+            let event = decode_stored(bytes.value())?;
+            if applied.get(event.id.as_bytes().as_slice())?.is_some() {
+                found.push(event);
+            }
         }
         Ok(found)
     }

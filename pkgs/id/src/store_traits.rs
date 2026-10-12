@@ -94,18 +94,25 @@ impl SharedEventStore {
         }
     }
 
-    /// Verifies and applies one received event. See [`EventStore::ingest`].
+    /// Verifies and applies one received event, with its body. `body` is the bytes the header
+    /// commits to, or `None` when the event arrived without one. The action of a group operation
+    /// comes from the body. See [`EventStore::ingest_with_body`].
     ///
     /// # Errors
     ///
     /// Returns [`TraitStoreError::Store`] for a redb or corruption error, and
     /// [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock.
-    pub fn ingest(&self, bytes: &[u8], now_ms: u64) -> Result<Ingest, TraitStoreError> {
+    pub fn ingest(
+        &self,
+        bytes: &[u8],
+        body: Option<&[u8]>,
+        now_ms: u64,
+    ) -> Result<Ingest, TraitStoreError> {
         let mut store = self
             .inner
             .write()
             .map_err(|_err| TraitStoreError::Poisoned)?;
-        Ok(store.ingest(bytes, now_ms)?)
+        Ok(store.ingest_with_body(bytes, body, now_ms)?)
     }
 
     /// Checks the store's own rows. See [`EventStore::check_invariants`].
@@ -117,8 +124,14 @@ impl SharedEventStore {
         self.read(|store| Ok(store.check_invariants()?))
     }
 
-    /// Runs `op` under the read lock.
-    pub(crate) fn read<T>(
+    /// Runs `op` under the read lock. It answers the queries the traits do not cover, such as the
+    /// applied state and the roster of a group.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock, or
+    /// whatever `op` returns.
+    pub fn read<T>(
         &self,
         op: impl FnOnce(&EventStore) -> Result<T, TraitStoreError>,
     ) -> Result<T, TraitStoreError> {
@@ -541,7 +554,7 @@ mod tests {
 
     fn ingest_all(store: &SharedEventStore, events: &[Event]) {
         for event in events {
-            let outcome = store.ingest(&event.bytes, 0).unwrap();
+            let outcome = store.ingest(&event.bytes, None, 0).unwrap();
             assert_eq!(
                 outcome,
                 Ingest::Accepted {
@@ -817,7 +830,7 @@ mod tests {
         // Alice's rival at seq 1: the same backlink as `second`, so it conflicts with it.
         let rival = event(&alice, 1, Some(first.id), Some(rival_topic), "rival", None);
         assert_eq!(
-            store.ingest(&rival.bytes, 0).unwrap(),
+            store.ingest(&rival.bytes, None, 0).unwrap(),
             Ingest::Fork {
                 author: *who.as_bytes(),
                 seq: 1,
@@ -926,7 +939,7 @@ mod tests {
             Err(TraitStoreError::Poisoned)
         ));
         assert!(matches!(
-            store.ingest(&[], 0),
+            store.ingest(&[], None, 0),
             Err(TraitStoreError::Poisoned)
         ));
     }

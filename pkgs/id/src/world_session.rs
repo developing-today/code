@@ -17,7 +17,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(feature = "sandbox")]
 use anyhow::Context as _;
 use iroh_blobs::{
     BlobFormat, Hash,
@@ -195,14 +194,13 @@ enum ClientFrame {
     Chat {
         text: String,
     },
-    /// Joined: mint a capability with a subset of this session's scopes.
+    /// Joined: mint a capability with a subset of this session's scopes. A
+    /// delegation carries no use count.
     Attenuate {
         name: String,
         scopes: Vec<String>,
         /// Unix milliseconds at which the delegated capability stops working.
         expires_at: Option<u64>,
-        /// Committed chat and input actions the delegated capability may take.
-        uses: Option<u32>,
     },
     /// Joined as an account: delegate a subset of its scopes to one of its friends.
     DelegateToFriend {
@@ -210,7 +208,6 @@ enum ClientFrame {
         name: String,
         scopes: Vec<String>,
         expires_at: Option<u64>,
-        uses: Option<u32>,
     },
     Input {
         data_hex: String,
@@ -1905,6 +1902,30 @@ async fn send_view<I: SessionIo>(
     }
 }
 
+const USES_REFUSED: &str = "a delegation may not carry `uses`: a delegated grant has no use count, and the host's limit still applies";
+
+/// Whether a delegation frame names `uses` anywhere in it. The field was
+/// removed from delegations, and serde would ignore it, minting an unbounded
+/// grant from a client that still sends it. Any depth is refused, so no
+/// position hides the field.
+fn delegation_names_uses(value: &serde_json::Value) -> bool {
+    let delegating = matches!(
+        value.get("type").and_then(serde_json::Value::as_str),
+        Some("attenuate" | "delegate_to_friend")
+    );
+    delegating && names_uses(value)
+}
+
+fn names_uses(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .any(|(key, inner)| key == "uses" || names_uses(inner)),
+        serde_json::Value::Array(items) => items.iter().any(names_uses),
+        _ => false,
+    }
+}
+
 /// Handle one frame from a joined participant. Returns `false` to end the session.
 async fn handle_client_frame<I: SessionIo>(
     service: &WorldService,
@@ -1913,7 +1934,13 @@ async fn handle_client_frame<I: SessionIo>(
     text: &str,
 ) -> bool {
     let world = service.world();
-    let Ok(frame) = serde_json::from_str::<ClientFrame>(text) else {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return send_error(io, "invalid world frame").await;
+    };
+    if delegation_names_uses(&value) {
+        return send_error(io, USES_REFUSED).await;
+    }
+    let Ok(frame) = serde_json::from_value::<ClientFrame>(value) else {
         return send_error(io, "invalid world frame").await;
     };
     let result = match frame {
@@ -1921,12 +1948,14 @@ async fn handle_client_frame<I: SessionIo>(
             name,
             scopes,
             expires_at,
-            uses,
         } => {
             let Some(scopes) = WorldScopes::from_names(scopes.iter().map(String::as_str)) else {
                 return send_error(io, "unknown scope").await;
             };
-            let bounds = CapabilityBounds { expires_at, uses };
+            let bounds = CapabilityBounds {
+                expires_at,
+                uses: None,
+            };
             let result = world.attenuate(token.clone(), scopes, bounds, name).await;
             return send_delegation(io, result).await;
         }
@@ -1935,12 +1964,14 @@ async fn handle_client_frame<I: SessionIo>(
             name,
             scopes,
             expires_at,
-            uses,
         } => {
             let Some(scopes) = WorldScopes::from_names(scopes.iter().map(String::as_str)) else {
                 return send_error(io, "unknown scope").await;
             };
-            let bounds = CapabilityBounds { expires_at, uses };
+            let bounds = CapabilityBounds {
+                expires_at,
+                uses: None,
+            };
             let result = world
                 .delegate_to_friend(token.clone(), friend, scopes, bounds, name)
                 .await;
@@ -2169,6 +2200,14 @@ mod tests {
         async fn say(&self, frame: serde_json::Value) {
             self.to_server
                 .send(Inbound::Text(frame.to_string()))
+                .await
+                .unwrap();
+        }
+
+        /// Sends the frame text as given, so a test controls field order.
+        async fn say_text(&self, text: &str) {
+            self.to_server
+                .send(Inbound::Text(text.to_owned()))
                 .await
                 .unwrap();
         }
@@ -2601,6 +2640,69 @@ mod tests {
             .say(serde_json::json!({"type":"attenuate","name":"cy","scopes":["telepathy"]}))
             .await;
         assert_eq!(child_peer.next().await.unwrap()["message"], "unknown scope");
+    }
+
+    /// A joined participant that may delegate `join`.
+    async fn delegator(svc: &WorldService) -> Peer {
+        let delegate = WorldScopes::from_names(["join", "chat", "input", "delegate"]).unwrap();
+        let (_, owner) = svc.world().issue("ann".to_owned(), delegate).await.unwrap();
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({"type":"join","capability":owner.expose()}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        peer
+    }
+
+    /// Delegation frames that name `uses`, in each position a client could put
+    /// it. Serde would ignore the field and mint an unbounded grant.
+    const FRAMES_NAMING_USES: [&str; 9] = [
+        r#"{"type":"attenuate","uses":1,"name":"bo","scopes":["join"]}"#,
+        r#"{"type":"attenuate","name":"bo","uses":1,"scopes":["join"]}"#,
+        r#"{"type":"attenuate","name":"bo","scopes":["join"],"uses":1}"#,
+        r#"{"type":"attenuate","name":"bo","scopes":["join"],"expires_at":null,"uses":null}"#,
+        r#"{"type":"attenuate","name":"bo","scopes":["join"],"bounds":{"uses":1}}"#,
+        r#"{"type":"attenuate","name":"bo","scopes":[{"uses":1}]}"#,
+        r#"{"type":"delegate_to_friend","uses":1,"friend":"nobody","name":"bo","scopes":["join"]}"#,
+        r#"{"type":"delegate_to_friend","friend":"nobody","name":"bo","scopes":["join"],"uses":1}"#,
+        r#"{"type":"delegate_to_friend","friend":"nobody","name":"bo","scopes":["join"],"bounds":{"uses":1}}"#,
+    ];
+
+    #[tokio::test]
+    async fn a_delegation_frame_that_names_uses_is_refused_by_name() {
+        let svc = service(None);
+        let mut peer = delegator(&svc).await;
+        for text in FRAMES_NAMING_USES {
+            peer.say_text(text).await;
+            let reply = peer.next().await.unwrap();
+            assert_eq!(reply["type"], "error", "{text}");
+            assert!(
+                reply["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("`uses`"),
+                "{text}: {reply}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_delegation_frame_without_uses_is_accepted() {
+        let svc = service(None);
+        let mut peer = delegator(&svc).await;
+        for text in [
+            r#"{"type":"attenuate","name":"bo","scopes":["join"]}"#,
+            r#"{"type":"attenuate","scopes":["join"],"expires_at":null,"name":"cy"}"#,
+        ] {
+            peer.say_text(text).await;
+            assert_eq!(peer.next().await.unwrap()["type"], "invite", "{text}");
+        }
+        // Past the uses check, this delegate has no account, so the friend
+        // delegation is denied for that reason alone.
+        peer.say_text(
+            r#"{"type":"delegate_to_friend","friend":"nobody","name":"di","scopes":["join"]}"#,
+        )
+        .await;
+        assert_eq!(peer.next().await.unwrap()["message"], "delegation denied");
     }
 
     #[tokio::test]

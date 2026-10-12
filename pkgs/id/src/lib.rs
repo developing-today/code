@@ -176,13 +176,17 @@ pub mod envelope_net;
 pub mod envelope_outbox;
 pub mod event_store;
 pub mod fileops;
+pub mod groups;
 pub mod helpers;
 pub mod invite;
 pub mod local;
 pub mod log_sync;
+pub mod membership;
 pub mod meta_client;
 #[cfg(feature = "world")]
 pub mod petname;
+#[cfg(feature = "world")]
+pub mod server_config;
 pub mod protocol;
 pub mod repl;
 #[cfg(feature = "sandbox")]
