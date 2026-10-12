@@ -26,9 +26,11 @@ use super::roster::Roster;
 /// message.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Envelope {
-    /// Hash of the sequence number, the sender, the names and the content.
+    /// Hash of the sequence number, the sender, the scheme, the names and the content.
     id: Hash,
     sender: VerifyingKey,
+    /// The scheme version the message was encoded under: a copy of the group's signed policy (P4.4).
+    scheme: u32,
     /// The last control message seen from each author when this was published.
     previous: Vec<Hash>,
     content: Content,
@@ -38,7 +40,7 @@ pub struct Envelope {
 enum Content {
     Control {
         control: ControlMessage<VerifyingKey>,
-        direct: Vec<DirectMessage<VerifyingKey, Hash, Roster>>,
+        direct: Vec<Direct>,
     },
     Application {
         group_secret_id: GroupSecretId,
@@ -47,21 +49,56 @@ enum Content {
     },
 }
 
+/// A direct message with the scheme version it was encoded under. The copy lets a recipient check
+/// the version before the crate reads the message. A joiner has no group state yet, so the welcome
+/// copy is the only check it has. It is a pair, so the copy costs two bytes on the wire (P4.4).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Direct(u32, DirectMessage<VerifyingKey, Hash, Roster>);
+
 impl Envelope {
     fn new(
         seq: u64,
         sender: VerifyingKey,
+        scheme: u32,
         previous: Vec<Hash>,
         content: Content,
     ) -> Result<Self, OrdererError> {
-        let bytes = encode_cbor(&(seq, sender, &previous, &content))
+        let bytes = encode_cbor(&(seq, sender, scheme, &previous, &content))
             .map_err(|err| OrdererError::Encode(err.to_string()))?;
         Ok(Self {
             id: Hash::digest(&bytes),
             sender,
+            scheme,
             previous,
             content,
         })
+    }
+
+    /// The scheme version in the header.
+    pub const fn scheme(&self) -> u32 {
+        self.scheme
+    }
+
+    /// The scheme version copied into each direct message, in order. Empty for an application
+    /// message.
+    pub fn direct_schemes(&self) -> Vec<u32> {
+        match &self.content {
+            Content::Control { direct, .. } => direct.iter().map(|copy| copy.0).collect(),
+            Content::Application { .. } => Vec::new(),
+        }
+    }
+
+    /// Rewrites the header and the direct copies, as a relay's edit would. The ID is kept, so the
+    /// refusal tests check the copies alone.
+    #[cfg(test)]
+    pub(crate) fn with_scheme(mut self, header: u32, copy: u32) -> Self {
+        self.scheme = header;
+        if let Content::Control { direct, .. } = &mut self.content {
+            for entry in direct {
+                entry.0 = copy;
+            }
+        }
+        self
     }
 }
 
@@ -91,7 +128,7 @@ impl GroupMessage<VerifyingKey, Hash, Roster> for Envelope {
 
     fn direct_messages(&self) -> Vec<DirectMessage<VerifyingKey, Hash, Roster>> {
         match &self.content {
-            Content::Control { direct, .. } => direct.clone(),
+            Content::Control { direct, .. } => direct.iter().map(|copy| copy.1.clone()).collect(),
             Content::Application { .. } => Vec::new(),
         }
     }
@@ -110,10 +147,11 @@ pub enum OrdererError {
 pub struct Orderer;
 
 impl Orderer {
-    /// The state before a create or a welcome.
-    pub const fn init(my_id: VerifyingKey) -> OrdererState {
+    /// The state before a create or a welcome. Every message this state publishes carries `scheme`.
+    pub const fn init(my_id: VerifyingKey, scheme: u32) -> OrdererState {
         OrdererState {
             my_id,
+            scheme,
             next_seq: 0,
             previous: BTreeMap::new(),
             messages: BTreeMap::new(),
@@ -130,6 +168,8 @@ impl Orderer {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OrdererState {
     my_id: VerifyingKey,
+    /// The scheme version of every message this device publishes.
+    scheme: u32,
     next_seq: u64,
     /// The last control message delivered from each author, including our own.
     previous: BTreeMap<VerifyingKey, Hash>,
@@ -152,7 +192,7 @@ impl OrdererState {
         let seq = self.next_seq;
         self.next_seq += 1;
         let previous = self.previous.values().copied().collect();
-        let envelope = Envelope::new(seq, self.my_id, previous, content)?;
+        let envelope = Envelope::new(seq, self.my_id, self.scheme, previous, content)?;
         self.ready.insert(envelope.id);
         Ok(envelope)
     }
@@ -186,9 +226,13 @@ impl Ordering<VerifyingKey, Hash, Roster> for Orderer {
         control_message: &ControlMessage<VerifyingKey>,
         direct_messages: &[DirectMessage<VerifyingKey, Hash, Roster>],
     ) -> Result<(Self::State, Self::Message), Self::Error> {
+        let direct = direct_messages
+            .iter()
+            .map(|message| Direct(y.scheme, message.clone()))
+            .collect();
         let content = Content::Control {
             control: control_message.clone(),
-            direct: direct_messages.to_vec(),
+            direct,
         };
         let envelope = y.publish(content)?;
         y.previous.insert(y.my_id, envelope.id);

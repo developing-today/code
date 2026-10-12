@@ -21,7 +21,10 @@ pub mod welcome;
 pub use history::{HistoryMode, HistoryModeError};
 pub use ordering::{Envelope, Orderer, OrdererError};
 pub use roster::Roster;
-pub use scheme::{Received, SchemeError, Session, key_bundle, key_of, new_keys, registry};
+pub use scheme::{
+    DATASCHEME, Received, SCHEME_V1, SchemeError, Session, key_bundle, key_of, negotiate, new_keys,
+    registry,
+};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

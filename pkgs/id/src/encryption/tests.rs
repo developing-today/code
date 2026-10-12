@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use p2panda_core::cbor::encode_cbor;
+use p2panda_core::cbor::{decode_cbor, encode_cbor};
 use p2panda_core::{Hash, SigningKey, VerifyingKey};
 use p2panda_encryption::crypto::Rng;
 use p2panda_encryption::crypto::x25519::SecretKey as IdentitySecret;
@@ -20,7 +20,9 @@ use proptest::prelude::*;
 use super::history::{HISTORY_WAIT, HistoryAnswer, HistoryError, ask_member};
 use super::welcome::{CHUNK_HEADER_BYTES, Reassembly, WelcomeError, split};
 use super::*;
-use crate::groups::Key;
+use crate::groups::{
+    Body, Create, Event, GroupView, Key, MemberOp, Policy, Role, Scheme, Template, fold,
+};
 
 fn person(seed: u8) -> (Key, VerifyingKey) {
     let verifying = SigningKey::from_bytes(&[seed; 32]).verifying_key();
@@ -35,12 +37,37 @@ fn text(message: &str) -> Received {
     Received::Plaintext(message.as_bytes().to_vec())
 }
 
+/// A group policy that names the `datascheme` scheme at `version`.
+fn scheme_policy(version: u32) -> Policy {
+    Policy {
+        scheme: Some(Scheme {
+            name: DATASCHEME.to_owned(),
+            version,
+        }),
+        ..Policy::default()
+    }
+}
+
+/// A view that lists `members` as Admins. For the checks that run before any fold.
+fn view_of(members: &BTreeSet<Key>) -> GroupView {
+    GroupView {
+        policy: scheme_policy(SCHEME_V1),
+        members: members.iter().map(|key| (*key, Role::Admin)).collect(),
+        friendship: None,
+        present: BTreeSet::new(),
+        dissolved_by: None,
+    }
+}
+
 /// Every person's keys and one session per person, all sharing one registry of bundles.
 struct Cast {
     rng: Rng,
     sessions: BTreeMap<Key, Session>,
     /// Each person's identity secret, to open the answers sealed to them.
     identities: BTreeMap<Key, IdentitySecret>,
+    /// The group's signed events, in order. The first is the create, and the group model is their
+    /// fold.
+    events: Vec<Event>,
     /// The member set the group model holds after the last operation.
     model: BTreeSet<Key>,
 }
@@ -63,7 +90,13 @@ impl Cast {
         let sessions = keys
             .into_iter()
             .map(|(key, (verifying, state))| {
-                let session = Session::init(verifying, state, registry.clone());
+                let session = Session::init(
+                    verifying,
+                    state,
+                    registry.clone(),
+                    &scheme_policy(SCHEME_V1),
+                )
+                .expect("session");
                 (key, session)
             })
             .collect();
@@ -71,6 +104,7 @@ impl Cast {
             rng,
             sessions,
             identities,
+            events: Vec::new(),
             model: BTreeSet::new(),
         }
     }
@@ -87,55 +121,117 @@ impl Cast {
         self.identities.get(&id(who)).expect("identity")
     }
 
+    /// The group's view as the fold gives it after the events so far.
+    fn view(&self) -> GroupView {
+        let create = self.events.first().expect("a create").id;
+        let projection = fold(&self.events).expect("fold");
+        projection.group(&create).expect("the group").clone()
+    }
+
+    /// Appends a membership event by `by` to the group's log, and returns the view after it.
+    fn log(&mut self, by: u8, body: Body) -> GroupView {
+        let group = self.events.first().map(|create| create.id);
+        let after = self.events.last().map(|last| last.id).into_iter().collect();
+        let name = format!("event {}", self.events.len());
+        self.events.push(Event {
+            id: Hash::digest(name.as_bytes()),
+            author: id(by),
+            after,
+            group,
+            body,
+        });
+        let view = self.view();
+        self.model = view.members.keys().copied().collect();
+        view
+    }
+
     fn create(&mut self, by: u8, members: &[u8]) -> Envelope {
-        self.model = members.iter().map(|seed| id(*seed)).collect();
-        let model = self.model.clone();
+        let others = members
+            .iter()
+            .filter(|seed| **seed != by)
+            .map(|seed| (id(*seed), Role::Admin))
+            .collect();
+        let create = Event {
+            id: Hash::digest(b"event 0"),
+            author: id(by),
+            after: Vec::new(),
+            group: None,
+            body: Body::Create(Create {
+                template: Template::Custom,
+                policy: scheme_policy(SCHEME_V1),
+                members: others,
+                admins_on_create: false,
+            }),
+        };
+        self.events = vec![create];
+        let view = self.view();
+        self.model = view.members.keys().copied().collect();
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .create(&model, &self.rng)
+            .create(&view, &self.rng)
             .expect("create")
     }
 
     fn add(&mut self, by: u8, who: u8) -> Envelope {
-        self.model.insert(id(who));
-        let model = self.model.clone();
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Add {
+                member: id(who),
+                role: Role::Admin,
+            }),
+        );
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .add(&model, id(who), &self.rng)
+            .add(&view, id(who), &self.rng)
             .expect("add")
     }
 
     fn remove(&mut self, by: u8, who: u8) -> Envelope {
-        self.model.remove(&id(who));
-        let model = self.model.clone();
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Remove {
+                member: id(who),
+                successor: None,
+            }),
+        );
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .remove(&model, id(who), &self.rng)
+            .remove(&view, id(who), &self.rng)
             .expect("remove")
     }
 
     /// An add that welcomes the joiner with the secrets `mode` allows.
     fn add_with_history(&mut self, by: u8, who: u8, mode: HistoryMode) -> Envelope {
-        self.model.insert(id(who));
-        let model = self.model.clone();
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Add {
+                member: id(who),
+                role: Role::Admin,
+            }),
+        );
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .add_with_history(&model, id(who), mode, &self.rng)
+            .add_with_history(&view, id(who), mode, &self.rng)
             .expect("add_with_history")
     }
 
     /// A join through `add_from_join`: the add, then the immediate update.
     fn join(&mut self, by: u8, who: u8) -> Vec<Envelope> {
-        self.model.insert(id(who));
-        let model = self.model.clone();
+        let view = self.log(
+            by,
+            Body::Member(MemberOp::Add {
+                member: id(who),
+                role: Role::Admin,
+            }),
+        );
         self.sessions
             .get_mut(&id(by))
             .expect("session")
-            .add_from_join(&model, id(who), &self.rng)
+            .add_from_join(&view, id(who), &self.rng)
             .expect("add_from_join")
     }
 
@@ -196,13 +292,13 @@ fn test_create_gives_every_member_the_model_roster() {
 #[test]
 fn test_create_rejects_a_device_outside_the_model() {
     let mut cast = Cast::new(&[1, 2]);
-    let model: BTreeSet<Key> = std::iter::once(id(2)).collect();
+    let view = view_of(&std::iter::once(id(2)).collect());
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .create(&model, &rng);
+        .create(&view, &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert!(
         !cast.session(1).is_welcomed(),
@@ -223,9 +319,9 @@ fn test_operations_before_create_are_rejected_without_poisoning() {
         session.update(&rng),
         Err(SchemeError::NotWelcomed)
     ));
-    let create_model: BTreeSet<Key> = [id(1), id(2)].into_iter().collect();
+    let view = view_of(&[id(1), id(2)].into_iter().collect());
     assert!(
-        session.create(&create_model, &rng).is_ok(),
+        session.create(&view, &rng).is_ok(),
         "the session still creates"
     );
 }
@@ -256,13 +352,13 @@ fn test_add_rejects_a_key_the_model_does_not_list() {
     let create = cast.create(1, &[1, 2]);
     cast.deliver(&create, &[2]);
 
-    let model = cast.model.clone();
+    let view = cast.view();
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .add(&model, id(3), &rng);
+        .add(&view, id(3), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
 }
@@ -789,13 +885,13 @@ fn test_remove_rejects_a_member_the_model_still_lists() {
     let create = cast.create(1, &[1, 2, 3]);
     cast.deliver(&create, &[2, 3]);
 
-    let model = cast.model.clone();
+    let view = cast.view();
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .remove(&model, id(3), &rng);
+        .remove(&view, id(3), &rng);
     assert!(matches!(result, Err(SchemeError::StillInModel(_))));
 }
 
@@ -922,13 +1018,13 @@ fn test_from_join_rejects_a_key_the_model_does_not_list() {
     let create = cast.create(1, &[1, 2, 3]);
     cast.deliver(&create, &[2, 3, 4]);
 
-    let model = cast.model.clone();
+    let view = cast.view();
     let rng = Rng::default();
     let result = cast
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .add_from_join(&model, id(4), &rng);
+        .add_from_join(&view, id(4), &rng);
     assert!(matches!(result, Err(SchemeError::NotInModel(_))));
     assert_eq!(cast.members_of(1), cast.model, "the roster is untouched");
 }
@@ -993,6 +1089,289 @@ fn test_joiner_cannot_read_a_message_from_before_its_join_and_reads_one_after() 
         vec![vec![Received::Withheld(before.id())]],
         "the joiner does not read a message sent before its join"
     );
+}
+
+// --- wire (P4.4) ----------------------------------------------------------------------------------
+
+/// The CBOR length of the add that welcomes a fourth member after `rotations` updates. Each update
+/// adds one secret, and the welcome carries every secret the group holds.
+fn add_welcome_len(rotations: usize) -> usize {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    for _ in 0..rotations {
+        let update = cast.update(1);
+        cast.deliver(&update, &[2, 3]);
+    }
+    let add = cast.add(1, 4);
+    encode_cbor(&add).expect("encode the add").len()
+}
+
+#[test]
+fn test_each_epoch_adds_about_forty_bytes_to_the_welcome() {
+    // S12: serde_bytes on the two byte fields costs 40.0 bytes per epoch. The stock integer arrays
+    // cost 146.5.
+    let grown = add_welcome_len(110) - add_welcome_len(10);
+    assert!(
+        (3950..=4050).contains(&grown),
+        "100 epochs grew the welcome by {grown} bytes, expected about 4000"
+    );
+}
+
+#[test]
+fn test_v1_bytes_decode_and_the_joiner_reads_them() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+
+    let add = cast.add(1, 4);
+    let bytes = encode_cbor(&add).expect("encode the add");
+    let received: Envelope = decode_cbor(bytes.as_slice()).expect("decode the add");
+    cast.deliver(&received, &[4]);
+    assert!(
+        cast.session(4).is_welcomed(),
+        "the decoded welcome welcomes"
+    );
+
+    let message = cast.send(2, "over the wire");
+    let bytes = encode_cbor(&message).expect("encode the message");
+    let received: Envelope = decode_cbor(bytes.as_slice()).expect("decode the message");
+    assert_eq!(
+        cast.deliver(&received, &[4]),
+        vec![vec![text("over the wire")]]
+    );
+}
+
+#[test]
+fn test_an_envelope_re_encodes_to_the_same_bytes() {
+    // The bundle is sorted inside the welcome, so a decoded envelope is encoded again unchanged.
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    for _ in 0..3 {
+        let update = cast.update(1);
+        cast.deliver(&update, &[2, 3]);
+    }
+    let add = cast.add(1, 4);
+    let first = encode_cbor(&add).expect("encode the add");
+    let decoded: Envelope = decode_cbor(first.as_slice()).expect("decode the add");
+    assert_eq!(encode_cbor(&decoded).expect("encode again"), first);
+}
+
+#[test]
+fn test_a_welcome_with_a_v0_copy_is_refused() {
+    // A relay that rewrites the welcome's copy to the stock version. The header still names v1.
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let forged = cast.add(1, 4).with_scheme(SCHEME_V1, 0);
+
+    let result = cast
+        .sessions
+        .get_mut(&id(4))
+        .expect("session")
+        .process(&forged);
+    assert!(
+        matches!(
+            result,
+            Err(SchemeError::SchemeMismatch {
+                expected: SCHEME_V1,
+                found: 0
+            })
+        ),
+        "the welcome's copy is checked against the signed policy: {result:?}"
+    );
+    assert!(
+        !cast.session(4).is_welcomed(),
+        "the refused welcome leaves the joiner unwelcomed"
+    );
+}
+
+#[test]
+fn test_a_header_that_disagrees_with_the_policy_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let message = cast.send(1, "downgraded");
+    let forged = message.with_scheme(0, 0);
+
+    let result = cast
+        .sessions
+        .get_mut(&id(2))
+        .expect("session")
+        .process(&forged);
+    assert!(
+        matches!(
+            result,
+            Err(SchemeError::SchemeMismatch {
+                expected: SCHEME_V1,
+                found: 0
+            })
+        ),
+        "the header is checked against the signed policy: {result:?}"
+    );
+}
+
+#[test]
+fn test_the_policy_names_the_scheme_this_build_speaks() {
+    assert!(matches!(
+        negotiate(&scheme_policy(SCHEME_V1)),
+        Ok(SCHEME_V1)
+    ));
+    assert!(matches!(
+        negotiate(&Policy::default()),
+        Err(SchemeError::NoScheme)
+    ));
+    assert!(matches!(
+        negotiate(&scheme_policy(0)),
+        Err(SchemeError::UnsupportedScheme { version: 0, .. })
+    ));
+    assert!(matches!(
+        negotiate(&scheme_policy(2)),
+        Err(SchemeError::UnsupportedScheme { version: 2, .. })
+    ));
+    let other = Policy {
+        scheme: Some(Scheme {
+            name: "other".to_owned(),
+            version: SCHEME_V1,
+        }),
+        ..Policy::default()
+    };
+    assert!(matches!(
+        negotiate(&other),
+        Err(SchemeError::UnsupportedScheme { .. })
+    ));
+}
+
+#[test]
+fn test_a_stock_group_is_refused_not_migrated() {
+    // The stock layout (v0) is not shipped, so a group that names it is refused when a device
+    // starts its session. Nothing is migrated (scheme-serde RESULTS, the recommendation).
+    let (_, verifying) = person(1);
+    let rng = Rng::default();
+    let identity = IdentitySecret::from_rng(&rng).expect("identity");
+    let keys = new_keys(&identity, Lifetime::default(), &rng).expect("keys");
+    let registry = registry(&[]).expect("registry");
+    let result = Session::init(verifying, keys, registry, &scheme_policy(0));
+    assert!(
+        matches!(
+            result,
+            Err(SchemeError::UnsupportedScheme { version: 0, .. })
+        ),
+        "a stock group is refused when the session starts"
+    );
+}
+
+// --- the roster follows the fold (P4.13) ----------------------------------------------------------
+
+#[test]
+fn test_a_membership_change_through_the_group_path_updates_the_roster() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+    assert_eq!(cast.members_of(1), [id(1), id(2)].into_iter().collect());
+
+    cast.add(1, 3);
+    assert_eq!(
+        cast.members_of(1),
+        [id(1), id(2), id(3)].into_iter().collect(),
+        "an add through the fold reaches the roster"
+    );
+
+    cast.remove(1, 2);
+    assert_eq!(
+        cast.members_of(1),
+        [id(1), id(3)].into_iter().collect(),
+        "a removal through the fold reaches the roster"
+    );
+}
+
+#[test]
+fn test_a_view_that_disagrees_with_the_roster_is_refused_and_poisons_the_session() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+
+    // The fold lists 4 as well, but the crate is only asked to add 3.
+    let mut view = cast.view();
+    view.members.insert(id(3), Role::Admin);
+    view.members.insert(id(4), Role::Admin);
+    let rng = Rng::default();
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
+    assert!(
+        matches!(result, Err(SchemeError::RosterMismatch(_))),
+        "a mismatch is refused: {result:?}"
+    );
+    assert!(
+        matches!(cast.session(1).members(), Err(SchemeError::Poisoned)),
+        "the session does not keep a roster the fold disagrees with"
+    );
+    assert!(matches!(
+        cast.sessions
+            .get_mut(&id(1))
+            .expect("session")
+            .send(b"after", &rng),
+        Err(SchemeError::Poisoned)
+    ));
+}
+
+#[test]
+fn test_a_view_whose_policy_names_no_scheme_is_refused_without_poisoning() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+
+    let mut view = cast.view();
+    view.policy = Policy::default();
+    view.members.insert(id(3), Role::Admin);
+    let rng = Rng::default();
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
+    assert!(matches!(result, Err(SchemeError::NoScheme)), "{result:?}");
+    assert_eq!(
+        cast.members_of(1),
+        [id(1), id(2)].into_iter().collect(),
+        "the refused change left the roster as it was"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// Random adds, joins and removes through the group path. After each one, the creator's roster
+    /// is the set of members the fold gives.
+    #[test]
+    fn test_roster_follows_the_fold_through_random_changes(
+        ops in proptest::collection::vec((0u8..3, 2u8..6), 1..24),
+    ) {
+        let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+        let create = cast.create(1, &[1, 2]);
+        cast.deliver(&create, &[2]);
+        for (kind, who) in ops {
+            let present = cast.model.contains(&id(who));
+            match kind {
+                0 if !present => {
+                    cast.add(1, who);
+                }
+                1 if !present => {
+                    cast.join(1, who);
+                }
+                2 if present => {
+                    cast.remove(1, who);
+                }
+                _ => continue,
+            }
+            let folded: BTreeSet<Key> = cast.view().members.keys().copied().collect();
+            prop_assert_eq!(cast.members_of(1), folded, "after {} of {}", kind, who);
+        }
+    }
 }
 
 // --- property -------------------------------------------------------------------------------------

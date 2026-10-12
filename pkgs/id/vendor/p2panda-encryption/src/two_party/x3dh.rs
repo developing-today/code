@@ -38,6 +38,8 @@ pub struct X3dhCiphertext {
     pub prekey_id: PreKeyId,
 
     /// Encrypted payload for the receiver.
+    // Scheme v1 (P4.4): a byte string on the wire, not an array of integers.
+    #[serde(with = "serde_bytes")]
     pub ciphertext: Vec<u8>,
 
     /// Ephemeral public key used for this session.
