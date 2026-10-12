@@ -16,13 +16,11 @@
 //! reason, rather than a guess. Auth state, fork proofs and waiting events are not part of these
 //! traits, and stay in the event store's own tables.
 //!
-//! # Known limit: `LogSync` is not wired in
+//! # `LogSync`
 //!
-//! p2panda-sync is not a dependency yet. Its p2panda-store dependency uses the default features,
-//! and those include SQLite, so adding it would bring SQLite back into the build. Until P3.2
-//! removes that default (a fork of the one dependency line, or a `LogSync` of our own), nothing
-//! here runs `LogSync`. `test_logsync_is_not_wired_and_the_lock_has_no_sqlite` pins this: it fails
-//! when the lock names SQLite or p2panda-sync, so that change is made on purpose.
+//! `LogSync` runs over these traits in `log_sync`. It uses a vendored copy of p2panda-sync
+//! (`vendor/`) whose store dependency has no SQLite default, so the build has no SQLite.
+//! `test_the_lock_has_no_sqlite_with_logsync_wired` fails if SQLite returns.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::{Future, ready};
@@ -463,25 +461,37 @@ mod tests {
     use crate::chain::{ChainExt, sign};
     use crate::waiting::WaitingLimits;
 
-    /// The `LogSync` limit, pinned. The lock has no SQLite and no p2panda-sync, so `LogSync` is not
-    /// wired in. Adding p2panda-sync brings SQLite back through its store dependency, which is
-    /// the P3.2 item. This test fails on either, so the change is made on purpose.
+    /// The build has no SQLite, with `LogSync` wired in. p2panda-sync's store dependency defaults to
+    /// SQLite, so the vendored copy turns that default off (`vendor/README.md`). This fails if the
+    /// lock names SQLite or sqlx, if p2panda-sync is missing, or if the vendored line loses the change.
     #[test]
-    fn test_logsync_is_not_wired_and_the_lock_has_no_sqlite() {
+    fn test_the_lock_has_no_sqlite_with_logsync_wired() {
         let lock =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock")).unwrap();
-        for name in [
-            "sqlx",
-            "sqlite",
-            "rusqlite",
-            "libsqlite3-sys",
-            "p2panda-sync",
-        ] {
+        for name in ["sqlx", "sqlite", "rusqlite", "libsqlite3-sys"] {
             assert!(
                 !lock.contains(&format!("name = \"{name}")),
-                "Cargo.lock names {name}: LogSync needs p2panda-sync without its SQLite default (P3.2)"
+                "Cargo.lock names {name}: SQLite is back in the build (see vendor/README.md)"
             );
         }
+        assert!(
+            lock.contains("name = \"p2panda-sync\""),
+            "Cargo.lock does not name p2panda-sync: LogSync is not wired in"
+        );
+
+        let manifest = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/vendor/p2panda-sync/Cargo.toml"
+        ))
+        .unwrap();
+        let store_line = manifest
+            .lines()
+            .find(|line| line.starts_with("p2panda-store = {"))
+            .unwrap();
+        assert!(
+            store_line.contains("default-features = false"),
+            "the vendored p2panda-store keeps its SQLite default: {store_line}"
+        );
     }
 
     fn key(n: u8) -> SigningKey {
