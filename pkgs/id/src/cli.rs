@@ -88,6 +88,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::groups::Role;
+use crate::groups::policy::Delegation;
 
 /// The main CLI structure for the `id` peer-to-peer file sharing tool.
 ///
@@ -1032,6 +1033,10 @@ pub enum Command {
         #[command(subcommand)]
         command: GroupCommand,
     },
+    /// Grant a delegate a scope in a group, with the group's delegation mode (P6.7b).
+    Delegate(DelegateArgs),
+    /// Revoke a delegation by its grant's event ID, as `delegate` printed it (P6.7b).
+    Revoke(RevokeArgs),
     /// Migrate existing files to have name/file auto-tags.
     ///
     /// Scans all blob tags in the store and adds `name` and `file`
@@ -1274,6 +1279,39 @@ pub enum GroupTemplate {
     Normal,
     /// Two members who ask and accept each other.
     Friendship,
+}
+
+/// The arguments of `id delegate`.
+#[derive(Args, Debug)]
+pub struct DelegateArgs {
+    /// The group.
+    pub group: String,
+    /// The account that is granted the scope.
+    pub grantee: String,
+    /// The scope to grant.
+    #[arg(long, value_enum, default_value = "read")]
+    pub scope: Role,
+    /// Let the grantee pass the scope on to others.
+    #[arg(long)]
+    pub redelegate: bool,
+    /// The group's delegation mode, set first if it differs: `keep_prior`, `cascade` or `transfer`.
+    #[arg(long, value_enum)]
+    pub mode: Option<Delegation>,
+    /// Print JSON instead of a line.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// The arguments of `id revoke`.
+#[derive(Args, Debug)]
+pub struct RevokeArgs {
+    /// The group.
+    pub group: String,
+    /// The grant's event ID, as `id delegate` printed it.
+    pub grant: String,
+    /// Print JSON instead of a line.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Subcommands for `id world`.

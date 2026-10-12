@@ -1,4 +1,5 @@
-//! `id group` (P6.7a): parse the arguments, act on the group log, and print.
+//! `id group`, `id delegate` and `id revoke` (P6.7a and P6.7b): parse the arguments, act on the group
+//! log, and print.
 //!
 //! The rules are the fold's, and the actions are the library's ([`crate::groups::actions`]). This
 //! module only turns arguments into calls and results into lines or JSON. A refused action is an
@@ -17,11 +18,11 @@ use clap::ValueEnum;
 use p2panda_core::Hash;
 use serde_json::{Map, Value, json};
 
-use crate::cli::{GroupCommand, GroupTemplate};
+use crate::cli::{DelegateArgs, GroupCommand, GroupTemplate, RevokeArgs};
 use crate::groups::actions::{Action, NewGroup};
 use crate::groups::log::{FILE_NAME, GroupLog, hash_from_hex, key_from_hex};
 use crate::groups::policy::{History, Join, OnMemberRemoved, Removal};
-use crate::groups::{GroupView, Key, Outcome};
+use crate::groups::{Delegate, GroupView, Key, Outcome};
 use crate::invites::Invitation;
 use crate::{KEY_FILE, load_or_create_keypair};
 
@@ -308,4 +309,52 @@ pub async fn cmd_group(path: Option<PathBuf>, json: bool, command: GroupCommand)
             )
         }
     }
+}
+
+/// Runs `id delegate`: sets the mode if asked, then grants the scope.
+///
+/// # Errors
+///
+/// Fails if an argument is malformed, the log cannot be read or written, or the action is refused.
+pub async fn cmd_delegate(path: Option<PathBuf>, args: DelegateArgs) -> Result<()> {
+    let mut log = GroupLog::open(&log_path(path))?;
+    let group = hash_from_hex(&args.group)?;
+    let grantee = key_from_hex(&args.grantee)?;
+    let delegate = Delegate {
+        grantee,
+        scope: args.scope,
+        can_redelegate: args.redelegate,
+    };
+    let delegated = log.delegate(author().await?, group, delegate, args.mode)?;
+    if let (Some(change), Some(mode)) = (&delegated.mode_change, args.mode) {
+        print_action(
+            args.json,
+            "policy",
+            vec![("delegation", json!(name_of(&mode)))],
+            change,
+        )?;
+    }
+    if let Some(grant) = &delegated.grant {
+        let fields = vec![
+            ("grantee", json!(hex(&grantee))),
+            ("scope", json!(name_of(&args.scope))),
+            ("redelegate", json!(args.redelegate)),
+        ];
+        print_action(args.json, "delegate", fields, grant)?;
+    }
+    Ok(())
+}
+
+/// Runs `id revoke`: vetoes the grant.
+///
+/// # Errors
+///
+/// Fails if an argument is malformed, the log cannot be read or written, or the veto is refused.
+pub async fn cmd_revoke(path: Option<PathBuf>, args: RevokeArgs) -> Result<()> {
+    let mut log = GroupLog::open(&log_path(path))?;
+    let group = hash_from_hex(&args.group)?;
+    let grant = hash_from_hex(&args.grant)?;
+    let action = log.revoke(author().await?, group, grant)?;
+    let fields = vec![("grant", json!(grant.to_hex()))];
+    print_action(args.json, "revoke", fields, &action)
 }

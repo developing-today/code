@@ -267,6 +267,8 @@ async fn main() -> Result<()> {
         Some(Command::Group { json, command }) => {
             id::commands::cmd_group(cli.groups_log, json, command).await
         }
+        Some(Command::Delegate(args)) => id::commands::cmd_delegate(cli.groups_log, args).await,
+        Some(Command::Revoke(args)) => id::commands::cmd_revoke(cli.groups_log, args).await,
         #[cfg(feature = "world")]
         Some(Command::World(world_cmd)) => id::commands::cmd_world(world_cmd).await,
         #[cfg(not(feature = "world"))]

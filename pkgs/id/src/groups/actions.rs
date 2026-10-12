@@ -1,4 +1,4 @@
-//! The actions a user takes on groups (P6.7a). Each action is one event, built from its
+//! The actions a user takes on groups (P6.7a and P6.7b). Each action is one event, built from its
 //! arguments and recorded in the [`GroupLog`]. The fold decides whether it took effect.
 //!
 //! The functions here check only what the fold does not: that the group an action names exists in
@@ -10,8 +10,8 @@ use p2panda_core::Hash;
 use super::fold::{GroupView, Outcome};
 use super::friendship::{Pair, friendship_id};
 use super::log::{GroupLog, Recorded};
-use super::policy::{Policy, Template};
-use super::{Body, Create, Key, MemberOp, Role};
+use super::policy::{Delegation, Policy, Template};
+use super::{Body, Create, Delegate, Key, MemberOp, Role};
 
 /// What an action did: the group it acted in, and the event it recorded with what the fold made of
 /// it. For a create, the group is the new group's ID, which is the create event's ID for a normal
@@ -24,6 +24,16 @@ pub struct Action {
     pub event: Hash,
     /// Whether the event took effect, or why not.
     pub outcome: Outcome,
+}
+
+/// What a delegation recorded: the delegation mode change, if one was needed, and the grant. The
+/// grant is `None` when the mode change was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Delegated {
+    /// The change of the group's delegation mode, when it differed.
+    pub mode_change: Option<Action>,
+    /// The grant. Its event is the ID that a revoke names.
+    pub grant: Option<Action>,
 }
 
 /// A group to create.
@@ -160,6 +170,67 @@ impl GroupLog {
             group,
             Body::Member(MemberOp::SetRole { member, role }),
         )
+    }
+
+    /// Sets a group's delegation mode, and keeps the rest of its policy as it is.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the group is not in the log, or the event cannot be recorded.
+    pub fn set_delegation(&mut self, author: Key, group: Hash, mode: Delegation) -> Result<Action> {
+        let policy = self.view(group)?.policy;
+        self.act(
+            author,
+            group,
+            Body::Policy(Policy {
+                delegation: Some(mode),
+                ..policy
+            }),
+        )
+    }
+
+    /// Grants `delegate` its scope in `group`. With `mode`, the group's delegation mode is set first,
+    /// if it differs. A refused mode change ends the call: no grant is recorded after it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the group is not in the log, or an event cannot be recorded.
+    pub fn delegate(
+        &mut self,
+        author: Key,
+        group: Hash,
+        delegate: Delegate,
+        mode: Option<Delegation>,
+    ) -> Result<Delegated> {
+        let mode_change = match mode {
+            Some(mode) if self.view(group)?.policy.delegation_mode() != mode => {
+                Some(self.set_delegation(author, group, mode)?)
+            }
+            _ => None,
+        };
+        if mode_change
+            .as_ref()
+            .is_some_and(|change| matches!(change.outcome, Outcome::Refused(_)))
+        {
+            return Ok(Delegated {
+                mode_change,
+                grant: None,
+            });
+        }
+        let grant = self.act(author, group, Body::Delegate(delegate))?;
+        Ok(Delegated {
+            mode_change,
+            grant: Some(grant),
+        })
+    }
+
+    /// Revokes the grant `grant` in `group`, by a veto the fold applies to it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the group is not in the log, or the event cannot be recorded.
+    pub fn revoke(&mut self, author: Key, group: Hash, grant: Hash) -> Result<Action> {
+        self.act(author, group, Body::Veto { grant })
     }
 
     /// Records one event in a group that the log has.
