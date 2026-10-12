@@ -180,6 +180,7 @@ pub mod friendship;
 pub mod helpers;
 pub mod invite;
 pub mod local;
+pub mod membership;
 pub mod meta_client;
 #[cfg(feature = "world")]
 pub mod petname;
