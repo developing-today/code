@@ -917,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn test_an_after_hash_naming_an_unapplied_event_keeps_waiting() {
+    fn test_an_after_hash_naming_a_voided_event_is_applied() {
         let (_dir, mut store) = open();
         let x = key(11);
         let y = key(12);
@@ -925,10 +925,16 @@ mod tests {
         ingest_all(&mut store, &events);
         let rival = event(&x, 1, Some(events[0].id), Vec::new(), "rival");
         ingest(&mut store, &rival);
-        // events[1] is stored, but the fork took it out of the applied prefix.
+        // events[1] is stored, and the fork voided it. It is present, so y0 does not wait.
         let y0 = event(&y, 0, None, vec![events[1].id], "y");
-        assert_eq!(ingest(&mut store, &y0), Ingest::Waiting { id: y0.id });
-        assert!(store.chain(&author(&y)).unwrap().is_none());
+        assert_eq!(
+            ingest(&mut store, &y0),
+            Ingest::Accepted {
+                id: y0.id,
+                released: vec![],
+            }
+        );
+        assert_eq!(store.chain(&author(&y)).unwrap().unwrap().next_seq, 1);
     }
 
     #[test]
@@ -1086,7 +1092,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_fork_at_sequence_zero_unapplies_an_event_applied_on_top_of_it() {
+    fn test_a_fork_at_sequence_zero_keeps_an_event_that_names_the_voided_one_applied() {
         let (_dir, mut store) = open();
         let (x, y) = (key(20), key(21));
         let x0 = event(&x, 0, None, Vec::new(), "message");
@@ -1101,29 +1107,31 @@ mod tests {
                 seq: 0
             }
         );
-        assert!(
-            applied_ids(&store, &author(&y)).is_empty(),
-            "y0 rests on x0, which the fork voided"
+        assert_eq!(
+            applied_ids(&store, &author(&y)),
+            vec![y0.id],
+            "y0 names x0, which the fork voided. x0 is still present, so y0 stays applied"
         );
         assert_eq!(
-            store.event(&author(&y), 0).unwrap(),
-            Some(y0),
-            "y0 stays stored"
+            store.chain(&author(&y)).unwrap().unwrap().next_seq,
+            1,
+            "y's chain keeps its applied event"
         );
-        assert_eq!(store.chain(&author(&y)).unwrap(), None);
         store.check_invariants().unwrap();
     }
 
+    /// A fork voids only the forked author's own events from its fork point on. Honest events
+    /// of other authors that name a voided event still apply, and so do their later events:
+    /// the voided event is present, so it does not wait. Phase 1 has no membership or authority
+    /// model, so the design's authority-based voiding (decision 1) cannot run yet. It replaces
+    /// this rule in Phase 2 (P2.3).
     #[test]
-    fn test_a_fork_unapplies_every_event_that_rests_on_the_voided_ones() {
+    fn test_a_fork_voids_only_the_forked_chain_until_p2_3_authority_voiding() {
         let (_dir, mut store) = open();
         let (x, y, z) = (key(22), key(23), key(24));
         let x0 = event(&x, 0, None, Vec::new(), "message");
         let x1 = event(&x, 1, Some(x0.id), Vec::new(), "message");
-        let y0 = event(&y, 0, None, vec![x1.id], "message");
-        let y1 = event(&y, 1, Some(y0.id), Vec::new(), "message");
-        let z0 = event(&z, 0, None, vec![y0.id], "message");
-        ingest_all(&mut store, &[x0.clone(), x1, y0, y1, z0]);
+        ingest_all(&mut store, &[x0.clone(), x1.clone()]);
         let rival = event(&x, 1, Some(x0.id), Vec::new(), "rival");
         assert_eq!(
             ingest(&mut store, &rival),
@@ -1132,16 +1140,14 @@ mod tests {
                 seq: 1
             }
         );
+        // Y names X's voided event, and Y's next event names Y's first. Z names Y's second.
+        let y0 = event(&y, 0, None, vec![x1.id], "message");
+        let y1 = event(&y, 1, Some(y0.id), Vec::new(), "message");
+        let z0 = event(&z, 0, None, vec![y1.id], "message");
+        ingest_all(&mut store, &[y0.clone(), y1.clone(), z0.clone()]);
         assert_eq!(applied_ids(&store, &author(&x)), vec![x0.id]);
-        assert!(
-            applied_ids(&store, &author(&y)).is_empty(),
-            "y0 rests on x1, and y1 on y0"
-        );
-        assert!(
-            applied_ids(&store, &author(&z)).is_empty(),
-            "z0 rests on y0"
-        );
-        assert_eq!(store.chain(&author(&z)).unwrap(), None);
+        assert_eq!(applied_ids(&store, &author(&y)), vec![y0.id, y1.id]);
+        assert_eq!(applied_ids(&store, &author(&z)), vec![z0.id]);
         store.check_invariants().unwrap();
     }
 
