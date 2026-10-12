@@ -16,6 +16,7 @@
 pub mod fold;
 pub mod friendship;
 pub mod policy;
+pub mod worlds;
 
 mod delegation;
 
@@ -24,6 +25,7 @@ mod tests;
 
 use p2panda_core::Hash;
 
+pub use delegation::Grant;
 pub use fold::{FoldError, GroupView, Outcome, Projection, Refusal, fold};
 pub use friendship::{Pair, friendship_id};
 pub use policy::{
@@ -90,6 +92,14 @@ pub enum Body {
     /// Grants a scope to an account. The author must hold the scope, and must reach it through a
     /// chain of grants that can be passed on (design §7.2).
     Delegate(Delegate),
+    /// Grants a scope that the grantee may use in another world (P2.7, see [`worlds`]). It is judged
+    /// in this event's world the way [`Body::Delegate`] is, but it gives its grantee nothing here.
+    Cross {
+        /// The grant. Its scope may be at most Write.
+        delegate: Delegate,
+        /// The world the grant names. It is not the event's own world.
+        world: String,
+    },
     /// Vetoes a grant the event has seen. The author must hold Manage and a chain (design §7).
     /// From this event's causal position on, the grant and what depends on it fail.
     Veto {

@@ -24,14 +24,25 @@ use super::policy::Delegation;
 use super::{Body, Delegate, Event, Key, MemberOp, Role};
 
 /// A grant that took effect: `from` gave `to` the scope `scope` in `group`, as event `id`.
+///
+/// A grant with a `target` is a crossing (P2.7, see [`super::worlds`]). It is judged and kept in
+/// force like any other grant, but it is never a link in its home world's chains.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Grant {
-    pub(super) id: Hash,
-    pub(super) group: Hash,
-    pub(super) from: Key,
-    pub(super) to: Key,
-    pub(super) scope: Role,
-    pub(super) redelegate: bool,
+pub struct Grant {
+    /// The granting event's ID.
+    pub id: Hash,
+    /// The group the grant is made in.
+    pub group: Hash,
+    /// The grantor.
+    pub from: Key,
+    /// The grantee.
+    pub to: Key,
+    /// The scope granted.
+    pub scope: Role,
+    /// Whether the grantee may grant the scope on.
+    pub redelegate: bool,
+    /// The world the grant names, if it is a crossing.
+    pub target: Option<String>,
 }
 
 /// A removal that took effect. Its successor takes over the removed member's grants under
@@ -65,16 +76,19 @@ struct Link {
     scope: Role,
     redelegate: bool,
     reissued: bool,
+    crossing: bool,
 }
 
 impl Engine {
     /// Judges a grant. The author must be an active member who holds the scope at the event's
-    /// position, and must reach it through a chain that can be passed on.
+    /// position, and must reach it through a chain that can be passed on. A crossing (`target`
+    /// set) may carry Write at most and must name a world.
     pub(super) fn delegate(
         &mut self,
         by_id: &BTreeMap<Hash, &Event>,
         event: &Event,
         delegate: Delegate,
+        target: Option<&str>,
     ) -> Result<Judged, FoldError> {
         let group = match self.acting_in(event) {
             Ok(group) => group,
@@ -82,6 +96,9 @@ impl Engine {
         };
         if delegate.scope == Role::Admin {
             return Ok(Err(Refusal::BadScope));
+        }
+        if target.is_some_and(|world| world.is_empty() || delegate.scope > Role::Write) {
+            return Ok(Err(Refusal::NotCrossable));
         }
         if delegate.grantee == event.author {
             return Ok(Err(Refusal::BadGrantee));
@@ -102,7 +119,10 @@ impl Engine {
         Ok(Ok(Decision {
             group,
             action: None,
-            effect: Effect::Delegation(delegate),
+            effect: Effect::Delegation {
+                delegate,
+                target: target.map(str::to_owned),
+            },
         }))
     }
 
@@ -200,7 +220,8 @@ impl Engine {
     /// so it holds every scope. An actor that is a root is authorized. Otherwise a chain of links
     /// leads from a root to the actor, every link attenuating. With `need_redelegate`, the last
     /// link into the actor must allow the actor to grant on. The actor's own membership is not
-    /// checked here: a grant may reach an account that is not a member.
+    /// checked here: a grant may reach an account that is not a member. Crossings (grants that
+    /// name another world) are not links here, so they never extend a chain in this group.
     pub(super) fn authorized(
         &mut self,
         by_id: &BTreeMap<Hash, &Event>,
@@ -223,7 +244,7 @@ impl Engine {
         while let Some(holder) = stack.pop() {
             for link in links
                 .iter()
-                .filter(|link| link.from == holder && link.scope >= scope)
+                .filter(|link| !link.crossing && link.from == holder && link.scope >= scope)
             {
                 if link.to == actor && (!need_redelegate || link.redelegate) {
                     return Ok(true);
@@ -318,6 +339,7 @@ impl Engine {
                             scope: grant.scope,
                             redelegate: grant.redelegate,
                             reissued: true,
+                            crossing: grant.target.is_some(),
                         });
                     }
                 }
@@ -333,6 +355,7 @@ impl Engine {
                 scope: grant.scope,
                 redelegate: grant.redelegate,
                 reissued: false,
+                crossing: grant.target.is_some(),
             });
         }
         Ok(links)
