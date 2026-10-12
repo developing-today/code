@@ -82,6 +82,7 @@ use super::{
 };
 use crate::chain::{self, Event};
 use crate::membership::AuthId;
+use crate::membership::body::decode_body;
 use crate::waiting::{AuthorKey, WaitingPool};
 
 /// Why an event was refused. A refused event changes nothing.
@@ -178,10 +179,38 @@ impl EventStore {
         self.ingest_with_action(bytes, None, now_ms)
     }
 
+    /// Verifies one received event with its body, and applies what it allows. This is the
+    /// production path. The membership action comes from the body, by the body codec in
+    /// [`crate::membership::body`]:
+    ///
+    /// - A body that is not a group operation, or no body at all, makes the event content.
+    /// - A body that claims to be a group operation decodes to its action, or it is refused.
+    /// - A body that is not the one the header commits to, by BLAKE3 hash and size, is refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb or corruption error, as [`EventStore::ingest`] does.
+    pub fn ingest_with_body(
+        &mut self,
+        bytes: &[u8],
+        body: Option<&[u8]>,
+        now_ms: u64,
+    ) -> Result<Ingest, StoreError> {
+        let event = match chain::decode(bytes) {
+            Ok(event) => event,
+            Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
+        };
+        let action = match body_action(&event, body) {
+            Ok(action) => action,
+            Err(refusal) => return Ok(Ingest::Refused(refusal)),
+        };
+        self.ingest_event(event, action.as_ref(), now_ms)
+    }
+
     /// Verifies one received event, which may be a group operation, and applies what it allows.
-    /// `action` is the membership change of a group operation. The caller has read it from the
-    /// event's body and checked the body against the event's payload hash. The store does not read
-    /// bodies. Other events take no action.
+    /// `action` is the membership change of a group operation, handed in by the caller. The store
+    /// does not read bodies here. Other events take no action. The production path is
+    /// [`EventStore::ingest_with_body`], and the scenario tests use this one.
     ///
     /// # Errors
     ///
@@ -196,6 +225,16 @@ impl EventStore {
             Ok(event) => event,
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
+        self.ingest_event(event, action, now_ms)
+    }
+
+    /// Runs a decoded event through the store's transaction, with its action.
+    fn ingest_event(
+        &mut self,
+        event: Event,
+        action: Option<&GroupAction<AuthId, ()>>,
+        now_ms: u64,
+    ) -> Result<Ingest, StoreError> {
         self.transact(now_ms, |mirror| ingest_in(mirror, event, action, now_ms))
     }
 
@@ -225,6 +264,26 @@ impl EventStore {
     pub fn is_waiting(&self, id: &Hash) -> bool {
         self.waiting.contains(id)
     }
+}
+
+/// The membership action an event's body carries. `Ok(None)` makes the event content: it has no
+/// body, or its body is not a group operation. A body that is not the one the header commits to is
+/// refused, and so is a body that claims to be a group operation and does not decode.
+fn body_action(
+    event: &Event,
+    body: Option<&[u8]>,
+) -> Result<Option<GroupAction<AuthId, ()>>, Refusal> {
+    let Some(body) = body else {
+        return Ok(None);
+    };
+    let committed = event.header.payload_hash == Some(Hash::digest(body))
+        && u32::try_from(body.len()).is_ok_and(|len| len == event.header.payload_size);
+    if !committed {
+        return Err(Refusal::Malformed(
+            "the body is not the one the header commits to, by hash and size".to_owned(),
+        ));
+    }
+    decode_body(body).map_err(|err| Refusal::Malformed(err.to_string()))
 }
 
 /// Decides a received event inside the call's transaction, and the events it releases. Returns

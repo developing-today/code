@@ -2,25 +2,33 @@
 //! every arrival order. The applied state and the roster must be the same in all of them, and
 //! must match the S2 outcomes: an operation is voided when its author lost authority at its
 //! position, and a dependent of a voided operation is kept when its author kept authority.
+//!
+//! Each scenario runs twice. The scenario path hands each action to `ingest_with_action`. The
+//! production path sends each event with its body through `SharedEventStore::ingest`, which reads
+//! the action from the body. The two must agree.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeMap;
 
 use id::chain::{ChainExt, sign};
-use id::event_store::EventStore;
+use id::event_store::{EventStore, StoreError};
 use id::membership::AuthId;
+use id::membership::body::encode_body;
+use id::store_traits::SharedEventStore;
 use id::waiting::WaitingLimits;
 use p2panda_auth::Access;
 use p2panda_auth::group::{GroupAction, GroupMember};
 use p2panda_core::{Hash, SeqNum, SigningKey};
 
-/// One event of a scenario: its name in the scenario, its signed bytes, and its action.
+/// One event of a scenario: its name in the scenario, its signed bytes, its action, and the body
+/// the header commits to, which carries the action.
 #[derive(Clone)]
 struct Step {
     name: u8,
     bytes: Vec<u8>,
     action: Option<GroupAction<AuthId, ()>>,
+    body: Option<Vec<u8>>,
 }
 
 /// Signs a scenario. Each author's events form a chain, so the sequence numbers and backlinks
@@ -86,7 +94,8 @@ impl Builder {
             },
             after: after.iter().map(|n| self.ids[n]).collect(),
         };
-        let event = sign(&key(who), seq, backlink, None, ext).unwrap();
+        let body = action.as_ref().map(|action| encode_body(action).unwrap());
+        let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();
         if matches!(action, Some(GroupAction::Create { .. })) {
             self.group = Some(event.id);
         }
@@ -96,6 +105,7 @@ impl Builder {
             name,
             bytes: event.bytes,
             action,
+            body,
         });
     }
 
@@ -117,7 +127,8 @@ struct Outcome {
     roster: Vec<AuthId>,
 }
 
-/// Delivers the steps in `order` to a fresh store, and reports what it applied.
+/// Delivers the steps in `order` to a fresh store, and reports what it applied. The actions are
+/// handed in directly, as `ingest_with_action` takes them: the scenario path.
 fn deliver(steps: &[Step], order: &[usize]) -> Outcome {
     let dir = tempfile::tempdir().unwrap();
     let mut store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
@@ -127,26 +138,36 @@ fn deliver(steps: &[Step], order: &[usize]) -> Outcome {
             .ingest_with_action(&step.bytes, step.action.as_ref(), 0)
             .unwrap();
     }
+    outcome_of(&store, steps).unwrap()
+}
+
+/// Delivers the steps in `order` through the production path: each event with its body, to
+/// `SharedEventStore::ingest`, which reads the action from the body.
+fn deliver_production(steps: &[Step], order: &[usize]) -> Outcome {
+    let dir = tempfile::tempdir().unwrap();
+    let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+    let shared = SharedEventStore::new(store);
+    for &index in order {
+        let step = &steps[index];
+        shared.ingest(&step.bytes, step.body.as_deref(), 0).unwrap();
+    }
+    shared.read(|store| Ok(outcome_of(store, steps)?)).unwrap()
+}
+
+/// What the store applied to each step, and the roster of the group the create made.
+fn outcome_of(store: &EventStore, steps: &[Step]) -> Result<Outcome, StoreError> {
     let group = steps
         .iter()
         .find(|step| matches!(step.action, Some(GroupAction::Create { .. })))
         .map(|step| Hash::digest(&step.bytes))
         .unwrap();
-    let applied = steps
-        .iter()
-        .map(|step| {
-            let id = Hash::digest(&step.bytes);
-            (step.name, store.event_applied(&id).unwrap())
-        })
-        .collect();
-    let mut roster: Vec<AuthId> = store
-        .roster(&group)
-        .unwrap()
-        .into_iter()
-        .map(AuthId::Key)
-        .collect();
+    let mut applied = BTreeMap::new();
+    for step in steps {
+        applied.insert(step.name, store.event_applied(&Hash::digest(&step.bytes))?);
+    }
+    let mut roster: Vec<AuthId> = store.roster(&group)?.into_iter().map(AuthId::Key).collect();
     roster.sort();
-    Outcome { applied, roster }
+    Ok(Outcome { applied, roster })
 }
 
 /// Every permutation of `0..n`.
@@ -182,6 +203,11 @@ fn check(name: &str, steps: &[Step], expected: &[(u8, bool)], roster: &[char]) {
     for order in permutations(steps.len()) {
         let outcome = deliver(steps, &order);
         assert_eq!(outcome, expected, "{name}: arrival order {order:?}");
+        let production = deliver_production(steps, &order);
+        assert_eq!(
+            production, outcome,
+            "{name}: production path, arrival order {order:?}"
+        );
     }
 }
 

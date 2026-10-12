@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use id::chain::{ChainExt, sign};
 use id::event_store::{EventStore, Ingest};
 use id::membership::AuthId;
+use id::membership::body::encode_body;
+use id::store_traits::SharedEventStore;
 use id::waiting::WaitingLimits;
 use p2panda_auth::Access;
 use p2panda_auth::group::{GroupAction, GroupMember};
@@ -58,12 +60,14 @@ fn config() -> ProptestConfig {
     }
 }
 
-/// One signed event of a scenario, with its membership action when it is a group operation.
+/// One signed event of a scenario, with its membership action when it is a group operation, and the
+/// body that carries the action.
 #[derive(Clone)]
 struct Step {
     id: Hash,
     bytes: Vec<u8>,
     action: Option<GroupAction<AuthId, ()>>,
+    body: Option<Vec<u8>>,
 }
 
 fn key(who: char) -> SigningKey {
@@ -140,7 +144,8 @@ fn scenario(seed: u64) -> Vec<Step> {
             group: if index == 0 { None } else { group },
             after,
         };
-        let event = sign(&key(who), seq, backlink, None, ext).unwrap();
+        let body = action.as_ref().map(|action| encode_body(action).unwrap());
+        let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();
         if index == 0 {
             group = Some(event.id);
         }
@@ -149,6 +154,7 @@ fn scenario(seed: u64) -> Vec<Step> {
             id: event.id,
             bytes: event.bytes,
             action,
+            body,
         });
     }
     steps
@@ -161,8 +167,8 @@ struct Final {
     roster: Vec<AuthId>,
 }
 
-/// Delivers the scenario in `order` to a fresh store. Every event must be stored and none may be
-/// refused or left waiting.
+/// Delivers the scenario in `order` to a fresh store, handing each action in directly: the scenario
+/// path. Every event must be stored and none may be refused or left waiting.
 fn deliver(steps: &[Step], order: &[usize]) -> Result<Final, String> {
     let dir = tempfile::tempdir().map_err(|err| err.to_string())?;
     let mut store =
@@ -176,12 +182,36 @@ fn deliver(steps: &[Step], order: &[usize]) -> Result<Final, String> {
             return Err(format!("event {index} was refused: {outcome:?}"));
         }
     }
+    read_final(steps, &store)
+}
+
+/// Delivers the scenario in `order` through the production path: each event with its body, to
+/// `SharedEventStore::ingest`, which reads the action from the body. The same checks as [`deliver`].
+fn deliver_production(steps: &[Step], order: &[usize]) -> Result<Final, String> {
+    let dir = tempfile::tempdir().map_err(|err| err.to_string())?;
+    let store =
+        EventStore::open(dir.path(), WaitingLimits::default(), 0).map_err(|err| err.to_string())?;
+    let shared = SharedEventStore::new(store);
+    for &index in order {
+        let step = &steps[index];
+        let outcome = shared
+            .ingest(&step.bytes, step.body.as_deref(), 0)
+            .map_err(|err| err.to_string())?;
+        if matches!(outcome, Ingest::Refused(_)) {
+            return Err(format!("event {index} was refused: {outcome:?}"));
+        }
+    }
+    shared
+        .read(|store| Ok(read_final(steps, store)))
+        .map_err(|err| err.to_string())?
+}
+
+/// The applied flag of each step, and the roster, once every step is in. No event may be left
+/// waiting, and every event must be stored.
+fn read_final(steps: &[Step], store: &EventStore) -> Result<Final, String> {
     let waiting = store.waiting_ids().map_err(|err| err.to_string())?;
     if !waiting.is_empty() {
-        return Err(format!(
-            "order {order:?} leaves {} events waiting",
-            waiting.len()
-        ));
+        return Err(format!("{} events are left waiting", waiting.len()));
     }
     for (index, step) in steps.iter().enumerate() {
         let stored = store
@@ -189,7 +219,7 @@ fn deliver(steps: &[Step], order: &[usize]) -> Result<Final, String> {
             .map_err(|err| err.to_string())?
             .is_some();
         if !stored {
-            return Err(format!("order {order:?} never stored event {index}"));
+            return Err(format!("event {index} was never stored"));
         }
     }
     let mut applied = Vec::new();
@@ -234,6 +264,23 @@ proptest! {
             let order = shuffled(steps.len(), &mut rng);
             let outcome = deliver(&steps, &order).map_err(TestCaseError::fail)?;
             prop_assert_eq!(&outcome, &reference, "arrival order {:?}", order);
+        }
+    }
+
+    /// Through the production path, which reads each action from the event's body, every arrival
+    /// order gives the same applied set and roster as the scenario path in causal order.
+    #[test]
+    fn test_production_ingest_is_the_same_for_every_arrival_order(seed in any::<u64>()) {
+        let steps = scenario(seed);
+        let causal: Vec<usize> = (0..steps.len()).collect();
+        let reference = deliver(&steps, &causal).map_err(TestCaseError::fail)?;
+        let mut rng = Rng(seed ^ 0x5EED_1CE0_F00D_CAFE_u64);
+        let production = deliver_production(&steps, &causal).map_err(TestCaseError::fail)?;
+        prop_assert_eq!(&production, &reference, "production path in causal order");
+        for _ in 0..ORDERS {
+            let order = shuffled(steps.len(), &mut rng);
+            let outcome = deliver_production(&steps, &order).map_err(TestCaseError::fail)?;
+            prop_assert_eq!(&outcome, &reference, "production path, arrival order {:?}", order);
         }
     }
 }
