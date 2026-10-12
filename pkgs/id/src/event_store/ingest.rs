@@ -1702,6 +1702,31 @@ mod tests {
     }
 
     #[test]
+    fn test_a_held_event_that_a_fork_makes_a_proof_header_stays_held() {
+        let (_dir, mut store) = open();
+        let signer = key(50);
+        let who = author(&signer);
+        let missing = Hash::digest(b"an event that is never delivered");
+        // Seq 1 waits for a backlink that never arrives, and its rival at seq 1 forks it.
+        let held = event(&signer, 1, Some(missing), Vec::new(), "message");
+        let rival = event(&signer, 1, Some(missing), Vec::new(), "rival");
+        assert_eq!(ingest(&mut store, &held), Ingest::Waiting { id: held.id });
+        assert!(matches!(
+            ingest(&mut store, &rival),
+            Ingest::Fork { seq: 1, .. }
+        ));
+        let proof = store.fork_proof(&who).unwrap().expect("a proof is stored");
+        assert_eq!(
+            [proof.first.id, proof.second.id],
+            sorted(&held.id, &rival.id)
+        );
+        // A proof header never applies, so it stays held for good. It is neither stored nor held
+        // if the fork drops it.
+        assert!(store.is_waiting(&held.id), "a held proof header stays held");
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
     fn test_a_write_whose_rebuild_fails_makes_the_store_refuse_calls() {
         let (_dir, mut store) = open_with(WaitingLimits::new(256, 1_000));
         let signer = key(47);
