@@ -16,7 +16,7 @@ categories = ["command-line-utilities", "network-programming"]
 [features]
 default = ["sandbox", "world"]
 sandbox = ["dep:wasmtime", "world"]
-world = ["dep:sha2", "dep:subtle"]
+world = ["dep:sha2", "dep:subtle", "dep:hmac", "dep:scrypt", "dep:rmp-serde"]
 ssh = ["world", "dep:russh"]
 web = [
   "world",
@@ -101,6 +101,10 @@ base64 = { version = "0.22", optional = true }
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 hkdf = { version = "0.13", optional = true }
 sha2 = { version = "0.11", optional = true }
+# HMAC-SHA512 for the Seitan V2 invite ID and Ed25519 seed (P6.1, src/seitan/derive.rs). Already in the lock.
+hmac = { version = "0.13", optional = true }
+# scrypt for the Seitan V2 stretch (P6.1). Already in the lock as a transitive dependency.
+scrypt = { version = "0.12", optional = true }
 subtle = { version = "2", optional = true }
 wasmtime = { version = "=43.0.2", default-features = false, features = [
   "cranelift",
@@ -121,6 +125,12 @@ dcbor = "=0.25.2"
 iroh = { version = "1", features = ["test-utils"] }
 # Parses the relay kit's configs in tests/relay_ops.rs. Dev only.
 toml = "1"
+# XSalsa20-Poly1305 for the Keybase V2 vector's pkey box (P6.1 known-answer test). Dev only; not in the lock before P6.1.
+crypto_secretbox = "0.1"
+# Reads the vector's msgpack byte strings (P6.1 known-answer test). Dev only; already in the lock.
+serde_bytes = "0.11"
+# Decodes the Keybase vector constants as published (P6.1 known-answer test). Dev only; already in the lock.
+base64 = "0.22"
 
 # =============================================================================
 # Lints Configuration

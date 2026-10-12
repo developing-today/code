@@ -192,6 +192,8 @@ pub mod repl;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 #[cfg(feature = "world")]
+pub mod seitan;
+#[cfg(feature = "world")]
 pub mod server_config;
 pub mod store;
 pub mod store_traits;
