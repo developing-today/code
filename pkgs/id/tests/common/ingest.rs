@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use id::chain::decode;
 use id::event_store::{Chain, EventStore, Storage};
-use id::waiting::AuthorKey;
+use id::waiting::{AuthorKey, WaitingLimits};
 use p2panda_core::{Hash, SeqNum};
 use redb::backends::InMemoryBackend;
 use redb::{Database, DatabaseError, StorageBackend, StorageError};
@@ -162,7 +162,8 @@ impl Storage for MemStorage {
 ///
 /// Describes the first delivery or invariant that fails.
 pub fn deliver(order: &[Vec<u8>], authors: &[AuthorKey]) -> Result<Canonical, String> {
-    let mut store = EventStore::open_with(&MemStorage::default()).map_err(|err| err.to_string())?;
+    let mut store = EventStore::open_with(&MemStorage::default(), WaitingLimits::default(), 0)
+        .map_err(|err| err.to_string())?;
     for bytes in order {
         store
             .ingest(bytes, 0)

@@ -17,13 +17,13 @@
 //! 5. **Accept.** The next sequence number, whose backlink is the applied head, is applied
 //!    once every `after` hash is applied.
 //! 6. **Wait or park.** An event ahead of its chain, or with an `after` hash that is not
-//!    applied yet, is held in the waiting pool under its caps, and decided again when its
-//!    dependencies are applied. An event whose backlink can never be the applied head is
-//!    parked: held for good, so that a conflict with it is still seen.
+//!    applied yet, is held in the waiting pool and its row, under the caps, and decided again
+//!    when its dependencies are applied. An event whose backlink can never be the applied head
+//!    is parked: held for good, so that a conflict with it is still seen.
 //!
-//! Each decision that writes runs in one redb write transaction. A refused or held event
-//! writes nothing, and an accepted one is committed before any event it released is
-//! decided.
+//! Each call runs in one redb write transaction. It holds every decision the call causes: the
+//! event, each event it releases, the expiry of due events, and the waiting rows. The call
+//! commits all of them or none. A refused event and a duplicate write nothing.
 //!
 //! # Applied state and forks
 //!
@@ -40,7 +40,16 @@
 //! next sequence number, so the chain row is what marks the voids.
 //!
 //! Held events count too. Two held events at one sequence number are a fork, though
-//! neither is applied. A restart forgets held events, and sync sends them again.
+//! neither is applied. Held events are rows on disk, so a restart keeps them, and a conflict
+//! with an event held before the restart is still seen. An event the caps or the age limit
+//! drops is forgotten, and sync sends it again.
+//!
+//! # Known limit: a rival refused by a cap
+//!
+//! A conflict is found only against an event the store holds. A rival refused by its author's
+//! cap is not held, so when the other event arrives, no conflict is seen. The fork is seen when
+//! the refused rival is sent again, while the other event is still held. The behaviour is
+//! pinned by `test_a_rival_refused_by_the_cap_is_seen_only_when_sent_again`.
 //!
 //! The property tests in `tests/event_store_properties.rs` check the applied state against
 //! this definition, for every arrival order.
@@ -50,13 +59,14 @@ use std::collections::VecDeque;
 use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
+use super::waiting_rows::{Hold, Mirror};
 use super::{
     CHAINS, Chain, DEPENDENTS, EVENTS, EventStore, FORKS, ForkProof, HASHES, StoreError, corrupt,
     decode_proof, decode_stored, position_key, split_position, store_chain, store_event,
     store_fork,
 };
 use crate::chain::{self, Event};
-use crate::waiting::{AuthorKey, WaitRefusal};
+use crate::waiting::{AuthorKey, WaitingPool};
 
 /// Why an event was refused. A refused event changes nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,9 +106,9 @@ pub enum Ingest {
         /// The fork point: the lowest sequence number where the author conflicts.
         seq: SeqNum,
     },
-    /// The event is held in memory and not stored. It waits for a dependency, or it is
-    /// parked because its backlink can never be the applied head. Sync sends it again if
-    /// it is lost.
+    /// The event is held, and not stored. It waits for a dependency, or it is parked because its
+    /// backlink can never be the applied head. The hold is on disk, so a restart keeps it. Sync
+    /// sends it again if the caps or the age limit drop it.
     Waiting {
         /// The event's ID.
         id: Hash,
@@ -117,9 +127,9 @@ enum Decision {
     /// A conflict. The proof is written, and the fork point is `seq`. `unapplied` are
     /// the events that left the applied prefix, which the waiting pool forgets.
     Fork { seq: SeqNum, unapplied: Vec<Hash> },
-    /// Waits for these dependencies, none of which is applied. Nothing written.
+    /// Waits for these dependencies, none of which is applied. The caller holds the event.
     Wait(Vec<Hash>),
-    /// Can never apply, but is held so that a conflict with it is seen. Nothing written.
+    /// Can never apply, but is held so that a conflict with it is seen. The caller holds it.
     Park,
     /// Refused. Nothing written.
     Refuse(Refusal),
@@ -128,122 +138,183 @@ enum Decision {
 impl EventStore {
     /// Verifies one received event and applies what it allows.
     ///
-    /// `now_ms` is the clock the waiting caps use. It is a parameter so tests can
-    /// run on a fake clock.
+    /// `now_ms` is the clock. The events due at it expire first, so the caps and the rivals
+    /// see only the events still held. It is a parameter so tests can run on a fake clock.
     ///
     /// # Errors
     ///
-    /// Returns a redb or corruption error. A refusal is not an error: it comes back
-    /// as [`Ingest::Refused`].
+    /// Returns a redb or corruption error. A refusal is not an error: it comes back as
+    /// [`Ingest::Refused`]. After an error the waiting events are rebuilt from disk. If that
+    /// fails too, the store refuses further calls until it is reopened.
     pub fn ingest(&mut self, bytes: &[u8], now_ms: u64) -> Result<Ingest, StoreError> {
         let event = match chain::decode(bytes) {
             Ok(event) => event,
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
-        let id = event.id;
-        let author = author_of(&event);
-        let rivals = self.held_rivals(&event);
-        match self.decide(&event, &rivals)? {
-            Decision::Accept => {
-                let arrived = self.waiting.arrived(id, now_ms);
-                let released = self.drain(arrived.into(), now_ms)?;
-                Ok(Ingest::Accepted { id, released })
-            }
-            Decision::Duplicate => Ok(Ingest::Duplicate { id }),
-            Decision::Fork { seq, unapplied } => {
-                self.forget(&unapplied);
-                Ok(Ingest::Fork { author, seq })
-            }
-            Decision::Wait(deps) => {
-                let outcome = match self.waiting.insert(author, id, deps, event, now_ms) {
-                    Ok(()) => Ingest::Waiting { id },
-                    Err(WaitRefusal::AuthorFull) => Ingest::Refused(Refusal::WaitingFull),
-                };
-                self.drain(VecDeque::new(), now_ms)?;
-                Ok(outcome)
-            }
-            Decision::Park => match self.waiting.park(author, id, event, now_ms) {
-                Ok(()) => Ok(Ingest::Waiting { id }),
-                Err(WaitRefusal::AuthorFull) => Ok(Ingest::Refused(Refusal::WaitingFull)),
-            },
-            Decision::Refuse(refusal) => Ok(Ingest::Refused(refusal)),
-        }
+        self.transact(now_ms, |mirror| ingest_in(mirror, event, now_ms))
     }
 
-    /// Drops the waiting events that have reached the age cap at `now_ms`. Returns
-    /// how many were dropped.
-    pub fn expire_waiting(&mut self, now_ms: u64) -> usize {
-        self.waiting.expire(now_ms).len()
+    /// Drops the waiting events due at `now_ms`, with their rows. Returns how many were dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the write fails. The waiting events are then rebuilt from disk.
+    pub fn expire_waiting(&mut self, now_ms: u64) -> Result<usize, StoreError> {
+        self.transact(now_ms, |mirror| {
+            let expired = mirror.expire(now_ms)?;
+            Ok((expired, expired > 0))
+        })
     }
 
-    /// The number of events held waiting, across all authors.
+    /// The number of events held, waiting or parked, across all authors.
     pub fn waiting_len(&self) -> usize {
         self.waiting.len()
     }
 
-    /// The number of events `author` has waiting.
+    /// The number of events `author` has held.
     pub fn waiting_count(&self, author: &AuthorKey) -> usize {
         self.waiting.waiting_count(*author)
     }
 
-    /// The held events that conflict with `event`: the author's other events at its
-    /// sequence number.
-    fn held_rivals(&self, event: &Event) -> Vec<Event> {
-        let author = author_of(event);
-        let seq = event.header.seq_num;
-        self.waiting
-            .held_by(&author)
-            .filter(|held| held.header.seq_num == seq && held.id != event.id)
-            .cloned()
-            .collect()
+    /// Whether the event with this ID is held, waiting or parked.
+    pub fn is_waiting(&self, id: &Hash) -> bool {
+        self.waiting.contains(id)
     }
+}
 
-    /// Decides `event` in one write transaction. A decision that writes nothing aborts
-    /// the transaction.
-    fn decide(&self, event: &Event, rivals: &[Event]) -> Result<Decision, StoreError> {
-        let txn = self.db.begin_write()?;
-        let decision = decide_in(&txn, event, rivals)?;
-        if matches!(decision, Decision::Accept | Decision::Fork { .. }) {
-            txn.commit()?;
+/// Decides a received event inside the call's transaction, and the events it releases. Returns
+/// the outcome, and whether the call changed anything. A call that expired events has changed
+/// something, even if its own event was refused.
+fn ingest_in(m: &mut Mirror<'_>, event: Event, now: u64) -> Result<(Ingest, bool), StoreError> {
+    let expired = m.expire(now)?;
+    let id = event.id;
+    let author = author_of(&event);
+    let rivals = held_rivals(m.pool, &event);
+    let outcome = match settle(m, event, &rivals, now, false)? {
+        Settled::Accepted { released } => Ingest::Accepted {
+            id,
+            released: drain(m, released.into(), now)?,
+        },
+        Settled::Duplicate => Ingest::Duplicate { id },
+        Settled::Fork { seq, unapplied } => {
+            forget(m.pool, &unapplied);
+            Ingest::Fork { author, seq }
         }
-        Ok(decision)
-    }
+        Settled::Held | Settled::Skipped => {
+            drain(m, VecDeque::new(), now)?;
+            Ingest::Waiting { id }
+        }
+        Settled::Refused(refusal) => Ingest::Refused(refusal),
+    };
+    let changed = expired > 0 || !matches!(outcome, Ingest::Duplicate { .. } | Ingest::Refused(_));
+    Ok((outcome, changed))
+}
 
-    /// Applies the events in `queue`, then each waiting event they release, until
-    /// nothing more applies. Returns the IDs of the waiting events applied, in order.
-    fn drain(&mut self, mut queue: VecDeque<Event>, now_ms: u64) -> Result<Vec<Hash>, StoreError> {
-        let mut applied = Vec::new();
-        queue.extend(self.waiting.take_ready());
-        while let Some(event) = queue.pop_front() {
-            let id = event.id;
-            let author = author_of(&event);
-            let rivals = self.held_rivals(&event);
-            match self.decide(&event, &rivals)? {
-                Decision::Accept => {
-                    applied.push(id);
-                    queue.extend(self.waiting.arrived(id, now_ms));
-                }
-                Decision::Fork { unapplied, .. } => self.forget(&unapplied),
-                Decision::Wait(deps) => {
-                    // A refused insert drops the event, as an event past the cap is dropped.
-                    let _ = self.waiting.insert(author, id, deps, event, now_ms);
-                }
-                Decision::Park => {
-                    let _ = self.waiting.park(author, id, event, now_ms);
-                }
-                Decision::Duplicate | Decision::Refuse(_) => {}
+/// What one decision did, once the pool and the rows agree with it.
+enum Settled {
+    /// Applied. `released` are the events that waited only for it, and each is due a decision.
+    Accepted { released: Vec<Event> },
+    /// Already stored, or a fork proof header. Nothing changed.
+    Duplicate,
+    /// A conflict at `seq`. `unapplied` left the applied prefix.
+    Fork { seq: SeqNum, unapplied: Vec<Hash> },
+    /// Held, waiting or parked.
+    Held,
+    /// The pool did not keep the event. See [`Hold::Skipped`].
+    Skipped,
+    /// Refused. Nothing is held.
+    Refused(Refusal),
+}
+
+/// Decides `event` inside the transaction, and brings the pool and the rows into line with the
+/// decision. `from_pool` is true for an event the pool released: it is no longer held, so a final
+/// decision removes its row. Otherwise the event is new, or it is held and still is, so a
+/// decision that leaves it held keeps its row.
+fn settle(
+    m: &mut Mirror<'_>,
+    event: Event,
+    rivals: &[Event],
+    now: u64,
+    from_pool: bool,
+) -> Result<Settled, StoreError> {
+    let id = event.id;
+    let settled = match decide_in(m.txn, &event, rivals)? {
+        Decision::Accept => Settled::Accepted {
+            released: m.release(&id, now)?,
+        },
+        Decision::Duplicate => {
+            drop_released(m, &id, from_pool)?;
+            Settled::Duplicate
+        }
+        Decision::Fork { seq, unapplied } => {
+            drop_released(m, &id, from_pool)?;
+            Settled::Fork { seq, unapplied }
+        }
+        Decision::Refuse(refusal) => {
+            drop_released(m, &id, from_pool)?;
+            Settled::Refused(refusal)
+        }
+        Decision::Wait(deps) => held(m.hold(event, deps, false, now)?),
+        Decision::Park => held(m.hold(event, Vec::new(), true, now)?),
+    };
+    Ok(settled)
+}
+
+fn drop_released(m: &Mirror<'_>, id: &Hash, from_pool: bool) -> Result<(), StoreError> {
+    if from_pool {
+        m.drop_row(id)?;
+    }
+    Ok(())
+}
+
+const fn held(hold: Hold) -> Settled {
+    match hold {
+        Hold::Held => Settled::Held,
+        Hold::Full => Settled::Refused(Refusal::WaitingFull),
+        Hold::Skipped => Settled::Skipped,
+    }
+}
+
+/// Decides the events in `queue`, and each event they release, until none is left. Returns the
+/// IDs of the events applied, in order.
+fn drain(
+    m: &mut Mirror<'_>,
+    mut queue: VecDeque<Event>,
+    now: u64,
+) -> Result<Vec<Hash>, StoreError> {
+    let mut applied = Vec::new();
+    queue.extend(m.pool.take_ready());
+    while let Some(event) = queue.pop_front() {
+        let id = event.id;
+        let rivals = held_rivals(m.pool, &event);
+        match settle(m, event, &rivals, now, true)? {
+            Settled::Accepted { released } => {
+                applied.push(id);
+                queue.extend(released);
             }
-            queue.extend(self.waiting.take_ready());
+            Settled::Fork { unapplied, .. } => forget(m.pool, &unapplied),
+            Settled::Duplicate | Settled::Held | Settled::Skipped | Settled::Refused(_) => {}
         }
-        Ok(applied)
+        queue.extend(m.pool.take_ready());
     }
+    Ok(applied)
+}
 
-    /// Tells the waiting pool that these events are no longer applied, so events that
-    /// wait on them wait again.
-    fn forget(&mut self, unapplied: &[Hash]) {
-        for id in unapplied {
-            self.waiting.forget(id);
-        }
+/// The held events that conflict with `event`: the author's other events at its sequence number.
+fn held_rivals(pool: &WaitingPool<Hash, Event>, event: &Event) -> Vec<Event> {
+    let author = author_of(event);
+    let seq = event.header.seq_num;
+    pool.held_by(&author)
+        .filter(|held| held.header.seq_num == seq && held.id != event.id)
+        .cloned()
+        .collect()
+}
+
+/// Tells the pool that these events are no longer applied, so the events that wait on them wait
+/// again.
+fn forget(pool: &mut WaitingPool<Hash, Event>, unapplied: &[Hash]) {
+    for id in unapplied {
+        pool.forget(id);
     }
 }
 
@@ -510,8 +581,16 @@ fn unapplied_deps(txn: &WriteTransaction, after: &[Hash]) -> Result<Vec<Hash>, S
 
 /// Whether the event with this ID is applied: stored, at a sequence number below its
 /// author's applied prefix.
-fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
-    let hashes = txn.open_table(HASHES)?;
+pub(super) fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
+    applied_in(&txn.open_table(HASHES)?, &txn.open_table(CHAINS)?, hash)
+}
+
+/// [`is_applied`] over the `hashes` and `chains` tables, whether they are read or written.
+pub(super) fn applied_in(
+    hashes: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    chains: &impl ReadableTable<&'static [u8], &'static [u8]>,
+    hash: &Hash,
+) -> Result<bool, StoreError> {
     let position = hashes
         .get(hash.as_bytes().as_slice())?
         .map(|found| found.value().to_vec());
@@ -519,7 +598,6 @@ fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
         return Ok(false);
     };
     let (author, seq) = split_position(&position)?;
-    let chains = txn.open_table(CHAINS)?;
     let row = chains.get(author.as_slice())?;
     match row {
         Some(row) => Ok(Chain::decode(row.value())?.next_seq > seq),
@@ -532,6 +610,7 @@ fn is_applied(txn: &WriteTransaction, hash: &Hash) -> Result<bool, StoreError> {
 mod tests {
     use super::*;
     use crate::chain::{ChainExt, sign};
+    use crate::event_store::waiting_rows::{self, Row};
     use crate::waiting::WaitingLimits;
     use p2panda_core::SigningKey;
 
@@ -572,8 +651,12 @@ mod tests {
     }
 
     fn open() -> (tempfile::TempDir, EventStore) {
+        open_with(WaitingLimits::default())
+    }
+
+    fn open_with(limits: WaitingLimits) -> (tempfile::TempDir, EventStore) {
         let dir = tempfile::tempdir().unwrap();
-        let store = EventStore::open(dir.path()).unwrap();
+        let store = EventStore::open(dir.path(), limits, 0).unwrap();
         (dir, store)
     }
 
@@ -894,8 +977,7 @@ mod tests {
 
     #[test]
     fn test_waiting_events_past_the_author_cap_are_refused() {
-        let (_dir, store) = open();
-        let mut store = store.with_waiting_limits(WaitingLimits::new(2, WEEK_MS));
+        let (_dir, mut store) = open_with(WaitingLimits::new(2, WEEK_MS));
         let signer = key(15);
         let who = author(&signer);
         let events = chain_of(&signer, 5);
@@ -917,12 +999,11 @@ mod tests {
 
     #[test]
     fn test_a_waiting_event_expires_and_is_not_released_by_its_dependency() {
-        let (_dir, store) = open();
-        let mut store = store.with_waiting_limits(WaitingLimits::new(256, 1_000));
+        let (_dir, mut store) = open_with(WaitingLimits::new(256, 1_000));
         let signer = key(16);
         let events = chain_of(&signer, 2);
         store.ingest(&events[1].bytes, 0).unwrap();
-        assert_eq!(store.expire_waiting(1_000), 1);
+        assert_eq!(store.expire_waiting(1_000).unwrap(), 1);
         assert_eq!(
             store.ingest(&events[0].bytes, 1_000).unwrap(),
             Ingest::Accepted {
@@ -968,11 +1049,11 @@ mod tests {
         let events = chain_of(&signer, 2);
         let rival = event(&signer, 1, Some(events[0].id), Vec::new(), "rival");
         {
-            let mut store = EventStore::open(dir.path()).unwrap();
+            let mut store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
             ingest_all(&mut store, &events);
             ingest(&mut store, &rival);
         }
-        let store = EventStore::open(dir.path()).unwrap();
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         assert_eq!(
             store.chain(&who).unwrap(),
             Some(Chain {
@@ -1265,13 +1346,13 @@ mod tests {
         let signer = key(31);
         let events = chain_of(&signer, 2);
         {
-            let mut store = EventStore::open(dir.path()).unwrap();
+            let mut store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
             assert_eq!(
                 ingest(&mut store, &events[1]),
                 Ingest::Waiting { id: events[1].id }
             );
         }
-        let mut store = EventStore::open(dir.path()).unwrap();
+        let mut store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         assert_eq!(
             store.waiting_len(),
             1,
@@ -1288,19 +1369,48 @@ mod tests {
     }
 
     #[test]
+    fn test_a_restart_keeps_the_order_in_which_waiters_are_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let root0 = event(&key(48), 0, None, Vec::new(), "message");
+        // Eight authors each hold one event that waits for `root0`. The rows are keyed by hash,
+        // so only the arrival number keeps them in this order across a restart.
+        let waiters: Vec<Event> = (0..8)
+            .map(|n| event(&key(50 + n), 0, None, vec![root0.id], "message"))
+            .collect();
+        {
+            let mut store = reopen(&dir, WaitingLimits::default(), 0);
+            for waiter in &waiters {
+                assert_eq!(
+                    ingest(&mut store, waiter),
+                    Ingest::Waiting { id: waiter.id }
+                );
+            }
+        }
+        let store = reopen(&dir, WaitingLimits::default(), 0);
+        let mut store = store;
+        assert_eq!(
+            ingest(&mut store, &root0),
+            Ingest::Accepted {
+                id: root0.id,
+                released: waiters.iter().map(|waiter| waiter.id).collect(),
+            }
+        );
+    }
+
+    #[test]
     fn test_a_fork_against_a_waiting_event_is_seen_after_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let signer = key(32);
         let who = author(&signer);
         let events = chain_of(&signer, 2);
         {
-            let mut store = EventStore::open(dir.path()).unwrap();
+            let mut store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
             assert_eq!(
                 ingest(&mut store, &events[1]),
                 Ingest::Waiting { id: events[1].id }
             );
         }
-        let mut store = EventStore::open(dir.path()).unwrap();
+        let mut store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
         let rival = event(&signer, 1, Some(events[0].id), Vec::new(), "rival");
         assert_eq!(
             ingest(&mut store, &rival),
@@ -1314,8 +1424,7 @@ mod tests {
 
     #[test]
     fn test_an_expired_waiting_event_is_not_a_rival() {
-        let (_dir, store) = open();
-        let mut store = store.with_waiting_limits(WaitingLimits::new(256, 1_000));
+        let (_dir, mut store) = open_with(WaitingLimits::new(256, 1_000));
         let signer = key(33);
         let events = chain_of(&signer, 2);
         assert_eq!(
@@ -1329,5 +1438,289 @@ mod tests {
             Ingest::Waiting { id: rival.id }
         );
         assert_eq!(store.waiting_len(), 1, "only the rival is held");
+    }
+
+    /// Opens the store in `dir` again, with `limits`, at clock `now`.
+    fn reopen(dir: &tempfile::TempDir, limits: WaitingLimits, now: u64) -> EventStore {
+        EventStore::open(dir.path(), limits, now).unwrap()
+    }
+
+    #[test]
+    fn test_a_release_survives_a_restart_as_one_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let signer = key(34);
+        let who = author(&signer);
+        let events = chain_of(&signer, 2);
+        {
+            let mut store = reopen(&dir, WaitingLimits::default(), 0);
+            assert_eq!(
+                ingest(&mut store, &events[1]),
+                Ingest::Waiting { id: events[1].id }
+            );
+            assert_eq!(
+                ingest(&mut store, &events[0]),
+                Ingest::Accepted {
+                    id: events[0].id,
+                    released: vec![events[1].id],
+                }
+            );
+        }
+        let store = reopen(&dir, WaitingLimits::default(), 0);
+        assert!(
+            !store.is_waiting(&events[1].id),
+            "the released event applies"
+        );
+        assert_eq!(store.chain(&who).unwrap().unwrap().next_seq, 2);
+        assert!(store.waiting_ids().unwrap().is_empty());
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_waiting_event_past_its_age_is_dropped_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = WaitingLimits::new(256, 1_000);
+        let signer = key(35);
+        let events = chain_of(&signer, 2);
+        {
+            let mut store = reopen(&dir, limits, 0);
+            assert_eq!(
+                store.ingest(&events[1].bytes, 0).unwrap(),
+                Ingest::Waiting { id: events[1].id }
+            );
+        }
+        // Not due yet: the event has waited 999 ms.
+        let store = reopen(&dir, limits, 999);
+        assert!(store.is_waiting(&events[1].id));
+        drop(store);
+        // Due at 1_000 ms, so the open drops it and its row.
+        let store = reopen(&dir, limits, 1_000);
+        assert_eq!(store.waiting_len(), 0);
+        assert!(store.waiting_ids().unwrap().is_empty());
+        store.check_invariants().unwrap();
+        drop(store);
+        let store = reopen(&dir, limits, 1_000);
+        assert_eq!(store.waiting_len(), 0, "a dropped event stays dropped");
+    }
+
+    #[test]
+    fn test_an_expiry_made_by_expire_waiting_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let signer = key(36);
+        let events = chain_of(&signer, 2);
+        {
+            let mut store = reopen(&dir, WaitingLimits::default(), 0);
+            store.ingest(&events[1].bytes, 0).unwrap();
+            assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 1);
+        }
+        let store = reopen(&dir, WaitingLimits::default(), 0);
+        assert_eq!(store.waiting_len(), 0);
+        assert!(store.waiting_ids().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_a_refused_waiting_event_leaves_no_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = WaitingLimits::new(1, WEEK_MS);
+        let signer = key(37);
+        let events = chain_of(&signer, 3);
+        {
+            let mut store = reopen(&dir, limits, 0);
+            assert_eq!(
+                ingest(&mut store, &events[1]),
+                Ingest::Waiting { id: events[1].id }
+            );
+            assert_eq!(
+                ingest(&mut store, &events[2]),
+                Ingest::Refused(Refusal::WaitingFull)
+            );
+        }
+        let store = reopen(&dir, limits, 0);
+        assert_eq!(store.waiting_ids().unwrap(), vec![events[1].id]);
+        assert!(!store.is_waiting(&events[2].id));
+    }
+
+    #[test]
+    fn test_a_smaller_cap_on_reopen_drops_the_later_arrivals() {
+        let dir = tempfile::tempdir().unwrap();
+        let signer = key(38);
+        let who = author(&signer);
+        let events = chain_of(&signer, 4);
+        {
+            let mut store = reopen(&dir, WaitingLimits::new(3, WEEK_MS), 0);
+            for event in &events[1..] {
+                assert_eq!(ingest(&mut store, event), Ingest::Waiting { id: event.id });
+            }
+            assert_eq!(store.waiting_count(&who), 3);
+        }
+        // With a cap of two, the first two arrivals are kept, and the third row goes.
+        let store = reopen(&dir, WaitingLimits::new(2, WEEK_MS), 0);
+        assert_eq!(store.waiting_count(&who), 2);
+        assert!(store.is_waiting(&events[1].id));
+        assert!(store.is_waiting(&events[2].id));
+        assert!(!store.is_waiting(&events[3].id));
+        assert_eq!(store.waiting_ids().unwrap().len(), 2);
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_parked_event_is_held_across_a_restart_and_still_sees_a_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let signer = key(39);
+        let who = author(&signer);
+        let events = chain_of(&signer, 1);
+        let stray = event(
+            &signer,
+            1,
+            Some(Hash::digest(b"not the head")),
+            Vec::new(),
+            "stray",
+        );
+        {
+            let mut store = reopen(&dir, WaitingLimits::default(), 0);
+            ingest_all(&mut store, &events);
+            assert_eq!(ingest(&mut store, &stray), Ingest::Waiting { id: stray.id });
+        }
+        let mut store = reopen(&dir, WaitingLimits::default(), 0);
+        assert!(
+            store.is_waiting(&stray.id),
+            "the parked event is still held"
+        );
+        let rival = event(&signer, 1, Some(events[0].id), Vec::new(), "rival");
+        assert_eq!(
+            ingest(&mut store, &rival),
+            Ingest::Fork {
+                author: who,
+                seq: 1
+            }
+        );
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_an_event_released_into_a_frozen_chain_leaves_no_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let (x, y) = (key(40), key(41));
+        let x_events = chain_of(&x, 2);
+        let y0 = event(&y, 0, None, Vec::new(), "message");
+        let waits = event(&x, 2, Some(x_events[1].id), vec![y0.id], "message");
+        let rival = event(&x, 1, Some(x_events[0].id), Vec::new(), "rival");
+        {
+            let mut store = reopen(&dir, WaitingLimits::default(), 0);
+            ingest_all(&mut store, &x_events);
+            assert_eq!(ingest(&mut store, &waits), Ingest::Waiting { id: waits.id });
+            assert!(matches!(
+                ingest(&mut store, &rival),
+                Ingest::Fork { seq: 1, .. }
+            ));
+        }
+        let mut store = reopen(&dir, WaitingLimits::default(), 0);
+        assert!(
+            store.is_waiting(&waits.id),
+            "the event waits across the restart"
+        );
+        // Its dependency arrives, so it is released. Its chain is frozen at 1, so it is refused.
+        assert_eq!(
+            ingest(&mut store, &y0),
+            Ingest::Accepted {
+                id: y0.id,
+                released: vec![],
+            }
+        );
+        assert!(!store.is_waiting(&waits.id));
+        assert!(store.waiting_ids().unwrap().is_empty());
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_rival_refused_by_the_cap_is_seen_only_when_sent_again() {
+        // The known limit in the module docs. The author's one slot holds `filler`, so the rival
+        // is refused and not held. When the original arrives, nothing conflicts with it.
+        let (_dir, mut store) = open_with(WaitingLimits::new(1, WEEK_MS));
+        let signer = key(45);
+        let who = author(&signer);
+        let missing = Hash::digest(b"an event that is never delivered");
+        let original = event(&signer, 1, Some(missing), Vec::new(), "message");
+        let rival = event(&signer, 1, Some(missing), Vec::new(), "rival");
+        let filler = event(&signer, 2, Some(missing), Vec::new(), "filler");
+        assert_eq!(
+            ingest(&mut store, &filler),
+            Ingest::Waiting { id: filler.id }
+        );
+        assert_eq!(
+            ingest(&mut store, &rival),
+            Ingest::Refused(Refusal::WaitingFull)
+        );
+        // At WEEK_MS the filler is due, so the slot is free for the original.
+        assert_eq!(
+            store.ingest(&original.bytes, WEEK_MS).unwrap(),
+            Ingest::Waiting { id: original.id }
+        );
+        assert!(
+            store.fork_proof(&who).unwrap().is_none(),
+            "the refused rival is not held, so no conflict is seen"
+        );
+        // Sent again, the rival finds the original, which is held.
+        assert_eq!(
+            store.ingest(&rival.bytes, WEEK_MS).unwrap(),
+            Ingest::Fork {
+                author: who,
+                seq: 1
+            }
+        );
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn test_a_write_whose_rebuild_fails_makes_the_store_refuse_calls() {
+        let (_dir, mut store) = open_with(WaitingLimits::new(256, 1_000));
+        let signer = key(47);
+        let events = chain_of(&signer, 2);
+        store.ingest(&events[1].bytes, 0).unwrap();
+        // The row no longer decodes. The expiry that drops it fails, and so does the rebuild.
+        store
+            .write(|txn| {
+                let mut rows = txn.open_table(crate::event_store::WAITING)?;
+                rows.insert(events[1].id.as_bytes().as_slice(), b"garbage".as_slice())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(matches!(
+            store.expire_waiting(1_000),
+            Err(StoreError::Corrupt(_))
+        ));
+        assert!(matches!(
+            store.expire_waiting(1_000),
+            Err(StoreError::Unusable)
+        ));
+        assert!(matches!(
+            store.ingest(&events[0].bytes, 1_000),
+            Err(StoreError::Unusable)
+        ));
+    }
+
+    #[test]
+    fn test_invariants_refuse_a_waiting_event_whose_dependency_is_applied() {
+        let (_dir, mut store) = open();
+        let (x, y) = (key(42), key(43));
+        let x0 = event(&x, 0, None, Vec::new(), "message");
+        ingest_all(&mut store, std::slice::from_ref(&x0));
+        // The pool and the row both hold an event that waits for x0, which is already applied.
+        let waits = event(&y, 0, None, vec![x0.id], "message");
+        let row = Row {
+            id: waits.id,
+            author: author(&y),
+            seq: 0,
+            arrived_at: 0,
+            arrival: 0,
+            deps: vec![x0.id],
+            bytes: waits.bytes.clone(),
+        };
+        store
+            .waiting
+            .restore(author(&y), waits.id, [x0.id], waits, 0)
+            .unwrap();
+        store.write(|txn| waiting_rows::put(txn, &row)).unwrap();
+        let err = store.check_invariants().unwrap_err();
+        assert!(err.to_string().contains("applied"), "{err}");
     }
 }
