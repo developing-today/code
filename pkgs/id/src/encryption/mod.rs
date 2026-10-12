@@ -7,6 +7,7 @@
 //!   local membership change.
 //! - [`ordering`]: causal delivery, and the [`Envelope`] messages travel in.
 //! - [`warnings`]: the server's local warnings about a group's size and re-add churn (P4.9).
+//! - [`notice`]: the "scheme: none" notice for a group made without a scheme (P4.10).
 //!
 //! A group member is the key the group model holds (`crate::groups::Key`). The crate's identity is
 //! the matching `p2panda_core::VerifyingKey`.
@@ -14,6 +15,7 @@
 //! The epoch rotates only on create, update, add by join, remove and recovery. No timer rotates it
 //! (N7): the module takes no clock.
 
+pub mod notice;
 pub mod ordering;
 pub mod roster;
 pub mod scheme;
