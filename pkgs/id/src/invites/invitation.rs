@@ -55,6 +55,33 @@ impl Invitation {
     }
 }
 
+/// The paste form: a ticket as it is, or an `id:join?` link. A link's ticket needs no escaping,
+/// since a ticket is a fixed prefix and lower-case base32.
+impl std::fmt::Display for Invitation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ticket(ticket) => write!(f, "{ticket}"),
+            Self::Link { group, by, ticket } => write!(
+                f,
+                "{SCHEME}group={}&ticket={ticket}&by={}",
+                hex(group),
+                hex(by)
+            ),
+        }
+    }
+}
+
+/// Lower-case hex, two characters per byte.
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
 fn parse_ticket(text: &str) -> Result<EndpointTicket> {
     text.parse::<EndpointTicket>()
         .map_err(|error| anyhow!("{error}"))
