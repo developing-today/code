@@ -251,6 +251,13 @@ where
         released
     }
 
+    /// Forget that `key` arrived, for a key that has stopped counting as applied.
+    /// Events that wait on it from now on wait again. Events already released by it
+    /// are not affected.
+    pub fn forget(&mut self, key: &K) {
+        self.arrived.remove(key);
+    }
+
     /// Drop every held event that has waited `max_age_ms` by `now_ms`, and return
     /// them as `(author, event)` in arrival order, so the caller can log them.
     ///
@@ -502,6 +509,19 @@ mod tests {
         assert!(pool.arrived(1, 0).is_empty());
         assert_eq!(pool.waiting_count(author(1)), 0);
         assert!(pool.arrived(10, 0).is_empty());
+    }
+
+    #[test]
+    fn test_a_forgotten_key_holds_its_dependents_again() {
+        let mut pool = pool();
+        pool.arrived(10, 0);
+        pool.forget(&10);
+        pool.insert(author(1), 1, [10], "held", 0).unwrap();
+        assert!(
+            pool.take_ready().is_empty(),
+            "the key no longer counts as arrived"
+        );
+        assert_eq!(pool.arrived(10, 0), vec!["held"]);
     }
 
     #[test]

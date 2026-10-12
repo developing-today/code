@@ -5,7 +5,9 @@
 //! with `#` are skipped. The input uses the area's own syntax; for `tuple` it is
 //! two elements separated by a space (see `common::parse_value`), and for
 //! `chainext` it is one `b:` element holding the event bytes (see
-//! `common::chain`). The only expected result is `ok`: the property must hold
+//! `common::chain`), and for `ingest` it is one or more `b:` elements, the events
+//! of one delivery (see `common::ingest`). The only expected result is `ok`: the
+//! property must hold
 //! for that input. See `tests/regressions/README.md` for how a fuzz failure
 //! becomes a case.
 
@@ -16,6 +18,7 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::chain::check_event_bytes;
+use common::ingest::check_order_independence;
 use common::{Value, check_pair, parse_value};
 
 /// Split one line into its three fields.
@@ -50,6 +53,19 @@ fn replay_case(area: &str, input: &str, expected: &str) -> Result<(), String> {
                 "chainext input {input:?} must be one b:<escaped> element"
             )),
         },
+        "ingest" => {
+            // One or more `b:` elements, separated by spaces: the events, in one delivery.
+            let events = input
+                .split(' ')
+                .map(|element| match parse_value(element)? {
+                    Value::Bytes(bytes) => Ok(bytes),
+                    Value::Text(_) => Err(format!(
+                        "ingest input {input:?} must be b:<escaped> elements"
+                    )),
+                })
+                .collect::<Result<Vec<Vec<u8>>, String>>()?;
+            check_order_independence(&events)
+        }
         other => Err(format!("unknown area {other:?}")),
     }
 }
@@ -124,6 +140,10 @@ fn test_replay_rejects_malformed_cases() {
     assert!(
         replay_case("chainext", "s:a", "ok").is_err(),
         "chainext takes bytes, not a string"
+    );
+    assert!(
+        replay_case("ingest", "b:\\x00 s:a", "ok").is_err(),
+        "ingest takes only byte elements"
     );
 }
 

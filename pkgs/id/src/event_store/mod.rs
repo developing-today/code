@@ -43,7 +43,11 @@ use redb::{
 };
 
 use crate::chain::{self, Event};
-use crate::waiting::AuthorKey;
+
+mod ingest;
+
+use crate::waiting::{AuthorKey, WaitingLimits, WaitingPool};
+pub use ingest::{Ingest, Refusal};
 
 /// The store's file name in its directory.
 pub const FILE_NAME: &str = "events.redb";
@@ -226,7 +230,7 @@ impl Storage for FileStorage {
 }
 
 /// The applied prefix of one author's chain, as the `chains` table holds it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Chain {
     /// The sequence number the next applied event takes: the number of applied
     /// events. Zero for an author with none.
@@ -239,7 +243,6 @@ pub struct Chain {
 }
 
 impl Chain {
-    #[allow(dead_code, reason = "the ingest path (P1.8) writes through this")]
     fn encode(self) -> [u8; CHAIN_LEN] {
         let mut row = [0u8; CHAIN_LEN];
         row[..8].copy_from_slice(&u64::from(self.next_seq).to_be_bytes());
@@ -289,6 +292,8 @@ pub struct ForkProof {
 #[derive(Debug)]
 pub struct EventStore {
     db: Database,
+    /// Events that wait for a dependency. They are held in memory, not stored.
+    waiting: WaitingPool<Hash, Event>,
 }
 
 impl EventStore {
@@ -316,7 +321,18 @@ impl EventStore {
             create_fresh(storage)?
         };
         verify_schema(&db)?;
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            waiting: WaitingPool::new(WaitingLimits::default()),
+        })
+    }
+
+    /// Sets the caps on waiting events: how many one author may hold, and how long
+    /// one may wait. The pool starts empty, so set the caps before ingesting.
+    #[must_use]
+    pub fn with_waiting_limits(mut self, limits: WaitingLimits) -> Self {
+        self.waiting = WaitingPool::new(limits);
+        self
     }
 
     /// Runs `op` in one write transaction. The transaction commits if `op`
@@ -325,7 +341,7 @@ impl EventStore {
     /// # Errors
     ///
     /// Returns `op`'s error, or a redb error from the commit.
-    #[allow(dead_code, reason = "the ingest path (P1.8) writes through this")]
+    #[cfg(test)]
     pub(crate) fn write<T>(
         &self,
         op: impl FnOnce(&WriteTransaction) -> Result<T, StoreError>,
@@ -619,7 +635,6 @@ fn decode_stored(bytes: &[u8]) -> Result<Event, StoreError> {
 
 /// Encodes a fork proof: the sequence number, the length of the first header,
 /// then the two headers, ordered by ID.
-#[allow(dead_code, reason = "the ingest path (P1.8) writes through this")]
 pub(crate) fn encode_proof(seq: SeqNum, a: &Event, b: &Event) -> Result<Vec<u8>, StoreError> {
     let (first, second) = if a.id.as_bytes() <= b.id.as_bytes() {
         (a, b)
@@ -659,7 +674,6 @@ fn decode_proof(bytes: &[u8]) -> Result<ForkProof, StoreError> {
 
 /// Stores an accepted event at its position, and indexes it by ID and group.
 /// A position that is already stored is refused, inside the same transaction.
-#[allow(dead_code, reason = "the ingest path (P1.8) writes through this")]
 pub(crate) fn store_event(txn: &WriteTransaction, event: &Event) -> Result<(), StoreError> {
     let author = *event.header.verifying_key.as_bytes();
     let seq = event.header.seq_num;
@@ -681,7 +695,6 @@ pub(crate) fn store_event(txn: &WriteTransaction, event: &Event) -> Result<(), S
 }
 
 /// Writes an author's chain row.
-#[allow(dead_code, reason = "the ingest path (P1.8) writes through this")]
 pub(crate) fn store_chain(
     txn: &WriteTransaction,
     author: &AuthorKey,
@@ -693,7 +706,6 @@ pub(crate) fn store_chain(
 }
 
 /// Writes an author's fork proof, replacing any earlier one.
-#[allow(dead_code, reason = "the ingest path (P1.8) writes through this")]
 pub(crate) fn store_fork(
     txn: &WriteTransaction,
     author: &AuthorKey,

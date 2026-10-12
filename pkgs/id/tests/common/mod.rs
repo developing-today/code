@@ -10,6 +10,7 @@
 #![allow(dead_code)] // each test crate uses a different part of this module
 
 pub mod chain;
+pub mod ingest;
 
 use std::cmp::Ordering;
 

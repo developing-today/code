@@ -14,11 +14,13 @@
 //! it passes. The control builds the file in place, and must fail at some cut. Without that failure
 //! the sweep could not see the bug it guards against.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use id::event_store::{EventStore, FILE_NAME, Storage};
+use id::chain::{self, ChainExt, sign};
+use id::event_store::{EventStore, FILE_NAME, Ingest, Refusal, Storage};
+use p2panda_core::{Hash, SigningKey};
 use redb::{Database, DatabaseError, StorageBackend, StorageError, TableDefinition};
 
 use crate::faultfs::{FaultFs, Plan, Survive, Tear};
@@ -94,6 +96,11 @@ impl SimDir {
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.0.lock().expect("sim dir lock")
+    }
+
+    /// Whether power has been cut. Every later call changes nothing.
+    pub fn cut_landed(&self) -> bool {
+        dead(&self.lock())
     }
 
     /// The storage calls the first file has made so far, up to any cut.
@@ -276,6 +283,70 @@ impl Storage for SimDir {
     }
 }
 
+/// Runs `scenario` with a cut at every `stride`th storage call of the first file, under each of
+/// `policies`, and with a cut before every directory operation. Each run's scenario result, and
+/// every disk the cut could leave, go to `check`. Returns how many disks were checked, and the
+/// ones `check` rejects.
+fn sweep<A>(
+    scenario: impl Fn(&SimDir) -> A,
+    check: impl Fn(&Disk, &A) -> Result<(), String>,
+    stride: usize,
+    policies: &[(Survive, Tear)],
+) -> (usize, Vec<String>) {
+    let clean = SimDir::new(None, None);
+    scenario(&clean);
+    let mut runs: Vec<(String, SimDir)> = Vec::new();
+    for event in (1..=clean.calls()).step_by(stride) {
+        for (index, &(survive, tear)) in policies.iter().enumerate() {
+            for sync_completed in [false, true] {
+                let plan = Plan {
+                    event,
+                    survive,
+                    tear,
+                    sync_completed,
+                    seed: event * 7 + index as u64,
+                };
+                let label = format!(
+                    "call {event} {} {} sync_completed={sync_completed}",
+                    survive.name(),
+                    tear.name()
+                );
+                runs.push((label, SimDir::new(Some(plan), None)));
+            }
+        }
+    }
+    for op in 1..=clean.dir_ops() {
+        runs.push((
+            format!("before directory operation {op}"),
+            SimDir::new(None, Some(op)),
+        ));
+    }
+    let mut states = 0;
+    let mut failures = Vec::new();
+    for (label, sim) in runs {
+        let result = scenario(&sim);
+        for disk in sim.crash_states() {
+            states += 1;
+            if let Err(why) = check(&disk, &result) {
+                failures.push(format!("{label}: {why}"));
+            }
+        }
+    }
+    (states, failures)
+}
+
+fn listing(failures: &[String]) -> String {
+    failures
+        .iter()
+        .take(20)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The policies of the sampled runs: nothing survives, and a random subset with a torn write.
+const SAMPLED: [(Survive, Tear); 2] = [POLICIES[0], POLICIES[2]];
+
 /// The creation this sweep runs: the store's own open, which creates the file when it is absent.
 fn creation(sim: &SimDir) {
     let _ = EventStore::open_with(sim);
@@ -306,61 +377,6 @@ fn reopens(disk: &Disk) -> Result<(), String> {
         .map_err(|err| format!("opens, but is inconsistent: {err}"))
 }
 
-/// Runs `scenario` with a cut at every storage call of the first file, under every policy, and a
-/// cut before every directory operation. Returns how many crash states were checked, and the
-/// ones that `check` rejects.
-fn sweep(scenario: fn(&SimDir), check: fn(&Disk) -> Result<(), String>) -> (usize, Vec<String>) {
-    let clean = SimDir::new(None, None);
-    scenario(&clean);
-    let mut runs: Vec<(String, SimDir)> = Vec::new();
-    for event in 1..=clean.calls() {
-        for (index, (survive, tear)) in POLICIES.into_iter().enumerate() {
-            for sync_completed in [false, true] {
-                let plan = Plan {
-                    event,
-                    survive,
-                    tear,
-                    sync_completed,
-                    seed: event * 7 + index as u64,
-                };
-                let label = format!(
-                    "call {event} {} {} sync_completed={sync_completed}",
-                    survive.name(),
-                    tear.name()
-                );
-                runs.push((label, SimDir::new(Some(plan), None)));
-            }
-        }
-    }
-    for op in 1..=clean.dir_ops() {
-        runs.push((
-            format!("before directory operation {op}"),
-            SimDir::new(None, Some(op)),
-        ));
-    }
-    let mut states = 0;
-    let mut failures = Vec::new();
-    for (label, sim) in runs {
-        scenario(&sim);
-        for disk in sim.crash_states() {
-            states += 1;
-            if let Err(why) = check(&disk) {
-                failures.push(format!("{label}: {why}"));
-            }
-        }
-    }
-    (states, failures)
-}
-
-fn listing(failures: &[String]) -> String {
-    failures
-        .iter()
-        .take(20)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 #[test]
 fn clean_creation_leaves_a_store_that_reopens() {
     let sim = SimDir::new(None, None);
@@ -375,7 +391,7 @@ fn clean_creation_leaves_a_store_that_reopens() {
 
 #[test]
 fn first_creation_reopens_after_every_crash_point() {
-    let (states, failures) = sweep(creation, reopens);
+    let (states, failures) = sweep(creation, |disk, &()| reopens(disk), 1, &POLICIES);
     println!(
         "first creation: {states} crash states checked, {} failed",
         failures.len()
@@ -391,7 +407,7 @@ fn first_creation_reopens_after_every_crash_point() {
 
 #[test]
 fn creation_in_place_control_fails_at_some_crash_point() {
-    let (states, failures) = sweep(in_place, reopens);
+    let (states, failures) = sweep(in_place, |disk, &()| reopens(disk), 1, &POLICIES);
     println!(
         "control (in-place creation): {states} crash states checked, {} failed",
         failures.len()
@@ -399,5 +415,209 @@ fn creation_in_place_control_fails_at_some_crash_point() {
     assert!(
         !failures.is_empty(),
         "the control never failed: the sweep cannot see a torn first commit"
+    );
+}
+
+/// The deliveries the ingest sweep makes after creation: a wait that a later event releases, an
+/// after hash on another author's event, a fork, an event refused as frozen, and two repeats.
+fn workload() -> Vec<Vec<u8>> {
+    let author = SigningKey::from_bytes(&[21; 32]);
+    let other = SigningKey::from_bytes(&[22; 32]);
+    let ext = |kind: &str, after: Vec<Hash>| ChainExt {
+        kind: kind.to_owned(),
+        group: None,
+        after,
+    };
+    let a0 = sign(&author, 0, None, None, ext("message", Vec::new())).unwrap();
+    let a1 = sign(&author, 1, Some(a0.id), None, ext("message", Vec::new())).unwrap();
+    let a2 = sign(&author, 2, Some(a1.id), None, ext("message", Vec::new())).unwrap();
+    let a2_rival = sign(&author, 2, Some(a1.id), None, ext("rival", Vec::new())).unwrap();
+    let a3 = sign(&author, 3, Some(a2.id), None, ext("message", Vec::new())).unwrap();
+    let b0 = sign(&other, 0, None, None, ext("message", vec![a1.id])).unwrap();
+    vec![
+        a1.bytes,
+        a0.bytes.clone(),
+        a2.bytes.clone(),
+        b0.bytes,
+        a2_rival.bytes,
+        a3.bytes,
+        a2.bytes,
+        a0.bytes,
+    ]
+}
+
+/// Creates the store on `sim`, then delivers the workload. Returns each delivery the process
+/// acknowledged: one that returned before the power cut, with its outcome.
+fn ingest_run(sim: &SimDir) -> Vec<(Vec<u8>, Ingest)> {
+    let mut acked = Vec::new();
+    let Ok(mut store) = EventStore::open_with(sim) else {
+        return acked;
+    };
+    for bytes in workload() {
+        if sim.cut_landed() {
+            break;
+        }
+        let Ok(outcome) = store.ingest(&bytes, 0) else {
+            break;
+        };
+        if sim.cut_landed() {
+            break;
+        }
+        acked.push((bytes, outcome));
+    }
+    acked
+}
+
+/// Every acknowledged delivery must survive the reopen. An accepted event, and each event it
+/// released, is stored and applied, unless a fork at or below it has frozen its author. A fork
+/// must leave a proof no later than its own sequence number. The store must open, and its
+/// invariants must hold.
+fn acknowledged_survive(disk: &Disk, acked: &[(Vec<u8>, Ingest)]) -> Result<(), String> {
+    let store = EventStore::open_with(&SimDir::from_disk(disk))
+        .map_err(|err| format!("does not open: {err}"))?;
+    store
+        .check_invariants()
+        .map_err(|err| format!("opens, but is inconsistent: {err}"))?;
+    let known: HashMap<Hash, Vec<u8>> = workload()
+        .into_iter()
+        .filter_map(|bytes| chain::decode(&bytes).ok().map(|event| (event.id, bytes)))
+        .collect();
+    let mut applied_ids = Vec::new();
+    for (_, outcome) in acked {
+        match outcome {
+            Ingest::Accepted { id, released } => {
+                applied_ids.push(*id);
+                applied_ids.extend(released);
+            }
+            Ingest::Duplicate { id } => applied_ids.push(*id),
+            Ingest::Fork { author, seq } => {
+                let proof = store
+                    .fork_proof(author)
+                    .map_err(|err| err.to_string())?
+                    .ok_or("an acknowledged fork has no proof")?;
+                if proof.seq > *seq {
+                    return Err(format!(
+                        "an acknowledged fork at {seq} has a proof at {}",
+                        proof.seq
+                    ));
+                }
+            }
+            Ingest::Waiting { .. } | Ingest::Refused(_) => {}
+        }
+    }
+    for id in applied_ids {
+        let bytes = known
+            .get(&id)
+            .ok_or("an acknowledged id is not in the workload")?;
+        let event = chain::decode(bytes).map_err(|err| err.to_string())?;
+        let author = *event.header.verifying_key.as_bytes();
+        let seq = event.header.seq_num;
+        let stored = store
+            .event_by_id(&id)
+            .map_err(|err| err.to_string())?
+            .ok_or("an acknowledged event is not stored")?;
+        if stored != event {
+            return Err("an acknowledged event is stored as another event".to_owned());
+        }
+        let applied = store
+            .chain(&author)
+            .map_err(|err| err.to_string())?
+            .is_some_and(|chain| chain.next_seq > seq);
+        let frozen_at_or_below = store
+            .fork_proof(&author)
+            .map_err(|err| err.to_string())?
+            .is_some_and(|proof| proof.seq <= seq);
+        if !applied && !frozen_at_or_below {
+            return Err(format!(
+                "an acknowledged event at sequence {seq} is neither applied nor behind a fork"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn clean_ingest_run_has_every_outcome_and_survives_its_reopen() {
+    let sim = SimDir::new(None, None);
+    let acked = ingest_run(&sim);
+    assert_eq!(
+        acked.len(),
+        workload().len(),
+        "the run stopped early without a cut"
+    );
+    let outcomes: Vec<&Ingest> = acked.iter().map(|(_, outcome)| outcome).collect();
+    assert!(
+        matches!(outcomes[0], Ingest::Waiting { .. }),
+        "a1 waits for a0"
+    );
+    assert!(
+        matches!(outcomes[1], Ingest::Accepted { released, .. } if released.len() == 1),
+        "a0 releases a1"
+    );
+    assert!(matches!(outcomes[2], Ingest::Accepted { .. }), "a2 follows");
+    assert!(
+        matches!(outcomes[3], Ingest::Accepted { .. }),
+        "b0 names an applied a1"
+    );
+    assert!(
+        matches!(outcomes[4], Ingest::Fork { seq: 2, .. }),
+        "a2 forks"
+    );
+    assert!(
+        matches!(outcomes[5], Ingest::Refused(Refusal::Frozen)),
+        "a3 is refused after the fork"
+    );
+    assert!(
+        matches!(outcomes[6], Ingest::Duplicate { .. }),
+        "a2 again is a repeat"
+    );
+    assert!(
+        matches!(outcomes[7], Ingest::Duplicate { .. }),
+        "a0 again is a repeat"
+    );
+    for disk in sim.crash_states() {
+        acknowledged_survive(&disk, &acked).unwrap();
+    }
+}
+
+#[test]
+fn ingest_survives_every_sampled_crash_point() {
+    let (states, failures) = sweep(
+        ingest_run,
+        |disk, acked| acknowledged_survive(disk, acked),
+        10,
+        &SAMPLED,
+    );
+    println!(
+        "ingest (sampled): {states} crash states checked, {} failed",
+        failures.len()
+    );
+    assert!(states > 0, "the sweep checked no crash states");
+    assert!(
+        failures.is_empty(),
+        "{} crash states lost an acknowledged ingest:\n{}",
+        failures.len(),
+        listing(&failures)
+    );
+}
+
+#[test]
+#[ignore = "the full ingest gate: every storage call under every policy. `just crash-gate` runs it in release"]
+fn ingest_survives_every_crash_point() {
+    let (states, failures) = sweep(
+        ingest_run,
+        |disk, acked| acknowledged_survive(disk, acked),
+        1,
+        &POLICIES,
+    );
+    println!(
+        "ingest (full): {states} crash states checked, {} failed",
+        failures.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "{} crash states lost an acknowledged ingest:\n{}",
+        failures.len(),
+        listing(&failures)
     );
 }
