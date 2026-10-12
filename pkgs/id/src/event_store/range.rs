@@ -44,6 +44,10 @@ pub const DEFAULT_T: usize = 16;
 pub const FRAME_CAP: usize = 16 << 20;
 /// The default byte budget for one frame: a quarter of the cap, so one frame is never near it.
 pub const DEFAULT_FRAME_BUDGET: usize = 4 << 20;
+/// The default byte budget for one session's reconciliation reads: 64 MiB. It holds the 17.6 MB
+/// ID reply of a 524,288-event bootstrap with room to spare, and it bounds what a peer can make
+/// one session buffer.
+pub const DEFAULT_SESSION_BUDGET: usize = 64 << 20;
 /// The smallest budget that fits an entry.
 const MIN_FRAME_BUDGET: usize = 256;
 /// Bytes reserved in a frame for its `more` flag and its entry count.
@@ -63,15 +67,19 @@ pub enum ParamsError {
         "the frame budget must be from {MIN_FRAME_BUDGET} bytes to the {FRAME_CAP}-byte frame cap (got {0})"
     )]
     FrameBudget(usize),
+    /// A session budget too small for one entry.
+    #[error("the session budget must be at least {MIN_FRAME_BUDGET} bytes (got {0})")]
+    SessionBudget(usize),
 }
 
-/// The local parameters of one side: fan-out K, leaf threshold T, and the frame budget.
-/// None of them is sent to the peer.
+/// The local parameters of one side: fan-out K, leaf threshold T, the frame budget, and the
+/// session budget. None of them is sent to the peer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Params {
     k: usize,
     t: usize,
     frame_budget: usize,
+    session_budget: usize,
 }
 
 impl Params {
@@ -91,6 +99,7 @@ impl Params {
             k,
             t,
             frame_budget: DEFAULT_FRAME_BUDGET,
+            session_budget: DEFAULT_SESSION_BUDGET,
         })
     }
 
@@ -105,6 +114,22 @@ impl Params {
         }
         Ok(Self {
             frame_budget: bytes,
+            ..self
+        })
+    }
+
+    /// The same parameters with another session budget: the most a session may read in
+    /// reconciliation before it ends with [`super::sync::BudgetExceeded`].
+    ///
+    /// # Errors
+    ///
+    /// Refuses a budget below one entry.
+    pub fn with_session_budget(self, bytes: usize) -> Result<Self, ParamsError> {
+        if bytes < MIN_FRAME_BUDGET {
+            return Err(ParamsError::SessionBudget(bytes));
+        }
+        Ok(Self {
+            session_budget: bytes,
             ..self
         })
     }
@@ -124,6 +149,11 @@ impl Params {
         self.frame_budget
     }
 
+    /// The byte budget for one session's reconciliation reads.
+    pub const fn session_budget(&self) -> usize {
+        self.session_budget
+    }
+
     /// The most IDs one entry carries. Two such entries always fit one frame.
     const fn ids_per_entry(&self) -> usize {
         let per = self.frame_budget / 64;
@@ -137,6 +167,7 @@ impl Default for Params {
             k: DEFAULT_K,
             t: DEFAULT_T,
             frame_budget: DEFAULT_FRAME_BUDGET,
+            session_budget: DEFAULT_SESSION_BUDGET,
         }
     }
 }

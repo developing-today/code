@@ -42,6 +42,18 @@ const BATCH_EVENTS: usize = 256;
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
 
+/// A range session read past its session budget during reconciliation. It is raised before the
+/// frame that would pass the budget is buffered, so `read` never exceeds `budget`. The store is
+/// untouched: reconciliation writes nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the range session would read past its {budget}-byte budget ({read} bytes read so far)")]
+pub struct BudgetExceeded {
+    /// The session's budget, from [`Params::session_budget`].
+    pub budget: usize,
+    /// Bytes the session had read when it refused the frame.
+    pub read: usize,
+}
+
 /// What one session did on this side.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Outcome {
@@ -418,6 +430,8 @@ fn flush(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use super::*;
@@ -761,6 +775,65 @@ mod tests {
         assert_eq!(second_a.accepted, 0);
     }
 
+    /// P3.1c: a peer that never clears `more` must not make the reader buffer without bound. This
+    /// peer sends 4 MiB of flights with `more` set, then goes silent. Against a 256 KiB session
+    /// budget, the session must end with [`BudgetExceeded`] before it buffers past the budget, and
+    /// the store must be unchanged.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_an_unbounded_flight_ends_at_the_session_budget() {
+        const PEER_BYTES: usize = 4 << 20;
+        const BUDGET: usize = 256 << 10;
+        let (_dir, mut store) = open();
+        populate(&mut store, &[(1, 3)]);
+        let before = ids(&store);
+        let server = endpoint(vec![ALPN.to_vec()]).await.unwrap();
+        let client = endpoint(vec![]).await.unwrap();
+        let target = loopback_addr(&server);
+        // One frame with `more` set and 1,000 unbounded skip entries: two bytes each on the wire.
+        let mut frame = vec![1u8, 0xE8, 0x07];
+        frame.extend(std::iter::repeat_n(0u8, 2000));
+        let sent = Arc::new(AtomicUsize::new(0));
+        let peer_sent = Arc::clone(&sent);
+        let peer = tokio::spawn(async move {
+            let incoming = server.accept().await.unwrap();
+            let conn = incoming.await.unwrap();
+            let (mut send, _recv) = conn.accept_bi().await.unwrap();
+            while peer_sent.load(Ordering::Relaxed) < PEER_BYTES {
+                let len = u32::try_from(frame.len()).unwrap().to_be_bytes();
+                if send.write_all(&len).await.is_err() || send.write_all(&frame).await.is_err() {
+                    return;
+                }
+                peer_sent.fetch_add(4 + frame.len(), Ordering::Relaxed);
+            }
+            // Silent from here on. The connection stays open until the session gives up.
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            drop(conn);
+        });
+        let conn = client.connect(target, ALPN).await.unwrap();
+        let params = Params::default().with_session_budget(BUDGET).unwrap();
+        let outcome = sync_over(&mut store, &conn, true, params, NOW, Duration::from_secs(5)).await;
+        conn.close(0u32.into(), b"done");
+        peer.abort();
+        client.close().await;
+        let err = outcome.expect_err("an unbounded flight gave a session");
+        let budget = err
+            .downcast_ref::<BudgetExceeded>()
+            .copied()
+            .expect("the error is not a BudgetExceeded");
+        assert_eq!(budget.budget, BUDGET);
+        assert!(
+            budget.read <= BUDGET,
+            "the reader buffered {} bytes past its budget",
+            budget.read
+        );
+        assert_eq!(
+            ids(&store),
+            before,
+            "a refused session leaves the store unchanged"
+        );
+        assert!(sent.load(Ordering::Relaxed) >= PEER_BYTES);
+    }
+
     /// A peer that opens a connection and then says nothing holds a range session forever, unless
     /// the session has a deadline of its own. The session must end at that deadline.
     #[tokio::test(flavor = "multi_thread")]
@@ -788,7 +861,10 @@ mod tests {
         let outcome = tokio::time::timeout(Duration::from_secs(10), session)
             .await
             .expect("the session had no deadline of its own");
-        assert!(outcome.is_err(), "a silent peer gave a session: {outcome:?}");
+        assert!(
+            outcome.is_err(),
+            "a silent peer gave a session: {outcome:?}"
+        );
         conn.close(0u32.into(), b"done");
         silent.abort();
         client.close().await;
