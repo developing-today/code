@@ -10,10 +10,20 @@
 
 ## Steps
 
-| Step | Track | Status                | Commits | Tests | Notes                 |
-| ---- | ----- | --------------------- | ------- | ----- | --------------------- |
-| P7.1 | relay | todo                  |         |       |                       |
-| P7.2 | -     | blocked on owner's go |         |       | design only           |
-| P7.3 | dht   | todo                  |         |       |                       |
-| P7.4 | -     | none now              |         |       | decision 13           |
-| P7.5 | -     | owner-blocked         |         |       | accounts and networks |
+| Step | Track | Status                | Commits            | Tests                                  | Notes                                  |
+| ---- | ----- | --------------------- | ------------------ | -------------------------------------- | -------------------------------------- |
+| P7.1 | relay | done                  | 80feb48b, ff844396 | relay_ops: 21 (14 red before the mode) | tunnel and vps modes in relay.kit.toml |
+| P7.2 | -     | blocked on owner's go |                    |                                        | design only                            |
+| P7.3 | dht   | todo                  |                    |                                        |                                        |
+| P7.4 | -     | none now              |                    |                                        | decision 13                            |
+| P7.5 | -     | owner-blocked         |                    |                                        | accounts and networks                  |
+
+## 2026-10-12T21:40:00Z Note: P7.1 relay kit modes
+
+- The kit has two modes in `connectivity/relay/relay.kit.toml`: `tunnel` (plain HTTP on 127.0.0.1:3340, no TLS table, QAD off, no unit drop-in) and `vps` (HTTP on [::]:80, TLS on [::]:443, QAD on, drop-in `iroh-relay.service.d/vps.conf`). Metrics stay on 127.0.0.1:9090 in both.
+- The shared `iroh-relay.service` no longer grants `CAP_NET_BIND_SERVICE`. A unit grants it only if its mode binds a port below 1024, so the tunnel unit grants nothing.
+- Red first: 14 of 21 `relay_ops` tests failed on the missing kit (commit 80feb48b). Green after the mode (ff844396): 21 of 21.
+- Lib suite on the head: `cargo test --lib`, 1251 passed, 0 failed, 4 ignored.
+- The S11 findings applied: `KillSignal=SIGINT` in both modes, `ConditionPathExists` for the config, metrics on loopback, no `secret_key`. Not applied: a systemd test (S11 did not run under systemd).
+- Design connectivity §4.2 step 4 now names the vps drop-in, so a VPS install gets the port capability.
+- Owner-blocked (P7.5): running either mode on a real host, with a Cloudflare Tunnel or a VPS, and checking `/ping`, `/generate_204`, and the systemd KillSignal behaviour. Not deployed here.
