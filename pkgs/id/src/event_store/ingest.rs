@@ -1810,4 +1810,60 @@ mod tests {
         let err = store.check_invariants().unwrap_err();
         assert!(err.to_string().contains("present"), "{err}");
     }
+
+    #[test]
+    fn test_an_event_ahead_of_a_voided_backlink_is_parked_and_survives_a_restart() {
+        let (signer, other) = (key(32), key(33));
+        let b0 = event(&other, 0, None, Vec::new(), "message");
+        let b1 = event(&other, 1, Some(b0.id), Vec::new(), "message");
+        let b1_rival = event(
+            &other,
+            1,
+            Some(Hash::digest(b"not the head")),
+            Vec::new(),
+            "stray",
+        );
+        // The fork voids `b1`: it stays stored and present, and it is never applied again.
+        let a1 = event(&signer, 1, Some(b1.id), Vec::new(), "message");
+        let (dir, mut store) = open();
+        ingest_all(&mut store, &[b0, b1]);
+        assert_eq!(
+            ingest(&mut store, &b1_rival),
+            Ingest::Fork {
+                author: author(&other),
+                seq: 1
+            }
+        );
+        // `a1` can never apply, so it is parked. It must not wait for `b1`, which is present.
+        assert_eq!(ingest(&mut store, &a1), Ingest::Waiting { id: a1.id });
+        store.check_invariants().unwrap();
+        drop(store);
+        let store = reopen(&dir, WaitingLimits::default(), 0);
+        store.check_invariants().unwrap();
+        assert!(store.is_waiting(&a1.id));
+    }
+
+    #[test]
+    fn test_an_event_ahead_of_a_fork_proof_header_is_parked_and_survives_a_restart() {
+        let (signer, other) = (key(34), key(35));
+        let b0 = event(&other, 0, None, Vec::new(), "message");
+        let b0_rival = event(&other, 0, None, Vec::new(), "rival");
+        // `b0` is a fork proof header once `b0_rival` arrives. It is present and never applied.
+        let a1 = event(&signer, 1, Some(b0.id), Vec::new(), "message");
+        let (dir, mut store) = open();
+        ingest_all(&mut store, std::slice::from_ref(&b0));
+        assert_eq!(
+            ingest(&mut store, &b0_rival),
+            Ingest::Fork {
+                author: author(&other),
+                seq: 0
+            }
+        );
+        assert_eq!(ingest(&mut store, &a1), Ingest::Waiting { id: a1.id });
+        store.check_invariants().unwrap();
+        drop(store);
+        let store = reopen(&dir, WaitingLimits::default(), 0);
+        store.check_invariants().unwrap();
+        assert!(store.is_waiting(&a1.id));
+    }
 }
