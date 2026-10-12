@@ -12,15 +12,15 @@
 
 ## Steps
 
-| Step  | Track    | Status  | Commits | Tests | Notes                                                                     |
-| ----- | -------- | ------- | ------- | ----- | ------------------------------------------------------------------------- |
-| P6.1  | seitan   | todo    |         |       | verify accept-message bytes and the Keybase admin handler before shipping |
-| P6.2  | seitan   | todo    |         |       |                                                                           |
-| P6.3  | invites  | todo    |         |       |                                                                           |
-| P6.4  | invites  | todo    |         |       |                                                                           |
-| P6.5  | pull     | todo    |         |       |                                                                           |
-| P6.6  | recovery | todo    |         |       |                                                                           |
-| P6.7a | cli      | todo    |         |       |                                                                           |
-| P6.7b | cli      | todo    |         |       |                                                                           |
-| P6.7c | cli      | blocked |         |       | needs Phase 5                                                             |
-| P6.8  | recovery | todo    |         |       |                                                                           |
+| Step  | Track    | Status  | Commits  | Tests                                         | Notes                                                                                                                                                           |
+| ----- | -------- | ------- | -------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P6.1  | seitan   | todo    |          |                                               | verify accept-message bytes and the Keybase admin handler before shipping                                                                                       |
+| P6.2  | seitan   | todo    |          |                                               |                                                                                                                                                                 |
+| P6.3  | invites  | done    | d85cc778 | 11 (red first: 11 failing, then green)        | Option E: paste is a standard ticket, trimmed. Link needs by=. A bad event refuses the join before any send. No event: unverified, sent (owner question 1 open) |
+| P6.4  | invites  | done    | 75646716 | 8 new (19 in tests/invites.rs); lib 1176 pass | Event: group, role, expiry, fixed bytes, role codes. Link Display. N30 in module doc                                                                            |
+| P6.5  | pull     | todo    |          |                                               |                                                                                                                                                                 |
+| P6.6  | recovery | todo    |          |                                               |                                                                                                                                                                 |
+| P6.7a | cli      | todo    |          |                                               |                                                                                                                                                                 |
+| P6.7b | cli      | todo    |          |                                               |                                                                                                                                                                 |
+| P6.7c | cli      | blocked |          |                                               | needs Phase 5                                                                                                                                                   |
+| P6.8  | recovery | todo    |          |                                               |                                                                                                                                                                 |
