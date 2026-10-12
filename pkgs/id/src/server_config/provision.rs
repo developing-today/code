@@ -553,8 +553,8 @@ mod tests {
     }
 
     /// A create by `who`, named `name`, as a user action sends it.
-    fn create_by(who: Key, name: &str) -> crate::groups::Event {
-        crate::groups::Event {
+    fn create_by(who: Key, name: &str) -> Event {
+        Event {
             id: Hash::digest(name.as_bytes()),
             author: who,
             after: Vec::new(),
