@@ -1125,7 +1125,7 @@ fn test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read() {
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .recover(&without, &with, id(3), &cast.rng)
+        .recover(&without, &with, id(3), id(3), &cast.rng)
         .expect("recover");
     assert_eq!(recovery.epoch_before, before);
     assert_ne!(
@@ -1175,14 +1175,99 @@ fn test_recovery_rejects_a_removal_that_leaves_the_device_in_the_model() {
     cast.deliver(&create, &[2, 3]);
 
     let view = cast.view();
-    let result =
-        cast.sessions
-            .get_mut(&id(1))
-            .expect("session")
-            .recover(&view, &view, id(3), &cast.rng);
+    let result = cast.sessions.get_mut(&id(1)).expect("session").recover(
+        &view,
+        &view,
+        id(3),
+        id(3),
+        &cast.rng,
+    );
     assert!(
         matches!(result, Err(SchemeError::StillInModel(_))),
         "a device the model still lists is not removed"
+    );
+}
+
+#[test]
+fn test_fork_recovery_removes_the_forked_key_and_reenrols_a_new_one() {
+    // Device 3's key forked, so its copy is no longer trusted. The managers remove that key and
+    // re-enrol the device under device 4's new key (decision 17).
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let earlier = cast.send(1, "before the fork");
+    cast.deliver(&earlier, &[2, 3]);
+
+    let mut forked = cast.sessions.remove(&id(3)).expect("session");
+    let before = cast.epoch(1);
+    let without = cast.log(
+        1,
+        Body::Member(MemberOp::Remove {
+            member: id(3),
+            successor: None,
+        }),
+    );
+    let with = cast.log(
+        1,
+        Body::Member(MemberOp::Add {
+            member: id(4),
+            role: Role::Admin,
+        }),
+    );
+
+    let recovery = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .recover(&without, &with, id(3), id(4), &cast.rng)
+        .expect("recover");
+    assert_eq!(recovery.epoch_before, before);
+    assert_ne!(
+        recovery.epoch_after, before,
+        "the procedure rotates the epoch"
+    );
+    assert!(
+        !cast.members_of(1).contains(&id(3)),
+        "the forked key is out of the group"
+    );
+    assert!(
+        cast.members_of(1).contains(&id(4)),
+        "the new key is in the group"
+    );
+
+    // The new key takes the removal and the welcome, in delivery order.
+    cast.deliver(&create, &[4]);
+    cast.deliver(&recovery.removal, &[2, 4]);
+    cast.deliver(&recovery.readd[0], &[2, 4]);
+    cast.deliver(&recovery.readd[1], &[2, 4]);
+    assert!(cast.session(4).is_welcomed(), "the new key is welcomed");
+    assert_eq!(
+        cast.members_of(4),
+        cast.model,
+        "the new key's roster matches"
+    );
+
+    // It reads from the re-enrol point on. It cannot read what was sent before its join.
+    let after = cast.send(1, "after the re-enrol");
+    assert_eq!(
+        cast.deliver(&after, &[2, 4]),
+        vec![
+            vec![text("after the re-enrol")],
+            vec![text("after the re-enrol")]
+        ]
+    );
+    assert_eq!(
+        cast.session_mut(4).process(&earlier).expect("process"),
+        vec![Received::Withheld(earlier.id())],
+        "the new key does not read a message from before its join"
+    );
+
+    // The forked copy holds the state from before the removal, so it cannot read after it.
+    assert_eq!(forked.epoch(), recovery.epoch_before);
+    assert_eq!(
+        forked.process(&after).expect("process"),
+        vec![Received::Withheld(after.id())],
+        "the forked copy cannot read a message sent after the removal"
     );
 }
 

@@ -327,22 +327,26 @@ impl Session {
         self.step(|y| EncryptionGroup::update(y, rng))
     }
 
-    /// Recovers `device` from a suspected compromise (N8): removes it, then adds it back by a join.
+    /// Recovers a device whose key is suspect: removes `removed`, then adds `added` back by a join.
+    /// A compromise (N8) keeps the device's key, so `added` is `removed`. A fork (decision 17)
+    /// replaces the key, so `added` is the device's new key.
     ///
     /// `without` is the view after the removal and `with` the view after the re-add, so `with`
-    /// lists `device` and `without` does not. The removal rotates the epoch, so the device loses the
-    /// secret it held. The re-add welcomes it into the new epoch without any earlier secret (P4.3).
-    /// This session must be a manager's: the caller is the device that performs the procedure.
+    /// lists `added` and `without` does not. The removal rotates the epoch, so the old key loses
+    /// the secret it held. The re-add welcomes `added` into the new epoch without any earlier
+    /// secret (P4.3). This session must be a manager's: the caller is the device that performs the
+    /// procedure.
     pub fn recover(
         &mut self,
         without: &GroupView,
         with: &GroupView,
-        device: Key,
+        removed: Key,
+        added: Key,
         rng: &Rng,
     ) -> Result<Recovery, SchemeError> {
         let epoch_before = self.epoch();
-        let removal = self.remove(without, device, rng)?;
-        let readd = self.add_from_join(with, device, rng)?;
+        let removal = self.remove(without, removed, rng)?;
+        let readd = self.add_from_join(with, added, rng)?;
         Ok(Recovery {
             removal,
             readd,
