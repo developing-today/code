@@ -159,6 +159,7 @@ impl Orderer {
             waiting: BTreeMap::new(),
             deliverable: VecDeque::new(),
             welcomed: false,
+            welcome: None,
         }
     }
 }
@@ -184,9 +185,29 @@ pub struct OrdererState {
     deliverable: VecDeque<Hash>,
     /// Set by a create or a welcome. Nothing is delivered before it.
     welcomed: bool,
+    /// The create or welcome that opened delivery. It is delivered before any pending message that
+    /// is not in its own past (P4.7).
+    welcome: Option<Hash>,
 }
 
 impl OrdererState {
+    /// The messages `id` names, directly or through the messages they name.
+    fn past_of(&self, id: Hash) -> BTreeSet<Hash> {
+        let mut past = BTreeSet::new();
+        let mut pending = vec![id];
+        while let Some(next) = pending.pop() {
+            let Some(envelope) = self.messages.get(&next) else {
+                continue;
+            };
+            for named in &envelope.previous {
+                if past.insert(*named) {
+                    pending.push(*named);
+                }
+            }
+        }
+        past
+    }
+
     /// Publishes our own message. It names the control messages we have seen, and it is ready.
     fn publish(&mut self, content: Content) -> Result<Envelope, OrdererError> {
         let seq = self.next_seq;
@@ -276,9 +297,10 @@ impl Ordering<VerifyingKey, Hash, Roster> for Orderer {
 
     fn set_welcome(
         mut y: Self::State,
-        _message: &Self::Message,
+        message: &Self::Message,
     ) -> Result<Self::State, Self::Error> {
         y.welcomed = true;
+        y.welcome = Some(message.id);
         Ok(y)
     }
 
@@ -288,7 +310,26 @@ impl Ordering<VerifyingKey, Hash, Roster> for Orderer {
         if !y.welcomed {
             return Ok((y, None));
         }
-        let Some(id) = y.deliverable.pop_front() else {
+        // The welcome comes after its own past and before anything else. A control message that is
+        // concurrent with the join would otherwise reach the crate before the joiner is welcomed,
+        // and the crate would apply it to a roster that is still empty (P4.7).
+        let next = match y.welcome {
+            Some(welcome) if !y.ready.contains(&welcome) => return Ok((y, None)),
+            Some(welcome) if y.deliverable.contains(&welcome) => {
+                let past = y.past_of(welcome);
+                let index = y
+                    .deliverable
+                    .iter()
+                    .position(|id| past.contains(id))
+                    .or_else(|| y.deliverable.iter().position(|id| *id == welcome));
+                let Some(index) = index else {
+                    return Ok((y, None));
+                };
+                y.deliverable.remove(index)
+            }
+            _ => y.deliverable.pop_front(),
+        };
+        let Some(id) = next else {
             return Ok((y, None));
         };
         let Some(envelope) = y.messages.get(&id).cloned() else {

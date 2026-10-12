@@ -206,6 +206,14 @@ impl Session {
         self.state.as_ref().map_or(0, |y| y.secrets.len())
     }
 
+    /// The IDs of every group secret this device holds. Two members agree on the epochs when these
+    /// sets are equal, even if their latest epoch differs (concurrent changes, P4.7).
+    pub fn epoch_set(&self) -> BTreeSet<GroupSecretId> {
+        self.state
+            .as_ref()
+            .map_or_else(BTreeSet::new, |y| y.secrets.ids().copied().collect())
+    }
+
     /// The members the crate's roster holds, as group-model keys.
     pub fn members(&self) -> Result<BTreeSet<Key>, SchemeError> {
         let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
