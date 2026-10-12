@@ -161,4 +161,35 @@ proptest! {
         let at = cut.index(event.bytes.len());
         prop_assert!(decode(&event.bytes[..at]).is_err(), "a prefix of {at} bytes was accepted");
     }
+
+    /// The sequence and the backlink must agree, and the decoder applies the builder's rule:
+    /// sequence 0 takes no backlink, and every later sequence names one. A signed header that
+    /// breaks the rule is refused, whatever the sequence number, and one that keeps it is
+    /// accepted. p2panda's own decoder accepts both kinds, so this is the only check.
+    #[test]
+    fn test_decoder_applies_the_sequence_and_backlink_rule(
+        seq in 0u32..300,
+        backlink in prop::option::of(hash()),
+    ) {
+        let raw = Header::<ChainExt>::builder()
+            .seq_num(seq)
+            .backlink(backlink)
+            .build(
+                &key(),
+                ChainExt {
+                    kind: "m".to_owned(),
+                    group: None,
+                    after: Vec::new(),
+                },
+            )
+            .encode();
+        let agrees = (seq == 0) == backlink.is_none();
+        prop_assert_eq!(
+            decode(&raw).is_ok(),
+            agrees,
+            "sequence {}, backlink {:?}",
+            seq,
+            backlink
+        );
+    }
 }

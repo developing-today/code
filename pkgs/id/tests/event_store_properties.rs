@@ -22,9 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use common::ingest::{Canonical, DELIVERY_LIMIT, MemStorage, canonical, deliver_within};
 use id::chain::{ChainExt, Event, sign};
-use id::event_store::{Chain, EventStore, Ingest};
+use id::event_store::{Chain, EventStore, Ingest, Refusal};
 use id::waiting::{AuthorKey, WaitingLimits};
-use p2panda_core::{Hash, SeqNum, SigningKey};
+use p2panda_core::{Hash, Header, SeqNum, SigningKey};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
@@ -401,6 +401,47 @@ fn within_limit<T: Send + 'static>(
         Err(_) => Err(format!(
             "the deliveries did not finish within {DELIVERY_LIMIT:?}: an event made the store spin"
         )),
+    }
+}
+
+proptest! {
+    #![proptest_config(config())]
+
+    /// At ingest, a header that breaks the sequence and backlink rule is refused as malformed,
+    /// whatever its sequence number. It is not parked or held, so it takes no waiting slot and
+    /// raises no conflict. A header that keeps the rule is not refused for it.
+    #[test]
+    fn test_a_header_breaking_the_sequence_rule_is_refused_at_ingest(
+        seq in 0u32..40,
+        backlink in prop::option::of(any::<[u8; 32]>()),
+    ) {
+        let raw = Header::<ChainExt>::builder()
+            .seq_num(seq)
+            .backlink(backlink.map(Hash::from))
+            .build(
+                &SigningKey::from_bytes(&[7; 32]),
+                ChainExt {
+                    kind: "m".to_owned(),
+                    group: None,
+                    after: Vec::new(),
+                },
+            )
+            .encode();
+        let mut store = EventStore::open_with(&MemStorage::default(), WaitingLimits::default(), 0)
+            .map_err(|err| TestCaseError::fail(err.to_string()))?;
+        let outcome = store
+            .ingest(&raw, 0)
+            .map_err(|err| TestCaseError::fail(err.to_string()))?;
+        let agrees = (seq == 0) == backlink.is_none();
+        if agrees {
+            prop_assert!(!matches!(outcome, Ingest::Refused(_)), "refused: {outcome:?}");
+        } else {
+            prop_assert!(
+                matches!(outcome, Ingest::Refused(Refusal::Malformed(_))),
+                "sequence {seq} with backlink {backlink:?} gave {outcome:?}"
+            );
+            prop_assert_eq!(store.waiting_len(), 0, "a malformed header was held");
+        }
     }
 }
 
