@@ -95,3 +95,62 @@ Base: `b6f1a1d5` (phase-5). Track: `p5-bodies`. Commits, in order:
 ### Next
 
 P5.4 to P5.7 are not started. P5.4 needs the document content events on the same header pattern, if it uses the same extension. #185 and #160 wait on the owner.
+
+---
+
+## 2026-10-12T17-16-20Z Progress: documents (P5.4)
+
+Base: `37a8344b` (phase-5). Track: `p5-docs`. Commits, in order:
+
+- `b36e26dc` `feat(rust): documents as signed events with content hashes [P5.4]`
+- `9bcd86fa` `test(rust): documents converge over events and blob fetch [P5.4]`
+
+### Steps
+
+| Step           | Status                                                          | Commits                | Tests                                                          |
+| -------------- | --------------------------------------------------------------- | ---------------------- | -------------------------------------------------------------- |
+| P5.4 Documents | done for the event and the blob path. Live editing is not built | `b36e26dc`, `9bcd86fa` | `tests/documents.rs` (5), unit tests in `src/documents.rs` (4) |
+
+### Red, then green
+
+- Red. `tests/documents.rs` was written first. Its first build failed, because `id::documents` did not exist. With the types in place and `EventStore::documents` returning no rows, three tests failed at the record check (`left: 0`, `right: 1`). The signing check and the body refusal passed, as they should.
+- Green. With `documents()` reading applied `document.put` events, `tests/documents.rs` passes 5 of 5.
+
+### Decisions
+
+- A document is a `document.put` event. Its header names the content by BLAKE3 hash, its size, and its media type (`ChainExt.document`, carried the same way the tag operation is, #182). The event takes no payload body, and a body beside it is refused on receipt.
+- The bytes are a blob. iroh-blobs verifies them as they arrive, and the blob gate decides who may fetch them. A replica that keeps fetched bytes calls `DocumentRef::verify_content` first, which checks the length, then the hash. `blob_hash()` is the content hash, since both are BLAKE3 over the same bytes.
+- Tags on a document are `tag.set` and `tag.clear` events whose subject is the document event's ID. A clear removes a tag claim, never the document, which stays in `documents()`.
+- Store format: unchanged. The `document` field is left out of the encoding when it is `None`, so existing events keep their bytes. No version bump.
+- Tag value limit: `MAX_VALUE_BYTES` stays at 512 (owner to confirm). Clear authority (#185) and the user subject (#160) are not touched.
+
+### Changes to the plan
+
+- The P5.4 row also asks for snapshots from the collab server, and a save on explicit save and on idle close. Not built. Nothing produces a `document.put` from the ProseMirror collab server. The trigger is task 10, item 6.
+- Design §9.3's inline `json` and `bytes` payloads are not built. Bodies do not travel with sync (`store_traits.rs`), and the header holds byte strings of at most 512 bytes, so every document is a blob.
+- The blob gate still has no reference index producer. The test gives `WorldAccess` a fixed table, as `tests/blob_gate.rs` does.
+- The test hands event bytes to `EventStore::ingest`, the path sync takes once it has the bytes. It does not run a live `/id-sync/1` session.
+
+### Open
+
+- Two property tests fail on random seeds. Both fail the same way on `37a8344b`, checked in a scratch copy of HEAD with its own target directory. Neither is caused by this track.
+  - `tests/tag_claims.rs::test_the_compacted_fold_agrees_with_the_causal_walk` (P5.3). Seeds `12233682913237194312` (writers 3, steps 32) and `14490625886382135617` (writers 3, steps 23).
+  - `tests/tag_claims.rs::test_the_live_set_is_the_oracle_under_any_delivery_order` (P5.1). Seed `9408785462023634370` (steps 28).
+  - The seeds are not in `tests/tag_claims.proptest-regressions`, which stays at HEAD. The fix belongs to the tags track, and the seeds go in as regressions with it.
+- Lib-only build (`--no-default-features`) fails on `src/log_sync.rs:49-50` and `src/groups/worlds.rs:30`: `crate::world` and `crate::world_net` are not gated. The same imports are at HEAD.
+- `Staged::keeps` in `src/event_store/ingest.rs` has no call sites at HEAD (a dead-code warning, not from this track).
+
+### Test results
+
+- `cargo test --lib`: 1108 passed, 0 failed, 3 ignored. Before this track it was 1104; the 4 new are the unit tests in `src/documents.rs`.
+- `cargo test --test documents`: 5 passed. Before the query existed, 2 passed and 3 failed.
+- Also pass: `tag_index` 4, `voiding_scenarios` 12, `voiding_properties` 2, `chain_properties` 12, `production_ingest` 10, `regression_replay` 8, `blob_gate` 8, `event_store_properties` 11 (1 ignored).
+- `tag_claims`: 8 passed, 2 failed. The two failures are the random properties under Open.
+- Clippy on the lib and the tests: no new warnings from this track. The one from the new test file, a redundant clone, is removed.
+
+### Next
+
+- P5.5 search reads `tag_claims()`, and needs nothing from documents. A document is the subject of ordinary claims.
+- P5.6 content on removal: no code yet. `documents()` keeps a document until its record says otherwise. The removal path is not tested here.
+- P5.7 aliases are tags. The server primary alias needs a decision.
+- Still open: the blob reference index producer, and the collab-server trigger for document events.
