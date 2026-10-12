@@ -14,7 +14,7 @@ use redb::{ReadableDatabase, ReadableTable};
 use super::resolve::author_of;
 use super::{APPLIED, EVENTS, EventStore, PROOF_HEADERS, StoreError, corrupt, decode_stored};
 use crate::chain::Event;
-use crate::tag_claims::{Applied, Claim, is_tag_kind, live_claims};
+use crate::tag_claims::{Applied, Claim, compacted_claims, is_tag_kind};
 use crate::tag_index::TagIndex;
 
 /// The events an event names: its `after` hashes, and its backlink.
@@ -73,7 +73,7 @@ impl EventStore {
                 .entry(header.id)
                 .or_insert_with(|| parents_of(&header));
         }
-        Ok(live_claims(&applied, &parents))
+        Ok(compacted_claims(&applied, &parents))
     }
 
     /// The tag index over the live claims, built from [`EventStore::tag_claims`].

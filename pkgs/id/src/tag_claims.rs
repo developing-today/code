@@ -16,6 +16,10 @@
 //! text inside the header, and the header decoder declares text at most 512 bytes long, so a value
 //! is at most [`MAX_VALUE_BYTES`].
 //!
+//! Two folds give the live claims. [`live_claims`] walks the causal past of each clear. It is the
+//! reference. [`compacted_claims`] makes one pass over the parent links and keeps, for each event,
+//! only the live claims in its past. Both give the same result (P5.3, #184).
+//!
 //! The old iroh-docs tag store in [`crate::tags`] is a separate model and is not read here.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -213,6 +217,89 @@ pub fn live_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> V
         .collect()
 }
 
+/// The live claims, folded in one pass over the parent links (P5.3, #184).
+///
+/// Each event gets the set of live claims in its causal past, including itself. The set of an
+/// event is built from its parents' sets, so each event is visited once. A clear removes each
+/// claim it names that is in its parents' sets: those are the claims its author had seen. A
+/// removed claim is dropped from every set built after it, so a set holds only claims that are
+/// still live. Removal is final, so dropping it changes no later decision.
+///
+/// The result is the same as [`live_claims`], and it is sorted by claim ID. The walk for a clear is
+/// over the live claims in its parents' sets, not over its whole past. A clear from an author who
+/// had not seen a claim leaves that claim live, as [`live_claims`] does.
+#[must_use]
+pub fn compacted_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> Vec<Claim> {
+    let by_id: HashMap<Hash, &Applied> = applied.iter().map(|event| (event.id, event)).collect();
+    // The live claims in each event's causal past, including the event if it is a live claim.
+    let mut live_past: HashMap<Hash, HashSet<Hash>> = HashMap::new();
+    let mut removed: HashSet<Hash> = HashSet::new();
+    let mut open: HashSet<Hash> = HashSet::new();
+    for root in parents.keys().copied() {
+        // A depth-first walk in post-order: an event is folded after its parents.
+        let mut stack = vec![(root, false)];
+        while let Some((id, folded)) = stack.pop() {
+            if live_past.contains_key(&id) {
+                continue;
+            }
+            let named: &[Hash] = match parents.get(&id) {
+                Some(named) => named,
+                None => &[],
+            };
+            if !folded {
+                if !open.insert(id) {
+                    continue;
+                }
+                stack.push((id, true));
+                stack.extend(
+                    named
+                        .iter()
+                        .filter(|parent| !live_past.contains_key(*parent))
+                        .map(|parent| (*parent, false)),
+                );
+                continue;
+            }
+            open.remove(&id);
+            let mut past: HashSet<Hash> = HashSet::new();
+            for parent in named {
+                if let Some(claims) = live_past.get(parent) {
+                    past.extend(claims.iter().filter(|claim| !removed.contains(*claim)));
+                }
+            }
+            match by_id.get(&id).map(|event| &event.op) {
+                Some(TagOp::Clear { claims }) => {
+                    removed.extend(claims.iter().filter(|claim| past.contains(*claim)));
+                }
+                Some(TagOp::Set { .. }) if !removed.contains(&id) => {
+                    past.insert(id);
+                }
+                _ => {}
+            }
+            live_past.insert(id, past);
+        }
+    }
+    let mut live: Vec<Claim> = applied
+        .iter()
+        .filter(|event| !removed.contains(&event.id))
+        .filter_map(|event| match &event.op {
+            TagOp::Set {
+                subject,
+                name,
+                value,
+            } => Some(Claim {
+                id: event.id,
+                author: event.author,
+                subject: *subject,
+                name: name.clone(),
+                value: value.clone(),
+            }),
+            TagOp::Clear { .. } => None,
+        })
+        .collect();
+    live.sort_by_key(|claim| *claim.id.as_bytes());
+    live
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -286,5 +373,26 @@ mod tests {
                 .collect(),
         };
         assert!(check_op(CLEAR_KIND, &op).is_err());
+    }
+
+    #[test]
+    fn test_the_compacted_fold_keeps_a_claim_a_clear_did_not_see() {
+        // `b` (event 3) names claim 1, but its past is only itself, so claim 1 stays live.
+        let applied = [set(1, 9, "city"), clear(3, &[1])];
+        let parents: HashMap<Hash, Vec<Hash>> = HashMap::from([(hash(3), vec![])]);
+        let live = compacted_claims(&applied, &parents);
+        assert_eq!(live.iter().map(|c| c.id).collect::<Vec<_>>(), vec![hash(1)]);
+        assert_eq!(live, live_claims(&applied, &parents));
+    }
+
+    #[test]
+    fn test_the_compacted_fold_removes_a_claim_its_clear_saw_through_another_event() {
+        // Claim 1 is in the past of clear 4 through event 2, which names claim 1.
+        let applied = [set(1, 9, "city"), set(2, 9, "seen"), clear(4, &[1])];
+        let parents: HashMap<Hash, Vec<Hash>> =
+            HashMap::from([(hash(2), vec![hash(1)]), (hash(4), vec![hash(2)])]);
+        let live = compacted_claims(&applied, &parents);
+        assert_eq!(live.iter().map(|c| c.id).collect::<Vec<_>>(), vec![hash(2)]);
+        assert_eq!(live, live_claims(&applied, &parents));
     }
 }
