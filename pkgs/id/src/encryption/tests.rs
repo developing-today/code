@@ -7,7 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use p2panda_core::{SigningKey, VerifyingKey};
+use p2panda_core::cbor::encode_cbor;
+use p2panda_core::{Hash, SigningKey, VerifyingKey};
 use p2panda_encryption::crypto::Rng;
 use p2panda_encryption::crypto::x25519::SecretKey as IdentitySecret;
 use p2panda_encryption::data_scheme::group_secret::GroupSecretId;
@@ -17,6 +18,7 @@ use p2panda_encryption::traits::GroupMessage;
 use proptest::prelude::*;
 
 use super::history::{HISTORY_WAIT, HistoryAnswer, HistoryError, ask_member};
+use super::welcome::{CHUNK_HEADER_BYTES, Reassembly, WelcomeError, split};
 use super::*;
 use crate::groups::Key;
 
@@ -562,6 +564,162 @@ async fn test_a_request_with_no_answer_times_out_cleanly() {
     assert_eq!(
         outcome,
         Err(HistoryError::Timeout(Duration::from_millis(20)))
+    );
+}
+
+// --- welcome chunks -------------------------------------------------------------------------------
+
+/// A frame small enough that a welcome of a few epochs needs several chunks. A chunk is then
+/// `FRAME - CHUNK_HEADER_BYTES` bytes of payload.
+const SMALL_FRAME: usize = 512;
+
+/// The group of 1, 2 and 3 after `rotations` updates, with 4 holding every control message. Returns
+/// the full welcome for 4, and the update that was sent last.
+fn full_welcome(cast: &mut Cast, rotations: usize) -> (Envelope, Envelope) {
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+    let mut last = create;
+    for _ in 0..rotations {
+        last = cast.update(1);
+        cast.deliver(&last, &[2, 3, 4]);
+    }
+    (cast.add(1, 4), last)
+}
+
+/// A full welcome above the frame cap is split into checked chunks, reassembled, and processed.
+#[test]
+fn test_a_full_welcome_above_the_cap_is_split_and_reassembled() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+
+    let chunks = split(&add, SMALL_FRAME).expect("split");
+    assert!(chunks.len() > 1, "a full welcome above the cap is split");
+    for chunk in &chunks {
+        let encoded = encode_cbor(chunk).expect("encode").len();
+        assert!(
+            encoded <= SMALL_FRAME,
+            "chunk {} fits the frame",
+            chunk.index
+        );
+        assert!(
+            encoded - chunk.bytes.len() <= CHUNK_HEADER_BYTES,
+            "the header of chunk {} is within its budget",
+            chunk.index
+        );
+    }
+
+    let mut joiner = Reassembly::default();
+    let mut whole = None;
+    for chunk in chunks {
+        if let Some(envelope) = joiner.push(&chunk).expect("in order and intact") {
+            whole = Some(envelope);
+        }
+    }
+    let whole = whole.expect("the last chunk completes the welcome");
+    joiner.finish().expect("complete");
+
+    assert_eq!(
+        cast.sessions
+            .get_mut(&id(4))
+            .expect("session")
+            .process(&whole)
+            .expect("welcome"),
+        Vec::new()
+    );
+    assert!(
+        cast.session(4).is_welcomed(),
+        "the reassembled welcome welcomes"
+    );
+    assert_eq!(cast.session(4).epoch_count(), 21, "every epoch");
+}
+
+/// A welcome that fits one frame is one chunk, so every welcome takes the same path.
+#[test]
+fn test_a_welcome_within_one_frame_is_one_chunk() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 2);
+    let chunks = split(&add, crate::world_session::MAX_FRAME_BYTES).expect("split");
+    assert_eq!(chunks.len(), 1);
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks[0]).expect("one chunk").is_some());
+}
+
+/// A chunk whose bytes were altered in transit is refused as it arrives.
+#[test]
+fn test_a_corrupted_chunk_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    chunks[1].bytes[0] ^= 0x01;
+
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks.remove(0)).expect("chunk 0").is_none());
+    assert_eq!(
+        joiner.push(&chunks.remove(0)).err(),
+        Some(WelcomeError::AlteredChunk { index: 1 })
+    );
+}
+
+/// A missing chunk is refused: the next one that arrives is out of sequence, and a reassembly that
+/// ends early is incomplete.
+#[test]
+fn test_a_missing_chunk_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    assert!(chunks.len() >= 3, "the test needs a middle chunk");
+
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks.remove(0)).expect("chunk 0").is_none());
+    let skipped = chunks.remove(0);
+    assert_eq!(skipped.index, 1);
+    assert_eq!(
+        joiner.push(&chunks.remove(0)).err(),
+        Some(WelcomeError::OutOfSequence {
+            expected: 1,
+            got: 2
+        })
+    );
+    assert!(matches!(
+        joiner.finish(),
+        Err(WelcomeError::Incomplete { received: 1, .. })
+    ));
+}
+
+/// A chunk that checks and keeps its own digest, but carries altered bytes, passes each check and
+/// fails the whole. The welcome is refused before it is decoded.
+#[test]
+fn test_an_altered_welcome_with_consistent_checks_is_refused_before_decoding() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, _) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    let last = chunks.len() - 1;
+    chunks[last].bytes[0] ^= 0x01;
+    chunks[last].check = Hash::digest(&chunks[last].bytes);
+
+    let mut joiner = Reassembly::default();
+    let mut outcome = Ok(None);
+    for chunk in chunks {
+        outcome = joiner.push(&chunk);
+    }
+    assert_eq!(outcome.err(), Some(WelcomeError::AlteredWelcome));
+}
+
+/// A chunk of another welcome does not join this one.
+#[test]
+fn test_a_chunk_of_another_welcome_is_refused() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let (add, update) = full_welcome(&mut cast, 20);
+    let mut chunks = split(&add, SMALL_FRAME).expect("split");
+    let other = split(&update, SMALL_FRAME).expect("split");
+
+    let mut joiner = Reassembly::default();
+    assert!(joiner.push(&chunks.remove(0)).expect("chunk 0").is_none());
+    assert_eq!(
+        joiner
+            .push(&other.into_iter().nth(1).expect("chunk 1 of the other"))
+            .err(),
+        Some(WelcomeError::OtherWelcome)
     );
 }
 
