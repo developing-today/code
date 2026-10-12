@@ -241,6 +241,8 @@ pub enum TwoPartyCiphertext {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TwoPartyPlaintext {
     /// Secret message for the receiver.
+    // Scheme v1 (P4.4): a byte string on the wire, not an array of integers.
+    #[serde(with = "serde_bytes")]
     plaintext: Vec<u8>,
 
     /// Newly generated secret for the receiver, to be used in future 2SM rounds.
