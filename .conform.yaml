@@ -10,6 +10,7 @@ policies:
           - laptop-framework
           - nix
           - rust
+          - id
           - nvim
           - vim
           - vi
