@@ -44,10 +44,19 @@ pub const DEFAULT_T: usize = 16;
 pub const FRAME_CAP: usize = 16 << 20;
 /// The default byte budget for one frame: a quarter of the cap, so one frame is never near it.
 pub const DEFAULT_FRAME_BUDGET: usize = 4 << 20;
-/// The default byte budget for one session's reconciliation reads: 64 MiB. It holds the 17.6 MB
-/// ID reply of a 524,288-event bootstrap with room to spare, and it bounds what a peer can make
-/// one session buffer.
+/// The default session budget for reconciliation reads: 64 MiB.
+///
+/// It holds the 17.6 MB ID reply of a 524,288-event bootstrap with room to spare. It also bounds
+/// what a peer can make one session buffer.
 pub const DEFAULT_SESSION_BUDGET: usize = 64 << 20;
+/// Bytes a decoded entry costs against the session budget, on top of its wire bytes.
+///
+/// That is the entry's own size, and the heap block that holds its bound (at most [`KEY_LEN`]
+/// bytes, with allocator slack). Without it, a peer's two-byte entries would cost about thirty
+/// times their wire size.
+pub const ENTRY_CHARGE: usize = size_of::<Entry>() + KEY_LEN + 16;
+// Two bytes per ID, twice over, for a store at the 524,288-event limit: the bootstrap fits.
+const _: () = assert!(DEFAULT_SESSION_BUDGET >= 2 * 32 * 524_288);
 /// The smallest budget that fits an entry.
 const MIN_FRAME_BUDGET: usize = 256;
 /// Bytes reserved in a frame for its `more` flag and its entry count.
@@ -543,6 +552,21 @@ pub fn decode_frame(bytes: &[u8]) -> Result<(bool, Vec<Entry>)> {
     Ok((more, out))
 }
 
+/// The entry count in one frame's header. A reader calls it before it decodes the frame, so it
+/// can charge the entries against a budget first.
+///
+/// # Errors
+///
+/// Returns an error for an empty frame, an unknown flag, or a count that is not a varint.
+pub fn frame_entry_count(bytes: &[u8]) -> Result<usize> {
+    let mut r = Reader { buf: bytes };
+    match r.byte()? {
+        0 | 1 => {}
+        m => bail!("unknown frame flag {m}"),
+    }
+    r.varint()
+}
+
 /// Checks a whole flight's bounds: each upper bound sorts above the one before it, and only the
 /// last entry may be +infinity. A flight that breaks this would make a range with `lo > hi`.
 ///
@@ -731,6 +755,38 @@ mod tests {
             p.with_frame_budget(FRAME_CAP).unwrap().frame_budget(),
             FRAME_CAP
         );
+    }
+
+    #[test]
+    fn test_session_budget_refuses_below_one_entry() {
+        let p = Params::default();
+        assert_eq!(p.session_budget(), 64 << 20);
+        assert_eq!(
+            p.with_session_budget(100),
+            Err(ParamsError::SessionBudget(100))
+        );
+        assert_eq!(p.with_session_budget(256).unwrap().session_budget(), 256);
+    }
+
+    /// The count is read from the header alone, so a reader can charge it before it decodes.
+    #[test]
+    fn test_frame_entry_count_reads_the_header_only() {
+        let p = party(set(41, 300, false));
+        let empty = party(Vec::new());
+        let mut learned = Vec::new();
+        let params = Params::new(16, 400)
+            .unwrap()
+            .with_frame_budget(512)
+            .unwrap();
+        let msg = p.respond(&[empty.full_range()], params, &mut learned);
+        let wire = frames(&msg, params.frame_budget()).unwrap();
+        assert!(wire.len() > 1);
+        for frame in &wire {
+            let (_, entries) = decode_frame(frame).unwrap();
+            assert_eq!(frame_entry_count(frame).unwrap(), entries.len());
+        }
+        assert!(frame_entry_count(&[]).is_err(), "an empty frame");
+        assert!(frame_entry_count(&[2, 0]).is_err(), "unknown frame flag");
     }
 
     #[test]

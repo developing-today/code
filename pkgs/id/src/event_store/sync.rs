@@ -11,7 +11,9 @@
 //! 3. **Apply.** The receiver verifies each event, checks it was expected, and decides the
 //!    events in batches, in one write transaction per batch, as the store's ingest does.
 //!
-//! K and T are local. The frame budget is local too: it only has to stay under the frame cap.
+//! K, T, the frame budget and the session budget are local. The frame budget only has to stay
+//! under the frame cap. A session reads at most its session budget in reconciliation, and ends
+//! with [`BudgetExceeded`] past it, before the store is written.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, MutexGuard};
@@ -42,9 +44,10 @@ const BATCH_EVENTS: usize = 256;
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
 
-/// A range session read past its session budget during reconciliation. It is raised before the
-/// frame that would pass the budget is buffered, so `read` never exceeds `budget`. The store is
-/// untouched: reconciliation writes nothing.
+/// A range session read past its session budget during reconciliation.
+///
+/// It is raised before the frame that would pass the budget is buffered, so `read` never exceeds
+/// `budget`. The store is untouched: reconciliation writes nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("the range session would read past its {budget}-byte budget ({read} bytes read so far)")]
 pub struct BudgetExceeded {
@@ -252,11 +255,53 @@ async fn write_flight(
     Ok(())
 }
 
-/// Reads frames until one without the `more` flag, and returns the message's entries.
-async fn read_flight(recv: &mut RecvStream) -> Result<Vec<Entry>> {
+/// The bytes one session has read in reconciliation, against its budget.
+#[derive(Debug)]
+struct ReadBudget {
+    budget: usize,
+    read: usize,
+}
+
+impl ReadBudget {
+    /// Charges `cost` bytes. A charge that would pass the budget is refused, and nothing is
+    /// charged.
+    fn charge(&mut self, cost: usize) -> Result<(), BudgetExceeded> {
+        let total = self.read.saturating_add(cost);
+        if total > self.budget {
+            return Err(BudgetExceeded {
+                budget: self.budget,
+                read: self.read,
+            });
+        }
+        self.read = total;
+        Ok(())
+    }
+}
+
+/// Reads one frame of a flight. Its wire bytes are charged before its body is buffered, and its
+/// entries before it is decoded, so a frame that would pass the budget is refused unbuffered.
+async fn read_flight_frame(
+    recv: &mut RecvStream,
+    budget: &mut ReadBudget,
+) -> Result<(bool, Vec<Entry>)> {
+    let mut len = [0u8; 4];
+    recv.read_exact(&mut len).await?;
+    let len = u32::from_be_bytes(len) as usize;
+    ensure!(len <= range::FRAME_CAP, "frame announces {len} bytes");
+    budget.charge(4 + len)?;
+    let mut buf = vec![0u8; len];
+    recv.read_exact(&mut buf).await?;
+    let entries = range::frame_entry_count(&buf)?;
+    budget.charge(entries.saturating_mul(range::ENTRY_CHARGE))?;
+    decode_frame(&buf)
+}
+
+/// Reads frames until one without the `more` flag, and returns the message's entries. The
+/// flight is held whole, so the session's budget bounds it.
+async fn read_flight(recv: &mut RecvStream, budget: &mut ReadBudget) -> Result<Vec<Entry>> {
     let mut entries = Vec::new();
     loop {
-        let (more, mut part) = decode_frame(&read_frame(recv).await?)?;
+        let (more, mut part) = read_flight_frame(recv, budget).await?;
         entries.append(&mut part);
         if !more {
             break;
@@ -305,6 +350,10 @@ async fn run(
     };
     let mut out = Outcome::default();
     let party = Party::new(store.sync_entries()?)?;
+    let mut budget = ReadBudget {
+        budget: params.session_budget(),
+        read: 0,
+    };
 
     // 1. Reconciliation. The same loop as S7's session, with each message as frames.
     let mut learned: Vec<Id> = Vec::new();
@@ -320,7 +369,7 @@ async fn run(
         .await?;
     }
     loop {
-        let incoming = read_flight(&mut recv).await?;
+        let incoming = read_flight(&mut recv, &mut budget).await?;
         if all_skip(&incoming) {
             break;
         }
@@ -430,8 +479,6 @@ fn flush(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use super::*;
@@ -792,18 +839,17 @@ mod tests {
         // One frame with `more` set and 1,000 unbounded skip entries: two bytes each on the wire.
         let mut frame = vec![1u8, 0xE8, 0x07];
         frame.extend(std::iter::repeat_n(0u8, 2000));
-        let sent = Arc::new(AtomicUsize::new(0));
-        let peer_sent = Arc::clone(&sent);
         let peer = tokio::spawn(async move {
             let incoming = server.accept().await.unwrap();
             let conn = incoming.await.unwrap();
             let (mut send, _recv) = conn.accept_bi().await.unwrap();
-            while peer_sent.load(Ordering::Relaxed) < PEER_BYTES {
+            let mut written = 0;
+            while written < PEER_BYTES {
                 let len = u32::try_from(frame.len()).unwrap().to_be_bytes();
                 if send.write_all(&len).await.is_err() || send.write_all(&frame).await.is_err() {
                     return;
                 }
-                peer_sent.fetch_add(4 + frame.len(), Ordering::Relaxed);
+                written += 4 + frame.len();
             }
             // Silent from here on. The connection stays open until the session gives up.
             tokio::time::sleep(Duration::from_secs(120)).await;
@@ -831,7 +877,30 @@ mod tests {
             before,
             "a refused session leaves the store unchanged"
         );
-        assert!(sent.load(Ordering::Relaxed) >= PEER_BYTES);
+    }
+
+    /// A charge that passes the budget is refused and charges nothing, so `read` stays at or under
+    /// the budget. A charge that lands exactly on the budget is accepted.
+    #[test]
+    fn test_read_budget_refuses_the_charge_that_passes_the_budget() {
+        let mut budget = ReadBudget {
+            budget: 100,
+            read: 0,
+        };
+        assert!(budget.charge(60).is_ok());
+        assert!(
+            budget.charge(40).is_ok(),
+            "landing on the budget is allowed"
+        );
+        let err = budget.charge(1).unwrap_err();
+        assert_eq!(
+            err,
+            BudgetExceeded {
+                budget: 100,
+                read: 100
+            }
+        );
+        assert_eq!(budget.read, 100, "a refused charge is not counted");
     }
 
     /// A peer that opens a connection and then says nothing holds a range session forever, unless
