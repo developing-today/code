@@ -1235,10 +1235,16 @@ func (r *Registry) leaseTTL() time.Duration {
 	return r.set.Duration("daemon.leaseTTL")
 }
 
-// Close shuts every pool down. The caller is responsible for persisting the
+// Close shuts every pool down, giving calls in flight the whole drain window.
+func (r *Registry) Close() { r.CloseWithin(pool.ExecDrainTimeout) }
+
+// CloseWithin shuts every pool down. Each pool is drained, not closed: a call
+// running on it finishes if it can, up to drain, and is then cut. It returns
+// once every pool has drained, so the daemon does not stop under a call that
+// is still within its window. The caller is responsible for persisting the
 // schema cache first; doing it here would write after the daemon has already
 // told its client that it stopped.
-func (r *Registry) Close() {
+func (r *Registry) CloseWithin(drain time.Duration) {
 	r.mu.RLock()
 	pools := make([]*pool.Pool, 0, len(r.pools))
 	for _, p := range r.pools {
@@ -1248,7 +1254,10 @@ func (r *Registry) Close() {
 	fb := r.feedbackStore
 	r.mu.RUnlock()
 	for _, p := range pools {
-		p.Close()
+		p.CloseDrainedWithin(drain)
+	}
+	for _, p := range pools {
+		p.WaitDrained()
 	}
 	if vIdx != nil {
 		_ = vIdx.Close()
