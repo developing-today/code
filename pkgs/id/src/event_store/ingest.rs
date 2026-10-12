@@ -111,7 +111,9 @@ pub enum Ingest {
     },
     /// The author signed two different events at one sequence number. The chain is
     /// frozen there, and both headers are stored as the proof. A further event at the
-    /// fork point that changes the proof is reported the same way.
+    /// fork point that changes the proof is reported the same way. The headers are present
+    /// now, so events of other authors that waited for them may apply. Those are not listed
+    /// here. Read them from the store.
     Fork {
         /// The author.
         author: AuthorKey,
