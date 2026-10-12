@@ -46,7 +46,7 @@ let
     ruff
     rufo
     elmPackages.elm-format
-    go # also provides gofmt, the treefmt Go formatter
+    go_1_27 # highest released Go; also provides gofmt, the treefmt Go formatter
     haskellPackages.ormolu
     taplo
     # Utilities needed by formatter wrapper
@@ -87,7 +87,8 @@ let
     cargo-edit
 
     # --- Go (mcpx) ---
-    # `go` itself is in fmtBins (gofmt); mcpx is the repository's Go program.
+    # The go_1_27 toolchain is in fmtBins (it also provides gofmt); mcpx is the
+    # repository's Go program, built with the same toolchain (buildGo127Module).
     mcpx
 
     # --- Git hooks (lefthook.yml: treefmt pre-commit, conform commit-msg) ---

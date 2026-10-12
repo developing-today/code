@@ -492,10 +492,9 @@ let
           (
             system:
             let
-              # Use the flake's own nixpkgs pin (nixpkgs-unstable), the same
-              # revision shell.nix reads out of flake.lock. Previously this
-              # imported clan-core's private nixpkgs, so `nix develop` and
-              # `nix-shell` resolved tools to different versions.
+              # The flake's canonical nixpkgs (nixpkgs-unstable) -- the same
+              # tree the system, shell.nix and the id sub-flake use, so
+              # `nix develop` and `nix-shell` resolve identical versions.
               pkgs = import inputs.nixpkgs-unstable {
                 inherit system;
                 overlays = [ (import inputs.id-rust-overlay) ];

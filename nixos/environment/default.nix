@@ -1000,7 +1000,7 @@ in
       taplo
       rufo
       elmPackages.elm-format
-      go
+      go_1_27 # highest released Go, matching the devshell and mcpx's go.mod
       haskellPackages.ormolu
       nushell
       nvd
