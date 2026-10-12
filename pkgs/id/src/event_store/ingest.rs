@@ -5,48 +5,55 @@
 //! 1. **Verify.** [`chain::decode`] checks the canonical encoding and the signature
 //!    (through `AnyHeader::decode`, which uses `verify_strict`), then the extension's
 //!    rules. Anything that fails is refused as [`Refusal::Malformed`].
-//! 2. **Duplicate.** An event whose ID is stored, or is one of the author's fork
-//!    proof headers, changes nothing.
-//! 3. **Fork.** If the author already has an applied event at the event's sequence
-//!    number, the two conflict. The chain freezes at the lower of the two sequence
-//!    numbers, and both headers are stored as the proof.
-//! 4. **Frozen.** A frozen author's events from the fork point on are refused.
-//! 5. **Accept.** The next sequence number, whose backlink is the applied head, is
-//!    applied once every `after` hash is applied.
-//! 6. **Wait.** An event ahead of its chain, or with an `after` hash that is not
-//!    applied yet, is held in the waiting pool under its caps. When the dependency is
-//!    applied, the event is released and decided again.
+//! 2. **Duplicate.** An event whose ID is stored, or is one of its author's fork proof
+//!    headers, changes nothing.
+//! 3. **Frozen.** An event above its author's fork point is refused as
+//!    [`Refusal::Frozen`].
+//! 4. **Fork.** If the author has another event at the same sequence number, stored or
+//!    held, the two are a fork, whatever their backlinks and dependencies. The fork point
+//!    moves down to that sequence number, and the proof holds the two lowest IDs there.
+//!    The applied events from that point on are unapplied, and so is every applied event
+//!    that rests on one of them.
+//! 5. **Accept.** The next sequence number, whose backlink is the applied head, is applied
+//!    once every `after` hash is applied.
+//! 6. **Wait or park.** An event ahead of its chain, or with an `after` hash that is not
+//!    applied yet, is held in the waiting pool under its caps, and decided again when its
+//!    dependencies are applied. An event whose backlink can never be the applied head is
+//!    parked: held for good, so that a conflict with it is still seen.
 //!
-//! Each decision that writes runs in one redb write transaction. A refused event
+//! Each decision that writes runs in one redb write transaction. A refused or held event
 //! writes nothing, and an accepted one is committed before any event it released is
 //! decided.
 //!
 //! # Applied state and forks
 //!
-//! The applied prefix of a chain is the events below its next sequence number. A fork
-//! moves the next sequence number down to the fork point. Events from the fork point
-//! on stay stored, but they are not applied. When an event leaves the applied prefix,
-//! the waiting pool forgets it, so events that wait on it wait again. The applied
-//! state therefore depends on which events a store has received, not on the order in
-//! which it received them. The property tests in `tests/event_store_properties.rs`
-//! check that.
+//! The applied state depends on the set of events a store has received, not on their
+//! arrival order. An event is applied when it sits below its author's fork point, its
+//! backlink is the applied event before it, and every `after` hash is applied. The fork
+//! point is the lowest sequence number where the author has two distinct events, and the
+//! proof holds the two lowest IDs there.
 //!
-//! Two cases still depend on arrival order, and the membership layer must handle
-//! both. First, a fork does not undo the events applied on top of a later fork, so an
-//! event applied before the fork stays applied. Second, a conflict whose backlink is
-//! not the applied head is refused, not held, so a conflict that arrives before the
-//! event it conflicts with can go unnoticed. The property tests generate neither: their
-//! forks share the original's backlink, and their `after` hashes name only events a
-//! fork cannot unapply.
+//! An event that is stored but not applied is voided. A fork voids the author's events
+//! from its fork point on, and every event that rests on a voided one. A voided event is
+//! kept, because it still counts as the author's event at its sequence number, so a later
+//! conflict with it is still a fork. The applied prefix of a chain is the events below its
+//! next sequence number, so the chain row is what marks the voids.
+//!
+//! Held events count too. Two held events at one sequence number are a fork, though
+//! neither is applied. A restart forgets held events, and sync sends them again.
+//!
+//! The property tests in `tests/event_store_properties.rs` check the applied state against
+//! this definition, for every arrival order.
 
 use std::collections::VecDeque;
 
 use p2panda_core::{Hash, SeqNum};
-use redb::{ReadableTable, WriteTransaction};
+use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
 use super::{
-    CHAINS, Chain, EVENTS, EventStore, FORKS, HASHES, StoreError, corrupt, decode_proof,
-    decode_stored, position_key, split_position, store_chain, store_event, store_fork,
+    corrupt, decode_proof, decode_stored, position_key, split_position, store_chain, store_event,
+    store_fork, Chain, EventStore, ForkProof, StoreError, CHAINS, DEPENDENTS, EVENTS, FORKS,
+    HASHES,
 };
 use crate::chain::{self, Event};
 use crate::waiting::{AuthorKey, WaitRefusal};
@@ -57,11 +64,8 @@ pub enum Refusal {
     /// The bytes are not a valid event. The message names the rule that failed: a
     /// non-canonical encoding, a bad signature, or an extension that breaks its rules.
     Malformed(String),
-    /// The author has forked at or below this sequence number, so later events are
-    /// not applied.
+    /// The event is above its author's fork point, so it never applies.
     Frozen,
-    /// The sequence number is the next one, but the backlink is not the applied head.
-    BacklinkMismatch,
     /// The author already holds as many waiting events as the caps allow.
     WaitingFull,
 }
@@ -83,17 +87,18 @@ pub enum Ingest {
         /// The event's ID.
         id: Hash,
     },
-    /// The author signed two different events at a sequence number that exists. The
-    /// chain froze at the lower of the two sequence numbers, and both headers are
-    /// stored as the fork proof.
+    /// The author signed two different events at one sequence number. The chain is
+    /// frozen there, and both headers are stored as the proof. A further event at the
+    /// fork point that changes the proof is reported the same way.
     Fork {
         /// The author.
         author: AuthorKey,
         /// The fork point: the lowest sequence number where the author conflicts.
         seq: SeqNum,
     },
-    /// The event waits for a dependency. It is held in memory and not stored. Sync
-    /// sends it again if it is lost.
+    /// The event is held in memory and not stored. It waits for a dependency, or it is
+    /// parked because its backlink can never be the applied head. Sync sends it again if
+    /// it is lost.
     Waiting {
         /// The event's ID.
         id: Hash,
@@ -102,18 +107,20 @@ pub enum Ingest {
     Refused(Refusal),
 }
 
-/// What the store decides for one event, before waiting.
+/// What the store decides for one event, before the waiting pool sees it.
 #[derive(Debug, PartialEq, Eq)]
 enum Decision {
     /// Stored and applied.
     Accept,
     /// Already stored, or a proof header. Nothing written.
     Duplicate,
-    /// A different event at `seq`, below the applied prefix, which ended at `applied`.
-    /// Written as the fork.
-    Fork { seq: SeqNum, applied: SeqNum },
-    /// Waits for these dependencies. Nothing written.
+    /// A conflict. The proof is written, and the fork point is `seq`. `unapplied` are
+    /// the events that left the applied prefix, which the waiting pool forgets.
+    Fork { seq: SeqNum, unapplied: Vec<Hash> },
+    /// Waits for these dependencies, none of which is applied. Nothing written.
     Wait(Vec<Hash>),
+    /// Can never apply, but is held so that a conflict with it is seen. Nothing written.
+    Park,
     /// Refused. Nothing written.
     Refuse(Refusal),
 }
@@ -134,16 +141,17 @@ impl EventStore {
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
         let id = event.id;
-        let author = *event.header.verifying_key.as_bytes();
-        match self.decide(&event)? {
+        let author = author_of(&event);
+        let rivals = self.held_rivals(&event);
+        match self.decide(&event, &rivals)? {
             Decision::Accept => {
                 let arrived = self.waiting.arrived(id, now_ms);
                 let released = self.drain(arrived.into(), now_ms)?;
                 Ok(Ingest::Accepted { id, released })
             }
             Decision::Duplicate => Ok(Ingest::Duplicate { id }),
-            Decision::Fork { seq, applied } => {
-                self.forget_unapplied(&author, seq, applied)?;
+            Decision::Fork { seq, unapplied } => {
+                self.forget(&unapplied);
                 Ok(Ingest::Fork { author, seq })
             }
             Decision::Wait(deps) => {
@@ -154,6 +162,10 @@ impl EventStore {
                 self.drain(VecDeque::new(), now_ms)?;
                 Ok(outcome)
             }
+            Decision::Park => match self.waiting.park(author, id, event, now_ms) {
+                Ok(()) => Ok(Ingest::Waiting { id }),
+                Err(WaitRefusal::AuthorFull) => Ok(Ingest::Refused(Refusal::WaitingFull)),
+            },
             Decision::Refuse(refusal) => Ok(Ingest::Refused(refusal)),
         }
     }
@@ -174,11 +186,23 @@ impl EventStore {
         self.waiting.waiting_count(*author)
     }
 
+    /// The held events that conflict with `event`: the author's other events at its
+    /// sequence number.
+    fn held_rivals(&self, event: &Event) -> Vec<Event> {
+        let author = author_of(event);
+        let seq = event.header.seq_num;
+        self.waiting
+            .held_by(&author)
+            .filter(|held| held.header.seq_num == seq && held.id != event.id)
+            .cloned()
+            .collect()
+    }
+
     /// Decides `event` in one write transaction. A decision that writes nothing aborts
     /// the transaction.
-    fn decide(&self, event: &Event) -> Result<Decision, StoreError> {
+    fn decide(&self, event: &Event, rivals: &[Event]) -> Result<Decision, StoreError> {
         let txn = self.db.begin_write()?;
-        let decision = decide_in(&txn, event)?;
+        let decision = decide_in(&txn, event, rivals)?;
         if matches!(decision, Decision::Accept | Decision::Fork { .. }) {
             txn.commit()?;
         }
@@ -192,19 +216,20 @@ impl EventStore {
         queue.extend(self.waiting.take_ready());
         while let Some(event) = queue.pop_front() {
             let id = event.id;
-            let author = *event.header.verifying_key.as_bytes();
-            match self.decide(&event)? {
+            let author = author_of(&event);
+            let rivals = self.held_rivals(&event);
+            match self.decide(&event, &rivals)? {
                 Decision::Accept => {
                     applied.push(id);
                     queue.extend(self.waiting.arrived(id, now_ms));
                 }
-                Decision::Fork {
-                    seq,
-                    applied: before,
-                } => self.forget_unapplied(&author, seq, before)?,
+                Decision::Fork { unapplied, .. } => self.forget(&unapplied),
                 Decision::Wait(deps) => {
                     // A refused insert drops the event, as an event past the cap is dropped.
                     let _ = self.waiting.insert(author, id, deps, event, now_ms);
+                }
+                Decision::Park => {
+                    let _ = self.waiting.park(author, id, event, now_ms);
                 }
                 Decision::Duplicate | Decision::Refuse(_) => {}
             }
@@ -213,83 +238,203 @@ impl EventStore {
         Ok(applied)
     }
 
-    /// Tells the waiting pool that the events from `from` up to `applied` are no longer
-    /// applied, so events that wait on them wait again.
-    fn forget_unapplied(
-        &mut self,
-        author: &AuthorKey,
-        from: SeqNum,
-        applied: SeqNum,
-    ) -> Result<(), StoreError> {
-        for seq in from..applied {
-            if let Some(event) = self.event(author, seq)? {
-                self.waiting.forget(&event.id);
-            }
+    /// Tells the waiting pool that these events are no longer applied, so events that
+    /// wait on them wait again.
+    fn forget(&mut self, unapplied: &[Hash]) {
+        for id in unapplied {
+            self.waiting.forget(id);
         }
-        Ok(())
     }
 }
 
-/// Decides `event` inside `txn`, and writes what the decision needs.
-fn decide_in(txn: &WriteTransaction, event: &Event) -> Result<Decision, StoreError> {
-    let author = *event.header.verifying_key.as_bytes();
+/// Decides `event` inside `txn`, and writes what the decision needs. `rivals` are the
+/// held events of the same author at the same sequence number.
+fn decide_in(
+    txn: &WriteTransaction,
+    event: &Event,
+    rivals: &[Event],
+) -> Result<Decision, StoreError> {
+    let author = author_of(event);
     let seq = event.header.seq_num;
     if is_stored(txn, &event.id)? || is_proof_header(txn, &author, &event.id)? {
         return Ok(Decision::Duplicate);
     }
+    // Every other event the store knows of at this sequence number: stored, or held.
+    let mut conflicts: Vec<Event> = rivals.to_vec();
+    if let Some(stored) = stored_at(txn, &author, seq)? {
+        conflicts.push(stored);
+    }
+    if let Some(proof) = read_proof(txn, &author)? {
+        if seq > proof.seq {
+            return Ok(Decision::Refuse(Refusal::Frozen));
+        }
+        if seq == proof.seq {
+            // Another event at the fork point. The proof keeps the two lowest IDs there.
+            conflicts.extend([proof.first.clone(), proof.second.clone(), event.clone()]);
+            let (first, second) = two_lowest(conflicts)?;
+            if first.id == proof.first.id && second.id == proof.second.id {
+                return Ok(Decision::Refuse(Refusal::Frozen));
+            }
+            store_fork(txn, &author, seq, &first, &second)?;
+            return Ok(Decision::Fork {
+                seq,
+                unapplied: Vec::new(),
+            });
+        }
+    }
+    if !conflicts.is_empty() {
+        // The first conflict at this sequence number, or one below the fork point.
+        conflicts.push(event.clone());
+        let (first, second) = two_lowest(conflicts)?;
+        store_fork(txn, &author, seq, &first, &second)?;
+        let unapplied = freeze_and_unapply(txn, &author, seq)?;
+        return Ok(Decision::Fork { seq, unapplied });
+    }
+
     let chain = read_chain(txn, &author)?;
     if seq < chain.next_seq {
-        let stored = stored_event(txn, &author, seq)?;
-        let head = match seq.checked_sub(1) {
-            Some(before) => Some(stored_event(txn, &author, before)?.id),
-            None => None,
-        };
-        store_fork(txn, &author, seq, &stored, event)?;
-        store_chain(
-            txn,
-            &author,
-            Chain {
-                next_seq: seq,
-                head,
-                frozen: true,
-            },
-        )?;
-        return Ok(Decision::Fork {
-            seq,
-            applied: chain.next_seq,
-        });
+        // The applied event at this sequence number is stored, so it would be a conflict.
+        return Err(corrupt("an applied sequence number has no stored event"));
     }
-    if chain.frozen {
-        return Ok(Decision::Refuse(Refusal::Frozen));
-    }
-    let after = &event.header.extensions.after;
+    let deps = unapplied_deps(txn, &event.header.extensions.after)?;
     if seq == chain.next_seq {
         if seq > 0 && event.header.backlink != chain.head {
-            return Ok(Decision::Refuse(Refusal::BacklinkMismatch));
+            return Ok(Decision::Park);
         }
-        let missing = unapplied(txn, after)?;
-        if !missing.is_empty() {
-            return Ok(Decision::Wait(missing));
+        if !deps.is_empty() {
+            return Ok(Decision::Wait(deps));
         }
-        store_event(txn, event)?;
-        let next_seq = seq
-            .checked_add(1)
-            .ok_or_else(|| corrupt("a sequence number overflows"))?;
-        store_chain(
-            txn,
-            &author,
-            Chain {
-                next_seq,
-                head: Some(event.id),
-                frozen: false,
-            },
-        )?;
-        return Ok(Decision::Accept);
+        return accept(txn, event, chain);
     }
-    // Ahead of the chain: the backlink is the event that must come first.
-    let mut deps = unapplied(txn, after)?;
-    deps.extend(event.header.backlink);
-    Ok(Decision::Wait(deps))
+    // Ahead of the chain. The backlink must be applied first, unless it already is, at
+    // another position, and then this event can never apply.
+    let mut waits = deps;
+    let missing_backlink = match event.header.backlink {
+        Some(backlink) => (!is_applied(txn, &backlink)?).then_some(backlink),
+        None => None,
+    };
+    waits.extend(missing_backlink);
+    if waits.is_empty() {
+        Ok(Decision::Park)
+    } else {
+        Ok(Decision::Wait(waits))
+    }
+}
+
+/// Stores `event` as the next applied event of its author, and records what it rests on.
+fn accept(txn: &WriteTransaction, event: &Event, chain: Chain) -> Result<Decision, StoreError> {
+    let author = author_of(event);
+    let seq = event.header.seq_num;
+    store_event(txn, event)?;
+    index_dependents(txn, event)?;
+    let next_seq = seq
+        .checked_add(1)
+        .ok_or_else(|| corrupt("a sequence number overflows"))?;
+    store_chain(
+        txn,
+        &author,
+        Chain {
+            next_seq,
+            head: Some(event.id),
+            frozen: chain.frozen,
+        },
+    )?;
+    Ok(Decision::Accept)
+}
+
+/// Records, for each `after` hash of `event`, that the event rests on it.
+fn index_dependents(txn: &WriteTransaction, event: &Event) -> Result<(), StoreError> {
+    let position = position_key(&author_of(event), event.header.seq_num);
+    let mut dependents = txn.open_multimap_table(DEPENDENTS)?;
+    for dep in &event.header.extensions.after {
+        dependents.insert(dep.as_bytes().as_slice(), position.as_slice())?;
+    }
+    Ok(())
+}
+
+/// Freezes `author` at `seq`. The applied prefix ends there, and every applied event
+/// from `seq` up is unapplied, with whatever rests on those. Returns the events that
+/// left the applied prefix.
+fn freeze_and_unapply(
+    txn: &WriteTransaction,
+    author: &AuthorKey,
+    seq: SeqNum,
+) -> Result<Vec<Hash>, StoreError> {
+    let chain = read_chain(txn, author)?;
+    set_prefix(txn, author, chain.next_seq, true)?;
+    unapply_from(txn, *author, seq)
+}
+
+/// Unapplies `author`'s applied events from `seq` up, and every applied event that rests
+/// on one of them. Each chain it touches is rewritten to its new applied prefix, with its
+/// frozen flag kept. Returns the events that left the applied prefix.
+fn unapply_from(
+    txn: &WriteTransaction,
+    author: AuthorKey,
+    seq: SeqNum,
+) -> Result<Vec<Hash>, StoreError> {
+    let mut unapplied = Vec::new();
+    let mut pending = vec![(author, seq)];
+    while let Some((who, from)) = pending.pop() {
+        let chain = read_chain(txn, &who)?;
+        if from >= chain.next_seq {
+            continue;
+        }
+        for position in from..chain.next_seq {
+            let event = stored_event(txn, &who, position)?;
+            for dependent in dependents_of(txn, &event.id)? {
+                pending.push(split_position(&dependent)?);
+            }
+            unapplied.push(event.id);
+        }
+        set_prefix(txn, &who, from, chain.frozen)?;
+    }
+    Ok(unapplied)
+}
+
+/// Writes `author`'s chain row for an applied prefix of `next_seq` events. A chain with
+/// no applied event and no fork has no row.
+fn set_prefix(
+    txn: &WriteTransaction,
+    author: &AuthorKey,
+    next_seq: SeqNum,
+    frozen: bool,
+) -> Result<(), StoreError> {
+    if next_seq == 0 && !frozen {
+        let mut chains = txn.open_table(CHAINS)?;
+        chains.remove(author.as_slice())?;
+        return Ok(());
+    }
+    let head = next_seq
+        .checked_sub(1)
+        .map(|last| stored_event(txn, author, last))
+        .transpose()?
+        .map(|event| event.id);
+    store_chain(
+        txn,
+        author,
+        Chain {
+            next_seq,
+            head,
+            frozen,
+        },
+    )
+}
+
+/// The two events with the lowest IDs among `candidates`, in ID order. The candidates
+/// may repeat an event.
+fn two_lowest(mut candidates: Vec<Event>) -> Result<(Event, Event), StoreError> {
+    candidates.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));
+    candidates.dedup_by(|a, b| a.id == b.id);
+    let mut lowest = candidates.into_iter();
+    match (lowest.next(), lowest.next()) {
+        (Some(first), Some(second)) => Ok((first, second)),
+        _ => Err(corrupt("a fork needs two distinct events")),
+    }
+}
+
+fn author_of(event: &Event) -> AuthorKey {
+    *event.header.verifying_key.as_bytes()
 }
 
 fn is_stored(txn: &WriteTransaction, id: &Hash) -> Result<bool, StoreError> {
@@ -303,12 +448,14 @@ fn is_proof_header(
     author: &AuthorKey,
     id: &Hash,
 ) -> Result<bool, StoreError> {
+    let proof = read_proof(txn, author)?;
+    Ok(proof.is_some_and(|proof| proof.first.id == *id || proof.second.id == *id))
+}
+
+fn read_proof(txn: &WriteTransaction, author: &AuthorKey) -> Result<Option<ForkProof>, StoreError> {
     let forks = txn.open_table(FORKS)?;
-    let Some(row) = forks.get(author.as_slice())? else {
-        return Ok(false);
-    };
-    let proof = decode_proof(row.value())?;
-    Ok(proof.first.id == *id || proof.second.id == *id)
+    let row = forks.get(author.as_slice())?;
+    row.map(|row| decode_proof(row.value())).transpose()
 }
 
 fn read_chain(txn: &WriteTransaction, author: &AuthorKey) -> Result<Chain, StoreError> {
@@ -320,21 +467,38 @@ fn read_chain(txn: &WriteTransaction, author: &AuthorKey) -> Result<Chain, Store
     }
 }
 
+/// The stored event at `author`'s `seq`, applied or voided, if there is one.
+fn stored_at(
+    txn: &WriteTransaction,
+    author: &AuthorKey,
+    seq: SeqNum,
+) -> Result<Option<Event>, StoreError> {
+    let events = txn.open_table(EVENTS)?;
+    let row = events.get(position_key(author, seq).as_slice())?;
+    row.map(|row| decode_stored(row.value())).transpose()
+}
+
 fn stored_event(
     txn: &WriteTransaction,
     author: &AuthorKey,
     seq: SeqNum,
 ) -> Result<Event, StoreError> {
-    let events = txn.open_table(EVENTS)?;
-    let row = events.get(position_key(author, seq).as_slice())?;
-    match row {
-        Some(row) => decode_stored(row.value()),
-        None => Err(corrupt("an applied sequence number has no stored event")),
+    stored_at(txn, author, seq)?
+        .ok_or_else(|| corrupt("an applied sequence number has no stored event"))
+}
+
+/// The positions of the stored events that name `id` in their `after` hashes.
+fn dependents_of(txn: &WriteTransaction, id: &Hash) -> Result<Vec<Vec<u8>>, StoreError> {
+    let dependents = txn.open_multimap_table(DEPENDENTS)?;
+    let mut positions = Vec::new();
+    for position in dependents.get(id.as_bytes().as_slice())? {
+        positions.push(position?.value().to_vec());
     }
+    Ok(positions)
 }
 
 /// The `after` hashes that are not applied yet.
-fn unapplied(txn: &WriteTransaction, after: &[Hash]) -> Result<Vec<Hash>, StoreError> {
+fn unapplied_deps(txn: &WriteTransaction, after: &[Hash]) -> Result<Vec<Hash>, StoreError> {
     let mut missing = Vec::new();
     for hash in after {
         if !is_applied(txn, hash)? {
@@ -836,10 +1000,7 @@ mod tests {
     }
 
     /// What a store reports for `who`: the chain row and the fork proof.
-    fn state_of(
-        store: &EventStore,
-        who: &AuthorKey,
-    ) -> (Option<Chain>, Option<crate::event_store::ForkProof>) {
+    fn state_of(store: &EventStore, who: &AuthorKey) -> (Option<Chain>, Option<ForkProof>) {
         (store.chain(who).unwrap(), store.fork_proof(who).unwrap())
     }
 

@@ -12,6 +12,8 @@
 //! - `forks`: an author to the fork proof, the two headers that conflict at the
 //!   lowest sequence number where the author has forked.
 //! - `groups`: a group hash to the positions of the events in that group.
+//! - `dependents`: an event's ID to the positions of the stored events that name it in
+//!   their `after` hashes. A fork uses it to find what rests on the events it voids.
 //! - `meta`: the store's format.
 //!
 //! A position key is the author's 32 bytes followed by the sequence number in
@@ -38,8 +40,8 @@ use std::path::{Path, PathBuf};
 
 use p2panda_core::{Hash, SeqNum};
 use redb::{
-    Database, DatabaseError, MultimapTableDefinition, ReadableDatabase, ReadableTable,
-    StorageError, TableDefinition, WriteTransaction,
+    Database, DatabaseError, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable,
+    ReadableTable, StorageError, TableDefinition, WriteTransaction,
 };
 
 use crate::chain::{self, Event};
@@ -57,7 +59,7 @@ pub const FILE_NAME: &str = "events.redb";
 pub const TEMP_NAME: &str = "events.redb.tmp";
 
 /// The format row in `meta`. A store with another format is refused.
-const FORMAT: &[u8] = b"id.events.store.v1";
+const FORMAT: &[u8] = b"id.events.store.v2";
 const FORMAT_KEY: &[u8] = b"format";
 
 const EVENTS: TableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -69,6 +71,8 @@ const CHAINS: TableDefinition<'static, &'static [u8], &'static [u8]> =
 const FORKS: TableDefinition<'static, &'static [u8], &'static [u8]> = TableDefinition::new("forks");
 const GROUPS: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
     MultimapTableDefinition::new("groups");
+const DEPENDENTS: MultimapTableDefinition<'static, &'static [u8], &'static [u8]> =
+    MultimapTableDefinition::new("dependents");
 const META: TableDefinition<'static, &'static [u8], &'static [u8]> = TableDefinition::new("meta");
 
 /// Bytes in a position key: the author, then the sequence number.
@@ -434,6 +438,7 @@ impl EventStore {
         let chains = txn.open_table(CHAINS)?;
         let forks = txn.open_table(FORKS)?;
         let groups = txn.open_multimap_table(GROUPS)?;
+        let dependents = txn.open_multimap_table(DEPENDENTS)?;
 
         for row in events.iter()? {
             let (position, bytes) = row?;
@@ -455,6 +460,15 @@ impl EventStore {
                     return Err(corrupt("an event is missing from its group index"));
                 }
             }
+            for dep in &event.header.extensions.after {
+                let mut found = false;
+                for indexed in dependents.get(dep.as_bytes().as_slice())? {
+                    found |= indexed?.value() == position.value();
+                }
+                if !found {
+                    return Err(corrupt("an event is missing from the dependents index"));
+                }
+            }
         }
 
         for row in hashes.iter()? {
@@ -474,9 +488,31 @@ impl EventStore {
                 .try_into()
                 .map_err(|_err| corrupt("a chain row has a short author key"))?;
             let chain = Chain::decode(chain_bytes.value())?;
+            if chain.next_seq == 0 && !chain.frozen {
+                return Err(corrupt(
+                    "a chain with no applied event and no fork has a row",
+                ));
+            }
             for seq in 0..chain.next_seq {
-                if events.get(position_key(&author, seq).as_slice())?.is_none() {
-                    return Err(corrupt(format!("applied sequence {seq} is not stored")));
+                let stored = events
+                    .get(position_key(&author, seq).as_slice())?
+                    .ok_or_else(|| corrupt(format!("applied sequence {seq} is not stored")))?;
+                for dep in decode_stored(stored.value())?.header.extensions.after {
+                    let applied = match hashes.get(dep.as_bytes().as_slice())? {
+                        Some(position) => {
+                            let (dep_author, dep_seq) = split_position(position.value())?;
+                            match chains.get(dep_author.as_slice())? {
+                                Some(row) => Chain::decode(row.value())?.next_seq > dep_seq,
+                                None => false,
+                            }
+                        }
+                        None => false,
+                    };
+                    if !applied {
+                        return Err(corrupt(
+                            "an applied event rests on an event that is not applied",
+                        ));
+                    }
                 }
             }
             if let Some(head) = chain.head {
@@ -494,10 +530,31 @@ impl EventStore {
                 .transpose()?;
             match (chain.frozen, proof) {
                 (false, None) => {}
-                (true, Some(proof)) if proof.seq == chain.next_seq => {}
+                (true, Some(proof)) if proof.seq >= chain.next_seq => {}
                 _ => {
                     return Err(corrupt(
-                        "a frozen chain has no fork proof at its fork point, or an open chain has one",
+                        "a frozen chain has no fork proof at or above its applied prefix, or an open chain has one",
+                    ));
+                }
+            }
+        }
+
+        for row in dependents.iter()? {
+            let (dep, positions) = row?;
+            for position in positions {
+                let position = position?;
+                let stored = events
+                    .get(position.value())?
+                    .ok_or_else(|| corrupt("a dependents entry points at no stored event"))?;
+                let rests_on_dep = decode_stored(stored.value())?
+                    .header
+                    .extensions
+                    .after
+                    .iter()
+                    .any(|hash| hash.as_bytes().as_slice() == dep.value());
+                if !rests_on_dep {
+                    return Err(corrupt(
+                        "a dependents entry names an event that does not rest on it",
                     ));
                 }
             }
@@ -549,6 +606,7 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     txn.open_table(CHAINS)?;
     txn.open_table(FORKS)?;
     txn.open_multimap_table(GROUPS)?;
+    txn.open_multimap_table(DEPENDENTS)?;
     let mut meta = txn.open_table(META)?;
     meta.insert(FORMAT_KEY, FORMAT)?;
     drop(meta);
@@ -565,6 +623,7 @@ fn verify_schema(db: &Database) -> Result<(), StoreError> {
     txn.open_table(CHAINS).map_err(missing)?;
     txn.open_table(FORKS).map_err(missing)?;
     txn.open_multimap_table(GROUPS).map_err(missing)?;
+    txn.open_multimap_table(DEPENDENTS).map_err(missing)?;
     let meta = txn.open_table(META).map_err(missing)?;
     match meta.get(FORMAT_KEY)? {
         Some(found) if found.value() == FORMAT => Ok(()),
@@ -723,7 +782,7 @@ pub(crate) fn store_fork(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::chain::{ChainExt, sign};
+    use crate::chain::{sign, ChainExt};
     use p2panda_core::SigningKey;
 
     fn key(n: u8) -> SigningKey {
@@ -831,12 +890,10 @@ mod tests {
         assert_eq!(store.event(&who, 0).unwrap(), Some(event.clone()));
         assert_eq!(store.event_by_id(&event.id).unwrap(), Some(event.clone()));
         assert_eq!(store.group_members(&group).unwrap(), vec![(who, 0)]);
-        assert!(
-            store
-                .group_members(&Hash::digest(b"other"))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(store
+            .group_members(&Hash::digest(b"other"))
+            .unwrap()
+            .is_empty());
         store.check_invariants().unwrap();
     }
 

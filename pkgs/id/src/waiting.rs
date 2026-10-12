@@ -115,8 +115,9 @@ pub struct WaitingPool<K, E> {
     by_dep: HashMap<K, BTreeSet<u64>>,
     /// Held events by (arrival time, sequence number), for the age cap.
     by_time: BTreeSet<(u64, u64)>,
-    /// Held events per author. An author with none has no entry.
-    per_author: HashMap<AuthorKey, usize>,
+    /// The sequence numbers of each author's held events. An author with none has no
+    /// entry.
+    held: HashMap<AuthorKey, BTreeSet<u64>>,
     /// Keys that have arrived. A dependency in this set is already satisfied.
     arrived: HashSet<K>,
     /// Events whose dependencies had all arrived when they were inserted.
@@ -138,7 +139,7 @@ where
             by_key: HashMap::new(),
             by_dep: HashMap::new(),
             by_time: BTreeSet::new(),
-            per_author: HashMap::new(),
+            held: HashMap::new(),
             arrived: HashSet::new(),
             ready: Vec::new(),
             expired: Vec::new(),
@@ -157,7 +158,7 @@ where
 
     /// The number of events `author` has held. Never above the per-author cap.
     pub fn waiting_count(&self, author: AuthorKey) -> usize {
-        self.per_author.get(&author).copied().unwrap_or(0)
+        self.held.get(&author).map_or(0, BTreeSet::len)
     }
 
     /// Hold `event` until each of `deps` has arrived.
@@ -196,6 +197,53 @@ where
             self.ready.push(event);
             return Ok(());
         }
+        self.hold(author, key, missing, event, now_ms)
+    }
+
+    /// Hold `event` for good: it waits for no dependency, so no arrival releases it,
+    /// and only the age cap drops it. The caller parks an event that can never be
+    /// applied, but must still see when another event conflicts with it.
+    ///
+    /// An event whose key is already held or has arrived is ignored, as for
+    /// [`insert`](Self::insert).
+    ///
+    /// # Errors
+    ///
+    /// [`WaitRefusal::AuthorFull`] when the author already holds the per-author cap.
+    pub fn park(
+        &mut self,
+        author: AuthorKey,
+        key: K,
+        event: E,
+        now_ms: u64,
+    ) -> Result<(), WaitRefusal> {
+        self.expire_due(now_ms);
+        if self.arrived.contains(&key) || self.by_key.contains_key(&key) {
+            return Ok(());
+        }
+        self.hold(author, key, HashSet::new(), event, now_ms)
+    }
+
+    /// The held events of `author`, in sequence order of arrival. Parked events are
+    /// included.
+    pub fn held_by(&self, author: &AuthorKey) -> impl Iterator<Item = &E> {
+        self.held
+            .get(author)
+            .into_iter()
+            .flatten()
+            .filter_map(|seq| self.waiting.get(seq))
+            .map(|entry| &entry.event)
+    }
+
+    /// Stores `event` under `key`, waiting for `missing`, under the author's cap.
+    fn hold(
+        &mut self,
+        author: AuthorKey,
+        key: K,
+        missing: HashSet<K>,
+        event: E,
+        now_ms: u64,
+    ) -> Result<(), WaitRefusal> {
         if self.waiting_count(author) >= self.limits.per_author() {
             return Err(WaitRefusal::AuthorFull);
         }
@@ -206,7 +254,7 @@ where
         }
         self.by_time.insert((now_ms, seq));
         self.by_key.insert(key.clone(), seq);
-        *self.per_author.entry(author).or_default() += 1;
+        self.held.entry(author).or_default().insert(seq);
         self.waiting.insert(
             seq,
             Waiting {
@@ -307,10 +355,10 @@ where
                 }
             }
         }
-        if let Some(count) = self.per_author.get_mut(&entry.author) {
-            *count -= 1;
-            if *count == 0 {
-                self.per_author.remove(&entry.author);
+        if let Some(seqs) = self.held.get_mut(&entry.author) {
+            seqs.remove(&seq);
+            if seqs.is_empty() {
+                self.held.remove(&entry.author);
             }
         }
         Some(entry)
