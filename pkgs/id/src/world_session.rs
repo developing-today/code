@@ -17,7 +17,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(feature = "sandbox")]
 use anyhow::Context as _;
 use iroh_blobs::{
     BlobFormat, Hash,
