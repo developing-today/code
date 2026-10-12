@@ -110,6 +110,8 @@ pub struct Membership {
     state: GroupState,
     /// Every operation accepted into the auth graph, in order. A rebuild replays these.
     accepted: Vec<AuthOperation>,
+    /// Membership operations the layer refused. A refused operation takes no effect.
+    refused: HashSet<Hash>,
 }
 
 impl Membership {
@@ -177,6 +179,7 @@ impl Membership {
         let group = if action.is_create() { Some(id) } else { group };
         let Some(group) = group else {
             self.index.insert(id, after, None)?;
+            self.refused.insert(id);
             return Ok(Outcome::Refused {
                 reason: Refusal::Malformed,
                 placeholder: false,
@@ -222,6 +225,7 @@ impl Membership {
         reason: Refusal,
     ) -> Result<Outcome, MembershipError> {
         let id = op.id;
+        self.refused.insert(id);
         let placeholder = match self.manager_at(group, &op.dependencies) {
             Some(target) => {
                 // Promoting a member who already manages changes nothing, and the crate does not
@@ -283,6 +287,72 @@ impl Membership {
     /// `after` of the event is never used as a dependency, so this is what the crate saw.
     pub fn dependencies(&self, id: &Hash) -> Option<&[Hash]> {
         self.dependencies.get(id).map(Vec::as_slice)
+    }
+
+    /// Whether the group operation `id` takes effect in the resolved state. It must be accepted at
+    /// its position and not refused, the resolver must not filter it, and its author must hold
+    /// manage access at its dependencies. The check reads the final state, so an operation stops
+    /// taking effect when a later operation makes the resolver filter it.
+    pub fn is_effective(&self, id: &Hash) -> bool {
+        if self.refused.contains(id) {
+            return false;
+        }
+        // The resolver filters the concurrent operations of a removed member, which includes the
+        // other half of a mutual removal. A mutual removal still takes effect, so it is exempt.
+        let filtered =
+            self.state.inner.ignore.contains(id) && !self.state.inner.mutual_removes.contains(id);
+        if filtered {
+            return false;
+        }
+        let Some(op) = self.state.inner.operations.get(id) else {
+            return false;
+        };
+        if op.action.is_create() {
+            return true;
+        }
+        let deps: HashSet<Hash> = op.dependencies.iter().copied().collect();
+        self.access_at(&deps, op.group_id, op.author)
+            .is_some_and(|access| access.is_manage())
+    }
+
+    /// Whether `author` is a member of `group`, with any access, at the causal position that
+    /// `after` names. Content is judged by this: it keeps its place while its author holds access.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrontierError`] when an `after` hash is not indexed.
+    pub fn is_member_at(
+        &mut self,
+        author: [u8; 32],
+        group: Hash,
+        after: &[Hash],
+    ) -> Result<bool, MembershipError> {
+        let deps: HashSet<Hash> = self.index.frontier(after, group)?.into_iter().collect();
+        Ok(self
+            .access_at(&deps, AuthId::Group(group), AuthId::Key(author))
+            .is_some())
+    }
+
+    /// Whether a create has been decided for `group`.
+    pub fn has_group(&self, group: Hash) -> bool {
+        self.state.has_group(AuthId::Group(group))
+    }
+
+    /// The access `member` holds in `group` at `dependencies`, in the resolved state. The state at
+    /// a position is merged from the per-operation states, which the resolver's filter shaped, so
+    /// a filtered operation gives no access here.
+    fn access_at(
+        &self,
+        dependencies: &HashSet<Hash>,
+        group: AuthId,
+        member: AuthId,
+    ) -> Option<Access<()>> {
+        let groups = self.state.inner.state_at(dependencies).ok()?;
+        let members = groups.get(&group)?;
+        members
+            .access_levels()
+            .into_iter()
+            .find_map(|(who, access)| (who == GroupMember::Individual(member)).then_some(access))
     }
 
     /// Whether the event is held, waiting for an `after` hash.
