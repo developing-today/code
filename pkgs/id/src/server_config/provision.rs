@@ -13,7 +13,7 @@
 use p2panda_core::Hash;
 use thiserror::Error;
 
-use super::{GroupSpec, ServerConfig};
+use super::{CreateRule, GroupSpec, ServerConfig};
 use crate::directory::Directory;
 use crate::groups::{
     Body, Create, Event, FoldError, Key, MemberOp, Outcome, Policy, Projection, Refusal, Template,
@@ -26,6 +26,8 @@ use crate::world::hex_encode;
 pub struct Provisioned {
     directory: Directory,
     events: Vec<Event>,
+    /// The create rule of the config that was applied. Creates recorded later are checked by it.
+    create: CreateRule,
 }
 
 /// What one [`Provisioned::apply`] created. All zero means the config was already in effect.
@@ -84,6 +86,7 @@ impl Provisioned {
         Self {
             directory: Directory::new(),
             events: Vec::new(),
+            create: CreateRule::Anyone,
         }
     }
 
@@ -108,15 +111,26 @@ impl Provisioned {
         fold(&self.events)
     }
 
-    /// Records one event, as a user action does. A refused event is kept in the log with no effect,
-    /// as the fold decides. Read its outcome from the returned groups.
+    /// Records one event, as a user action does. A create must pass the config's create rule, and a
+    /// create that fails it is not recorded. Any other refused event is kept in the log with no
+    /// effect, as the fold decides. Read its outcome from the returned groups.
     ///
     /// # Errors
     ///
-    /// Fails if the events cannot be folded.
-    pub fn record(&mut self, event: Event) -> Result<Projection, FoldError> {
+    /// Fails with [`ProvisionError::NotAllowed`] for a create the rule refuses, and with
+    /// [`ProvisionError::Fold`] if the events cannot be folded.
+    pub fn record(&mut self, event: Event) -> Result<Projection, ProvisionError> {
+        if matches!(event.body, Body::Create(_)) {
+            let projection = self.projection()?;
+            if !self.create.allows(&event.author, &projection) {
+                return Err(ProvisionError::NotAllowed {
+                    group: hex_encode(event.id.as_bytes()),
+                    creator: hex_encode(&event.author),
+                });
+            }
+        }
         self.events.push(event);
-        self.projection()
+        Ok(self.projection()?)
     }
 
     /// Creates the accounts and groups the config names, and adds their members. What already
@@ -129,6 +143,7 @@ impl Provisioned {
     /// events. Users created before the failure stay, but the config is refused at startup, so no
     /// server runs on that partial state.
     pub fn apply(&mut self, config: &ServerConfig) -> Result<Report, ProvisionError> {
+        self.create = config.create_rule().clone();
         let mut report = Report::default();
         for user in config.users() {
             let id = hex_encode(&user.id);
