@@ -169,6 +169,30 @@ impl EventStore {
         self.transact(now_ms, |mirror| ingest_in(mirror, event, now_ms))
     }
 
+    /// Decides already verified events, in order, in one write transaction. Each event is
+    /// decided as [`EventStore::ingest`] would decide it, so later events see the earlier ones.
+    /// A fork, a hold, or a refusal changes only its own event.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb or corruption error. Then nothing in the batch is committed.
+    pub(crate) fn ingest_events(
+        &mut self,
+        events: Vec<Event>,
+        now_ms: u64,
+    ) -> Result<Vec<Ingest>, StoreError> {
+        self.transact(now_ms, |mirror| {
+            let mut outcomes = Vec::with_capacity(events.len());
+            let mut changed = false;
+            for event in events {
+                let (outcome, did_change) = ingest_in(mirror, event, now_ms)?;
+                changed |= did_change;
+                outcomes.push(outcome);
+            }
+            Ok((outcomes, changed))
+        })
+    }
+
     /// Drops the waiting events due at `now_ms`, with their rows. Returns how many were dropped.
     ///
     /// # Errors

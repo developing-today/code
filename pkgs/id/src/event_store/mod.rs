@@ -57,6 +57,8 @@ use redb::{
 use crate::chain::{self, Event};
 
 mod ingest;
+pub mod range;
+pub mod sync;
 mod waiting_rows;
 
 use crate::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
