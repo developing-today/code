@@ -2,6 +2,7 @@
 //! membership.
 
 use std::fmt;
+use std::time::Duration;
 
 use anyhow::Result;
 
@@ -17,6 +18,7 @@ use super::token::Token;
 pub struct Invite {
     id: InviteId,
     public_key: [u8; 32],
+    created_ms: u64,
     expires_ms: u64,
     revoked: bool,
     used: Option<Admitted>,
@@ -44,6 +46,10 @@ pub enum Reject {
     Expired,
     /// The invite has already admitted a joiner.
     Used,
+    /// The accept was signed more than the window before the invite was created. The field is the window.
+    Stale(Duration),
+    /// The accept was signed more than the window after the admin's clock. The field is the window.
+    FromFuture(Duration),
     /// The invite's public key is not a valid Ed25519 point.
     BadKey,
     /// The signature does not verify under the invite's key.
@@ -70,6 +76,20 @@ impl fmt::Display for Reject {
             Self::Used => "the invite has already been used",
             Self::BadKey => "the invite's public key is not valid",
             Self::BadSignature => "the accept's signature does not match this invite",
+            Self::Stale(window) => {
+                return write!(
+                    f,
+                    "the accept is older than the {} s freshness window before the invite was created",
+                    window.as_secs()
+                );
+            }
+            Self::FromFuture(window) => {
+                return write!(
+                    f,
+                    "the accept is more than the {} s freshness window ahead of this server's clock",
+                    window.as_secs()
+                );
+            }
         })
     }
 }
@@ -83,11 +103,12 @@ impl Invite {
     /// # Errors
     ///
     /// Fails only if a derivation fails, which the fixed parameters never trigger.
-    pub fn create(token: &Token, expires_ms: u64) -> Result<Self> {
+    pub fn create(token: &Token, created_ms: u64, expires_ms: u64) -> Result<Self> {
         let sikey = derive::stretch(token)?;
         Ok(Self {
             id: derive::invite_id(&sikey)?,
             public_key: derive::signing_key(&sikey)?.verifying_key().to_bytes(),
+            created_ms,
             expires_ms,
             revoked: false,
             used: None,
@@ -120,12 +141,22 @@ impl Invite {
 
     /// The admin path. The checks run in this order, and the signature comes last because it is the costly one:
     /// the invite ID matches, the invite is not revoked, it has not expired (now, and the signing time), it has not
-    /// been used, and the signature verifies. Only then is the use recorded, so a refused accept uses nothing up.
+    /// been used, the signing time is inside the freshness window, and the signature verifies. Only then is the use
+    /// recorded, so a refused accept uses nothing up.
+    ///
+    /// The window is bound to the invite's own life (N23), not to the wall clock. A home server may hold an accept
+    /// for a while before it forwards it, so a window measured from `now` would refuse honest holds. An accept is
+    /// admitted when `created − window ≤ ctime ≤ min(now + window, expires)`. The window is inclusive at both edges.
     ///
     /// # Errors
     ///
     /// Returns the first check that fails, as a [`Reject`].
-    pub fn admit(&mut self, proof: &Proof, now_ms: u64) -> Result<Admitted, Reject> {
+    pub fn admit(
+        &mut self,
+        proof: &Proof,
+        now_ms: u64,
+        window: Duration,
+    ) -> Result<Admitted, Reject> {
         let fields = accept::parse(&proof.message)?;
         if fields.invite_id != self.id {
             return Err(Reject::UnknownInvite);
@@ -138,6 +169,13 @@ impl Invite {
         }
         if self.used.is_some() {
             return Err(Reject::Used);
+        }
+        let window_ms = u64::try_from(window.as_millis()).unwrap_or(u64::MAX);
+        if fields.ctime_ms.saturating_add(window_ms) < self.created_ms {
+            return Err(Reject::Stale(window));
+        }
+        if fields.ctime_ms > now_ms.saturating_add(window_ms) {
+            return Err(Reject::FromFuture(window));
         }
         accept::verify(&self.public_key, proof)?;
         let admitted = Admitted {

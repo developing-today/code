@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
+use std::time::Duration;
 
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use crypto_secretbox::{KeyInit, Nonce, XSalsa20Poly1305, aead::Aead};
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::accept::{self, Proof, ProofError};
 use super::admit::{Admitted, Invite, Reject};
 use super::derive;
+use super::freshness::{DEFAULT_WINDOW, Freshness};
 use super::token::{ALPHABET, Token, TokenError};
 
 const VECTOR_TOKEN: &str = "4uywza+b3cga7rd6yc";
@@ -49,7 +51,7 @@ fn vector_token() -> Token {
 
 /// Keybase's vector invite: created at `CREATED`, expiring a week later.
 fn vector_invite() -> Invite {
-    Invite::create(&vector_token(), CREATED + WEEK).expect("the invite is created")
+    Invite::create(&vector_token(), CREATED, CREATED + WEEK).expect("the invite is created")
 }
 
 fn accept_from(token: &Token, uid: &str, eldest_seqno: u64, ctime: u64) -> Proof {
@@ -340,14 +342,14 @@ fn a_valid_accept_admits_the_joiner_once() {
     let now = CREATED + MINUTE;
     let alice = accept_from(&vector_token(), "alice", 3, now);
     assert_eq!(
-        invite.admit(&alice, now),
+        invite.admit(&alice, now, DEFAULT_WINDOW),
         Ok(Admitted {
             uid: "alice".to_owned(),
             eldest_seqno: 3,
         })
     );
     let bob = accept_from(&vector_token(), "bob", 1, now);
-    assert_eq!(invite.admit(&bob, now), Err(Reject::Used));
+    assert_eq!(invite.admit(&bob, now, DEFAULT_WINDOW), Err(Reject::Used));
 }
 
 #[test]
@@ -356,15 +358,18 @@ fn a_token_from_another_world_is_refused() {
     // world B, and world B's invite stays unused.
     let token_a = Token::generate();
     let token_b = Token::generate();
-    let mut world_b = Invite::create(&token_b, CREATED + WEEK).expect("created");
-    let mut world_a = Invite::create(&token_a, CREATED + WEEK).expect("created");
+    let mut world_b = Invite::create(&token_b, CREATED, CREATED + WEEK).expect("created");
+    let mut world_a = Invite::create(&token_a, CREATED, CREATED + WEEK).expect("created");
     let now = CREATED + MINUTE;
     let from_a = accept_from(&token_a, "alice", 3, now);
 
-    assert_eq!(world_b.admit(&from_a, now), Err(Reject::UnknownInvite));
+    assert_eq!(
+        world_b.admit(&from_a, now, DEFAULT_WINDOW),
+        Err(Reject::UnknownInvite)
+    );
     assert_eq!(world_b.admitted(), None);
     assert!(
-        world_a.admit(&from_a, now).is_ok(),
+        world_a.admit(&from_a, now, DEFAULT_WINDOW).is_ok(),
         "world A admits its own joiner"
     );
 }
@@ -380,7 +385,10 @@ fn a_proof_signed_with_another_key_for_this_invite_is_refused() {
             .expect("the key derives");
     let signature = forged_key.sign(&message).to_bytes();
     let proof = Proof { message, signature };
-    assert_eq!(invite.admit(&proof, now), Err(Reject::BadSignature));
+    assert_eq!(
+        invite.admit(&proof, now, DEFAULT_WINDOW),
+        Err(Reject::BadSignature)
+    );
 }
 
 #[test]
@@ -389,7 +397,10 @@ fn a_revoked_invite_admits_no_one() {
     invite.revoke();
     let now = CREATED + MINUTE;
     let alice = accept_from(&vector_token(), "alice", 3, now);
-    assert_eq!(invite.admit(&alice, now), Err(Reject::Revoked));
+    assert_eq!(
+        invite.admit(&alice, now, DEFAULT_WINDOW),
+        Err(Reject::Revoked)
+    );
 }
 
 #[test]
@@ -397,7 +408,10 @@ fn an_accept_after_the_expiry_is_refused() {
     let mut invite = vector_invite();
     let now = CREATED + WEEK + 1;
     let alice = accept_from(&vector_token(), "alice", 3, now);
-    assert_eq!(invite.admit(&alice, now), Err(Reject::Expired));
+    assert_eq!(
+        invite.admit(&alice, now, DEFAULT_WINDOW),
+        Err(Reject::Expired)
+    );
 }
 
 #[test]
@@ -405,7 +419,7 @@ fn an_accept_signed_after_the_expiry_is_refused() {
     let mut invite = vector_invite();
     let signed_late = accept_from(&vector_token(), "alice", 3, CREATED + WEEK + 1);
     assert_eq!(
-        invite.admit(&signed_late, CREATED + WEEK),
+        invite.admit(&signed_late, CREATED + WEEK, DEFAULT_WINDOW),
         Err(Reject::Expired)
     );
 }
@@ -418,7 +432,133 @@ fn a_refused_attempt_does_not_use_up_the_invite() {
         message: accept::message("mallory", 1, now, &invite.id()).expect("encodes"),
         signature: [0u8; 64],
     };
-    assert_eq!(invite.admit(&forged, now), Err(Reject::BadSignature));
+    assert_eq!(
+        invite.admit(&forged, now, DEFAULT_WINDOW),
+        Err(Reject::BadSignature)
+    );
     let alice = accept_from(&vector_token(), "alice", 3, now);
-    assert!(invite.admit(&alice, now).is_ok());
+    assert!(invite.admit(&alice, now, DEFAULT_WINDOW).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// The freshness window (N23)
+// ---------------------------------------------------------------------------
+
+const SECOND: u64 = 1000;
+/// The default window in milliseconds. It is 5:00.
+const FIVE_MINUTES: u64 = 5 * MINUTE;
+
+fn fresh_invite() -> Invite {
+    Invite::create(&vector_token(), CREATED, CREATED + WEEK).expect("the invite is created")
+}
+
+#[test]
+fn an_accept_signed_4_59_before_the_invite_is_admitted() {
+    let mut invite = fresh_invite();
+    let now = CREATED + MINUTE;
+    let ctime = CREATED - (FIVE_MINUTES - 59 * SECOND);
+    let proof = accept_from(&vector_token(), "alice", 3, ctime);
+    assert!(invite.admit(&proof, now, DEFAULT_WINDOW).is_ok());
+}
+
+#[test]
+fn an_accept_signed_exactly_5_00_before_the_invite_is_admitted() {
+    // The window is inclusive: an accept at the edge is not older than the window.
+    let mut invite = fresh_invite();
+    let now = CREATED + MINUTE;
+    let ctime = CREATED - FIVE_MINUTES;
+    let proof = accept_from(&vector_token(), "alice", 3, ctime);
+    assert!(invite.admit(&proof, now, DEFAULT_WINDOW).is_ok());
+}
+
+#[test]
+fn an_accept_signed_5_01_before_the_invite_is_refused_with_the_window_named() {
+    let mut invite = fresh_invite();
+    let now = CREATED + MINUTE;
+    let ctime = CREATED - (FIVE_MINUTES + SECOND);
+    let proof = accept_from(&vector_token(), "alice", 3, ctime);
+    let refused = invite.admit(&proof, now, DEFAULT_WINDOW);
+    assert_eq!(refused, Err(Reject::Stale(DEFAULT_WINDOW)));
+    let message = refused.expect_err("refused").to_string();
+    assert!(
+        message.contains("older than the 300 s freshness window"),
+        "the error names the window: {message}"
+    );
+    assert_eq!(invite.admitted(), None, "a stale accept uses nothing up");
+}
+
+#[test]
+fn the_window_also_edges_accepts_signed_from_the_future() {
+    let now = CREATED + MINUTE;
+    let mut at_edge = fresh_invite();
+    let on_edge = accept_from(&vector_token(), "alice", 3, now + FIVE_MINUTES);
+    assert!(at_edge.admit(&on_edge, now, DEFAULT_WINDOW).is_ok());
+
+    let mut past_edge = fresh_invite();
+    let past = accept_from(&vector_token(), "alice", 3, now + FIVE_MINUTES + SECOND);
+    assert_eq!(
+        past_edge.admit(&past, now, DEFAULT_WINDOW),
+        Err(Reject::FromFuture(DEFAULT_WINDOW))
+    );
+}
+
+#[test]
+fn the_window_resolves_inviter_then_world_then_server_then_default() {
+    let two = Duration::from_secs(120);
+    let ten = Duration::from_secs(600);
+    let one = Duration::from_secs(60);
+    assert_eq!(DEFAULT_WINDOW, Duration::from_secs(300));
+    assert_eq!(Freshness::default().window(), DEFAULT_WINDOW);
+    let server = Freshness {
+        server: Some(two),
+        ..Freshness::default()
+    };
+    assert_eq!(server.window(), two);
+    let world = Freshness {
+        server: Some(two),
+        world: Some(ten),
+        ..Freshness::default()
+    };
+    assert_eq!(world.window(), ten, "the world overrides the server");
+    let inviter = Freshness {
+        server: Some(two),
+        world: Some(ten),
+        inviter: Some(one),
+    };
+    assert_eq!(inviter.window(), one, "the inviter overrides the world");
+}
+
+#[test]
+fn a_configured_window_overrides_the_default_in_both_directions() {
+    let now = CREATED + MINUTE;
+    let strict = Freshness {
+        server: Some(Duration::from_secs(120)),
+        ..Freshness::default()
+    }
+    .window();
+    let wide = Freshness {
+        world: Some(Duration::from_secs(600)),
+        ..Freshness::default()
+    }
+    .window();
+
+    // Three minutes before the invite: the default admits it, the two-minute window refuses it.
+    let three_minutes_old = accept_from(&vector_token(), "alice", 3, CREATED - 3 * MINUTE);
+    assert!(
+        fresh_invite()
+            .admit(&three_minutes_old, now, DEFAULT_WINDOW)
+            .is_ok()
+    );
+    assert_eq!(
+        fresh_invite().admit(&three_minutes_old, now, strict),
+        Err(Reject::Stale(strict))
+    );
+
+    // Seven minutes before the invite: the default refuses it, the ten-minute window admits it.
+    let seven_minutes_old = accept_from(&vector_token(), "bob", 1, CREATED - 7 * MINUTE);
+    assert_eq!(
+        fresh_invite().admit(&seven_minutes_old, now, DEFAULT_WINDOW),
+        Err(Reject::Stale(DEFAULT_WINDOW))
+    );
+    assert!(fresh_invite().admit(&seven_minutes_old, now, wide).is_ok());
 }
