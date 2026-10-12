@@ -35,6 +35,8 @@ web = [
   "dep:sha2",
   "dep:qrcode",
 ]
+# Mainline DHT address lookup (P7.3, decision 15). Off in the default build; src/dht.rs decides per server.
+dht = ["dep:iroh-mainline-address-lookup"]
 
 [dependencies]
 anyhow = "1"
@@ -47,6 +49,8 @@ futures-lite = "2"
 futures-util = { version = "0.3", features = ["sink"] }
 iroh = "1"
 iroh-mdns-address-lookup = "0.6"
+# Mainline DHT address lookup (P7.3). Optional: only the `dht` feature brings it and n0-mainline in.
+iroh-mainline-address-lookup = { version = "0.6", optional = true }
 iroh-base = "1"
 iroh-tickets = "1"
 iroh-blobs = "0.103"

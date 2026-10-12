@@ -111,7 +111,7 @@ async fn session(policy: &DhtPolicy, dht: &TestDht) -> Endpoint {
 async fn dial_by_id(client: &Endpoint, peer: EndpointId) -> anyhow::Result<Connection> {
     tokio::time::timeout(DIAL_LIMIT, connectivity::connect(client, peer, ALPN))
         .await
-        .map_err(|_| anyhow!("the dial did not finish within {DIAL_LIMIT:?}"))?
+        .map_err(|_elapsed| anyhow!("the dial did not finish within {DIAL_LIMIT:?}"))?
 }
 
 /// Waits until the endpoint has published to the test DHT, for at most ten seconds.
