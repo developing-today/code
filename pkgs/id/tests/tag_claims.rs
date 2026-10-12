@@ -344,8 +344,8 @@ fn history(seed: u64, steps: usize, count: usize) -> History {
                 if sets.is_empty() {
                     continue;
                 }
-                let count = 1 + rng.below(3);
-                let named: Vec<Hash> = (0..count)
+                let named_count = 1 + rng.below(3);
+                let named: Vec<Hash> = (0..named_count)
                     .map(|_| sets[rng.below(sets.len())].id())
                     .collect();
                 let seen: HashSet<Hash> = known[w].values().map(Sent::id).collect();
