@@ -94,6 +94,8 @@ pub enum Refusal {
     BadGrantee,
     /// A veto names no grant of this group that the veto has seen.
     UnknownGrant,
+    /// A grant that names another world may carry Write at most, and must name a world.
+    NotCrossable,
 }
 
 /// What became of one event.
@@ -167,6 +169,7 @@ pub struct Projection {
     outcomes: BTreeMap<Hash, Outcome>,
     effective: BTreeSet<Hash>,
     in_force: BTreeSet<Hash>,
+    grants: Vec<Grant>,
 }
 
 impl Projection {
@@ -207,6 +210,12 @@ impl Projection {
     /// it was meant to allow for that.
     pub fn grant_in_force(&self, id: &Hash) -> bool {
         self.in_force.contains(id)
+    }
+
+    /// Every grant in force at the head of the events, with its grantor, grantee, scope and
+    /// target world. See [`Grant`].
+    pub fn grants_in_force(&self) -> impl Iterator<Item = &Grant> {
+        self.grants.iter()
     }
 }
 
@@ -256,7 +265,7 @@ fn run(
 const fn is_candidate(event: &Event) -> bool {
     matches!(
         event.body,
-        Body::Delegate(_) | Body::Veto { .. } | Body::Member(_)
+        Body::Delegate(_) | Body::Cross { .. } | Body::Veto { .. } | Body::Member(_)
     )
 }
 
@@ -360,7 +369,10 @@ pub(super) enum Effect {
         successor: Option<Key>,
         by: Hash,
     },
-    Delegation(Delegate),
+    Delegation {
+        delegate: Delegate,
+        target: Option<String>,
+    },
     Veto(Hash),
 }
 
@@ -459,7 +471,8 @@ impl Engine {
                 Ok(decision) => self.manage_chain(by_id, event, *op, decision),
                 Err(refusal) => Ok(Err(refusal)),
             },
-            Body::Delegate(delegate) => self.delegate(by_id, event, *delegate),
+            Body::Delegate(delegate) => self.delegate(by_id, event, *delegate, None),
+            Body::Cross { delegate, world } => self.delegate(by_id, event, *delegate, Some(world)),
             Body::Veto { grant } => self.veto(by_id, event, *grant),
         }
     }
@@ -489,7 +502,7 @@ impl Engine {
             Effect::Create(record) => {
                 self.groups.insert(group, record);
             }
-            Effect::Delegation(delegate) => {
+            Effect::Delegation { delegate, target } => {
                 let grant = Grant {
                     id: event.id,
                     group,
@@ -497,6 +510,7 @@ impl Engine {
                     to: delegate.grantee,
                     scope: delegate.scope,
                     redelegate: delegate.can_redelegate,
+                    target,
                 };
                 self.grants.insert(event.id, grant);
             }
@@ -836,6 +850,12 @@ impl Engine {
         in_force: BTreeSet<Hash>,
     ) -> Projection {
         let membership = &self.membership;
+        let grants: Vec<Grant> = self
+            .grants
+            .values()
+            .filter(|grant| in_force.contains(&grant.id))
+            .cloned()
+            .collect();
         let groups = self
             .groups
             .into_iter()
@@ -866,6 +886,7 @@ impl Engine {
             outcomes,
             effective,
             in_force,
+            grants,
         }
     }
 }
@@ -873,7 +894,7 @@ impl Engine {
 /// Applies a state change to a group that exists.
 fn apply_to(record: &mut Record, effect: Effect) {
     match effect {
-        Effect::Create(_) | Effect::Delegation(_) | Effect::Veto(_) => {}
+        Effect::Create(_) | Effect::Delegation { .. } | Effect::Veto(_) => {}
         Effect::Present(member) => {
             record.present.insert(member);
         }
