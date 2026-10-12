@@ -15,6 +15,14 @@
 //! The methods that the sync path does not use return [`TraitStoreError::Unsupported`], with the
 //! reason, rather than a guess. Auth state, fork proofs and waiting events are not part of these
 //! traits, and stay in the event store's own tables.
+//!
+//! # Known limit: LogSync is not wired in
+//!
+//! p2panda-sync is not a dependency yet. Its p2panda-store dependency uses the default features,
+//! and those include SQLite, so adding it would bring SQLite back into the build. Until P3.2
+//! removes that default (a fork of the one dependency line, or a LogSync of our own), nothing
+//! here runs LogSync. `test_logsync_is_not_wired_and_the_lock_has_no_sqlite` pins this: it fails
+//! when the lock names SQLite or p2panda-sync, so that change is made on purpose.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::{Future, ready};
@@ -454,6 +462,27 @@ mod tests {
     use super::*;
     use crate::chain::{ChainExt, sign};
     use crate::waiting::WaitingLimits;
+
+    /// The LogSync limit, pinned. The lock has no SQLite and no p2panda-sync, so LogSync is not
+    /// wired in. Adding p2panda-sync brings SQLite back through its store dependency, which is
+    /// the P3.2 item. This test fails on either, so the change is made on purpose.
+    #[test]
+    fn test_logsync_is_not_wired_and_the_lock_has_no_sqlite() {
+        let lock =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.lock")).unwrap();
+        for name in [
+            "sqlx",
+            "sqlite",
+            "rusqlite",
+            "libsqlite3-sys",
+            "p2panda-sync",
+        ] {
+            assert!(
+                !lock.contains(&format!("name = \"{name}")),
+                "Cargo.lock names {name}: LogSync needs p2panda-sync without its SQLite default (P3.2)"
+            );
+        }
+    }
 
     fn key(n: u8) -> SigningKey {
         SigningKey::from_bytes(&[n; 32])
