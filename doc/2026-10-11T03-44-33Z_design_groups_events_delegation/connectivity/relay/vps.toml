@@ -1,4 +1,5 @@
-# iroh-relay, VPS mode (setup B in the connectivity design).
+# iroh-relay, VPS mode (setup B in the connectivity design). Its values are in relay.kit.toml
+# under [modes.vps].
 #
 # Needs a public IPv4 address and these open ports:
 #   80/tcp   ACME challenge and captive-portal check

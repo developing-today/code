@@ -1,6 +1,7 @@
-# systemd unit for iroh-relay on a VPS (setup B). Setup A (Cloudflare Tunnel) uses the same
-# binary and config file with tunnel.toml. Install the binary at /usr/local/bin/iroh-relay and the
-# config at /etc/iroh-relay/relay.toml before enabling the unit.
+# systemd unit for iroh-relay, shared by both modes in relay.kit.toml. Install the binary at
+# /usr/local/bin/iroh-relay and the mode's config at /etc/iroh-relay/relay.toml before enabling
+# the unit. The vps mode also installs iroh-relay.service.d/vps.conf, which grants the port
+# capability. The tunnel mode installs none.
 [Unit]
 Description=iroh relay
 After=network-online.target
@@ -14,9 +15,6 @@ ExecStart=/usr/local/bin/iroh-relay --config-path /etc/iroh-relay/relay.toml
 KillSignal=SIGINT
 User=iroh-relay
 Group=iroh-relay
-# Lets a non-root user bind ports 80 and 443 without running as root.
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 StateDirectory=iroh-relay
 Environment=RUST_LOG=info
 Restart=always
