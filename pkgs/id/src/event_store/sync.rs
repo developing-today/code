@@ -105,23 +105,31 @@ pub(crate) enum Cut {
 }
 
 /// Runs one range session over an open connection. The dialer opens the stream and passes
-/// `initiator = true`. `now_ms` is the clock the store's waiting rules use. `_deadline` bounds
-/// the whole session, from opening the stream to the last event.
+/// `initiator = true`. `now_ms` is the clock the store's waiting rules use. `deadline` bounds
+/// the whole session, from opening the stream to the last event, as LogSync's does.
 ///
 /// # Errors
 ///
 /// Returns an error if the peer breaks the protocol, a frame is malformed or too large, an
-/// event fails verification, the session does not end within the flight limit, or the
-/// connection fails.
+/// event fails verification, the session does not end within the flight limit or within
+/// `deadline`, or the connection fails.
 pub async fn sync_over(
     store: &mut EventStore,
     conn: &Connection,
     initiator: bool,
     params: Params,
     now_ms: u64,
-    _deadline: Duration,
+    deadline: Duration,
 ) -> Result<Outcome> {
-    run(store, conn, initiator, params, now_ms, Cut::Never).await
+    match tokio::time::timeout(
+        deadline,
+        run(store, conn, initiator, params, now_ms, Cut::Never),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_elapsed) => bail!("the range session did not finish within {deadline:?}"),
+    }
 }
 
 impl EventStore {
