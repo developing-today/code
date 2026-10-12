@@ -253,8 +253,10 @@ pub async fn sync_with(
 }
 
 /// Answers one session on `send` and `recv`: reads the request, agrees or refuses, and runs the
-/// agreed method. The responder does not choose the method. It runs the one the initiator asked for.
-/// `gate` decides whether `peer` may pull, and is checked before the method is agreed.
+/// agreed method.
+///
+/// The responder does not choose the method. It runs the one the initiator asked for. `gate`
+/// decides whether `peer` may pull, and is checked before the method is agreed.
 ///
 /// # Errors
 ///
@@ -1183,7 +1185,7 @@ mod tests {
         let topic = group(13);
         let (founder, member) = (testing::key(0xd0).public(), testing::key(0xd4).public());
         let access = testing::live(testing::docs_world(founder, member, false));
-        let gate = PullGate::new(PullPolicy::Members, testing::WORLD, access.clone());
+        let gate = PullGate::new(PullPolicy::Members, testing::WORLD, Arc::clone(&access));
         let alice = key(24);
         let (_da, store_a) = open();
         let (_db, store_b) = open();

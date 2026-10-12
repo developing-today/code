@@ -55,7 +55,11 @@ pub struct PullGate {
 impl PullGate {
     /// A gate for `world` under `policy`. `access` answers membership at the time of each check.
     #[must_use]
-    pub fn new(policy: PullPolicy, world: impl Into<String>, access: Arc<dyn WorldAccess>) -> Self {
+    pub fn new<A: WorldAccess>(
+        policy: PullPolicy,
+        world: impl Into<String>,
+        access: Arc<A>,
+    ) -> Self {
         Self {
             policy,
             world: world.into(),
@@ -254,7 +258,7 @@ mod tests {
     #[test]
     fn test_pull_policy_members_refuses_a_removed_member_on_the_next_check() {
         let access = live(docs_world(key(1).public(), key(2).public(), false));
-        let gate = PullGate::new(PullPolicy::Members, WORLD, access.clone());
+        let gate = PullGate::new(PullPolicy::Members, WORLD, Arc::clone(&access));
         assert!(gate.admits(&key(2).public()), "before the removal");
         access.set(docs_world(key(1).public(), key(2).public(), true));
         assert!(!gate.admits(&key(2).public()), "after the removal");

@@ -500,6 +500,7 @@ mod tests {
     use crate::pull_policy::{PullPolicy, PullRefused, testing};
     use crate::waiting::WaitingLimits;
     use p2panda_core::{Hash, SigningKey};
+    use std::sync::Arc;
 
     use iroh::endpoint::{Endpoint, presets};
     use iroh::{EndpointAddr, RelayMode, TransportAddr};
@@ -1182,7 +1183,7 @@ mod tests {
     async fn test_pull_policy_members_range_refuses_a_removed_member_on_the_next_pull() {
         let (founder, member) = (testing::key(0xd0).public(), testing::key(0xd1).public());
         let access = testing::live(testing::docs_world(founder, member, false));
-        let gate = PullGate::new(PullPolicy::Members, testing::WORLD, access.clone());
+        let gate = PullGate::new(PullPolicy::Members, testing::WORLD, Arc::clone(&access));
         let (_da, mut a) = open();
         let (_db, mut b) = open();
         populate(&mut a, &[(1, 3)]);
