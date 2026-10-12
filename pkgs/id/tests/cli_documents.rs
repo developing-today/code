@@ -180,7 +180,10 @@ fn test_events_lists_the_tags_and_a_removal_on_a_document() {
     let store = root.path().join("events");
     let owner = node(root.path(), "owner", &store);
     let path = file(root.path(), "notes.md", BODY);
-    let doc = field(&publish(&owner, &path, &["--tag", "topic=plans"]), "document");
+    let doc = field(
+        &publish(&owner, &path, &["--tag", "topic=plans"]),
+        "document",
+    );
 
     append(
         &store,
@@ -198,9 +201,18 @@ fn test_events_lists_the_tags_and_a_removal_on_a_document() {
     let listed = owner.ok(&["doc", "events", &doc]);
     let lines: Vec<&str> = listed.lines().collect();
     assert_eq!(lines.len(), 2, "{listed}");
-    assert!(lines[0].starts_with(&format!("kind={SET_KIND} ")), "{listed}");
-    assert!(lines[1].starts_with(&format!("kind={REMOVAL_KIND} ")), "{listed}");
-    assert!(!listed.contains(DOCUMENT_KIND), "the put is not an event on the document: {listed}");
+    assert!(
+        lines[0].starts_with(&format!("kind={SET_KIND} ")),
+        "{listed}"
+    );
+    assert!(
+        lines[1].starts_with(&format!("kind={REMOVAL_KIND} ")),
+        "{listed}"
+    );
+    assert!(
+        !listed.contains(DOCUMENT_KIND),
+        "the put is not an event on the document: {listed}"
+    );
 }
 
 #[test]
@@ -221,7 +233,7 @@ fn test_frontier_lists_each_authors_head() {
     for line in lines {
         let author = key_bytes(&field(line, "author"));
         let head = saved.chain(&author).unwrap().unwrap().head.unwrap();
-        assert_eq!(field(line, "event"), head.to_hex().to_string(), "{line}");
+        assert_eq!(field(line, "event"), head.to_hex(), "{line}");
     }
 }
 
@@ -233,14 +245,23 @@ fn test_history_lists_the_document_and_its_tags_in_causal_order() {
     let ann = node(root.path(), "ann", &store);
     let path = file(root.path(), "notes.md", BODY);
     let doc = field(&publish(&owner, &path, &[]), "document");
-    let owner_set = field(&owner.ok(&["claim", "set", &doc, "topic", "plans"]), "event");
+    let owner_set = field(
+        &owner.ok(&["claim", "set", &doc, "topic", "plans"]),
+        "event",
+    );
     // Ann names the owner's tag in her event's causal past, because she saw it first.
     let ann_set = field(&ann.ok(&["claim", "set", &doc, "status", "ok"]), "event");
 
     let listed = owner.ok(&["doc", "history", &doc]);
     let ids: Vec<String> = listed.lines().map(|line| field(line, "event")).collect();
-    assert_eq!(ids, vec![doc.clone(), owner_set, ann_set], "{listed}");
-    assert!(listed.lines().next().unwrap().starts_with(&format!("kind={DOCUMENT_KIND} ")));
+    assert_eq!(ids, vec![doc, owner_set, ann_set], "{listed}");
+    assert!(
+        listed
+            .lines()
+            .next()
+            .unwrap()
+            .starts_with(&format!("kind={DOCUMENT_KIND} "))
+    );
 }
 
 #[test]
@@ -250,10 +271,8 @@ fn test_json_forms_print_one_object_for_publish_and_arrays_for_lists() {
     let owner = node(root.path(), "owner", &store);
     let path = file(root.path(), "notes.md", BODY);
 
-    let published: serde_json::Value = serde_json::from_str(
-        publish(&owner, &path, &["--json"]).trim(),
-    )
-    .unwrap();
+    let published: serde_json::Value =
+        serde_json::from_str(publish(&owner, &path, &["--json"]).trim()).unwrap();
     assert_eq!(published["command"], "publish");
     let doc = published["document"].as_str().unwrap().to_owned();
     assert_eq!(doc.len(), 64);
@@ -283,7 +302,10 @@ fn test_publish_refuses_an_empty_media_type_and_a_missing_file() {
         "text/markdown",
     ]);
     assert!(!missing.status.success());
-    assert!(documents(&store).is_empty(), "a refused publish records nothing");
+    assert!(
+        documents(&store).is_empty(),
+        "a refused publish records nothing"
+    );
 }
 
 #[test]

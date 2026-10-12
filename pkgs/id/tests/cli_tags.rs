@@ -88,7 +88,13 @@ fn publish(node: &Node, name: &str) -> String {
     let path = node.dir.join(name);
     std::fs::create_dir_all(&node.dir).unwrap();
     std::fs::write(&path, b"# Notes\n").unwrap();
-    let line = node.ok(&["doc", "publish", path.to_str().unwrap(), "--media-type", "text/markdown"]);
+    let line = node.ok(&[
+        "doc",
+        "publish",
+        path.to_str().unwrap(),
+        "--media-type",
+        "text/markdown",
+    ]);
     required(&line, "document")
 }
 
@@ -147,7 +153,13 @@ fn test_claim_clear_removes_the_live_claims_on_the_subject() {
     assert!(cleared.starts_with("clear "), "{cleared:?}");
     assert_eq!(required(&cleared, "claims"), "1");
     assert_eq!(owner.ok(&["claim", "list", &doc]), "");
-    assert!(open(&store).tag_claims().unwrap().iter().all(|claim| claim.subject != hash(&doc)));
+    assert!(
+        open(&store)
+            .tag_claims()
+            .unwrap()
+            .iter()
+            .all(|claim| claim.subject != hash(&doc))
+    );
 }
 
 #[test]
@@ -191,9 +203,12 @@ fn test_list_and_search_print_one_array_element_per_claim_with_json() {
     let owner = node(root.path(), "owner", &store);
     let doc = publish(&owner, "notes.md");
 
-    let set: serde_json::Value =
-        serde_json::from_str(owner.ok(&["claim", "set", &doc, "topic", "plans", "--json"]).trim())
-            .unwrap();
+    let set: serde_json::Value = serde_json::from_str(
+        owner
+            .ok(&["claim", "set", &doc, "topic", "plans", "--json"])
+            .trim(),
+    )
+    .unwrap();
     assert_eq!(set["command"], "set");
     assert_eq!(set["name"], "topic");
 
@@ -214,7 +229,23 @@ fn test_a_name_that_is_empty_or_not_nfc_is_refused() {
 
     assert!(!owner.run(&["claim", "set", &doc, ""]).status.success());
     // "e" and a combining acute accent is NFD, not NFC.
-    assert!(!owner.run(&["claim", "set", &doc, "e\u{301}"]).status.success());
-    assert!(!owner.run(&["claim", "set", "not-hex", "topic"]).status.success());
-    assert!(open(&store).tag_claims().unwrap().iter().all(|claim| !claim.name.is_empty()));
+    assert!(
+        !owner
+            .run(&["claim", "set", &doc, "e\u{301}"])
+            .status
+            .success()
+    );
+    assert!(
+        !owner
+            .run(&["claim", "set", "not-hex", "topic"])
+            .status
+            .success()
+    );
+    assert!(
+        open(&store)
+            .tag_claims()
+            .unwrap()
+            .iter()
+            .all(|claim| !claim.name.is_empty())
+    );
 }
