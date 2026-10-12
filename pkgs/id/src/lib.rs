@@ -153,6 +153,7 @@
 //! ```
 
 pub mod access;
+pub mod aliases;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub mod blob_gate;
