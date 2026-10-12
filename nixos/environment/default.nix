@@ -267,6 +267,18 @@ let
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for rationale and tradeoffs.
   latestCli = pkgs.callPackage (lib.from-root "pkgs/latest-cli") { };
+
+  # Rust toolchain for the whole system, matching the devshell exactly: the
+  # same pkgs/id/rust-toolchain.toml (channel 1.99.0) resolved through the same
+  # rust-overlay lock. This is what places clippy, rust-analyzer, rustfmt and
+  # llvm-tools on the system, which the plain nixpkgs rustc/cargo cannot.
+  #
+  # rust-overlay is not part of the system's nixpkgs, so extend a local copy
+  # rather than adding a global overlay -- a global one would also silently
+  # rewrite pkgs.rustc/rustc for every derivation that consumes it.
+  rustToolchain = (pkgs.extend (import inputs.id-rust-overlay)).rust-bin.fromRustupToolchainFile (
+    lib.from-root "pkgs/id/rust-toolchain.toml"
+  );
 in
 {
   nixpkgs.overlays = [
@@ -615,6 +627,30 @@ in
       gnss-share
       rtklib-ex
     ])
+    # Devshell parity: tools nix-common.nix installs for `nix develop`,
+    # mirrored system-wide so they are on PATH without entering the shell.
+    # Keep in sync with nix-common.nix. (mcpx, go, cmake, zig, bun, nodejs,
+    # ripgrep, fd, tokei, hyperfine, uv, deadnix, pkg-config,
+    # nix-output-monitor, age/ssh-to-age and the NixOS tooling are already
+    # listed above.)
+    ++ (with pkgs; [
+      git
+      file
+      jq
+      sops
+      gnupg
+      openssl
+      lefthook
+      conform
+      typescript
+      cargo-watch
+      cargo-nextest
+      cargo-llvm-cov
+      cargo-audit
+      cargo-outdated
+      cargo-machete
+      cargo-edit
+    ])
     ++ (with inputs.nixpkgs-25.legacyPackages.${system}; [ activitywatch ])
     ++ (with inputs.nixpkgs-stable.legacyPackages.${system}; [ ])
     ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
@@ -834,8 +870,8 @@ in
       # libxkbcommon
       # lsix
       # mesa.drivers
-      cargo
-      rustc
+      # cargo / rustc come from `rustToolchain` below (1.99.0 + clippy /
+      # rust-analyzer / llvm-tools), not the nixpkgs-master build.
       rustup
       # simple-http-server
       timg
@@ -960,7 +996,7 @@ in
       prettier # nodepackages remoed 2026-04-03
       ruff
       biome
-      rustfmt
+      # rustfmt ships in `rustToolchain` below
       taplo
       rufo
       elmPackages.elm-format
@@ -1138,7 +1174,10 @@ in
 
       # VR
       #immersed
-    ]);
+    ])
+    # Pinned Rust toolchain (1.99.0) shared with the devshell. Replaces the
+    # nixpkgs cargo/rustc/rustfmt above so PATH stays on one version.
+    ++ [ rustToolchain ];
     ######## STUPID PACKAGES BULLSHIT ABOVE THIS LINE
   };
 }

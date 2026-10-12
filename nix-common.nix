@@ -8,19 +8,29 @@
 #
 # Usage in shell.nix:
 #   nixCommon = import ./nix-common.nix { inherit pkgs; };
+#
+# Package management: add dev dependencies here only (never directly to
+# shell.nix or flake.nix). Both shells and the system profile mirror this list.
 
 { pkgs }:
 
 let
-  # Rust toolchain from rust-toolchain.toml (includes rustc, cargo, rustfmt, clippy)
-  # Works because both shell.nix and flake.nix apply rust-overlay before importing
-  # Uses pkgs/id path directly (root symlink not tracked by git, won't be in Nix store)
+  # Rust toolchain, pinned by pkgs/id/rust-toolchain.toml and resolved through
+  # rust-overlay. This is the modern way to get a complete toolchain: the
+  # file's `components` list is what places clippy, rust-analyzer, rustfmt and
+  # llvm-tools in the toolchain, and `channel` (currently 1.99.0) is the single
+  # place the version lives. Nothing else needs to be added for those tools.
   rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./pkgs/id/rust-toolchain.toml;
 
-  # Formatter binaries (keep in sync with treefmt.toml)
-  # Used by formatter wrapper (nix fmt), nix flake checks, and devShell PATH
+  # mcpx (MCP gateway / Code Mode runner) is built from this repository. It is
+  # callPackaged here so `nix develop` and `nix-shell` both get the same build,
+  # the same way nixos/environment/default.nix pulls it in system-wide.
+  mcpx = pkgs.callPackage ./pkgs/mcpx/package.nix { };
+
+  # Formatter binaries (keep in sync with treefmt.toml).
+  # Used by the formatter wrapper (nix fmt), nix flake checks, and devShell PATH.
   fmtBins = [
-    # Rust toolchain (includes rustfmt)
+    # Rust toolchain (includes rustfmt and clippy)
     rustToolchain
   ]
   ++ (with pkgs; [
@@ -36,7 +46,7 @@ let
     ruff
     rufo
     elmPackages.elm-format
-    go
+    go # also provides gofmt, the treefmt Go formatter
     haskellPackages.ormolu
     taplo
     # Utilities needed by formatter wrapper
@@ -47,28 +57,60 @@ let
     bash
   ]);
 
-  # Native build inputs (tools) — used by nativeBuildInputs and packages
-  nativeBuildInputs =
-    fmtBins
-    ++ (with pkgs; [
-      # Build dependencies (Rust compilation)
-      pkg-config
-      openssl
+  # Everything else the repository's workflows reference. Grouped so it is
+  # obvious why each package is here.
+  devTools = with pkgs; [
+    # --- NixOS management (just switch -> lib/rebuild-*.sh, lib/auth.sh) ---
+    nix # nix / nix flakes / flake locking
+    nix-output-monitor # the `nom` used to filter nixos-rebuild --json output
+    home-manager
+    git
+    jq # `jq` in rebuild-simple.sh and the justfile
+    sops
+    ssh-to-age
+    gnupg
+    age
 
-      nix
-      home-manager
-      git
-      sops
-      ssh-to-age
-      gnupg
-      age
+    # --- Rust (this repo's crates + the id sub-project) ---
+    # The toolchain itself (rustc, cargo, rustfmt, clippy, rust-analyzer,
+    # llvm-tools) is `rustToolchain` above, added via fmtBins.
+    pkg-config
+    openssl
+    cmake # id: libsql-ffi builds its bundled SQLite through cmake
+    zig # id: builds the roc-world wasm host (build.zig.zon wants 0.16)
+    cargo-watch
+    cargo-nextest
+    cargo-llvm-cov
+    cargo-audit
+    cargo-outdated
+    cargo-machete
+    cargo-edit
 
-      # Python/uv (used by scripts)
-      uv
+    # --- Go (mcpx) ---
+    # `go` itself is in fmtBins (gofmt); mcpx is the repository's Go program.
+    mcpx
 
-      # Manual linters (not in treefmt, run manually)
-      deadnix
-    ]);
+    # --- Git hooks (lefthook.yml: treefmt pre-commit, conform commit-msg) ---
+    lefthook
+    conform
+
+    # --- Web (id web UI) ---
+    # Playwright browsers deliberately stay in pkgs/id's own shell, which wires
+    # PLAYWRIGHT_BROWSERS_PATH; installing them here would be dead weight.
+    bun # JavaScript bundler and runtime (required for id web builds)
+    nodejs # npm, npx
+    typescript # TypeScript for type checking
+
+    # --- Assorted workflow tools referenced by justfile/scripts ---
+    ripgrep
+    fd
+    tokei
+    hyperfine
+    uv
+    deadnix # manual nix linter (kept out of treefmt on purpose)
+  ];
+
+  nativeBuildInputs = fmtBins ++ devTools;
 in
 {
   inherit rustToolchain fmtBins nativeBuildInputs;

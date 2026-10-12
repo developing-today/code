@@ -487,12 +487,16 @@ let
       inherit (clan.config) nixosConfigurations clanInternals;
       clan = clan.config;
       devShells =
-        inputs.clan-core.inputs.nixpkgs.lib.genAttrs
+        inputs.nixpkgs-unstable.lib.genAttrs
           [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ]
           (
             system:
             let
-              pkgs = import inputs.clan-core.inputs.nixpkgs {
+              # Use the flake's own nixpkgs pin (nixpkgs-unstable), the same
+              # revision shell.nix reads out of flake.lock. Previously this
+              # imported clan-core's private nixpkgs, so `nix develop` and
+              # `nix-shell` resolved tools to different versions.
+              pkgs = import inputs.nixpkgs-unstable {
                 inherit system;
                 overlays = [ (import inputs.id-rust-overlay) ];
               };
