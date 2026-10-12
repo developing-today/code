@@ -13,6 +13,11 @@
 //! Membership operations go to [`crate::membership`], which decides them on p2panda-auth. Each
 //! event is handed to it once, so the causal index stays complete. An event this layer refuses is
 //! handed over as a no-op.
+//!
+//! Delegation (P2.5) is judged in [`super::delegation`]. Whether a grant or a removal takes effect
+//! can depend on a concurrent event (strong remove), so the fold runs in rounds. Each round judges
+//! the events against the set that took effect in the round before, and the fold stops when a
+//! round reproduces its own set. The set depends only on the events, so the result does too.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
@@ -27,9 +32,10 @@ use crate::membership::{
     Role as Placement,
 };
 
+use super::delegation::{Grant, Removal};
 use super::friendship::{Pair, friendship_id};
 use super::policy::{OnMemberRemoved, Policy, Template};
-use super::{Body, Create, Event, Key, MemberOp, Role};
+use super::{Body, Create, Delegate, Event, Key, MemberOp, Role};
 
 /// Why an event had no effect. A refused event changes no state. It is still decided, so the
 /// events after it can be decided too.
@@ -76,6 +82,18 @@ pub enum Refusal {
     AlreadyPresent,
     /// The membership layer refused it at its causal position.
     Membership(AuthRefusal),
+    /// The author does not hold the scope at the grant's position, so it may not grant it
+    /// (design §7.2, attenuation).
+    Attenuated,
+    /// The author holds no chain of grants to the scope it needs (design §7.2). A manager acts
+    /// only through a grant that reaches it from an owner.
+    NoChain,
+    /// A grant may not name Admin. Admin is a policy right, not a scope.
+    BadScope,
+    /// A grant may not name its own author.
+    BadGrantee,
+    /// A veto names no grant of this group that the veto has seen.
+    UnknownGrant,
 }
 
 /// What became of one event.
@@ -107,6 +125,10 @@ pub enum FoldError {
     /// The membership layer broke an invariant.
     #[error(transparent)]
     Membership(#[from] MembershipError),
+    /// The grants, vetoes and removals that take effect do not settle on one set. Each round
+    /// judges the events against the set of the round before, and the sets keep changing.
+    #[error("the events that take effect do not settle")]
+    Unsettled,
 }
 
 /// One group as the events determine it.
@@ -143,6 +165,8 @@ impl GroupView {
 pub struct Projection {
     groups: BTreeMap<Hash, GroupView>,
     outcomes: BTreeMap<Hash, Outcome>,
+    effective: BTreeSet<Hash>,
+    in_force: BTreeSet<Hash>,
 }
 
 impl Projection {
@@ -169,6 +193,21 @@ impl Projection {
                 .any(|group| group.friendship == Some(pair) && group.is_active())
         })
     }
+
+    /// Whether the event takes effect in the settled state. A grant, a veto or a membership
+    /// operation takes effect when it was applied and p2panda-auth's resolver does not filter it.
+    /// An event that was applied but filtered does not take effect.
+    pub fn takes_effect(&self, id: &Hash) -> bool {
+        self.effective.contains(id)
+    }
+
+    /// Whether the grant with this event ID is in force at the head of the events (design §7.3).
+    /// A concurrent removal of its grantor voids it, a veto cuts it, and the group's mode decides
+    /// the rest. The chain above the grant is not checked here. Use the outcomes of the actions
+    /// it was meant to allow for that.
+    pub fn grant_in_force(&self, id: &Hash) -> bool {
+        self.in_force.contains(id)
+    }
 }
 
 /// Computes the state of every group from the whole set of events. The order the events are given
@@ -176,13 +215,49 @@ impl Projection {
 pub fn fold(events: &[Event]) -> Result<Projection, FoldError> {
     let by_id = index(events)?;
     let order = canonical_order(&by_id)?;
-    let mut engine = Engine::default();
+    // The events whose effect depends on the settled set: grants, vetoes, and membership changes.
+    let candidates: BTreeSet<Hash> = by_id
+        .values()
+        .filter(|event| is_candidate(event))
+        .map(|event| event.id)
+        .collect();
+    let rounds = candidates.len() + 1;
+    let mut settled = candidates;
+    for _ in 0..=rounds {
+        let (projection, next) = run(&order, &by_id, &settled)?;
+        if next == settled {
+            return Ok(projection);
+        }
+        settled = next;
+    }
+    Err(FoldError::Unsettled)
+}
+
+/// One round: every event judged against `settled`. Returns the projection and the set of
+/// candidate events that took effect in this round.
+fn run(
+    order: &[&Event],
+    by_id: &BTreeMap<Hash, &Event>,
+    settled: &BTreeSet<Hash>,
+) -> Result<(Projection, BTreeSet<Hash>), FoldError> {
+    let mut engine = Engine::new(settled.clone());
     let mut outcomes = BTreeMap::new();
-    for event in order {
-        let outcome = engine.apply(event, &by_id)?;
+    for &event in order {
+        let outcome = engine.apply(event, by_id)?;
         outcomes.insert(event.id, outcome);
     }
-    Ok(engine.into_projection(outcomes))
+    let effective = engine.effective();
+    let in_force = engine.in_force(by_id)?;
+    let projection = engine.into_projection(outcomes, effective.clone(), in_force);
+    Ok((projection, effective))
+}
+
+/// Whether the event's effect depends on the settled set.
+const fn is_candidate(event: &Event) -> bool {
+    matches!(
+        event.body,
+        Body::Delegate(_) | Body::Veto { .. } | Body::Member(_)
+    )
 }
 
 /// The events by ID. Every `after` hash must name one of them.
@@ -244,7 +319,7 @@ fn canonical_order<'a>(by_id: &BTreeMap<Hash, &'a Event>) -> Result<Vec<&'a Even
 }
 
 /// Every event that the `after` hashes reach through `after` links, the hashes included.
-fn causal_past(by_id: &BTreeMap<Hash, &Event>, after: &[Hash]) -> BTreeSet<Hash> {
+pub(super) fn causal_past(by_id: &BTreeMap<Hash, &Event>, after: &[Hash]) -> BTreeSet<Hash> {
     let mut past = BTreeSet::new();
     let mut stack: Vec<Hash> = after.to_vec();
     while let Some(id) = stack.pop() {
@@ -260,18 +335,21 @@ fn causal_past(by_id: &BTreeMap<Hash, &Event>, after: &[Hash]) -> BTreeSet<Hash>
 
 /// What a group holds beyond its membership layer state.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Record {
-    policy: Policy,
-    admins: BTreeSet<Key>,
-    present: BTreeSet<Key>,
-    friendship: Option<Pair>,
-    dissolved_by: Option<Hash>,
+pub(super) struct Record {
+    pub(super) policy: Policy,
+    pub(super) admins: BTreeSet<Key>,
+    pub(super) present: BTreeSet<Key>,
+    pub(super) friendship: Option<Pair>,
+    pub(super) dissolved_by: Option<Hash>,
+    /// The accounts the create named, its author included. They are the owners: the roots of
+    /// every delegation chain (design §7.2, as S2 chose it).
+    pub(super) roots: BTreeSet<Key>,
 }
 
 /// The state change an accepted event makes. It is committed once the membership layer accepts
 /// the event.
 #[derive(Debug)]
-enum Effect {
+pub(super) enum Effect {
     Create(Record),
     Present(Key),
     Policy(Policy),
@@ -282,57 +360,85 @@ enum Effect {
     Remove {
         member: Key,
         dissolves: bool,
+        successor: Option<Key>,
         by: Hash,
     },
+    Delegation(Delegate),
+    Veto(Hash),
 }
 
 /// A rule's decision: the membership operation to hand to the membership layer, and the state
 /// change to commit if the layer accepts it.
 #[derive(Debug)]
-struct Decision {
-    group: Hash,
-    action: Option<GroupAction<AuthId, ()>>,
-    effect: Effect,
+pub(super) struct Decision {
+    pub(super) group: Hash,
+    pub(super) action: Option<GroupAction<AuthId, ()>>,
+    pub(super) effect: Effect,
 }
+
+/// A rule's verdict: a decision, or the reason it has no effect.
+pub(super) type Judged = Result<Decision, Refusal>;
+
+/// Placement of an event in the membership layer, as a label for the layer.
+type Placed = Placement;
 
 /// The state while the events are applied in canonical order.
 #[derive(Debug, Default)]
-struct Engine {
-    membership: Membership,
-    groups: BTreeMap<Hash, Record>,
+pub(super) struct Engine {
+    pub(super) membership: Membership,
+    pub(super) groups: BTreeMap<Hash, Record>,
+    /// The candidate events that took effect in the previous round.
+    pub(super) settled: BTreeSet<Hash>,
+    /// The candidate events applied in this round.
+    applied: BTreeSet<Hash>,
+    /// The applied candidates that are membership operations in the auth graph.
+    placed: BTreeSet<Hash>,
+    /// The grants applied in this round, by event ID.
+    pub(super) grants: BTreeMap<Hash, Grant>,
+    /// The vetoes applied in this round, each with the grant it vetoes.
+    pub(super) vetoes: BTreeMap<Hash, Hash>,
+    /// The removals applied in this round, by event ID.
+    pub(super) removals: BTreeMap<Hash, Removal>,
 }
 
 impl Engine {
+    fn new(settled: BTreeSet<Hash>) -> Self {
+        Self {
+            settled,
+            ..Self::default()
+        }
+    }
+
     /// Applies one event, and returns what became of it.
     fn apply(
         &mut self,
         event: &Event,
         by_id: &BTreeMap<Hash, &Event>,
     ) -> Result<Outcome, FoldError> {
-        let decided = match &event.body {
-            Body::Create(create) => self.create(event, create, by_id),
-            Body::Join => self.join(event),
-            Body::Policy(policy) => self.policy(event, policy),
-            Body::Member(op) => self.member(event, *op),
-        };
-        let decision = match decided {
+        let decision = match self.judge(event, by_id)? {
             Ok(decision) => decision,
             Err(refusal) => {
-                self.decide(event, Placement::Other)?;
+                self.decide(event, Placed::Other)?;
                 return Ok(Outcome::Refused(refusal));
             }
         };
         let role = match &decision.action {
-            Some(action) => Placement::Auth {
+            Some(action) => Placed::Auth {
                 author: event.author,
                 group: Some(decision.group),
                 action: action.clone(),
             },
-            None => Placement::Other,
+            None => Placed::Other,
         };
         match self.decide(event, role)? {
             Decided::Applied => {
-                self.commit(decision.group, decision.effect);
+                if is_candidate(event) {
+                    self.applied.insert(event.id);
+                    if decision.action.is_some() {
+                        self.placed.insert(event.id);
+                    }
+                }
+                self.commit(event, decision.group, decision.effect);
                 Ok(Outcome::Applied)
             }
             Decided::Refused { reason, .. } => Ok(Outcome::Refused(Refusal::Membership(reason))),
@@ -342,9 +448,28 @@ impl Engine {
         }
     }
 
+    /// The verdict on one event, before the membership layer sees it.
+    fn judge(
+        &mut self,
+        event: &Event,
+        by_id: &BTreeMap<Hash, &Event>,
+    ) -> Result<Judged, FoldError> {
+        match &event.body {
+            Body::Create(create) => Ok(self.create(event, create, by_id)),
+            Body::Join => Ok(self.join(event)),
+            Body::Policy(policy) => Ok(self.policy(event, policy)),
+            Body::Member(op) => match self.member(event, *op) {
+                Ok(decision) => self.manage_chain(by_id, event, *op, decision),
+                Err(refusal) => Ok(Err(refusal)),
+            },
+            Body::Delegate(delegate) => self.delegate(by_id, event, *delegate),
+            Body::Veto { grant } => self.veto(by_id, event, *grant),
+        }
+    }
+
     /// Hands one event to the membership layer. The events are applied in causal order, so it
     /// decides at once.
-    fn decide(&mut self, event: &Event, role: Placement) -> Result<Decided, FoldError> {
+    fn decide(&mut self, event: &Event, role: Placed) -> Result<Decided, FoldError> {
         let decided = self.membership.receive(CausalEvent {
             id: event.id,
             after: event.after.clone(),
@@ -362,10 +487,50 @@ impl Engine {
             })
     }
 
-    fn commit(&mut self, group: Hash, effect: Effect) {
+    fn commit(&mut self, event: &Event, group: Hash, effect: Effect) {
         match effect {
             Effect::Create(record) => {
                 self.groups.insert(group, record);
+            }
+            Effect::Delegation(delegate) => {
+                let grant = Grant {
+                    id: event.id,
+                    group,
+                    from: event.author,
+                    to: delegate.grantee,
+                    scope: delegate.scope,
+                    redelegate: delegate.can_redelegate,
+                };
+                self.grants.insert(event.id, grant);
+            }
+            Effect::Veto(grant) => {
+                self.vetoes.insert(event.id, grant);
+            }
+            Effect::Remove {
+                member,
+                dissolves,
+                successor,
+                by,
+            } => {
+                let removal = Removal {
+                    id: by,
+                    group,
+                    member,
+                    successor,
+                    after: event.after.clone(),
+                };
+                self.removals.insert(by, removal);
+                if let Some(record) = self.groups.get_mut(&group) {
+                    apply_to(
+                        record,
+                        Effect::Remove {
+                            member,
+                            dissolves,
+                            successor,
+                            by,
+                        },
+                    );
+                }
             }
             other => {
                 if let Some(record) = self.groups.get_mut(&group) {
@@ -373,6 +538,16 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// The candidate events that took effect: applied, and for a membership operation not filtered
+    /// by p2panda-auth's resolver in the final state.
+    fn effective(&self) -> BTreeSet<Hash> {
+        self.applied
+            .iter()
+            .copied()
+            .filter(|id| !self.placed.contains(id) || self.membership.is_effective(id))
+            .collect()
     }
 
     fn create(
@@ -433,6 +608,7 @@ impl Engine {
             present: BTreeSet::from([author]),
             friendship: Some(pair),
             dissolved_by: None,
+            roots: BTreeSet::from([author, other]),
         };
         let initial = vec![
             (
@@ -551,7 +727,7 @@ impl Engine {
                     },
                 })
             }
-            MemberOp::Remove { member } => {
+            MemberOp::Remove { member, successor } => {
                 if !self.listed(&group, &member) {
                     return Err(Refusal::NotAMember(member));
                 }
@@ -566,6 +742,7 @@ impl Engine {
                     effect: Effect::Remove {
                         member,
                         dissolves: record.policy.on_member_removed == OnMemberRemoved::Dissolve,
+                        successor,
                         by: event.id,
                     },
                 })
@@ -601,7 +778,7 @@ impl Engine {
         }
     }
 
-    fn record(&self, group: &Hash) -> Result<&Record, Refusal> {
+    pub(super) fn record(&self, group: &Hash) -> Result<&Record, Refusal> {
         self.groups.get(group).ok_or(Refusal::NoGroup)
     }
 
@@ -614,7 +791,7 @@ impl Engine {
 
     /// The member's role as its access level gives it, or `None` when it is not listed. An Admin
     /// shows as Manage here, because Admin is recorded apart from the access level.
-    fn access(&self, group: &Hash, key: &Key) -> Option<Role> {
+    pub(super) fn access(&self, group: &Hash, key: &Key) -> Option<Role> {
         self.membership
             .members(*group)
             .iter()
@@ -623,8 +800,22 @@ impl Engine {
     }
 
     /// Whether the account may act in the group. A friendship's member must be present too.
-    fn is_active(&self, group: &Hash, record: &Record, key: &Key) -> bool {
+    pub(super) fn is_active(&self, group: &Hash, record: &Record, key: &Key) -> bool {
         self.listed(group, key) && (record.friendship.is_none() || record.present.contains(key))
+    }
+
+    /// The group an event names, when the group is live and the event's author is an active member
+    /// of it. Otherwise the refusal.
+    pub(super) fn acting_in(&self, event: &Event) -> Result<Hash, Refusal> {
+        let group = event.group.ok_or(Refusal::NoGroup)?;
+        let record = self.record(&group)?;
+        if record.dissolved_by.is_some() {
+            return Err(Refusal::Dissolved);
+        }
+        if !self.is_active(&group, record, &event.author) {
+            return Err(Refusal::NotActive);
+        }
+        Ok(group)
     }
 
     /// How many friendships of `pair` the events in `past` have dissolved. This is the counter a
@@ -641,7 +832,13 @@ impl Engine {
         u32::try_from(count).unwrap_or(u32::MAX)
     }
 
-    fn into_projection(self, outcomes: BTreeMap<Hash, Outcome>) -> Projection {
+    /// Builds the projection from the final state of the round.
+    fn into_projection(
+        self,
+        outcomes: BTreeMap<Hash, Outcome>,
+        effective: BTreeSet<Hash>,
+        in_force: BTreeSet<Hash>,
+    ) -> Projection {
         let membership = &self.membership;
         let groups = self
             .groups
@@ -668,14 +865,19 @@ impl Engine {
                 (group, view)
             })
             .collect();
-        Projection { groups, outcomes }
+        Projection {
+            groups,
+            outcomes,
+            effective,
+            in_force,
+        }
     }
 }
 
 /// Applies a state change to a group that exists.
 fn apply_to(record: &mut Record, effect: Effect) {
     match effect {
-        Effect::Create(_) => {}
+        Effect::Create(_) | Effect::Delegation(_) | Effect::Veto(_) => {}
         Effect::Present(member) => {
             record.present.insert(member);
         }
@@ -693,6 +895,7 @@ fn apply_to(record: &mut Record, effect: Effect) {
             member,
             dissolves,
             by,
+            ..
         } => {
             record.admins.remove(&member);
             record.present.remove(&member);
@@ -725,11 +928,13 @@ fn new_group(event: &Event, create: &Create) -> Result<Decision, Refusal> {
         Access::manage(),
     )];
     let mut admins = BTreeSet::from([author]);
+    let mut roots = BTreeSet::from([author]);
     for (member, role) in &create.members {
         initial.push((
             GroupMember::Individual(AuthId::Key(*member)),
             access_for(*role),
         ));
+        roots.insert(*member);
         if *role == Role::Admin {
             admins.insert(*member);
         }
@@ -740,6 +945,7 @@ fn new_group(event: &Event, create: &Create) -> Result<Decision, Refusal> {
         present: BTreeSet::new(),
         friendship: None,
         dissolved_by: None,
+        roots,
     };
     Ok(Decision {
         group: event.id,
@@ -756,7 +962,7 @@ fn has_repeats(members: &[(Key, Role)]) -> bool {
 }
 
 /// The role a member's access level gives. Admin is never an access level.
-fn access_role(access: &Access<()>) -> Role {
+pub(super) fn access_role(access: &Access<()>) -> Role {
     if access.is_manage() {
         Role::Manage
     } else if access.is_write() {
@@ -782,5 +988,19 @@ fn access_for(role: Role) -> Access<()> {
         Role::Read => Access::read(),
         Role::Write => Access::write(),
         Role::Manage | Role::Admin => Access::manage(),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_an_empty_set_folds_to_nothing() {
+        let p = fold(&[]).unwrap();
+        assert_eq!(p.groups().count(), 0);
+        assert!(!p.takes_effect(&Hash::digest(b"none")));
+        assert!(!p.grant_in_force(&Hash::digest(b"none")));
     }
 }

@@ -17,6 +17,8 @@ pub mod fold;
 pub mod friendship;
 pub mod policy;
 
+mod delegation;
+
 #[cfg(test)]
 mod tests;
 
@@ -27,6 +29,17 @@ pub use friendship::{Pair, friendship_id};
 pub use policy::{
     Delegation, History, Join, OnMemberRemoved, Policy, Removal, RoleRules, Scheme, Template,
 };
+
+/// A grant of a scope from the event's author to another account (design §7.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Delegate {
+    /// The account granted the scope.
+    pub grantee: Key,
+    /// The access the grantee may exercise. Admin is a policy right and is not delegable.
+    pub scope: Role,
+    /// Whether the grantee may grant the scope on. Only a redelegatable grant extends a chain.
+    pub can_redelegate: bool,
+}
 
 /// An account's key. Accounts are keys in this layer.
 pub type Key = [u8; 32];
@@ -74,6 +87,15 @@ pub enum Body {
     Policy(Policy),
     /// Changes one member.
     Member(MemberOp),
+    /// Grants a scope to an account. The author must hold the scope, and must reach it through a
+    /// chain of grants that can be passed on (design §7.2).
+    Delegate(Delegate),
+    /// Vetoes a grant the event has seen. The author must hold Manage and a chain (design §7).
+    /// From this event's causal position on, the grant and what depends on it fail.
+    Veto {
+        /// The grant's event ID.
+        grant: Hash,
+    },
 }
 
 /// A group's creation.
@@ -103,6 +125,9 @@ pub enum MemberOp {
     Remove {
         /// The member removed.
         member: Key,
+        /// Under the `transfer` delegation mode, the account that takes over the member's grants
+        /// (design §7.3). Ignored by the other modes.
+        successor: Option<Key>,
     },
     /// Sets a member's role. Admin only.
     SetRole {

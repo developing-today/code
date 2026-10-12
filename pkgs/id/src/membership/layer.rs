@@ -338,6 +338,22 @@ impl Membership {
             .is_some())
     }
 
+    /// The access `member` holds in `group` at the causal position that `after` names, or `None`
+    /// when it holds none there. Delegation judges grants by this (design §7.2).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MembershipError`] when an `after` hash is not indexed.
+    pub fn access_at_position(
+        &mut self,
+        after: &[Hash],
+        group: Hash,
+        member: [u8; 32],
+    ) -> Result<Option<Access<()>>, MembershipError> {
+        let deps: HashSet<Hash> = self.index.frontier(after, group)?.into_iter().collect();
+        Ok(self.access_at(&deps, AuthId::Group(group), AuthId::Key(member)))
+    }
+
     /// Whether a create has been decided for `group`.
     pub fn has_group(&self, group: Hash) -> bool {
         self.state.has_group(AuthId::Group(group))

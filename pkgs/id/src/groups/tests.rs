@@ -3,12 +3,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use p2panda_core::Hash;
 use proptest::prelude::*;
 
-use super::policy::{Join, OnMemberRemoved, Policy, RoleRules, Template};
+use super::policy::{Delegation, Join, OnMemberRemoved, Policy, RoleRules, Template};
 use super::{
-    Body, Create, Event, Key, MemberOp, Outcome, Pair, Projection, Refusal, Role, fold,
+    Body, Create, Delegate, Event, Key, MemberOp, Outcome, Pair, Projection, Refusal, Role, fold,
     friendship_id,
 };
 
@@ -114,7 +116,10 @@ fn remove(name: &str, by: u8, group: Hash, who: u8, after_names: &[&str]) -> Eve
         name,
         by,
         group,
-        MemberOp::Remove { member: key(who) },
+        MemberOp::Remove {
+            member: key(who),
+            successor: None,
+        },
         after_names,
     )
 }
@@ -663,6 +668,596 @@ fn test_a_friendship_has_no_cap_beyond_its_two_and_no_third_member() {
     );
 }
 
+// ----- Delegation (P2.5, design §7) -----
+
+fn delegate(
+    name: &str,
+    by: u8,
+    group: Hash,
+    to: u8,
+    scope: Role,
+    redelegate: bool,
+    after_names: &[&str],
+) -> Event {
+    let body = Body::Delegate(Delegate {
+        grantee: key(to),
+        scope,
+        can_redelegate: redelegate,
+    });
+    event(name, by, after_names, Some(group), body)
+}
+
+fn veto(name: &str, by: u8, group: Hash, grant: &str, after_names: &[&str]) -> Event {
+    event(
+        name,
+        by,
+        after_names,
+        Some(group),
+        Body::Veto { grant: id(grant) },
+    )
+}
+
+fn remove_to(
+    name: &str,
+    by: u8,
+    group: Hash,
+    who: u8,
+    successor: Option<u8>,
+    after_names: &[&str],
+) -> Event {
+    member(
+        name,
+        by,
+        group,
+        MemberOp::Remove {
+            member: key(who),
+            successor: successor.map(key),
+        },
+        after_names,
+    )
+}
+
+fn with_mode(mode: Option<Delegation>) -> Policy {
+    Policy {
+        delegation: mode,
+        ..Policy::default()
+    }
+}
+
+/// A group by 1 with 2 and 3 as managers added by 1, and 2 granted Manage by 1 and 3 by 2. Joe
+/// (2) is the grantor the removal tests take away.
+fn chain_base(mode: Option<Delegation>) -> Vec<Event> {
+    let g = id("g");
+    vec![
+        custom("g", 1, &[], with_mode(mode)),
+        add("a0", 1, g, 2, Role::Manage, &["g"]),
+        add("a1", 1, g, 3, Role::Manage, &["a0"]),
+        delegate("d0", 1, g, 2, Role::Manage, true, &["a1"]),
+        delegate("d1", 2, g, 3, Role::Manage, true, &["d0"]),
+    ]
+}
+
+#[test]
+fn test_a_group_without_a_delegation_setting_cascades() {
+    assert_eq!(
+        Policy::default().delegation_mode(),
+        Delegation::Cascade,
+        "cascade is the default"
+    );
+    assert_eq!(
+        with_mode(Some(Delegation::KeepPrior)).delegation_mode(),
+        Delegation::KeepPrior
+    );
+}
+
+#[test]
+fn test_keep_prior_lets_a_grant_made_before_the_removal_stand() {
+    let g = id("g");
+    let mut events = chain_base(Some(Delegation::KeepPrior));
+    events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
+    events.push(add("a2", 3, g, 4, Role::Read, &["x0"]));
+    let p = project(&events);
+    assert_eq!(outcome(&p, "x0"), Outcome::Applied);
+    assert_eq!(outcome(&p, "a2"), Outcome::Applied, "d1 was made before x0");
+    assert!(p.grant_in_force(&id("d1")));
+}
+
+#[test]
+fn test_cascade_removes_the_grants_the_removed_member_made() {
+    let g = id("g");
+    let mut events = chain_base(None);
+    events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
+    events.push(add("a2", 3, g, 4, Role::Read, &["x0"]));
+    let p = project(&events);
+    assert_eq!(outcome(&p, "x0"), Outcome::Applied);
+    assert_eq!(outcome(&p, "a2"), Outcome::Refused(Refusal::NoChain));
+    assert!(!p.grant_in_force(&id("d1")));
+    assert!(p.grant_in_force(&id("d0")), "the owner's grant to 2 stands");
+}
+
+#[test]
+fn test_cascade_keeps_a_grant_for_an_action_concurrent_with_the_removal() {
+    // a2 names only d1, so it is concurrent with x0. At its position 2 still holds Manage.
+    let g = id("g");
+    let mut events = chain_base(None);
+    events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
+    events.push(add("a2", 3, g, 4, Role::Read, &["d1"]));
+    let p = project(&events);
+    assert_eq!(outcome(&p, "a2"), Outcome::Applied);
+}
+
+#[test]
+fn test_transfer_hands_the_removed_members_grants_to_the_successor() {
+    let g = id("g");
+    let mut events = chain_base(Some(Delegation::Transfer));
+    events.push(add("a3", 1, g, 5, Role::Manage, &["a1"]));
+    events.push(delegate("d2", 1, g, 5, Role::Manage, true, &["a3"]));
+    events.push(remove_to("x0", 1, g, 2, Some(5), &["d1", "d2"]));
+    events.push(add("a2", 3, g, 4, Role::Read, &["x0"]));
+    let p = project(&events);
+    assert_eq!(outcome(&p, "a2"), Outcome::Applied, "5 reissues d1");
+    assert!(
+        !p.grant_in_force(&id("d1")),
+        "the original grant is superseded"
+    );
+}
+
+#[test]
+fn test_transfer_without_a_successor_ends_the_grants() {
+    let g = id("g");
+    let mut events = chain_base(Some(Delegation::Transfer));
+    events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
+    events.push(add("a2", 3, g, 4, Role::Read, &["x0"]));
+    let p = project(&events);
+    assert_eq!(outcome(&p, "a2"), Outcome::Refused(Refusal::NoChain));
+}
+
+#[test]
+fn test_a_successor_must_hold_the_scope_to_take_over() {
+    // 5 is granted Manage by the owner, but its membership is Read, so it cannot hold Manage.
+    let g = id("g");
+    let mut events = chain_base(Some(Delegation::Transfer));
+    events.push(add("a3", 1, g, 5, Role::Read, &["a1"]));
+    events.push(delegate("d2", 1, g, 5, Role::Manage, true, &["a3"]));
+    events.push(remove_to("x0", 1, g, 2, Some(5), &["d1", "d2"]));
+    events.push(add("a2", 3, g, 4, Role::Read, &["x0"]));
+    let p = project(&events);
+    assert_eq!(outcome(&p, "a2"), Outcome::Refused(Refusal::NoChain));
+}
+
+#[test]
+fn test_a_removed_member_may_not_grant_after_its_removal() {
+    let g = id("g");
+    let mut events = chain_base(None);
+    events.push(remove_to("x0", 1, g, 2, None, &["d1"]));
+    events.push(delegate("d2", 2, g, 4, Role::Read, false, &["x0"]));
+    let p = project(&events);
+    assert!(matches!(outcome(&p, "d2"), Outcome::Refused(_)));
+    assert!(!p.grant_in_force(&id("d2")));
+}
+
+#[test]
+fn test_a_grant_may_not_be_wider_than_the_grantors_scope() {
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a0"]),
+        delegate("d1", 2, g, 3, Role::Manage, true, &["d0"]),
+        delegate("d2", 2, g, 3, Role::Read, false, &["d0"]),
+    ]);
+    assert_eq!(outcome(&p, "d1"), Outcome::Refused(Refusal::Attenuated));
+    assert_eq!(outcome(&p, "d2"), Outcome::Applied, "Read is within Write");
+}
+
+#[test]
+fn test_a_grant_that_cannot_be_redelegated_ends_the_chain() {
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 1, g, 2, Role::Manage, &["g"]),
+        delegate("d0", 1, g, 2, Role::Manage, false, &["a0"]),
+        add("a1", 2, g, 4, Role::Read, &["d0"]),
+        delegate("d1", 2, g, 3, Role::Read, false, &["d0"]),
+    ]);
+    assert_eq!(
+        outcome(&p, "a1"),
+        Outcome::Applied,
+        "a grantee acts without redelegating"
+    );
+    assert_eq!(outcome(&p, "d1"), Outcome::Refused(Refusal::NoChain));
+}
+
+#[test]
+fn test_chain_search_accepts_a_valid_chain_and_refuses_a_broken_one() {
+    let g = id("g");
+    // 1 -> 2 -> 3 -> 4. Every link may be passed on except the last.
+    let valid = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 1, g, 2, Role::Manage, &["g"]),
+        add("a1", 1, g, 3, Role::Manage, &["a0"]),
+        add("a2", 1, g, 4, Role::Manage, &["a1"]),
+        delegate("d0", 1, g, 2, Role::Manage, true, &["a2"]),
+        delegate("d1", 2, g, 3, Role::Manage, true, &["d0"]),
+        delegate("d2", 3, g, 4, Role::Manage, false, &["d1"]),
+        add("a3", 4, g, 5, Role::Read, &["d2"]),
+        delegate("d3", 4, g, 5, Role::Read, false, &["d2"]),
+    ]);
+    assert_eq!(outcome(&valid, "a3"), Outcome::Applied, "the chain holds");
+    assert_eq!(outcome(&valid, "d3"), Outcome::Refused(Refusal::NoChain));
+
+    // The same chain with 2 -> 3 not redelegatable: 3 cannot grant on, and 4 has no chain.
+    let broken = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 1, g, 2, Role::Manage, &["g"]),
+        add("a1", 1, g, 3, Role::Manage, &["a0"]),
+        add("a2", 1, g, 4, Role::Manage, &["a1"]),
+        delegate("d0", 1, g, 2, Role::Manage, true, &["a2"]),
+        delegate("d1", 2, g, 3, Role::Manage, false, &["d0"]),
+        delegate("d2", 3, g, 4, Role::Manage, false, &["d1"]),
+        add("a3", 4, g, 5, Role::Read, &["d2"]),
+    ]);
+    assert_eq!(outcome(&broken, "d2"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&broken, "a3"), Outcome::Refused(Refusal::NoChain));
+}
+
+#[test]
+fn test_a_manager_acts_only_through_a_grant_from_an_owner() {
+    // 3 is a Manage member added by the owner, but no grant reaches it, so it cannot add.
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 1, g, 2, Role::Manage, &["g"]),
+        add("a1", 2, g, 3, Role::Manage, &["a0"]),
+        add("a2", 2, g, 4, Role::Read, &["a1"]),
+    ]);
+    assert_eq!(
+        outcome(&p, "a0"),
+        Outcome::Applied,
+        "the owner adds directly"
+    );
+    assert_eq!(outcome(&p, "a1"), Outcome::Refused(Refusal::NoChain));
+    assert_eq!(outcome(&p, "a2"), Outcome::Refused(Refusal::NoChain));
+}
+
+#[test]
+fn test_a_manager_may_veto_a_grant_and_the_grants_below_it_fall() {
+    let g = id("g");
+    let mut events = chain_base(None);
+    events.push(add("a2", 1, g, 4, Role::Manage, &["a1"]));
+    events.push(delegate("d2", 1, g, 4, Role::Manage, true, &["a2"]));
+    events.push(veto("v0", 4, g, "d0", &["d2", "d0"]));
+    events.push(add("a3", 3, g, 5, Role::Read, &["v0"]));
+    events.push(add("a4", 3, g, 6, Role::Read, &["d1"]));
+    let p = project(&events);
+    assert_eq!(outcome(&p, "v0"), Outcome::Applied);
+    assert_eq!(
+        outcome(&p, "a3"),
+        Outcome::Refused(Refusal::NoChain),
+        "3 reaches the owner only through d0"
+    );
+    assert_eq!(
+        outcome(&p, "a4"),
+        Outcome::Applied,
+        "before the veto, d0 stood"
+    );
+    assert!(!p.grant_in_force(&id("d0")));
+    assert!(p.grant_in_force(&id("d2")));
+}
+
+#[test]
+fn test_a_veto_needs_manage_access_a_chain_and_a_grant_it_has_seen() {
+    let g = id("g");
+    let p = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 1, g, 2, Role::Manage, &["g"]),
+        add("a1", 1, g, 3, Role::Read, &["a0"]),
+        add("a2", 1, g, 4, Role::Manage, &["a1"]),
+        delegate("d0", 1, g, 2, Role::Manage, true, &["a2"]),
+        veto("v0", 3, g, "d0", &["d0"]),
+        veto("v1", 4, g, "d0", &["d0"]),
+        veto("v2", 2, g, "d0", &["d0"]),
+    ]);
+    assert_eq!(outcome(&p, "v0"), Outcome::Refused(Refusal::NotManager));
+    assert_eq!(
+        outcome(&p, "v1"),
+        Outcome::Refused(Refusal::NoChain),
+        "4 manages without a chain"
+    );
+    assert_eq!(
+        outcome(&p, "v2"),
+        Outcome::Applied,
+        "2 manages through the owner's grant"
+    );
+    let unseen = project(&[
+        custom("g", 1, &[], Policy::default()),
+        add("a0", 1, g, 2, Role::Manage, &["g"]),
+        delegate("d0", 1, g, 2, Role::Manage, true, &["a0"]),
+        veto("v0", 2, g, "d1", &["d0"]),
+    ]);
+    assert_eq!(
+        outcome(&unseen, "v0"),
+        Outcome::Refused(Refusal::UnknownGrant),
+        "d1 does not exist"
+    );
+}
+
+/// The S2 spike's delegation DAG (`spikes/shared/s2-auth/src/delegation.rs`), with the owner 1,
+/// Joe 2, Dan 3, Jim 4, Zed 5, Yan 6, Quinn 7, Eve 8, Kim 9, Lou 10 and Xav 11. Joe is removed by
+/// s9. `alt` adds Dan's grant to Jim (s16). `successor` is named by the removal.
+fn s2_events(alt: bool, mode: Option<Delegation>, successor: Option<u8>) -> Vec<Event> {
+    let g = id("s0");
+    let mut events = vec![
+        custom("s0", 1, &[], with_mode(mode)),
+        add("s1", 1, g, 2, Role::Manage, &["s0"]),
+        add("s2", 1, g, 3, Role::Manage, &["s1"]),
+        delegate("s3", 1, g, 2, Role::Manage, true, &["s1"]),
+        delegate("s4", 1, g, 3, Role::Manage, true, &["s2"]),
+        add("s5", 2, g, 4, Role::Manage, &["s3"]),
+        delegate("s6", 2, g, 4, Role::Manage, true, &["s5"]),
+        add("s7", 1, g, 7, Role::Manage, &["s2"]),
+        delegate("s8", 2, g, 7, Role::Manage, true, &["s5"]),
+    ];
+    let mut removal_after = vec!["s6", "s4"];
+    if alt {
+        events.push(delegate("s16", 3, g, 4, Role::Manage, true, &["s4"]));
+        removal_after.push("s16");
+    }
+    events.push(remove_to("s9", 1, g, 2, successor, &removal_after));
+    events.push(add("s10", 4, g, 5, Role::Manage, &["s9"]));
+    events.push(add("s11", 4, g, 6, Role::Manage, &["s6"]));
+    events.push(add("s12", 7, g, 8, Role::Read, &["s7", "s8"]));
+    events.push(add("s13", 1, g, 9, Role::Write, &["s2"]));
+    events.push(delegate("s14", 9, g, 10, Role::Manage, true, &["s13"]));
+    events.push(delegate("s15", 2, g, 11, Role::Manage, true, &["s9"]));
+    events
+}
+
+#[test]
+fn test_s2_delegation_scenarios_keep_their_results() {
+    let g = id("s0");
+    // (alt chain, mode, successor, Jim's later action applies, the grant Joe to Jim stands).
+    let runs = [
+        (false, None, None, false, false),
+        (true, None, None, true, false),
+        (false, Some(Delegation::KeepPrior), None, true, true),
+        (false, Some(Delegation::Transfer), Some(3), true, false),
+    ];
+    for (alt, mode, successor, jim_later, joe_to_jim_stands) in runs {
+        let name = format!("alt {alt}, mode {mode:?}, successor {successor:?}");
+        let p = project(&s2_events(alt, mode, successor));
+        let expected = if jim_later {
+            Outcome::Applied
+        } else {
+            Outcome::Refused(Refusal::NoChain)
+        };
+        assert_eq!(outcome(&p, "s10"), expected, "{name}: Jim's later add");
+        assert_eq!(outcome(&p, "s11"), Outcome::Applied, "{name}: concurrent");
+        assert_eq!(
+            outcome(&p, "s12"),
+            Outcome::Refused(Refusal::NoChain),
+            "{name}: Quinn's only chain is void"
+        );
+        assert!(!p.grant_in_force(&id("s8")), "{name}: void");
+        assert_eq!(
+            p.grant_in_force(&id("s6")),
+            joe_to_jim_stands,
+            "{name}: Joe to Jim"
+        );
+        let members = &p.group(&g).unwrap().members;
+        assert!(!members.contains_key(&key(2)), "{name}: Joe is removed");
+        assert_eq!(members.contains_key(&key(5)), jim_later, "{name}: Zed");
+    }
+    let p = project(&s2_events(false, None, None));
+    assert_eq!(outcome(&p, "s14"), Outcome::Refused(Refusal::Attenuated));
+    assert!(matches!(outcome(&p, "s15"), Outcome::Refused(_)));
+    assert!(p.grant_in_force(&id("s3")));
+}
+
+/// The causal past of each event, the event included, from the `after` links.
+fn pasts(events: &[Event]) -> BTreeMap<Hash, BTreeSet<Hash>> {
+    let by_id: BTreeMap<Hash, &Event> = events.iter().map(|e| (e.id, e)).collect();
+    events
+        .iter()
+        .map(|e| {
+            let mut past = BTreeSet::new();
+            let mut stack = vec![e.id];
+            while let Some(next) = stack.pop() {
+                if past.insert(next)
+                    && let Some(event) = by_id.get(&next)
+                {
+                    stack.extend(event.after.iter().copied());
+                }
+            }
+            (e.id, past)
+        })
+        .collect()
+}
+
+/// Random delegation scripts: groups in four modes, managers, grants, removals with an optional
+/// successor, and vetoes. Each step is (kind, author, target, scope, pick, mask).
+fn delegation_script() -> impl Strategy<Value = Vec<(u8, u8, u8, u8, u8, u8)>> {
+    prop::collection::vec(
+        (0u8..8, 1u8..=4, 1u8..=4, 0u8..4, any::<u8>(), any::<u8>()),
+        1..24,
+    )
+}
+
+fn delegation_build(script: &[(u8, u8, u8, u8, u8, u8)]) -> Vec<Event> {
+    const ROLES: [Role; 4] = [Role::Pull, Role::Read, Role::Write, Role::Manage];
+    const MODES: [Option<Delegation>; 4] = [
+        None,
+        Some(Delegation::Cascade),
+        Some(Delegation::KeepPrior),
+        Some(Delegation::Transfer),
+    ];
+    let mut events: Vec<Event> = Vec::new();
+    let mut groups: Vec<Hash> = Vec::new();
+    for (i, &(raw, author, target, scope, pick, mask)) in script.iter().enumerate() {
+        // The first event creates a group. After it, adds and grants are the common steps.
+        let kind = match raw {
+            _ if i == 0 => 0,
+            0 => 0,
+            1 | 2 => 1,
+            3..=5 => 2,
+            6 => 3,
+            _ => 4,
+        };
+        let name = format!("e{i}");
+        let after_hashes: Vec<Hash> = events
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| (mask >> (j % 8)) & 1 == 1)
+            .map(|(_, earlier)| earlier.id)
+            .rev()
+            .take(3)
+            .collect();
+        let group = groups
+            .get(usize::from(pick) % groups.len().max(1))
+            .copied()
+            .unwrap_or_else(|| id("none"));
+        let grants: Vec<Hash> = events
+            .iter()
+            .filter(|e| matches!(e.body, Body::Delegate(_)))
+            .map(|e| e.id)
+            .collect();
+        let grant = grants
+            .get(usize::from(pick) % grants.len().max(1))
+            .copied()
+            .unwrap_or_else(|| id("none"));
+        let role = ROLES[usize::from(scope)];
+        let (group, body) = match kind {
+            0 => {
+                let policy = with_mode(MODES[usize::from(pick % 4)]);
+                let body = Body::Create(Create {
+                    template: Template::Custom,
+                    policy,
+                    members: Vec::new(),
+                    admins_on_create: false,
+                });
+                (None, body)
+            }
+            1 => (
+                Some(group),
+                Body::Member(MemberOp::Add {
+                    member: key(target),
+                    role,
+                }),
+            ),
+            2 => (
+                Some(group),
+                Body::Delegate(Delegate {
+                    grantee: key(target),
+                    scope: role,
+                    can_redelegate: mask % 2 == 0,
+                }),
+            ),
+            3 => (
+                Some(group),
+                Body::Member(MemberOp::Remove {
+                    member: key(target),
+                    successor: (mask % 3 == 0).then(|| key(pick % 5 + 1)),
+                }),
+            ),
+            _ => (Some(group), Body::Veto { grant }),
+        };
+        let created = Event {
+            id: id(&name),
+            author: key(author),
+            after: after_hashes,
+            group,
+            body,
+        };
+        if matches!(created.body, Body::Create(_)) {
+            groups.push(created.id);
+        }
+        events.push(created);
+    }
+    events
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    #[test]
+    fn prop_delegation_outcomes_do_not_depend_on_the_arrival_order(
+        script in delegation_script(),
+        seed in any::<u64>(),
+    ) {
+        let events = delegation_build(&script);
+        let expected = project(&events);
+        let shuffled_state = fold(&shuffled(&events, seed.max(1))).unwrap();
+        prop_assert_eq!(&shuffled_state, &expected);
+        let mut reversed = events;
+        reversed.reverse();
+        prop_assert_eq!(&fold(&reversed).unwrap(), &expected);
+    }
+
+    #[test]
+    fn prop_no_grant_survives_its_grantors_strong_removal_unless_the_mode_keeps_it(
+        script in delegation_script(),
+    ) {
+        let events = delegation_build(&script);
+        let p = project(&events);
+        let pasts = pasts(&events);
+        let grants = events.iter().filter(|e| {
+            matches!(e.body, Body::Delegate(_)) && p.outcome(&e.id) == Some(&Outcome::Applied)
+        });
+        for grant in grants {
+            let (Some(group), Body::Delegate(delegate)) = (grant.group, &grant.body) else {
+                continue;
+            };
+            let view = p.group(&group).unwrap();
+            let grantor = grant.author;
+            let removals: Vec<&Event> = events
+                .iter()
+                .filter(|e| {
+                    e.group == Some(group)
+                        && matches!(e.body, Body::Member(MemberOp::Remove { member, .. }) if member == grantor)
+                        && p.takes_effect(&e.id)
+                })
+                .collect();
+            let vetoed = events.iter().any(|v| {
+                matches!(v.body, Body::Veto { grant: target } if target == grant.id)
+                    && p.takes_effect(&v.id)
+            });
+            let in_force = p.grant_in_force(&grant.id);
+            if vetoed {
+                prop_assert!(!in_force, "a vetoed grant is not in force");
+            }
+            let concurrent = removals.iter().any(|r| {
+                !pasts[&grant.id].contains(&r.id) && !pasts[&r.id].contains(&grant.id)
+            });
+            if concurrent {
+                prop_assert!(!in_force, "a grant concurrent with its grantor's removal is void");
+            }
+            match view.policy.delegation_mode() {
+                Delegation::Cascade => {
+                    let holds_at_head = view
+                        .members
+                        .get(&grantor)
+                        .is_some_and(|role| *role >= delegate.scope);
+                    if !removals.is_empty() && !holds_at_head {
+                        prop_assert!(!in_force, "cascade ends a grant its grantor no longer holds");
+                    }
+                }
+                Delegation::Transfer => {
+                    if !removals.is_empty() {
+                        prop_assert!(!in_force, "transfer supersedes the grantor's grants");
+                    }
+                }
+                Delegation::KeepPrior => {
+                    let before_every_removal =
+                        removals.iter().all(|r| pasts[&r.id].contains(&grant.id));
+                    if !vetoed && before_every_removal {
+                        prop_assert!(in_force, "keep_prior keeps a grant made before the removal");
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ----- Properties over arrival order -----
 
 /// A random set of group events. Each step picks a kind, the actors, a group among those
@@ -759,6 +1354,7 @@ fn build(script: &[(u8, u8, u8, u8, u8, u8)]) -> Vec<Event> {
                 Some(group),
                 Body::Member(MemberOp::Remove {
                     member: key(target),
+                    successor: None,
                 }),
             ),
             _ => (

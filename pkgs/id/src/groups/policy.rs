@@ -39,15 +39,15 @@ pub enum Removal {
     Weak,
 }
 
-/// What happens to a removed member's delegations (design §7.3). Unset means the default is still
-/// open; see [`Policy::delegation`].
+/// What happens to a removed member's grants (design §7.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delegation {
-    /// Delegations made before the removal stand.
+    /// Grants made before the removal stand. Grants made concurrently with it are void.
     KeepPrior,
-    /// Delegations made by the removed member end with it.
+    /// A grant stands only while its grantor still holds the scope. The default.
     Cascade,
-    /// Delegations pass to the members who remain.
+    /// The removal names a successor, who takes over the removed member's grants from the removal
+    /// on. Without a successor the grants end.
     Transfer,
 }
 
@@ -91,7 +91,8 @@ pub struct Policy {
     pub on_member_removed: OnMemberRemoved,
     /// How removals take effect.
     pub removal: Removal,
-    /// The fate of a removed member's delegations. `None` is the open default (design §7.3).
+    /// The fate of a removed member's grants. `None` means cascade (design §7.3). Read it through
+    /// [`Policy::delegation_mode`].
     pub delegation: Option<Delegation>,
     /// What a joiner may see of earlier history.
     pub history: History,
@@ -136,6 +137,11 @@ impl Policy {
                 change: Role::Admin,
             },
         }
+    }
+
+    /// The delegation mode in effect: the record's, or cascade when it names none.
+    pub fn delegation_mode(&self) -> Delegation {
+        self.delegation.unwrap_or(Delegation::Cascade)
     }
 
     /// Whether the record is usable. Only Admin may change roles and policy, and a cap must allow
