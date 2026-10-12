@@ -48,7 +48,8 @@
 //! Held events count too. Two held events at one sequence number are a fork, though
 //! neither is applied. Held events are rows on disk, so a restart keeps them, and a conflict
 //! with an event held before the restart is still seen. An event the caps or the age limit
-//! drops is forgotten, and sync sends it again.
+//! drops is forgotten, and sync sends it again. A held event that a fork makes a proof header
+//! stays held for good: it never applies, and the proof keeps its conflicts seen.
 //!
 //! # Known limit: a rival refused by a cap
 //!
@@ -258,19 +259,19 @@ fn settle(
             released: m.release(&id, now)?,
         },
         Decision::Duplicate => {
-            drop_released(m, &id, from_pool)?;
+            drop_released(m, &event, from_pool)?;
             Settled::Duplicate
         }
         Decision::Fork { seq, proof } => {
-            drop_released(m, &id, from_pool)?;
+            drop_released(m, &event, from_pool)?;
             let mut released = Vec::new();
             for header in proof {
-                released.extend(m.release(&header, now)?);
+                released.extend(m.present_proof(&header, now)?);
             }
             Settled::Fork { seq, released }
         }
         Decision::Refuse(refusal) => {
-            drop_released(m, &id, from_pool)?;
+            drop_released(m, &event, from_pool)?;
             Settled::Refused(refusal)
         }
         Decision::Wait(deps) => held(m.hold(event, deps, false, now)?),
@@ -279,11 +280,17 @@ fn settle(
     Ok(settled)
 }
 
-fn drop_released(m: &Mirror<'_>, id: &Hash, from_pool: bool) -> Result<(), StoreError> {
-    if from_pool {
-        m.drop_row(id)?;
+/// Settles a released event that the decision does not apply. A fork proof header never applies,
+/// so it is held for good again. Any other event is refused, and its row goes.
+fn drop_released(m: &mut Mirror<'_>, event: &Event, from_pool: bool) -> Result<(), StoreError> {
+    if !from_pool {
+        return Ok(());
     }
-    Ok(())
+    if is_proof_header(m.txn, &author_of(event), &event.id)? {
+        m.park_proof(&event.id)
+    } else {
+        m.drop_row(&event.id)
+    }
 }
 
 const fn held(hold: Hold) -> Settled {
