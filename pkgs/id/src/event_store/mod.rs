@@ -79,7 +79,7 @@ pub const FILE_NAME: &str = "events.redb";
 pub const TEMP_NAME: &str = "events.redb.tmp";
 
 /// The format row in `meta`. A store with another format is refused.
-const FORMAT: &[u8] = b"id.events.store.v7";
+const FORMAT: &[u8] = b"id.events.store.v8";
 const FORMAT_KEY: &[u8] = b"format";
 
 const EVENTS: TableDefinition<'static, &'static [u8], &'static [u8]> =
@@ -109,10 +109,6 @@ const ACTIONS: TableDefinition<'static, &'static [u8], &'static [u8]> =
 /// The IDs of the applied events, with an empty value. Written by the resolution.
 const APPLIED: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("applied");
-/// The body of each tag event, by event ID, as the header commits to it. Written when the event
-/// arrives with its body, so the tag fold reads the claim and the clear back. See `claims`.
-const TAG_OPS: TableDefinition<'static, &'static [u8], &'static [u8]> =
-    TableDefinition::new("tag_ops");
 
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
@@ -842,7 +838,6 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     txn.open_multimap_table(WAITING_BY_DEP)?;
     txn.open_table(ACTIONS)?;
     txn.open_table(APPLIED)?;
-    txn.open_table(TAG_OPS)?;
     let mut meta = txn.open_table(META)?;
     meta.insert(FORMAT_KEY, FORMAT)?;
     drop(meta);
@@ -865,7 +860,6 @@ fn verify_schema(db: &Database) -> Result<(), StoreError> {
     txn.open_multimap_table(WAITING_BY_DEP).map_err(missing)?;
     txn.open_table(ACTIONS).map_err(missing)?;
     txn.open_table(APPLIED).map_err(missing)?;
-    txn.open_table(TAG_OPS).map_err(missing)?;
     let meta = txn.open_table(META).map_err(missing)?;
     match meta.get(FORMAT_KEY)? {
         Some(found) if found.value() == FORMAT => Ok(()),
@@ -1123,6 +1117,7 @@ mod tests {
             kind: kind.to_owned(),
             group,
             after: Vec::new(),
+            tag: None,
         }
     }
 

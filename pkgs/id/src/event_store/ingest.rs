@@ -89,7 +89,6 @@ use p2panda_auth::group::GroupAction;
 use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
 
-use super::claims::store_tag_body;
 use super::resolve::{self, decode_action, encode_action};
 use super::waiting_rows::{Hold, Mirror};
 use super::{
@@ -100,7 +99,7 @@ use super::{
 use crate::chain::{self, Event};
 use crate::membership::AuthId;
 use crate::membership::body::decode_body;
-use crate::tag_claims::{decode_op, is_tag_kind};
+use crate::tag_claims::is_tag_kind;
 use crate::waiting::{AuthorKey, WaitingPool};
 
 /// Why an event was refused. A refused event changes nothing.
@@ -203,9 +202,10 @@ impl EventStore {
     ///
     /// - A body that is not a group operation, or no body at all, makes the event content.
     /// - A body that claims to be a group operation decodes to its action, or it is refused.
-    /// - A tag event (kind `tag.set` or `tag.clear`) takes no membership action. Its body must
-    ///   decode as a tag operation, and the store keeps it for the tag fold (see `claims`).
     /// - A body that is not the one the header commits to, by BLAKE3 hash and size, is refused.
+    /// - A tag event (kind `tag.set` or `tag.clear`) takes no body. Its operation is in its
+    ///   header (#182), so a payload on a tag event is refused. Its tag takes no membership
+    ///   action, and the fold reads it from the stored header (see `claims`).
     ///
     /// # Errors
     ///
@@ -220,11 +220,12 @@ impl EventStore {
             Ok(event) => event,
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
-        let tag = match tag_body_of(&event, body) {
-            Ok(tag) => tag,
-            Err(refusal) => return Ok(Ingest::Refused(refusal)),
-        };
         let action = if is_tag_kind(&event.header.extensions.kind) {
+            if body.is_some() {
+                return Ok(Ingest::Refused(Refusal::Malformed(
+                    "a tag event carries its operation in its header, not in a body".to_owned(),
+                )));
+            }
             None
         } else {
             match body_action(&event, body) {
@@ -232,7 +233,7 @@ impl EventStore {
                 Err(refusal) => return Ok(Ingest::Refused(refusal)),
             }
         };
-        self.ingest_event(event, action.as_ref(), tag.as_deref(), now_ms)
+        self.ingest_event(event, action.as_ref(), now_ms)
     }
 
     /// Verifies one received event, which may be a group operation, and applies what it allows.
@@ -253,27 +254,18 @@ impl EventStore {
             Ok(event) => event,
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
-        self.ingest_event(event, action, None, now_ms)
+        self.ingest_event(event, action, now_ms)
     }
 
-    /// Runs a decoded event through the store's transaction, with its action and, for a tag event,
-    /// its tag body. The body is written when the event is kept, held or stored, so a release
-    /// and a later duplicate both find it.
+    /// Runs a decoded event through the store's transaction, with its action.
     fn ingest_event(
         &mut self,
         event: Event,
         action: Option<&GroupAction<AuthId, ()>>,
-        tag: Option<&[u8]>,
         now_ms: u64,
     ) -> Result<Ingest, StoreError> {
         self.transact(now_ms, |mirror| {
-            let id = event.id;
             let (staged, changed) = ingest_in(mirror, event, action, now_ms, Labels::AsStored)?;
-            let kept = staged.keeps();
-            if let Some(body) = tag.filter(|_| kept) {
-                store_tag_body(mirror.txn, &id, body)?;
-            }
-            let changed = changed || (tag.is_some() && kept);
             Ok((staged.finish(mirror.txn)?, changed))
         })
     }
@@ -403,18 +395,6 @@ fn body_action(
     };
     committed(event, body)?;
     decode_body(body).map_err(|err| Refusal::Malformed(err.to_string()))
-}
-
-/// The tag body of a tag event, if it has one: `Ok(None)` for an event of another kind, or with no
-/// body. A tag body must be the one the header commits to, and must decode for its kind.
-fn tag_body_of(event: &Event, body: Option<&[u8]>) -> Result<Option<Vec<u8>>, Refusal> {
-    let kind = &event.header.extensions.kind;
-    let Some(body) = body.filter(|_| is_tag_kind(kind)) else {
-        return Ok(None);
-    };
-    committed(event, body)?;
-    decode_op(kind, body).map_err(|err| Refusal::Malformed(err.to_string()))?;
-    Ok(Some(body.to_vec()))
 }
 
 /// Refuses a body that is not the one the header commits to, by BLAKE3 hash and size.
@@ -1080,6 +1060,7 @@ mod tests {
             kind: kind.to_owned(),
             group: None,
             after,
+            tag: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1597,6 +1578,7 @@ mod tests {
                 kind: "message".to_owned(),
                 group: Some(group),
                 after: Vec::new(),
+                tag: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };

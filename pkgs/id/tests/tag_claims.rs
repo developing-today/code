@@ -1,7 +1,7 @@
 //! Tags as observed-remove claims over the event store (Phase 5, P5.1; design §9.1, spike S8).
 //!
-//! The S8 properties, checked on [`EventStore`] through its production path, with the body
-//! delivered alongside each event:
+//! The S8 properties, checked on [`EventStore`] through its production path. Each event carries
+//! its tag operation in its header, and a receiver gets nothing else (#182):
 //!
 //! 1. A clear removes the claims it names that its author had seen, and no others.
 //! 2. A concurrent add survives a clear that did not see it.
@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use id::chain::{ChainExt, Event, sign};
 use id::event_store::{EventStore, Ingest, Refusal};
-use id::tag_claims::{CLEAR_KIND, SET_KIND, TagOp, encode_op};
+use id::tag_claims::{CLEAR_KIND, SET_KIND, TagOp};
 use id::waiting::{AuthorKey, WaitingLimits};
 use p2panda_core::{Hash, SeqNum, SigningKey};
 use proptest::prelude::*;
@@ -32,11 +32,10 @@ struct Writer {
     last: Option<Hash>,
 }
 
-/// One signed event, with the body its header commits to.
+/// One signed event.
 #[derive(Clone)]
 struct Sent {
     event: Event,
-    body: Vec<u8>,
     /// Which writer signed it.
     writer: usize,
 }
@@ -65,20 +64,16 @@ impl Writer {
             TagOp::Set { .. } => SET_KIND,
             TagOp::Clear { .. } => CLEAR_KIND,
         };
-        let body = encode_op(op).unwrap();
         let ext = ChainExt {
             kind: kind.to_owned(),
             group: None,
             after,
+            tag: Some(op.clone()),
         };
-        let event = sign(&self.key, self.seq, self.last, Some(&body), ext).unwrap();
+        let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
         self.seq += 1;
         self.last = Some(event.id);
-        Sent {
-            event,
-            body,
-            writer,
-        }
+        Sent { event, writer }
     }
 }
 
@@ -102,11 +97,9 @@ fn open() -> (tempfile::TempDir, EventStore) {
     (dir, store)
 }
 
-/// Delivers one event with its body, and checks that it was not refused.
+/// Delivers one event's bytes, as sync does, and checks that it was not refused.
 fn deliver(store: &mut EventStore, sent: &Sent) {
-    let outcome = store
-        .ingest_with_body(&sent.event.bytes, Some(&sent.body), 0)
-        .unwrap();
+    let outcome = store.ingest(&sent.event.bytes, 0).unwrap();
     assert!(
         !matches!(outcome, Ingest::Refused(_)),
         "refused: {outcome:?}"
@@ -229,33 +222,16 @@ fn test_a_claim_is_attributed_to_the_key_that_signed_it() {
 }
 
 #[test]
-fn test_a_claim_whose_body_has_not_arrived_is_not_live_until_it_does() {
+fn test_a_tag_event_with_a_payload_body_is_refused() {
+    // The operation is in the header, so a body beside a tag event is refused.
     let subject = Hash::digest(b"doc");
     let mut a = Writer::new(1);
     let claim = a.send(&set(subject, "city", Some("Seattle")), vec![], 0);
-
-    let (_dir, mut store) = open();
-    let outcome = store.ingest(&claim.event.bytes, 0).unwrap();
-    assert!(matches!(outcome, Ingest::Accepted { .. }), "{outcome:?}");
-    assert!(live(&store).is_empty());
-
-    let outcome = store
-        .ingest_with_body(&claim.event.bytes, Some(&claim.body), 0)
-        .unwrap();
-    assert!(matches!(outcome, Ingest::Duplicate { .. }), "{outcome:?}");
-    assert_eq!(live(&store), ids(&[&claim]));
-}
-
-#[test]
-fn test_a_body_that_is_not_the_one_the_header_commits_to_is_refused() {
-    let subject = Hash::digest(b"doc");
-    let mut a = Writer::new(1);
-    let claim = a.send(&set(subject, "city", Some("Seattle")), vec![], 0);
-    let other = encode_op(&set(subject, "state", None)).unwrap();
+    let body = b"a body".to_vec();
 
     let (_dir, mut store) = open();
     let outcome = store
-        .ingest_with_body(&claim.event.bytes, Some(&other), 0)
+        .ingest_with_body(&claim.event.bytes, Some(&body), 0)
         .unwrap();
     assert!(
         matches!(outcome, Ingest::Refused(Refusal::Malformed(_))),
@@ -265,27 +241,23 @@ fn test_a_body_that_is_not_the_one_the_header_commits_to_is_refused() {
 }
 
 #[test]
-fn test_a_tag_kind_with_the_body_of_another_kind_is_refused() {
+fn test_a_tag_event_whose_operation_does_not_fit_its_kind_is_not_signed() {
     let subject = Hash::digest(b"doc");
-    let mut a = Writer::new(1);
-    let body = encode_op(&set(subject, "city", None)).unwrap();
-    let ext = ChainExt {
+    let a = Writer::new(1);
+    let mismatch = ChainExt {
         kind: CLEAR_KIND.to_owned(),
         group: None,
         after: vec![],
+        tag: Some(set(subject, "city", None)),
     };
-    let event = sign(&a.key, a.seq, a.last, Some(&body), ext).unwrap();
-    a.seq += 1;
-
-    let (_dir, mut store) = open();
-    let outcome = store
-        .ingest_with_body(&event.bytes, Some(&body), 0)
-        .unwrap();
-    assert!(
-        matches!(outcome, Ingest::Refused(Refusal::Malformed(_))),
-        "{outcome:?}"
-    );
-    assert!(live(&store).is_empty());
+    assert!(sign(&a.key, 0, None, None, mismatch).is_err());
+    let missing = ChainExt {
+        kind: SET_KIND.to_owned(),
+        group: None,
+        after: vec![],
+        tag: None,
+    };
+    assert!(sign(&a.key, 0, None, None, missing).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -421,9 +393,7 @@ proptest! {
         for order in orders {
             let (_dir, mut store) = open();
             for sent in order {
-                let outcome = store
-                    .ingest_with_body(&sent.event.bytes, Some(&sent.body), 0)
-                    .unwrap();
+                let outcome = store.ingest(&sent.event.bytes, 0).unwrap();
                 prop_assert!(!matches!(outcome, Ingest::Refused(_)), "refused: {outcome:?}");
             }
             prop_assert_eq!(live(&store), history.expected.clone());

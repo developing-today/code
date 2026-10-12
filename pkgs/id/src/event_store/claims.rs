@@ -1,36 +1,21 @@
 //! Tag claims over the store (Phase 5, P5.1 and P5.2).
 //!
 //! A tag event is applied like any content event: the resolution decides whether it applies, and
-//! the store keeps it either way. Its body is kept in the `tag_ops` table, written when the event
-//! arrives with the body its header commits to, so the claim and the clear can be read back.
-//! [`EventStore::tag_claims`] reads the applied tag events with their bodies, and folds them with
-//! the parent links of every event the store holds. A clear's causal past is read from those
-//! links, so it covers the events the clear's author had seen.
+//! the store keeps it either way. Its operation is in its header (#182), so the stored event
+//! carries the claim or the clear. [`EventStore::tag_claims`] reads the applied tag events and
+//! folds them with the parent links of every event the store holds. A clear's causal past is read
+//! from those links, so it covers the events the clear's author had seen.
 
 use std::collections::HashMap;
 
 use p2panda_core::Hash;
-use redb::{ReadableDatabase, ReadableTable, WriteTransaction};
+use redb::{ReadableDatabase, ReadableTable};
 
 use super::resolve::author_of;
-use super::{
-    APPLIED, EVENTS, EventStore, PROOF_HEADERS, StoreError, TAG_OPS, corrupt, decode_stored,
-};
+use super::{APPLIED, EVENTS, EventStore, PROOF_HEADERS, StoreError, corrupt, decode_stored};
 use crate::chain::Event;
-use crate::tag_claims::{Applied, Claim, decode_op, is_tag_kind, live_claims};
+use crate::tag_claims::{Applied, Claim, is_tag_kind, live_claims};
 use crate::tag_index::TagIndex;
-
-/// Writes the body of a tag event, so the fold can read it. The body is the one the header commits
-/// to, and the caller has checked that.
-pub(super) fn store_tag_body(
-    txn: &WriteTransaction,
-    id: &Hash,
-    body: &[u8],
-) -> Result<(), StoreError> {
-    let mut ops = txn.open_table(TAG_OPS)?;
-    ops.insert(id.as_bytes().as_slice(), body)?;
-    Ok(())
-}
 
 /// The events an event names: its `after` hashes, and its backlink.
 fn parents_of(event: &Event) -> Vec<Hash> {
@@ -47,18 +32,14 @@ fn parents_of(event: &Event) -> Vec<Hash> {
 impl EventStore {
     /// The live claims in the store: each applied `tag.set` that no applied `tag.clear` removes.
     ///
-    /// A tag event whose body the store does not hold yet is not counted, so a claim or a clear
-    /// shows only once its body has arrived.
-    ///
     /// # Errors
     ///
-    /// Returns a redb error if the read fails, or [`StoreError::Corrupt`] for a stored tag body
-    /// that does not decode.
+    /// Returns a redb error if the read fails, or [`StoreError::Corrupt`] for a stored tag event
+    /// that carries no tag operation for its kind.
     pub fn tag_claims(&self) -> Result<Vec<Claim>, StoreError> {
         let txn = self.db.begin_read()?;
         let events = txn.open_table(EVENTS)?;
         let applied_table = txn.open_table(APPLIED)?;
-        let ops = txn.open_table(TAG_OPS)?;
 
         let mut parents: HashMap<Hash, Vec<Hash>> = HashMap::new();
         let mut applied = Vec::new();
@@ -66,15 +47,16 @@ impl EventStore {
             let (_position, bytes) = row?;
             let event = decode_stored(bytes.value())?;
             parents.insert(event.id, parents_of(&event));
-            let kind = &event.header.extensions.kind;
-            if !is_tag_kind(kind) || applied_table.get(event.id.as_bytes().as_slice())?.is_none() {
+            if !is_tag_kind(&event.header.extensions.kind)
+                || applied_table.get(event.id.as_bytes().as_slice())?.is_none()
+            {
                 continue;
             }
-            let Some(body) = ops.get(event.id.as_bytes().as_slice())? else {
-                continue;
+            let Some(op) = event.header.extensions.tag.clone() else {
+                return Err(corrupt(
+                    "a stored tag event carries no tag operation".to_owned(),
+                ));
             };
-            let op = decode_op(kind, body.value())
-                .map_err(|err| corrupt(format!("a stored tag body does not decode: {err}")))?;
             applied.push(Applied {
                 id: event.id,
                 author: author_of(&event),
