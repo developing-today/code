@@ -660,8 +660,25 @@ let
           };
           nixCommon = import ../nix-common.nix { inherit pkgs; };
           inherit (nixCommon) fmtBins;
+          formatCheck = pkgs.writeShellScriptBin "format-check" ''
+            export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
+            if [ "$#" -eq 0 ]; then
+              echo "usage: nix run .#format-check -- <changed-file>..." >&2
+              exit 2
+            fi
+            exec treefmt \
+              --config-file "$PWD/treefmt.toml" \
+              --tree-root "$PWD" \
+              --fail-on-change \
+              "$@"
+          '';
         in
         {
+          apps.format-check = {
+            type = "app";
+            program = "${formatCheck}/bin/format-check";
+          };
+
           formatter = pkgs.writeShellScriptBin "formatter" ''
             export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
             # fix = strip-whitespace + lockfiles + fmt (treefmt with --config-file/--tree-root)
