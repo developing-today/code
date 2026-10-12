@@ -1,7 +1,7 @@
 //! Tags as observed-remove claims over the event store (Phase 5, P5.1; design §9.1, spike S8).
 //!
-//! The S8 properties, checked on [`EventStore`] through its production path, with the body
-//! delivered alongside each event:
+//! The S8 properties, checked on [`EventStore`] through its production path. Each event carries
+//! its tag operation in its header, and a receiver gets nothing else (#182):
 //!
 //! 1. A clear removes the claims it names that its author had seen, and no others.
 //! 2. A concurrent add survives a clear that did not see it.
@@ -15,11 +15,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use id::chain::{ChainExt, Event, sign};
 use id::event_store::{EventStore, Ingest, Refusal};
-use id::tag_claims::{CLEAR_KIND, SET_KIND, TagOp, encode_op};
+use id::tag_claims::{Applied, CLEAR_KIND, SET_KIND, TagOp, compacted_claims, live_claims};
 use id::waiting::{AuthorKey, WaitingLimits};
 use p2panda_core::{Hash, SeqNum, SigningKey};
 use proptest::prelude::*;
@@ -32,11 +32,12 @@ struct Writer {
     last: Option<Hash>,
 }
 
-/// One signed event, with the body its header commits to.
+/// One signed event.
 #[derive(Clone)]
 struct Sent {
     event: Event,
-    body: Vec<u8>,
+    /// The key that signed it.
+    author: AuthorKey,
     /// Which writer signed it.
     writer: usize,
 }
@@ -65,18 +66,18 @@ impl Writer {
             TagOp::Set { .. } => SET_KIND,
             TagOp::Clear { .. } => CLEAR_KIND,
         };
-        let body = encode_op(op).unwrap();
         let ext = ChainExt {
             kind: kind.to_owned(),
             group: None,
             after,
+            tag: Some(op.clone()),
         };
-        let event = sign(&self.key, self.seq, self.last, Some(&body), ext).unwrap();
+        let event = sign(&self.key, self.seq, self.last, None, ext).unwrap();
         self.seq += 1;
         self.last = Some(event.id);
         Sent {
             event,
-            body,
+            author: self.author(),
             writer,
         }
     }
@@ -102,11 +103,9 @@ fn open() -> (tempfile::TempDir, EventStore) {
     (dir, store)
 }
 
-/// Delivers one event with its body, and checks that it was not refused.
+/// Delivers one event's bytes, as sync does, and checks that it was not refused.
 fn deliver(store: &mut EventStore, sent: &Sent) {
-    let outcome = store
-        .ingest_with_body(&sent.event.bytes, Some(&sent.body), 0)
-        .unwrap();
+    let outcome = store.ingest(&sent.event.bytes, 0).unwrap();
     assert!(
         !matches!(outcome, Ingest::Refused(_)),
         "refused: {outcome:?}"
@@ -229,33 +228,16 @@ fn test_a_claim_is_attributed_to_the_key_that_signed_it() {
 }
 
 #[test]
-fn test_a_claim_whose_body_has_not_arrived_is_not_live_until_it_does() {
+fn test_a_tag_event_with_a_payload_body_is_refused() {
+    // The operation is in the header, so a body beside a tag event is refused.
     let subject = Hash::digest(b"doc");
     let mut a = Writer::new(1);
     let claim = a.send(&set(subject, "city", Some("Seattle")), vec![], 0);
-
-    let (_dir, mut store) = open();
-    let outcome = store.ingest(&claim.event.bytes, 0).unwrap();
-    assert!(matches!(outcome, Ingest::Accepted { .. }), "{outcome:?}");
-    assert!(live(&store).is_empty());
-
-    let outcome = store
-        .ingest_with_body(&claim.event.bytes, Some(&claim.body), 0)
-        .unwrap();
-    assert!(matches!(outcome, Ingest::Duplicate { .. }), "{outcome:?}");
-    assert_eq!(live(&store), ids(&[&claim]));
-}
-
-#[test]
-fn test_a_body_that_is_not_the_one_the_header_commits_to_is_refused() {
-    let subject = Hash::digest(b"doc");
-    let mut a = Writer::new(1);
-    let claim = a.send(&set(subject, "city", Some("Seattle")), vec![], 0);
-    let other = encode_op(&set(subject, "state", None)).unwrap();
+    let body = b"a body".to_vec();
 
     let (_dir, mut store) = open();
     let outcome = store
-        .ingest_with_body(&claim.event.bytes, Some(&other), 0)
+        .ingest_with_body(&claim.event.bytes, Some(&body), 0)
         .unwrap();
     assert!(
         matches!(outcome, Ingest::Refused(Refusal::Malformed(_))),
@@ -265,27 +247,23 @@ fn test_a_body_that_is_not_the_one_the_header_commits_to_is_refused() {
 }
 
 #[test]
-fn test_a_tag_kind_with_the_body_of_another_kind_is_refused() {
+fn test_a_tag_event_whose_operation_does_not_fit_its_kind_is_not_signed() {
     let subject = Hash::digest(b"doc");
-    let mut a = Writer::new(1);
-    let body = encode_op(&set(subject, "city", None)).unwrap();
-    let ext = ChainExt {
+    let a = Writer::new(1);
+    let mismatch = ChainExt {
         kind: CLEAR_KIND.to_owned(),
         group: None,
         after: vec![],
+        tag: Some(set(subject, "city", None)),
     };
-    let event = sign(&a.key, a.seq, a.last, Some(&body), ext).unwrap();
-    a.seq += 1;
-
-    let (_dir, mut store) = open();
-    let outcome = store
-        .ingest_with_body(&event.bytes, Some(&body), 0)
-        .unwrap();
-    assert!(
-        matches!(outcome, Ingest::Refused(Refusal::Malformed(_))),
-        "{outcome:?}"
-    );
-    assert!(live(&store).is_empty());
+    assert!(sign(&a.key, 0, None, None, mismatch).is_err());
+    let missing = ChainExt {
+        kind: SET_KIND.to_owned(),
+        group: None,
+        after: vec![],
+        tag: None,
+    };
+    assert!(sign(&a.key, 0, None, None, missing).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -317,8 +295,7 @@ struct History {
 
 /// Writes a history of three writers, with syncs between them, sets, and clears. A clear names
 /// random claims, seen or not. The oracle records the claims each clear's author had seen.
-fn history(seed: u64, steps: usize) -> History {
-    const WRITERS: usize = 3;
+fn history(seed: u64, steps: usize, count: usize) -> History {
     let mut rng = Rng(seed);
     let subjects = [
         Hash::digest(b"s0"),
@@ -328,21 +305,21 @@ fn history(seed: u64, steps: usize) -> History {
     let names = ["city", "name", "a"];
     let values = [None, Some("Seattle"), Some("a\0b"), Some("a"), Some("")];
 
-    let mut writers: Vec<Writer> = (1..=WRITERS)
+    let mut writers: Vec<Writer> = (1..=count)
         .map(|n| Writer::new(u8::try_from(n).unwrap()))
         .collect();
     // What each writer has seen: its events by ID, which is causally closed.
-    let mut known: Vec<BTreeMap<[u8; 32], Sent>> = vec![BTreeMap::new(); WRITERS];
+    let mut known: Vec<BTreeMap<[u8; 32], Sent>> = vec![BTreeMap::new(); count];
     let mut events: Vec<Sent> = Vec::new();
     let mut sets: Vec<Sent> = Vec::new();
     // Each clear's named claims, and the claims its author had seen when it wrote it.
     let mut clears: Vec<(Vec<Hash>, HashSet<Hash>)> = Vec::new();
 
     for _ in 0..steps {
-        let w = rng.below(WRITERS);
+        let w = rng.below(count);
         match rng.below(10) {
             0..=1 => {
-                let other = rng.below(WRITERS);
+                let other = rng.below(count);
                 let theirs = known[other].clone();
                 known[w].extend(theirs);
             }
@@ -350,7 +327,7 @@ fn history(seed: u64, steps: usize) -> History {
                 let subject = subjects[rng.below(subjects.len())];
                 let name = names[rng.below(names.len())];
                 let value = values[rng.below(values.len())];
-                let after = frontier(&known[w], WRITERS);
+                let after = frontier(&known[w], count);
                 let sent = writers[w].send(&set(subject, name, value), after, w);
                 known[w].insert(*sent.id().as_bytes(), sent.clone());
                 sets.push(sent.clone());
@@ -365,7 +342,7 @@ fn history(seed: u64, steps: usize) -> History {
                     .map(|_| sets[rng.below(sets.len())].id())
                     .collect();
                 let seen: HashSet<Hash> = known[w].values().map(Sent::id).collect();
-                let after = frontier(&known[w], WRITERS);
+                let after = frontier(&known[w], count);
                 let sent = writers[w].send(&clear(&named), after, w);
                 known[w].insert(*sent.id().as_bytes(), sent.clone());
                 clears.push((named, seen));
@@ -406,7 +383,7 @@ proptest! {
     /// waits for its causal past), and shuffled with every event repeated. Each reaches the oracle.
     #[test]
     fn test_the_live_set_is_the_oracle_under_any_delivery_order(seed in any::<u64>(), steps in 8usize..32) {
-        let history = history(seed, steps);
+        let history = history(seed, steps, 3);
         let mut rng = Rng(seed ^ 0xD1E5_0C0F_FEE0_0001);
 
         let mut shuffled: Vec<&Sent> = history.events.iter().flat_map(|sent| [sent, sent]).collect();
@@ -421,12 +398,44 @@ proptest! {
         for order in orders {
             let (_dir, mut store) = open();
             for sent in order {
-                let outcome = store
-                    .ingest_with_body(&sent.event.bytes, Some(&sent.body), 0)
-                    .unwrap();
+                let outcome = store.ingest(&sent.event.bytes, 0).unwrap();
                 prop_assert!(!matches!(outcome, Ingest::Refused(_)), "refused: {outcome:?}");
             }
             prop_assert_eq!(live(&store), history.expected.clone());
         }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 16, ..ProptestConfig::default() })]
+
+    /// The compacted fold gives the causal walk's live claims, for histories of two or three
+    /// writers. Clears name claims their authors had seen and claims they had not, so a clear from
+    /// an author who had not seen a claim must leave it live (P5.3, #184).
+    #[test]
+    fn test_the_compacted_fold_agrees_with_the_causal_walk(seed in any::<u64>(), writers in 2usize..=3, steps in 8usize..40) {
+        let history = history(seed, steps, writers);
+        let applied: Vec<Applied> = history
+            .events
+            .iter()
+            .map(|sent| Applied {
+                id: sent.id(),
+                author: sent.author,
+                op: sent.event.header.extensions.tag.clone().expect("a tag event carries its operation"),
+            })
+            .collect();
+        let parents: HashMap<Hash, Vec<Hash>> = history
+            .events
+            .iter()
+            .map(|sent| {
+                let header = &sent.event.header;
+                (sent.id(), header.extensions.after.iter().copied().chain(header.backlink).collect())
+            })
+            .collect();
+        let walked = live_claims(&applied, &parents);
+        let folded = compacted_claims(&applied, &parents);
+        prop_assert_eq!(&folded, &walked);
+        let folded_ids: BTreeSet<[u8; 32]> = folded.iter().map(|claim| *claim.id.as_bytes()).collect();
+        prop_assert_eq!(folded_ids, history.expected.clone());
     }
 }

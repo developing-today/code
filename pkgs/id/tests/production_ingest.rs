@@ -74,6 +74,7 @@ impl Chains {
             kind: kind.to_owned(),
             group,
             after: after.to_vec(),
+            tag: None,
         };
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();
         self.last.insert(who, (seq, event.id));
@@ -271,6 +272,7 @@ fn test_a_body_that_does_not_match_its_payload_hash_is_refused() {
             kind: GROUP_OP.to_owned(),
             group: Some(group),
             after: vec![group],
+            tag: None,
         },
     )
     .unwrap();

@@ -53,8 +53,14 @@ fn oversized_frontier() -> impl Strategy<Value = Vec<Hash>> {
 
 /// Any extension the builder accepts.
 fn chain_ext() -> impl Strategy<Value = ChainExt> {
-    (kind(), prop::option::of(hash()), frontier(MAX_AFTER))
-        .prop_map(|(kind, group, after)| ChainExt { kind, group, after })
+    (kind(), prop::option::of(hash()), frontier(MAX_AFTER)).prop_map(|(kind, group, after)| {
+        ChainExt {
+            kind,
+            group,
+            after,
+            tag: None,
+        }
+    })
 }
 
 /// An extension the builder would never sign. `after` is not limited here, so
@@ -112,7 +118,7 @@ proptest! {
         let ext = ChainExt {
             kind: "m".to_owned(),
             group: None,
-            after: after.clone(),
+            after: after.clone(), tag: None,
         };
         prop_assert!(sign(&key(), 0, None, None, ext.clone()).is_err());
         prop_assert!(ext.validate().is_err());
@@ -179,7 +185,7 @@ proptest! {
                 ChainExt {
                     kind: "m".to_owned(),
                     group: None,
-                    after: Vec::new(),
+                    after: Vec::new(), tag: None,
                 },
             )
             .encode();

@@ -2,8 +2,9 @@
 //!
 //! A tag is a claim. `tag.set` names a subject (any event ID), a name, and an optional value. It
 //! is attributed to the key that signed it. `tag.clear` names the claims it removes. Both are
-//! ordinary events: the kind is in the header's [`ChainExt`](crate::chain::ChainExt), and the body
-//! is the payload the header commits to.
+//! ordinary events: the kind is in the header's [`ChainExt`](crate::chain::ChainExt), and so is the
+//! operation, in its `tag` field. The operation is the tag's body (#182). It is signed with the
+//! header, so an event carries its whole tag, and sync moves events alone.
 //!
 //! A clear removes a claim only when the claim is named by the clear and lies in the clear's
 //! causal past, which is the set of events its author had seen. A concurrent add the clear did not
@@ -11,21 +12,20 @@
 //! The past is the transitive closure of each event's `after` hashes and backlink, so the clear's
 //! frontier need not name a claim for the clear to remove it.
 //!
-//! Bodies are canonical CBOR, version [`VERSION`]:
+//! The operation's limits are checked when a header is built and when it is decoded. A value is
+//! text inside the header, and the header decoder declares text at most 512 bytes long, so a value
+//! is at most [`MAX_VALUE_BYTES`].
 //!
-//! - `tag.set`: `[1, subject, name, value]`. The subject is a 32-byte string, the name is text of
-//!   1 to [`MAX_NAME_BYTES`] bytes, and the value is text of at most [`MAX_VALUE_BYTES`] bytes or
-//!   null.
-//! - `tag.clear`: `[1, [claim, ...]]`, with at most [`MAX_CLEAR_CLAIMS`] claims, each a 32-byte
-//!   string.
+//! Two folds give the live claims. [`live_claims`] walks the causal past of each clear. It is the
+//! reference. [`compacted_claims`] makes one pass over the parent links and keeps, for each event,
+//! only the live claims in its past. Both give the same result (P5.3, #184).
 //!
-//! Text is NFC, as the header's kind is. The old iroh-docs tag store in [`crate::tags`] is a
-//! separate model and is not read here.
+//! The old iroh-docs tag store in [`crate::tags`] is a separate model and is not read here.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use cbor_core::{DecodeOptions, Strictness, Value};
 use p2panda_core::Hash;
+use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
 
 use crate::waiting::AuthorKey;
@@ -36,32 +36,17 @@ pub const SET_KIND: &str = "tag.set";
 /// The kind of a `tag.clear` event, as the header's `kind` names it.
 pub const CLEAR_KIND: &str = "tag.clear";
 
-/// The body format version this code writes and reads.
-pub const VERSION: u64 = 1;
-
 /// The most bytes a tag name may have. A name is at least one byte.
 pub const MAX_NAME_BYTES: usize = 128;
 
-/// The most bytes a tag value may have.
-pub const MAX_VALUE_BYTES: usize = 1024;
+/// The most bytes a tag value may have. The header decoder declares text at most 512 bytes long.
+pub const MAX_VALUE_BYTES: usize = 512;
 
-/// The most claims one `tag.clear` may name.
+/// The most claims one `tag.clear` may name. The header decoder declares arrays at most 512 long.
 pub const MAX_CLEAR_CLAIMS: usize = 256;
 
-/// The most bytes a tag body may have. A full clear is about 8.7 KiB, so this leaves room.
-pub const MAX_TAG_BODY_BYTES: usize = 16 * 1024;
-
-/// Nesting limit for a tag body's CBOR. Matches the group body codec.
-const RECURSION_LIMIT: u16 = 8;
-
-/// Declared element limit for one array. Matches the header decoder.
-const LENGTH_LIMIT: u64 = 512;
-
-/// Byte budget for speculative pre-allocation. Matches the header decoder.
-const OOM_MITIGATION: usize = 64;
-
-/// What a tag event does. The kind of the event says which form the body takes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What a tag event does. The kind of the event says which form the operation takes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TagOp {
     /// Adds a claim: the subject carries `name` (and `value`), attributed to the signer.
     Set {
@@ -105,199 +90,55 @@ pub struct Claim {
     pub value: Option<String>,
 }
 
-/// Why a tag body or operation was refused.
+/// Why a tag operation was refused.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum TagError {
-    /// The kind is not a tag kind.
-    #[error("{0:?} is not a tag kind")]
-    NotATag(String),
-    /// The body is not the canonical encoding of the value it holds.
-    #[error("the tag body is not canonical CBOR")]
-    NotCanonical,
-    /// The body does not decode as CBOR.
-    #[error("the tag body does not decode: {0}")]
-    Cbor(String),
-    /// The body does not have the shape its kind requires.
-    #[error("the tag body has the wrong shape: {0}")]
-    Shape(String),
-    /// The body names a version this code does not read.
-    #[error("tag body version {0} is not supported")]
-    Version(u64),
+    /// The operation is not the one the event's kind names.
+    #[error("a {kind:?} event carries the wrong tag operation")]
+    KindMismatch {
+        /// The kind of the event.
+        kind: String,
+    },
     /// A field breaks a limit or the NFC rule.
     #[error("{0}")]
     Field(String),
 }
 
-/// Whether `kind` is a tag kind, so its body is a tag operation.
+/// Whether `kind` is a tag kind, so its event carries a tag operation.
 #[must_use]
 pub fn is_tag_kind(kind: &str) -> bool {
     kind == SET_KIND || kind == CLEAR_KIND
 }
 
-/// Encodes a tag operation as its body.
+/// Checks a tag operation against the kind of the event that carries it.
 ///
 /// # Errors
 ///
-/// Returns [`TagError::Field`] for a name or value that breaks its limit or the NFC rule, and for
-/// a clear with more than [`MAX_CLEAR_CLAIMS`] claims. Also returns [`TagError::Field`] for a body
-/// over [`MAX_TAG_BODY_BYTES`].
-pub fn encode_op(op: &TagOp) -> Result<Vec<u8>, TagError> {
-    let value = match op {
-        TagOp::Set {
-            subject,
-            name,
-            value,
-        } => {
+/// Returns [`TagError::KindMismatch`] when the operation is not the one `kind` names. Returns
+/// [`TagError::Field`] for a name or value that breaks its limit or the NFC rule, and for a clear
+/// that names more than [`MAX_CLEAR_CLAIMS`] claims.
+pub fn check_op(kind: &str, op: &TagOp) -> Result<(), TagError> {
+    match (kind, op) {
+        (SET_KIND, TagOp::Set { name, value, .. }) => {
             check_text("name", name, 1, MAX_NAME_BYTES)?;
-            let value = match value {
-                Some(text) => {
-                    check_text("value", text, 0, MAX_VALUE_BYTES)?;
-                    Value::TextString(text.as_str().into())
-                }
-                None => Value::null(),
-            };
-            Value::Array(vec![
-                Value::Unsigned(VERSION),
-                Value::ByteString(subject.as_bytes().to_vec().into()),
-                Value::TextString(name.as_str().into()),
-                value,
-            ])
+            if let Some(text) = value {
+                check_text("value", text, 0, MAX_VALUE_BYTES)?;
+            }
+            Ok(())
         }
-        TagOp::Clear { claims } => {
+        (CLEAR_KIND, TagOp::Clear { claims }) => {
             if claims.len() > MAX_CLEAR_CLAIMS {
                 return Err(TagError::Field(format!(
                     "{} claims, the most is {MAX_CLEAR_CLAIMS}",
                     claims.len()
                 )));
             }
-            let named = claims
-                .iter()
-                .map(|claim| Value::ByteString(claim.as_bytes().to_vec().into()))
-                .collect();
-            Value::Array(vec![Value::Unsigned(VERSION), Value::Array(named)])
+            Ok(())
         }
-    };
-    let body = value.encode();
-    if body.len() > MAX_TAG_BODY_BYTES {
-        return Err(TagError::Field(format!(
-            "a tag body of {} bytes, the most is {MAX_TAG_BODY_BYTES}",
-            body.len()
-        )));
+        _ => Err(TagError::KindMismatch {
+            kind: kind.to_owned(),
+        }),
     }
-    Ok(body)
-}
-
-/// Decodes a tag body, given its event's kind.
-///
-/// # Errors
-///
-/// Returns the reason the body is refused. See [`TagError`].
-pub fn decode_op(kind: &str, body: &[u8]) -> Result<TagOp, TagError> {
-    if !is_tag_kind(kind) {
-        return Err(TagError::NotATag(kind.to_owned()));
-    }
-    if body.len() > MAX_TAG_BODY_BYTES {
-        return Err(TagError::Field(format!(
-            "a tag body of {} bytes, the most is {MAX_TAG_BODY_BYTES}",
-            body.len()
-        )));
-    }
-    let value = DecodeOptions::new()
-        .strictness(Strictness::STRICT)
-        .recursion_limit(RECURSION_LIMIT)
-        .length_limit(LENGTH_LIMIT)
-        .oom_mitigation(OOM_MITIGATION)
-        .decode_owned(body)
-        .map_err(|err| TagError::Cbor(err.to_string()))?;
-    if value.encode().as_slice() != body {
-        return Err(TagError::NotCanonical);
-    }
-    let items = value
-        .as_array()
-        .map_err(|err| TagError::Shape(format!("a tag body is an array: {err}")))?;
-    let Some((version, rest)) = items.split_first() else {
-        return Err(TagError::Shape("a tag body is empty".to_owned()));
-    };
-    let Value::Unsigned(version) = version else {
-        return Err(TagError::Shape("the version is not an integer".to_owned()));
-    };
-    if *version != VERSION {
-        return Err(TagError::Version(*version));
-    }
-    if kind == SET_KIND {
-        decode_set(rest)
-    } else {
-        decode_clear(rest)
-    }
-}
-
-/// The fields of a `tag.set` body, after the version.
-fn decode_set(rest: &[Value<'static>]) -> Result<TagOp, TagError> {
-    let [subject, name, value] = rest else {
-        return Err(TagError::Shape(
-            "a tag.set has a version, a subject, a name and a value".to_owned(),
-        ));
-    };
-    let subject = decode_hash(subject)?;
-    let name = decode_text("name", name, 1, MAX_NAME_BYTES)?;
-    let value = match value {
-        Value::SimpleValue(simple) if simple.to_u8() == 22 => None,
-        other => Some(decode_text("value", other, 0, MAX_VALUE_BYTES)?),
-    };
-    Ok(TagOp::Set {
-        subject,
-        name,
-        value,
-    })
-}
-
-/// The fields of a `tag.clear` body, after the version.
-fn decode_clear(rest: &[Value<'static>]) -> Result<TagOp, TagError> {
-    let [claims] = rest else {
-        return Err(TagError::Shape(
-            "a tag.clear has a version and a list of claims".to_owned(),
-        ));
-    };
-    let items = claims
-        .as_array()
-        .map_err(|err| TagError::Shape(format!("the claims are an array: {err}")))?;
-    if items.len() > MAX_CLEAR_CLAIMS {
-        return Err(TagError::Field(format!(
-            "{} claims, the most is {MAX_CLEAR_CLAIMS}",
-            items.len()
-        )));
-    }
-    let claims = items
-        .iter()
-        .map(decode_hash)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(TagOp::Clear { claims })
-}
-
-/// A 32-byte string, as a hash.
-fn decode_hash(value: &Value<'static>) -> Result<Hash, TagError> {
-    let Value::ByteString(bytes) = value else {
-        return Err(TagError::Shape("an ID is a byte string".to_owned()));
-    };
-    let bytes: &[u8] = bytes;
-    let array = <[u8; 32]>::try_from(bytes)
-        .map_err(|_| TagError::Shape(format!("an ID is {} bytes, it must be 32", bytes.len())))?;
-    Ok(Hash::from_bytes(array))
-}
-
-/// A text field that is NFC and within its byte limits.
-fn decode_text(
-    field: &str,
-    value: &Value<'static>,
-    min: usize,
-    max: usize,
-) -> Result<String, TagError> {
-    let Value::TextString(text) = value else {
-        return Err(TagError::Shape(format!("the {field} is not text")));
-    };
-    let text: &str = text;
-    check_text(field, text, min, max)?;
-    Ok(text.to_owned())
 }
 
 /// Checks a text field: its byte length is in `min..=max`, and it is NFC.
@@ -335,8 +176,8 @@ pub fn causal_past(start: &[Hash], parents: &HashMap<Hash, Vec<Hash>>) -> HashSe
 /// The live claims, given the applied tag events and the parent links of every event the store
 /// holds. A claim is live unless an applied clear names it and has it in its causal past.
 ///
-/// The result is a function of the set of events, so it does not depend on the order they arrived.
-/// It is sorted by claim ID.
+/// This walks the causal past of each clear, so it costs O(clears x history). It is the reference
+/// for [`compacted_claims`]. The result is sorted by claim ID.
 #[must_use]
 pub fn live_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> Vec<Claim> {
     let mut sets: BTreeMap<[u8; 32], Claim> = BTreeMap::new();
@@ -376,6 +217,89 @@ pub fn live_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> V
         .collect()
 }
 
+/// The live claims, folded in one pass over the parent links (P5.3, #184).
+///
+/// Each event gets the set of live claims in its causal past, including itself. The set of an
+/// event is built from its parents' sets, so each event is visited once. A clear removes each
+/// claim it names that is in its parents' sets: those are the claims its author had seen. A
+/// removed claim is dropped from every set built after it, so a set holds only claims that are
+/// still live. Removal is final, so dropping it changes no later decision.
+///
+/// The result is the same as [`live_claims`], and it is sorted by claim ID. The walk for a clear is
+/// over the live claims in its parents' sets, not over its whole past. A clear from an author who
+/// had not seen a claim leaves that claim live, as [`live_claims`] does.
+#[must_use]
+pub fn compacted_claims(applied: &[Applied], parents: &HashMap<Hash, Vec<Hash>>) -> Vec<Claim> {
+    let by_id: HashMap<Hash, &Applied> = applied.iter().map(|event| (event.id, event)).collect();
+    // The live claims in each event's causal past, including the event if it is a live claim.
+    let mut live_past: HashMap<Hash, HashSet<Hash>> = HashMap::new();
+    let mut removed: HashSet<Hash> = HashSet::new();
+    let mut open: HashSet<Hash> = HashSet::new();
+    for root in parents.keys().copied() {
+        // A depth-first walk in post-order: an event is folded after its parents.
+        let mut stack = vec![(root, false)];
+        while let Some((id, folded)) = stack.pop() {
+            if live_past.contains_key(&id) {
+                continue;
+            }
+            let named: &[Hash] = match parents.get(&id) {
+                Some(named) => named,
+                None => &[],
+            };
+            if !folded {
+                if !open.insert(id) {
+                    continue;
+                }
+                stack.push((id, true));
+                stack.extend(
+                    named
+                        .iter()
+                        .filter(|parent| !live_past.contains_key(*parent))
+                        .map(|parent| (*parent, false)),
+                );
+                continue;
+            }
+            open.remove(&id);
+            let mut past: HashSet<Hash> = HashSet::new();
+            for parent in named {
+                if let Some(claims) = live_past.get(parent) {
+                    past.extend(claims.iter().filter(|claim| !removed.contains(*claim)));
+                }
+            }
+            match by_id.get(&id).map(|event| &event.op) {
+                Some(TagOp::Clear { claims }) => {
+                    removed.extend(claims.iter().filter(|claim| past.contains(*claim)));
+                }
+                Some(TagOp::Set { .. }) if !removed.contains(&id) => {
+                    past.insert(id);
+                }
+                _ => {}
+            }
+            live_past.insert(id, past);
+        }
+    }
+    let mut live: Vec<Claim> = applied
+        .iter()
+        .filter(|event| !removed.contains(&event.id))
+        .filter_map(|event| match &event.op {
+            TagOp::Set {
+                subject,
+                name,
+                value,
+            } => Some(Claim {
+                id: event.id,
+                author: event.author,
+                subject: *subject,
+                name: name.clone(),
+                value: value.clone(),
+            }),
+            TagOp::Clear { .. } => None,
+        })
+        .collect();
+    live.sort_by_key(|claim| *claim.id.as_bytes());
+    live
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -385,44 +309,60 @@ mod tests {
         Hash::from_bytes([n; 32])
     }
 
-    #[test]
-    fn test_a_set_round_trips_with_and_without_a_value() {
-        for value in [None, Some(String::new()), Some("Seattle".to_owned())] {
-            let op = TagOp::Set {
-                subject: hash(7),
-                name: "city".to_owned(),
-                value,
-            };
-            let body = encode_op(&op).unwrap();
-            assert_eq!(decode_op(SET_KIND, &body).unwrap(), op);
+    fn set(id: u8, subject: u8, name: &str) -> Applied {
+        Applied {
+            id: hash(id),
+            author: [id; 32],
+            op: TagOp::Set {
+                subject: hash(subject),
+                name: name.to_owned(),
+                value: None,
+            },
+        }
+    }
+
+    fn clear(id: u8, claims: &[u8]) -> Applied {
+        Applied {
+            id: hash(id),
+            author: [id; 32],
+            op: TagOp::Clear {
+                claims: claims.iter().map(|n| hash(*n)).collect(),
+            },
         }
     }
 
     #[test]
-    fn test_a_clear_round_trips_with_no_claims_and_with_many() {
-        for count in [0_u8, 1, 3] {
-            let op = TagOp::Clear {
-                claims: (0..count).map(hash).collect(),
-            };
-            let body = encode_op(&op).unwrap();
-            assert_eq!(decode_op(CLEAR_KIND, &body).unwrap(), op);
-        }
+    fn test_a_tag_op_is_checked_against_its_kind() {
+        let set_op = TagOp::Set {
+            subject: hash(1),
+            name: "city".to_owned(),
+            value: Some(String::new()),
+        };
+        let clear_op = TagOp::Clear { claims: vec![] };
+        assert!(check_op(SET_KIND, &set_op).is_ok());
+        assert!(check_op(CLEAR_KIND, &clear_op).is_ok());
+        assert!(check_op(CLEAR_KIND, &set_op).is_err());
+        assert!(check_op(SET_KIND, &clear_op).is_err());
+        assert!(check_op("message", &set_op).is_err());
     }
 
     #[test]
-    fn test_a_name_outside_its_limits_is_refused() {
-        let empty = TagOp::Set {
-            subject: hash(1),
-            name: String::new(),
-            value: None,
+    fn test_a_name_or_value_outside_its_limits_is_refused() {
+        let check = |name: &str, value: Option<String>| {
+            check_op(
+                SET_KIND,
+                &TagOp::Set {
+                    subject: hash(1),
+                    name: name.to_owned(),
+                    value,
+                },
+            )
         };
-        assert!(encode_op(&empty).is_err());
-        let long = TagOp::Set {
-            subject: hash(1),
-            name: "n".repeat(MAX_NAME_BYTES + 1),
-            value: None,
-        };
-        assert!(encode_op(&long).is_err());
+        assert!(check("", None).is_err());
+        assert!(check(&"n".repeat(MAX_NAME_BYTES + 1), None).is_err());
+        assert!(check("a", Some("v".repeat(MAX_VALUE_BYTES))).is_ok());
+        assert!(check("a", Some("v".repeat(MAX_VALUE_BYTES + 1))).is_err());
+        assert!(check("a", Some("e\u{301}".to_owned())).is_err());
     }
 
     #[test]
@@ -432,47 +372,27 @@ mod tests {
                 .map(|n| Hash::digest(n.to_be_bytes()))
                 .collect(),
         };
-        assert!(encode_op(&op).is_err());
+        assert!(check_op(CLEAR_KIND, &op).is_err());
     }
 
     #[test]
-    fn test_a_body_under_the_wrong_kind_is_refused() {
-        let body = encode_op(&TagOp::Clear { claims: vec![] }).unwrap();
-        assert!(decode_op(SET_KIND, &body).is_err());
-        let body = encode_op(&TagOp::Set {
-            subject: hash(1),
-            name: "a".to_owned(),
-            value: None,
-        })
-        .unwrap();
-        assert!(decode_op(CLEAR_KIND, &body).is_err());
-        assert!(decode_op("message", &body).is_err());
+    fn test_the_compacted_fold_keeps_a_claim_a_clear_did_not_see() {
+        // `b` (event 3) names claim 1, but its past is only itself, so claim 1 stays live.
+        let applied = [set(1, 9, "city"), clear(3, &[1])];
+        let parents: HashMap<Hash, Vec<Hash>> = HashMap::from([(hash(3), vec![])]);
+        let live = compacted_claims(&applied, &parents);
+        assert_eq!(live.iter().map(|c| c.id).collect::<Vec<_>>(), vec![hash(1)]);
+        assert_eq!(live, live_claims(&applied, &parents));
     }
 
     #[test]
-    fn test_a_body_with_trailing_bytes_is_refused() {
-        let mut body = encode_op(&TagOp::Set {
-            subject: hash(1),
-            name: "a".to_owned(),
-            value: None,
-        })
-        .unwrap();
-        body.push(0x00);
-        assert!(decode_op(SET_KIND, &body).is_err());
-    }
-
-    #[test]
-    fn test_a_subject_that_is_not_32_bytes_is_refused() {
-        let body = Value::Array(vec![
-            Value::Unsigned(VERSION),
-            Value::ByteString(vec![1_u8; 31].into()),
-            Value::TextString("a".into()),
-            Value::null(),
-        ])
-        .encode();
-        assert!(matches!(
-            decode_op(SET_KIND, &body),
-            Err(TagError::Shape(_))
-        ));
+    fn test_the_compacted_fold_removes_a_claim_its_clear_saw_through_another_event() {
+        // Claim 1 is in the past of clear 4 through event 2, which names claim 1.
+        let applied = [set(1, 9, "city"), set(2, 9, "seen"), clear(4, &[1])];
+        let parents: HashMap<Hash, Vec<Hash>> =
+            HashMap::from([(hash(2), vec![hash(1)]), (hash(4), vec![hash(2)])]);
+        let live = compacted_claims(&applied, &parents);
+        assert_eq!(live.iter().map(|c| c.id).collect::<Vec<_>>(), vec![hash(2)]);
+        assert_eq!(live, live_claims(&applied, &parents));
     }
 }
