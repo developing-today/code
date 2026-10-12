@@ -105,6 +105,8 @@ rqrr = { version = "0.11.0", default-features = false }
 proptest = "1.12"
 # Interop vectors for the canonical CBOR of event headers. Dev only.
 dcbor = "=0.25.2"
+# Local relay server for the startup-wait tests (iroh's test-utils feature). Dev only.
+iroh = { version = "1", features = ["test-utils"] }
 
 # =============================================================================
 # Lints Configuration
