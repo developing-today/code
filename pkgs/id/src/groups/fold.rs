@@ -744,6 +744,10 @@ impl Engine {
                 if member != author && !is_manager {
                     return Err(Refusal::NotManager);
                 }
+                // Manage removes members at or below its own level. Admin is above it (design §5.2).
+                if member != author && record.admins.contains(&member) && !is_admin {
+                    return Err(Refusal::NotAdmin);
+                }
                 Ok(Decision {
                     group,
                     action: Some(GroupAction::Remove {
