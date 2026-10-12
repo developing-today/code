@@ -81,7 +81,7 @@ Fly.io (a container with a public IP) is a further option. Its cost is $2.19–3
 1. Create the VPS and point an A record for `relay.<domain>` at its address.
 2. Open 80 and 443 TCP, and 7842 UDP.
 3. Copy [`connectivity/relay/vps.toml`](./connectivity/relay/vps.toml). Set the hostname and contact. Keep `prod_tls = false` until the staging certificate issues, then set it to `true`.
-4. Install the binary and the unit file. Start the service.
+4. Install the binary, the unit file [`iroh-relay.service`](./connectivity/relay/iroh-relay.service), and its drop-in [`iroh-relay.service.d/vps.conf`](./connectivity/relay/iroh-relay.service.d/vps.conf) (to `/etc/systemd/system/iroh-relay.service.d/`). The drop-in grants the port capability for 80 and 443. Start the service.
 5. In clients, use the default relay configuration, which keeps QAD on.
 
 ## 5. Discovery alternates
