@@ -300,6 +300,19 @@ in
         doCheck = false;
       });
     })
+    # vtk 9.5.2 (FreeCAD's dependency): nixos-unstable 2026-10-10 added a
+    # postPatch that renames VTK's vendored pegtl module from VTK::pegtl to
+    # VTK::vtkpegtl, but left the 9.5.x CMake switch on the old module name.
+    # The switch is then ignored, VTK looks for an external PEGTL that is not
+    # there, and configure dies with "Could not find the PEGTL external
+    # dependency". Disable the external lookup for the renamed module too.
+    (final: prev: {
+      vtk = prev.vtk.overrideAttrs (old: {
+        cmakeFlags = (old.cmakeFlags or [ ]) ++ [
+          "-DVTK_MODULE_USE_EXTERNAL_VTK_vtkpegtl=OFF"
+        ];
+      });
+    })
   ];
   environment = {
     sessionVariables = {
