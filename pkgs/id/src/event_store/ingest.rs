@@ -72,7 +72,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use p2panda_auth::group::GroupAction;
 use p2panda_core::{Hash, SeqNum};
-use redb::{ReadableTable, WriteTransaction};
+use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
 
 use super::resolve::{self, decode_action, encode_action};
 use super::waiting_rows::{Hold, Mirror};
@@ -391,7 +391,11 @@ fn settle(
             if let Some(action) = action {
                 store_action(m.txn, &id, action)?;
             }
-            refresh(m.txn)?;
+            if plain(m.txn)? {
+                apply_plain(m.txn, &event)?;
+            } else {
+                refresh(m.txn)?;
+            }
             Settled::Stored {
                 applied: is_applied(m.txn, &id)?,
                 released: m.release(&id, now)?,
@@ -619,6 +623,25 @@ fn attach_action(
 /// Recomputes which stored events apply, and writes the result: the applied table, and each
 /// chain row as the leading run of applied events from sequence zero. The result is a function of
 /// the stored events and the fork proofs, so every arrival order writes the same rows.
+/// Whether the store holds no group state: no membership action and no fork. Then every stored
+/// event applies (`resolve` has no membership layer to void one), so an accepted event is the
+/// only change, and [`refresh`] would only rewrite what is already true. Reloading and re-resolving
+/// every stored event on each accept made a session quadratic in its length.
+fn plain(txn: &WriteTransaction) -> Result<bool, StoreError> {
+    let actions = txn.open_table(ACTIONS)?;
+    let forks = txn.open_table(FORKS)?;
+    Ok(actions.is_empty()? && forks.is_empty()?)
+}
+
+/// Applies an accepted event in a store with no group state. This is what [`refresh`] would
+/// write: the event is applied, and its author's applied prefix now runs through it.
+fn apply_plain(txn: &WriteTransaction, event: &Event) -> Result<(), StoreError> {
+    let author = author_of(event);
+    txn.open_table(APPLIED)?
+        .insert(event.id.as_bytes().as_slice(), [].as_slice())?;
+    set_prefix(txn, &author, event.header.seq_num + 1, false)
+}
+
 pub(super) fn refresh(txn: &WriteTransaction) -> Result<(), StoreError> {
     let (stored, forks, headers) = {
         let events = txn.open_table(EVENTS)?;
@@ -798,6 +821,7 @@ mod tests {
     use crate::event_store::waiting_rows::{self, Row};
     use crate::waiting::WaitingLimits;
     use p2panda_core::SigningKey;
+    use redb::ReadableDatabase;
 
     const WEEK_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 
@@ -859,6 +883,54 @@ mod tests {
                     released: vec![],
                 }
             );
+        }
+    }
+
+    /// The applied rows and the chain rows, as bytes.
+    fn rows(store: &EventStore) -> (Vec<Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>) {
+        let txn = store.db.begin_read().unwrap();
+        let applied = txn
+            .open_table(APPLIED)
+            .unwrap()
+            .iter()
+            .unwrap()
+            .map(|row| row.unwrap().0.value().to_vec())
+            .collect();
+        let chains = txn
+            .open_table(CHAINS)
+            .unwrap()
+            .iter()
+            .unwrap()
+            .map(|row| {
+                let (key, value) = row.unwrap();
+                (key.value().to_vec(), value.value().to_vec())
+            })
+            .collect();
+        (applied, chains)
+    }
+
+    /// Re-resolves the whole store, as the store does on an accept that carries group state.
+    fn refresh_all(store: &mut EventStore) {
+        store
+            .transact(0, |m| {
+                refresh(m.txn)?;
+                Ok(((), true))
+            })
+            .unwrap();
+    }
+
+    /// The fast path for a plain accept writes exactly the rows a full refresh writes.
+    #[test]
+    fn test_a_plain_accept_writes_what_a_full_refresh_would() {
+        let (alice, bob) = (key(1), key(2));
+        let (_dir, mut store) = open();
+        let mut events = chain_of(&alice, 5);
+        events.extend(chain_of(&bob, 3));
+        for event in &events {
+            ingest_all(&mut store, std::slice::from_ref(event));
+            let fast = rows(&store);
+            refresh_all(&mut store);
+            assert_eq!(rows(&store), fast, "after sequence {}", event.header.seq_num);
         }
     }
 
