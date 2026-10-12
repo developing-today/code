@@ -6,10 +6,11 @@
 //!
 //! Three decisions shape the session:
 //!
-//! - **Arrival order is the write path.** Each operation is verified and stored by
-//!   [`SharedEventStore::ingest`] before `LogSync` sees it. The events are not read back from
-//!   `p2panda-sync`'s broadcast channel. A slow reader of that channel loses events without an error,
-//!   so the events are never taken from it.
+//! - **Arrival order is the write path.** Each operation is handed to an ingest worker, which verifies
+//!   and stores the arrivals in order, in batches, with [`SharedEventStore::ingest_batch`]. A batch is
+//!   one write transaction, so one fsync, and the worker runs on a blocking thread so a write does not
+//!   hold the runtime. The events are not read back from `p2panda-sync`'s broadcast channel. A slow
+//!   reader of that channel loses events without an error, so the events are never taken from it.
 //! - **A refused event does not end the session.** A refusal (past a fork point, or over the waiting
 //!   caps) is counted in [`Tally`] and the batch goes on. One conflict must not drop the events after
 //!   it, which is the failure that range sync had (P3.1a).
@@ -58,6 +59,12 @@ pub const SESSION_DEADLINE: Duration = Duration::from_secs(60);
 /// Events the broadcast channel holds. Nothing reads them (see the module docs), so this only has
 /// to be nonzero.
 const EVENT_BUFFER: usize = 16;
+
+/// Operations the ingest worker takes in one write transaction, at most.
+const INGEST_BATCH: usize = 256;
+
+/// Operations the stream may queue for the ingest worker before it waits for the worker.
+const ARRIVAL_BUFFER: usize = 256;
 
 /// Why a sync session failed. A refused event is not an error: it is counted in [`Tally`].
 #[derive(Debug, thiserror::Error)]
@@ -289,30 +296,39 @@ async fn run_log_sync(
     let protocol: LogSync<ChainLog, ChainExt, SharedEventStore, LogSyncEvent<ChainExt>> =
         LogSync::new(store.clone(), logs, events_tx);
 
-    let mut tally = Tally::default();
+    // The operations are stored by a worker on a thread that may block, so a write does not hold the
+    // runtime. The stream sends each operation to it, and waits when it is full.
+    let (arrivals_tx, arrivals_rx) = mpsc::channel::<Arrival>(ARRIVAL_BUFFER);
+    let worker = {
+        let store = store.clone();
+        tokio::task::spawn_blocking(move || ingest_arrivals(&store, arrivals_rx))
+    };
+
     let inbound = stream::unfold(&mut frames.inbound, |rx| async move {
         let item = rx.recv().await?;
         Some((item, rx))
     });
-    let mut inbound = Box::pin(inbound.map(
-        |frame| -> Result<LogSyncMessage<ChainLog>, SyncError> {
+    let mut inbound = Box::pin(inbound.then(|frame| {
+        let arrivals = &arrivals_tx;
+        async move {
             let frame = frame.map_err(SyncError::Stream)?;
             let message: LogSyncMessage<ChainLog> = postcard::from_bytes(&frame)
                 .map_err(|error| SyncError::Frame(error.to_string()))?;
             if let LogSyncMessage::Operation((header, body)) = &message {
                 // Events carry no body here, and a body is not stored, so a body is refused.
-                if body.is_some() {
-                    tally.refused += 1;
+                let arrival = if body.is_some() {
+                    Arrival::Refused
                 } else {
-                    let outcome = store
-                        .ingest(header, None, unix_ms())
-                        .map_err(|error| SyncError::Store(error.to_string()))?;
-                    tally.record(&outcome);
-                }
+                    Arrival::Header(header.clone())
+                };
+                arrivals
+                    .send(arrival)
+                    .await
+                    .map_err(|_closed| SyncError::Store("the ingest worker stopped".to_owned()))?;
             }
-            Ok(message)
-        },
-    ));
+            Ok::<_, SyncError>(message)
+        }
+    }));
     let mut outbound = Box::pin(sink::unfold(
         &mut frames.send,
         |send, message: LogSyncMessage<ChainLog>| async move {
@@ -326,14 +342,69 @@ async fn run_log_sync(
     ));
 
     let result = protocol.run(&mut outbound, &mut inbound).await;
-    // The streams hold the tally and the frames. Release them before the tally is read.
+    // The streams hold the sender. Release them, then the worker ends once it has stored the rest.
     drop((outbound, inbound));
+    drop(arrivals_tx);
+    let stored = worker
+        .await
+        .map_err(|error| SyncError::Store(error.to_string()))?;
+    // A store error ends the worker, and the stream then fails too. The store's error is the cause.
+    let tally = stored?;
     let (_dedup, metrics) = result.map_err(|error| SyncError::LogSync(error.to_string()))?;
     Ok(Outcome {
         method: SyncMethod::Log,
         received: tally,
         metrics,
     })
+}
+
+/// One thing the stream hands the ingest worker.
+enum Arrival {
+    /// An operation's header, to verify and store.
+    Header(Vec<u8>),
+    /// An operation with a body. It is refused, and counted.
+    Refused,
+}
+
+/// Stores a session's arrivals, in order, on a thread that may block. The worker takes what has
+/// arrived, up to [`INGEST_BATCH`] operations, and stores it in one write transaction, so the
+/// session pays one commit, and one fsync, per batch rather than per operation. It returns the
+/// tally once the stream has closed.
+///
+/// # Errors
+///
+/// Returns [`SyncError::Store`] for the first batch the store refuses. Nothing of that batch is
+/// stored, and the arrivals after it are not read.
+fn ingest_arrivals(
+    store: &SharedEventStore,
+    mut arrivals: mpsc::Receiver<Arrival>,
+) -> Result<Tally, SyncError> {
+    let mut tally = Tally::default();
+    while let Some(first) = arrivals.blocking_recv() {
+        let mut batch: Vec<Vec<u8>> = Vec::new();
+        let mut next = Some(first);
+        while let Some(arrival) = next {
+            match arrival {
+                Arrival::Header(bytes) => batch.push(bytes),
+                Arrival::Refused => tally.refused += 1,
+            }
+            next = if batch.len() < INGEST_BATCH {
+                arrivals.try_recv().ok()
+            } else {
+                None
+            };
+        }
+        if batch.is_empty() {
+            continue;
+        }
+        let outcomes = store
+            .ingest_batch(&batch, unix_ms())
+            .map_err(|error| SyncError::Store(error.to_string()))?;
+        for outcome in &outcomes {
+            tally.record(outcome);
+        }
+    }
+    Ok(tally)
 }
 
 /// One stream pair. A task of its own reads the receive half and forwards whole frames over a
