@@ -168,18 +168,7 @@ fn verify(image: Vec<u8>, acked: u64, models: &[Model]) -> Outcome {
         Ok(state) => state,
         Err(e) => return outcome(Verdict::OpenError, format!("dump: {e}")),
     };
-    let n = acked as usize;
-    let verdict = if state == models[n] {
-        Verdict::OkAcked
-    } else if n + 1 < models.len() && state == models[n + 1] {
-        Verdict::OkAckedPlusOne
-    } else if models[..n].contains(&state) {
-        Verdict::LostCommitted
-    } else if models.iter().skip(n + 2).any(|m| *m == state) {
-        Verdict::Future
-    } else {
-        Verdict::Partial
-    };
+    let verdict = classify(&state, models, acked);
     if verdict.is_failure() {
         return outcome(verdict, String::new());
     }
@@ -194,7 +183,24 @@ fn verify(image: Vec<u8>, acked: u64, models: &[Model]) -> Outcome {
     outcome(verdict, String::new())
 }
 
-fn panic_text(payload: &(dyn Any + Send)) -> String {
+/// Which valid prefix a reopened state is. `models[n]` is the state after `n` acknowledged steps,
+/// and `models[n + 1]` is the state when the step in flight at the cut became durable too.
+pub fn classify<M: PartialEq>(state: &M, models: &[M], acked: u64) -> Verdict {
+    let n = acked as usize;
+    if *state == models[n] {
+        Verdict::OkAcked
+    } else if n + 1 < models.len() && *state == models[n + 1] {
+        Verdict::OkAckedPlusOne
+    } else if models[..n].contains(state) {
+        Verdict::LostCommitted
+    } else if models.iter().skip(n + 2).any(|m| m == state) {
+        Verdict::Future
+    } else {
+        Verdict::Partial
+    }
+}
+
+pub fn panic_text(payload: &(dyn Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_owned())

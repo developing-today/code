@@ -1368,11 +1368,11 @@
     "crash-gate": {
       "attributes": [{ "group": "test" }],
       "body": [
-        ["cargo test --release --test crash -- --skip write_corpus --include-ignored"],
+        ["cargo test --release --features web --test crash -- --skip write_corpus --include-ignored"],
         ["@echo \"✓ Crash gate passed\""]
       ],
       "dependencies": [],
-      "doc": "Crash-safety gate for redb: every storage call under every survival policy, and the lying-sync control, in release",
+      "doc": "Crash-safety gate for redb and the identity store: every storage call under every survival policy, and the lying-sync control, in release",
       "name": "crash-gate",
       "parameters": [],
       "priors": 0,

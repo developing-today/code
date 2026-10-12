@@ -75,6 +75,8 @@ use crate::tags::TagStore;
 pub use assets::static_handler;
 pub use collab::CollabState;
 pub use identity::IdentityStore;
+#[doc(hidden)]
+pub use identity::crash_gate;
 pub use routes::create_router;
 pub use security::WebSecurity;
 pub use templates::{AssetUrls, render_page};
