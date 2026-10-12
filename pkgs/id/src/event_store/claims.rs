@@ -18,6 +18,7 @@ use super::{
 };
 use crate::chain::Event;
 use crate::tag_claims::{Applied, Claim, decode_op, is_tag_kind, live_claims};
+use crate::tag_index::TagIndex;
 
 /// Writes the body of a tag event, so the fold can read it. The body is the one the header commits
 /// to, and the caller has checked that.
@@ -91,5 +92,14 @@ impl EventStore {
                 .or_insert_with(|| parents_of(&header));
         }
         Ok(live_claims(&applied, &parents))
+    }
+
+    /// The tag index over the live claims, built from [`EventStore::tag_claims`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`EventStore::tag_claims`].
+    pub fn tag_index(&self) -> Result<TagIndex, StoreError> {
+        Ok(TagIndex::new(&self.tag_claims()?))
     }
 }
