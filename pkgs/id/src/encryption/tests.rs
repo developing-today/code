@@ -343,3 +343,77 @@ fn test_three_members_create_send_update_and_remove_in_step() {
     let third = cast.send(3, "third");
     assert_eq!(cast.deliver(&third, &[1]), vec![vec![text("third")]]);
 }
+
+// --- a joiner (P4.2) ------------------------------------------------------------------------------
+
+#[test]
+fn test_joiner_reads_messages_sent_after_the_add() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4]);
+
+    let add = cast.add(1, 4);
+    cast.deliver(&add, &[2, 3, 4]);
+    assert!(cast.session(4).is_welcomed(), "the add welcomes the joiner");
+    assert_eq!(
+        cast.members_of(4),
+        cast.model,
+        "the joiner's roster matches the model"
+    );
+
+    let message = cast.send(2, "after the join");
+    assert_eq!(
+        cast.deliver(&message, &[1, 3, 4]),
+        vec![
+            vec![text("after the join")],
+            vec![text("after the join")],
+            vec![text("after the join")]
+        ]
+    );
+}
+
+#[test]
+fn test_five_members_converge_through_add_update_and_remove() {
+    let mut cast = Cast::new(&[1, 2, 3, 4, 5]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3, 4, 5]);
+
+    let add_four = cast.add(1, 4);
+    cast.deliver(&add_four, &[2, 3, 4, 5]);
+    let add_five = cast.add(2, 5);
+    cast.deliver(&add_five, &[1, 3, 4, 5]);
+
+    let update = cast.update(5);
+    cast.deliver(&update, &[1, 2, 3, 4]);
+    for who in [1, 2, 3, 4, 5] {
+        assert_eq!(
+            cast.members_of(who),
+            cast.model,
+            "member {who} roster after joins"
+        );
+        assert_eq!(cast.epoch(who), cast.epoch(1), "member {who} epoch");
+    }
+
+    let before = cast.send(4, "before the removal");
+    cast.deliver(&before, &[1, 2, 3, 5]);
+
+    let remove = cast.remove(1, 2);
+    let read = cast.deliver(&remove, &[2, 3, 4, 5]);
+    assert_eq!(read[0], vec![Received::Removed]);
+
+    let after = cast.send(5, "after the removal");
+    assert_eq!(
+        cast.deliver(&after, &[1, 3, 4]),
+        vec![
+            vec![text("after the removal")],
+            vec![text("after the removal")],
+            vec![text("after the removal")]
+        ]
+    );
+    assert_eq!(
+        cast.epoch(3),
+        cast.epoch(5),
+        "the remaining members share an epoch"
+    );
+    assert_eq!(cast.members_of(5), cast.model);
+}

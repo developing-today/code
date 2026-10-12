@@ -63,7 +63,7 @@ p2panda-sync = { path = "vendor/p2panda-sync" }
 p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", features = ["serde"] }
 # DataScheme group encryption (P4.1, src/encryption/). `data_scheme` is on because the adapter is the
 # scheme. `test_utils` and `message_scheme` stay off: the adapter brings its own orderer and membership.
-p2panda-encryption = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false, features = ["data_scheme"] }
+p2panda-encryption = { path = "vendor/p2panda-encryption", default-features = false, features = ["data_scheme"] }
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
 redb = "=4.3.0"

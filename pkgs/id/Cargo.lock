@@ -4527,7 +4527,6 @@ dependencies = [
 [[package]]
 name = "p2panda-encryption"
 version = "0.7.1"
-source = "git+https://github.com/p2panda/p2panda?rev=3e84cac48bba05c6857cce2ec433862b97f8d53c#3e84cac48bba05c6857cce2ec433862b97f8d53c"
 dependencies = [
  "chacha20poly1305",
  "curve25519-dalek 4.1.3",
