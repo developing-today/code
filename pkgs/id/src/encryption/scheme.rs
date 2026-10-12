@@ -44,7 +44,7 @@ use p2panda_encryption::traits::{
 use thiserror::Error;
 
 use super::history::{HistoryAnswer, HistoryMode, HistoryRequest};
-use super::ordering::{Envelope, Orderer};
+use super::ordering::{Envelope, MAX_PARENTS, Orderer};
 use super::roster::Roster;
 use crate::groups::{GroupView, Key, Policy};
 
@@ -142,6 +142,15 @@ pub enum SchemeError {
         name: String,
         /// The version the policy names.
         version: u32,
+    },
+    /// The message would name more parents than a message may carry, so it is refused before the
+    /// crate sees it. The session is not poisoned (P4.7).
+    #[error("the message would name {count} parents, more than the cap of {cap}, so it is refused")]
+    TooManyParents {
+        /// The parents the message would name: the heads and the author's own latest.
+        count: usize,
+        /// The most parents a message may name.
+        cap: usize,
     },
     /// A message's header or direct copy names a version other than the group's signed policy.
     #[error("the message names scheme v{found}, but the group's signed policy names v{expected}")]
@@ -309,6 +318,7 @@ impl Session {
     /// Rotates the epoch by giving every current member a new secret.
     pub fn update(&mut self, rng: &Rng) -> Result<Envelope, SchemeError> {
         self.ensure_welcomed()?;
+        self.ensure_parents_fit()?;
         self.step(|y| EncryptionGroup::update(y, rng))
     }
 
@@ -339,6 +349,7 @@ impl Session {
     /// Encrypts `plaintext` under the current epoch.
     pub fn send(&mut self, plaintext: &[u8], rng: &Rng) -> Result<Envelope, SchemeError> {
         self.ensure_welcomed()?;
+        self.ensure_parents_fit()?;
         self.step(|y| EncryptionGroup::send(y, plaintext, rng))
     }
 
@@ -489,6 +500,21 @@ impl Session {
             .collect())
     }
 
+    /// Refuses a publish that would name more than [`MAX_PARENTS`] parents (P4.7). It runs before the
+    /// crate call, since a call that fails inside the orderer consumes the state and poisons the
+    /// session. Nothing is dropped from the parents: the change is refused.
+    fn ensure_parents_fit(&self) -> Result<(), SchemeError> {
+        let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
+        let count = y.orderer.parent_count();
+        if count <= MAX_PARENTS {
+            return Ok(());
+        }
+        Err(SchemeError::TooManyParents {
+            count,
+            cap: MAX_PARENTS,
+        })
+    }
+
     const fn ensure_welcomed(&self) -> Result<(), SchemeError> {
         match &self.state {
             None => Err(SchemeError::Poisoned),
@@ -552,6 +578,7 @@ impl Session {
         op: impl FnOnce(Group) -> Step<T>,
     ) -> Result<T, SchemeError> {
         self.check_policy(view)?;
+        self.ensure_parents_fit()?;
         let y = self.state.take().ok_or(SchemeError::Poisoned)?;
         let (y, value) = op(y).map_err(crate_error)?;
         let roster = roster_of(&y)?;

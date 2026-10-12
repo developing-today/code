@@ -1691,6 +1691,104 @@ fn test_two_concurrent_adds_converge_for_a_third_member() {
     }
 }
 
+// --- heads (P4.7) ---------------------------------------------------------------------------------
+
+#[test]
+fn test_a_message_names_the_heads_and_not_every_authors_latest() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+
+    // Member 2's update covers the create. Member 3 has heard it, so the only head it can see is
+    // member 2's update: it names that, and not the create.
+    let first = cast.update(2);
+    cast.deliver(&first, &[1, 3]);
+    let second = cast.update(3);
+    assert_eq!(
+        second.parents(),
+        [first.id()],
+        "the head, and not the create that the first update covers"
+    );
+    assert!(!second.parents().contains(&create.id()));
+}
+
+#[test]
+fn test_an_author_names_its_own_latest_even_when_a_later_message_covers_it() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+
+    // Member 2's update covers member 1's own create. Member 1 still names the create.
+    let first = cast.update(2);
+    cast.deliver(&first, &[1, 3]);
+    let third = cast.update(1);
+    let parents: BTreeSet<Hash> = third.parents().iter().copied().collect();
+    assert_eq!(
+        parents,
+        [create.id(), first.id()]
+            .into_iter()
+            .collect::<BTreeSet<Hash>>()
+    );
+}
+
+/// A group of 33 members. Members 2 to 33 each update from the create, so no update names another.
+/// Member 1 has heard the first `heard` of them. Returns the group and the create.
+fn concurrent_updates(heard: usize) -> (Cast, Envelope) {
+    let seeds: Vec<u8> = (1..=33).collect();
+    let mut cast = Cast::new(&seeds);
+    let create = cast.create(1, &seeds);
+    let others: Vec<u8> = (2..=33).collect();
+    cast.deliver(&create, &others);
+    let updates: Vec<Envelope> = others.iter().map(|who| cast.update(*who)).collect();
+    for update in updates.iter().take(heard) {
+        cast.deliver(update, &[1]);
+    }
+    (cast, create)
+}
+
+#[test]
+fn test_a_message_may_name_32_parents() {
+    let (mut cast, create) = concurrent_updates(31);
+    // The 31 updates member 1 has heard are its heads, and its own create is named too.
+    let message = cast.update(1);
+    assert_eq!(message.parents().len(), 32, "the cap is 32, and it is met");
+    assert!(
+        message.parents().contains(&create.id()),
+        "the own latest is named"
+    );
+}
+
+#[test]
+fn test_a_message_naming_33_parents_is_refused_and_the_state_is_kept() {
+    let (mut cast, _) = concurrent_updates(32);
+    let epoch = cast.epoch(1);
+    let members = cast.members_of(1);
+    let rng = Rng::default();
+
+    let update = cast.session_mut(1).update(&rng);
+    assert!(
+        matches!(
+            update,
+            Err(SchemeError::TooManyParents { count: 33, cap: 32 })
+        ),
+        "{update:?}"
+    );
+    let send = cast.session_mut(1).send(b"refused", &rng);
+    assert!(
+        matches!(
+            send,
+            Err(SchemeError::TooManyParents { count: 33, cap: 32 })
+        ),
+        "{send:?}"
+    );
+    assert_eq!(
+        cast.epoch(1),
+        epoch,
+        "the refused change left the epoch as it was"
+    );
+    assert_eq!(cast.members_of(1), members, "and the roster");
+}
+
 /// A seeded shuffle, so a proptest case replays one delivery order.
 fn shuffled<T>(items: Vec<T>, seed: u64) -> Vec<T> {
     let mut keyed: Vec<(u64, T)> = items
