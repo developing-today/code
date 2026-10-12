@@ -51,12 +51,9 @@ enum Content {
 
 /// A direct message with the scheme version it was encoded under. The copy lets a recipient check
 /// the version before the crate reads the message. A joiner has no group state yet, so the welcome
-/// copy is the only check it has.
+/// copy is the only check it has. It is a pair, so the copy costs two bytes on the wire (P4.4).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Direct {
-    scheme: u32,
-    message: DirectMessage<VerifyingKey, Hash, Roster>,
-}
+struct Direct(u32, DirectMessage<VerifyingKey, Hash, Roster>);
 
 impl Envelope {
     fn new(
@@ -86,7 +83,7 @@ impl Envelope {
     /// message.
     pub fn direct_schemes(&self) -> Vec<u32> {
         match &self.content {
-            Content::Control { direct, .. } => direct.iter().map(|copy| copy.scheme).collect(),
+            Content::Control { direct, .. } => direct.iter().map(|copy| copy.0).collect(),
             Content::Application { .. } => Vec::new(),
         }
     }
@@ -98,7 +95,7 @@ impl Envelope {
         self.scheme = header;
         if let Content::Control { direct, .. } = &mut self.content {
             for entry in direct {
-                entry.scheme = copy;
+                entry.0 = copy;
             }
         }
         self
@@ -131,9 +128,7 @@ impl GroupMessage<VerifyingKey, Hash, Roster> for Envelope {
 
     fn direct_messages(&self) -> Vec<DirectMessage<VerifyingKey, Hash, Roster>> {
         match &self.content {
-            Content::Control { direct, .. } => {
-                direct.iter().map(|copy| copy.message.clone()).collect()
-            }
+            Content::Control { direct, .. } => direct.iter().map(|copy| copy.1.clone()).collect(),
             Content::Application { .. } => Vec::new(),
         }
     }
@@ -233,10 +228,7 @@ impl Ordering<VerifyingKey, Hash, Roster> for Orderer {
     ) -> Result<(Self::State, Self::Message), Self::Error> {
         let direct = direct_messages
             .iter()
-            .map(|message| Direct {
-                scheme: y.scheme,
-                message: message.clone(),
-            })
+            .map(|message| Direct(y.scheme, message.clone()))
             .collect();
         let content = Content::Control {
             control: control_message.clone(),
