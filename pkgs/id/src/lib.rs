@@ -187,6 +187,7 @@ pub mod repl;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 pub mod store;
+pub mod store_traits;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
