@@ -12,6 +12,7 @@ use p2panda_encryption::crypto::x25519::SecretKey as IdentitySecret;
 use p2panda_encryption::data_scheme::group_secret::GroupSecretId;
 use p2panda_encryption::key_bundle::Lifetime;
 use p2panda_encryption::key_manager::KeyManagerState;
+use p2panda_encryption::key_registry::KeyRegistryState;
 use p2panda_encryption::traits::GroupMessage;
 use proptest::prelude::*;
 
@@ -37,6 +38,9 @@ struct Cast {
     sessions: BTreeMap<Key, Session>,
     /// The member set the group model holds after the last operation.
     model: BTreeSet<Key>,
+    /// Each person's identity and keys, kept so a device can be rebuilt with the same keys.
+    keys: BTreeMap<Key, (VerifyingKey, KeyManagerState)>,
+    registry: KeyRegistryState<VerifyingKey>,
 }
 
 impl Cast {
@@ -53,17 +57,25 @@ impl Cast {
         }
         let registry = registry(&bundles).expect("registry");
         let sessions = keys
-            .into_iter()
+            .iter()
             .map(|(key, (verifying, state))| {
-                let session = Session::init(verifying, state, registry.clone());
-                (key, session)
+                let session = Session::init(*verifying, state.clone(), registry.clone());
+                (*key, session)
             })
             .collect();
         Self {
             rng,
             sessions,
             model: BTreeSet::new(),
+            keys,
+            registry,
         }
+    }
+
+    /// A fresh session for `who` with the keys it was created with. It holds no group secret.
+    fn reinstall(&self, who: u8) -> Session {
+        let (verifying, state) = self.keys.get(&id(who)).expect("keys");
+        Session::init(*verifying, state.clone(), self.registry.clone())
     }
 
     fn session(&self, who: u8) -> &Session {
@@ -316,6 +328,136 @@ fn test_remove_rejects_a_member_the_model_still_lists() {
 }
 
 // --- integration: three members -------------------------------------------------------------------
+
+// --- rotation (P4.8) ------------------------------------------------------------------------------
+
+#[test]
+fn test_the_epoch_rotates_on_create_update_and_remove_and_not_on_send() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let created = cast.epoch(1);
+
+    let message = cast.send(1, "no rotation");
+    cast.deliver(&message, &[2, 3]);
+    assert_eq!(cast.epoch(1), created, "a send keeps the epoch");
+
+    let update = cast.update(1);
+    cast.deliver(&update, &[2, 3]);
+    let updated = cast.epoch(1);
+    assert_ne!(updated, created, "an explicit update rotates");
+
+    let remove = cast.remove(1, 3);
+    cast.deliver(&remove, &[2, 3]);
+    assert_ne!(cast.epoch(1), updated, "a removal rotates");
+    assert_eq!(
+        cast.epoch(1),
+        cast.epoch(2),
+        "the members agree on the epoch"
+    );
+}
+
+#[test]
+fn test_an_idle_group_keeps_its_epoch_over_a_simulated_year() {
+    // The adapter takes no clock and runs no timer, so the only thing that moves an epoch is a call
+    // to create, update, add or remove. Each simulated hour below is a tick with no call at all.
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let epoch = cast.epoch(1);
+
+    for hour in 0..(24 * 365) {
+        for who in [1, 2, 3] {
+            assert_eq!(cast.epoch(who), epoch, "member {who} at hour {hour}");
+        }
+    }
+
+    let update = cast.update(1);
+    cast.deliver(&update, &[2, 3]);
+    assert_ne!(
+        cast.epoch(1),
+        epoch,
+        "the group still rotates when it is asked to"
+    );
+}
+
+#[test]
+fn test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+
+    // The attacker's copy of device 3 holds the state it had before the compromise was found.
+    let mut compromised = cast.sessions.remove(&id(3)).expect("session");
+    let without: BTreeSet<Key> = [id(1), id(2)].into();
+    let with = cast.model.clone();
+    let before = cast.epoch(1);
+
+    let recovery = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .recover(&without, &with, id(3), &cast.rng)
+        .expect("recover");
+    assert_eq!(recovery.epoch_before, before);
+    assert_ne!(
+        recovery.epoch_after, before,
+        "the procedure rotates the epoch"
+    );
+    assert_eq!(recovery.readd.len(), 2, "a welcome and an immediate update");
+
+    // The device comes back as a new session with its own keys and no group secret.
+    let fresh = cast.reinstall(3);
+    cast.sessions.insert(id(3), fresh);
+    cast.model = with;
+    cast.deliver(&create, &[3]);
+    cast.deliver(&recovery.removal, &[2, 3]);
+    cast.deliver(&recovery.readd[0], &[2, 3]);
+    cast.deliver(&recovery.readd[1], &[2, 3]);
+    assert!(
+        cast.session(3).is_welcomed(),
+        "the re-add welcomes the device"
+    );
+    assert_eq!(
+        cast.members_of(3),
+        cast.model,
+        "the device's roster matches"
+    );
+
+    let message = cast.send(1, "after the recovery");
+    assert_eq!(
+        cast.deliver(&message, &[2, 3]),
+        vec![
+            vec![text("after the recovery")],
+            vec![text("after the recovery")]
+        ]
+    );
+
+    assert_eq!(compromised.epoch(), recovery.epoch_before);
+    assert_eq!(
+        compromised.process(&message).expect("process"),
+        vec![Received::Withheld(message.id())],
+        "the compromised copy cannot read a message sent after the recovery"
+    );
+}
+
+#[test]
+fn test_recovery_rejects_a_removal_that_leaves_the_device_in_the_model() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+
+    let model = cast.model.clone();
+    let result =
+        cast.sessions
+            .get_mut(&id(1))
+            .expect("session")
+            .recover(&model, &model, id(3), &cast.rng);
+    assert!(
+        matches!(result, Err(SchemeError::StillInModel(_))),
+        "a device the model still lists is not removed"
+    );
+}
 
 #[test]
 fn test_three_members_create_send_update_and_remove_in_step() {

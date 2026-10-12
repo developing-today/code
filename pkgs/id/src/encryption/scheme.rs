@@ -55,6 +55,25 @@ pub enum Received {
     Withheld(Hash),
 }
 
+/// What the recovery procedure (N8) did. The CLI prints [`RECOVERY_STEPS`] next to it.
+#[derive(Clone, Debug)]
+pub struct Recovery {
+    /// The removal. It rotates the epoch, so the device no longer holds the new secrets.
+    pub removal: Envelope,
+    /// The re-add: the welcome and the immediate update, in delivery order (P4.3).
+    pub readd: Vec<Envelope>,
+    /// The epoch before the procedure.
+    pub epoch_before: Option<GroupSecretId>,
+    /// The epoch after the procedure. It differs from `epoch_before`.
+    pub epoch_after: Option<GroupSecretId>,
+}
+
+/// The steps of the recovery procedure, in the order [`Session::recover`] runs them.
+pub const RECOVERY_STEPS: [&str; 2] = [
+    "remove the device: the group rotates its secret, and the device cannot read what follows",
+    "add the device back by a join: it reads messages from the new epoch, and nothing before it",
+];
+
 /// What the adapter can fail with.
 #[derive(Debug, Error)]
 pub enum SchemeError {
@@ -201,6 +220,30 @@ impl Session {
     pub fn update(&mut self, rng: &Rng) -> Result<Envelope, SchemeError> {
         self.ensure_welcomed()?;
         self.step(|y| EncryptionGroup::update(y, rng))
+    }
+
+    /// Recovers `device` from a suspected compromise (N8): removes it, then adds it back by a join.
+    ///
+    /// `without` is the model after the removal and `with` the model after the re-add, so `with`
+    /// is `without` plus `device`. The removal rotates the epoch, so the device loses the secret it
+    /// held. The re-add welcomes it into the new epoch without any earlier secret (P4.3). This
+    /// session must be a manager's: the caller is the device that performs the procedure.
+    pub fn recover(
+        &mut self,
+        without: &BTreeSet<Key>,
+        with: &BTreeSet<Key>,
+        device: Key,
+        rng: &Rng,
+    ) -> Result<Recovery, SchemeError> {
+        let epoch_before = self.epoch();
+        let removal = self.remove(without, device, rng)?;
+        let readd = self.add_from_join(with, device, rng)?;
+        Ok(Recovery {
+            removal,
+            readd,
+            epoch_before,
+            epoch_after: self.epoch(),
+        })
     }
 
     /// Encrypts `plaintext` under the current epoch.
