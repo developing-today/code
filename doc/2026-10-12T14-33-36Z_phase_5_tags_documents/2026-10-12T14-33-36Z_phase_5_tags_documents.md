@@ -7,15 +7,15 @@
 
 ## Steps
 
-| Step                         | Track   | Status | Commits | Tests | Notes                  |
-| ---------------------------- | ------- | ------ | ------- | ----- | ---------------------- |
-| P5.1 Observed-remove tags    | tags    | todo   |         |       | S8 model               |
-| P5.2 Tag index on tuple keys | tags    | todo   |         |       |                        |
-| P5.3 Compaction              | compact | todo   |         |       |                        |
-| P5.4 Documents               | docs    | todo   |         |       |                        |
-| P5.5 Search                  | search  | todo   |         |       |                        |
-| P5.6 Content on removal      | docs    | todo   |         |       | decision 4             |
-| P5.7 Aliases as tags         | alias   | todo   |         |       | owner answers recorded |
+| Step                         | Track   | Status | Commits                | Tests                                        | Notes           |
+| ---------------------------- | ------- | ------ | ---------------------- | -------------------------------------------- | --------------- |
+| P5.1 Observed-remove tags    | tags    | todo   |                        |                                              | S8 model        |
+| P5.2 Tag index on tuple keys | tags    | todo   |                        |                                              |                 |
+| P5.3 Compaction              | compact | todo   |                        |                                              |                 |
+| P5.4 Documents               | docs    | todo   |                        |                                              |                 |
+| P5.5 Search                  | search  | todo   |                        |                                              |                 |
+| P5.6 Content on removal      | docs    | todo   |                        |                                              | decision 4      |
+| P5.7 Aliases as tags         | alias   | done   | `e92c72de`, `c2af7b90` | `tests/aliases.rs` (7), `src/aliases.rs` (3) | #185, #160 open |
 
 ## Decisions
 
@@ -164,3 +164,47 @@ Both properties failed at `37a8344b`, and the cause was in the oracle side, not 
 - The regression file keeps `cc 0759f56f…`. It replays under both properties. `test_the_regression_histories_reach_the_oracle_through_every_path` runs the two histories from the task in every test run. `test_each_event_names_every_event_its_author_had_seen` checks each event's causal past against its author's record.
 - `PROPTEST_RNG_SEED` selects the runner's RNG, not the input. The `(seed, steps, writers)` triples in the task are the inputs to `history()`, and the named tests use them directly.
 - Suites after the fix: `cargo test --lib tag` 115 passed, `--test tag_claims` 12 passed (the 10 existing plus 2), `--test tag_index` 4 passed, `cargo test --lib` 1104 passed, 3 ignored. The 256-case runs of both properties pass, using a scratch copy with the case count set to 256, since the explicit `cases` in the config overrides `PROPTEST_CASES`.
+
+## 2026-10-12T20-18-39Z Progress: aliases as tags (P5.7)
+
+Base: `f42c549c` (phase-5). Track: `p5-alias`. Commits, in order:
+
+- `e92c72de` `test(rust): aliases as tag claims, contested and prefix-shown [P5.7]`
+- `c2af7b90` `feat(rust): alias display over tag claims and the server primary alias [P5.7]`
+- this record: `docs(id): phase 5 aliases [phase 5]`
+
+### Steps
+
+| Step                 | Status | Commits                | Tests                                                               |
+| -------------------- | ------ | ---------------------- | ------------------------------------------------------------------- |
+| P5.7 Aliases as tags | done   | `e92c72de`, `c2af7b90` | `tests/aliases.rs` (7 integration), `src/aliases.rs` unit tests (3) |
+
+### Red, then green
+
+- Red: `tests/aliases.rs` was committed with `src/aliases.rs` stubbed to the final API (no aliases, no rows). All 7 tests failed on their assertions (for example `left: 0`, `right: 1`).
+- Green: `tests/aliases.rs` 7 of 7 passed. `cargo test --lib`: 1111 passed, 0 failed, 3 ignored (1108 before, plus the 3 unit tests).
+
+### Decisions
+
+- **An alias is a `tag.set` named `alias`, whose value is its text.** It is attributed to the signing key. Its subject is the object's ID.
+- **A group's subject is its create event ID.** That is the group ID the server config computes, so a group's stored primary alias is read by that ID (`ServerConfig::primary_alias`).
+- **Display order, per object:** a pet name first, then the stored server primary, then one alias claim shown alone, then, for two or more claims, contested. Nothing is picked from the claims. The full set is always in the row.
+- **The pet name is an input to the view.** It is a map from subject to name, held by the caller. It is not an event and is not stored here.
+- **Nothing is unique.** Two objects may claim one alias, and both are returned.
+- **Prefix:** the shortest prefix of the hex ID that no other row in the view starts with, at least 7 digits, as git shows short IDs. The full ID is shown when no prefix is unique. The 7-digit minimum is my choice, not from the decisions. Owner to confirm.
+- **Server alias fallback** is read as the stored primary, which sits below the pet name. When there is no primary, the claims are shown contested. The design's separate idea, that the server shows its own alias as a fallback, is "meaning to confirm" and is not built.
+
+### Not built (open)
+
+- **#185, who may clear an alias claim.** Untouched. An alias is cleared by the existing observed-remove rule.
+- **#160, the user subject.** No identity event exists, so a user's subject is not defined. A user's primary alias is keyed by account key in the config and is not looked up. Only groups get a primary.
+- **Creation date.** The design shows each alias's date. The signed header has no time field (p2panda-core 0.7.1), so the date is not shown. Adding one changes the signed format, so it needs an owner decision.
+- **Where pet names are stored.** Not decided. This module takes them as input.
+
+### Changes to the plan
+
+- None to the phase. No store format change and no dependency change.
+
+### Next
+
+- #185 and #160 wait on the owner. The creation-date question is new and needs a decision.
