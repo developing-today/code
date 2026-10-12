@@ -25,6 +25,7 @@ use super::*;
 use crate::groups::{
     Body, Create, Event, GroupView, Key, MemberOp, Policy, Role, Scheme, Template, fold,
 };
+use crate::rejection::Reason;
 
 fn person(seed: u8) -> (Key, VerifyingKey) {
     let verifying = SigningKey::from_bytes(&[seed; 32]).verifying_key();
@@ -1125,7 +1126,7 @@ fn test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read() {
         .sessions
         .get_mut(&id(1))
         .expect("session")
-        .recover(&without, &with, id(3), &cast.rng)
+        .recover(&without, &with, id(3), id(3), &cast.rng)
         .expect("recover");
     assert_eq!(recovery.epoch_before, before);
     assert_ne!(
@@ -1175,14 +1176,158 @@ fn test_recovery_rejects_a_removal_that_leaves_the_device_in_the_model() {
     cast.deliver(&create, &[2, 3]);
 
     let view = cast.view();
-    let result =
-        cast.sessions
-            .get_mut(&id(1))
-            .expect("session")
-            .recover(&view, &view, id(3), &cast.rng);
+    let result = cast.sessions.get_mut(&id(1)).expect("session").recover(
+        &view,
+        &view,
+        id(3),
+        id(3),
+        &cast.rng,
+    );
     assert!(
         matches!(result, Err(SchemeError::StillInModel(_))),
         "a device the model still lists is not removed"
+    );
+}
+
+/// The reason an adapter result gives, or `None` when it succeeded or gave none.
+fn reason_of<T>(result: Result<T, SchemeError>) -> Option<Reason> {
+    result.err().and_then(|err| err.reason())
+}
+
+#[test]
+fn test_an_operation_before_the_welcome_gives_the_waiting_reason() {
+    let mut cast = Cast::new(&[1, 2]);
+    let rng = Rng::default();
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .send(b"early", &rng);
+    assert_eq!(reason_of(result), Some(Reason::Waiting));
+}
+
+#[test]
+fn test_an_add_outside_the_model_gives_the_voided_reason() {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2]);
+    cast.deliver(&create, &[2]);
+    let view = cast.view();
+    let result = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &cast.rng);
+    assert_eq!(reason_of(result), Some(Reason::Voided));
+}
+
+#[test]
+fn test_a_roster_the_crate_does_not_match_gives_the_frozen_reason_then_the_poisoned_session() {
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    cast.create(1, &[1, 2]);
+    // The view lists 3 and 4, but the crate adds only 3, so the rosters disagree and the session
+    // is poisoned.
+    let view = view_of(&[id(1), id(2), id(3), id(4)].into_iter().collect());
+    let rng = Rng::default();
+    let mismatch = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .add(&view, id(3), &rng);
+    assert_eq!(reason_of(mismatch), Some(Reason::Frozen));
+    let poisoned = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .send(b"after", &rng);
+    assert_eq!(reason_of(poisoned), Some(Reason::Frozen));
+}
+
+#[test]
+fn test_a_history_request_with_no_answer_gives_the_waiting_reason() {
+    let refused = SchemeError::from(HistoryError::Refused);
+    assert_eq!(refused.reason(), Some(Reason::Waiting));
+}
+
+#[test]
+fn test_fork_recovery_removes_the_forked_key_and_reenrols_a_new_one() {
+    // Device 3's key forked, so its copy is no longer trusted. The managers remove that key and
+    // re-enrol the device under device 4's new key (decision 17).
+    let mut cast = Cast::new(&[1, 2, 3, 4]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let earlier = cast.send(1, "before the fork");
+    cast.deliver(&earlier, &[2, 3]);
+
+    let mut forked = cast.sessions.remove(&id(3)).expect("session");
+    let before = cast.epoch(1);
+    let without = cast.log(
+        1,
+        Body::Member(MemberOp::Remove {
+            member: id(3),
+            successor: None,
+        }),
+    );
+    let with = cast.log(
+        1,
+        Body::Member(MemberOp::Add {
+            member: id(4),
+            role: Role::Admin,
+        }),
+    );
+
+    let recovery = cast
+        .sessions
+        .get_mut(&id(1))
+        .expect("session")
+        .recover(&without, &with, id(3), id(4), &cast.rng)
+        .expect("recover");
+    assert_eq!(recovery.epoch_before, before);
+    assert_ne!(
+        recovery.epoch_after, before,
+        "the procedure rotates the epoch"
+    );
+    assert!(
+        !cast.members_of(1).contains(&id(3)),
+        "the forked key is out of the group"
+    );
+    assert!(
+        cast.members_of(1).contains(&id(4)),
+        "the new key is in the group"
+    );
+
+    // The new key takes the removal and the welcome, in delivery order.
+    cast.deliver(&create, &[4]);
+    cast.deliver(&recovery.removal, &[2, 4]);
+    cast.deliver(&recovery.readd[0], &[2, 4]);
+    cast.deliver(&recovery.readd[1], &[2, 4]);
+    assert!(cast.session(4).is_welcomed(), "the new key is welcomed");
+    assert_eq!(
+        cast.members_of(4),
+        cast.model,
+        "the new key's roster matches"
+    );
+
+    // It reads from the re-enrol point on. It cannot read what was sent before its join.
+    let after = cast.send(1, "after the re-enrol");
+    assert_eq!(
+        cast.deliver(&after, &[2, 4]),
+        vec![
+            vec![text("after the re-enrol")],
+            vec![text("after the re-enrol")]
+        ]
+    );
+    assert_eq!(
+        cast.session_mut(4).process(&earlier).expect("process"),
+        vec![Received::Withheld(earlier.id())],
+        "the new key does not read a message from before its join"
+    );
+
+    // The forked copy holds the state from before the removal, so it cannot read after it.
+    assert_eq!(forked.epoch(), recovery.epoch_before);
+    assert_eq!(
+        forked.process(&after).expect("process"),
+        vec![Received::Withheld(after.id())],
+        "the forked copy cannot read a message sent after the removal"
     );
 }
 

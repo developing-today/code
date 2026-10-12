@@ -31,6 +31,7 @@ use crate::membership::{
     AuthId, CausalEvent, Membership, MembershipError, Outcome as Decided, Refusal as AuthRefusal,
     Role as Placement,
 };
+use crate::rejection::Reason;
 
 use super::delegation::{Grant, Removal};
 use super::friendship::{Pair, friendship_id};
@@ -98,6 +99,39 @@ pub enum Refusal {
     NotCrossable,
 }
 
+impl Refusal {
+    /// The reason this refusal gives. A friendship's requester is waiting for the other side, and a
+    /// group that does not exist yet is waiting for its create. A dissolved group is frozen by the
+    /// removal that dissolved it. Every other refusal is a rule of the group, so it voids the event.
+    pub const fn reason(&self) -> Reason {
+        match self {
+            Self::NoGroup | Self::NotActive => Reason::Waiting,
+            Self::Dissolved => Reason::Frozen,
+            Self::WrongGroup
+            | Self::NotAdmin
+            | Self::NotManager
+            | Self::NotAMember(_)
+            | Self::AlreadyMember(_)
+            | Self::WrongFriendshipId
+            | Self::BadFriendship
+            | Self::BadTemplate(_)
+            | Self::BadPolicy
+            | Self::BadMembers
+            | Self::OverCap { .. }
+            | Self::JoinNotSupported
+            | Self::NotInvited
+            | Self::AlreadyPresent
+            | Self::Membership(_)
+            | Self::Attenuated
+            | Self::NoChain
+            | Self::BadScope
+            | Self::BadGrantee
+            | Self::UnknownGrant
+            | Self::NotCrossable => Reason::Voided,
+        }
+    }
+}
+
 /// What became of one event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -105,6 +139,16 @@ pub enum Outcome {
     Applied,
     /// It had no effect.
     Refused(Refusal),
+}
+
+impl Outcome {
+    /// The reason the event had no effect, or `None` when it took effect.
+    pub const fn reason(&self) -> Option<Reason> {
+        match self {
+            Self::Applied => None,
+            Self::Refused(refusal) => Some(refusal.reason()),
+        }
+    }
 }
 
 /// The events cannot be used as a set.
