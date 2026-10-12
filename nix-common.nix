@@ -27,6 +27,21 @@ let
   # the same way nixos/environment/default.nix pulls it in system-wide.
   mcpx = pkgs.callPackage ./pkgs/mcpx/package.nix { };
 
+  # Android SDK for building Android projects (notably the OpenChamber mobile
+  # app) from either shell. Mirrors nixos/environment/default.nix exactly, so
+  # the dev shells and the system profile expose the same SDK. Emulator,
+  # sources and system images are deliberately excluded (large, and the build
+  # host does not need them). Requires allowUnfree + android_sdk.accept_license
+  # on the pkgs passed in -- the flake devShell and shell.nix both set them.
+  androidSdk = pkgs.androidenv.composeAndroidPackages {
+    cmdLineToolsVersion = "latest";
+    buildToolsVersions = [ "35.0.0" ];
+    platformVersions = [ "35" ];
+    includeEmulator = false;
+    includeSources = false;
+    includeSystemImages = false;
+  };
+
   # Formatter binaries (keep in sync with treefmt.toml).
   # Used by the formatter wrapper (nix fmt), nix flake checks, and devShell PATH.
   fmtBins = [
@@ -144,6 +159,14 @@ in
     ))
     pkgs.gobject-introspection
     pkgs.glib
+
+    # Android: the composed SDK (cmdline-tools, platform-tools, build-tools
+    # 35.0.0, platforms;android-35) and JDK 21 for Gradle 8.x. android-tools adds
+    # adb/fastboot directly to PATH; ANDROID_HOME/ANDROID_SDK_ROOT/JAVA_HOME are
+    # exported in shellHook below. Keep in sync with nixos/environment/default.nix.
+    pkgs.jdk21
+    pkgs.android-tools
+    androidSdk.androidsdk
   ];
 
   # Shared shell hook for both nix-shell and nix develop
@@ -184,6 +207,15 @@ in
       export PATH="$_devshell_only''${_hm_paths:+:$_hm_paths}''${_system_only:+:$_system_only}"
       unset _pre_profile_path _hm_paths _devshell_only _system_only _remaining _e _is_sys _p
     fi
+    # Android SDK + JDK 21. Exported here (not as a mkShell attr) so both
+    # shell.nix and the flake devShell pick them up through the shared hook.
+    # The OpenChamber mobile scripts read ANDROID_HOME and fall back to a
+    # Homebrew JAVA_HOME when it is unset, so JAVA_HOME must be exported.
+    export ANDROID_HOME="${androidSdk.androidsdk}/libexec/android-sdk"
+    export ANDROID_SDK_ROOT="$ANDROID_HOME"
+    export JAVA_HOME="${pkgs.jdk21.home}"
+    export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+
     # mcpx daemon autostart
     if command -v mcpx &>/dev/null; then
       mcpx daemon start 2>/dev/null || true

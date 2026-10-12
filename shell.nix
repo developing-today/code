@@ -34,6 +34,12 @@ let
 
   pkgs = import nixpkgs {
     overlays = [ (import rustOverlay) ];
+    # nix-common.nix includes the Android SDK (androidenv is unfree and gated
+    # on license acceptance); see nixos/nixpkgs/default.nix for the system copy.
+    config = {
+      allowUnfree = true;
+      android_sdk.accept_license = true;
+    };
   };
 
   # Import shared configuration (defines rustToolchain, fmtBins, nativeBuildInputs, etc.)

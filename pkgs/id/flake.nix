@@ -90,7 +90,11 @@
           name = "id-integration-test-runner";
           src = ./.;
           inherit buildInputs;
-          nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+          nativeBuildInputs = nativeBuildInputs ++ [
+            bun2nixPkg.hook
+            pkgs.rustPlatform.cargoSetupHook
+          ];
+          inherit cargoDeps;
           inherit (opensslEnv) OPENSSL_DIR;
           inherit (opensslEnv) OPENSSL_LIB_DIR;
           inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -112,16 +116,6 @@
             # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
             export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-            # Configure cargo to use vendored dependencies (nix sandbox has no network)
-            cat >> .cargo/config.toml << EOF
-
-            [source.crates-io]
-            replace-with = "vendored-sources"
-
-            [source.vendored-sources]
-            directory = "${cargoDeps}"
-            EOF
-
             # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
             (cd web && bun run build)
 
@@ -130,7 +124,7 @@
             cargo test --all-features --test cli_integration --no-run 2>&1
           '';
           installPhase = ''
-            mkdir -p $out/bin
+            mkdir -p $out/bin $out/share/id-test
             # The test binary is in target/debug/deps/cli_integration-<hash>
             TEST_BIN=$(find target/debug/deps -name 'cli_integration-*' -executable -type f | head -1)
             if [ -z "$TEST_BIN" ]; then
@@ -138,6 +132,7 @@
               exit 1
             fi
             cp "$TEST_BIN" $out/bin/cli_integration_test
+            cp -r examples $out/share/id-test/examples
           '';
         };
 
@@ -168,7 +163,11 @@
             name = "id-${name}";
             src = ./.;
             inherit buildInputs;
-            nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+            nativeBuildInputs = nativeBuildInputs ++ [
+              bun2nixPkg.hook
+              pkgs.rustPlatform.cargoSetupHook
+            ];
+            inherit cargoDeps;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -189,16 +188,6 @@
 
               # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
               export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-              # Configure cargo to use vendored dependencies (nix sandbox has no network)
-              cat >> .cargo/config.toml << EOF
-
-              [source.crates-io]
-              replace-with = "vendored-sources"
-
-              [source.vendored-sources]
-              directory = "${cargoDeps}"
-              EOF
 
               # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
               (cd web && bun run build)
@@ -334,12 +323,14 @@
             inherit buildInputs;
             nativeBuildInputs = nativeBuildInputs ++ [
               bun2nixPkg.hook
+              pkgs.rustPlatform.cargoSetupHook
               # TODO: Switch back to `bunx playwright test` once Bun supports Playwright's
               # ESM config loader (.esm.preflight virtual imports). Bun's runtime doesn't handle
               # the Node.js-specific ESM hooks that Playwright uses for TypeScript config loading.
               # Tracking: https://github.com/oven-sh/bun/pull/28610
               pkgs.nodejs
             ];
+            inherit cargoDeps;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -360,16 +351,6 @@
 
               # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
               export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-              # Configure cargo to use vendored dependencies (nix sandbox has no network)
-              cat >> .cargo/config.toml << EOF
-
-              [source.crates-io]
-              replace-with = "vendored-sources"
-
-              [source.vendored-sources]
-              directory = "${cargoDeps}"
-              EOF
 
               # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
               (cd web && bun run build)

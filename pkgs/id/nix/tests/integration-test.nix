@@ -29,18 +29,21 @@
   testScript = ''
     ID_BIN = "${idPackage}/bin/id"
     TEST_BIN = "${integrationTestRunner}/bin/cli_integration_test"
+    EXAMPLES_DIR = "${integrationTestRunner}/share/id-test/examples"
 
     start_all()
 
     # Verify both binaries are accessible
     server.succeed(f"test -x {ID_BIN}")
     server.succeed(f"test -x {TEST_BIN}")
+    server.succeed(f"test -d {EXAMPLES_DIR}")
 
     # Run the full integration test suite (including serve_tests).
     # ID_BINARY overrides the compile-time CARGO_BIN_EXE_id path so the
     # test binary finds the nix-built id binary.
     server.succeed(
         f"ID_BINARY={ID_BIN} "
+        f"ID_TEST_EXAMPLES_DIR={EXAMPLES_DIR} "
         f"{TEST_BIN} "
         f"--test-threads=2 2>&1"
     )

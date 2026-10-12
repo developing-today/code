@@ -1247,6 +1247,44 @@ mod tests {
     }
 
     #[test]
+    fn test_a_fork_proof_backlink_releases_a_successor_as_parked() {
+        let (_dir, mut store) = open();
+        let fork_signer = key(27);
+        let successor_signer = key(28);
+        let missing = Hash::from_bytes([99; 32]);
+
+        // Hold the sequence-zero event until its rival turns it into a proof header.
+        let first = event(&fork_signer, 0, None, vec![missing], "waiting");
+        assert_eq!(ingest(&mut store, &first), Ingest::Waiting { id: first.id });
+
+        // This event waits for that header as its backlink while it is still missing.
+        let successor = event(
+            &successor_signer,
+            1,
+            Some(first.id),
+            Vec::new(),
+            "successor",
+        );
+        assert_eq!(
+            ingest(&mut store, &successor),
+            Ingest::Waiting { id: successor.id }
+        );
+
+        // The fork makes `first` present, but it can never become applied. The released
+        // successor must remain held without waiting on the now-present proof header.
+        let rival = event(&fork_signer, 0, None, Vec::new(), "rival");
+        assert_eq!(
+            ingest(&mut store, &rival),
+            Ingest::Fork {
+                author: author(&fork_signer),
+                seq: 0,
+            }
+        );
+        assert!(store.is_waiting(&successor.id));
+        store.check_invariants().unwrap();
+    }
+
+    #[test]
     fn test_a_conflict_below_the_fork_point_moves_the_fork_point_down() {
         let (_dir, mut store) = open();
         let signer = key(6);
