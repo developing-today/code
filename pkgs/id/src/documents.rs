@@ -15,6 +15,12 @@
 //!
 //! Inline content (design §9.3, `json` and `bytes`) is not built. A body does not travel with
 //! sync, and a header holds byte strings of at most 512 bytes, so content is always a blob here.
+//!
+//! Removal (P5.6, design decision 4) is a `document.remove` event that names the document's event
+//! ID in its header. Content is kept: the removal is an event like any other, and it changes
+//! neither the document's bytes nor its tags. Only the document's author's removal marks the
+//! document, in [`DocumentRecord::removal`]. A removal from anyone else is stored and has no
+//! effect.
 
 use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
@@ -24,6 +30,9 @@ use crate::waiting::AuthorKey;
 
 /// The kind of a `document.put` event, as the header's `kind` names it.
 pub const DOCUMENT_KIND: &str = "document.put";
+
+/// The kind of a `document.remove` event, which names the document it removes in its header.
+pub const REMOVAL_KIND: &str = "document.remove";
 
 /// The most bytes a media type may have. A media type is at least one byte.
 pub const MAX_MEDIA_TYPE_BYTES: usize = 128;
@@ -63,6 +72,12 @@ pub enum DocumentError {
 #[must_use]
 pub fn is_document_kind(kind: &str) -> bool {
     kind == DOCUMENT_KIND
+}
+
+/// Whether `kind` is the removal kind, so its event carries the ID of the document it removes.
+#[must_use]
+pub fn is_removal_kind(kind: &str) -> bool {
+    kind == REMOVAL_KIND
 }
 
 impl DocumentRef {
@@ -135,15 +150,19 @@ fn len_of(bytes: &[u8]) -> u64 {
     u64::try_from(bytes.len()).unwrap_or(u64::MAX)
 }
 
-/// A document in the store: its `document.put` event, the key that signed it, and its content.
+/// A document in the store: its `document.put` event, the key that signed it, its content, and
+/// the removal the author made of it, if any.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocumentRecord {
     /// The document's ID: the `document.put` event's ID. Tags name it as their subject.
     pub id: Hash,
     /// The key that signed the document event.
     pub author: AuthorKey,
-    /// The content the event names.
+    /// The content the event names. Removal keeps it (decision 4).
     pub document: DocumentRef,
+    /// The ID of the `document.remove` event the author signed for this document, if the author
+    /// has removed it. When the author has signed more than one, this is the lowest ID.
+    pub removal: Option<Hash>,
 }
 
 #[cfg(test)]

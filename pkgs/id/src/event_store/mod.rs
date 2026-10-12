@@ -1120,6 +1120,7 @@ mod tests {
             after: Vec::new(),
             tag: None,
             document: None,
+            removes: None,
         }
     }
 

@@ -147,6 +147,7 @@ fn signed(
         after: pick_after(rng, known),
         tag: None,
         document: None,
+        removes: None,
     };
     sign(key, seq, backlink, None, ext).unwrap()
 }
@@ -333,6 +334,7 @@ fn present_event(
         after: pick_present(rng, good),
         tag: None,
         document: None,
+        removes: None,
     };
     sign(key, seq, backlink, None, ext).unwrap()
 }
@@ -753,7 +755,7 @@ proptest! {
                 ChainExt {
                     kind: "m".to_owned(),
                     group: None,
-                    after: Vec::new(), tag: None, document: None,
+                    after: Vec::new(), tag: None, document: None, removes: None,
                 },
             )
             .encode();
@@ -796,6 +798,7 @@ fn print_ingest_seeds() {
                 after,
                 tag: None,
                 document: None,
+                removes: None,
             };
             sign(key, seq, backlink, None, ext).unwrap()
         };

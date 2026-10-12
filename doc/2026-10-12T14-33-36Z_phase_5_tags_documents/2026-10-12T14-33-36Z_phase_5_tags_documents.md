@@ -14,7 +14,7 @@
 | P5.3 Compaction              | compact | done   | `79efff10`             | `tests/tag_claims.rs` (16-case property)     | in memory; closes #184            |
 | P5.4 Documents               | docs    | done   | `b36e26dc`, `9bcd86fa` | `tests/documents.rs` (5)                     | live editing not built            |
 | P5.5 Search                  | search  | done   | `7563e10d`, `edcdaf7a` | `tests/search.rs` (9)                        | over `tag_claims()` and the index |
-| P5.6 Content on removal      | docs    | todo   |                        |                                              | decision 4                        |
+| P5.6 Content on removal      | docs    | done   | `781ac3b8`, `b3b63f1f` | `tests/content_removal.rs` (7) | decision 4: content kept; #195 |
 | P5.7 Aliases as tags         | alias   | done   | `e92c72de`, `c2af7b90` | `tests/aliases.rs` (7), `src/aliases.rs` (3) | #185, #160 open                   |
 | Step                         | Track   | Status | Commits                | Tests                                        | Notes                             |
 | ---------------------------- | ------- | ------ | ---------------------- | -------------------------------------------- | ---------------                   |

@@ -538,6 +538,7 @@ mod tests {
                 after: Vec::new(),
                 tag: None,
                 document: None,
+                removes: None,
             };
             events.push(chain::sign(&key, seq, backlink, Some(body), ext).unwrap());
         }
@@ -658,6 +659,7 @@ mod tests {
                 after: Vec::new(),
                 tag: None,
                 document: None,
+                removes: None,
             },
         )
         .unwrap();
@@ -699,6 +701,7 @@ mod tests {
                 after: Vec::new(),
                 tag: None,
                 document: None,
+                removes: None,
             },
         )
         .unwrap();

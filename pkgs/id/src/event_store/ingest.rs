@@ -97,7 +97,7 @@ use super::{
     store_event, store_fork,
 };
 use crate::chain::{self, Event};
-use crate::documents::is_document_kind;
+use crate::documents::{is_document_kind, is_removal_kind};
 use crate::membership::AuthId;
 use crate::membership::body::decode_body;
 use crate::tag_claims::is_tag_kind;
@@ -209,6 +209,8 @@ impl EventStore {
     ///   action, and the fold reads it from the stored header (see `claims`).
     /// - A document event (kind `document.put`) takes no body either. Its content is a blob that
     ///   the header names by hash, so a payload beside it is refused (P5.4).
+    /// - A removal event (kind `document.remove`) takes no body. It names its document in its
+    ///   header, so a payload beside it is refused (P5.6).
     ///
     /// # Errors
     ///
@@ -224,10 +226,10 @@ impl EventStore {
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
         let kind = &event.header.extensions.kind;
-        let action = if is_tag_kind(kind) || is_document_kind(kind) {
+        let action = if is_tag_kind(kind) || is_document_kind(kind) || is_removal_kind(kind) {
             if body.is_some() {
                 return Ok(Ingest::Refused(Refusal::Malformed(
-                    "a tag or document event carries its content in its header, not in a body"
+                    "a tag, document or removal event carries its content in its header, not in a body"
                         .to_owned(),
                 )));
             }
@@ -1067,6 +1069,7 @@ mod tests {
             after,
             tag: None,
             document: None,
+            removes: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -1586,6 +1589,7 @@ mod tests {
                 after: Vec::new(),
                 tag: None,
                 document: None,
+                removes: None,
             };
             sign(&signer, seq, backlink, None, ext).unwrap()
         };
