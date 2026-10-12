@@ -4227,6 +4227,7 @@ source = "git+https://github.com/p2panda/p2panda?rev=3e84cac48bba05c6857cce2ec43
 dependencies = [
  "p2panda-core",
  "petgraph",
+ "serde",
  "thiserror 2.0.21",
  "tracing",
 ]
