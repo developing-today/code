@@ -195,6 +195,7 @@ pub mod server_config;
 pub mod store;
 pub mod store_traits;
 pub mod sync_method;
+pub mod tag_claims;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
