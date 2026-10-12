@@ -1,6 +1,8 @@
 {
   lib,
-  buildGoModule,
+  # Built with the highest released Go toolchain (1.27.x); go.mod's `go`
+  # directive tracks it, so buildGo127Module rather than plain buildGoModule.
+  buildGo127Module,
   # Runtimes mcpx can use for `mcpx run` / `mcpx exec`. It picks the first one
   # present on PATH in this order, so the wrapper below pins a known-good set
   # rather than depending on whatever the calling shell happens to have.
@@ -16,7 +18,7 @@
   makeBinaryWrapper,
   installShellFiles,
 }:
-buildGoModule {
+buildGo127Module {
   pname = "mcpx";
   version = "0.1.0";
 

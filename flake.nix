@@ -308,7 +308,7 @@ rec {
       url = "github:aaddrick/claude-desktop-debian";
     };
     # --- BEGIN id sub-flake inputs (synced from pkgs/id/flake.nix) ---
-    id-nixpkgs.follows = "nixpkgs-master";
+    id-nixpkgs.follows = "nixpkgs-unstable";
     id-systems.follows = "systems";
     id-rust-overlay = {
       url = "github:oxalica/rust-overlay";
