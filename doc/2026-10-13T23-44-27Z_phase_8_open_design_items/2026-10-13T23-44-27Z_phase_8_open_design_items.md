@@ -15,13 +15,23 @@
 
 ## Steps
 
-| Step | Track       | Status   | Commits | Tests | Notes                                        |
-| ---- | ----------- | -------- | ------- | ----- | -------------------------------------------- |
-| P8.1 | -           | deferred |         |       | causal validity only (task 09)               |
-| P8.2 | pruning     | todo     |         |       | retention behind causal-cut snapshot         |
-| P8.3 | multidevice | todo     |         |       | device chains & account delegations          |
-| P8.4 | views       | todo     |         |       | directory explorer lines                     |
-| P8.5 | worlds      | todo     |         |       | cross-world delegation reconciliation        |
-| P8.6 | warnings    | todo     |         |       | size tier and churn warnings in group status |
-| P8.7 | -           | skipped  |         |       | owner confirmed: skip BeeKEM                 |
-| P8.8 | -           | deferred |         |       | do nothing now                               |
+| Step | Track       | Status   | Commits            | Tests                                 | Notes                                               |
+| ---- | ----------- | -------- | ------------------ | ------------------------------------- | --------------------------------------------------- |
+| P8.1 | -           | deferred |                    |                                       | causal validity only (task 09)                      |
+| P8.2 | pruning     | todo     |                    |                                       | retention behind causal-cut snapshot                |
+| P8.3 | multidevice | todo     |                    |                                       | device chains & account delegations                 |
+| P8.4 | views       | done     | 1d8321f1, babadcb4 | views_explorer: 6; directory_view: 21 | directory explorer waiting, voided, frozen sections |
+| P8.5 | worlds      | todo     |                    |                                       | cross-world delegation reconciliation               |
+| P8.6 | warnings    | todo     |                    |                                       | size tier and churn warnings in group status        |
+| P8.7 | -           | skipped  |                    |                                       | owner confirmed: skip BeeKEM                        |
+| P8.8 | -           | deferred |                    |                                       | do nothing now                                      |
+
+## 2026-10-13T23:55:00Z Note: P8.4 views for waiting, voided, and frozen events
+
+- Extended `DirectoryView` and `render_text` in `src/directory_view.rs` to support inspecting event state:
+  - Waiting events: section `waiting:` listing event ID, missing dependency hash, and reason formatted as "waiting: missing <hash>".
+  - Voided events: section `voided:` listing event ID, voiding authority/removal hash, and reason formatted as "voided: concurrent with <hash>".
+  - Frozen chains: section `frozen:` listing author/event ID, fork sequence/proof hash, and reason formatted as "frozen: fork at seq <n>".
+- Shared types `WaitingView`, `VoidedView`, and `FrozenView` keep HTTP JSON serialization and SSH text rendering in step.
+- Red first: integration tests in `tests/views_explorer.rs` failed on missing fields and types (commit 1d8321f1). Green after implementation (commit babadcb4).
+- Tests: `views_explorer`: 6 passed; `directory_view`: 21 passed.
