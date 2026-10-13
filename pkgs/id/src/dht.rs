@@ -20,12 +20,19 @@ pub enum DhtPolicy {
     /// No DHT: no publish and no lookup. The default.
     #[default]
     Off,
+    /// The DHT is enabled as a server-wide setting.
+    Server,
     /// The DHT is on for the endpoint because these worlds opted in. Worlds
     /// that did not opt in share the endpoint, so they use the DHT too.
     Endpoint(BTreeSet<String>),
 }
 
 impl DhtPolicy {
+    /// Server-wide DHT policy.
+    pub const fn from_server(enabled: bool) -> Self {
+        if enabled { Self::Server } else { Self::Off }
+    }
+
     /// The policy for the worlds that opted in. With no world opted in, the
     /// DHT is off.
     pub fn from_worlds<I, S>(opted_in: I) -> Self
@@ -43,13 +50,13 @@ impl DhtPolicy {
 
     /// Whether the endpoint uses the DHT.
     pub const fn is_on(&self) -> bool {
-        matches!(self, Self::Endpoint(_))
+        matches!(self, Self::Server | Self::Endpoint(_))
     }
 
-    /// The worlds that opted in, in name order. Empty when the DHT is off.
+    /// The worlds that opted in, in name order. Empty when the DHT is off or server-wide.
     pub fn opted_in(&self) -> impl Iterator<Item = &str> {
         let worlds = match self {
-            Self::Off => None,
+            Self::Off | Self::Server => None,
             Self::Endpoint(worlds) => Some(worlds),
         };
         worlds.into_iter().flatten().map(String::as_str)
@@ -88,6 +95,17 @@ mod tests {
     fn test_default_policy_is_off() {
         assert_eq!(DhtPolicy::default(), DhtPolicy::Off);
         assert!(!DhtPolicy::default().is_on());
+    }
+
+    #[test]
+    fn test_server_wide_dht_policy() {
+        assert_eq!(DhtPolicy::from_server(false), DhtPolicy::Off);
+        assert!(!DhtPolicy::from_server(false).is_on());
+
+        let policy = DhtPolicy::from_server(true);
+        assert_eq!(policy, DhtPolicy::Server);
+        assert!(policy.is_on());
+        assert_eq!(policy.opted_in().count(), 0);
     }
 
     #[test]
