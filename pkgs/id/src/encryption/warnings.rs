@@ -17,6 +17,21 @@ use p2panda_core::Hash;
 /// The member counts that warn (N11).
 pub const SIZE_THRESHOLDS: [usize; 3] = [96, 128, 1_000];
 
+/// The size tier for a given member count (P8.6).
+///
+/// tier=0 for <96 members, tier=96 for 96..127, tier=128 for 128..999, tier=1000 for >=1000 members.
+pub const fn size_tier(members: usize) -> usize {
+    if members >= 1_000 {
+        1_000
+    } else if members >= 128 {
+        128
+    } else if members >= 96 {
+        96
+    } else {
+        0
+    }
+}
+
 /// The re-add window, in seconds: one day.
 pub const CHURN_WINDOW_SECS: u64 = 24 * 60 * 60;
 
@@ -172,6 +187,19 @@ mod tests {
 
     fn size(threshold: usize, members: usize) -> Warning {
         Warning::Size { threshold, members }
+    }
+
+    #[test]
+    fn test_size_tier() {
+        assert_eq!(size_tier(0), 0);
+        assert_eq!(size_tier(1), 0);
+        assert_eq!(size_tier(95), 0);
+        assert_eq!(size_tier(96), 96);
+        assert_eq!(size_tier(127), 96);
+        assert_eq!(size_tier(128), 128);
+        assert_eq!(size_tier(999), 128);
+        assert_eq!(size_tier(1_000), 1_000);
+        assert_eq!(size_tier(2_000), 1_000);
     }
 
     #[test]
