@@ -15,13 +15,23 @@
 
 ## Steps
 
-| Step | Track       | Status   | Commits | Tests | Notes                                        |
-| ---- | ----------- | -------- | ------- | ----- | -------------------------------------------- |
-| P8.1 | -           | deferred |         |       | causal validity only (task 09)               |
-| P8.2 | pruning     | todo     |         |       | retention behind causal-cut snapshot         |
-| P8.3 | multidevice | todo     |         |       | device chains & account delegations          |
-| P8.4 | views       | todo     |         |       | directory explorer lines                     |
-| P8.5 | worlds      | todo     |         |       | cross-world delegation reconciliation        |
-| P8.6 | warnings    | todo     |         |       | size tier and churn warnings in group status |
-| P8.7 | -           | skipped  |         |       | owner confirmed: skip BeeKEM                 |
-| P8.8 | -           | deferred |         |       | do nothing now                               |
+| Step | Track       | Status   | Commits            | Tests                                     | Notes                                        |
+| ---- | ----------- | -------- | ------------------ | ----------------------------------------- | -------------------------------------------- |
+| P8.1 | -           | deferred |                    |                                           | causal validity only (task 09)               |
+| P8.2 | pruning     | todo     |                    |                                           | retention behind causal-cut snapshot         |
+| P8.3 | multidevice | todo     |                    |                                           | device chains & account delegations          |
+| P8.4 | views       | todo     |                    |                                           | directory explorer lines                     |
+| P8.5 | worlds      | todo     |                    |                                           | cross-world delegation reconciliation        |
+| P8.6 | warnings    | done     | 1289cef6, 472d45d3 | cli_warnings 3; cli_groups 8; warnings 12 | size tier and churn warnings in group status |
+| P8.7 | -           | skipped  |                    |                                           | owner confirmed: skip BeeKEM                 |
+| P8.8 | -           | deferred |                    |                                           | do nothing now                               |
+
+## 2026-10-13T23:55:00Z Note: P8.6 warnings UI in group status and list
+
+- Group size tier and churn warnings are wired into `id group policy` and `id group list`.
+- Size tiers: tier=0 for <96 members, tier=96 for 96..127, tier=128 for 128..999, tier=1000 for >=1000 members.
+- Crossing warnings from `Evaluator` are formatted via `Warning::message()`.
+- Text mode includes `tier=<usize>` and optional `warning=<message>`.
+- JSON mode (`--json`) includes `"tier": usize` and optional `"warning": string`.
+- Red first: integration tests in `tests/cli_warnings.rs` failed initially (commit 1289cef6) and passed after wiring (commit 472d45d3).
+- Targeted test suite passes: `cli_warnings` (3 tests), `cli_groups` (8 tests), `warnings` (12 tests).
