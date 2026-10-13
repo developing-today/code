@@ -1,3 +1,4 @@
+//! Tests for directory explorer sections (waiting, voided, and frozen events).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use id::directory_view::{DirectoryView, FrozenView, VoidedView, WaitingView, render_text};
