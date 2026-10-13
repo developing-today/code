@@ -10,8 +10,13 @@
 
 ## Steps
 
-| Step | Track | Status                | Commits            | Tests                                  | Notes                                  |
-| ---- | ----- | --------------------- | ------------------ | -------------------------------------- | -------------------------------------- |
+| Step | Track | Status                | Commits                      | Tests                                                   | Notes                                       |
+| ---- | ----- | --------------------- | ---------------------------- | ------------------------------------------------------- | ------------------------------------------- |
+| P7.1 | relay | done                  | 80feb48b, ff844396           | relay_ops: 21 (14 red before the mode)                  | tunnel and vps modes in relay.kit.toml      |
+| P7.2 | -     | blocked on owner's go |                              |                                                         | design only                                 |
+| P7.3 | dht   | done (server-wide)    | 1c91f76a, 5249c60a, 61f7e00c | dht_opt_in 3; dht unit 5; dht_testnet 2 (`dht` feature) | server-wide --dht on serve; publish enabled |
+| P7.4 | -     | none now              |                              |                                                         | decision 13                                 |
+| P7.5 | -     | owner-blocked         |                              |                                                         | accounts and networks                       |
 
 ## 2026-10-12T21:40:00Z Note: P7.1 relay kit modes
 
@@ -22,8 +27,10 @@
 - The S11 findings applied: `KillSignal=SIGINT` in both modes, `ConditionPathExists` for the config, metrics on loopback, no `secret_key`. Not applied: a systemd test (S11 did not run under systemd).
 - Design connectivity §4.2 step 4 now names the vps drop-in, so a VPS install gets the port capability.
 - Owner-blocked (P7.5): running either mode on a real host, with a Cloudflare Tunnel or a VPS, and checking `/ping`, `/generate_204`, and the systemd KillSignal behaviour. Not deployed here.
-| P7.1 | relay | done                  | 80feb48b, ff844396 | relay_ops: 21 (14 red before the mode) | tunnel and vps modes in relay.kit.toml |
-| P7.2 | -     | blocked on owner's go |                    |                                        | design only                            |
-| P7.3 | dht   | done (endpoint-wide)  | 1c91f76a, 5249c60a, 61f7e00c | dht_opt_in 3 (red: E0432 at 1c91f76a); dht unit 4; dht_testnet 2 (`dht` feature) | see note 2026-10-12T21-36-10Z |
-| P7.4 | -     | none now              |                    |                                        | decision 13                            |
-| P7.5 | -     | owner-blocked         |                    |                                        | accounts and networks                  |
+
+## 2026-10-12T22:05:00Z Note: P7.3 DHT server-wide config and publishing decisions
+
+- The owner decided: "dht can be server wide config. sure, publish. yes skip beekem for now."
+- Scoping: `DhtPolicy::Server` (`from_server`) adds server-wide DHT enablement. `--dht` flag wired into `id serve` (mirrors `--no-mdns`).
+- Publishing: `iroh-mainline-address-lookup` builder keeps publishing enabled (default).
+- BeeKEM: P8.7 remains skipped as decided.

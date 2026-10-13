@@ -275,6 +275,8 @@ pub struct ServeOptions {
     pub replace_defaults: bool,
     /// Disable mDNS.
     pub no_mdns: bool,
+    /// Enable mainline DHT address lookup and publishing.
+    pub dht: bool,
     /// Iroh QUIC port (0 = random).
     pub iroh_port: u16,
     /// Address the web interface binds to.
@@ -672,6 +674,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         no_default_topic,
         replace_defaults,
         no_mdns,
+        dht,
         iroh_port,
         bind,
         web_token,
@@ -723,6 +726,17 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     .secret_key(key.clone());
     if !no_mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder());
+    }
+    let dht_policy = crate::dht::DhtPolicy::from_server(dht);
+    #[cfg(feature = "dht")]
+    if dht_policy.is_on() {
+        builder = crate::dht::with_lookup(&dht_policy, builder, crate::dht::mainline());
+    }
+    #[cfg(not(feature = "dht"))]
+    if dht_policy.is_on() {
+        warn!(
+            "--dht was requested, but `id` was compiled without the optional `dht` feature; DHT lookup is not active"
+        );
     }
     if iroh_port != 0 {
         builder = builder.bind_addr(std::net::SocketAddrV4::new(

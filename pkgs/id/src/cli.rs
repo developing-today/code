@@ -316,6 +316,13 @@ pub enum Command {
         /// environments where multicast traffic is blocked or unwanted.
         #[arg(long)]
         no_mdns: bool,
+        /// Enable mainline DHT address lookup and publishing.
+        ///
+        /// By default, the server does not use the mainline BitTorrent DHT
+        /// for address discovery. This flag enables DHT lookup and publishing
+        /// for the server's endpoint.
+        #[arg(long)]
+        dht: bool,
         /// Port for the Iroh QUIC endpoint (peer-to-peer protocol).
         ///
         /// By default, the OS assigns a random available port (0).
@@ -2971,6 +2978,17 @@ mod tests {
         match cli.command {
             Some(Command::Serve { no_mdns, .. }) => {
                 assert!(no_mdns);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_dht() {
+        let cli = Cli::parse_from(["id", "serve", "--dht"]);
+        match cli.command {
+            Some(Command::Serve { dht, .. }) => {
+                assert!(dht);
             }
             _ => panic!("Expected Serve command"),
         }
