@@ -69,10 +69,7 @@ pub(super) async fn feed_handler(State(state): State<AppState>) -> axum::respons
     let mut recent_tags = Vec::new();
     let mut tag_occurrences = std::collections::BTreeMap::<String, (usize, u64)>::new();
     for (name, tags) in by_subject {
-        if tags
-            .iter()
-            .any(|tag| tag.key.as_bytes() == b"deleted")
-        {
+        if tags.iter().any(|tag| tag.key.as_bytes() == b"deleted") {
             continue;
         }
         let Some(hash) = super::routes::get_hash_for_name(&state.store, &name).await else {
@@ -476,7 +473,12 @@ mod tests {
         assert!(!feed.recent.iter().any(|doc| doc.name == "private.md"));
         assert!(!feed.recent.iter().any(|doc| doc.name == "untagged.md"));
         assert!(!feed.recent.iter().any(|doc| doc.name == "deleted.md"));
-        assert!(!feed.recent_tags.iter().any(|tag| tag.subject.as_deref() == Some("deleted.md")));
+        assert!(
+            !feed
+                .recent_tags
+                .iter()
+                .any(|tag| tag.subject.as_deref() == Some("deleted.md"))
+        );
 
         let files = router
             .oneshot(
