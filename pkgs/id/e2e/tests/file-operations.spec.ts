@@ -18,7 +18,7 @@ import { test, expect } from "@playwright/test";
 
 // Helper: create a file and navigate to its editor
 async function createFile(page: import("@playwright/test").Page, name: string) {
-  await page.goto("/");
+  await page.goto("/files");
   await page.fill("#new-file-name", name);
   await page.click("#new-file-form button[type='submit']");
   await page.waitForURL(/\/(file|edit)\//, { timeout: 15_000 });
@@ -127,7 +127,7 @@ test.describe("Tag Operations", () => {
     expect(setResp.ok()).toBeTruthy();
 
     // Navigate away to files page
-    await page.click("a[data-nav][href='/']");
+    await page.click("a[data-nav][href='/files']");
     await expect(page.locator("#new-file-form")).toBeVisible({ timeout: 10_000 });
 
     // Verify tag persistence via REST API after navigation
@@ -189,7 +189,7 @@ test.describe("File Rename", () => {
     await page.waitForURL(new RegExp(newName.replace(/\./g, "\\.")), { timeout: 10_000 });
 
     // Go to file list
-    await page.goto("/");
+    await page.goto("/files");
     await expect(page.locator(`text=${newName}`)).toBeVisible({ timeout: 5_000 });
   });
 });
@@ -233,7 +233,7 @@ test.describe("File Copy", () => {
     await page.waitForURL(new RegExp(copyName.replace(/\./g, "\\.")), { timeout: 10_000 });
 
     // Check file list
-    await page.goto("/");
+    await page.goto("/files");
     await expect(page.locator(`text=${fileName}`)).toBeVisible({ timeout: 5_000 });
     await expect(page.locator(`text=${copyName}`)).toBeVisible({ timeout: 5_000 });
   });
@@ -256,7 +256,7 @@ test.describe("File Delete and Restore", () => {
     expect(response.ok()).toBeTruthy();
 
     // Go to file list - file should not be visible (without show-deleted)
-    await page.goto("/");
+    await page.goto("/files");
     await expect(page.locator(`.file-item a:has-text("${fileName}")`)).not.toBeVisible({ timeout: 5_000 });
   });
 
@@ -271,7 +271,7 @@ test.describe("File Delete and Restore", () => {
     });
 
     // Go to file list
-    await page.goto("/");
+    await page.goto("/files");
 
     // Check show-deleted checkbox
     await page.check("#show-deleted");
@@ -291,7 +291,7 @@ test.describe("File Delete and Restore", () => {
     });
 
     // Verify gone
-    await page.goto("/");
+    await page.goto("/files");
     await expect(page.locator(`.file-item a:has-text("${fileName}")`)).not.toBeVisible({ timeout: 5_000 });
 
     // Restore
@@ -302,7 +302,7 @@ test.describe("File Delete and Restore", () => {
     expect(restoreResp.ok()).toBeTruthy();
 
     // Reload and verify it's back
-    await page.goto("/");
+    await page.goto("/files");
     await expect(page.locator(`text=${fileName}`)).toBeVisible({ timeout: 5_000 });
   });
 });
@@ -319,9 +319,9 @@ test.describe("File Search", () => {
     const file2 = `${uniquePrefix}-beta.txt`;
 
     await createFile(page, file1);
-    await page.goto("/");
+    await page.goto("/files");
     await createFile(page, file2);
-    await page.goto("/");
+    await page.goto("/files");
 
     // Both files should be visible
     await expect(page.locator(`text=${file1}`)).toBeVisible({ timeout: 5_000 });
@@ -343,9 +343,9 @@ test.describe("File Search", () => {
     const file2 = `${uniquePrefix}-two.txt`;
 
     await createFile(page, file1);
-    await page.goto("/");
+    await page.goto("/files");
     await createFile(page, file2);
-    await page.goto("/");
+    await page.goto("/files");
 
     // Search for "one"
     await page.fill("#file-search", "one");
@@ -362,7 +362,7 @@ test.describe("File Search", () => {
   });
 
   test("search with no results shows empty state", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/files");
 
     // Search for something that doesn't exist
     await page.fill("#file-search", `nonexistent-${Date.now()}-xyz`);
@@ -405,7 +405,7 @@ test.describe("Theme Switching", () => {
     await expect(page.locator("html")).toHaveAttribute("data-theme", "arch");
 
     // Navigate to files
-    await page.click("a[data-nav][href='/']");
+    await page.click("a[data-nav][href='/files']");
     await expect(page.locator("#new-file-form")).toBeVisible({ timeout: 10_000 });
 
     // Theme should still be arch

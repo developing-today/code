@@ -4,7 +4,7 @@ import { test, expect } from "@playwright/test";
  * Basic E2E tests for the id web UI.
  *
  * These tests verify core functionality across Chromium and Firefox:
- * - Home page loads correctly
+ * - Home and file browser load correctly
  * - File creation flow
  * - Editor page elements (rename, copy, tags)
  * - Navigation
@@ -22,29 +22,38 @@ import { test, expect } from "@playwright/test";
 test.describe("Home Page", () => {
   test("loads with correct title", async ({ page }) => {
     await page.goto("/");
-    await expect(page).toHaveTitle("Files - id");
+    await expect(page).toHaveTitle("Home - id");
+  });
+
+  test("shows world explorer, global chat, and separate document/tag feeds", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "World explorer" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Global chat" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Recent documents" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Recent tags" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Popular tags" })).toBeVisible();
   });
 
   test("shows file list card", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/files");
     // The file list card contains the new file form
     await expect(page.locator("#new-file-form")).toBeVisible();
   });
 
   test("has new file form", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/files");
     await expect(page.locator("#new-file-name")).toBeVisible();
     await expect(page.locator("#new-file-form button[type='submit']")).toBeVisible();
   });
 
   test("has search input", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/files");
     await expect(page.locator("#file-search")).toBeVisible();
     await expect(page.locator("#file-search")).toHaveAttribute("placeholder", /search/i);
   });
 
   test("has show deleted checkbox", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/files");
     await expect(page.locator("#show-deleted")).toBeVisible();
   });
 
@@ -54,7 +63,7 @@ test.describe("Home Page", () => {
   });
 
   test("shows empty state when no files", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/files");
     // Fresh ephemeral server has no files
     await expect(page.locator(".text-muted", { hasText: /no files|empty/i })).toBeVisible();
   });
@@ -68,7 +77,7 @@ test.describe("File Creation", () => {
   test("can create a new file and navigate to editor", async ({ page }) => {
     const fileName = `test-${Date.now()}.md`;
 
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
 
@@ -85,7 +94,7 @@ test.describe("File Creation", () => {
   test("editor has rename button", async ({ page }) => {
     const fileName = `rename-test-${Date.now()}.txt`;
 
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
@@ -97,7 +106,7 @@ test.describe("File Creation", () => {
   test("editor has copy button", async ({ page }) => {
     const fileName = `copy-test-${Date.now()}.txt`;
 
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
@@ -109,7 +118,7 @@ test.describe("File Creation", () => {
   test("editor has tag panel", async ({ page }) => {
     const fileName = `tag-test-${Date.now()}.txt`;
 
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
@@ -122,7 +131,7 @@ test.describe("File Creation", () => {
   test("editor has ProseMirror editor", async ({ page }) => {
     const fileName = `editor-test-${Date.now()}.txt`;
 
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
@@ -142,13 +151,13 @@ test.describe("Navigation", () => {
     const fileName = `nav-test-${Date.now()}.txt`;
 
     // Create a file
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
 
     // Click "files" link in editor header
-    await page.click("a[href='/']", { timeout: 5_000 });
+    await page.click("a[href='/files']", { timeout: 5_000 });
 
     // Should be back at file list
     await expect(page).toHaveTitle("Files - id");
@@ -158,13 +167,13 @@ test.describe("Navigation", () => {
     const fileName = `list-test-${Date.now()}.txt`;
 
     // Create a file
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
 
     // Go back to file list
-    await page.goto("/");
+    await page.goto("/files");
 
     // File should appear in the list
     await expect(page.locator(`text=${fileName}`)).toBeVisible();
@@ -185,7 +194,7 @@ test.describe("Theme", () => {
   test("theme switcher buttons exist on editor page", async ({ page }) => {
     const fileName = `theme-test-${Date.now()}.txt`;
 
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
@@ -205,7 +214,7 @@ test.describe("Editor Features", () => {
   test("save button exists", async ({ page }) => {
     const fileName = `save-test-${Date.now()}.txt`;
 
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
@@ -219,7 +228,7 @@ test.describe("Editor Features", () => {
   test("download dropdown exists", async ({ page }) => {
     const fileName = `dl-test-${Date.now()}.txt`;
 
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
@@ -230,7 +239,7 @@ test.describe("Editor Features", () => {
   test("editor container has data attributes", async ({ page }) => {
     const fileName = `data-test-${Date.now()}.txt`;
 
-    await page.goto("/");
+    await page.goto("/files");
     await page.fill("#new-file-name", fileName);
     await page.click("#new-file-form button[type='submit']");
     await page.waitForURL(/\/(file|edit)\//);
