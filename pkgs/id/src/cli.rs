@@ -318,7 +318,7 @@ pub enum Command {
         no_mdns: bool,
         /// Enable mainline DHT address lookup and publishing.
         ///
-        /// By default, the server does not use the mainline BitTorrent DHT
+        /// By default, the server does not use the mainline `BitTorrent` DHT
         /// for address discovery. This flag enables DHT lookup and publishing
         /// for the server's endpoint.
         #[arg(long)]

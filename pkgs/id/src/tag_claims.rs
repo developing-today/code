@@ -156,6 +156,7 @@ fn check_text(field: &str, text: &str, min: usize, max: usize) -> Result<(), Tag
 }
 
 /// The events that `start` reaches by following parent links: its own causal past, transitively.
+///
 /// `parents` maps each event to the events it names, its `after` hashes and its backlink. The
 /// starting events are included.
 #[must_use]

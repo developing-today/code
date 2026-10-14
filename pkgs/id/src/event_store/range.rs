@@ -97,7 +97,7 @@ impl Params {
     /// # Errors
     ///
     /// Refuses `k` below 2, and `t` below 1.
-    pub fn new(k: usize, t: usize) -> Result<Self, ParamsError> {
+    pub const fn new(k: usize, t: usize) -> Result<Self, ParamsError> {
         if k < 2 {
             return Err(ParamsError::FanOut(k));
         }
@@ -133,7 +133,7 @@ impl Params {
     /// # Errors
     ///
     /// Refuses a budget below one entry.
-    pub fn with_session_budget(self, bytes: usize) -> Result<Self, ParamsError> {
+    pub const fn with_session_budget(self, bytes: usize) -> Result<Self, ParamsError> {
         if bytes < MIN_FRAME_BUDGET {
             return Err(ParamsError::SessionBudget(bytes));
         }
@@ -250,12 +250,12 @@ impl Party {
     }
 
     /// The number of keys.
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.keys.len()
     }
 
     /// Whether the set is empty.
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
 
@@ -388,13 +388,12 @@ impl Party {
 
 /// Appends an entry, merging it into the previous one when both are skips.
 fn push(out: &mut Vec<Entry>, upper: Option<Vec<u8>>, mode: Mode) {
-    if mode == Mode::Skip {
-        if let Some(last) = out.last_mut() {
-            if last.mode == Mode::Skip {
-                last.upper = upper;
-                return;
-            }
-        }
+    if mode == Mode::Skip
+        && let Some(last) = out.last_mut()
+        && last.mode == Mode::Skip
+    {
+        last.upper = upper;
+        return;
     }
     out.push(Entry { upper, mode });
 }

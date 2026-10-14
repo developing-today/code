@@ -1,0 +1,19 @@
+<<<<<<< SEARCH
+    /// Whether the event is kept: stored, or held. A refused event and a fork are not.
+    const fn keeps(&self) -> bool {
+        matches!(
+            self,
+            Self::Stored { .. }
+                | Self::Ready(
+                    Ingest::Accepted { .. }
+                        | Ingest::Voided { .. }
+                        | Ingest::Duplicate { .. }
+                        | Ingest::Waiting { .. },
+                )
+        )
+    }
+
+    /// The outcome of the event.
+=======
+    /// The outcome of the event.
+>>>>>>> REPLACE
