@@ -369,11 +369,11 @@ Wasmtime gives fuel, memory caps, and a second isolation layer for free.
 
 So the rule is **provenance decides the tier, not the language**:
 
-| Tier | What runs | Who may supply it | Bounds |
-| ---- | --------- | ----------------- | ------ |
-| N: native Roc | Roc compiled with the `id` world platform (Rust host), no effects beyond the program ABI | The operator only, built from source on the host | Authority: none by construction. CPU/memory: not bounded in-process, so run in a dedicated worker with rlimits and a watchdog (not yet built) |
-| W: Wasm in Wasmtime | The same program compiled to wasm32, import-free | Anyone: uploaded, or fetched from a peer by blob hash | Fuel per call, memory cap, size limits, poisoned on trap (implemented in `sandbox.rs`) |
-| B: Wasm in the browser | The same wasm module, for view/prediction only | The host serves the module the world pins | Browser sandbox; never authoritative, server state wins |
+| Tier                   | What runs                                                                                | Who may supply it                                     | Bounds                                                                                                                                        |
+| ---------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| N: native Roc          | Roc compiled with the `id` world platform (Rust host), no effects beyond the program ABI | The operator only, built from source on the host      | Authority: none by construction. CPU/memory: not bounded in-process, so run in a dedicated worker with rlimits and a watchdog (not yet built) |
+| W: Wasm in Wasmtime    | The same program compiled to wasm32, import-free                                         | Anyone: uploaded, or fetched from a peer by blob hash | Fuel per call, memory cap, size limits, poisoned on trap (implemented in `sandbox.rs`)                                                        |
+| B: Wasm in the browser | The same wasm module, for view/prediction only                                           | The host serves the module the world pins             | Browser sandbox; never authoritative, server state wins                                                                                       |
 
 All three tiers implement one `WorldProgram` seam (`update(participant, bytes)`
 and `view(viewer) -> bytes`), so a world does not know which tier runs it.
@@ -393,7 +393,7 @@ through a small `SessionIo` trait, so protocol behavior cannot diverge.
   UTF-8 JSON object, at most 16 KiB. The JSON is exactly the WebSocket
   protocol, so presentation adapters are transport-agnostic.
 - The first frame is `join {capability, after?}` or `invite {admin_token,
-  display_name}`; anything else is an error and the stream ends. A peer that
+display_name}`; anything else is an error and the stream ends. A peer that
   sends no first frame within 10 s is dropped.
 - Iroh authenticates the **node**, not the participant. The remote node ID is
   logged but never grants world authority; the capability does. This matches
@@ -407,8 +407,8 @@ Clients: `id world invite <NODE> --admin-token T --name N` and
 
 ### Not yet done (explicit)
 
-*(Superseded: the items below were completed in later sections. See
-“Current status: not yet offered” at the end of this document.)*
+_(Superseded: the items below were completed in later sections. See
+“Current status: not yet offered” at the end of this document.)_
 
 - `WorldProgram` wiring into the actor, then the Roc wasm demo. The checked-in
   Roc module still traps on its first `view`; that must be diagnosed first.
@@ -549,7 +549,7 @@ copy of the structured data.
 ### Sync completion: readiness is not arrival
 
 `replicate` used to return as soon as the docs engine declared the document
-*ready* (`PendingContentReady`). Readiness only means the initial sync round is
+_ready_ (`PendingContentReady`). Readiness only means the initial sync round is
 over — a peer can still be connecting, so a replica could read an empty
 document even though the host had entries (seen as a rare flake under full
 suite load). It now also waits for every announced entry's blob to be local,
@@ -585,9 +585,9 @@ participant can replicate with a read-only ticket, in memory or on disk, and
 that survives host restarts on the same namespace; two example apps (counter,
 tic-tac-toe) build with the shared platform and run end to end.
 
-*(Superseded — see "Current status" at the end of this document. The worlds
+_(Superseded — see "Current status" at the end of this document. The worlds
 hub, the capability runtime, the compile service and the native Roc tier
-below were all built after this list was written.)*
+below were all built after this list was written.)_
 
 ---
 
@@ -680,7 +680,7 @@ built in this order, each committed on its own: **hub**, **capabilities**,
 - Bounds: a ceiling on open worlds (`--world-max-open`) and on concurrent
   sessions (`--world-max-sessions`); a session holds a lease for its lifetime.
   Durable worlds with no sessions are evicted after an idle period and reopen
-  from their journal on next use, so the number of *existing* worlds is
+  from their journal on next use, so the number of _existing_ worlds is
   limited by disk, not memory. Ephemeral worlds are never evicted.
 - Each world keeps its own actor, journal, module directory, records document
   and (with the native tier) its own worker process: no state is shared across
@@ -694,7 +694,7 @@ the server is expressed as **data it returns** and **events it receives**:
 - `wants : model -> Str` (JSON, a pure projection like `records`) lists the
   subscriptions and requests the model currently has:
   `{"v":1,"subscribe":["time.tick:5000","players"],
-    "requests":[{"id":"r1","cap":"time.now"}]}`.
+"requests":[{"id":"r1","cap":"time.now"}]}`.
 - The host turns each new thing into an **event**, delivered through the
   existing `update(model, 0, json)` (participant 0 is the host; real
   participants start at 1). Every such event is **journaled** before it is
@@ -862,7 +862,7 @@ defaults). Notes worth keeping:
 - The compiler child runs with a cleared environment (its cache lives in
   the job directory, so concurrent jobs never collide), CPU/address-space/
   file-size rlimits, bounded captured output, and a wall-clock deadline
-  with kill. `RLIMIT_NPROC` is deliberately *not* set: it counts the user's
+  with kill. `RLIMIT_NPROC` is deliberately _not_ set: it counts the user's
   whole process table (threads included) and would starve the compiler's
   worker threads for reasons unrelated to the job.
 - The result goes through the same import-free validation as an upload
@@ -901,7 +901,7 @@ wants, snapshot, restore.
   of released with a mismatched refcount.
 - **Spawn hardening** (in the post-fork hook): `no_new_privs`, dumpable off,
   rlimits (address space, CPU, file size, processes, core), Landlock — the
-  ruleset denies *every* path except an EXECUTE+READ grant on the worker's
+  ruleset denies _every_ path except an EXECUTE+READ grant on the worker's
   own file (opened O_PATH by the parent before the fork; pre_exec hooks must
   not touch the filesystem) — and a seccomp allowlist that permits the
   worker's syscalls (including the one pending `execve`, which Landlock
