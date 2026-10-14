@@ -915,6 +915,8 @@ struct SaveRequest {
 struct SaveResponse {
     /// New blob hash after save.
     hash: String,
+    /// The signed `document.put` event ID for this saved revision.
+    document_id: String,
     /// File name.
     name: String,
     /// Archive tag name (if original was archived).
@@ -1013,8 +1015,8 @@ struct DownloadRequest {
 /// Save the current editor document to the blob store.
 ///
 /// Converts the `ProseMirror` JSON to the appropriate format based on filename,
-/// creates a new blob, archives the original under a timestamped name, and
-/// updates the tag to point to the new blob.
+/// creates a new blob and signed document revision, archives the original under
+/// a timestamped name, and updates the legacy filename tag to point to the new blob.
 ///
 /// Rate-limited: rejects saves within the cooldown period (default 5s) per file.
 async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest>) -> Response {
@@ -1050,7 +1052,7 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
     };
 
     // Add new blob to store
-    let add_result = state.store.blobs().add_bytes(bytes).await;
+    let add_result = state.store.blobs().add_bytes(bytes.clone()).await;
     let outcome = match add_result {
         Ok(outcome) => outcome,
         Err(err) => {
@@ -1060,6 +1062,27 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
     };
     let new_hash = outcome.hash;
     let new_hash_str = new_hash.to_string();
+
+    // A saved revision is durable only once its bytes are addressable and its signed event is
+    // applied. The mutex protects LocalEvents' synchronous redb writes and is released before any
+    // subsequent network-backed metadata operations.
+    let filename_tag = [("filename".to_owned(), Some(req.name.clone()))];
+    let publish_result = {
+        let mut events = state.local_events.lock().await;
+        events.publish(get_content_type(&req.name), &bytes, &filename_tag)
+    };
+    let published = match publish_result {
+        Ok(published) => published,
+        Err(err) => {
+            tracing::error!("[routes] Failed to publish saved revision: {:#}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to publish document revision",
+            )
+                .into_response();
+        }
+    };
+    let document_id = published.id.to_hex();
 
     // Archive the original blob under a timestamped tag
     let archive_name = archive_original_tag(&state.store, &req.name, &req.doc_id).await;
@@ -1132,6 +1155,7 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
 
     Json(SaveResponse {
         hash: new_hash_str,
+        document_id,
         name: req.name,
         archive_name,
     })
@@ -1895,13 +1919,12 @@ mod save_publication_tests {
 
     use super::*;
     use crate::{
-        event_store::EventStore,
+        local_events::Entry,
         tags::TagStore,
-        waiting::WaitingLimits,
         web::{AppState, SaveRateLimiter},
     };
 
-    async fn state() -> (tempfile::TempDir, AppState, Endpoint, Docs) {
+    async fn state() -> (AppState, Endpoint, Docs) {
         let endpoint = Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
             .bind()
@@ -1929,7 +1952,7 @@ mod save_publication_tests {
         )
         .await
         .unwrap();
-        (dir, state, endpoint, docs)
+        (state, endpoint, docs)
     }
 
     async fn save(state: AppState, name: &str, text: &str) -> Response {
@@ -1950,58 +1973,72 @@ mod save_publication_tests {
 
     #[tokio::test]
     async fn successful_save_publishes_an_applied_signed_document_and_keeps_the_blob_fetchable() {
-        let (dir, mut state, _endpoint, _docs) = state().await;
+        let (mut state, _endpoint, _docs) = state().await;
         state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
         let response = save(state.clone(), "revision.md", "first revision").await;
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         let event_id: p2panda_core::Hash = body["document_id"].as_str().unwrap().parse().unwrap();
-        let event_store =
-            EventStore::open(&dir.path().join("events"), WaitingLimits::default(), 0).unwrap();
-        let documents = event_store.documents().unwrap();
-        let document = documents
+        let history = state.local_events.lock().await.history(event_id).unwrap();
+        let (author, document) = history
             .iter()
-            .find(|document| document.id == event_id)
+            .find_map(|entry| match entry {
+                Entry::Document {
+                    id,
+                    author,
+                    document,
+                } if *id == event_id => Some((*author, document.clone())),
+                _ => None,
+            })
             .unwrap();
-        let blob_hash = iroh_blobs::Hash::from_bytes(*document.document.content.as_bytes());
+        let blob_hash = iroh_blobs::Hash::from_bytes(*document.content.as_bytes());
         assert_eq!(body["hash"].as_str().unwrap(), blob_hash.to_string());
         let bytes = state.store.blobs().get_bytes(blob_hash).await.unwrap();
+        document.verify_content(&bytes).unwrap();
+        assert_eq!(document.blob_hash().to_string(), blob_hash.to_string());
+        assert_eq!(document.size, u64::try_from(bytes.len()).unwrap());
+        assert_eq!(document.media_type, "text/markdown; charset=utf-8");
         assert_eq!(
-            document.document.blob_hash().to_string(),
-            blob_hash.to_string()
-        );
-        assert_eq!(document.document.size, u64::try_from(bytes.len()).unwrap());
-        assert_eq!(document.document.media_type, "text/markdown; charset=utf-8");
-        assert_eq!(
-            document.author,
+            author,
             p2panda_core::SigningKey::from_bytes(&[3; 32])
                 .verifying_key()
                 .as_bytes()
                 .to_owned()
         );
-        let claims = event_store.tag_claims().unwrap();
-        assert!(claims.iter().any(|claim| {
-            claim.subject == event_id
-                && claim.name == "filename"
-                && claim.value.as_deref() == Some("revision.md")
-        }));
+        assert!(history.iter().any(|entry| matches!(
+            entry,
+            Entry::Set { subject, name, value: Some(value), .. }
+                if *subject == event_id && name == "filename" && value == "revision.md"
+        )));
 
         // Repeated successful checkpoints get distinct durable revision events.
-        drop(event_store);
         let second = save(state.clone(), "revision.md", "second revision").await;
         assert_eq!(second.status(), StatusCode::OK);
         let second_body = response_json(second).await;
         assert_ne!(body["document_id"], second_body["document_id"]);
-        let event_store =
-            EventStore::open(&dir.path().join("events"), WaitingLimits::default(), 0).unwrap();
-        assert_eq!(event_store.documents().unwrap().len(), 2);
+        let second_id: p2panda_core::Hash = second_body["document_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(state.local_events.lock().await.history(event_id).is_ok());
+        assert!(state.local_events.lock().await.history(second_id).is_ok());
     }
 
     #[tokio::test]
     async fn refused_filename_tag_does_not_return_a_success_response() {
-        let (_dir, state, _endpoint, _docs) = state().await;
-        let response = save(state, &format!("{}.md", "x".repeat(600)), "content").await;
+        let (state, _endpoint, _docs) = state().await;
+        let response = save(state.clone(), &format!("{}.md", "x".repeat(600)), "content").await;
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            state
+                .local_events
+                .lock()
+                .await
+                .frontier()
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 
