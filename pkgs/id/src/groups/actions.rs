@@ -11,7 +11,7 @@ use super::fold::{GroupView, Outcome};
 use super::friendship::{Pair, friendship_id};
 use super::log::{GroupLog, Recorded};
 use super::policy::{Delegation, Policy, Template};
-use super::{Body, Create, Delegate, Key, MemberOp, Role};
+use super::{Body, Create, Delegate, DeviceOp, Key, MemberOp, Role};
 
 /// What an action did: the group it acted in, and the event it recorded with what the fold made of
 /// it. For a create, the group is the new group's ID, which is the create event's ID for a normal
@@ -231,6 +231,48 @@ impl GroupLog {
     /// Fails if the group is not in the log, or the event cannot be recorded.
     pub fn revoke(&mut self, author: Key, group: Hash, grant: Hash) -> Result<Action> {
         self.act(author, group, Body::Veto { grant })
+    }
+
+    /// Authorizes `device` to act on behalf of `author` in `group` up to `scope` (P8.3).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the group is not in the log, or the event cannot be recorded.
+    pub fn device_add(
+        &mut self,
+        author: Key,
+        group: Hash,
+        device: Key,
+        scope: Role,
+    ) -> Result<Action> {
+        self.act(author, group, Body::Device(DeviceOp::Add { device, scope }))
+    }
+
+    /// Revokes `device`'s authorization by `author` in `group` (P8.3).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the group is not in the log, or the event cannot be recorded.
+    pub fn device_revoke(&mut self, author: Key, group: Hash, device: Key) -> Result<Action> {
+        self.act(author, group, Body::Device(DeviceOp::Revoke { device }))
+    }
+
+    /// Count of active authorized devices for `account` in `group` (P8.3).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the events cannot be folded.
+    pub fn active_device_count(&self, group: &Hash, account: &Key) -> Result<usize> {
+        Ok(self.projection()?.active_device_count(group, account))
+    }
+
+    /// Total count of active authorized devices across all members in `group` (P8.3).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the events cannot be folded.
+    pub fn group_device_count(&self, group: &Hash) -> Result<usize> {
+        Ok(self.projection()?.group_device_count(group))
     }
 
     /// Records one event in a group that the log has.

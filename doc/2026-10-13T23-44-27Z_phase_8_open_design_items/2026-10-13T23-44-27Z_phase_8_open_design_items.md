@@ -19,7 +19,7 @@
 | ---- | ----------- | -------- | ------------------ | ----------------------------------------- | -------------------------------------------- |
 | P8.1 | -           | deferred |                    |                                           | causal validity only (task 09)               |
 | P8.2 | pruning     | todo     |                    |                                           | retention behind causal-cut snapshot         |
-| P8.3 | multidevice | todo     |                    |                                           | device chains & account delegations          |
+| P8.3 | multidevice | done     | 862639b4, 76f5084d | multidevice: 6 (22 red compile errors before feat) | device chains & account delegations; cascade revocation & counting |
 | P8.4 | views       | done     | 1d8321f1, babadcb4 | views_explorer: 6; directory_view: 21 | directory explorer waiting, voided, frozen sections |
 | P8.5 | worlds      | todo     |                    |                                           | cross-world delegation reconciliation        |
 | P8.6 | warnings    | done     | 1289cef6, 472d45d3 | cli_warnings 3; cli_groups 8; warnings 12 | size tier and churn warnings in group status |
@@ -45,3 +45,11 @@
 - Shared types `WaitingView`, `VoidedView`, and `FrozenView` keep HTTP JSON serialization and SSH text rendering in step.
 - Red first: integration tests in `tests/views_explorer.rs` failed on missing fields and types (commit 1d8321f1). Green after implementation (commit babadcb4).
 - Tests: `views_explorer`: 6 passed; `directory_view`: 21 passed.
+
+## 2026-10-13T23:55:00Z Note: P8.3 Multi-device delegation and device counting
+
+- Each device has its own key and chain. An account authorizes devices through signed `device.add` (`DEVICE_ADD_KIND`) and `device.revoke` (`DEVICE_REVOKE_KIND`) operations (`DeviceOp`).
+- Device authorizations are structured as capability delegations from the account key: a device acts on behalf of the account for authorized groups and scopes.
+- When an account is removed or revokes a device via `device.revoke`, the device's authorization is severed following cascade rules.
+- Device counting helpers `active_device_count(&group, &account)` and `group_device_count(&group)` (available on `Projection` and `GroupLog`) accurately return active authorized device counts for an account and across a group.
+- Red first: `cargo test --test multidevice` failed with 22 compilation errors in `862639b4`. Green after `76f5084d`: 6 of 6 integration tests pass in `tests/multidevice.rs`; all 12 `delegation` tests in `src/lib.rs` pass.
