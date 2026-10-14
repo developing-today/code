@@ -1,7 +1,16 @@
 /** Browser presentation for the server-authoritative world session. */
 
 type WorldFrame = {
-  type: "snapshot" | "event" | "view" | "records" | "invite" | "upload_ready" | "module_installed" | "compiled" | "error";
+  type:
+    | "snapshot"
+    | "event"
+    | "view"
+    | "records"
+    | "invite"
+    | "upload_ready"
+    | "module_installed"
+    | "compiled"
+    | "error";
   snapshot?: {
     world_id: string;
     current_sequence: number;
@@ -418,14 +427,16 @@ function initWorld(): void {
     const compiler = new WebSocket(`${scheme}//${location.host}/ws/world`);
     compiler.addEventListener("open", () => {
       setStatus("Sources sent; compiling and installing on the host…");
-      compiler.send(JSON.stringify({
-        type: "compile",
-        admin_token: secret,
-        files,
-        seed,
-        native: false,
-        world: selectedWorld(),
-      }));
+      compiler.send(
+        JSON.stringify({
+          type: "compile",
+          admin_token: secret,
+          files,
+          seed,
+          native: false,
+          world: selectedWorld(),
+        }),
+      );
     });
     compiler.addEventListener("message", (message) => {
       let frame: WorldFrame;
