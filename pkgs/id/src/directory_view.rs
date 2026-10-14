@@ -86,6 +86,15 @@ pub struct DirectoryView {
     /// The viewer's own envelopes still in, or recently left, the outbox.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deliveries: Vec<DeliveryView>,
+    /// Events waiting on missing dependencies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<WaitingView>,
+    /// Events voided in causal order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voided: Vec<VoidedView>,
+    /// Chains frozen due to forks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frozen: Vec<FrozenView>,
 }
 
 /// An account as one viewer sees it.
@@ -453,6 +462,100 @@ fn delivery(entry: &Entry, envelope: &Envelope) -> DeliveryView {
         kind: kind.to_owned(),
         to: envelope.to.clone(),
         status,
+    }
+}
+
+/// An event waiting on missing dependencies.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingView {
+    /// The event ID.
+    pub id: String,
+    /// The missing dependency hash.
+    pub missing: String,
+    /// The reason formatted as `waiting: missing <hash>`.
+    pub reason: String,
+}
+
+impl WaitingView {
+    /// Create a waiting event view with its reason formatted as `waiting: missing <hash>`.
+    #[must_use]
+    pub fn new(id: impl Into<String>, missing: impl Into<String>) -> Self {
+        let missing = missing.into();
+        Self {
+            id: id.into(),
+            reason: format!("waiting: missing {missing}"),
+            missing,
+        }
+    }
+}
+
+/// An event voided in causal order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoidedView {
+    /// The event ID.
+    pub id: String,
+    /// The voiding authority or removal hash.
+    #[serde(alias = "voided_by", alias = "authority")]
+    pub removal: String,
+    /// The reason formatted as `voided: concurrent with <hash>`.
+    pub reason: String,
+}
+
+impl VoidedView {
+    /// Create a voided event view with its reason formatted as `voided: concurrent with <hash>`.
+    #[must_use]
+    pub fn new(id: impl Into<String>, removal: impl Into<String>) -> Self {
+        let removal = removal.into();
+        Self {
+            id: id.into(),
+            reason: format!("voided: concurrent with {removal}"),
+            removal,
+        }
+    }
+
+    /// The voiding authority or removal hash.
+    #[must_use]
+    pub fn voided_by(&self) -> &str {
+        &self.removal
+    }
+
+    /// The voiding authority or removal hash.
+    #[must_use]
+    pub fn authority(&self) -> &str {
+        &self.removal
+    }
+}
+
+/// A chain frozen due to a fork.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrozenView {
+    /// The author or event ID.
+    #[serde(alias = "author")]
+    pub id: String,
+    /// The sequence number where the fork occurred.
+    pub seq: u64,
+    /// The fork proof hash.
+    pub proof: String,
+    /// The reason formatted as `frozen: fork at seq <n>`.
+    pub reason: String,
+}
+
+impl FrozenView {
+    /// Create a frozen chain view with its reason formatted as `frozen: fork at seq <n>`.
+    #[must_use]
+    pub fn new(id: impl Into<String>, seq: u64, proof: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            seq,
+            proof: proof.into(),
+            reason: format!("frozen: fork at seq {seq}"),
+        }
+    }
+
+    /// The author or event ID.
+    #[must_use]
+    pub fn author(&self) -> &str {
+        &self.id
     }
 }
 
@@ -1435,6 +1538,9 @@ fn view(directory: &Directory, petnames: &Petnames, viewer: &Viewer) -> Director
         accounts,
         groups,
         deliveries: Vec::new(),
+        waiting: Vec::new(),
+        voided: Vec::new(),
+        frozen: Vec::new(),
     }
 }
 
@@ -1582,6 +1688,27 @@ pub fn render_text(view: &DirectoryView) -> String {
                 "  {}  {}  {}",
                 delivery.kind, delivery.to, delivery.status
             ));
+        }
+    }
+    if !view.waiting.is_empty() {
+        lines.push(String::new());
+        lines.push("waiting:".to_owned());
+        for item in &view.waiting {
+            lines.push(format!("  {}  {}  {}", item.id, item.missing, item.reason));
+        }
+    }
+    if !view.voided.is_empty() {
+        lines.push(String::new());
+        lines.push("voided:".to_owned());
+        for item in &view.voided {
+            lines.push(format!("  {}  {}  {}", item.id, item.removal, item.reason));
+        }
+    }
+    if !view.frozen.is_empty() {
+        lines.push(String::new());
+        lines.push("frozen:".to_owned());
+        for item in &view.frozen {
+            lines.push(format!("  {}  {}  {}", item.id, item.proof, item.reason));
         }
     }
     let mut text = lines.join("\n");
@@ -2531,5 +2658,37 @@ mod tests {
             remote: None,
         };
         assert!(!local.queues_for_other_servers(&directory, &mut auth, &as_ada, 0));
+    }
+
+    #[test]
+    fn waiting_voided_and_frozen_views_render_and_serialize() {
+        let view = DirectoryView {
+            viewer: "admin".to_owned(),
+            accounts: Vec::new(),
+            groups: Vec::new(),
+            deliveries: Vec::new(),
+            waiting: vec![WaitingView::new("w-1", "dep-1")],
+            voided: vec![VoidedView::new("v-1", "rem-1")],
+            frozen: vec![FrozenView::new("f-1", 5, "proof-1")],
+        };
+
+        let rendered = render_text(&view);
+        assert!(rendered.contains("waiting:"));
+        assert!(rendered.contains("  w-1  dep-1  waiting: missing dep-1"));
+        assert!(rendered.contains("voided:"));
+        assert!(rendered.contains("  v-1  rem-1  voided: concurrent with rem-1"));
+        assert!(rendered.contains("frozen:"));
+        assert!(rendered.contains("  f-1  proof-1  frozen: fork at seq 5"));
+
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(json.contains("\"waiting\""));
+        assert!(json.contains("\"voided\""));
+        assert!(json.contains("\"frozen\""));
+        assert!(json.contains("waiting: missing dep-1"));
+        assert!(json.contains("voided: concurrent with rem-1"));
+        assert!(json.contains("frozen: fork at seq 5"));
+
+        let roundtrip: DirectoryView = serde_json::from_str(&json).unwrap();
+        assert_eq!(view, roundtrip);
     }
 }

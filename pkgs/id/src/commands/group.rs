@@ -19,6 +19,7 @@ use p2panda_core::Hash;
 use serde_json::{Map, Value, json};
 
 use crate::cli::{DelegateArgs, GroupCommand, GroupTemplate, RevokeArgs};
+use crate::encryption::warnings::{Evaluator, Observation, Warning, size_tier};
 use crate::groups::actions::{Action, NewGroup};
 use crate::groups::log::{FILE_NAME, GroupLog, hash_from_hex, key_from_hex};
 use crate::groups::policy::{History, Join, OnMemberRemoved, Removal};
@@ -161,6 +162,35 @@ fn policy_fields(view: &GroupView) -> Vec<(&'static str, Value)> {
     ]
 }
 
+/// The size tier and any Evaluator crossing warning for a group (P8.6).
+fn evaluate_group(group: Hash, members: usize) -> (usize, Option<String>) {
+    let tier = size_tier(members);
+    let observation = Observation {
+        group,
+        client_made: true,
+        members,
+        readds: &[],
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut evaluator = Evaluator::default();
+    let warnings = evaluator.observe(&observation, now);
+    let size_warning = warnings
+        .iter()
+        .filter(|w| matches!(w, Warning::Size { .. }))
+        .last();
+    let churn_warning = warnings.iter().find(|w| matches!(w, Warning::Churn { .. }));
+    let warning = match (size_warning, churn_warning) {
+        (Some(size), Some(churn)) => Some(format!("{}; {}", size.message(), churn.message())),
+        (Some(size), None) => Some(size.message()),
+        (None, Some(churn)) => Some(churn.message()),
+        (None, None) => None,
+    };
+    (tier, warning)
+}
+
 /// Runs an `id group` command.
 ///
 /// # Errors
@@ -225,6 +255,11 @@ pub async fn cmd_group(path: Option<PathBuf>, json: bool, command: GroupCommand)
             let view = log.view(group)?;
             let mut fields = vec![("group", json!(group.to_hex()))];
             fields.extend(policy_fields(&view));
+            let (tier, warning) = evaluate_group(group, view.members.len());
+            fields.push(("tier", json!(tier)));
+            if let Some(warning) = &warning {
+                fields.push(("warning", json!(warning)));
+            }
             if json {
                 let mut with_command = vec![("command", json!("policy"))];
                 with_command.extend(fields);
@@ -282,11 +317,17 @@ pub async fn cmd_group(path: Option<PathBuf>, json: bool, command: GroupCommand)
             let rows: Vec<Vec<(&str, Value)>> = projection
                 .groups()
                 .map(|(id, view)| {
-                    vec![
+                    let (tier, warning) = evaluate_group(*id, view.members.len());
+                    let mut row = vec![
                         ("group", json!(id.to_hex())),
                         ("active", json!(view.is_active())),
                         ("members", json!(view.members.len())),
-                    ]
+                        ("tier", json!(tier)),
+                    ];
+                    if let Some(warning) = warning {
+                        row.push(("warning", json!(warning)));
+                    }
+                    row
                 })
                 .collect();
             if json {
