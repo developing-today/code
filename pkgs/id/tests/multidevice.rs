@@ -286,9 +286,9 @@ fn test_device_count_helper_accurately_returns_active_device_count() {
         "Group now has 2 active devices"
     );
 
-    // Remove Account 1 -> cascade severs Account 1's remaining device (Device 2)
+    // Account 1 leaves (removes itself) -> cascade severs Account 1's remaining device (Device 2)
     let mut step3 = step2;
-    step3.push(member_remove("rem_acct1", 2, g, 1, &["dev1_rev"]));
+    step3.push(member_remove("rem_acct1", 1, g, 1, &["dev1_rev"]));
     let p3 = fold(&step3).expect("fold succeeds");
     assert_eq!(
         p3.active_device_count(&g, &key(1)),

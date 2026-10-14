@@ -33,10 +33,10 @@ use crate::membership::{
 };
 use crate::rejection::Reason;
 
-use super::delegation::{Grant, Removal};
+use super::delegation::{Grant, Removal, removed_member};
 use super::friendship::{Pair, friendship_id};
 use super::policy::{OnMemberRemoved, Policy, Template};
-use super::{Body, Create, Delegate, Event, Key, MemberOp, Role};
+use super::{Body, Create, Delegate, DeviceOp, Event, Key, MemberOp, Role};
 
 /// Why an event had no effect. A refused event changes no state. It is still decided, so the
 /// events after it can be decided too.
@@ -206,6 +206,34 @@ impl GroupView {
     }
 }
 
+/// An authorization of a device by an account that took effect (P8.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceGrant {
+    /// The event ID.
+    pub id: Hash,
+    /// The group the authorization was made in.
+    pub group: Hash,
+    /// The authorizing account.
+    pub account: Key,
+    /// The authorized device.
+    pub device: Key,
+    /// The authorized scope.
+    pub scope: Role,
+}
+
+/// A revocation of a device authorization (P8.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceRevokeRecord {
+    /// The revocation event ID.
+    pub id: Hash,
+    /// The group.
+    pub group: Hash,
+    /// The revoking account.
+    pub account: Key,
+    /// The revoked device.
+    pub device: Key,
+}
+
 /// The state of every group, and what became of each event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Projection {
@@ -214,6 +242,7 @@ pub struct Projection {
     effective: BTreeSet<Hash>,
     in_force: BTreeSet<Hash>,
     grants: Vec<Grant>,
+    devices: Vec<DeviceGrant>,
 }
 
 impl Projection {
@@ -261,6 +290,59 @@ impl Projection {
     pub fn grants_in_force(&self) -> impl Iterator<Item = &Grant> {
         self.grants.iter()
     }
+
+    /// The active authorized devices for `account` in `group` at the head of the events (P8.3).
+    /// Following cascade rules, a removed account has no active devices.
+    pub fn active_devices(&self, group: &Hash, account: &Key) -> BTreeSet<Key> {
+        let Some(view) = self.groups.get(group) else {
+            return BTreeSet::new();
+        };
+        if !view.members.contains_key(account) {
+            return BTreeSet::new();
+        }
+        self.devices
+            .iter()
+            .filter(|d| d.group == *group && d.account == *account)
+            .map(|d| d.device)
+            .collect()
+    }
+
+    /// Count of active authorized devices for `account` in `group` (P8.3).
+    pub fn active_device_count(&self, group: &Hash, account: &Key) -> usize {
+        self.active_devices(group, account).len()
+    }
+
+    /// All active authorized devices across all members in `group` at the head of the events (P8.3).
+    pub fn group_active_devices(&self, group: &Hash) -> BTreeSet<Key> {
+        let Some(view) = self.groups.get(group) else {
+            return BTreeSet::new();
+        };
+        self.devices
+            .iter()
+            .filter(|d| d.group == *group && view.members.contains_key(&d.account))
+            .map(|d| d.device)
+            .collect()
+    }
+
+    /// Total count of active authorized devices across all members in `group` (P8.3).
+    pub fn group_device_count(&self, group: &Hash) -> usize {
+        self.group_active_devices(group).len()
+    }
+
+    /// Count of active authorized devices for `account` across all active groups (P8.3).
+    pub fn account_device_count(&self, account: &Key) -> usize {
+        let mut devices = BTreeSet::new();
+        for (group, view) in &self.groups {
+            if view.members.contains_key(account) {
+                for d in &self.devices {
+                    if d.group == *group && d.account == *account {
+                        devices.insert(d.device);
+                    }
+                }
+            }
+        }
+        devices.len()
+    }
 }
 
 /// Computes the state of every group from the whole set of events. The order the events are given
@@ -301,7 +383,7 @@ fn run(
     }
     let effective = engine.effective();
     let in_force = engine.in_force(by_id)?;
-    let projection = engine.into_projection(outcomes, effective.clone(), in_force);
+    let projection = engine.into_projection(outcomes, effective.clone(), in_force, by_id);
     Ok((projection, effective))
 }
 
@@ -309,7 +391,11 @@ fn run(
 const fn is_candidate(event: &Event) -> bool {
     matches!(
         event.body,
-        Body::Delegate(_) | Body::Cross { .. } | Body::Veto { .. } | Body::Member(_)
+        Body::Delegate(_)
+            | Body::Cross { .. }
+            | Body::Veto { .. }
+            | Body::Member(_)
+            | Body::Device(_)
     )
 }
 
@@ -418,6 +504,15 @@ pub(super) enum Effect {
         target: Option<String>,
     },
     Veto(Hash),
+    DeviceAdd {
+        account: Key,
+        device: Key,
+        scope: Role,
+    },
+    DeviceRevoke {
+        account: Key,
+        device: Key,
+    },
 }
 
 /// A rule's decision: the membership operation to hand to the membership layer, and the state
@@ -452,6 +547,10 @@ pub(super) struct Engine {
     pub(super) vetoes: BTreeMap<Hash, Hash>,
     /// The removals applied in this round, by event ID.
     pub(super) removals: BTreeMap<Hash, Removal>,
+    /// The device authorizations applied in this round, by event ID.
+    pub(super) devices: BTreeMap<Hash, DeviceGrant>,
+    /// The device revocations applied in this round, by event ID.
+    pub(super) device_revocations: BTreeMap<Hash, DeviceRevokeRecord>,
 }
 
 impl Engine {
@@ -475,9 +574,13 @@ impl Engine {
                 return Ok(Outcome::Refused(refusal));
             }
         };
+        let effective_author = match self.effective_author(by_id, decision.group, event) {
+            Some((author, _)) => author,
+            None => event.author,
+        };
         let role = match &decision.action {
             Some(action) => Placed::Auth {
-                author: event.author,
+                author: effective_author,
                 group: Some(decision.group),
                 action: action.clone(),
             },
@@ -510,14 +613,15 @@ impl Engine {
         match &event.body {
             Body::Create(create) => Ok(self.create(event, create, by_id)),
             Body::Join => Ok(self.join(event)),
-            Body::Policy(policy) => Ok(self.policy(event, policy)),
-            Body::Member(op) => match self.member(event, *op) {
+            Body::Policy(policy) => Ok(self.policy(event, policy, by_id)),
+            Body::Member(op) => match self.member(event, *op, by_id) {
                 Ok(decision) => self.manage_chain(by_id, event, *op, decision),
                 Err(refusal) => Ok(Err(refusal)),
             },
             Body::Delegate(delegate) => self.delegate(by_id, event, *delegate, None),
             Body::Cross { delegate, world } => self.delegate(by_id, event, *delegate, Some(world)),
             Body::Veto { grant } => self.veto(by_id, event, *grant),
+            Body::Device(op) => self.device(by_id, event, *op),
         }
     }
 
@@ -586,6 +690,29 @@ impl Engine {
                         },
                     );
                 }
+            }
+            Effect::DeviceAdd {
+                account,
+                device,
+                scope,
+            } => {
+                let grant = DeviceGrant {
+                    id: event.id,
+                    group,
+                    account,
+                    device,
+                    scope,
+                };
+                self.devices.insert(event.id, grant);
+            }
+            Effect::DeviceRevoke { account, device } => {
+                let revoke = DeviceRevokeRecord {
+                    id: event.id,
+                    group,
+                    account,
+                    device,
+                };
+                self.device_revocations.insert(event.id, revoke);
             }
             other => {
                 if let Some(record) = self.groups.get_mut(&group) {
@@ -711,17 +838,21 @@ impl Engine {
         self.accept(group, record, event.author)
     }
 
-    fn policy(&self, event: &Event, policy: &Policy) -> Result<Decision, Refusal> {
+    fn policy(
+        &self,
+        event: &Event,
+        policy: &Policy,
+        by_id: &BTreeMap<Hash, &Event>,
+    ) -> Result<Decision, Refusal> {
         let group = event.group.ok_or(Refusal::NoGroup)?;
         let record = self.record(&group)?;
-        let author = event.author;
         if record.dissolved_by.is_some() {
             return Err(Refusal::Dissolved);
         }
-        if !self.is_active(&group, record, &author) {
+        let Some((_author, author_role)) = self.effective_author(by_id, group, event) else {
             return Err(Refusal::NotActive);
-        }
-        if !record.admins.contains(&author) {
+        };
+        if author_role < Role::Admin {
             return Err(Refusal::NotAdmin);
         }
         if !policy.is_valid() {
@@ -739,20 +870,22 @@ impl Engine {
         })
     }
 
-    fn member(&self, event: &Event, op: MemberOp) -> Result<Decision, Refusal> {
+    fn member(
+        &self,
+        event: &Event,
+        op: MemberOp,
+        by_id: &BTreeMap<Hash, &Event>,
+    ) -> Result<Decision, Refusal> {
         let group = event.group.ok_or(Refusal::NoGroup)?;
         let record = self.record(&group)?;
-        let author = event.author;
         if record.dissolved_by.is_some() {
             return Err(Refusal::Dissolved);
         }
-        if !self.is_active(&group, record, &author) {
+        let Some((author, author_role)) = self.effective_author(by_id, group, event) else {
             return Err(Refusal::NotActive);
-        }
-        let is_admin = record.admins.contains(&author);
-        let is_manager = self
-            .access(&group, &author)
-            .is_some_and(|role| role >= Role::Manage);
+        };
+        let is_admin = author_role == Role::Admin;
+        let is_manager = author_role >= Role::Manage;
         match op {
             MemberOp::Add { member, role } => {
                 if !is_manager {
@@ -862,15 +995,172 @@ impl Engine {
         self.listed(group, key) && (record.friendship.is_none() || record.present.contains(key))
     }
 
+    /// Resolves whether `actor` is an active authorized device for an account in `group` at `after`.
+    /// Returns `Some((account, authorized_scope))` if so.
+    pub(super) fn authorized_device_account(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        group: Hash,
+        actor: Key,
+        after: &[Hash],
+    ) -> Option<(Key, Role)> {
+        let past = causal_past(by_id, after);
+        for grant in self.devices.values() {
+            if grant.group != group || grant.device != actor {
+                continue;
+            }
+            if !self.settled.contains(&grant.id) || !past.contains(&grant.id) {
+                continue;
+            }
+            // Check if revoked in past
+            let revoked = self.device_revocations.values().any(|rev| {
+                rev.group == group
+                    && rev.account == grant.account
+                    && rev.device == actor
+                    && self.settled.contains(&rev.id)
+                    && past.contains(&rev.id)
+                    && causal_past(by_id, &[rev.id]).contains(&grant.id)
+            });
+            if revoked {
+                continue;
+            }
+            // Cascade check: grantor account must still be an active member of group at `after`
+            let account_removed = self.removals.values().any(|rem| {
+                rem.group == group
+                    && rem.member == grant.account
+                    && self.settled.contains(&rem.id)
+                    && past.contains(&rem.id)
+                    && causal_past(by_id, &[rem.id]).contains(&grant.id)
+            });
+            if account_removed {
+                continue;
+            }
+            if !self.listed(&group, &grant.account) {
+                continue;
+            }
+            if self.void_device(by_id, grant) {
+                continue;
+            }
+            return Some((grant.account, grant.scope));
+        }
+        None
+    }
+
+    /// Resolves the effective author and maximum role for `event` in `group`.
+    pub(super) fn effective_author(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        group: Hash,
+        event: &Event,
+    ) -> Option<(Key, Role)> {
+        let record = self.groups.get(&group)?;
+        if self.is_active(&group, record, &event.author) {
+            let role = if record.admins.contains(&event.author) {
+                Role::Admin
+            } else {
+                self.access(&group, &event.author).unwrap_or(Role::Pull)
+            };
+            Some((event.author, role))
+        } else if let Some((account, device_scope)) =
+            self.authorized_device_account(by_id, group, event.author, &event.after)
+        {
+            if !self.is_active(&group, record, &account) {
+                return None;
+            }
+            let account_role = if record.admins.contains(&account) {
+                Role::Admin
+            } else {
+                self.access(&group, &account).unwrap_or(Role::Pull)
+            };
+            Some((account, account_role.min(device_scope)))
+        } else {
+            None
+        }
+    }
+
+    /// Whether a settled removal of the authorizing account is concurrent with the device grant.
+    fn void_device(&self, by_id: &BTreeMap<Hash, &Event>, grant: &DeviceGrant) -> bool {
+        let past_grant = causal_past(by_id, &[grant.id]);
+        self.settled
+            .iter()
+            .filter_map(|id| by_id.get(id).copied())
+            .filter(|event| {
+                event.group == Some(grant.group) && removed_member(event) == Some(grant.account)
+            })
+            .any(|removal| {
+                !past_grant.contains(&removal.id)
+                    && !causal_past(by_id, &[removal.id]).contains(&grant.id)
+            })
+    }
+
+    /// Judges a device operation (P8.3).
+    pub(super) fn device(
+        &mut self,
+        by_id: &BTreeMap<Hash, &Event>,
+        event: &Event,
+        op: DeviceOp,
+    ) -> Result<Judged, FoldError> {
+        let group = match self.acting_in(event, by_id) {
+            Ok(group) => group,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let record = match self.record(&group) {
+            Ok(record) => record,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        if !self.is_active(&group, record, &event.author) {
+            return Ok(Err(Refusal::NotActive));
+        }
+        let is_admin = record.admins.contains(&event.author);
+        match op {
+            DeviceOp::Add { device, scope } => {
+                if device == event.author {
+                    return Ok(Err(Refusal::BadGrantee));
+                }
+                let holds = if is_admin {
+                    true
+                } else if scope == Role::Admin {
+                    false
+                } else {
+                    self.holds(group, event.author, scope, &event.after)?
+                };
+                if !holds {
+                    return Ok(Err(Refusal::Attenuated));
+                }
+                Ok(Ok(Decision {
+                    group,
+                    action: None,
+                    effect: Effect::DeviceAdd {
+                        account: event.author,
+                        device,
+                        scope,
+                    },
+                }))
+            }
+            DeviceOp::Revoke { device } => Ok(Ok(Decision {
+                group,
+                action: None,
+                effect: Effect::DeviceRevoke {
+                    account: event.author,
+                    device,
+                },
+            })),
+        }
+    }
+
     /// The group an event names, when the group is live and the event's author is an active member
-    /// of it. Otherwise the refusal.
-    pub(super) fn acting_in(&self, event: &Event) -> Result<Hash, Refusal> {
+    /// or authorized device of it. Otherwise the refusal.
+    pub(super) fn acting_in(
+        &self,
+        event: &Event,
+        by_id: &BTreeMap<Hash, &Event>,
+    ) -> Result<Hash, Refusal> {
         let group = event.group.ok_or(Refusal::NoGroup)?;
         let record = self.record(&group)?;
         if record.dissolved_by.is_some() {
             return Err(Refusal::Dissolved);
         }
-        if !self.is_active(&group, record, &event.author) {
+        if self.effective_author(by_id, group, event).is_none() {
             return Err(Refusal::NotActive);
         }
         Ok(group)
@@ -896,12 +1186,44 @@ impl Engine {
         outcomes: BTreeMap<Hash, Outcome>,
         effective: BTreeSet<Hash>,
         in_force: BTreeSet<Hash>,
+        by_id: &BTreeMap<Hash, &Event>,
     ) -> Projection {
         let membership = &self.membership;
         let grants: Vec<Grant> = self
             .grants
             .values()
             .filter(|grant| in_force.contains(&grant.id))
+            .cloned()
+            .collect();
+        let devices: Vec<DeviceGrant> = self
+            .devices
+            .values()
+            .filter(|grant| {
+                if !effective.contains(&grant.id) {
+                    return false;
+                }
+                if !membership
+                    .members(grant.group)
+                    .iter()
+                    .any(|(id, _)| *id == AuthId::Key(grant.account))
+                {
+                    return false;
+                }
+                let revoked = self.device_revocations.values().any(|rev| {
+                    rev.group == grant.group
+                        && rev.account == grant.account
+                        && rev.device == grant.device
+                        && effective.contains(&rev.id)
+                        && causal_past(by_id, &[rev.id]).contains(&grant.id)
+                });
+                if revoked {
+                    return false;
+                }
+                if self.void_device(by_id, grant) {
+                    return false;
+                }
+                true
+            })
             .cloned()
             .collect();
         let groups = self
@@ -935,6 +1257,7 @@ impl Engine {
             effective,
             in_force,
             grants,
+            devices,
         }
     }
 }
@@ -942,7 +1265,11 @@ impl Engine {
 /// Applies a state change to a group that exists.
 fn apply_to(record: &mut Record, effect: Effect) {
     match effect {
-        Effect::Create(_) | Effect::Delegation { .. } | Effect::Veto(_) => {}
+        Effect::Create(_)
+        | Effect::Delegation { .. }
+        | Effect::Veto(_)
+        | Effect::DeviceAdd { .. }
+        | Effect::DeviceRevoke { .. } => {}
         Effect::Present(member) => {
             record.present.insert(member);
         }
