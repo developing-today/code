@@ -322,3 +322,120 @@ fn test_prune_behind_cut_empty_or_noop() {
 
     store.check_invariants().unwrap();
 }
+
+#[test]
+fn test_prune_removes_unreferenced_author_chain_completely() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path());
+    let mut chains = Chains::new();
+
+    // Alice creates group
+    let (create, create_body) = chains.group_op(
+        1,
+        None,
+        &[],
+        &GroupAction::Create {
+            initial_members: vec![(GroupMember::Individual(auth(1)), Access::manage())],
+        },
+    );
+    let group = create.id;
+    deliver(&mut store, &create, create_body.as_deref());
+
+    // Author 4 (Dave) writes a standalone message/doc outside the group or in group
+    let (doc_dave, doc_dave_body) =
+        chains.document(4, group, &[create.id], Hash::digest(b"dave standalone doc"));
+    deliver(&mut store, &doc_dave, doc_dave_body.as_deref());
+
+    // Alice writes a document D2 seeing only create
+    let (doc_alice, doc_alice_body) =
+        chains.document(1, group, &[create.id], Hash::digest(b"alice doc"));
+    deliver(&mut store, &doc_alice, doc_alice_body.as_deref());
+
+    store.check_invariants().unwrap();
+    assert!(store.event_by_id(&doc_dave.id).unwrap().is_some());
+    assert!(
+        store
+            .chain(&*key(4).verifying_key().as_bytes())
+            .unwrap()
+            .is_some()
+    );
+
+    // Cut includes doc_dave, protected includes doc_alice
+    let count = store
+        .prune_behind_cut(&[doc_dave.id], &[doc_alice.id])
+        .unwrap();
+    assert_eq!(count, 1);
+
+    // Dave's event is pruned and Dave's chain row is deleted
+    assert!(store.event_by_id(&doc_dave.id).unwrap().is_none());
+    assert!(
+        store
+            .chain(&*key(4).verifying_key().as_bytes())
+            .unwrap()
+            .is_none()
+    );
+
+    // Invariants still hold
+    store.check_invariants().unwrap();
+}
+
+#[test]
+fn test_active_backlink_walks_preserved_for_tail_prune() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = open(dir.path());
+    let mut chains = Chains::new();
+
+    // Alice creates group
+    let (create, create_body) = chains.group_op(
+        1,
+        None,
+        &[],
+        &GroupAction::Create {
+            initial_members: vec![(GroupMember::Individual(auth(1)), Access::manage())],
+        },
+    );
+    let group = create.id;
+    deliver(&mut store, &create, create_body.as_deref());
+
+    // Bob writes doc B0, then B1, then B2
+    let (b0, b0_body) = chains.document(2, group, &[create.id], Hash::digest(b"b0"));
+    deliver(&mut store, &b0, b0_body.as_deref());
+
+    let (b1, b1_body) = chains.document(2, group, &[b0.id], Hash::digest(b"b1"));
+    deliver(&mut store, &b1, b1_body.as_deref());
+
+    let (b2, b2_body) = chains.document(2, group, &[b1.id], Hash::digest(b"b2"));
+    deliver(&mut store, &b2, b2_body.as_deref());
+
+    // Alice creates removal or anchor pointing to b1 (so b1, b0, create are in protected past)
+    let (removal, removal_body) = chains.group_op(
+        1,
+        Some(group),
+        &[b1.id],
+        &GroupAction::Remove {
+            member: GroupMember::Individual(auth(2)),
+        },
+    );
+    deliver(&mut store, &removal, removal_body.as_deref());
+
+    store.check_invariants().unwrap();
+
+    // Cut is b2, protected is removal (which saw b1, but not b2)
+    let count = store.prune_behind_cut(&[b2.id], &[removal.id]).unwrap();
+    assert_eq!(count, 1, "b2 should be pruned");
+
+    assert!(store.event_by_id(&b2.id).unwrap().is_none());
+    assert!(store.event_by_id(&b1.id).unwrap().is_some());
+    assert!(store.event_by_id(&b0.id).unwrap().is_some());
+
+    // Bob's chain should now have head = b1 and next_seq = 2
+    let bob_chain = store
+        .chain(&*key(2).verifying_key().as_bytes())
+        .unwrap()
+        .unwrap();
+    assert_eq!(bob_chain.next_seq, 2);
+    assert_eq!(bob_chain.head, Some(b1.id));
+
+    // Invariants check still passes
+    store.check_invariants().unwrap();
+}

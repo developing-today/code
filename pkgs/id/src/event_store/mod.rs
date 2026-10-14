@@ -46,7 +46,7 @@
 //! store and its files: [`FileStorage`] is the disk, and the crash model in tests
 //! implements the same trait over a simulated directory.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -526,15 +526,194 @@ impl EventStore {
 
     /// Prunes events behind a causal cut that are not in the protected causal past.
     ///
+    /// What must survive:
+    /// - every event back to the causal past of each open removal (needed by membership voidness check)
+    ///   and open frontier.
+    /// - events that are dependencies or active backlinks of surviving events.
+    ///
+    /// Pruned events are removed from event storage (events, hashes, groups, actions, applied)
+    /// while keeping chain and index consistency and avoiding corrupting active backlink walks.
+    ///
     /// # Errors
     ///
-    /// Returns a redb error if the write transaction fails.
+    /// Returns a redb error if the write transaction fails, or [`StoreError::Corrupt`].
     pub fn prune_behind_cut(
         &mut self,
-        _cut: &[Hash],
-        _protected: &[Hash],
+        cut: &[Hash],
+        protected: &[Hash],
     ) -> Result<usize, StoreError> {
-        Ok(0)
+        if self.unusable {
+            return Err(StoreError::Unusable);
+        }
+        if cut.is_empty() {
+            return Ok(0);
+        }
+
+        let txn = self.db.begin_write()?;
+        let (events_by_id, to_prune) = {
+            let events_table = txn.open_table(EVENTS)?;
+            let actions_table = txn.open_table(ACTIONS)?;
+
+            struct StoredMeta {
+                author: AuthorKey,
+                seq: SeqNum,
+                parents: Vec<Hash>,
+                group: Option<Hash>,
+                has_action: bool,
+                position: [u8; POSITION_LEN],
+            }
+
+            let mut events_by_id: HashMap<Hash, StoredMeta> = HashMap::new();
+            for row in events_table.iter()? {
+                let (pos_bytes, event_bytes) = row?;
+                let event = decode_stored(event_bytes.value())?;
+                let (author, seq) = split_position(pos_bytes.value())?;
+                let mut position = [0u8; POSITION_LEN];
+                position.copy_from_slice(pos_bytes.value());
+                let mut parents = event.header.extensions.after.clone();
+                if let Some(backlink) = event.header.backlink {
+                    parents.push(backlink);
+                }
+                let has_action = actions_table.get(event.id.as_bytes().as_slice())?.is_some();
+                events_by_id.insert(
+                    event.id,
+                    StoredMeta {
+                        author,
+                        seq,
+                        parents,
+                        group: event.header.extensions.group,
+                        has_action,
+                        position,
+                    },
+                );
+            }
+
+            // Identify all events behind the cut (the cut roots and their causal ancestors)
+            let mut behind_cut = HashSet::new();
+            let mut queue = VecDeque::new();
+            for &h in cut {
+                if events_by_id.contains_key(&h) && behind_cut.insert(h) {
+                    queue.push_back(h);
+                }
+            }
+            while let Some(current) = queue.pop_front() {
+                if let Some(meta) = events_by_id.get(&current) {
+                    for &parent in &meta.parents {
+                        if events_by_id.contains_key(&parent) && behind_cut.insert(parent) {
+                            queue.push_back(parent);
+                        }
+                    }
+                }
+            }
+
+            // Identify what must survive:
+            // 1. All events in `protected` and their causal ancestors.
+            // 2. All events NOT behind the cut and their causal ancestors (to protect open frontiers
+            //    and prevent corrupting active backlink walks).
+            let mut must_survive = HashSet::new();
+            let mut queue = VecDeque::new();
+            for &h in protected {
+                if events_by_id.contains_key(&h) && must_survive.insert(h) {
+                    queue.push_back(h);
+                }
+            }
+            for &h in events_by_id.keys() {
+                if !behind_cut.contains(&h) && must_survive.insert(h) {
+                    queue.push_back(h);
+                }
+            }
+            while let Some(current) = queue.pop_front() {
+                if let Some(meta) = events_by_id.get(&current) {
+                    for &parent in &meta.parents {
+                        if events_by_id.contains_key(&parent) && must_survive.insert(parent) {
+                            queue.push_back(parent);
+                        }
+                    }
+                }
+            }
+
+            let to_prune: Vec<Hash> = behind_cut
+                .into_iter()
+                .filter(|h| !must_survive.contains(h))
+                .collect();
+
+            (events_by_id, to_prune)
+        };
+
+        let count = to_prune.len();
+        if count == 0 {
+            txn.abort()?;
+            return Ok(0);
+        }
+
+        let prune_set: HashSet<Hash> = to_prune.iter().copied().collect();
+        let mut affected_authors = HashSet::new();
+
+        {
+            let mut events_table = txn.open_table(EVENTS)?;
+            let mut hashes_table = txn.open_table(HASHES)?;
+            let mut groups_table = txn.open_multimap_table(GROUPS)?;
+            let mut actions_table = txn.open_table(ACTIONS)?;
+            let mut applied_table = txn.open_table(APPLIED)?;
+
+            for id in &to_prune {
+                if let Some(meta) = events_by_id.get(id) {
+                    affected_authors.insert(meta.author);
+                    events_table.remove(meta.position.as_slice())?;
+                    hashes_table.remove(id.as_bytes().as_slice())?;
+                    if let Some(group) = meta.group {
+                        groups_table
+                            .remove(group.as_bytes().as_slice(), meta.position.as_slice())?;
+                    }
+                    if meta.has_action {
+                        actions_table.remove(id.as_bytes().as_slice())?;
+                    }
+                    applied_table.remove(id.as_bytes().as_slice())?;
+                }
+            }
+        }
+
+        {
+            let mut chains_table = txn.open_table(CHAINS)?;
+            let forks_table = txn.open_table(FORKS)?;
+
+            for author in affected_authors {
+                let mut surviving: Vec<(&Hash, SeqNum)> = events_by_id
+                    .iter()
+                    .filter(|(id, meta)| meta.author == author && !prune_set.contains(id))
+                    .map(|(id, meta)| (id, meta.seq))
+                    .collect();
+                surviving.sort_by_key(|(_, seq)| *seq);
+
+                let has_fork = lowest_proof(&forks_table, &author)?.is_some();
+                let current_chain = chains_table
+                    .get(author.as_slice())?
+                    .map(|r| Chain::decode(r.value()))
+                    .transpose()?;
+                let frozen = current_chain.is_some_and(|c| c.frozen) || has_fork;
+
+                if let Some(&(head_id, max_seq)) = surviving.last() {
+                    let chain = Chain {
+                        next_seq: max_seq.saturating_add(1),
+                        head: Some(*head_id),
+                        frozen,
+                    };
+                    chains_table.insert(author.as_slice(), chain.encode().as_slice())?;
+                } else if frozen {
+                    let chain = Chain {
+                        next_seq: 0,
+                        head: None,
+                        frozen: true,
+                    };
+                    chains_table.insert(author.as_slice(), chain.encode().as_slice())?;
+                } else {
+                    chains_table.remove(author.as_slice())?;
+                }
+            }
+        }
+
+        txn.commit()?;
+        Ok(count)
     }
 
     /// Checks the store's own rows against each other: every applied sequence is
