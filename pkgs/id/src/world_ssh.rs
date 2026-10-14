@@ -5,8 +5,9 @@
 //! `view` frame repaints the terminal, so an ordinary `ssh` client can play any
 //! world that presents a view.
 
-use std::{fmt::Write as _, net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::VecDeque, fmt::Write as _, net::SocketAddr, sync::Arc, time::Duration};
 
+use futures_lite::StreamExt;
 use russh::{
     Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Pty,
     keys::{Algorithm, PrivateKey, PublicKey, ssh_key::HashAlg, ssh_key::LineEnding},
@@ -24,7 +25,7 @@ use crate::directory_view::{
 };
 use crate::world::hex_encode;
 use crate::world_hub::{ResolveError, WorldHub};
-use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
+use crate::world_session::{Inbound, SessionIo, run_session};
 
 /// File, beside the other server keys, that holds the SSH host key.
 pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
@@ -47,14 +48,16 @@ pub async fn serve(
     listener: TcpListener,
     hub: WorldHub,
     host_key: PrivateKey,
+    blobs: iroh_blobs::api::Store,
 ) -> std::io::Result<()> {
-    serve_limited(listener, hub, host_key, MAX_CONNECTIONS).await
+    serve_limited(listener, hub, host_key, blobs, MAX_CONNECTIONS).await
 }
 
 async fn serve_limited(
     listener: TcpListener,
     hub: WorldHub,
     host_key: PrivateKey,
+    blobs: iroh_blobs::api::Store,
     max_connections: usize,
 ) -> std::io::Result<()> {
     let config = Arc::new(Config {
@@ -66,6 +69,7 @@ async fn serve_limited(
     });
     let mut server = SshServer {
         hub,
+        blobs,
         connections: Arc::new(Semaphore::new(max_connections)),
     };
     server.run_on_socket(config, &listener).await
@@ -93,6 +97,7 @@ pub async fn load_or_create_host_key(path: &str) -> anyhow::Result<PrivateKey> {
 #[derive(Clone)]
 struct SshServer {
     hub: WorldHub,
+    blobs: iroh_blobs::api::Store,
     connections: Arc<Semaphore>,
 }
 
@@ -102,6 +107,7 @@ impl Server for SshServer {
     fn new_client(&mut self, _peer: Option<SocketAddr>) -> SshClient {
         SshClient {
             hub: self.hub.clone(),
+            blobs: self.blobs.clone(),
             permit: Arc::clone(&self.connections).try_acquire_owned().ok(),
             login: None,
             input: None,
@@ -119,6 +125,7 @@ struct Login {
 
 struct SshClient {
     hub: WorldHub,
+    blobs: iroh_blobs::api::Store,
     permit: Option<OwnedSemaphorePermit>,
     login: Option<Login>,
     input: Option<mpsc::Sender<Vec<u8>>>,
@@ -267,7 +274,12 @@ impl Handler for SshClient {
             handle: session.handle(),
             channel,
             frames,
+            blobs: self.blobs.clone(),
             first: Some(first),
+            capability: login.capability.clone(),
+            lines: WorldLineBuffer::default(),
+            commands: VecDeque::new(),
+            records_prefix: None,
             errored: false,
         };
         let hub = self.hub.clone();
@@ -330,13 +342,19 @@ fn join_frame(login: &Login) -> String {
     join.to_string()
 }
 
-/// [`SessionIo`] for one SSH shell: the join frame first, then keystrokes in,
-/// and terminal output for each view out.
+/// [`SessionIo`] for one SSH shell: the join frame first, then terminal lines
+/// as chat/command frames, and terminal output for each view or record page.
 struct SshIo {
     handle: Handle,
     channel: ChannelId,
     frames: mpsc::Receiver<Vec<u8>>,
+    blobs: iroh_blobs::api::Store,
     first: Option<String>,
+    capability: String,
+    lines: WorldLineBuffer,
+    commands: VecDeque<WorldCommand>,
+    /// `Some(prefix)` while draining records pages from a `/records` command.
+    records_prefix: Option<Option<String>>,
     errored: bool,
 }
 
@@ -345,11 +363,87 @@ impl SessionIo for SshIo {
         if let Some(join) = self.first.take() {
             return Inbound::Text(join);
         }
-        match self.frames.recv().await {
-            Some(bytes) => Inbound::Text(
-                json!({ "type": "input", "data_hex": encode_hex(&bytes) }).to_string(),
-            ),
-            None => Inbound::Closed,
+        loop {
+            if let Some(command) = self.commands.pop_front() {
+                match command {
+                    WorldCommand::Chat(text) => {
+                        return Inbound::Text(json!({ "type": "chat", "text": text }).to_string());
+                    }
+                    WorldCommand::Input(data_hex) => {
+                        return Inbound::Text(
+                            json!({ "type": "input", "data_hex": data_hex }).to_string(),
+                        );
+                    }
+                    WorldCommand::Records { prefix } => {
+                        self.records_prefix = Some(prefix.clone());
+                        return Inbound::Text(
+                            json!({
+                                "type": "records", "capability": self.capability,
+                                "prefix": prefix, "after": null
+                            })
+                            .to_string(),
+                        );
+                    }
+                    WorldCommand::Documents { prefix } => {
+                        let text = match list_public_documents(&self.blobs, prefix.as_deref()).await
+                        {
+                            Ok(text) => text,
+                            Err(_) => "documents unavailable".to_owned(),
+                        };
+                        if self
+                            .handle
+                            .data(
+                                self.channel,
+                                terminal_text(&format!("\r\n{text}\r\nworld> ")),
+                            )
+                            .await
+                            .is_err()
+                        {
+                            return Inbound::Closed;
+                        }
+                    }
+                    WorldCommand::Document(name) => {
+                        let text = match read_public_document(&self.blobs, &name).await {
+                            Ok(text) => format!("\r\n{text}\r\nworld> "),
+                            Err(error) => format!("\r\n{}\r\nworld> ", error.message()),
+                        };
+                        if self
+                            .handle
+                            .data(self.channel, terminal_text(&text))
+                            .await
+                            .is_err()
+                        {
+                            return Inbound::Closed;
+                        }
+                    }
+                    WorldCommand::RecordsContinue { prefix, after } => {
+                        return Inbound::Text(
+                            json!({
+                                "type": "records", "capability": self.capability,
+                                "prefix": prefix, "after": after
+                            })
+                            .to_string(),
+                        );
+                    }
+                    WorldCommand::Help => {
+                        let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /documents [prefix], /document <name>, /help, /quit\r\n";
+                        if self.handle.data(self.channel, help).await.is_err() {
+                            return Inbound::Closed;
+                        }
+                    }
+                    WorldCommand::Message(message) => {
+                        let text = format!("{message}\r\n");
+                        if self.handle.data(self.channel, text).await.is_err() {
+                            return Inbound::Closed;
+                        }
+                    }
+                    WorldCommand::Quit => return Inbound::Closed,
+                }
+            }
+            let Some(bytes) = self.frames.recv().await else {
+                return Inbound::Closed;
+            };
+            self.commands.extend(self.lines.push(&bytes));
         }
     }
 
@@ -358,19 +452,376 @@ impl SessionIo for SshIo {
             return true;
         };
         let text = match value["type"].as_str() {
+            Some("snapshot") => {
+                "World chat: type a line to chat; /help lists commands.\r\nworld> ".to_owned()
+            }
             Some("view") => match value["data"].as_str() {
-                Some(data) => format!("\x1b[H\x1b[2J{}", terminal_text(data)),
+                Some(data) => format!(
+                    "\x1b[H\x1b[2J{}\r\nType a line to chat; /help lists commands.\r\nworld> ",
+                    terminal_text(data)
+                ),
                 None => return true,
             },
             Some("error") => {
                 self.errored = true;
+                self.records_prefix = None;
                 let message = value["message"].as_str().unwrap_or("error");
                 format!("\r\n{}\r\n", terminal_text(message))
+            }
+            Some("records") => {
+                let records = value["records"].as_object();
+                let sequence = value["sequence"].as_u64().unwrap_or_default();
+                let after = value["next_after"].as_str().map(str::to_owned);
+                let text = render_records_value(records, sequence, after.as_deref());
+                if let (Some(prefix), Some(after)) = (self.records_prefix.clone(), after) {
+                    self.commands
+                        .push_back(WorldCommand::RecordsContinue { prefix, after });
+                } else {
+                    self.records_prefix = None;
+                }
+                format!("\r\n{}", terminal_text(&text))
             }
             _ => return true,
         };
         self.handle.data(self.channel, text).await.is_ok()
     }
+}
+
+const MAX_WORLD_TERMINAL_LINE: usize = 1024;
+const MAX_RECORDS_TERMINAL_BYTES: usize = 384 * 1024;
+const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
+const MAX_DOCUMENT_LIST_BYTES: usize = 32 * 1024;
+const MAX_DOCUMENT_LIST_ITEMS: usize = 512;
+
+#[derive(Debug, PartialEq, Eq)]
+enum WorldCommand {
+    Chat(String),
+    Input(String),
+    Records {
+        prefix: Option<String>,
+    },
+    RecordsContinue {
+        prefix: Option<String>,
+        after: String,
+    },
+    Documents {
+        prefix: Option<String>,
+    },
+    Document(String),
+    Help,
+    Message(String),
+    Quit,
+}
+
+fn world_command(line: &str) -> Option<WorldCommand> {
+    if line.is_empty() {
+        return None;
+    }
+    if line == "/help" {
+        return Some(WorldCommand::Help);
+    }
+    if line == "/quit" {
+        return Some(WorldCommand::Quit);
+    }
+    if line == "/records" || line.starts_with("/records ") {
+        let Some(prefix) = line.strip_prefix("/records") else {
+            return Some(WorldCommand::Message("usage: /records [prefix]".to_owned()));
+        };
+        let prefix = prefix.trim();
+        return Some(WorldCommand::Records {
+            prefix: (!prefix.is_empty()).then(|| prefix.to_owned()),
+        });
+    }
+    if line == "/documents" || line.starts_with("/documents ") {
+        let Some(prefix) = line.strip_prefix("/documents") else {
+            return Some(WorldCommand::Message(
+                "usage: /documents [prefix]".to_owned(),
+            ));
+        };
+        let prefix = prefix.trim();
+        return Some(WorldCommand::Documents {
+            prefix: (!prefix.is_empty()).then(|| prefix.to_owned()),
+        });
+    }
+    if let Some(name) = line.strip_prefix("/document ") {
+        if !name.is_empty() && name == name.trim() {
+            return Some(WorldCommand::Document(name.to_owned()));
+        }
+        return Some(WorldCommand::Message("usage: /document <name>".to_owned()));
+    }
+    if let Some(hex) = line.strip_prefix("/input ") {
+        if !hex.is_empty() && hex.len() % 2 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some(WorldCommand::Input(hex.to_ascii_lowercase()));
+        }
+        return Some(WorldCommand::Message("usage: /input <hex>".to_owned()));
+    }
+    if line.starts_with('/') {
+        return Some(WorldCommand::Message(
+            "unknown command; type /help".to_owned(),
+        ));
+    }
+    Some(WorldCommand::Chat(line.to_owned()))
+}
+
+#[derive(Default)]
+struct WorldLineBuffer {
+    line: Vec<u8>,
+    overflow: bool,
+    after_cr: bool,
+    escape: WorldEscape,
+}
+
+#[derive(Default)]
+enum WorldEscape {
+    #[default]
+    None,
+    Start,
+    Sequence,
+    Osc,
+    OscEscape,
+    String,
+    StringEscape,
+}
+
+impl WorldLineBuffer {
+    fn push(&mut self, packet: &[u8]) -> Vec<WorldCommand> {
+        let mut commands = Vec::new();
+        for &byte in packet {
+            match self.escape {
+                WorldEscape::Start => {
+                    self.escape = match byte {
+                        b'[' | b'O' => WorldEscape::Sequence,
+                        b']' => WorldEscape::Osc,
+                        b'P' | b'_' | b'^' => WorldEscape::String,
+                        _ => WorldEscape::None,
+                    };
+                    continue;
+                }
+                WorldEscape::Sequence => {
+                    if (0x40..=0x7e).contains(&byte) {
+                        self.escape = WorldEscape::None;
+                    }
+                    continue;
+                }
+                WorldEscape::Osc => {
+                    if byte == 0x07 {
+                        self.escape = WorldEscape::None;
+                    } else if byte == 0x1b {
+                        self.escape = WorldEscape::OscEscape;
+                    }
+                    continue;
+                }
+                WorldEscape::OscEscape => {
+                    self.escape = if byte == b'\\' {
+                        WorldEscape::None
+                    } else {
+                        WorldEscape::Osc
+                    };
+                    continue;
+                }
+                WorldEscape::String => {
+                    if byte == 0x1b {
+                        self.escape = WorldEscape::StringEscape;
+                    }
+                    continue;
+                }
+                WorldEscape::StringEscape => {
+                    self.escape = if byte == b'\\' {
+                        WorldEscape::None
+                    } else {
+                        WorldEscape::String
+                    };
+                    continue;
+                }
+                WorldEscape::None => {}
+            }
+            if byte == 0x1b {
+                self.escape = WorldEscape::Start;
+                continue;
+            }
+            let after_cr = std::mem::take(&mut self.after_cr);
+            if byte == b'\n' && after_cr {
+                continue;
+            }
+            if byte == b'\r' || byte == b'\n' {
+                self.after_cr = byte == b'\r';
+                if !self.overflow {
+                    let bytes = std::mem::take(&mut self.line);
+                    let line = String::from_utf8_lossy(&bytes);
+                    if let Some(command) = world_command(&line) {
+                        commands.push(command);
+                    }
+                } else {
+                    self.line.clear();
+                }
+                self.overflow = false;
+                continue;
+            }
+            if byte == 0x03 || (byte == 0x04 && self.line.is_empty()) {
+                commands.push(WorldCommand::Quit);
+            } else if matches!(byte, 0x7f | 0x08) {
+                self.line.pop();
+            } else if (0x20..=0x7e).contains(&byte) || byte >= 0x80 {
+                if self.line.len() < MAX_WORLD_TERMINAL_LINE && !self.overflow {
+                    self.line.push(byte);
+                } else {
+                    self.overflow = true;
+                    self.line.clear();
+                }
+            }
+        }
+        commands
+    }
+}
+
+fn render_records_value(
+    records: Option<&serde_json::Map<String, serde_json::Value>>,
+    sequence: u64,
+    next_after: Option<&str>,
+) -> String {
+    let mut output = format!("records at sequence {sequence}:\n");
+    if let Some(records) = records {
+        for (key, value) in records {
+            let key = serde_json::to_string(key).unwrap_or_else(|_| "\"?\"".to_owned());
+            let value = serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned());
+            let line = format!("{key} = {value}\n");
+            if output.len() + line.len() + 32 > MAX_RECORDS_TERMINAL_BYTES {
+                output.push_str("[page display truncated]\n");
+                break;
+            }
+            output.push_str(&line);
+        }
+    }
+    if next_after.is_some() {
+        output.push_str("more records; fetching next page\n");
+    }
+    output
+}
+
+#[cfg(test)]
+fn render_records(
+    records: &crate::world::Records,
+    sequence: u64,
+    next_after: Option<&str>,
+) -> String {
+    let value = serde_json::to_value(records).ok();
+    render_records_value(
+        value.as_ref().and_then(serde_json::Value::as_object),
+        sequence,
+        next_after,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocumentError {
+    InvalidName,
+    Missing,
+    TooLarge,
+    Binary,
+    Unavailable,
+}
+
+impl DocumentError {
+    const fn message(self) -> &'static str {
+        match self {
+            Self::InvalidName => "document name must be a public .txt, .md, or .markdown tag",
+            Self::Missing => "document not found",
+            Self::TooLarge => "document exceeds the 64 KiB SSH viewing limit",
+            Self::Binary => "document is not valid UTF-8 text",
+            Self::Unavailable => "document unavailable",
+        }
+    }
+}
+
+fn is_viewable_document_name(name: &str) -> bool {
+    if !is_public_document_name(name) {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt")
+}
+
+async fn list_public_documents(
+    store: &iroh_blobs::api::Store,
+    prefix: Option<&str>,
+) -> anyhow::Result<String> {
+    let mut tags = store.tags().list().await?;
+    let mut names = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut truncated = false;
+    while let Some(item) = tags.next().await {
+        let item = item?;
+        let Ok(name) = std::str::from_utf8(item.name.as_ref()) else {
+            continue;
+        };
+        if !is_public_document_name(name) || prefix.is_some_and(|p| !name.starts_with(p)) {
+            continue;
+        }
+        let line = format!("{name}\n");
+        if names.len() >= MAX_DOCUMENT_LIST_ITEMS
+            || total_bytes + line.len() > MAX_DOCUMENT_LIST_BYTES
+        {
+            truncated = true;
+            break;
+        }
+        total_bytes += line.len();
+        names.push(name.to_owned());
+    }
+    names.sort();
+    let mut output = String::from("public named files:\n");
+    if names.is_empty() {
+        output.push_str("(none)\n");
+    } else {
+        for name in names {
+            output.push_str(&name);
+            output.push('\n');
+        }
+    }
+    if truncated {
+        output.push_str("[listing truncated]\n");
+    }
+    output.push_str("View UTF-8 .txt/.md/.markdown files with /document <name>.\n");
+    Ok(output)
+}
+
+fn is_public_document_name(name: &str) -> bool {
+    !name.is_empty()
+        && !crate::tags::is_internal_tag(name)
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.chars().any(char::is_control)
+}
+
+async fn read_public_document(
+    store: &iroh_blobs::api::Store,
+    name: &str,
+) -> Result<String, DocumentError> {
+    if !is_viewable_document_name(name) {
+        return Err(DocumentError::InvalidName);
+    }
+    let tag = store
+        .tags()
+        .get(name)
+        .await
+        .map_err(|_| DocumentError::Unavailable)?
+        .ok_or(DocumentError::Missing)?;
+    let size = match store.blobs().status(tag.hash).await {
+        Ok(iroh_blobs::api::blobs::BlobStatus::Complete { size }) => size,
+        _ => return Err(DocumentError::Unavailable),
+    };
+    if size > MAX_DOCUMENT_BYTES as u64 {
+        return Err(DocumentError::TooLarge);
+    }
+    let bytes = store
+        .blobs()
+        .get_bytes(tag.hash)
+        .await
+        .map_err(|_| DocumentError::Unavailable)?;
+    if bytes.len() > MAX_DOCUMENT_BYTES {
+        return Err(DocumentError::TooLarge);
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|_| DocumentError::Binary)?;
+    Ok(format!("--- {name} ({size} bytes; read-only) ---\n{text}"))
 }
 
 /// One explorer login: the world, the caller it acts as, and the secret it
@@ -650,11 +1101,12 @@ mod tests {
     }
 
     async fn start(hub: WorldHub) -> (u16, tokio::task::JoinHandle<std::io::Result<()>>) {
-        start_limited(hub, MAX_CONNECTIONS).await
+        start_limited(hub, test_store(), MAX_CONNECTIONS).await
     }
 
     async fn start_limited(
         hub: WorldHub,
+        blobs: iroh_blobs::api::Store,
         max_connections: usize,
     ) -> (u16, tokio::task::JoinHandle<std::io::Result<()>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -662,8 +1114,25 @@ mod tests {
         let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         (
             port,
-            tokio::spawn(serve_limited(listener, hub, host_key, max_connections)),
+            tokio::spawn(serve_limited(
+                listener,
+                hub,
+                host_key,
+                blobs,
+                max_connections,
+            )),
         )
+    }
+
+    async fn start_with_store(
+        hub: WorldHub,
+        blobs: iroh_blobs::api::Store,
+    ) -> (u16, tokio::task::JoinHandle<std::io::Result<()>>) {
+        start_limited(hub, blobs, MAX_CONNECTIONS).await
+    }
+
+    fn test_store() -> iroh_blobs::api::Store {
+        iroh_blobs::store::mem::MemStore::new().into()
     }
 
     async fn connect(port: u16, password: &str) -> client::Handle<TrustAll> {
@@ -926,7 +1395,12 @@ mod tests {
             }
         })
         .await
-        .expect("timed out waiting for the terminal");
+        .unwrap_or_else(|_| {
+            panic!(
+                "timed out waiting for {needle:?}; screen: {:?}",
+                terminal.screen().contents()
+            )
+        });
     }
 
     fn lobby_hub() -> WorldHub {
@@ -946,8 +1420,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_shell_accepts_chat_and_reads_authorized_records_pages() {
+        let hub = lobby_hub();
+        let world = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .world()
+            .clone();
+        let mut events = world.subscribe();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-chat".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell(&session).await;
+        let mut terminal = vt100::Parser::new(24, 80, 0);
+        read_until(&mut channel, &mut terminal, "world>").await;
+
+        channel.data(&b"hello from SSH\r"[..]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(event) = events.recv().await {
+                    if matches!(event.kind, crate::world::WorldEventKind::Chat { .. }) {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("chat line was not sent to the world");
+        channel.data(&b"/records\r"[..]).await.unwrap();
+        read_until(&mut channel, &mut terminal, "records at sequence").await;
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn connections_over_the_limit_are_refused_at_auth() {
-        let (port, server) = start_limited(lobby_hub(), 1).await;
+        let (port, server) = start_limited(lobby_hub(), test_store(), 1).await;
 
         let _first = connect(port, &"0".repeat(64)).await;
         let config = Arc::new(client::Config::default());
@@ -970,6 +1490,184 @@ mod tests {
             terminal_text("a\x1b]52;c;AAAA\x07b\r\nc\td"),
             "a]52;c;AAAAb\r\nc\td"
         );
+    }
+
+    #[test]
+    fn world_line_buffer_handles_fragmented_packets_and_crlf_once() {
+        let mut input = WorldLineBuffer::default();
+        assert!(input.push(b"hel").is_empty());
+        assert_eq!(
+            input.push(b"lo\r"),
+            vec![WorldCommand::Chat("hello".into())]
+        );
+        assert!(input.push(b"\n").is_empty());
+        assert_eq!(
+            input.push(b"next\n"),
+            vec![WorldCommand::Chat("next".into())]
+        );
+    }
+
+    #[test]
+    fn world_lines_map_commands_without_echoing_or_treating_empty_as_chat() {
+        assert_eq!(world_command(""), None);
+        assert_eq!(
+            world_command("hi there"),
+            Some(WorldCommand::Chat("hi there".into()))
+        );
+        assert_eq!(
+            world_command("/input 00aF"),
+            Some(WorldCommand::Input("00af".into()))
+        );
+        assert_eq!(
+            world_command("/records abc"),
+            Some(WorldCommand::Records {
+                prefix: Some("abc".into())
+            })
+        );
+        assert_eq!(
+            world_command("/documents notes"),
+            Some(WorldCommand::Documents {
+                prefix: Some("notes".into())
+            })
+        );
+        assert_eq!(
+            world_command("/document notes.md"),
+            Some(WorldCommand::Document("notes.md".into()))
+        );
+        assert_eq!(world_command("/help"), Some(WorldCommand::Help));
+        assert_eq!(world_command("/quit"), Some(WorldCommand::Quit));
+        assert_eq!(
+            world_command("/input nope"),
+            Some(WorldCommand::Message("usage: /input <hex>".into()))
+        );
+    }
+
+    #[test]
+    fn world_line_buffer_discards_overlong_line_until_newline() {
+        let mut input = WorldLineBuffer::default();
+        assert!(input.push(&vec![b'x'; MAX_LINE + 1]).is_empty());
+        assert_eq!(
+            input.push(b"tail\nokay\n"),
+            vec![WorldCommand::Chat("okay".into())]
+        );
+    }
+
+    #[test]
+    fn world_line_buffer_drops_fragmented_terminal_control_strings() {
+        let mut input = WorldLineBuffer::default();
+        assert!(input.push(b"safe\x1b]52;c;secret").is_empty());
+        assert_eq!(
+            input.push(b"\x07still safe\r\n"),
+            vec![WorldCommand::Chat("safestill safe".into())]
+        );
+    }
+
+    #[test]
+    fn records_render_as_bounded_json_safe_terminal_text() {
+        let records: crate::world::Records =
+            serde_json::from_str(r#"{"a\u001b[31m":{"n":1},"b":"line\nvalue"}"#).unwrap();
+        let text = render_records(&records, 7, Some("b"));
+        assert!(text.contains("sequence 7"));
+        assert!(text.contains("\"a\\u001b[31m\" = {\"n\":1}"));
+        assert!(text.contains("\"b\" = \"line\\nvalue\""));
+        assert!(text.contains("more records; fetching next page"));
+        assert!(text.len() <= MAX_RECORDS_TERMINAL_BYTES);
+    }
+
+    async fn put_document(store: &iroh_blobs::api::Store, name: &str, bytes: Vec<u8>) {
+        let outcome = store.blobs().add_bytes(bytes).await.unwrap();
+        store.tags().set(name, outcome.hash).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn document_reader_limits_names_sizes_and_binary_content() {
+        let store = test_store();
+        put_document(&store, "notes.md", b"# hello\ntext".to_vec()).await;
+        put_document(&store, "image.txt", vec![0xff, 0x00]).await;
+        put_document(&store, "large.txt", vec![b'x'; MAX_DOCUMENT_BYTES + 1]).await;
+        put_document(&store, ".private.md", b"hidden".to_vec()).await;
+        put_document(&store, "evil\nworld.md", b"terminal injection".to_vec()).await;
+        put_document(&store, "résumé.md", b"unicode ok".to_vec()).await;
+        assert!(
+            read_public_document(&store, "notes.md")
+                .await
+                .unwrap()
+                .contains("# hello")
+        );
+        assert_eq!(
+            read_public_document(&store, "missing.md").await,
+            Err(DocumentError::Missing)
+        );
+        assert_eq!(
+            read_public_document(&store, "image.txt").await,
+            Err(DocumentError::Binary)
+        );
+        assert_eq!(
+            read_public_document(&store, "large.txt").await,
+            Err(DocumentError::TooLarge)
+        );
+        assert_eq!(
+            read_public_document(&store, ".private.md").await,
+            Err(DocumentError::InvalidName)
+        );
+        assert_eq!(
+            read_public_document(&store, "../notes.md").await,
+            Err(DocumentError::InvalidName)
+        );
+        assert_eq!(
+            read_public_document(&store, "evil\nworld.md").await,
+            Err(DocumentError::InvalidName)
+        );
+        assert!(
+            read_public_document(&store, "résumé.md")
+                .await
+                .unwrap()
+                .contains("unicode ok")
+        );
+        let listing = list_public_documents(&store, Some("notes")).await.unwrap();
+        assert!(listing.contains("notes.md"));
+        assert!(!listing.contains(".private.md"));
+        assert!(!listing.contains("image.txt"));
+        let all = list_public_documents(&store, None).await.unwrap();
+        assert!(all.contains("résumé.md"));
+        assert!(!all.contains("evil\nworld.md"));
+    }
+
+    #[tokio::test]
+    async fn a_shell_lists_and_views_read_only_documents_from_its_server_store() {
+        let store = test_store();
+        put_document(
+            &store,
+            "guide.md",
+            b"# SSH guide\nhello\x1b[2Jworld".to_vec(),
+        )
+        .await;
+        put_document(&store, ".internal.md", b"hidden".to_vec()).await;
+        let hub = lobby_hub();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-docs".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start_with_store(hub, store).await;
+        let session = connect(port, &capability).await;
+        let mut channel = shell(&session).await;
+        let mut terminal = vt100::Parser::new(24, 80, 0);
+        read_until(&mut channel, &mut terminal, "world>").await;
+        channel.data(&b"/documents guide\r"[..]).await.unwrap();
+        read_until(&mut channel, &mut terminal, "guide.md").await;
+        assert!(!terminal.screen().contents().contains(".internal.md"));
+        channel.data(&b"/document guide.md\r"[..]).await.unwrap();
+        read_until(&mut channel, &mut terminal, "# SSH guide").await;
+        assert!(!terminal.screen().contents().contains("\x1b[2J"));
+        server.abort();
     }
 
     #[cfg(feature = "sandbox")]
@@ -1005,7 +1703,7 @@ mod tests {
         let mut channel = shell(&session).await;
         let mut terminal = vt100::Parser::new(24, 80, 0);
         read_until(&mut channel, &mut terminal, "count=0").await;
-        channel.data(&b"inc"[..]).await.unwrap();
+        channel.data(&b"/input 696e63\r"[..]).await.unwrap();
         read_until(&mut channel, &mut terminal, "count=1").await;
         server.abort();
     }
