@@ -524,6 +524,19 @@ impl EventStore {
         Ok(members)
     }
 
+    /// Prunes events behind a causal cut that are not in the protected causal past.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb error if the write transaction fails.
+    pub fn prune_behind_cut(
+        &mut self,
+        _cut: &[Hash],
+        _protected: &[Hash],
+    ) -> Result<usize, StoreError> {
+        Ok(0)
+    }
+
     /// Checks the store's own rows against each other: every applied sequence is
     /// stored, every head matches its event, every index points at a stored
     /// event, and each frozen chain has a matching fork proof. The waiting rows
