@@ -63,3 +63,9 @@
 - Invariants check (`check_invariants`) and query folds (`roster`, `tag_claims`, `documents`) produce identical results before and after pruning.
 - Red first: integration tests in `tests/retention_pruning.rs` failed initially (commit 678e9e63) and passed after implementation (commit a3c82d7c).
 - Targeted test suite passes: `retention_pruning` (4 tests), `event_store` (92 passed, 2 ignored).
+
+## 2026-10-14T00:00:00Z Acceptance: durable signed revisions for web saves
+
+- Every successful manual save or autosave checkpoint publishes the saved bytes as a blob and records an applied, node-signed `document.put` revision naming its BLAKE3 hash, byte size, and media type, plus a `filename` tag. Each save is a separate revision; historical blobs/events remain available. The event ID is returned to the caller. Legacy filename blob tags remain for existing file views.
+- ProseMirror steps remain ephemeral in-memory collaboration transport; only save/autosave checkpoints become durable signed revisions.
+- Save acceptance requires tests for applied signed record metadata, filename claim, blob retrieval, distinct repeated revisions, and an error response rather than success when publication fails.

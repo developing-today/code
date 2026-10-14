@@ -1881,6 +1881,130 @@ async fn archive_original_tag(
     }
 }
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod save_publication_tests {
+    use std::{sync::Arc, time::Duration};
+
+    use axum::{body::to_bytes, extract::State};
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+    use serde_json::json;
+
+    use super::*;
+    use crate::{
+        event_store::EventStore,
+        tags::TagStore,
+        waiting::WaitingLimits,
+        web::{AppState, SaveRateLimiter},
+    };
+
+    async fn state() -> (tempfile::TempDir, AppState, Endpoint, Docs) {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "save-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let state = AppState::new(
+            store,
+            None,
+            "save-test".to_owned(),
+            tags,
+            [3; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        (dir, state, endpoint, docs)
+    }
+
+    async fn save(state: AppState, name: &str, text: &str) -> Response {
+        save_handler(
+            State(state),
+            Json(SaveRequest {
+                doc_id: iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+                name: name.to_owned(),
+                doc: json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":text}]}]}),
+            }),
+        )
+        .await
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn successful_save_publishes_an_applied_signed_document_and_keeps_the_blob_fetchable() {
+        let (dir, mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+        let response = save(state.clone(), "revision.md", "first revision").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let event_id: p2panda_core::Hash = body["document_id"].as_str().unwrap().parse().unwrap();
+        let event_store =
+            EventStore::open(&dir.path().join("events"), WaitingLimits::default(), 0).unwrap();
+        let documents = event_store.documents().unwrap();
+        let document = documents
+            .iter()
+            .find(|document| document.id == event_id)
+            .unwrap();
+        let blob_hash = iroh_blobs::Hash::from_bytes(*document.document.content.as_bytes());
+        assert_eq!(body["hash"].as_str().unwrap(), blob_hash.to_string());
+        let bytes = state.store.blobs().get_bytes(blob_hash).await.unwrap();
+        assert_eq!(
+            document.document.blob_hash().to_string(),
+            blob_hash.to_string()
+        );
+        assert_eq!(document.document.size, u64::try_from(bytes.len()).unwrap());
+        assert_eq!(document.document.media_type, "text/markdown; charset=utf-8");
+        assert_eq!(
+            document.author,
+            p2panda_core::SigningKey::from_bytes(&[3; 32])
+                .verifying_key()
+                .as_bytes()
+                .to_owned()
+        );
+        let claims = event_store.tag_claims().unwrap();
+        assert!(claims.iter().any(|claim| {
+            claim.subject == event_id
+                && claim.name == "filename"
+                && claim.value.as_deref() == Some("revision.md")
+        }));
+
+        // Repeated successful checkpoints get distinct durable revision events.
+        drop(event_store);
+        let second = save(state.clone(), "revision.md", "second revision").await;
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_body = response_json(second).await;
+        assert_ne!(body["document_id"], second_body["document_id"]);
+        let event_store =
+            EventStore::open(&dir.path().join("events"), WaitingLimits::default(), 0).unwrap();
+        assert_eq!(event_store.documents().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn refused_filename_tag_does_not_return_a_success_response() {
+        let (_dir, state, _endpoint, _docs) = state().await;
+        let response = save(state, &format!("{}.md", "x".repeat(600)), "content").await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+}
+
 // =============================================================================
 // Identity API Handlers
 // =============================================================================
