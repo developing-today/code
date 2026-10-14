@@ -104,20 +104,20 @@ function createPanel(container: HTMLElement): HTMLElement {
 
   panel.innerHTML = `
     <div class="search-panel-row">
-      <input type="text" id="search-input" class="search-field" placeholder="Find…" autocomplete="off" spellcheck="false" />
-      <span class="search-match-count" id="search-match-count"></span>
-      <button class="search-btn" id="search-prev" title="Previous (Shift+Enter)">&#x25B2;</button>
-      <button class="search-btn" id="search-next" title="Next (Enter)">&#x25BC;</button>
+      <input type="text" id="search-input" class="search-field" placeholder="Find…" aria-label="Find text" autocomplete="off" spellcheck="false" />
+      <span class="search-match-count" id="search-match-count" aria-live="polite"></span>
+      <button class="search-btn" id="search-prev" title="Previous (Shift+Enter)" aria-label="Find previous">&#x25B2;</button>
+      <button class="search-btn" id="search-next" title="Next (Enter)" aria-label="Find next">&#x25BC;</button>
       <label class="search-toggle" title="Case sensitive">
-        <input type="checkbox" id="search-case" /><span>Aa</span>
+        <input type="checkbox" id="search-case" aria-label="Match case" /><span>Aa</span>
       </label>
       <label class="search-toggle" title="Regular expression">
-        <input type="checkbox" id="search-regex" /><span>.*</span>
+        <input type="checkbox" id="search-regex" aria-label="Use regular expression" /><span>.*</span>
       </label>
-      <button class="search-btn search-close" id="search-close" title="Close (Escape)">&times;</button>
+      <button class="search-btn search-close" id="search-close" title="Close (Escape)" aria-label="Close search">&times;</button>
     </div>
     <div class="search-panel-row search-replace-row" id="search-replace-row" style="display:none">
-      <input type="text" id="replace-input" class="search-field" placeholder="Replace…" autocomplete="off" spellcheck="false" />
+      <input type="text" id="replace-input" class="search-field" placeholder="Replace…" aria-label="Replace with" autocomplete="off" spellcheck="false" />
       <button class="search-btn" id="replace-one" title="Replace">Replace</button>
       <button class="search-btn" id="replace-all" title="Replace all">All</button>
     </div>
