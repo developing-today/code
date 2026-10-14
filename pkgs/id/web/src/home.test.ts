@@ -6,9 +6,7 @@ describe("home tag feeds", () => {
     const list = document.createElement("ol");
     const label = '<img src=x onerror="alert(1)">';
 
-    renderTagList(list, [
-      { label, subject: "notes.md", timestamp: 1_800_000_000_000_000, occurrences: 1 },
-    ]);
+    renderTagList(list, [{ label, subject: "notes.md", timestamp: 1_800_000_000_000_000, occurrences: 1 }]);
 
     expect(list.querySelector("img")).toBeNull();
     expect(list.querySelector("a")?.textContent).toBe(label);
