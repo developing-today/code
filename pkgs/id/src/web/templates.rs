@@ -790,6 +790,11 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
         <input data-world-seed class="input input-bordered w-24" type="number" value="1" aria-label="World seed">
         <button data-world-install class="btn btn-warning" type="button">Install Wasm module</button>
       </div>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <input data-world-source class="file-input file-input-bordered" type="file" accept=".roc,text/plain" multiple aria-label="Roc world sources">
+        <button data-world-compile class="btn btn-warning" type="button">Compile &amp; install Roc sources</button>
+      </div>
+      <p class="text-xs opacity-60">Choose main.roc and up to 7 additional .roc files. Each file is limited to 128 KiB and all sources together to 256 KiB. Compilation runs on the host (up to 120 seconds).</p>
       <p class="text-xs opacity-60">Uploads run in the host's import-free Wasmtime sandbox. The current world restarts at its module seed.</p>
     </details>
   </section>
