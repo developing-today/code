@@ -710,7 +710,7 @@ the server is expressed as **data it returns** and **events it receives**:
 - `wants : model -> Str` (JSON, a pure projection like `records`) lists the
   subscriptions and requests the model currently has:
   `{"v":1,"subscribe":["time.tick:5000","players"],
-  "requests":[{"id":"r1","cap":"time.now"}]}`.
+"requests":[{"id":"r1","cap":"time.now"}]}`.
 - The host turns each new thing into an **event**, delivered through the
   existing `update(model, 0, json)` (participant 0 is the host; real
   participants start at 1). Every such event is **journaled** before it is
