@@ -163,8 +163,8 @@ test.describe("SPA Navigation", () => {
   test("nav links exist in header", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("a[data-nav][href='/files']", { hasText: "files" })).toBeVisible();
-    await expect(page.locator("a[data-nav][href='/']", { hasText: "id" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "files", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "id", exact: true })).toBeVisible();
     await expect(page.locator("a[data-nav][href='/peers']", { hasText: "peers" })).toBeVisible();
     await expect(page.locator("a[data-nav][href='/settings']", { hasText: "settings" })).toBeVisible();
   });
