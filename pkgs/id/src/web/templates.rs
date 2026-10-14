@@ -1044,7 +1044,13 @@ mod tests {
 
     #[test]
     fn test_render_editor_page_keeps_file_browser_navigation() {
-        let html = render_editor_page("doc-id", "notes.md", "content", "hash", &AssetUrls::default());
+        let html = render_editor_page(
+            "doc-id",
+            "notes.md",
+            "content",
+            "hash",
+            &AssetUrls::default(),
+        );
         assert!(html.contains("<a href=\"/files\" data-nav>files</a>"));
         assert!(html.contains("<a href=\"/\" data-nav>id</a>"));
     }
