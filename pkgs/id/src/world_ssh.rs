@@ -972,6 +972,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn world_line_buffer_handles_fragmented_packets_and_crlf_once() {
+        let mut input = WorldLineBuffer::default();
+        assert!(input.push(b"hel").is_empty());
+        assert_eq!(
+            input.push(b"lo\r"),
+            vec![WorldCommand::Chat("hello".into())]
+        );
+        assert!(input.push(b"\n").is_empty());
+        assert_eq!(
+            input.push(b"next\n"),
+            vec![WorldCommand::Chat("next".into())]
+        );
+    }
+
+    #[test]
+    fn world_lines_map_commands_without_echoing_or_treating_empty_as_chat() {
+        assert_eq!(world_command("", "secret"), None);
+        assert_eq!(
+            world_command("hi there", "secret"),
+            Some(WorldCommand::Chat("hi there".into()))
+        );
+        assert_eq!(
+            world_command("/input 00aF", "secret"),
+            Some(WorldCommand::Input("00af".into()))
+        );
+        assert_eq!(
+            world_command("/records abc", "secret"),
+            Some(WorldCommand::Records {
+                prefix: Some("abc".into())
+            })
+        );
+        assert_eq!(world_command("/help", "secret"), Some(WorldCommand::Help));
+        assert_eq!(world_command("/quit", "secret"), Some(WorldCommand::Quit));
+        assert_eq!(
+            world_command("/input nope", "secret"),
+            Some(WorldCommand::Message("usage: /input <hex>".into()))
+        );
+    }
+
+    #[test]
+    fn world_line_buffer_discards_overlong_line_until_newline() {
+        let mut input = WorldLineBuffer::default();
+        assert!(input.push(&vec![b'x'; MAX_LINE + 1]).is_empty());
+        assert_eq!(
+            input.push(b"tail\nokay\n"),
+            vec![WorldCommand::Chat("okay".into())]
+        );
+    }
+
+    #[test]
+    fn records_render_as_bounded_json_safe_terminal_text() {
+        let records = serde_json::from_str(r#"{"a\u001b[31m":{"n":1},"b":"line\nvalue"}"#).unwrap();
+        let text = render_records(&records, 7, Some("b"));
+        assert!(text.contains("sequence 7"));
+        assert!(text.contains("a[31m = {\"n\":1}"));
+        assert!(text.contains("b = \"line\\nvalue\""));
+        assert!(text.contains("more records; fetching next page"));
+        assert!(text.len() <= MAX_RECORDS_PAGE_BYTES);
+    }
+
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn a_shell_plays_the_world_and_repaints_each_view() {
