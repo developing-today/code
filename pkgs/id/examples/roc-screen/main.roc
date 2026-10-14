@@ -19,7 +19,7 @@ update = |model, _pid, ev| {
 view : Model -> Str
 view = |model| {
     base = Screen.boxed(Screen.new(20, 3), 0, 0, 20, 3, "counter")
-    Screen.render_plain(Screen.put_text(base, 2, 1, "count=${model.count.to_str()}", { fg: 0, bg: 0, bold: Bool.False }))
+    Screen.render_json(Screen.put_text(base, 2, 1, "count=${model.count.to_str()}", { fg: 0, bg: 0, bold: Bool.False }))
 }
 
 records : Model -> Str

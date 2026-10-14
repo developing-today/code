@@ -1,5 +1,7 @@
 /** Browser presentation for the server-authoritative world session. */
 
+import { renderWorldSurface, type ScreenSurface } from "./world-surface";
+
 type WorldFrame = {
   type:
     | "snapshot"
@@ -23,6 +25,7 @@ type WorldFrame = {
   };
   sequence?: number;
   data?: string;
+  surface?: ScreenSurface;
   invite?: { capability?: string; participant_id?: number; display_name?: string };
   capability?: string;
   records?: Record<string, unknown>;
@@ -167,6 +170,7 @@ function initWorld(): void {
         break;
       }
       case "view":
+        if (frame.surface && renderWorldSurface(view, frame.surface)) break;
         if (frame.data !== undefined) view.textContent = frame.data;
         break;
       case "records": {

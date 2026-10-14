@@ -242,6 +242,9 @@ enum ServerFrame<'a> {
     View {
         sequence: u64,
         data: &'a str,
+        /// Optional typed screen surface. Older clients can continue using `data`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        surface: Option<&'a crate::world_presentation::WorldSurface>,
     },
     ModuleInfo {
         world_id: String,
@@ -1889,11 +1892,16 @@ async fn send_view<I: SessionIo>(
             if data.len() > MAX_FRAME_BYTES {
                 return send_error(io, "world presentation is too large").await;
             }
+            let surface = match crate::world_presentation::parse_surface(&data) {
+                Ok(surface) => surface,
+                Err(_) => return send_error(io, "invalid world screen presentation").await,
+            };
             send_json(
                 io,
                 &ServerFrame::View {
                     sequence,
                     data: &data,
+                    surface: surface.as_ref(),
                 },
             )
             .await
@@ -2478,10 +2486,29 @@ mod tests {
         let view = serde_json::to_string(&ServerFrame::View {
             sequence: 3,
             data: "count=1",
+            surface: None,
         })
         .unwrap();
         assert!(view.contains("\"type\":\"view\""));
         assert!(view.contains("\"data\":\"count=1\""));
+    }
+
+    #[test]
+    fn typed_screen_is_an_optional_view_surface_without_dropping_legacy_data() {
+        let data =
+            r#"{"kind":"screen","version":1,"width":2,"height":1,"rows":["ok"],"styles":[[]]}"#;
+        let surface = crate::world_presentation::parse_surface(data)
+            .unwrap()
+            .unwrap();
+        let encoded = serde_json::to_string(&ServerFrame::View {
+            sequence: 8,
+            data,
+            surface: Some(&surface),
+        })
+        .unwrap();
+        assert!(encoded.contains("\"data\":\"{\\\"kind\\\":\\\"screen\\\""));
+        assert!(encoded.contains("\"surface\":{\"kind\":\"screen\",\"version\":1"));
+        assert!(encoded.contains("\"symbol\":\"o\""));
     }
 
     #[test]

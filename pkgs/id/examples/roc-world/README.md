@@ -17,7 +17,7 @@ A world program provides these functions:
 ```
 init    : U64 -> model                    # seed from the host
 update  : model, U64, Str -> model        # second argument is the participant id
-view    : model -> Str                    # the presentation as text
+view    : model -> Str                    # legacy text or a portable screen document
 records : model -> Str                    # optional JSON object projection
 wants : model -> Str                      # optional: subscriptions and requests
 snapshot : model -> Str                   # state as text, for journal checkpoints
@@ -30,6 +30,14 @@ requires no `Task`, and modules are compiled to an import-free Wasm module.
 `records` is optional: when present it must return a JSON object of string
 keys to JSON values, which the host validates and mirrors into the world's
 iroh-docs document.
+
+`view` may return ordinary UTF-8 text, or a versioned portable screen JSON
+document produced by `Screen.render_json`. The host validates the grid (at
+most 120×50 cells), Unicode display widths, palette indices, and style ranges.
+The SSH presenter emits only trusted cursor/colour escape codes, while the web
+presenter creates text-only DOM nodes with fixed palette styles. Never put
+terminal escape sequences, HTML, or CSS in a guest view. `Screen.render_plain`
+remains useful for older clients and text-only output.
 
 `wants` is the capability protocol: a JSON document of the subscriptions the
 program holds and the one-shot requests it has outstanding
