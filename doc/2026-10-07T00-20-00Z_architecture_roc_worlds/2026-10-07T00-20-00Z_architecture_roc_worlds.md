@@ -1076,19 +1076,34 @@ serves the world to any ordinary SSH client: `ssh -p PORT <WORLD>@host`, with
 the invite capability as the password. An empty user names the default world.
 The password is checked when the shell opens, through the same join path as
 Iroh and WebSocket, so a wrong capability is answered inside the shell with
-`join denied`. The shell's keystrokes become `input` frames, and each `view`
-frame clears the terminal and repaints it; `error` frames are printed.
+`join denied`. The shell line-buffers fragmented terminal packets: ordinary
+complete lines are `chat` frames, `/input <hex>` sends raw program input,
+`/records [prefix]` requests capability-authorized record pages, `/help` lists
+commands and `/quit` closes the shell. Empty and overlong lines and terminal
+control sequences are not submitted. Views clear and repaint the terminal, so
+the default program chat/view and records can be used in one session.
+
+The same local blob store opened by `serve` backs `/documents [prefix]` and
+`/document <name>`. Listing skips internal dot-tags and is bounded; viewing is
+read-only and limited to exact public `.txt`, `.md` or `.markdown` names whose
+blob is complete, at most 64 KiB and valid UTF-8. Terminal control characters
+are removed. Missing, binary and oversized files are refused; SSH does not
+resolve filesystem paths or traverse private namespaces. Collaboration edits
+remain in the web ProseMirror editor.
 
 The server host key lives in `.ssh-host-key` (created on first start). Input
 is queued with `try_send` rather than awaited: the handler runs on the same
 russh loop that flushes output, so waiting for queue space could deadlock.
 A flood of keystrokes drops input instead of stalling the session.
 
-Verification: `world_ssh` unit tests drive `serve` with a russh client. A
-wrong password is refused inside the shell. With the sandbox feature, the
-counter module is installed in-process and the client sees `count=0`, then
-`count=1` after `inc`, parsed with `vt100`. The test does not start the full
-binary, because its Iroh startup stalls in the sandbox.
+Verification: `world_ssh` tests drive `serve` with a russh client and cover
+fragmented lines, CR/LF, maximum length, commands, records rendering, authorized
+chat/records requests, and read-only document listing/viewing including missing,
+binary, oversized and internal names. A wrong password is refused inside the
+shell. With the sandbox feature, the counter module is installed in-process
+and the client sees `count=0`, then `count=1` after `/input 696e63`, parsed with
+`vt100`. The tests do not start the full binary, because its Iroh startup stalls
+in the sandbox.
 
 Access control is not decided by this transport. The SSH password is the same
 bearer capability the other transports accept, so the open question (ACL
