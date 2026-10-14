@@ -1,0 +1,4 @@
+## 2024-05-18 - ProseMirror Decoration Layout Thrashing
+
+**Learning:** In ProseMirror, deriving decoration keys from random variables (like `Math.random()`, or a `decorationGeneration` global counter incremented every update) causes ProseMirror to unmount and remount the DOM node on every state change, even when the underlying cursor data hasn't changed. This leads to layout thrashing and high CPU usage.
+**Action:** When implementing ProseMirror decorations, always use stable keys derived from the underlying data properties (e.g. `clientID`, `position`, `head`, `anchor`). Never use random or incrementing generations for decoration widget keys.
