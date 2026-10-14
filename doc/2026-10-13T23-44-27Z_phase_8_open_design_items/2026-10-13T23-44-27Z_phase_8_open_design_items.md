@@ -18,7 +18,7 @@
 | Step | Track       | Status   | Commits            | Tests                                     | Notes                                        |
 | ---- | ----------- | -------- | ------------------ | ----------------------------------------- | -------------------------------------------- |
 | P8.1 | -           | deferred |                    |                                           | causal validity only (task 09)               |
-| P8.2 | pruning     | todo     |                    |                                           | retention behind causal-cut snapshot         |
+| P8.2 | pruning     | done     | 678e9e63, a3c82d7c | retention_pruning 4; event_store 92       | retention behind causal-cut snapshot         |
 | P8.3 | multidevice | todo     |                    |                                           | device chains & account delegations          |
 | P8.4 | views       | todo     |                    |                                           | directory explorer lines                     |
 | P8.5 | worlds      | todo     |                    |                                           | cross-world delegation reconciliation        |
@@ -35,3 +35,13 @@
 - JSON mode (`--json`) includes `"tier": usize` and optional `"warning": string`.
 - Red first: integration tests in `tests/cli_warnings.rs` failed initially (commit 1289cef6) and passed after wiring (commit 472d45d3).
 - Targeted test suite passes: `cli_warnings` (3 tests), `cli_groups` (8 tests), `warnings` (12 tests).
+
+## 2026-10-13T23:59:00Z Note: P8.2 retention and pruning behind causal cut
+
+- Implemented `EventStore::prune_behind_cut(&mut self, cut: &[Hash], protected: &[Hash]) -> Result<usize, StoreError>`.
+- Preserves every event back to the causal past of open removals (needed for membership voidness check) and open frontiers.
+- Active backlink walks and dependency index invariants are preserved; author chain rows are adjusted or removed on total pruning.
+- Pruned events are removed from `events`, `hashes`, `groups`, `actions`, and `applied` tables.
+- Invariants check (`check_invariants`) and query folds (`roster`, `tag_claims`, `documents`) produce identical results before and after pruning.
+- Red first: integration tests in `tests/retention_pruning.rs` failed initially (commit 678e9e63) and passed after implementation (commit a3c82d7c).
+- Targeted test suite passes: `retention_pruning` (4 tests), `event_store` (92 passed, 2 ignored).
