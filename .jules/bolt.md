@@ -1,0 +1,4 @@
+## 2024-05-14 - ProseMirror DOM Node Recycling
+
+**Learning:** ProseMirror's `Decoration.widget` requires using a factory function (`() => HTMLElement`) to construct the DOM node. Instantiating the node directly during the decoration generation loop bypasses ProseMirror's node recycling mechanism and causes severe layout thrashing/GC spikes, especially for dynamic decorations like cursors that update frequently. Furthermore, any visual attribute that dynamically changes the appearance of the widget (e.g. `opacity`, `connectionState`, `color`) must be explicitly embedded in the widget's `key` string.
+**Action:** When implementing ProseMirror decorations, always use the factory function pattern `() => HTMLElement` for `Decoration.widget` construction and derive the `key` string from underlying data properties to enable DOM node recycling and avoid performance bottlenecks.
