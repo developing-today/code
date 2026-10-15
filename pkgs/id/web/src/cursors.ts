@@ -673,7 +673,6 @@ function createCursorDecorations(
 
         // Find the leftmost group (we'll attach the bar to its cursor line)
         const leftmostGroup = groupsForBar.find((g) => g.position === leftmostPos);
-        let leftmostCursorLine: HTMLElement | null = null;
 
         // Create a cluster-wide key that includes ALL client IDs AND positions in the cluster
         // This ensures widgets are recreated when cluster membership OR positions change
@@ -683,9 +682,7 @@ function createCursorDecorations(
           .join("-");
 
         // Generate a cluster hash based on opacities for the key so it recreates when opacities change
-        const clusterOpacityHash = groupsForBar
-          .flatMap((g) => g.cursors.map((c) => c.opacity.toFixed(2)))
-          .join("-");
+        const clusterOpacityHash = groupsForBar.flatMap((g) => g.cursors.map((c) => c.opacity.toFixed(2))).join("-");
 
         // Create cursor lines for each position group (no attached labels)
         groupsForBar.forEach((group) => {
@@ -726,8 +723,8 @@ function createCursorDecorations(
                 side: 1,
                 // Include connectionState, color, and cluster opacities in the key
                 key: `cursor-cluster-${group.position}-${clusterKey}-conn-${connectionState}-color-${group.mostRecentColor}-op-${clusterOpacityHash}`,
-              }
-            )
+              },
+            ),
           );
         });
       } else {
@@ -738,15 +735,16 @@ function createCursorDecorations(
         decorations.push(
           Decoration.widget(
             cursor.head,
-            () => viewState
-              ? createStandaloneCursor(cursor, connectionState, viewState, handleMouseEnter, handleMouseLeave)
-              : createCursorLine(cursor, false, connectionState),
+            () =>
+              viewState
+                ? createStandaloneCursor(cursor, connectionState, viewState, handleMouseEnter, handleMouseLeave)
+                : createCursorLine(cursor, false, connectionState),
             {
               side: 1,
               // Key based on dynamic properties dictating rendering
               key: `cursor-${cursor.clientID}-conn-${connectionState}-op-${cursor.opacity.toFixed(2)}-color-${cursor.color}`,
-            }
-          )
+            },
+          ),
         );
       }
     });
