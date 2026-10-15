@@ -802,7 +802,7 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
   <section class="grid gap-4 md:grid-cols-2">
     <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
       <h2 class="font-bold">World view</h2>
-      <pre data-world-view class="min-h-32 whitespace-pre-wrap rounded bg-base-200 p-4 font-mono text-lg" aria-live="polite">Waiting for a world view…</pre>
+      <div data-world-view class="min-h-32 max-h-[70vh] overflow-auto whitespace-pre-wrap rounded bg-base-200 p-4 font-mono text-lg leading-none" aria-live="polite">Waiting for a world view…</div>
       <p class="text-xs opacity-60">Rendered by the host's world program; clients do not decide authoritative state.</p>
       <div class="flex items-center justify-between">
         <h2 class="font-bold">Records</h2>

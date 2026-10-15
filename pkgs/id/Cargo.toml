@@ -82,6 +82,8 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-normalization = "0.1"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
 
 # Web feature dependencies (optional)
 axum = { version = "0.8", features = ["ws", "multipart"], optional = true }

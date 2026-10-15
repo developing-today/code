@@ -81,6 +81,99 @@ Screen := {
         Str.join_with(lines, "\n")
     }
 
+    ## A portable, versioned screen document for SSH and browser presenters.
+    ## The host validates the document and derives a bounded cell grid. Plain
+    ## text views remain supported for programs that do not use this function.
+    render_json : Screen -> Str
+    render_json = |screen| {
+        rows = List.map(range(0, screen.height), |row| json_quote(row_text(screen, row)))
+        styles = List.map(range(0, screen.height), |row| row_styles_json(screen, row))
+        width = screen.width.to_str()
+        height = screen.height.to_str()
+        row_json = Str.join_with(rows, ",")
+        styles_json = Str.join_with(styles, ",")
+        prefix = Str.concat("{\"kind\":\"screen\",\"version\":1,\"width\":", width)
+        with_height = Str.concat(prefix, Str.concat(",\"height\":", height))
+        with_rows = Str.concat(with_height, Str.concat(",\"rows\":[", Str.concat(row_json, "]")))
+        Str.concat(with_rows, Str.concat(",\"styles\":[", Str.concat(styles_json, "]}")))
+    }
+
+    json_quote : Str -> Str
+    json_quote = |text| {
+        escaped = List.fold(Str.to_utf8(text), [], |out, byte| {
+            next = if byte == 34 {
+                [92, 34]
+            } else if byte == 92 {
+                [92, 92]
+            } else if byte == 8 {
+                [92, 98]
+            } else if byte == 9 {
+                [92, 116]
+            } else if byte == 10 {
+                [92, 110]
+            } else if byte == 12 {
+                [92, 102]
+            } else if byte == 13 {
+                [92, 114]
+            } else if byte < 32 {
+                [92, 117, 48, 48, hex_digit(byte / 16), hex_digit(byte % 16)]
+            } else {
+                [byte]
+            }
+            List.fold(next, out, |acc, value| List.append(acc, value))
+        })
+        Str.concat("\"", Str.concat(bytes_to_str(escaped), "\""))
+    }
+
+    hex_digit : U8 -> U8
+    hex_digit = |value| if value < 10 { 48 + value } else { 87 + value }
+
+    row_styles_json : Screen, U64 -> Str
+    row_styles_json = |screen, row| {
+        start = row * screen.width
+        cells = List.sublist(screen.cells, { start: start, len: screen.width })
+        indexed = List.map_with_index(cells, |cell, column| { cell: cell, column: column })
+        result = List.fold(indexed, {
+            out: [],
+            start: 0,
+            length: 0,
+            fg: 0,
+            bg: 0,
+            bold: Bool.False,
+        }, |acc, item| {
+            cell = item.cell
+            same = cell.fg == acc.fg and cell.bg == acc.bg and cell.bold == acc.bold
+            if acc.length == 0 {
+                { out: acc.out, start: item.column, length: 1, fg: cell.fg, bg: cell.bg, bold: cell.bold }
+            } else if same {
+                { out: acc.out, start: acc.start, length: acc.length + 1, fg: acc.fg, bg: acc.bg, bold: acc.bold }
+            } else {
+                out = if acc.fg == 0 and acc.bg == 0 and acc.bold == Bool.False {
+                    acc.out
+                } else {
+                    List.append(acc.out, style_span_json(acc.start, acc.length, acc.fg, acc.bg, acc.bold))
+                }
+                { out: out, start: item.column, length: 1, fg: cell.fg, bg: cell.bg, bold: cell.bold }
+            }
+        })
+        spans = if result.length == 0 or (result.fg == 0 and result.bg == 0 and result.bold == Bool.False) {
+            result.out
+        } else {
+            List.append(result.out, style_span_json(result.start, result.length, result.fg, result.bg, result.bold))
+        }
+        Str.concat("[", Str.concat(Str.join_with(spans, ","), "]"))
+    }
+
+    style_span_json : U64, U64, U8, U8, Bool -> Str
+    style_span_json = |x, length, fg, bg, bold| {
+        bold_json = if bold { "true" } else { "false" }
+        prefix = Str.concat("{\"x\":", x.to_str())
+        with_length = Str.concat(prefix, Str.concat(",\"length\":", length.to_str()))
+        with_fg = Str.concat(with_length, Str.concat(",\"fg\":", fg.to_str()))
+        with_bg = Str.concat(with_fg, Str.concat(",\"bg\":", bg.to_str()))
+        Str.concat(with_bg, Str.concat(",\"bold\":", Str.concat(bold_json, "}")))
+    }
+
     row_text : Screen, U64 -> Str
     row_text = |screen, row| {
         start = row * screen.width
@@ -126,3 +219,6 @@ expect Screen.range(2, 5) == [2, 3, 4]
 expect Screen.render_plain(Screen.put_text(Screen.new(4, 2), 1, 0, "hi", { fg: 0, bg: 0, bold: Bool.False })) == " hi \n    "
 expect Screen.render_plain(Screen.put_text(Screen.new(3, 1), 2, 0, "abc", { fg: 0, bg: 0, bold: Bool.False })) == "  a"
 expect Screen.render_plain(Screen.boxed(Screen.new(6, 3), 0, 0, 6, 3, "t")) == "+-t--+\n|    |\n+----+"
+expect Screen.render_json(Screen.put_text(Screen.new(2, 1), 0, 0, "ok", { fg: 0, bg: 0, bold: Bool.False })) == "{\"kind\":\"screen\",\"version\":1,\"width\":2,\"height\":1,\"rows\":[\"ok\"],\"styles\":[[]]}"
+expect Screen.render_json(Screen.put_text(Screen.new(3, 1), 0, 0, "abc", { fg: 196, bg: 0, bold: Bool.True })) == "{\"kind\":\"screen\",\"version\":1,\"width\":3,\"height\":1,\"rows\":[\"abc\"],\"styles\":[[{\"x\":0,\"length\":3,\"fg\":196,\"bg\":0,\"bold\":true}]]}"
+expect Screen.json_quote("a\"\\\n") == "\"a\\\"\\\\\\n\""

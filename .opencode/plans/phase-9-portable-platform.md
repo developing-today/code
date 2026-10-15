@@ -1,0 +1,30 @@
+# Phase 9: portable world surfaces and controlled execution profiles
+
+## Goal
+
+Build the missing platform foundations for interactive data, game, and communication apps: a transport-neutral screen contract that can be rendered by SSH terminals and the browser; structured Roc libraries for the protocol; and explicit per-world execution policy that preserves sandboxing while letting an administrator grant narrowly named capabilities and tune resource bounds.
+
+The immediate slice (P9.1) is a backwards-compatible, validated cell-grid presentation contract and safe terminal/web presenters. It must not require ANSI in guest output, execute arbitrary markup, or change the existing world event/journal ABI.
+
+## Sequence
+
+1. **P9.1 Portable screen view.** Accept legacy plain-text view strings or a versioned structured screen document; validate bounds and cell contents once; render the same model as DOM cells in web and allowlisted ANSI cells in SSH. Add a Roc `Screen` JSON encoder and example/host tests.
+2. **P9.2 Input and viewport.** Add typed key, paste, focus, and resize input events with a compatibility path for existing text/hex inputs. Keep transport input decoding separate from durable program events; specify which events are ephemeral and which are journaled.
+3. **P9.3 Execution profiles.** Make source-only mode and compiler provenance explicit; support server/per-world capability ceilings and configurable compile/runtime resource bounds. Direct control means explicitly granted platform effects, not unconfined process access. Retain OS isolation for native workers and import-free Wasm unless a separately audited sandbox adapter is designed.
+4. **P9.4 Standard libraries.** Add tested Roc JSON parse/encode primitives and migrate an app/example to structured host events, records, and presentation. Grow data, game, and communication helpers on stable capabilities rather than host-specific shortcuts.
+5. **P9.5 Adapters/examples.** Provide a Rust/Ratatui buffer-to-screen adapter or documented capture interface, plus equivalent terminal and browser examples. Ratatui widgets alone are not an app runtime; applications still supply update state and event-loop logic.
+
+## Current worktree scope
+
+Implement P9.1 only, as a stacked PR on `platform-roc-web`. Do not mix source-only policy, compiler pinning, generalized storage, or unconfined execution into this presentation change. Capture all of those follow-ups here and in the design record.
+
+## Acceptance for P9.1
+
+- Old plain-text programs render exactly as before.
+- A bounded, versioned screen DTO has deterministic parsing/serialization and rejects dimensions, cell counts, glyphs, or style values outside policy.
+- SSH never relays guest-supplied control sequences; only the trusted presenter emits known cursor and SGR codes.
+- Browser output uses text nodes/CSS only, never guest-supplied HTML or CSS.
+- The same screen DTO has parity tests for web and terminal presenters.
+- Roc `Screen` can produce the DTO without asking app authors to hand-concatenate JSON.
+
+See [the design record](../../doc/2026-10-14T19-39-30Z_architecture_portable_world_surfaces/2026-10-14T19-39-30Z_architecture_portable_world_surfaces.md).

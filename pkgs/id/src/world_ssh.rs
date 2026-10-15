@@ -358,10 +358,29 @@ impl SessionIo for SshIo {
             return true;
         };
         let text = match value["type"].as_str() {
-            Some("view") => match value["data"].as_str() {
-                Some(data) => format!("\x1b[H\x1b[2J{}", terminal_text(data)),
-                None => return true,
-            },
+            Some("view") => {
+                if let Some(surface) = value.get("surface") {
+                    if let Ok(crate::world_presentation::WorldSurface::Screen(screen)) =
+                        serde_json::from_value(surface.clone())
+                    {
+                        if let Some(rendered) = screen.render_ansi() {
+                            rendered
+                        } else if let Some(data) = value["data"].as_str() {
+                            format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                        } else {
+                            return true;
+                        }
+                    } else if let Some(data) = value["data"].as_str() {
+                        format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                    } else {
+                        return true;
+                    }
+                } else if let Some(data) = value["data"].as_str() {
+                    format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                } else {
+                    return true;
+                }
+            }
             Some("error") => {
                 self.errored = true;
                 let message = value["message"].as_str().unwrap_or("error");
