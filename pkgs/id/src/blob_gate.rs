@@ -125,10 +125,7 @@ pub struct FoldedWorlds {
 impl FoldedWorlds {
     /// Pairs the folded worlds with a reference index.
     pub const fn new(worlds: Worlds, references: HashMap<Hash, BTreeSet<String>>) -> Self {
-        Self {
-            worlds,
-            references,
-        }
+        Self { worlds, references }
     }
 }
 
