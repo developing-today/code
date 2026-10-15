@@ -582,8 +582,17 @@ mod tests {
         )
         .unwrap();
         let frame = String::from_utf8(world.view().unwrap()).unwrap();
-        let rows: Vec<&str> = frame.split('\n').collect();
-        assert_eq!(rows.len(), 3);
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) =
+            crate::world_presentation::parse_surface(&frame).unwrap()
+        else {
+            panic!("Roc screen example must return a structured screen");
+        };
+        assert_eq!((screen.width, screen.height), (20, 3));
+        let rows: Vec<String> = screen
+            .cells
+            .chunks(usize::from(screen.width))
+            .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+            .collect();
         assert!(rows[0].starts_with("+-counter"));
         assert!(rows[1].starts_with("| count=1"));
         assert_eq!(rows[2], format!("+{}+", "-".repeat(18)));
