@@ -11,6 +11,9 @@ The example that uses the server's capability system. The program:
 
 It demonstrates the host-event contract (participant 0 delivers JSON), the
 request/result loop, subscription refusals, and that grants are journaled.
+The example imports `pf.JsonLib` from the pure-Roc `Json.roc` platform module:
+host events are decoded to typed values, and capability requests and records
+are encoded from values rather than assembled as JSON text.
 
 ## Build and run
 

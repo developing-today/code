@@ -10,7 +10,7 @@ platform ""
             restore : Str -> model,
         }
     }
-    exposes [Screen, Key]
+    exposes [Screen, Key, JsonLib]
     packages {}
     provides {
         "roc_init": init_for_host,
@@ -29,6 +29,7 @@ platform ""
 
 import Screen
 import Key
+import Json as JsonLib
 
 init_for_host : U64 -> Box(Model)
 init_for_host = |seed| Box.box((program.init)(seed))

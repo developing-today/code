@@ -58,6 +58,17 @@ exact. A request to a capability the world has not granted is answered with
 (`time.now`, `time.tick`, `random.u64`, `players`, `players.list`,
 `chat.say`, `world.info`), grant policies and bounds.
 
+The platform also exposes the dependency-free `Json.roc` module to apps as
+`pf.JsonLib` (the matching `Json` value type shadows a Roc built-in name).
+Its `decode`/`encode`, object `get`, and type-specific `as_*` accessors let
+apps handle host events and produce request/record documents without string
+splicing. JSON number lexemes are preserved as strings to avoid implicit
+floating-point conversion. Decode accepts at most 65,536 UTF-8 bytes and 64
+nested arrays/objects; exceeding either bound is an explicit error. Encoding
+also validates number lexemes and returns an error rather than emitting
+malformed JSON. Duplicate object keys are preserved, and `get` returns the
+first matching key.
+
 One nightly caveat: with
 nightly-2026-10-04-130536d's wasm backend, `List.get` past the second
 element of a string list produced by `Str.split_on` returned truncated
