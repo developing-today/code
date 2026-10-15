@@ -1,5 +1,6 @@
 /** Browser presentation for the server-authoritative world session. */
 
+import { terminalBytesForKey } from "./world-keyboard";
 import { renderWorldSurface, type ScreenSurface } from "./world-surface";
 
 type WorldFrame = {
@@ -223,6 +224,22 @@ function initWorld(): void {
       }),
     );
   };
+
+  const sendInputBytes = (bytes: Uint8Array) => {
+    if (socket?.readyState !== WebSocket.OPEN) {
+      setStatus("Join the world before sending game input", "error");
+      return false;
+    }
+    const dataHex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    socket.send(JSON.stringify({ type: "input", data_hex: dataHex }));
+    return true;
+  };
+
+  view.addEventListener("keydown", (event: KeyboardEvent) => {
+    const bytes = terminalBytesForKey(event);
+    if (!bytes) return;
+    if (sendInputBytes(bytes)) event.preventDefault();
+  });
 
   recordsRefresh.addEventListener("click", requestRecords);
 
@@ -496,12 +513,7 @@ function initWorld(): void {
     event.preventDefault();
     const text = gameInput.value.trim();
     if (!text) return;
-    if (socket?.readyState !== WebSocket.OPEN) {
-      setStatus("Join the world before sending game input", "error");
-      return;
-    }
-    const dataHex = Array.from(new TextEncoder().encode(text), (byte) => byte.toString(16).padStart(2, "0")).join("");
-    socket.send(JSON.stringify({ type: "input", data_hex: dataHex }));
+    if (!sendInputBytes(new TextEncoder().encode(text))) return;
     gameInput.value = "";
   });
 

@@ -39,6 +39,13 @@ presenter creates text-only DOM nodes with fixed palette styles. Never put
 terminal escape sequences, HTML, or CSS in a guest view. `Screen.render_plain`
 remains useful for older clients and text-only output.
 
+In the browser, focus the world screen and use the keyboard to send input. The
+web adapter encodes common keys as terminal bytes (UTF-8 text, control keys,
+and standard navigation sequences), matching SSH PTY input and the existing
+`Key.parse` helper. Keyboard events are journaled exactly like other world
+input. Resize remains presentation-local and is not sent to shared game state;
+viewport-aware rendering is a separate follow-up.
+
 `wants` is the capability protocol: a JSON document of the subscriptions the
 program holds and the one-shot requests it has outstanding
 (`{"v":1,"subscribe":["players","time.tick:5000"],"requests":[{"id":"r1","cap":"time.now"}]}`).
