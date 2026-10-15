@@ -421,6 +421,15 @@ pub enum Command {
         /// import-free format, so this tier is opt-in.
         #[arg(long, requires = "world")]
         world_native: bool,
+        /// Accept new world programs only as Roc source compiled by this server.
+        /// Disables raw Wasm/native module uploads and `--world-module`.
+        #[arg(
+            long,
+            env = "ID_WORLD_SOURCE_ONLY",
+            requires = "world",
+            conflicts_with = "world_module"
+        )]
+        world_source_only: bool,
         /// Execution bounds for world programs.
         #[command(flatten)]
         world_runtime: WorldRuntimeArgs,
@@ -3366,6 +3375,39 @@ mod tests {
         assert!(
             Cli::try_parse_from(["id", "serve", "--web", "--world"]).is_err(),
             "an empty admin secret must not be accepted"
+        );
+    }
+
+    #[test]
+    fn source_only_mode_is_opt_in_and_requires_world_mode() {
+        let parsed = Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "admin",
+            "--world-source-only",
+        ])
+        .unwrap();
+        match parsed.command {
+            Some(Command::Serve {
+                world_source_only, ..
+            }) => assert!(world_source_only),
+            _ => panic!("Expected Serve command"),
+        }
+        assert!(Cli::try_parse_from(["id", "serve", "--world-source-only"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "serve",
+                "--world",
+                "--world-admin-token",
+                "admin",
+                "--world-source-only",
+                "--world-module",
+                "trusted.wasm",
+            ])
+            .is_err()
         );
     }
 

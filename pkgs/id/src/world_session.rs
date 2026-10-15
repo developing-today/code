@@ -389,6 +389,8 @@ pub enum InstallError {
     Unauthorized,
     /// Size or content hash validation failed.
     InvalidUpload,
+    /// Raw artifacts are disabled by this world's source-only policy.
+    RawModuleDisabled,
     /// Wasmtime rejected or could not instantiate the module.
     InvalidModule,
     /// The blob could not be pinned or the world actor refused activation.
@@ -416,6 +418,8 @@ pub struct WorldService {
     records: Option<Arc<crate::world_records::RecordsStore>>,
     compiler: Option<Arc<Compiler>>,
     native: bool,
+    /// Raw artifact installs are refused; compiled source remains permitted.
+    source_only: bool,
     runtime: crate::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
     outbox: Option<Arc<Mutex<crate::envelope_outbox::Outbox>>>,
@@ -438,6 +442,20 @@ impl WorldService {
     pub const fn with_native_enabled(mut self) -> Self {
         self.native = true;
         self
+    }
+
+    /// Require new Wasm programs to be compiled from source by this server.
+    /// This disables raw artifact installation, but not the compiled output path.
+    #[must_use]
+    pub const fn with_source_only(mut self, enabled: bool) -> Self {
+        self.source_only = enabled;
+        self
+    }
+
+    /// Whether raw Wasm/native uploads are disabled for this world.
+    #[must_use]
+    pub(crate) const fn source_only(&self) -> bool {
+        self.source_only
     }
 
     /// Read or change this world's directory as the caller.
@@ -533,6 +551,7 @@ impl WorldService {
             records: None,
             compiler: None,
             native: false,
+            source_only: false,
             runtime: crate::world_limits::RuntimeLimits::default(),
             mail: None,
             outbox: None,
@@ -593,8 +612,11 @@ impl WorldService {
                     format!("compile failed: {error:#}")
                 })?;
         let hash = module_hash(&wasm);
+        let permit = self
+            .try_reserve_module_upload()
+            .map_err(|error| format!("install failed: {error:?}"))?;
         let (_, sequence) = self
-            .install_wasm(supplied_admin, wasm, spec.seed, &hash)
+            .install_wasm_reserved(supplied_admin, wasm, spec.seed, &hash, permit, true)
             .await
             .map_err(|error| format!("install failed: {error:?}"))?;
         Ok((hash, sequence, diagnostics))
@@ -742,7 +764,7 @@ impl WorldService {
         claimed_hash: &str,
     ) -> Result<(String, u64), InstallError> {
         let permit = self.try_reserve_module_upload()?;
-        self.install_wasm_reserved(supplied_admin, wasm, seed, claimed_hash, permit)
+        self.install_wasm_reserved(supplied_admin, wasm, seed, claimed_hash, permit, false)
             .await
     }
 
@@ -754,6 +776,7 @@ impl WorldService {
         seed: u64,
         claimed_hash: &str,
         _permit: OwnedSemaphorePermit,
+        compiled_from_source: bool,
     ) -> Result<(String, u64), InstallError> {
         self.authorize_admin(supplied_admin)
             .map_err(|error| match error {
@@ -762,6 +785,9 @@ impl WorldService {
                 InviteError::Unavailable => InstallError::Unavailable,
                 InviteError::InvalidBounds(_) => InstallError::InvalidUpload,
             })?;
+        if self.source_only && !compiled_from_source {
+            return Err(InstallError::RawModuleDisabled);
+        }
         if wasm.is_empty() || wasm.len() > MAX_WORLD_MODULE_BYTES {
             return Err(InstallError::InvalidUpload);
         }
@@ -1265,6 +1291,15 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             module_hash,
             seed,
         } => {
+            if service.source_only() {
+                if service.authorize_admin(Some(&admin_token)).is_err() {
+                    let _ = send_error(io, "module install denied").await;
+                    return;
+                }
+                let _ =
+                    send_error(io, "raw module uploads are disabled by source-only policy").await;
+                return;
+            }
             if let Err(message) = install_module_session(
                 service,
                 io,
@@ -1687,12 +1722,22 @@ async fn install_module_session<I: SessionIo>(
             return Err("module content hash mismatch");
         }
         let (module_hash, sequence) = service
-            .install_wasm_reserved(Some(admin_token), bytes, seed, &actual_hash, upload_permit)
+            .install_wasm_reserved(
+                Some(admin_token),
+                bytes,
+                seed,
+                &actual_hash,
+                upload_permit,
+                false,
+            )
             .await
             .map_err(|error| match error {
                 InstallError::Disabled => "module installation is not enabled on this host",
                 InstallError::Unauthorized => "module install denied",
                 InstallError::InvalidUpload => "invalid module upload",
+                InstallError::RawModuleDisabled => {
+                    "raw module uploads are disabled by source-only policy"
+                }
                 InstallError::InvalidModule => "Wasm module failed validation or initialization",
                 InstallError::Unavailable => "world could not activate the module",
             })?;
@@ -3119,6 +3164,63 @@ mod tests {
         svc.install_wasm(Some("admin"), wasm, 12, &hash)
             .await
             .expect("default limits install");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn source_only_policy_rejects_raw_modules_but_preserves_normal_mode() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let hash = module_hash(&wasm);
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(MemStore::new().into())
+            .with_source_only(true);
+
+        assert!(service.source_only());
+        assert!(matches!(
+            service
+                .install_wasm(Some("wrong"), wasm.clone(), 1, &hash)
+                .await,
+            Err(InstallError::Unauthorized)
+        ));
+        assert!(matches!(
+            service
+                .install_wasm(Some("admin"), wasm.clone(), 1, &hash)
+                .await,
+            Err(InstallError::RawModuleDisabled)
+        ));
+        assert_eq!(service.active_module_hash().await, None);
+
+        let normal = WorldService::new(
+            WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap()),
+            Some("admin".to_owned()),
+        )
+        .with_blob_store(MemStore::new().into());
+        normal
+            .install_wasm(Some("admin"), wasm, 1, &hash)
+            .await
+            .expect("raw modules stay supported by default");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn source_only_policy_rejects_streaming_upload_before_accepting_chunks() {
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world, Some("admin".to_owned())).with_source_only(true);
+        let mut peer = Peer::connect(service, SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "admin_token": "admin",
+            "total_bytes": 32,
+            "module_hash": null,
+            "seed": 1,
+        }))
+        .await;
+        let error = peer.next().await.unwrap();
+        assert_eq!(error["type"], "error");
+        assert!(error["message"].as_str().unwrap().contains("source-only"));
     }
 
     #[cfg(feature = "sandbox")]

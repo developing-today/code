@@ -70,6 +70,25 @@ the probe re-snapshots to identical text and publishes identical records.
 Both exports are optional at the Wasm level, so older modules keep working and
 keep their full journals.
 
+## Source-only server policy
+
+For a server that accepts guest programs only as Roc source, enable
+`id serve --world --world-admin-token <secret> --world-source-only` and configure
+the trusted compiler/platform with `--roc-bin` and `--roc-platform` (or their
+`ID_ROC_BIN` / `ID_ROC_PLATFORM` environment variables). The server refuses
+startup if source-only mode has no compiler/platform, and the flag cannot be
+combined with a raw `--world-module` bootstrap. It rejects raw Wasm/native
+uploads before receiving upload chunks; authorized source compilation still
+installs through the normal Wasm validation and execution bounds. The default
+remains backward-compatible and accepts admin-authenticated raw modules.
+
+Source-only mode is not a compiler sandbox or compiler provenance guarantee:
+the server operator must trust the configured compiler and platform. The
+compiler version/digest is not yet recorded with each module; see the [source
+policy design record](../../../../doc/2026-10-14T20-00-05Z_feature_source_only_world_installs/2026-10-14T20-00-05Z_feature_source_only_world_installs.md)
+for tracked follow-ups. Native execution remains a separate opt-in and retains
+OS sandboxing.
+
 The host passes the id of the participant who sent an event as the second
 argument of `update`, so programs can implement turn-taking or per-player
 rules without the host knowing anything about the game.

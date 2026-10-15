@@ -1176,7 +1176,8 @@ mod tests {
         let blobs: iroh_blobs::api::Store = MemStore::new().into();
         let service = WorldService::new(world.clone(), Some("admin".to_owned()))
             .with_blob_store(blobs.clone())
-            .with_compiler(compiler);
+            .with_compiler(compiler)
+            .with_source_only(true);
         let addr = serve(world_routes().with_state(WorldWebState {
             hub: Some(WorldHub::single(service)),
             cookie_secure: false,

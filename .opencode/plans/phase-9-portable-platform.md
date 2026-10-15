@@ -14,9 +14,14 @@ The immediate slice (P9.1) is a backwards-compatible, validated cell-grid presen
 4. **P9.4 Standard libraries.** Add tested Roc JSON parse/encode primitives and migrate an app/example to structured host events, records, and presentation. Grow data, game, and communication helpers on stable capabilities rather than host-specific shortcuts.
 5. **P9.5 Adapters/examples.** Provide a Rust/Ratatui buffer-to-screen adapter or documented capture interface, plus equivalent terminal and browser examples. Ratatui widgets alone are not an app runtime; applications still supply update state and event-loop logic.
 
-## Current worktree scope
+## Status and current worktree scope
 
-Implement P9.1 only, as a stacked PR on `platform-roc-web`. Do not mix source-only policy, compiler pinning, generalized storage, or unconfined execution into this presentation change. Capture all of those follow-ups here and in the design record.
+- **P9.1 complete:** portable surface contract and SSH/web presenters are committed on `platform-portable-ui` (PR #214, stacked on #209).
+- **P9.3a complete in this worktree:** server-wide source-only install policy, stacked on #214. Source compilation remains enabled and raw artifacts are refused. Compiler provenance, per-world profiles, and broader allowed-function ceilings remain open.
+- **P9.2 next:** viewport and typed interactive input needs transport/session design so resize is not accidentally journaled as shared durable application state.
+- **P9.4/P9.5 remain planned:** Roc JSON/data helpers and Ratatui-shaped adapters/examples.
+
+“Direct control” is limited to explicit named capabilities under an admin-controlled ceiling. This plan does not enable unrestricted filesystem, network, or process access; native execution remains OS-sandboxed.
 
 ## Acceptance for P9.1
 
@@ -28,3 +33,12 @@ Implement P9.1 only, as a stacked PR on `platform-roc-web`. Do not mix source-on
 - Roc `Screen` can produce the DTO without asking app authors to hand-concatenate JSON.
 
 See [the design record](../../doc/2026-10-14T19-39-30Z_architecture_portable_world_surfaces/2026-10-14T19-39-30Z_architecture_portable_world_surfaces.md).
+
+P9.3a record: [source-only world installs](../../doc/2026-10-14T20-00-05Z_feature_source_only_world_installs/2026-10-14T20-00-05Z_feature_source_only_world_installs.md).
+
+## P9.3a acceptance
+
+- Source-only is an explicit server option, off by default, and requires an enabled world plus a configured server-side Roc compiler/platform.
+- Raw upload is rejected before consuming chunks and raw installation is also refused through the service interface.
+- Source compilation still validates and installs through the established module validator, persistence, and activation path.
+- Native execution stays separately gated; trusted compiler provenance is not claimed until compiler identity is recorded.
