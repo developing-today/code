@@ -2,9 +2,38 @@
 ## Number stores the exact JSON number lexeme, avoiding implicit float loss.
 DecodeError := [InvalidJson, InputTooLarge, NestingTooDeep, OutputTooLarge, InvalidNumber, MissingField, WrongType]
 
-Outcome(a) := [Ok(a), Err(DecodeError)]
+decode_error_code : DecodeError -> U8
+decode_error_code = |error| match error {
+	DecodeError.InvalidJson => 0
+	DecodeError.InputTooLarge => 1
+	DecodeError.NestingTooDeep => 2
+	DecodeError.OutputTooLarge => 3
+	DecodeError.InvalidNumber => 4
+	DecodeError.MissingField => 5
+	DecodeError.WrongType => 6
+}
 
-Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(List({ key : Str, value : Json }))].{
+Outcome(a) := [Ok(a), Err(DecodeError)].{
+	is_ok : Outcome(a) -> Bool
+	is_ok = |outcome| match outcome {
+		Ok(_) => Bool.True
+		Err(_) => Bool.False
+	}
+
+	error_is : Outcome(a), DecodeError -> Bool
+	error_is = |outcome, wanted| match outcome {
+		Ok(_) => Bool.False
+		Err(error) => decode_error_code(error) == decode_error_code(wanted)
+	}
+
+	value_or : Outcome(a), a -> a
+	value_or = |outcome, fallback| match outcome {
+		Ok(value) => value
+		Err(_) => fallback
+	}
+}
+
+RocJson := [Null, Bool(Bool), Number(Str), String(Str), Array(List(RocJson)), Object(List({ key : Str, value : RocJson }))].{
 	max_input_bytes : U64
 	max_input_bytes = 65536
 	max_output_bytes : U64
@@ -12,7 +41,7 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 	max_nesting_depth : U64
 	max_nesting_depth = 64
 
-	decode : Str -> Outcome(Json)
+	decode : Str -> Outcome(RocJson)
 	decode = |text| {
 		bytes = Str.to_utf8(text)
 		if List.len(bytes) > max_input_bytes {
@@ -30,7 +59,7 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 		}
 	}
 
-	encode : Json -> Outcome(Str)
+	encode : RocJson -> Outcome(Str)
 	encode = |value| match encode_value(value, 0) {
 		Err(error) => Err(error)
 		Ok(text) =>
@@ -41,43 +70,43 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 			}
 	}
 
-	get : Json, Str -> Outcome(Json)
+	get : RocJson, Str -> Outcome(RocJson)
 	get = |value, key| match value {
 		Object(fields) => find_field(fields, key)
 		_ => Err(DecodeError.WrongType)
 	}
 
-	as_string : Json -> Outcome(Str)
+	as_string : RocJson -> Outcome(Str)
 	as_string = |value| match value {
 		String(text) => Ok(text)
 		_ => Err(DecodeError.WrongType)
 	}
 
-	as_number : Json -> Outcome(Str)
+	as_number : RocJson -> Outcome(Str)
 	as_number = |value| match value {
 		Number(text) => Ok(text)
 		_ => Err(DecodeError.WrongType)
 	}
 
-	as_bool : Json -> Outcome(Bool)
+	as_bool : RocJson -> Outcome(Bool)
 	as_bool = |value| match value {
 		Bool(boolean) => Ok(boolean)
 		_ => Err(DecodeError.WrongType)
 	}
 
-	as_array : Json -> Outcome(List(Json))
+	as_array : RocJson -> Outcome(List(RocJson))
 	as_array = |value| match value {
 		Array(items) => Ok(items)
 		_ => Err(DecodeError.WrongType)
 	}
 
-	as_object : Json -> Outcome(List({ key : Str, value : Json }))
+	as_object : RocJson -> Outcome(List({ key : Str, value : RocJson }))
 	as_object = |value| match value {
 		Object(fields) => Ok(fields)
 		_ => Err(DecodeError.WrongType)
 	}
 
-	parse_value : List(U8), U64, U64 -> Outcome({ value : Json, next : U64 })
+	parse_value : List(U8), U64, U64 -> Outcome({ value : RocJson, next : U64 })
 	parse_value = |bytes, at, depth| {
 		match byte_at(bytes, at) {
 			110 => parse_literal(bytes, at, "null", Null)
@@ -105,7 +134,7 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 		}
 	}
 
-	parse_literal : List(U8), U64, Str, Json -> Outcome({ value : Json, next : U64 })
+	parse_literal : List(U8), U64, Str, RocJson -> Outcome({ value : RocJson, next : U64 })
 	parse_literal = |bytes, at, literal, value| {
 		wanted = Str.to_utf8(literal)
 		if bytes_match(bytes, at, wanted, 0) {
@@ -115,7 +144,7 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 		}
 	}
 
-	parse_array : List(U8), U64, List(Json), U64 -> Outcome({ value : Json, next : U64 })
+	parse_array : List(U8), U64, List(RocJson), U64 -> Outcome({ value : RocJson, next : U64 })
 	parse_array = |bytes, at, items, depth| {
 		pos = skip_space(bytes, at)
 		if byte_at(bytes, pos) == 93 {
@@ -138,7 +167,7 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 		}
 	}
 
-	parse_object : List(U8), U64, List({ key : Str, value : Json }), U64 -> Outcome({ value : Json, next : U64 })
+	parse_object : List(U8), U64, List({ key : Str, value : RocJson }), U64 -> Outcome({ value : RocJson, next : U64 })
 	parse_object = |bytes, at, fields, depth| {
 		pos = skip_space(bytes, at)
 		if byte_at(bytes, pos) == 125 {
@@ -282,7 +311,7 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 		}
 	}
 
-	parse_number : List(U8), U64 -> Outcome({ value : Json, next : U64 })
+	parse_number : List(U8), U64 -> Outcome({ value : RocJson, next : U64 })
 	parse_number = |bytes, at| {
 		end = number_end(bytes, at)
 		lexeme = bytes_to_str(List.sublist(bytes, { start: at, len: end - at }))
@@ -354,13 +383,13 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 	is_digit : U8 -> Bool
 	is_digit = |c| c >= 48 and c <= 57
 
-	find_field : List({ key : Str, value : Json }), Str -> Outcome(Json)
+	find_field : List({ key : Str, value : RocJson }), Str -> Outcome(RocJson)
 	find_field = |fields, key| match List.first(List.keep_if(fields, |field| field.key == key)) {
 		Ok(field) => Ok(field.value)
 		Err(_) => Err(DecodeError.MissingField)
 	}
 
-	encode_value : Json, U64 -> Outcome(Str)
+	encode_value : RocJson, U64 -> Outcome(Str)
 	encode_value = |value, depth| match value {
 		Null => Ok("null")
 		Bool(boolean) => Ok(
@@ -397,7 +426,7 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 			}
 	}
 
-	encode_values : List(Json), U64, List(Str) -> Outcome(List(Str))
+	encode_values : List(RocJson), U64, List(Str) -> Outcome(List(Str))
 	encode_values = |values, depth, encoded| match List.first(values) {
 		Err(_) => Ok(encoded)
 		Ok(value) => match encode_value(value, depth) {
@@ -406,7 +435,7 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 		}
 	}
 
-	encode_fields : List({ key : Str, value : Json }), U64, List(Str) -> Outcome(List(Str))
+	encode_fields : List({ key : Str, value : RocJson }), U64, List(Str) -> Outcome(List(Str))
 	encode_fields = |fields, depth, encoded| match List.first(fields) {
 		Err(_) => Ok(encoded)
 		Ok(field) => match encode_value(field.value, depth) {
@@ -486,13 +515,13 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 		}
 	}
 
-	decoded_as : Str, Json -> Bool
+	decoded_as : Str, RocJson -> Bool
 	decoded_as = |text, expected| match decode(text) {
 		Ok(value) => same_json(value, expected)
 		Err(_) => Bool.False
 	}
 
-	same_json : Json, Json -> Bool
+	same_json : RocJson, RocJson -> Bool
 	same_json = |left, right| match encode(left) {
 		Err(_) => Bool.False
 		Ok(left_text) => match encode(right) {
@@ -501,9 +530,9 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 		}
 	}
 
-	invalid_encoding : Json, DecodeError -> Bool
+	invalid_encoding : RocJson, DecodeError -> Bool
 	invalid_encoding = |value, wanted| match encode(value) {
-		Err(error) => error_code(error) == error_code(wanted)
+		Err(error) => decode_error_code(error) == decode_error_code(wanted)
 		Ok(_) => Bool.False
 	}
 
@@ -521,48 +550,37 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 
 	decode_error_is : Str, DecodeError -> Bool
 	decode_error_is = |text, wanted| match decode(text) {
-		Err(error) => error_code(error) == error_code(wanted)
+		Err(error) => decode_error_code(error) == decode_error_code(wanted)
 		Ok(_) => Bool.False
 	}
 
-	error_code : DecodeError -> U8
-	error_code = |error| match error {
-		DecodeError.InvalidJson => 0
-		DecodeError.InputTooLarge => 1
-		DecodeError.NestingTooDeep => 2
-		DecodeError.OutputTooLarge => 3
-		DecodeError.InvalidNumber => 4
-		DecodeError.MissingField => 5
-		DecodeError.WrongType => 6
-	}
-
-	nested_value : U64, Json -> Json
+	nested_value : U64, RocJson -> RocJson
 	nested_value = |depth, value| if depth == 0 {
 		value
 	} else {
-		nested_value(depth - 1, Json.Array([value]))
+		nested_value(depth - 1, RocJson.Array([value]))
 	}
 
-	nested_object_value : U64, Json -> Json
+	nested_object_value : U64, RocJson -> RocJson
 	nested_object_value = |depth, value| if depth == 0 {
 		value
 	} else {
-		nested_object_value(depth - 1, Json.Object([{ key: "a", value: value }]))
+		nested_object_value(depth - 1, RocJson.Object([{ key: "a", value: value }]))
 	}
 
-	encoded_as : Json, Str -> Bool
+	encoded_as : RocJson, Str -> Bool
 	encoded_as = |value, expected| match encode(value) {
 		Ok(text) => text == expected
 		Err(_) => Bool.False
 	}
 
-	round_trip_matches : Json -> Bool
+	round_trip_matches : RocJson -> Bool
 	round_trip_matches = |value| match encode(value) {
 		Ok(text) => decoded_as(text, value)
 		Err(_) => Bool.False
 	}
 
-	exceeds_depth : Json -> Bool
+	exceeds_depth : RocJson -> Bool
 	exceeds_depth = |value| match encode(value) {
 		Err(DecodeError.NestingTooDeep) => Bool.True
 		_ => Bool.False
@@ -580,7 +598,7 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 		_ => Bool.False
 	}
 
-	output_too_large : Json -> Bool
+	output_too_large : RocJson -> Bool
 	output_too_large = |value| match encode(value) {
 		Err(DecodeError.OutputTooLarge) => Bool.True
 		_ => Bool.False
@@ -593,62 +611,35 @@ Json := [Null, Bool(Bool), Number(Str), String(Str), Array(List(Json)), Object(L
 		Err(_) => Bool.False
 	}
 
-	accessor_checks : Bool
-	accessor_checks = {
-		nested = decode("{\"items\":[\"ok\"]}")
-		match nested {
-			Err(_) => Bool.False
-			Ok(root) => match get(root, "items") {
-				Err(_) => Bool.False
-				Ok(items) => match as_array(items) {
-					Err(_) => Bool.False
-					Ok(values) => match List.first(values) {
-						Err(_) => Bool.False
-						Ok(first) => match as_string(first) {
-							Ok(text) => text == "ok" and wrong_type(as_bool(first)) and missing_field(get(root, "absent"))
-							Err(_) => Bool.False
-						}
-					}
-				}
-			}
-		}
-	}
-
-	wrong_type : Outcome(Bool) -> Bool
-	wrong_type = |result| match result {
-		Err(DecodeError.WrongType) => Bool.True
-		_ => Bool.False
-	}
-
-	missing_field : Outcome(Json) -> Bool
-	missing_field = |result| match result {
-		Err(DecodeError.MissingField) => Bool.True
-		_ => Bool.False
-	}
 }
 
-expect Json.encoded_as(Json.String("a\"\\\n\u(1)"), "\"a\\\"\\\\\\n\\u0001\"")
-expect Json.decoded_as("{\"outer\":[null,true,{\"n\":-12.5e+2,\"s\":\"quote: \\\" slash: \\\\ tab:\\t line:\\n\"}]}", Json.Object([{ key: "outer", value: Json.Array([Json.Null, Json.Bool(Bool.True), Json.Object([{ key: "n", value: Json.Number("-12.5e+2") }, { key: "s", value: Json.String("quote: \" slash: \\ tab:\t line:\n") }])]) }]))
-expect Json.decoded_as("\"\\uD83D\\uDE03\"", Json.String("😃"))
-expect Json.invalid("[1,")
-expect Json.invalid("{\"x\":\"unfinished}")
-expect Json.invalid("true false")
-expect Json.invalid("01")
-expect Json.invalid("1e+")
-expect Json.accessor_checks
-round_trip_sample = Json.Array([Json.Null, Json.Bool(Bool.False), Json.Number("0.125"), Json.String("x\u(8)\t\\\""), Json.Object([{ key: "k", value: Json.Array([]) }])])
-expect Json.round_trip_matches(round_trip_sample)
-expect Json.invalid_encoding(Json.Number("01"), DecodeError.InvalidNumber)
-expect Json.invalid_encoding(Json.Object([{ key: "n", value: Json.Number("1e+") }]), DecodeError.InvalidNumber)
-expect Json.encoded_as(Json.Number("-0.25E+3"), "-0.25E+3")
-expect Json.decoded_as(Json.depth_text(64), Json.nested_value(64, Json.Number("0")))
-expect Json.too_deep(Json.depth_text(65))
-expect Json.decoded_as(Json.object_depth_text(64), Json.nested_object_value(64, Json.Number("0")))
-expect Json.too_deep(Json.object_depth_text(65))
-expect Json.decoded_as(Json.input_with_padding(65532), Json.Null)
-expect Json.too_large(Json.input_with_padding(65533))
-expect Json.round_trip_matches(Json.nested_value(64, Json.Null))
-expect Json.exceeds_depth(Json.nested_value(65, Json.Null))
-expect Json.round_trip_matches(Json.nested_object_value(64, Json.Null))
-expect Json.exceeds_depth(Json.nested_object_value(65, Json.Null))
-expect Json.output_too_large(Json.String(Json.bytes_to_str(List.repeat(65, 65535))))
+expect RocJson.encoded_as(RocJson.String("a\"\\\n\u(1)"), "\"a\\\"\\\\\\n\\u0001\"")
+expect RocJson.decoded_as("{\"outer\":[null,true,{\"n\":-12.5e+2,\"s\":\"quote: \\\" slash: \\\\ tab:\\t line:\\n\"}]}", RocJson.Object([{ key: "outer", value: RocJson.Array([RocJson.Null, RocJson.Bool(Bool.True), RocJson.Object([{ key: "n", value: RocJson.Number("-12.5e+2") }, { key: "s", value: RocJson.String("quote: \" slash: \\ tab:\t line:\n") }])]) }]))
+expect RocJson.decoded_as("\"\\uD83D\\uDE03\"", RocJson.String("😃"))
+expect RocJson.invalid("[1,")
+expect RocJson.invalid("{\"x\":\"unfinished}")
+expect RocJson.invalid("true false")
+expect RocJson.invalid("01")
+expect RocJson.invalid("1e+")
+expect Outcome.is_ok(RocJson.get(RocJson.Object([{ key: "items", value: RocJson.Array([RocJson.String("ok")]) }]), "items"))
+expect Outcome.error_is(RocJson.get(RocJson.Object([]), "absent"), DecodeError.MissingField)
+expect Outcome.value_or(RocJson.as_string(RocJson.String("ok")), "") == "ok"
+expect Outcome.is_ok(RocJson.as_string(RocJson.String("ok")))
+expect Outcome.error_is(RocJson.as_string(RocJson.Number("1")), DecodeError.WrongType)
+expect Outcome.error_is(RocJson.as_bool(RocJson.String("no")), DecodeError.WrongType)
+round_trip_sample = RocJson.Array([RocJson.Null, RocJson.Bool(Bool.False), RocJson.Number("0.125"), RocJson.String("x\u(8)\t\\\""), RocJson.Object([{ key: "k", value: RocJson.Array([]) }])])
+expect RocJson.round_trip_matches(round_trip_sample)
+expect RocJson.invalid_encoding(RocJson.Number("01"), DecodeError.InvalidNumber)
+expect RocJson.invalid_encoding(RocJson.Object([{ key: "n", value: RocJson.Number("1e+") }]), DecodeError.InvalidNumber)
+expect RocJson.encoded_as(RocJson.Number("-0.25E+3"), "-0.25E+3")
+expect RocJson.decoded_as(RocJson.depth_text(64), RocJson.nested_value(64, RocJson.Number("0")))
+expect RocJson.too_deep(RocJson.depth_text(65))
+expect RocJson.decoded_as(RocJson.object_depth_text(64), RocJson.nested_object_value(64, RocJson.Number("0")))
+expect RocJson.too_deep(RocJson.object_depth_text(65))
+expect RocJson.decoded_as(RocJson.input_with_padding(65532), RocJson.Null)
+expect RocJson.too_large(RocJson.input_with_padding(65533))
+expect RocJson.round_trip_matches(RocJson.nested_value(64, RocJson.Null))
+expect RocJson.exceeds_depth(RocJson.nested_value(65, RocJson.Null))
+expect RocJson.round_trip_matches(RocJson.nested_object_value(64, RocJson.Null))
+expect RocJson.exceeds_depth(RocJson.nested_object_value(65, RocJson.Null))
+expect RocJson.output_too_large(RocJson.String(RocJson.bytes_to_str(List.repeat(65, 65535))))

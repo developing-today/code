@@ -1,6 +1,6 @@
 app [program] { pf: platform "../roc-world/platform.roc" }
 
-import pf.JsonLib
+import pf.RocJson
 
 # A lounge world: the first example that uses the server's capability
 # system. It subscribes to arrivals and ticks, greets every newcomer through
@@ -14,7 +14,7 @@ Model : {
 	denied : U64,
 	next : U64,
 	last_now : Str,
-	pending : List(JsonLib),
+	pending : List(RocJson),
 }
 
 program = { init, update, view, records, wants, snapshot, restore }
@@ -24,7 +24,7 @@ init = |_seed| { joins: 0, denied: 0, next: 0, last_now: "", pending: [] }
 
 update : Model, U64, Str -> Model
 update = |model, _pid, ev| {
-	match JsonLib.decode(ev) {
+	match RocJson.decode(ev) {
 		Err(_) => model
 		Ok(event) => {
 			cap = string_field(event, "cap")
@@ -66,20 +66,20 @@ view = |model|
 
 records : Model -> Str
 records = |model| encode_or_crash(
-	JsonLib.Object([
-		{ key: "joins", value: JsonLib.Number(model.joins.to_str()) },
-		{ key: "denied", value: JsonLib.Number(model.denied.to_str()) },
-		{ key: "last_now", value: JsonLib.Number(num_of(model.last_now).to_str()) },
+	RocJson.Object([
+		{ key: "joins", value: RocJson.Number(model.joins.to_str()) },
+		{ key: "denied", value: RocJson.Number(model.denied.to_str()) },
+		{ key: "last_now", value: RocJson.Number(num_of(model.last_now).to_str()) },
 	]),
 )
 
 ## The capability protocol: subscriptions and currently outstanding requests.
 wants : Model -> Str
 wants = |model| encode_or_crash(
-	JsonLib.Object([
-		{ key: "v", value: JsonLib.Number("1") },
-		{ key: "subscribe", value: JsonLib.Array([JsonLib.String("players"), JsonLib.String("time.tick:5000")]) },
-		{ key: "requests", value: JsonLib.Array(model.pending) },
+	RocJson.Object([
+		{ key: "v", value: RocJson.Number("1") },
+		{ key: "subscribe", value: RocJson.Array([RocJson.String("players"), RocJson.String("time.tick:5000")]) },
+		{ key: "requests", value: RocJson.Array(model.pending) },
 	]),
 )
 
@@ -99,7 +99,7 @@ restore = |text| {
 	pending = List.fold(
 		List.drop_first(parts, 1),
 		[],
-		|acc, line| match JsonLib.decode(line) {
+		|acc, line| match RocJson.decode(line) {
 			Ok(value) => List.append(acc, value)
 			Err(_) => acc
 		},
@@ -117,27 +117,27 @@ restore = |text| {
 
 ## JSON generation is part of the app's output contract. Never replace an
 ## encoding failure with empty or malformed JSON.
-encode_or_crash = |value| match JsonLib.encode(value) {
+encode_or_crash = |value| match RocJson.encode(value) {
 	Ok(text) => text
 	Err(_) => crash "lounge attempted to encode an invalid or oversized JSON value"
 }
 
-field = |value, key| match JsonLib.get(value, key) {
+field = |value, key| match RocJson.get(value, key) {
 	Ok(found) => found
-	Err(_) => JsonLib.Null
+	Err(_) => RocJson.Null
 }
 
-string_field = |value, key| match JsonLib.as_string(field(value, key)) {
+string_field = |value, key| match RocJson.as_string(field(value, key)) {
 	Ok(text) => text
 	Err(_) => ""
 }
 
-number_field = |value, key| match JsonLib.as_number(field(value, key)) {
+number_field = |value, key| match RocJson.as_number(field(value, key)) {
 	Ok(text) => text
 	Err(_) => ""
 }
 
-bool_field = |value, key| match JsonLib.as_bool(field(value, key)) {
+bool_field = |value, key| match RocJson.as_bool(field(value, key)) {
 	Ok(boolean) => boolean
 	Err(_) => Bool.False
 }
@@ -160,21 +160,21 @@ sanitize = |text| {
 	}
 }
 
-chat_request = |next, text| JsonLib.Object([
-	{ key: "id", value: JsonLib.String(Str.concat("r", next.to_str())) },
-	{ key: "cap", value: JsonLib.String("chat.say") },
-	{ key: "args", value: JsonLib.Object([{ key: "text", value: JsonLib.String(text) }]) },
+chat_request = |next, text| RocJson.Object([
+	{ key: "id", value: RocJson.String(Str.concat("r", next.to_str())) },
+	{ key: "cap", value: RocJson.String("chat.say") },
+	{ key: "args", value: RocJson.Object([{ key: "text", value: RocJson.String(text) }]) },
 ])
 
-time_request = |next| JsonLib.Object([
-	{ key: "id", value: JsonLib.String(Str.concat("r", next.to_str())) },
-	{ key: "cap", value: JsonLib.String("time.now") },
+time_request = |next| RocJson.Object([
+	{ key: "id", value: RocJson.String(Str.concat("r", next.to_str())) },
+	{ key: "cap", value: RocJson.String("time.now") },
 ])
 
 pending_request = |pending, id|
 	match List.first(List.keep_if(pending, |request| string_field(request, "id") == id)) {
 		Ok(request) => request
-		Err(_) => JsonLib.Null
+		Err(_) => RocJson.Null
 	}
 
 drop_pending = |pending, id|

@@ -58,9 +58,8 @@ exact. A request to a capability the world has not granted is answered with
 (`time.now`, `time.tick`, `random.u64`, `players`, `players.list`,
 `chat.say`, `world.info`), grant policies and bounds.
 
-The platform also exposes the dependency-free `Json.roc` module to apps as
-`pf.JsonLib` (the matching `Json` value type shadows a Roc built-in name).
-Its `decode`/`encode`, object `get`, and type-specific `as_*` accessors let
+The platform also exposes the dependency-free `RocJson.roc` module to apps as
+`pf.RocJson`. Its `decode`/`encode`, object `get`, and type-specific `as_*` accessors let
 apps handle host events and produce request/record documents without string
 splicing. JSON number lexemes are preserved as strings to avoid implicit
 floating-point conversion. Decode accepts at most 65,536 UTF-8 bytes and 64
