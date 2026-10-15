@@ -212,6 +212,15 @@ enum ClientFrame {
     Input {
         data_hex: String,
     },
+    /// Ephemeral dimensions for this connection's presentation only. Never journaled.
+    Resize {
+        width: u16,
+        height: u16,
+    },
+    /// Explicit bounded clipboard text, delivered as one durable input event.
+    Paste {
+        text: String,
+    },
     InstallBegin {
         admin_token: String,
         total_bytes: usize,
@@ -1393,7 +1402,9 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         | ClientFrame::Chat { .. }
         | ClientFrame::Attenuate { .. }
         | ClientFrame::DelegateToFriend { .. }
-        | ClientFrame::Input { .. } => {
+        | ClientFrame::Input { .. }
+        | ClientFrame::Resize { .. }
+        | ClientFrame::Paste { .. } => {
             let _ = send_error(io, "first frame must be join, invite or install_begin").await;
         }
     }
@@ -1776,6 +1787,7 @@ async fn joined<I: SessionIo>(
         return;
     };
     let mut cursor = snapshot.current_sequence;
+    let mut viewport = None;
     if let Some(after) = after {
         match world.events_after(token.clone(), after).await {
             Ok(page) if page.needs_snapshot => {
@@ -1793,7 +1805,7 @@ async fn joined<I: SessionIo>(
                     if !send_json(io, &ServerFrame::Event { event }).await {
                         return;
                     }
-                    if !send_view(world, io, &token, event.sequence).await {
+                    if !send_view(world, io, &token, event.sequence, viewport).await {
                         return;
                     }
                 }
@@ -1813,7 +1825,7 @@ async fn joined<I: SessionIo>(
     {
         return;
     }
-    if !send_view(world, io, &token, cursor).await {
+    if !send_view(world, io, &token, cursor, viewport).await {
         return;
     }
 
@@ -1831,7 +1843,7 @@ async fn joined<I: SessionIo>(
         tokio::select! {
             inbound = io.recv() => match inbound {
                 Inbound::Text(text) => {
-                    if !handle_client_frame(service, io, &token, &text).await {
+                    if !handle_client_frame(service, io, &token, &text, &mut viewport, cursor).await {
                         break;
                     }
                 }
@@ -1855,7 +1867,7 @@ async fn joined<I: SessionIo>(
                             if !send_json(io, &ServerFrame::ProgramChanged {
                                 module_hash,
                                 sequence: cursor,
-                            }).await || !send_view(world, io, &token, cursor).await {
+                            }).await || !send_view(world, io, &token, cursor, viewport).await {
                                 break;
                             }
                         }
@@ -1873,7 +1885,7 @@ async fn joined<I: SessionIo>(
                         break;
                     }
                     cursor = event.sequence;
-                    if !send_view(world, io, &token, cursor).await {
+                    if !send_view(world, io, &token, cursor, viewport).await {
                         break;
                     }
                 }
@@ -1883,7 +1895,7 @@ async fn joined<I: SessionIo>(
                         break;
                     }
                     cursor = snapshot.current_sequence;
-                    if !send_view(world, io, &token, cursor).await {
+                    if !send_view(world, io, &token, cursor, viewport).await {
                         break;
                     }
                 }
@@ -1892,7 +1904,7 @@ async fn joined<I: SessionIo>(
             changed = views.changed() => match changed {
                 Ok(()) => {
                     let sequence = *views.borrow_and_update();
-                    if !send_view(world, io, &token, sequence).await {
+                    if !send_view(world, io, &token, sequence, viewport).await {
                         break;
                     }
                 }
@@ -1931,6 +1943,7 @@ async fn send_view<I: SessionIo>(
     io: &mut I,
     token: &JoinCapability,
     sequence: u64,
+    viewport: Option<Viewport>,
 ) -> bool {
     match world.view(token.clone()).await {
         Ok(Some(data)) => {
@@ -1938,6 +1951,12 @@ async fn send_view<I: SessionIo>(
                 return send_error(io, "world presentation is too large").await;
             }
             let surface = match crate::world_presentation::parse_surface(&data) {
+                Ok(Some(crate::world_presentation::WorldSurface::Screen(screen))) => {
+                    let screen = viewport.map_or(screen.clone(), |viewport| {
+                        screen.fit(viewport.width, viewport.height)
+                    });
+                    Some(crate::world_presentation::WorldSurface::Screen(screen))
+                }
                 Ok(surface) => surface,
                 Err(_) => return send_error(io, "invalid world screen presentation").await,
             };
@@ -1954,6 +1973,26 @@ async fn send_view<I: SessionIo>(
         Ok(None) => true,
         Err(_) => false,
     }
+}
+
+/// Connection-local terminal/browser dimensions. This value is intentionally
+/// absent from world events and snapshots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Viewport {
+    width: usize,
+    height: usize,
+}
+
+fn normalize_paste(text: &str) -> Result<Vec<u8>, &'static str> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    if normalized.len() > 4096
+        || normalized
+            .chars()
+            .any(|ch| ch.is_control() && ch != '\n' && ch != '\t')
+    {
+        return Err("paste must be at most 4096 UTF-8 bytes and contain no control characters");
+    }
+    Ok(normalized.into_bytes())
 }
 
 const USES_REFUSED: &str = "a delegation may not carry `uses`: a delegated grant has no use count, and the host's limit still applies";
@@ -1986,6 +2025,8 @@ async fn handle_client_frame<I: SessionIo>(
     io: &mut I,
     token: &JoinCapability,
     text: &str,
+    viewport: &mut Option<Viewport>,
+    sequence: u64,
 ) -> bool {
     let world = service.world();
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
@@ -2032,6 +2073,30 @@ async fn handle_client_frame<I: SessionIo>(
             return send_delegation(io, result).await;
         }
         ClientFrame::Chat { text } => world.chat(token.clone(), text).await,
+        ClientFrame::Resize { width, height } => {
+            if width == 0 || height == 0 || width > 500 || height > 200 {
+                return send_error(
+                    io,
+                    "viewport dimensions must be width 1..=500 and height 1..=200",
+                )
+                .await;
+            }
+            *viewport = Some(Viewport {
+                width: usize::from(width),
+                height: usize::from(height),
+            });
+            return send_view(world, io, token, sequence, *viewport).await;
+        }
+        ClientFrame::Paste { text } => {
+            let Ok(bytes) = normalize_paste(&text) else {
+                return send_error(
+                    io,
+                    "paste must be at most 4096 UTF-8 bytes and contain no control characters",
+                )
+                .await;
+            };
+            world.input(token.clone(), bytes).await
+        }
         ClientFrame::Input { data_hex } => match decode_hex(&data_hex) {
             Some(data) => world.input(token.clone(), data).await,
             None => return send_error(io, "input data must be hexadecimal").await,
@@ -2312,6 +2377,50 @@ mod tests {
         )
     }
 
+    struct FixedScreen;
+
+    impl crate::world::WorldProgram for FixedScreen {
+        fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+            Ok(Some(
+                r#"{"kind":"screen","version":1,"width":4,"height":2,"rows":["界ab","wxyz"]}"#
+                    .to_owned(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn viewport_is_session_local_and_never_advances_the_world_sequence() {
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(FixedScreen),
+        );
+        let svc = WorldService::new(world.clone(), None);
+        let scopes = WorldScopes::from_names(["join", "input"]).unwrap();
+        let (_, capability) = world.issue("player".to_owned(), scopes).await.unwrap();
+        let mut peer = Peer::connect(svc, SessionConfig::default());
+        peer.say(serde_json::json!({"type":"join","capability":capability.expose()}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        assert_eq!(peer.next().await.unwrap()["type"], "view");
+        let sequence = world
+            .snapshot(capability.clone())
+            .await
+            .unwrap()
+            .current_sequence;
+
+        peer.say(serde_json::json!({"type":"resize","width":1,"height":1}))
+            .await;
+        let view = peer.next().await.unwrap();
+        assert_eq!(view["type"], "view");
+        assert_eq!(view["surface"]["width"], 1);
+        assert_eq!(view["surface"]["height"], 1);
+        assert_eq!(view["surface"]["cells"][0]["symbol"], " ");
+        assert_eq!(
+            world.snapshot(capability).await.unwrap().current_sequence,
+            sequence
+        );
+    }
+
     /// A server with Ann and Bo as friends and no outbox. When `bo_home_is_remote`,
     /// Bo's artifacts are held on another server, so removing Bo must be sent.
     async fn friends_without_outbox(
@@ -2513,6 +2622,18 @@ mod tests {
         assert_eq!(decode_hex("0"), None);
         assert_eq!(decode_hex("zz"), None);
         assert_eq!(decode_hex(&"0".repeat(MAX_FRAME_BYTES * 2 + 2)), None);
+    }
+
+    #[test]
+    fn paste_is_normalized_bounded_and_rejects_controls() {
+        assert_eq!(normalize_paste("a\r\nb\rc\t"), Ok(b"a\nb\nc\t".to_vec()));
+        assert_eq!(normalize_paste(&"x".repeat(4096)).unwrap().len(), 4096);
+        assert!(normalize_paste(&"x".repeat(4097)).is_err());
+        assert!(normalize_paste("a\u{1b}b").is_err());
+        assert_eq!(
+            normalize_paste(&"界".repeat(1366)).unwrap_err(),
+            "paste must be at most 4096 UTF-8 bytes and contain no control characters"
+        );
     }
 
     #[test]

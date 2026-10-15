@@ -105,6 +105,7 @@ impl Server for SshServer {
             permit: Arc::clone(&self.connections).try_acquire_owned().ok(),
             login: None,
             input: None,
+            viewport: None,
         }
     }
 }
@@ -121,7 +122,13 @@ struct SshClient {
     hub: WorldHub,
     permit: Option<OwnedSemaphorePermit>,
     login: Option<Login>,
-    input: Option<mpsc::Sender<Vec<u8>>>,
+    input: Option<mpsc::Sender<SshInputFrame>>,
+    viewport: Option<(u32, u32)>,
+}
+
+enum SshInputFrame {
+    Bytes(Vec<u8>),
+    Resize(u32, u32),
 }
 
 impl Handler for SshClient {
@@ -231,13 +238,30 @@ impl Handler for SshClient {
         &mut self,
         channel: ChannelId,
         _term: &str,
-        _col_width: u32,
-        _row_height: u32,
+        col_width: u32,
+        row_height: u32,
         _pix_width: u32,
         _pix_height: u32,
         _modes: &[(Pty, u32)],
         session: &mut Session,
     ) -> Result<(), russh::Error> {
+        self.viewport = Some((col_width, row_height));
+        session.channel_success(channel)
+    }
+
+    async fn window_change_request(
+        &mut self,
+        channel: ChannelId,
+        col_width: u32,
+        row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        session: &mut Session,
+    ) -> Result<(), russh::Error> {
+        self.viewport = Some((col_width, row_height));
+        if let Some(input) = &self.input {
+            let _ = input.try_send(SshInputFrame::Resize(col_width, row_height));
+        }
         session.channel_success(channel)
     }
 
@@ -262,12 +286,14 @@ impl Handler for SshClient {
         session.channel_success(channel)?;
 
         let (input, frames) = mpsc::channel(INPUT_QUEUE);
+        let first_resize = self.viewport.take();
         self.input = Some(input);
         let mut io = SshIo {
             handle: session.handle(),
             channel,
             frames,
             first: Some(first),
+            first_resize,
             errored: false,
         };
         let hub = self.hub.clone();
@@ -292,7 +318,7 @@ impl Handler for SshClient {
         };
         // Never wait for queue space: this handler runs on the same loop that
         // flushes the world's output, so waiting here could deadlock.
-        if let Err(error) = input.try_send(data.to_vec()) {
+        if let Err(error) = input.try_send(SshInputFrame::Bytes(data.to_vec())) {
             match error {
                 mpsc::error::TrySendError::Full(_) => {
                     tracing::debug!("world ssh input queue full; dropping input");
@@ -335,8 +361,9 @@ fn join_frame(login: &Login) -> String {
 struct SshIo {
     handle: Handle,
     channel: ChannelId,
-    frames: mpsc::Receiver<Vec<u8>>,
+    frames: mpsc::Receiver<SshInputFrame>,
     first: Option<String>,
+    first_resize: Option<(u32, u32)>,
     errored: bool,
 }
 
@@ -345,9 +372,17 @@ impl SessionIo for SshIo {
         if let Some(join) = self.first.take() {
             return Inbound::Text(join);
         }
+        if let Some((width, height)) = self.first_resize.take() {
+            return Inbound::Text(
+                json!({ "type": "resize", "width": width, "height": height }).to_string(),
+            );
+        }
         match self.frames.recv().await {
-            Some(bytes) => Inbound::Text(
+            Some(SshInputFrame::Bytes(bytes)) => Inbound::Text(
                 json!({ "type": "input", "data_hex": encode_hex(&bytes) }).to_string(),
+            ),
+            Some(SshInputFrame::Resize(width, height)) => Inbound::Text(
+                json!({ "type": "resize", "width": width, "height": height }).to_string(),
             ),
             None => Inbound::Closed,
         }
@@ -493,7 +528,7 @@ async fn run_explorer(
     mut explorer: Explorer,
     handle: Handle,
     channel: ChannelId,
-    mut bytes: mpsc::Receiver<Vec<u8>>,
+    mut bytes: mpsc::Receiver<SshInputFrame>,
 ) {
     let greeting = match explorer.act(DirectoryAction::View).await {
         Ok(outcome) => format!(
@@ -517,7 +552,10 @@ async fn run_explorer(
         return;
     }
     let mut typing = Typing::default();
-    'input: while let Some(chunk) = bytes.recv().await {
+    'input: while let Some(frame) = bytes.recv().await {
+        let SshInputFrame::Bytes(chunk) = frame else {
+            continue;
+        };
         let mut out = Vec::new();
         let mut done = false;
         for byte in chunk {
