@@ -15,6 +15,7 @@ import {
   findNext,
   findPrev,
   getSearchState,
+  getMatchHighlights,
   replaceAll,
   replaceNext,
   SearchQuery,
@@ -51,18 +52,8 @@ const panelState: PanelState = {
 
 /** Count total matches for display. */
 function countMatches(view: EditorView): number {
-  const ss = getSearchState(view.state);
-  if (!ss || !ss.query.valid) return 0;
-
-  let count = 0;
-  let result = ss.query.findNext(view.state, 0);
-  const seen = new Set<number>();
-  while (result && !seen.has(result.from)) {
-    seen.add(result.from);
-    count++;
-    result = ss.query.findNext(view.state, result.to);
-  }
-  return count;
+  const decos = getMatchHighlights(view.state);
+  return decos ? decos.find(0, view.state.doc.content.size).length : 0;
 }
 
 /** Update match count label. */
