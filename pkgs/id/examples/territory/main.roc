@@ -1,6 +1,8 @@
 app [program] { pf: platform "../roc-world/platform.roc" }
 
 import pf.Key
+import pf.Screen
+import pf.RocJson
 
 # A territory world for up to eight players on a 16x8 grid.
 #
@@ -97,22 +99,26 @@ restore = |text| {
 # --- presence --------------------------------------------------------------
 
 presence : Model, Str -> Model
-presence = |model, ev| {
-    pid = parse_pid(ev)
-    if Str.contains(ev, "\"event\":\"joined\"") {
-        join(model, pid, sanitize(until(after(ev, "\"name\":\""), "\"")))
-    } else if Str.contains(ev, "\"event\":\"left\"") {
-        leave(model, pid)
-    } else {
-        model
-    }
-}
-
-parse_pid : Str -> U64
-parse_pid = |ev|
-    match U64.from_str(until(until(after(ev, "\"id\":"), ","), "}")) {
-        Ok(pid) => pid
-        Err(_) => 0
+presence = |model, ev|
+    match RocJson.decode(ev) {
+        Ok(event) => {
+            event_name = string_field(event, "event")
+            part = field(event, "participant")
+            pid_str = number_field(part, "id")
+            name = sanitize(string_field(part, "name"))
+            pid = match U64.from_str(pid_str) {
+                Ok(n) => n
+                Err(_) => 0
+            }
+            if event_name == "joined" {
+                join(model, pid, name)
+            } else if event_name == "left" {
+                leave(model, pid)
+            } else {
+                model
+            }
+        }
+        Err(_) => model
     }
 
 join : Model, U64, Str -> Model
@@ -265,19 +271,67 @@ mark_for = |n|
         Err(_) => 63
     }
 
+# --- styles and helpers ----------------------------------------------------
+
+mark_style : U8 -> { fg : U8, bg : U8, bold : Bool }
+mark_style = |mark|
+    match mark {
+        65 => { fg: 10, bg: 0, bold: Bool.True }
+        66 => { fg: 12, bg: 0, bold: Bool.True }
+        67 => { fg: 11, bg: 0, bold: Bool.True }
+        68 => { fg: 13, bg: 0, bold: Bool.True }
+        69 => { fg: 14, bg: 0, bold: Bool.True }
+        70 => { fg: 9,  bg: 0, bold: Bool.True }
+        71 => { fg: 15, bg: 0, bold: Bool.True }
+        72 => { fg: 8,  bg: 0, bold: Bool.True }
+        _  => { fg: 0,  bg: 0, bold: Bool.False }
+    }
+
+cursor_style : U8 -> { fg : U8, bg : U8, bold : Bool }
+cursor_style = |cursor_mark|
+    match cursor_mark {
+        97  => { fg: 0, bg: 10, bold: Bool.True }
+        98  => { fg: 0, bg: 12, bold: Bool.True }
+        99  => { fg: 0, bg: 11, bold: Bool.True }
+        100 => { fg: 0, bg: 13, bold: Bool.True }
+        101 => { fg: 0, bg: 14, bold: Bool.True }
+        102 => { fg: 0, bg: 9,  bold: Bool.True }
+        103 => { fg: 0, bg: 15, bold: Bool.True }
+        104 => { fg: 15, bg: 8, bold: Bool.True }
+        _   => { fg: 0, bg: 7,  bold: Bool.True }
+    }
+
+style_for_cell : U8 -> { fg : U8, bg : U8, bold : Bool }
+style_for_cell = |b|
+    if b >= 97 and b <= 104 {
+        cursor_style(b)
+    } else if b >= 65 and b <= 72 {
+        mark_style(b)
+    } else {
+        { fg: 8, bg: 0, bold: Bool.False }
+    }
+
+field = |value, key| match RocJson.get(value, key) {
+    Ok(found) => found
+    Err(_) => RocJson.Null
+}
+
+string_field = |value, key| match RocJson.as_string(field(value, key)) {
+    Ok(text) => text
+    Err(_) => ""
+}
+
+number_field = |value, key| match RocJson.as_number(field(value, key)) {
+    Ok(text) => text
+    Err(_) => ""
+}
+
 # --- text helpers ----------------------------------------------------------
 
 bytes_to_str : List(U8) -> Str
 bytes_to_str = |bytes|
     match Str.from_utf8(bytes) {
         Ok(text) => text
-        Err(_) => ""
-    }
-
-after : Str, Str -> Str
-after = |text, marker|
-    match List.get(Str.split_on(text, marker), 1) {
-        Ok(rest) => rest
         Err(_) => ""
     }
 

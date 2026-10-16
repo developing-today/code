@@ -879,6 +879,30 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_roc_screen_renders_structured_surface() {
+        let wasm = include_bytes!("../examples/roc-screen/roc-screen.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        live.update(1, b"+").unwrap();
+        live.update(1, b"+").unwrap();
+        let view_bytes = live.view().unwrap();
+        let view_str = String::from_utf8(view_bytes).unwrap();
+        let surface = crate::world_presentation::parse_surface(&view_str).unwrap();
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) = surface else {
+            panic!("expected structured Screen surface, got {view_str}");
+        };
+        assert_eq!((screen.width, screen.height), (20, 3));
+        let rows: Vec<String> = screen
+            .cells
+            .chunks(usize::from(screen.width))
+            .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+            .collect();
+        assert!(rows[0].starts_with("+-counter"));
+        assert!(rows[1].starts_with("| count=2"));
+        assert_eq!(rows[2], format!("+{}+", "-".repeat(18)));
+    }
+
+    #[test]
     fn checked_in_territory_plays_persists_and_rejoins() {
         let wasm = include_bytes!("../examples/territory/territory.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();

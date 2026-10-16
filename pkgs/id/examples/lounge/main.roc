@@ -30,7 +30,7 @@ update = |model, _pid, ev| {
 			cap = string_field(event, "cap")
 			event_name = string_field(event, "event")
 			if cap == "players" and event_name == "joined" {
-				name = sanitize(string_field(event, "name"))
+				name = sanitize(string_field(field(event, "participant"), "name"))
 				next = model.next + 1
 				request = chat_request(next, Str.concat("Welcome, ", Str.concat(name, "!")))
 				{ joins: model.joins + 1, denied: model.denied, next: next, last_now: model.last_now, pending: List.append(model.pending, request) }
