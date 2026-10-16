@@ -31,6 +31,19 @@ use crate::world_session::{
 /// variants; removing or changing one needs `/id-world/2`.
 pub const WORLD_ALPN: &[u8] = b"/id-world/1";
 
+/// Public module state returned by a world's `info` frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldModuleInfo {
+    /// World identifier.
+    pub world_id: String,
+    /// Hash of the active module, if any.
+    pub active_module_hash: Option<String>,
+    /// Server-observed build origin, if recorded by this host.
+    pub active_module_provenance: Option<crate::world::ModuleProvenance>,
+    /// Latest committed world sequence.
+    pub current_sequence: u64,
+}
+
 /// Concurrent sessions allowed on one connection.
 const MAX_SESSIONS_PER_CONNECTION: usize = 16;
 
@@ -656,6 +669,17 @@ impl WorldClient {
     ///
     /// Fails if the capability is refused or the stream breaks.
     pub async fn info(&mut self, capability: &str) -> Result<(String, Option<String>, u64)> {
+        let info = self.info_details(capability).await?;
+        Ok((
+            info.world_id,
+            info.active_module_hash,
+            info.current_sequence,
+        ))
+    }
+
+    /// Query module state, including observed build provenance where available.
+    /// Older hosts that do not send provenance continue to decode as `None`.
+    pub async fn info_details(&mut self, capability: &str) -> Result<WorldModuleInfo> {
         self.send_json(&serde_json::json!({
             "type": "info",
             "capability": capability,
@@ -675,7 +699,18 @@ impl WorldClient {
                 let current_sequence = reply["current_sequence"]
                     .as_u64()
                     .context("host omitted sequence")?;
-                Ok((world_id, active_module_hash, current_sequence))
+                let active_module_provenance = reply
+                    .get("active_module_provenance")
+                    .filter(|value| !value.is_null())
+                    .map(|value| serde_json::from_value(value.clone()))
+                    .transpose()
+                    .context("host sent invalid module provenance")?;
+                Ok(WorldModuleInfo {
+                    world_id,
+                    active_module_hash,
+                    active_module_provenance,
+                    current_sequence,
+                })
             }
             _ => bail!(
                 "{}",
@@ -1085,9 +1120,13 @@ mod tests {
         let mut query = WorldClient::connect(&client_ep, addr.clone())
             .await
             .unwrap();
-        let (_, active, _) = query.info(&capability).await.unwrap();
+        let info = query.info_details(&capability).await.unwrap();
         query.close();
-        assert_eq!(active.as_deref(), Some(hash.as_str()));
+        assert_eq!(info.active_module_hash.as_deref(), Some(hash.as_str()));
+        assert_eq!(
+            info.active_module_provenance,
+            Some(crate::world::ModuleProvenance::Artifact)
+        );
 
         let mut fetch = WorldClient::connect(&client_ep, addr.clone())
             .await

@@ -189,7 +189,7 @@ pub async fn compile(
     compiler: &Compiler,
     granted: &[String],
     timeout: Duration,
-) -> Result<(Vec<u8>, String)> {
+) -> Result<(Vec<u8>, String, crate::world::ModuleProvenance)> {
     use crate::world_session::MAX_WORLD_MODULE_BYTES;
 
     validate_spec(spec)?;
@@ -206,8 +206,10 @@ pub async fn compile(
     } else {
         "wasm32"
     };
+    let source_blake3 = digest_sources(&spec.files)?;
     let job = tempfile::tempdir().context("create compile job directory")?;
     copy_platform(&compiler.platform_dir, job.path())?;
+    let platform_blake3 = digest_tree(&job.path().join("platform"))?;
     for (name, content) in &spec.files {
         let path = job.path().join(sanitize_file_name(name)?);
         tokio::fs::write(&path, content)
@@ -223,7 +225,9 @@ pub async fn compile(
     tokio::fs::write(&main_path, rewritten).await?;
 
     let output_path = job.path().join("out");
-    let roc_bin = resolve_program(&compiler.roc_bin);
+    let roc_bin = std::fs::canonicalize(resolve_program(&compiler.roc_bin))
+        .context("resolve Roc compiler executable")?;
+    let compiler_blake3 = digest_file(&roc_bin)?;
     let job_dir = job.path().to_owned();
     let output = PathBuf::from(&output_path);
     // The compiler is a whole LLVM process; run it on a blocking thread and
@@ -240,6 +244,11 @@ pub async fn compile(
         if target == "wasm32" {
             args.push(format!("--wasm-memory={WASM_MEMORY_BYTES}"));
         }
+        let stable_arguments: Vec<String> = args
+            .iter()
+            .filter(|argument| !argument.starts_with("--output="))
+            .cloned()
+            .collect();
         command
             .current_dir(&job_dir)
             .args(&args)
@@ -290,9 +299,9 @@ pub async fn compile(
         };
         let captured_err = readers.1.join().unwrap_or_default();
         let captured_out = readers.0.join().unwrap_or_default();
-        Ok((status, captured_err, captured_out))
+        Ok((status, captured_err, captured_out, stable_arguments))
     });
-    let (status, captured_err, _captured_out) = run
+    let (status, captured_err, _captured_out, arguments) = run
         .await
         .context("compile task")?
         .map_err(|error| error.context("compilation failed"))?;
@@ -302,6 +311,15 @@ pub async fn compile(
             tail(&captured_err, MAX_CAPTURE_BYTES)
         );
     }
+    let provenance =
+        crate::world::ModuleProvenance::SourceBuild(crate::world::SourceBuildProvenance {
+            schema_version: 1,
+            compiler_blake3,
+            platform_blake3,
+            source_blake3,
+            target: target.to_owned(),
+            arguments,
+        });
 
     let wasm = tokio::fs::read(&output_path)
         .await
@@ -317,7 +335,7 @@ pub async fn compile(
             crate::world_native::is_native_module(&wasm),
             "the compiler did not produce a native executable"
         );
-        return Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES)));
+        return Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES), provenance));
     }
     // Same policy as an upload: import-free and allowlisted.
     #[cfg(feature = "sandbox")]
@@ -329,7 +347,92 @@ pub async fn compile(
         },
     )
     .context("the compiled module is not a valid world module")?;
-    Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES)))
+    Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES), provenance))
+}
+
+fn digest_file(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"roc-compiler-binary-v1\0");
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        use std::io::Read as _;
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn digest_tree(root: &Path) -> Result<String> {
+    fn visit(root: &Path, dir: &Path, hasher: &mut blake3::Hasher) -> Result<()> {
+        let mut entries = std::fs::read_dir(dir)
+            .with_context(|| format!("read {}", dir.display()))?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            ensure!(
+                !entry.file_type()?.is_symlink(),
+                "no symlinks in the platform"
+            );
+            let path = entry.path();
+            if path.is_dir() {
+                let relative = path.strip_prefix(root)?;
+                let name = relative.to_string_lossy();
+                let name_bytes = name.as_bytes();
+                let name_len = u64::try_from(name_bytes.len()).context("platform path length")?;
+                hasher.update(b"D");
+                hasher.update(&name_len.to_le_bytes());
+                hasher.update(name_bytes);
+                visit(root, &path, hasher)?;
+                continue;
+            }
+            let relative = path.strip_prefix(root)?;
+            let name = relative.to_string_lossy();
+            let name_bytes = name.as_bytes();
+            let name_len = u64::try_from(name_bytes.len()).context("platform path length")?;
+            hasher.update(b"F");
+            hasher.update(&name_len.to_le_bytes());
+            hasher.update(name_bytes);
+            let mut file = std::fs::File::open(&path)?;
+            let file_len = file.metadata()?.len();
+            hasher.update(&file_len.to_le_bytes());
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                use std::io::Read as _;
+                let read = file.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+        }
+        Ok(())
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    visit(root, root, &mut hasher)?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn digest_sources(files: &[(String, String)]) -> Result<String> {
+    let mut sorted: Vec<_> = files.iter().collect();
+    sorted.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"roc-source-files-v1\0");
+    for (name, content) in sorted {
+        let name = name.as_bytes();
+        let content = content.as_bytes();
+        let name_len = u64::try_from(name.len()).context("source filename length")?;
+        let content_len = u64::try_from(content.len()).context("source file length")?;
+        hasher.update(&name_len.to_le_bytes());
+        hasher.update(name);
+        hasher.update(&content_len.to_le_bytes());
+        hasher.update(content);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 /// Copy the platform pieces a compilation needs (its `.roc` modules, including
@@ -466,6 +569,43 @@ mod tests {
     }
 
     #[test]
+    fn source_digest_is_independent_of_file_order_but_tracks_names_and_contents() {
+        let first = vec![
+            ("main.roc".to_owned(), "app [] {}".to_owned()),
+            ("lib.roc".to_owned(), "value = 1".to_owned()),
+        ];
+        let reversed = vec![first[1].clone(), first[0].clone()];
+        assert_eq!(
+            digest_sources(&first).unwrap(),
+            digest_sources(&reversed).unwrap()
+        );
+
+        let changed = vec![
+            first[0].clone(),
+            ("lib.roc".to_owned(), "value = 2".to_owned()),
+        ];
+        assert_ne!(
+            digest_sources(&first).unwrap(),
+            digest_sources(&changed).unwrap()
+        );
+    }
+
+    #[test]
+    fn platform_digest_is_stable_and_includes_relative_names() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("targets/wasm32")).unwrap();
+        std::fs::write(root.path().join("platform.roc"), "platform").unwrap();
+        std::fs::write(root.path().join("targets/wasm32/host.wasm"), b"host").unwrap();
+
+        let before = digest_tree(root.path()).unwrap();
+        assert_eq!(before, digest_tree(root.path()).unwrap());
+        std::fs::create_dir(root.path().join("empty")).unwrap();
+        assert_ne!(before, digest_tree(root.path()).unwrap());
+        std::fs::write(root.path().join("targets/wasm32/host.wasm"), b"other").unwrap();
+        assert_ne!(before, digest_tree(root.path()).unwrap());
+    }
+
+    #[test]
     fn the_platform_path_is_rewritten_to_the_staged_copy() {
         let main = "app [program] { pf: platform \"../roc-world/platform.roc\" }\n";
         assert_eq!(
@@ -509,7 +649,7 @@ mod tests {
         ))
         .unwrap();
         eprintln!("PROBE roc={}", compiler.roc_bin);
-        let (wasm, _diagnostics) = compile(
+        let (wasm, _diagnostics, provenance) = compile(
             &CompileSpec {
                 files: vec![("main.roc".to_owned(), counter)],
                 seed: 42,
@@ -521,6 +661,15 @@ mod tests {
         )
         .await
         .unwrap();
+        let crate::world::ModuleProvenance::SourceBuild(build) = provenance else {
+            panic!("source compilation must return build provenance");
+        };
+        assert_eq!(build.schema_version, 1);
+        assert_eq!(build.target, "wasm32");
+        assert_eq!(build.arguments[0], "build");
+        assert_eq!(build.compiler_blake3.len(), 64);
+        assert_eq!(build.platform_blake3.len(), 64);
+        assert_eq!(build.source_blake3.len(), 64);
         // The compiled module behaves like the checked-in one.
         let runner =
             crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
@@ -556,7 +705,7 @@ mod tests {
             "/examples/roc-screen/main.roc"
         ))
         .unwrap();
-        let (wasm, _diagnostics) = compile(
+        let (wasm, _diagnostics, provenance) = compile(
             &CompileSpec {
                 files: vec![("main.roc".to_owned(), app)],
                 seed: 7,
@@ -568,6 +717,10 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(matches!(
+            provenance,
+            crate::world::ModuleProvenance::SourceBuild(_)
+        ));
         let runner =
             crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
                 .unwrap();
@@ -621,7 +774,7 @@ mod tests {
             "/examples/roc-counter/main.roc"
         ))
         .unwrap();
-        let (native, _diagnostics) = compile(
+        let (native, _diagnostics, provenance) = compile(
             &CompileSpec {
                 files: vec![("main.roc".to_owned(), counter)],
                 seed: 42,
@@ -633,6 +786,10 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(matches!(
+            provenance,
+            crate::world::ModuleProvenance::SourceBuild(_)
+        ));
         assert!(crate::world_native::is_native_module(&native));
         let job = tempfile::tempdir().unwrap();
         let path = job.path().join("counter");

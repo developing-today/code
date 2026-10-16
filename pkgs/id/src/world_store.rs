@@ -1047,6 +1047,7 @@ mod tests {
                 kind: crate::world::WorldEventKind::ProgramInstalled {
                     module_hash: "h".to_owned(),
                     seed: 1,
+                    provenance: None,
                 },
             },
         });
@@ -1054,6 +1055,7 @@ mod tests {
             sequence: 1,
             module_hash: "h".to_owned(),
             seed: 1,
+            provenance: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
         });

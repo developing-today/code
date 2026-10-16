@@ -258,6 +258,8 @@ enum ServerFrame<'a> {
     ModuleInfo {
         world_id: String,
         active_module_hash: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active_module_provenance: Option<crate::world::ModuleProvenance>,
         current_sequence: u64,
     },
     /// One page of structured records, with the sequence they were read at.
@@ -613,7 +615,7 @@ impl WorldService {
             .await
             .map_err(|error| format!("compile failed: {error:#}"))?
             .granted;
-        let (wasm, diagnostics) =
+        let (wasm, diagnostics, provenance) =
             crate::world_compile::compile(spec, compiler, &granted, COMPILE_TIMEOUT)
                 .await
                 .map_err(|error| {
@@ -625,7 +627,15 @@ impl WorldService {
             .try_reserve_module_upload()
             .map_err(|error| format!("install failed: {error:?}"))?;
         let (_, sequence) = self
-            .install_wasm_reserved(supplied_admin, wasm, spec.seed, &hash, permit, true)
+            .install_wasm_reserved(
+                supplied_admin,
+                wasm,
+                spec.seed,
+                &hash,
+                permit,
+                true,
+                Some(provenance),
+            )
             .await
             .map_err(|error| format!("install failed: {error:?}"))?;
         Ok((hash, sequence, diagnostics))
@@ -773,8 +783,16 @@ impl WorldService {
         claimed_hash: &str,
     ) -> Result<(String, u64), InstallError> {
         let permit = self.try_reserve_module_upload()?;
-        self.install_wasm_reserved(supplied_admin, wasm, seed, claimed_hash, permit, false)
-            .await
+        self.install_wasm_reserved(
+            supplied_admin,
+            wasm,
+            seed,
+            claimed_hash,
+            permit,
+            false,
+            None,
+        )
+        .await
     }
 
     #[cfg(feature = "sandbox")]
@@ -786,6 +804,7 @@ impl WorldService {
         claimed_hash: &str,
         _permit: OwnedSemaphorePermit,
         compiled_from_source: bool,
+        provenance: Option<crate::world::ModuleProvenance>,
     ) -> Result<(String, u64), InstallError> {
         self.authorize_admin(supplied_admin)
             .map_err(|error| match error {
@@ -796,6 +815,9 @@ impl WorldService {
             })?;
         if self.source_only && !compiled_from_source {
             return Err(InstallError::RawModuleDisabled);
+        }
+        if compiled_from_source && provenance.is_none() {
+            return Err(InstallError::InvalidModule);
         }
         if wasm.is_empty() || wasm.len() > MAX_WORLD_MODULE_BYTES {
             return Err(InstallError::InvalidUpload);
@@ -896,7 +918,12 @@ impl WorldService {
         };
         let installed = self
             .world
-            .install_program(module_hash.clone(), seed, guest)
+            .install_program_with_provenance(
+                module_hash.clone(),
+                seed,
+                Some(provenance.unwrap_or(crate::world::ModuleProvenance::Artifact)),
+                guest,
+            )
             .await
             .map_err(|_| InstallError::Unavailable)?;
         if !matches!(
@@ -1455,6 +1482,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                         &ServerFrame::ModuleInfo {
                             world_id: snapshot.world_id,
                             active_module_hash: snapshot.active_module_hash,
+                            active_module_provenance: snapshot.active_module_provenance,
                             current_sequence: snapshot.current_sequence,
                         },
                     )
@@ -1740,6 +1768,7 @@ async fn install_module_session<I: SessionIo>(
                 &actual_hash,
                 upload_permit,
                 false,
+                None,
             )
             .await
             .map_err(|error| match error {
