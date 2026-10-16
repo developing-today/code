@@ -40,7 +40,6 @@ const RECONNECT_CLEANUP_DELAY_MS = 3_000; // Wait 3s after Init before cleanup (
 const HOVER_RESTORE_DELAY_MS = 1_000; // 1s delay before restoring after hover
 const PENDING_REMOVAL_MS = 5_000; // Show fading cursor for 5s after disconnect
 
-
 export interface CursorInfo {
   clientID: string | number;
   head: number;
@@ -454,7 +453,6 @@ function createCursorDecorations(
   const docSize = state.doc.content.size;
   const now = Date.now();
   const localHead = state.selection.head;
-
 
   // Normalize myClientID to number for comparison (handles string/number mismatch)
   const myClientIDNum = myClientID !== null ? Number(myClientID) : null;
