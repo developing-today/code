@@ -187,6 +187,12 @@ enum ClientFrame {
         grant: Vec<String>,
         revoke: Vec<String>,
     },
+    /// Admin: persist requested per-world runtime bounds. They do not change
+    /// a running guest; they apply on its next install or process restart.
+    SetExecutionProfile {
+        admin_token: String,
+        profile: crate::world_limits::WorldExecutionProfile,
+    },
     /// Show this world's capability grants, wants and usage.
     Caps {
         capability: String,
@@ -306,6 +312,11 @@ enum ServerFrame<'a> {
     /// The world's capability report.
     Caps {
         report: crate::world_caps::CapsReport,
+    },
+    /// The requested profile and an explicit deferred-application notice.
+    ExecutionProfile {
+        update: crate::world::ExecutionProfileUpdate,
+        message: &'static str,
     },
     /// A compiled module was installed.
     Compiled {
@@ -434,6 +445,7 @@ pub struct WorldService {
     runtime: crate::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
     outbox: Option<Arc<Mutex<crate::envelope_outbox::Outbox>>>,
+    profile_operation: Arc<Mutex<()>>,
 }
 
 impl std::fmt::Debug for WorldService {
@@ -566,6 +578,7 @@ impl WorldService {
             runtime: crate::world_limits::RuntimeLimits::default(),
             mail: None,
             outbox: None,
+            profile_operation: Arc::new(Mutex::new(())),
         }
     }
 
@@ -577,6 +590,23 @@ impl WorldService {
     ) -> Self {
         self.runtime = runtime;
         self
+    }
+
+    /// Persist a per-world resource profile. The running program keeps its
+    /// existing limits; the request applies on the next install or restart.
+    pub async fn set_execution_profile(
+        &self,
+        supplied_admin: Option<&str>,
+        profile: crate::world_limits::WorldExecutionProfile,
+    ) -> anyhow::Result<crate::world::ExecutionProfileUpdate> {
+        self.authorize_admin(supplied_admin)
+            .map_err(|_| anyhow::anyhow!("admin denied"))?;
+        // Resolve now for validation and to ensure this request is valid under
+        // this process's hard ceilings. The stored request remains unclamped,
+        // so a later server with lower ceilings still wins at instantiation.
+        profile.resolve(self.runtime)?;
+        let _operation = self.profile_operation.lock().await;
+        self.world.set_execution_profile(profile).await
     }
 
     /// Let admins compile Roc sources into this world on the fly.
@@ -806,6 +836,7 @@ impl WorldService {
         compiled_from_source: bool,
         provenance: Option<crate::world::ModuleProvenance>,
     ) -> Result<(String, u64), InstallError> {
+        let _profile_operation = self.profile_operation.lock().await;
         self.authorize_admin(supplied_admin)
             .map_err(|error| match error {
                 InviteError::Disabled => InstallError::Disabled,
@@ -856,7 +887,14 @@ impl WorldService {
                     .await
                     .map_err(|_| InstallError::Unavailable)?;
             }
-            let native_limits = self.runtime.native;
+            let runtime = self
+                .world
+                .execution_profile()
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .resolve(self.runtime)
+                .map_err(|_| InstallError::InvalidModule)?;
+            let native_limits = runtime.native;
             let program = tokio::task::spawn_blocking(move || {
                 crate::world_native::NativeProgram::new(&path, seed, native_limits, None)
             })
@@ -871,7 +909,14 @@ impl WorldService {
             })?;
             Box::new(program)
         } else {
-            let limits = self.runtime.sandbox;
+            let runtime = self
+                .world
+                .execution_profile()
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .resolve(self.runtime)
+                .map_err(|_| InstallError::InvalidModule)?;
+            let limits = runtime.sandbox;
             let compile_bytes = wasm.clone();
             let program = tokio::task::spawn_blocking(move || {
                 crate::sandbox::Sandbox::compile(&compile_bytes, limits)?.instantiate(seed)
@@ -991,6 +1036,7 @@ fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
         | ClientFrame::Compile { admin_token, .. }
         | ClientFrame::CreateWorld { admin_token }
         | ClientFrame::ListWorlds { admin_token } => Some(admin_token),
+        ClientFrame::SetExecutionProfile { admin_token, .. } => Some(admin_token),
         _ => None,
     }
 }
@@ -1379,6 +1425,27 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             },
             Err(_) => {
                 let _ = send_error(io, "admin denied").await;
+            }
+        },
+        ClientFrame::SetExecutionProfile {
+            admin_token,
+            profile,
+        } => match service
+            .set_execution_profile(Some(&admin_token), profile)
+            .await
+        {
+            Ok(update) => {
+                let _ = send_json(
+                    io,
+                    &ServerFrame::ExecutionProfile {
+                        update,
+                        message: "profile saved; it applies on the next program install or process restart, not to the running instance",
+                    },
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = send_error(io, &format!("{error:#}")).await;
             }
         },
         #[cfg(feature = "sandbox")]
@@ -2145,6 +2212,28 @@ async fn handle_client_frame<I: SessionIo>(
             }
             return true;
         }
+        ClientFrame::SetExecutionProfile {
+            admin_token,
+            profile,
+        } => {
+            match service
+                .set_execution_profile(Some(&admin_token), profile)
+                .await
+            {
+                Ok(update) => {
+                    let _ = send_json(
+                        io,
+                        &ServerFrame::ExecutionProfile {
+                            update,
+                            message: "profile saved; it applies on the next program install or process restart, not to the running instance",
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => return send_error(io, &format!("{error:#}")).await,
+            }
+            return true;
+        }
         ClientFrame::RecordsTicket { .. } => {
             if let Err(message) = records_ticket_session(service, io).await {
                 return send_error(io, message).await;
@@ -2404,6 +2493,74 @@ mod tests {
             WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap()),
             admin.map(str::to_owned),
         )
+    }
+
+    #[tokio::test]
+    async fn execution_profile_change_is_admin_only_and_does_not_replace_live_program() {
+        struct MarkerProgram;
+        impl crate::world::WorldProgram for MarkerProgram {
+            fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                Ok(Some("existing instance".to_owned()))
+            }
+        }
+
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(MarkerProgram),
+        );
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()));
+        let requested = crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(1000),
+            ..Default::default()
+        };
+        assert!(
+            service
+                .set_execution_profile(Some("wrong"), requested)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            world.execution_profile().await.unwrap(),
+            crate::world_limits::WorldExecutionProfile::default()
+        );
+
+        let update = service
+            .set_execution_profile(Some("admin"), requested)
+            .await
+            .unwrap();
+        assert_eq!(update.requested, requested);
+        assert!(update.applies_on_next_program_install_or_process_restart);
+        let (_, token) = world.issue("guest", WorldScopes::GUEST).await.unwrap();
+        assert_eq!(
+            world.view(token).await.unwrap().as_deref(),
+            Some("existing instance"),
+            "updating the profile must not replace or mutate the running program"
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_profile_protocol_returns_the_deferred_application_notice() {
+        let service = service(Some("admin"));
+        let mut peer = Peer::connect(service, SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "set_execution_profile",
+            "admin_token": "admin",
+            "profile": {"wasm_fuel": 1234},
+        }))
+        .await;
+        let response = peer.next().await.unwrap();
+        assert_eq!(response["type"], "execution_profile");
+        assert_eq!(response["update"]["requested"]["wasm_fuel"], 1234);
+        assert_eq!(
+            response["update"]["applies_on_next_program_install_or_process_restart"],
+            true
+        );
+        assert!(
+            response["message"]
+                .as_str()
+                .unwrap()
+                .contains("not to the running instance")
+        );
     }
 
     struct FixedScreen;
@@ -3302,6 +3459,24 @@ mod tests {
         let svc = WorldService::new(world, Some("admin".to_owned()))
             .with_blob_store(MemStore::new().into())
             .with_runtime_limits(starved);
+        assert!(matches!(
+            svc.install_wasm(Some("admin"), wasm.clone(), 12, &hash)
+                .await,
+            Err(InstallError::InvalidModule)
+        ));
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let svc = WorldService::new(world, Some("admin".to_owned()))
+            .with_blob_store(MemStore::new().into());
+        svc.set_execution_profile(
+            Some("admin"),
+            crate::world_limits::WorldExecutionProfile {
+                wasm_fuel: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(matches!(
             svc.install_wasm(Some("admin"), wasm.clone(), 12, &hash)
                 .await,

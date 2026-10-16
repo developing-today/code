@@ -418,6 +418,12 @@ pub enum JournalEntry {
         /// Capability names.
         granted: Vec<String>,
     },
+    /// The world's requested execution profile. Limits are resolved against
+    /// the current server hard ceilings when a program instance is created.
+    ExecutionProfile {
+        /// Per-world resource requests; omitted fields inherit server limits.
+        profile: crate::world_limits::WorldExecutionProfile,
+    },
     /// The world's isolation, written whole on every change. Absent means
     /// [`Isolation::Isolated`].
     Isolation {
@@ -454,6 +460,9 @@ pub enum JournalEntry {
         /// Provenance of the active module, if it was recorded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provenance: Option<ModuleProvenance>,
+        /// Requested resource profile. Absent in older checkpoints.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_profile: Option<crate::world_limits::WorldExecutionProfile>,
         /// The program's own serialization of its state.
         snapshot: String,
         /// Recent events kept for reconnect catch-up.
@@ -514,6 +523,15 @@ pub struct RestoredWorld {
     /// Inputs committed after the install or checkpoint, in order, to replay
     /// through it.
     pub replay: Vec<WorldEvent>,
+}
+
+/// The profile requested by the world admin and when it takes effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ExecutionProfileUpdate {
+    /// Requested profile; this is not necessarily the active instance's limits.
+    pub requested: crate::world_limits::WorldExecutionProfile,
+    /// True when a program is currently running with its previously resolved limits.
+    pub applies_on_next_program_install_or_process_restart: bool,
 }
 
 /// Structured records a program publishes: key to JSON value, key-ordered.
@@ -689,6 +707,7 @@ struct CapabilityRecord {
 pub struct WorldCore {
     world_id: String,
     limits: WorldLimits,
+    execution_profile: crate::world_limits::WorldExecutionProfile,
     next_participant_id: u64,
     sequence: u64,
     active_module_hash: Option<String>,
@@ -735,6 +754,7 @@ impl WorldCore {
         Ok(Self {
             world_id,
             limits,
+            execution_profile: crate::world_limits::WorldExecutionProfile::default(),
             next_participant_id: 1,
             sequence: 0,
             active_module_hash: None,
@@ -867,6 +887,12 @@ impl WorldCore {
                     }
                     core.ledger.set_granted(granted.iter().cloned().collect());
                 }
+                JournalEntry::ExecutionProfile { profile } => {
+                    profile
+                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .context("invalid world execution profile in journal")?;
+                    core.execution_profile = profile;
+                }
                 JournalEntry::Isolation { isolation } => core.isolation = isolation,
                 JournalEntry::CrossWorldWrite { enabled } => {
                     core.cross_world_write = enabled;
@@ -939,6 +965,7 @@ impl WorldCore {
                     module_hash,
                     seed,
                     provenance,
+                    execution_profile,
                     snapshot,
                     events,
                 } => {
@@ -961,6 +988,11 @@ impl WorldCore {
                     core.active_module_hash = Some(module_hash.clone());
                     core.active_module_provenance = provenance.clone();
                     core.active_seed = seed;
+                    let execution_profile = execution_profile.unwrap_or_default();
+                    execution_profile
+                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .context("invalid world execution profile in checkpoint")?;
+                    core.execution_profile = execution_profile;
                     program = Some(RestoredProgram {
                         module_hash,
                         seed,
@@ -1043,11 +1075,17 @@ impl WorldCore {
         if self.file_write_override {
             entries.push(JournalEntry::FileWriteOverride { enabled: true });
         }
+        if self.execution_profile != crate::world_limits::WorldExecutionProfile::default() {
+            entries.push(JournalEntry::ExecutionProfile {
+                profile: self.execution_profile,
+            });
+        }
         entries.push(JournalEntry::Checkpoint {
             sequence: self.sequence,
             module_hash,
             seed: self.active_seed,
             provenance: self.active_module_provenance.clone(),
+            execution_profile: Some(self.execution_profile),
             snapshot,
             events: self.events.iter().cloned().collect(),
         });
@@ -1114,6 +1152,12 @@ impl WorldCore {
     #[must_use]
     pub fn world_id(&self) -> &str {
         &self.world_id
+    }
+
+    /// The per-world resource requests, independent of current server ceilings.
+    #[must_use]
+    pub const fn execution_profile(&self) -> crate::world_limits::WorldExecutionProfile {
+        self.execution_profile
     }
 
     /// Issue a capability for a participant. Only `JOIN`-scoped capabilities
@@ -1690,6 +1734,15 @@ enum WorldCommand {
         grant: Vec<String>,
         revoke: Vec<String>,
         reply: oneshot::Sender<Result<CapsReport>>,
+    },
+    /// Admin: durably replace this world's requested runtime profile.
+    SetExecutionProfile {
+        profile: crate::world_limits::WorldExecutionProfile,
+        reply: oneshot::Sender<Result<ExecutionProfileUpdate>>,
+    },
+    /// Read this world's requested runtime profile.
+    ExecutionProfileInfo {
+        reply: oneshot::Sender<crate::world_limits::WorldExecutionProfile>,
     },
     /// Admin: read the capability report.
     CapsInfo {
@@ -2534,6 +2587,21 @@ impl WorldActor {
                 })();
                 let _ = reply.send(result);
             }
+            WorldCommand::SetExecutionProfile { profile, reply } => {
+                let result = self
+                    .persist(JournalEntry::ExecutionProfile { profile })
+                    .map(|()| {
+                        self.core.execution_profile = profile;
+                        ExecutionProfileUpdate {
+                            requested: profile,
+                            applies_on_next_program_install_or_process_restart: true,
+                        }
+                    });
+                let _ = reply.send(result);
+            }
+            WorldCommand::ExecutionProfileInfo { reply } => {
+                let _ = reply.send(self.core.execution_profile);
+            }
             WorldCommand::SetIsolation {
                 authority,
                 isolation,
@@ -2737,6 +2805,34 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped caps response")?
+    }
+
+    /// Persist this world's requested resource profile. The current program
+    /// instance is deliberately left untouched.
+    pub async fn set_execution_profile(
+        &self,
+        profile: crate::world_limits::WorldExecutionProfile,
+    ) -> Result<ExecutionProfileUpdate> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetExecutionProfile { profile, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped execution profile response")?
+    }
+
+    /// Read this world's currently requested resource profile.
+    pub async fn execution_profile(&self) -> Result<crate::world_limits::WorldExecutionProfile> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ExecutionProfileInfo { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped execution profile")
     }
 
     /// Change the world's isolation.
@@ -3304,10 +3400,42 @@ mod tests {
             parsed,
             JournalEntry::Checkpoint {
                 provenance: None,
+                execution_profile: None,
                 ..
             }
         ));
         assert_eq!(serde_json::to_value(parsed).unwrap(), old);
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                serde_json::from_value(old).unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            restored.core.execution_profile(),
+            crate::world_limits::WorldExecutionProfile::default()
+        );
+    }
+
+    #[test]
+    fn execution_profile_survives_checkpoint_compaction_and_restore() {
+        let profile = crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(1234),
+            native_cpu_seconds: Some(3),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.execution_profile(), profile);
     }
 
     #[test]

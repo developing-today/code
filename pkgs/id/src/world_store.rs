@@ -351,7 +351,14 @@ pub async fn open_world(
     let mut restored_module = None;
     let program: Box<dyn WorldProgram> = match &restored.program {
         None => Box::new(EmptyProgram),
-        Some(spec) => match restore_program(&modules, spec, &restored.replay, runtime).await {
+        Some(spec) => match restore_program(
+            &modules,
+            spec,
+            &restored.replay,
+            restored.core.execution_profile().resolve(runtime)?,
+        )
+        .await
+        {
             Ok((program, wasm)) => {
                 report.replayed_inputs = restored.replay.len();
                 restored_module = Some(wasm);
@@ -504,6 +511,118 @@ mod tests {
 
         let (svc, _) = open().await.unwrap();
         assert_eq!(svc.world().policy().await.unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn execution_profile_survives_restart_and_current_server_limits_win() {
+        let dir = TempDir::new().unwrap();
+        let mut tighter_server = RuntimeLimits::default();
+        tighter_server.native.cpu_seconds = 2;
+        let open = |runtime| {
+            open_world(
+                dir.path(),
+                "profiled",
+                WorldLimits::default(),
+                runtime,
+                move |handle| {
+                    WorldService::new(handle, Some("admin".to_owned())).with_runtime_limits(runtime)
+                },
+            )
+        };
+        let (service, _) = open(RuntimeLimits::default()).await.unwrap();
+        let requested = crate::world_limits::WorldExecutionProfile {
+            native_cpu_seconds: Some(100),
+            ..Default::default()
+        };
+        service
+            .set_execution_profile(Some("admin"), requested)
+            .await
+            .unwrap();
+        service.world().shutdown().await.unwrap();
+
+        let (service, _) = open(tighter_server).await.unwrap();
+        assert_eq!(
+            service.world().execution_profile().await.unwrap(),
+            requested
+        );
+        assert_eq!(
+            requested
+                .resolve(tighter_server)
+                .unwrap()
+                .native
+                .cpu_seconds,
+            2,
+            "a persisted request must not raise the new server's hard ceiling"
+        );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn restored_program_uses_the_current_server_runtime_ceiling() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let hash = module_hash(&wasm);
+        let dir = TempDir::new().unwrap();
+        let blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let (service, _) = open_world(
+            dir.path(),
+            "profiled-restore",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            move |handle| {
+                WorldService::new(handle, Some("admin".to_owned()))
+                    .with_blob_store(blobs)
+                    .with_runtime_limits(RuntimeLimits::default())
+            },
+        )
+        .await
+        .unwrap();
+
+        service
+            .set_execution_profile(
+                Some("admin"),
+                crate::world_limits::WorldExecutionProfile {
+                    wasm_fuel: Some(u64::MAX),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        service
+            .install_wasm(Some("admin"), wasm, 1, &hash)
+            .await
+            .unwrap();
+        service.world().shutdown().await.unwrap();
+
+        let constrained_server = RuntimeLimits {
+            sandbox: crate::sandbox::SandboxLimits {
+                fuel: 1,
+                ..crate::sandbox::SandboxLimits::default()
+            },
+            ..RuntimeLimits::default()
+        };
+        let fresh_blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let (restored, report) = open_world(
+            dir.path(),
+            "profiled-restore",
+            WorldLimits::default(),
+            constrained_server,
+            move |handle| {
+                WorldService::new(handle, Some("admin".to_owned()))
+                    .with_blob_store(fresh_blobs)
+                    .with_runtime_limits(constrained_server)
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.module_hash.as_deref(), Some(hash.as_str()));
+        assert!(
+            report.program_error.is_some(),
+            "restoration should use the server's stricter fuel ceiling"
+        );
+        assert_eq!(restored.active_module_hash().await, None);
     }
 
     #[tokio::test]
@@ -1056,6 +1175,7 @@ mod tests {
             module_hash: "h".to_owned(),
             seed: 1,
             provenance: None,
+            execution_profile: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
         });
