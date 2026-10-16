@@ -43,6 +43,40 @@ pub struct ScreenSurface {
 }
 
 impl ScreenSurface {
+    /// Build a validated portable screen from a terminal buffer's row-major
+    /// cells. Integrations should translate their native colors and modifiers
+    /// to the DTO's xterm-256 indices and bold flag before calling this.
+    ///
+    /// # Errors
+    ///
+    /// Rejects empty or oversized dimensions, a mismatched cell count, unsafe
+    /// glyphs, invalid wide-glyph continuations, and invalid style values.
+    pub fn from_cells(width: usize, height: usize, cells: Vec<ScreenCell>) -> Result<Self> {
+        ensure!(
+            (1..=MAX_SCREEN_WIDTH).contains(&width),
+            "screen width must be 1..={MAX_SCREEN_WIDTH}"
+        );
+        ensure!(
+            (1..=MAX_SCREEN_HEIGHT).contains(&height),
+            "screen height must be 1..={MAX_SCREEN_HEIGHT}"
+        );
+        ensure!(
+            cells.len() == width * height,
+            "screen cell count does not match its dimensions"
+        );
+        let screen = Self {
+            version: 1,
+            width: u16::try_from(width)?,
+            height: u16::try_from(height)?,
+            cells,
+        };
+        ensure!(
+            screen.render_ansi().is_some(),
+            "screen cells do not form a valid portable screen"
+        );
+        Ok(screen)
+    }
+
     /// Crop a screen to a connection-local viewport without changing world state.
     /// Cropping through the second column of a wide glyph replaces that partial
     /// glyph with a blank cell so the returned grid remains valid.
@@ -404,6 +438,49 @@ mod tests {
         assert_eq!(cropped.cells[0].symbol, " ");
         assert_eq!(cropped.cells[0].columns, 1);
         assert!(cropped.render_ansi().is_some());
+    }
+
+    #[test]
+    fn buffer_capture_constructor_enforces_the_portable_cell_policy() {
+        let cells = vec![
+            ScreenCell {
+                symbol: "界".to_owned(),
+                fg: 196,
+                bg: 0,
+                bold: true,
+                columns: 2,
+            },
+            ScreenCell {
+                symbol: String::new(),
+                fg: 196,
+                bg: 0,
+                bold: true,
+                columns: 0,
+            },
+        ];
+        let captured = ScreenSurface::from_cells(2, 1, cells).unwrap();
+        assert_eq!(captured.width, 2);
+        assert_eq!(captured.cells[0].fg, 196);
+        assert!(captured.render_ansi().is_some());
+
+        assert!(ScreenSurface::from_cells(2, 1, vec![]).is_err());
+        assert!(
+            ScreenSurface::from_cells(
+                121,
+                1,
+                vec![
+                    ScreenCell {
+                        symbol: " ".to_owned(),
+                        fg: 0,
+                        bg: 0,
+                        bold: false,
+                        columns: 1,
+                    };
+                    121
+                ]
+            )
+            .is_err()
+        );
     }
 
     #[test]
