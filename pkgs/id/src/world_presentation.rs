@@ -42,6 +42,39 @@ pub struct ScreenSurface {
     pub cells: Vec<ScreenCell>,
 }
 
+impl ScreenSurface {
+    /// Crop a screen to a connection-local viewport without changing world state.
+    /// Cropping through the second column of a wide glyph replaces that partial
+    /// glyph with a blank cell so the returned grid remains valid.
+    pub fn fit(&self, width: usize, height: usize) -> Self {
+        let width = width.min(usize::from(self.width));
+        let height = height.min(usize::from(self.height));
+        let mut cells = Vec::with_capacity(width * height);
+        for y in 0..height {
+            let start = y * usize::from(self.width);
+            let mut row = self.cells[start..start + width].to_vec();
+            if row.last().is_some_and(|cell| cell.columns == 2) {
+                if let Some(last) = row.last_mut() {
+                    *last = ScreenCell {
+                        symbol: " ".to_owned(),
+                        fg: 0,
+                        bg: 0,
+                        bold: false,
+                        columns: 1,
+                    };
+                }
+            }
+            cells.extend(row);
+        }
+        Self {
+            version: self.version,
+            width: u16::try_from(width).unwrap_or(self.width),
+            height: u16::try_from(height).unwrap_or(self.height),
+            cells,
+        }
+    }
+}
+
 /// One normalized cell. `columns == 0` marks the continuation of a two-column glyph.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -354,6 +387,23 @@ mod tests {
             parse_surface(r#"{"kind":"other","version":1}"#).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn viewport_crops_rows_and_does_not_split_wide_graphemes() {
+        let parsed = parse_surface(
+            r#"{"kind":"screen","version":1,"width":4,"height":2,"rows":["界ab","wxyz"]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        let WorldSurface::Screen(screen) = parsed;
+
+        let cropped = screen.fit(1, 1);
+        assert_eq!(cropped.width, 1);
+        assert_eq!(cropped.height, 1);
+        assert_eq!(cropped.cells[0].symbol, " ");
+        assert_eq!(cropped.cells[0].columns, 1);
+        assert!(cropped.render_ansi().is_some());
     }
 
     #[test]

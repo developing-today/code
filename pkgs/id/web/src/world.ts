@@ -240,6 +240,29 @@ function initWorld(): void {
     if (!bytes) return;
     if (sendInputBytes(bytes)) event.preventDefault();
   });
+  view.addEventListener("paste", (event: ClipboardEvent) => {
+    const text = event.clipboardData?.getData("text/plain");
+    if (text === undefined || !text) return;
+    if (new TextEncoder().encode(text).length > 4096) {
+      setStatus("Paste is limited to 4096 UTF-8 bytes", "error");
+      event.preventDefault();
+      return;
+    }
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "paste", text }));
+      event.preventDefault();
+    }
+  });
+
+  const sendViewport = () => {
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    const fontSize = Number.parseFloat(getComputedStyle(view).fontSize) || 16;
+    const width = Math.max(1, Math.min(500, Math.floor(view.clientWidth / (fontSize * 0.6))));
+    const height = Math.max(1, Math.min(200, Math.floor(view.clientHeight / fontSize)));
+    socket.send(JSON.stringify({ type: "resize", width, height }));
+  };
+  const viewportObserver = new ResizeObserver(sendViewport);
+  viewportObserver.observe(view);
 
   recordsRefresh.addEventListener("click", requestRecords);
 
@@ -256,6 +279,7 @@ function initWorld(): void {
     socket.addEventListener("open", () => {
       reconnects = 0;
       socket?.send(JSON.stringify({ type: "join", capability: token, after: cursor || null, world: selectedWorld() }));
+      sendViewport();
     });
     socket.addEventListener("message", (event) => receive(String(event.data)));
     socket.addEventListener("error", () => setStatus("World connection failed", "error"));
