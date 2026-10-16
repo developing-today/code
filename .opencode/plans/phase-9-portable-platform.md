@@ -19,7 +19,7 @@ The immediate slice (P9.1) is a backwards-compatible, validated cell-grid presen
 - **P9.1 complete:** portable surface contract and SSH/web presenters are committed on `platform-portable-ui` (PR #214, stacked on #209).
 - **P9.3a complete in this worktree:** server-wide source-only install policy, stacked on #214. Source compilation remains enabled and raw artifacts are refused. Compiler provenance, per-world profiles, and broader allowed-function ceilings remain open.
 - **P9.2a complete in this worktree:** focusable browser surfaces encode common keys with terminal-compatible bytes and send them through the existing durable input event. SSH already forwards PTY bytes through that same event.
-- **P9.2b implementation in progress:** bounded paste is an explicit input event; browser ResizeObserver and SSH PTY/window-change events set connection-local viewport context. Structured screens are cropped per connection without entering the journal. Roc apps still render at their declared dimensions; a future guest ABI may expose dimensions for app-level reflow.
+- **P9.2b complete in PR #219:** bounded paste is an explicit input event; browser ResizeObserver and SSH PTY/window-change events set connection-local viewport context. Structured screens are cropped per connection without entering the journal. Roc apps still render at their declared dimensions; guest-aware reflow remains a future ABI follow-up.
 - **P9.4 first slice complete in this worktree:** pure-Roc `RocJson.roc` decode/encode and typed accessors are exported by the Roc world platform; lounge now decodes host events and encodes requests/records. Broader data/game/communication helpers remain planned.
 - **P9.5 remains planned:** Ratatui-shaped adapters/examples.
 
