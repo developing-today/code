@@ -19,8 +19,9 @@ The immediate slice (P9.1) is a backwards-compatible, validated cell-grid presen
 - **P9.1 complete:** portable surface contract and SSH/web presenters are committed on `platform-portable-ui` (PR #214, stacked on #209).
 - **P9.3a complete in this worktree:** server-wide source-only install policy, stacked on #214. Source compilation remains enabled and raw artifacts are refused. Compiler provenance, per-world profiles, and broader allowed-function ceilings remain open.
 - **P9.2a complete in this worktree:** focusable browser surfaces encode common keys with terminal-compatible bytes and send them through the existing durable input event. SSH already forwards PTY bytes through that same event.
-- **P9.2b implementation in progress:** bounded paste is an explicit input event; browser ResizeObserver and SSH PTY/window-change events set connection-local viewport context. Structured screens are cropped per connection without entering the journal. Roc apps still render at their declared dimensions; a future guest ABI may expose dimensions for app-level reflow.
-- **P9.4/P9.5 remain planned:** Roc JSON/data helpers and Ratatui-shaped adapters/examples.
+- **P9.2b complete in PR #219:** bounded paste is an explicit input event; browser ResizeObserver and SSH PTY/window-change events set connection-local viewport context. Structured screens are cropped per connection without entering the journal. Roc apps still render at their declared dimensions; guest-aware reflow remains a future ABI follow-up.
+- **P9.4 first slice complete in this worktree:** pure-Roc `RocJson.roc` decode/encode and typed accessors are exported by the Roc world platform; lounge now decodes host events and encodes requests/records. Broader data/game/communication helpers remain planned.
+- **P9.5 remains planned:** Ratatui-shaped adapters/examples.
 
 “Direct control” is limited to explicit named capabilities under an admin-controlled ceiling. This plan does not enable unrestricted filesystem, network, or process access; native execution remains OS-sandboxed.
 
@@ -40,6 +41,8 @@ P9.3a record: [source-only world installs](../../doc/2026-10-14T20-00-05Z_featur
 P9.2a record: [browser and SSH keyboard parity](../../doc/2026-10-14T20-10-00Z_feature_world_keyboard_parity/2026-10-14T20-10-00Z_feature_world_keyboard_parity.md).
 
 P9.2b record: [per-session viewport and paste policy](../../doc/2026-10-15T16-00-00Z_feature_world_viewport_and_paste/2026-10-15T16-00-00Z_feature_world_viewport_and_paste.md).
+
+P9.4 first-slice record: [pure-Roc JSON module](../../doc/2026-10-15T09-27-28Z_feature_roc_json/2026-10-15T09-27-28Z_feature_roc_json.md).
 
 ## P9.3a acceptance
 

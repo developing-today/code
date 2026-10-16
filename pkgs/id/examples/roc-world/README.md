@@ -43,8 +43,10 @@ In the browser, focus the world screen and use the keyboard to send input. The
 web adapter encodes common keys as terminal bytes (UTF-8 text, control keys,
 and standard navigation sequences), matching SSH PTY input and the existing
 `Key.parse` helper. Keyboard events are journaled exactly like other world
-input. Resize remains presentation-local and is not sent to shared game state;
-viewport-aware rendering is a separate follow-up.
+input. Resize remains presentation-local and is not sent to shared game state.
+The host crops a structured screen to each participant's connection-local
+viewport; Roc apps still render at their declared dimensions and do not receive
+viewport metadata.
 
 `wants` is the capability protocol: a JSON document of the subscriptions the
 program holds and the one-shot requests it has outstanding
@@ -57,6 +59,16 @@ exact. A request to a capability the world has not granted is answered with
 `cap_denied` — never silently. See the design doc for the catalog
 (`time.now`, `time.tick`, `random.u64`, `players`, `players.list`,
 `chat.say`, `world.info`), grant policies and bounds.
+
+The platform also exposes the dependency-free `RocJson.roc` module to apps as
+`pf.RocJson`. Its `decode`/`encode`, object `get`, and type-specific `as_*` accessors let
+apps handle host events and produce request/record documents without string
+splicing. JSON number lexemes are preserved as strings to avoid implicit
+floating-point conversion. Decode accepts at most 65,536 UTF-8 bytes and 64
+nested arrays/objects; exceeding either bound is an explicit error. Encoding
+also validates number lexemes and returns an error rather than emitting
+malformed JSON. Duplicate object keys are preserved, and `get` returns the
+first matching key.
 
 One nightly caveat: with
 nightly-2026-10-04-130536d's wasm backend, `List.get` past the second
