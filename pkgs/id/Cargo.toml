@@ -104,6 +104,7 @@ aes-gcm = { version = "0.11", default-features = false, features = [
   "alloc",
 ], optional = true }
 base64 = { version = "0.22", optional = true }
+blake3 = "1"
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 hkdf = { version = "0.13", optional = true }
 sha2 = { version = "0.11", optional = true }

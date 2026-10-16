@@ -2884,6 +2884,7 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
+ "blake3",
  "cbor-core",
  "clap",
  "comrak",

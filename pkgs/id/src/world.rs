@@ -231,7 +231,38 @@ pub enum WorldEventKind {
         /// inputs after this event it reproduces the program state exactly.
         #[serde(default)]
         seed: u64,
+        /// Server-observed origin metadata. Absent on older journal entries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provenance: Option<ModuleProvenance>,
     },
+}
+
+/// How the active module artifact entered the world.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "origin", content = "build", rename_all = "snake_case")]
+pub enum ModuleProvenance {
+    /// A raw module artifact was installed; no compiler identity is asserted.
+    Artifact,
+    /// The server observed a successful source build. These hashes identify
+    /// inputs; they are not a signature or a trust attestation.
+    SourceBuild(SourceBuildProvenance),
+}
+
+/// Bounded, deterministic metadata observed for one source compilation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceBuildProvenance {
+    /// Provenance record schema, independent of the world journal version.
+    pub schema_version: u8,
+    /// Domain-separated BLAKE3 digest of the compiler executable bytes.
+    pub compiler_blake3: String,
+    /// BLAKE3 digest of the platform tree, including relative paths.
+    pub platform_blake3: String,
+    /// BLAKE3 digest of the submitted source filenames and contents.
+    pub source_blake3: String,
+    /// Compiler target (`wasm32` or `x64musl`).
+    pub target: String,
+    /// Stable compiler arguments, excluding the temporary output path.
+    pub arguments: Vec<String>,
 }
 
 /// Whether a world's directory may be read from other worlds.
@@ -420,6 +451,9 @@ pub enum JournalEntry {
         module_hash: String,
         /// Seed the program was initialized with.
         seed: u64,
+        /// Provenance of the active module, if it was recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provenance: Option<ModuleProvenance>,
         /// The program's own serialization of its state.
         snapshot: String,
         /// Recent events kept for reconnect catch-up.
@@ -466,6 +500,8 @@ pub struct RestoredProgram {
     /// State to restore before replaying, if the journal was compacted behind
     /// a checkpoint; otherwise the program starts from `init(seed)`.
     pub snapshot: Option<String>,
+    /// Server-observed module origin, if this journal version recorded it.
+    pub provenance: Option<ModuleProvenance>,
 }
 
 /// A world rebuilt from its journal, before its program is re-instantiated.
@@ -608,6 +644,9 @@ pub struct WorldSnapshot {
     pub world_id: String,
     /// Content hash of the active program, if this world executes one.
     pub active_module_hash: Option<String>,
+    /// Provenance for the active module, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_module_provenance: Option<ModuleProvenance>,
     /// Latest committed sequence at snapshot time.
     pub current_sequence: u64,
     /// Earliest event sequence present in this snapshot, or the current
@@ -653,6 +692,7 @@ pub struct WorldCore {
     next_participant_id: u64,
     sequence: u64,
     active_module_hash: Option<String>,
+    active_module_provenance: Option<ModuleProvenance>,
     active_seed: u64,
     /// What this world's program may ask the server for.
     pub(crate) ledger: crate::world_caps::CapLedger,
@@ -698,6 +738,7 @@ impl WorldCore {
             next_participant_id: 1,
             sequence: 0,
             active_module_hash: None,
+            active_module_provenance: None,
             active_seed: 0,
             ledger: crate::world_caps::CapLedger::new(Default::default(), limits.grant_on_use),
             isolation: Isolation::default(),
@@ -870,13 +911,19 @@ impl WorldCore {
                         event.sequence
                     );
                     match &event.kind {
-                        WorldEventKind::ProgramInstalled { module_hash, seed } => {
+                        WorldEventKind::ProgramInstalled {
+                            module_hash,
+                            seed,
+                            provenance,
+                        } => {
                             core.active_module_hash = Some(module_hash.clone());
+                            core.active_module_provenance = provenance.clone();
                             core.active_seed = *seed;
                             program = Some(RestoredProgram {
                                 module_hash: module_hash.clone(),
                                 seed: *seed,
                                 snapshot: None,
+                                provenance: provenance.clone(),
                             });
                             replay.clear();
                         }
@@ -891,6 +938,7 @@ impl WorldCore {
                     sequence,
                     module_hash,
                     seed,
+                    provenance,
                     snapshot,
                     events,
                 } => {
@@ -911,11 +959,13 @@ impl WorldCore {
                         core.events.pop_front();
                     }
                     core.active_module_hash = Some(module_hash.clone());
+                    core.active_module_provenance = provenance.clone();
                     core.active_seed = seed;
                     program = Some(RestoredProgram {
                         module_hash,
                         seed,
                         snapshot: Some(snapshot),
+                        provenance,
                     });
                 }
             }
@@ -997,6 +1047,7 @@ impl WorldCore {
             sequence: self.sequence,
             module_hash,
             seed: self.active_seed,
+            provenance: self.active_module_provenance.clone(),
             snapshot,
             events: self.events.iter().cloned().collect(),
         });
@@ -1538,6 +1589,7 @@ impl WorldCore {
         WorldSnapshot {
             world_id: self.world_id.clone(),
             active_module_hash: self.active_module_hash.clone(),
+            active_module_provenance: self.active_module_provenance.clone(),
             current_sequence: self.sequence,
             oldest_retained_sequence,
             events: events.into_iter().collect(),
@@ -1624,6 +1676,7 @@ enum WorldCommand {
     InstallProgram {
         module_hash: String,
         seed: u64,
+        provenance: Option<ModuleProvenance>,
         program: Box<dyn WorldProgram>,
         reply: oneshot::Sender<Result<WorldEvent>>,
     },
@@ -2405,6 +2458,7 @@ impl WorldActor {
             WorldCommand::InstallProgram {
                 module_hash,
                 seed,
+                provenance,
                 program: mut replacement,
                 reply,
             } => {
@@ -2422,7 +2476,11 @@ impl WorldActor {
                 let candidate = WorldEvent {
                     sequence: self.core.sequence.saturating_add(1),
                     participant_id: 0,
-                    kind: WorldEventKind::ProgramInstalled { module_hash, seed },
+                    kind: WorldEventKind::ProgramInstalled {
+                        module_hash,
+                        seed,
+                        provenance: provenance.clone(),
+                    },
                 };
                 let result = self
                     .persist(JournalEntry::Committed {
@@ -2434,6 +2492,7 @@ impl WorldActor {
                         if let WorldEventKind::ProgramInstalled { module_hash, .. } = &event.kind {
                             self.core.active_module_hash = Some(module_hash.clone());
                         }
+                        self.core.active_module_provenance = provenance;
                         self.core.active_seed = seed;
                         self.program = replacement;
                         self.program_healthy = true;
@@ -3052,11 +3111,24 @@ impl WorldHandle {
         seed: u64,
         program: Box<dyn WorldProgram>,
     ) -> Result<WorldEvent> {
+        self.install_program_with_provenance(module_hash, seed, None, program)
+            .await
+    }
+
+    /// As [`Self::install_program`], preserving server-observed origin metadata.
+    pub async fn install_program_with_provenance(
+        &self,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
+        program: Box<dyn WorldProgram>,
+    ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::InstallProgram {
                 module_hash,
                 seed,
+                provenance,
                 program,
                 reply,
             })
@@ -3171,6 +3243,88 @@ mod tests {
     fn join(core: &mut WorldCore, name: &str) -> (Participant, JoinCapability) {
         core.issue_capability(name, WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap()
+    }
+
+    fn sample_source_provenance() -> ModuleProvenance {
+        ModuleProvenance::SourceBuild(SourceBuildProvenance {
+            schema_version: 1,
+            compiler_blake3: "compiler".to_owned(),
+            platform_blake3: "platform".to_owned(),
+            source_blake3: "source".to_owned(),
+            target: "wasm32".to_owned(),
+            arguments: vec!["build".to_owned(), "main.roc".to_owned()],
+        })
+    }
+
+    #[test]
+    fn provenance_is_optional_and_old_install_events_keep_their_wire_shape() {
+        let old = serde_json::json!({
+            "sequence": 1,
+            "participant_id": 0,
+            "kind": { "kind": "program_installed", "data": { "module_hash": "h", "seed": 3 } }
+        });
+        let parsed: WorldEvent = serde_json::from_value(old.clone()).unwrap();
+        assert!(matches!(
+            parsed.kind,
+            WorldEventKind::ProgramInstalled {
+                provenance: None,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), old);
+
+        let event = WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "h".to_owned(),
+                seed: 3,
+                provenance: Some(sample_source_provenance()),
+            },
+        };
+        let encoded = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            serde_json::from_value::<WorldEvent>(encoded).unwrap(),
+            event
+        );
+    }
+
+    #[test]
+    fn checkpoint_defaults_missing_provenance_and_round_trips_recorded_provenance() {
+        let old = serde_json::json!({
+            "entry": "checkpoint",
+            "sequence": 0,
+            "module_hash": "h",
+            "seed": 1,
+            "snapshot": "s",
+            "events": []
+        });
+        let parsed: JournalEntry = serde_json::from_value(old.clone()).unwrap();
+        assert!(matches!(
+            parsed,
+            JournalEntry::Checkpoint {
+                provenance: None,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), old);
+    }
+
+    #[test]
+    fn recorded_provenance_survives_checkpoint_compaction_and_restore() {
+        let provenance = sample_source_provenance();
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.active_module_provenance = Some(provenance.clone());
+        core.active_seed = 7;
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.active_module_provenance,
+            Some(provenance.clone())
+        );
+        assert_eq!(restored.program.unwrap().provenance, Some(provenance));
     }
 
     /// A program driven by numeric inputs: each input switches its `wants`
