@@ -1040,7 +1040,7 @@ pub enum Command {
     /// ID_WORLD_CAPABILITY=... id world join NODE_ID
     /// ```
     #[command(subcommand)]
-    World(WorldCommand),
+    World(Box<WorldCommand>),
     /// Groups: create, show the policy, add, remove, set roles, list, and join (P6.7a).
     ///
     /// Each action records one event in the group log and prints one line, or one JSON object with
@@ -1558,9 +1558,9 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
-    /// Show (and, with `--grant`/`--revoke`, change) a world's capabilities.
+    /// Show (and, with `--grant`/`--revoke`/`--ceiling`, change) a world's capabilities.
     ///
-    /// Without `--grant`/`--revoke` this needs only a guest capability and
+    /// Without `--grant`/`--revoke`/`--ceiling` this needs only a guest capability and
     /// prints what the world has granted, what its program wants, and what it
     /// has used. With them it needs the admin token.
     Caps {
@@ -1578,6 +1578,52 @@ pub enum WorldCommand {
         /// Capability to revoke (repeatable).
         #[arg(long)]
         revoke: Vec<String>,
+        /// Capability ceiling to set (comma-separated or repeatable; only known capabilities, no `*`).
+        #[arg(long, value_delimiter = ',')]
+        ceiling: Option<Vec<String>>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// View or configure a world's requested execution profile bounds.
+    ///
+    /// When any limit option (`--fuel`, `--wasm-memory`, etc.) is specified,
+    /// `--admin-token` is required to persist the new profile. When no limits
+    /// are specified, prints the current persisted profile (requires either
+    /// `--admin-token` or a guest `--capability`).
+    Profile {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: Option<String>,
+        /// Guest capability from `id world invite` (sufficient to inspect the profile).
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: Option<String>,
+        /// Requested Wasm fuel limit per transaction/event.
+        #[arg(long, visible_alias = "fuel")]
+        wasm_fuel: Option<u64>,
+        /// Requested Wasm linear memory in bytes.
+        #[arg(long, visible_alias = "wasm-memory")]
+        wasm_memory_bytes: Option<u64>,
+        /// Requested Wasm message payload limit in bytes.
+        #[arg(long, visible_alias = "wasm-message")]
+        wasm_message_bytes: Option<u64>,
+        /// Requested native address-space cap in bytes.
+        #[arg(long, visible_alias = "native-memory")]
+        native_memory_bytes: Option<u64>,
+        /// Requested native CPU cap in seconds.
+        #[arg(long, visible_alias = "native-cpu")]
+        native_cpu_seconds: Option<u64>,
+        /// Requested native call deadline in milliseconds.
+        #[arg(long, visible_alias = "native-deadline")]
+        native_call_deadline_ms: Option<u64>,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
         world: Option<String>,
@@ -3521,9 +3567,12 @@ mod tests {
             "t",
         ]);
         match cli.command {
-            Some(Command::World(WorldCommand::CrossWorldWrite { mode, .. })) => {
-                assert_eq!(mode, "on");
-            }
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::CrossWorldWrite { mode, .. } => {
+                    assert_eq!(mode, "on");
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
             other => panic!("unexpected: {other:?}"),
         }
         let cli = Cli::parse_from([
@@ -3536,7 +3585,7 @@ mod tests {
         ]);
         assert!(matches!(
             cli.command,
-            Some(Command::World(WorldCommand::ForceCrossWorldWrite { .. }))
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::ForceCrossWorldWrite { .. })
         ));
         let cli = Cli::parse_from([
             "id",
@@ -3550,14 +3599,17 @@ mod tests {
             "t",
         ]);
         match cli.command {
-            Some(Command::World(WorldCommand::FileScope {
-                scope,
-                write_override,
-                ..
-            })) => {
-                assert_eq!(scope, "unrestricted");
-                assert_eq!(write_override.as_deref(), Some("on"));
-            }
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::FileScope {
+                    scope,
+                    write_override,
+                    ..
+                } => {
+                    assert_eq!(scope, "unrestricted");
+                    assert_eq!(write_override.as_deref(), Some("on"));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
             other => panic!("unexpected: {other:?}"),
         }
         assert!(
@@ -3603,18 +3655,21 @@ mod tests {
             "--no-relay",
         ]);
         match cli.command {
-            Some(Command::World(WorldCommand::Invite {
-                admin_token,
-                name,
-                addrs,
-                no_relay,
-                ..
-            })) => {
-                assert_eq!(admin_token, "t");
-                assert_eq!(name, "ann");
-                assert_eq!(addrs.len(), 1);
-                assert!(no_relay);
-            }
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Invite {
+                    admin_token,
+                    name,
+                    addrs,
+                    no_relay,
+                    ..
+                } => {
+                    assert_eq!(admin_token, "t");
+                    assert_eq!(name, "ann");
+                    assert_eq!(addrs.len(), 1);
+                    assert!(no_relay);
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
             other => panic!("unexpected: {other:?}"),
         }
         let cli = Cli::parse_from([
@@ -3632,12 +3687,15 @@ mod tests {
             "2",
         ]);
         match cli.command {
-            Some(Command::World(WorldCommand::Invite {
-                expires_in, uses, ..
-            })) => {
-                assert_eq!(expires_in, Some(259_200));
-                assert_eq!(uses, Some(2));
-            }
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Invite {
+                    expires_in, uses, ..
+                } => {
+                    assert_eq!(expires_in, Some(259_200));
+                    assert_eq!(uses, Some(2));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
             other => panic!("unexpected: {other:?}"),
         }
         assert!(
@@ -3667,7 +3725,96 @@ mod tests {
         ]);
         assert!(matches!(
             cli.command,
-            Some(Command::World(WorldCommand::Join { after: Some(7), .. }))
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { after: Some(7), .. })
         ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_caps_ceiling() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "caps",
+            &node,
+            "--admin-token",
+            "adm",
+            "--ceiling",
+            "time.now,chat.say",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Caps {
+                    admin_token,
+                    ceiling,
+                    ..
+                } => {
+                    assert_eq!(admin_token, Some("adm".to_owned()));
+                    assert_eq!(
+                        ceiling,
+                        Some(vec!["time.now".to_owned(), "chat.say".to_owned()])
+                    );
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_world_profile() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "profile",
+            &node,
+            "--admin-token",
+            "adm",
+            "--wasm-fuel",
+            "500000",
+            "--wasm-memory",
+            "16777216",
+            "--native-cpu",
+            "10",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Profile {
+                    admin_token,
+                    wasm_fuel,
+                    wasm_memory_bytes,
+                    native_cpu_seconds,
+                    capability,
+                    ..
+                } => {
+                    assert_eq!(admin_token, Some("adm".to_owned()));
+                    assert_eq!(wasm_fuel, Some(500000));
+                    assert_eq!(wasm_memory_bytes, Some(16777216));
+                    assert_eq!(native_cpu_seconds, Some(10));
+                    assert!(capability.is_none());
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        let cli = Cli::parse_from(["id", "world", "profile", &node, "--capability", "cap123"]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Profile {
+                    admin_token,
+                    capability,
+                    wasm_fuel,
+                    ..
+                } => {
+                    assert_eq!(admin_token, None);
+                    assert_eq!(capability, Some("cap123".to_owned()));
+                    assert!(wasm_fuel.is_none());
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 }

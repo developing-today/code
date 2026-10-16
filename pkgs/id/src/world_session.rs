@@ -202,6 +202,11 @@ enum ClientFrame {
         admin_token: String,
         profile: crate::world_limits::WorldExecutionProfile,
     },
+    /// Read the world's requested runtime bounds (needs either admin token or guest capability).
+    ExecutionProfileInfo {
+        admin_token: Option<String>,
+        capability: Option<String>,
+    },
     /// Show this world's capability grants, wants and usage.
     Caps {
         capability: String,
@@ -1499,6 +1504,41 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 let _ = send_error(io, &format!("{error:#}")).await;
             }
         },
+        ClientFrame::ExecutionProfileInfo {
+            admin_token,
+            capability,
+        } => {
+            let auth_ok = if let Some(admin) = admin_token.as_deref() {
+                service.authorize_admin(Some(admin)).is_ok()
+            } else if let Some(cap) = capability.as_deref() {
+                let token = JoinCapability::from_wire(cap.to_string());
+                service.world().participant_id(token).await.is_ok()
+            } else {
+                false
+            };
+            if !auth_ok {
+                let _ = send_error(io, "access denied").await;
+            } else {
+                match service.world().execution_profile().await {
+                    Ok(profile) => {
+                        let _ = send_json(
+                            io,
+                            &ServerFrame::ExecutionProfile {
+                                update: crate::world::ExecutionProfileUpdate {
+                                    requested: profile,
+                                    applies_on_next_program_install_or_process_restart: false,
+                                },
+                                message: "current persisted execution profile",
+                            },
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        let _ = send_error(io, &format!("{error:#}")).await;
+                    }
+                }
+            }
+        }
         #[cfg(feature = "sandbox")]
         ClientFrame::Compile {
             admin_token,
@@ -2277,6 +2317,25 @@ async fn handle_client_frame<I: SessionIo>(
                         &ServerFrame::ExecutionProfile {
                             update,
                             message: "profile saved; it applies on the next program install or process restart, not to the running instance",
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => return send_error(io, &format!("{error:#}")).await,
+            }
+            return true;
+        }
+        ClientFrame::ExecutionProfileInfo { .. } => {
+            match service.world().execution_profile().await {
+                Ok(profile) => {
+                    let _ = send_json(
+                        io,
+                        &ServerFrame::ExecutionProfile {
+                            update: crate::world::ExecutionProfileUpdate {
+                                requested: profile,
+                                applies_on_next_program_install_or_process_restart: false,
+                            },
+                            message: "current persisted execution profile",
                         },
                     )
                     .await;
