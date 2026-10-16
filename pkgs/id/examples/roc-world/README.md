@@ -43,8 +43,10 @@ In the browser, focus the world screen and use the keyboard to send input. The
 web adapter encodes common keys as terminal bytes (UTF-8 text, control keys,
 and standard navigation sequences), matching SSH PTY input and the existing
 `Key.parse` helper. Keyboard events are journaled exactly like other world
-input. Resize remains presentation-local and is not sent to shared game state;
-viewport-aware rendering is a separate follow-up.
+input. Resize remains presentation-local and is not sent to shared game state.
+The host crops a structured screen to each participant's connection-local
+viewport; Roc apps still render at their declared dimensions and do not receive
+viewport metadata.
 
 `wants` is the capability protocol: a JSON document of the subscriptions the
 program holds and the one-shot requests it has outstanding
