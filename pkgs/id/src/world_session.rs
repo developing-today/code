@@ -57,6 +57,9 @@ const MAX_CAPABILITY_BYTES: usize = 256;
 
 /// Longest accepted admin secret, in bytes.
 const MAX_ADMIN_TOKEN_BYTES: usize = 256;
+/// Sent with a capability ceiling change: unlike a profile, it takes effect now.
+const CAPS_CEILING_NOTICE: &str =
+    "ceiling saved; it applies immediately to new uses and active subscriptions";
 
 /// Simultaneous bounded module uploads accepted by a world service.
 const MAX_CONCURRENT_MODULE_UPLOADS: usize = 2;
@@ -187,6 +190,12 @@ enum ClientFrame {
         grant: Vec<String>,
         revoke: Vec<String>,
     },
+    /// Admin: replace this world's capability ceiling. It applies immediately;
+    /// grants are kept, and an empty list allows no capability.
+    SetCapsCeiling {
+        admin_token: String,
+        ceiling: Vec<String>,
+    },
     /// Admin: persist requested per-world runtime bounds. They do not change
     /// a running guest; they apply on its next install or process restart.
     SetExecutionProfile {
@@ -316,6 +325,12 @@ enum ServerFrame<'a> {
     /// The requested profile and an explicit deferred-application notice.
     ExecutionProfile {
         update: crate::world::ExecutionProfileUpdate,
+        message: &'static str,
+    },
+    /// The capability report after a ceiling change, and a notice that the
+    /// change applied immediately.
+    CapsCeiling {
+        report: crate::world_caps::CapsReport,
         message: &'static str,
     },
     /// A compiled module was installed.
@@ -592,6 +607,22 @@ impl WorldService {
         self
     }
 
+    /// Replace the world's capability ceiling, admin only. Unlike a profile,
+    /// the ceiling applies at once: the next use or subscription sees it.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `admin denied` for a wrong token, and with the world's
+    /// message for an invalid or unstorable ceiling.
+    pub async fn set_caps_ceiling(
+        &self,
+        supplied_admin: Option<&str>,
+        ceiling: Vec<String>,
+    ) -> anyhow::Result<crate::world_caps::CapsReport> {
+        anyhow::ensure!(self.authorize_admin(supplied_admin).is_ok(), "admin denied");
+        self.world.set_caps_ceiling(ceiling).await
+    }
+
     /// Persist a per-world resource profile. The running program keeps its
     /// existing limits; the request applies on the next install or restart.
     pub async fn set_execution_profile(
@@ -639,12 +670,14 @@ impl WorldService {
         if spec.native && !self.native {
             return Err("native modules are not enabled on this server".to_owned());
         }
+        // The effective list, not the raw grants: a platform module outside a
+        // server or world ceiling is refused at compile time too.
         let granted = self
             .world
             .caps_report()
             .await
             .map_err(|error| format!("compile failed: {error:#}"))?
-            .granted;
+            .effective;
         let (wasm, diagnostics, provenance) =
             crate::world_compile::compile(spec, compiler, &granted, COMPILE_TIMEOUT)
                 .await
@@ -1425,6 +1458,24 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             },
             Err(_) => {
                 let _ = send_error(io, "admin denied").await;
+            }
+        },
+        ClientFrame::SetCapsCeiling {
+            admin_token,
+            ceiling,
+        } => match service.set_caps_ceiling(Some(&admin_token), ceiling).await {
+            Ok(report) => {
+                let _ = send_json(
+                    io,
+                    &ServerFrame::CapsCeiling {
+                        report,
+                        message: CAPS_CEILING_NOTICE,
+                    },
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = send_error(io, &format!("{error:#}")).await;
             }
         },
         ClientFrame::SetExecutionProfile {
@@ -2271,6 +2322,25 @@ async fn handle_client_frame<I: SessionIo>(
             }
             return true;
         }
+        ClientFrame::SetCapsCeiling {
+            admin_token,
+            ceiling,
+        } => {
+            match service.set_caps_ceiling(Some(&admin_token), ceiling).await {
+                Ok(report) => {
+                    let _ = send_json(
+                        io,
+                        &ServerFrame::CapsCeiling {
+                            report,
+                            message: CAPS_CEILING_NOTICE,
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => return send_error(io, &format!("{error:#}")).await,
+            }
+            return true;
+        }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
         | ClientFrame::Info { .. }
@@ -2561,6 +2631,127 @@ mod tests {
                 .unwrap()
                 .contains("not to the running instance")
         );
+    }
+
+    #[tokio::test]
+    async fn caps_ceiling_is_admin_only_and_applies_at_once() {
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()));
+        let full = world.caps_report().await.unwrap().ceiling;
+        assert!(
+            service
+                .set_caps_ceiling(Some("wrong"), vec!["time.now".to_owned()])
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .set_caps_ceiling(None, vec!["time.now".to_owned()])
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            world.caps_report().await.unwrap().ceiling,
+            full,
+            "a refused change changes nothing"
+        );
+
+        let report = service
+            .set_caps_ceiling(Some("admin"), vec!["time.now".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(report.ceiling, vec!["time.now".to_owned()]);
+        assert_eq!(
+            world.caps_report().await.unwrap().ceiling,
+            vec!["time.now".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn caps_ceiling_protocol_round_trips_and_says_it_applies_now() {
+        let mut peer = Peer::connect(service(Some("admin")), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "set_caps_ceiling",
+            "admin_token": "admin",
+            "ceiling": ["time.now"],
+        }))
+        .await;
+        let response = peer.next().await.unwrap();
+        assert_eq!(response["type"], "caps_ceiling");
+        assert_eq!(
+            response["report"]["ceiling"],
+            serde_json::json!(["time.now"])
+        );
+        assert!(
+            response["message"]
+                .as_str()
+                .unwrap()
+                .contains("applies immediately")
+        );
+
+        let mut peer = Peer::connect(service(Some("admin")), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "set_caps_ceiling",
+            "admin_token": "wrong",
+            "ceiling": [],
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "error");
+
+        let mut peer = Peer::connect(service(Some("admin")), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "set_caps_ceiling",
+            "admin_token": "admin",
+            "ceiling": ["*"],
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "error");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn source_compile_sees_the_effective_list_not_the_raw_grants() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("platform.roc"), "x").unwrap();
+        std::fs::create_dir_all(root.path().join("targets/wasm32")).unwrap();
+        std::fs::write(root.path().join("targets/wasm32/host.wasm"), b"\0asm").unwrap();
+        std::fs::write(root.path().join("Key.roc"), "module []\n").unwrap();
+        std::fs::write(root.path().join("Screen.roc"), "module []\n").unwrap();
+        let compiler =
+            Compiler::new(root.path().to_path_buf(), "/nonexistent/roc".to_owned()).unwrap();
+        let svc = service(Some("admin")).with_compiler(compiler);
+        svc.world()
+            .update_caps(vec!["*".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        let spec = CompileSpec {
+            files: vec![(
+                "main.roc".to_owned(),
+                "import pf.Screen\napp [x] {}".to_owned(),
+            )],
+            seed: 1,
+            native: false,
+        };
+
+        svc.set_caps_ceiling(Some("admin"), vec!["Key".to_owned()])
+            .await
+            .unwrap();
+        let error = svc
+            .compile_and_install(Some("admin"), &spec)
+            .await
+            .unwrap_err();
+        assert!(error.contains("main.roc imports Screen"), "{error}");
+
+        // Inside the ceiling the same import passes the gate and reaches the
+        // compiler, which is not installed here.
+        svc.set_caps_ceiling(Some("admin"), vec!["Key".to_owned(), "Screen".to_owned()])
+            .await
+            .unwrap();
+        let error = svc
+            .compile_and_install(Some("admin"), &spec)
+            .await
+            .unwrap_err();
+        assert!(!error.contains("imports Screen"), "{error}");
     }
 
     struct FixedScreen;

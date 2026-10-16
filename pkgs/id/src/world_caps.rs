@@ -31,7 +31,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Version of the `wants` document the host understands.
 pub const WANTS_VERSION: u64 = 1;
@@ -68,6 +68,12 @@ pub const CATALOG: &[&str] = &[
 #[must_use]
 pub fn is_known(name: &str) -> bool {
     CATALOG.contains(&name)
+}
+
+/// Every catalog capability, as a set: the default server and world ceiling.
+#[must_use]
+pub fn catalog_names() -> BTreeSet<String> {
+    CATALOG.iter().map(|name| (*name).to_owned()).collect()
 }
 
 /// One thing a program asked for.
@@ -281,6 +287,8 @@ pub enum CapError {
     Failed,
     /// The participant whose input caused the request lacks the scope for it.
     ActorDenied,
+    /// The server or the world's capability ceiling excludes it, even if granted.
+    OutsideCeiling,
 }
 
 impl CapError {
@@ -293,12 +301,13 @@ impl CapError {
             Self::BadArgs => "bad_args",
             Self::Failed => "failed",
             Self::ActorDenied => "actor_denied",
+            Self::OutsideCeiling => "outside_ceiling",
         }
     }
 }
 
 /// How a capability was used since the world opened.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapUsage {
     /// Uses the world allowed.
     pub allowed: u64,
@@ -306,10 +315,16 @@ pub struct CapUsage {
     pub denied: u64,
 }
 
-/// What a world has granted, and what its program has asked for.
-#[derive(Clone, Debug, Default)]
+/// What a world has granted, what the ceilings allow, and what its program has
+/// asked for.
+///
+/// A use is allowed only when the capability is allowed **and** granted. `*` in
+/// the grant set counts as every allowed name.
+#[derive(Clone, Debug)]
 pub struct CapLedger {
     granted: BTreeSet<String>,
+    /// What the server and world ceilings allow: their intersection, within the catalog.
+    allowed: BTreeSet<String>,
     usage: BTreeMap<String, CapUsage>,
     grant_on_use: bool,
 }
@@ -327,20 +342,33 @@ pub enum Decision {
 }
 
 impl CapLedger {
-    /// A ledger with `granted` capabilities and the given policy.
+    /// A ledger with `granted` capabilities and the given policy. Every catalog
+    /// capability is allowed until a ceiling narrows the set.
     #[must_use]
-    pub const fn new(granted: BTreeSet<String>, grant_on_use: bool) -> Self {
+    pub fn new(granted: BTreeSet<String>, grant_on_use: bool) -> Self {
         Self {
             granted,
+            allowed: catalog_names(),
             usage: BTreeMap::new(),
             grant_on_use,
         }
     }
 
-    /// Whether `cap` is granted (`*` grants everything the server knows).
+    /// Replace the set the ceilings allow. Names outside the catalog are dropped.
+    pub fn set_allowed(&mut self, allowed: BTreeSet<String>) {
+        self.allowed = allowed.into_iter().filter(|name| is_known(name)).collect();
+    }
+
+    /// What the server and world ceilings allow.
+    #[must_use]
+    pub const fn allowed(&self) -> &BTreeSet<String> {
+        &self.allowed
+    }
+
+    /// Whether `cap` is allowed and granted (`*` grants everything allowed).
     #[must_use]
     pub fn is_granted(&self, cap: &str) -> bool {
-        is_known(cap) && (self.granted.contains(cap) || self.granted.contains("*"))
+        self.allowed.contains(cap) && (self.granted.contains(cap) || self.granted.contains("*"))
     }
 
     /// Record one use of `cap` and decide it.
@@ -356,6 +384,12 @@ impl CapLedger {
         if !is_known(cap) {
             entry.denied += 1;
             return Decision::Deny(CapError::Unknown);
+        }
+        // A ceiling is checked before anything else, so grant-on-use can
+        // never add a name the server or the world excludes.
+        if !self.allowed.contains(cap) {
+            entry.denied += 1;
+            return Decision::Deny(CapError::OutsideCeiling);
         }
         if !actor_permits {
             entry.denied += 1;
@@ -383,6 +417,16 @@ impl CapLedger {
     /// Replace the granted set (restoring from the journal, or an admin edit).
     pub fn set_granted(&mut self, granted: BTreeSet<String>) {
         self.granted = granted;
+    }
+
+    /// What authority reaches now: granted and allowed, with `*` standing for
+    /// every allowed name. This is the list a compile gate should see.
+    #[must_use]
+    pub fn effective(&self) -> BTreeSet<String> {
+        if self.granted.contains("*") {
+            return self.allowed.clone();
+        }
+        self.granted.intersection(&self.allowed).cloned().collect()
     }
 
     /// Usage by capability name.
@@ -416,21 +460,45 @@ pub fn validate_grant_names(names: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Validate a capability ceiling, from an admin or the server flag: known
+/// capabilities only. `*` is a grant shorthand, not a limit, so it is refused.
+///
+/// # Errors
+///
+/// Refuses `*` and names the first unknown capability.
+pub fn validate_ceiling_names(names: &[String]) -> Result<()> {
+    ensure!(
+        !names.iter().any(|name| name == "*"),
+        "a capability ceiling lists names; `*` only grants"
+    );
+    validate_grant_names(names)
+}
+
 /// What `id world caps` shows.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapsReport {
     /// Capabilities the world has granted.
     pub granted: Vec<String>,
     /// Capabilities the program's current `wants` needs.
     pub requested: Vec<String>,
-    /// Requested but not granted: what an admin would grant to unblock it.
+    /// Requested but not effective: what an admin would grant, or which a
+    /// ceiling would have to admit, to unblock it.
     pub missing: Vec<String>,
     /// Use since the world opened, including refused use.
     pub usage: BTreeMap<String, CapUsage>,
     /// `deny` or `grant-on-use`.
-    pub policy: &'static str,
+    pub policy: String,
     /// Every capability the server can provide.
-    pub catalog: Vec<&'static str>,
+    pub catalog: Vec<String>,
+    /// The world's own capability ceiling. Empty in reports from servers
+    /// that predate ceilings.
+    #[serde(default)]
+    pub ceiling: Vec<String>,
+    /// Granted and within the server and world ceilings: what the program can
+    /// use now, with `*` expanded. Empty in reports from servers that predate
+    /// ceilings.
+    #[serde(default)]
+    pub effective: Vec<String>,
 }
 
 #[cfg(test)]
@@ -601,5 +669,95 @@ mod tests {
             Ok(serde_json::Value::from("x".repeat(MAX_EVENT_BYTES))),
         );
         assert!(huge.contains("result_too_large") && huge.len() < 200);
+    }
+
+    fn names(list: &[&str]) -> BTreeSet<String> {
+        list.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_default_ceiling_is_the_whole_catalog() {
+        let mut ledger = CapLedger::new(names(&["time.now"]), false);
+        assert_eq!(ledger.allowed(), &catalog_names());
+        assert!(ledger.is_granted("time.now"));
+        assert_eq!(ledger.decide("time.now"), Decision::Allow);
+        assert_eq!(ledger.decide("chat.say"), Decision::Deny(CapError::Denied));
+        ledger.set_granted(names(&["*"]));
+        assert_eq!(ledger.effective(), catalog_names());
+        assert_eq!(
+            ledger.decide("chat.say"),
+            Decision::Allow,
+            "a wildcard grant reaches every catalog name"
+        );
+    }
+
+    #[test]
+    fn a_ceiling_denies_a_grant_and_a_wildcard_alike() {
+        let mut ledger = CapLedger::new(names(&["*"]), false);
+        ledger.set_allowed(names(&["time.now"]));
+        assert!(ledger.is_granted("time.now"));
+        assert!(!ledger.is_granted("chat.say"));
+        assert_eq!(
+            ledger.decide_for("chat.say", true),
+            Decision::Deny(CapError::OutsideCeiling)
+        );
+        ledger.set_granted(names(&["chat.say"]));
+        assert_eq!(
+            ledger.decide_for("chat.say", true),
+            Decision::Deny(CapError::OutsideCeiling),
+            "an explicit grant does not reach past the ceiling"
+        );
+        assert_eq!(
+            ledger.usage()["chat.say"],
+            CapUsage {
+                allowed: 0,
+                denied: 2
+            }
+        );
+        // The explicit grant replaced the wildcard, and chat.say is outside the
+        // ceiling, so nothing is effective.
+        assert_eq!(ledger.effective(), names(&[]));
+        ledger.set_granted(names(&["*"]));
+        assert_eq!(ledger.effective(), names(&["time.now"]));
+    }
+
+    #[test]
+    fn grant_on_use_never_grants_a_name_outside_the_ceiling() {
+        let mut ledger = CapLedger::new(BTreeSet::new(), true);
+        ledger.set_allowed(names(&["time.now"]));
+        assert_eq!(
+            ledger.decide("chat.say"),
+            Decision::Deny(CapError::OutsideCeiling)
+        );
+        assert!(!ledger.granted().contains("chat.say"));
+        assert_eq!(ledger.decide("time.now"), Decision::AllowAndGrant);
+        assert!(ledger.granted().contains("time.now"));
+    }
+
+    #[test]
+    fn unknown_names_stay_unknown_under_a_ceiling() {
+        let mut ledger = CapLedger::new(BTreeSet::new(), true);
+        ledger.set_allowed(names(&["time.now", "telepathy"]));
+        assert_eq!(
+            ledger.decide("telepathy"),
+            Decision::Deny(CapError::Unknown),
+            "a name the catalog lacks is never allowed, even if a ceiling lists it"
+        );
+        assert_eq!(ledger.allowed(), &names(&["time.now"]));
+    }
+
+    #[test]
+    fn a_ceiling_takes_the_server_and_world_intersection() {
+        let mut ledger = CapLedger::new(names(&["chat.say", "time.now"]), false);
+        ledger.set_allowed(names(&["chat.say"]));
+        assert_eq!(ledger.effective(), names(&["chat.say"]));
+        assert!(!ledger.is_granted("time.now"));
+    }
+
+    #[test]
+    fn ceiling_names_refuse_the_wildcard_and_unknown_names() {
+        validate_ceiling_names(&["time.now".to_owned()]).unwrap();
+        assert!(validate_ceiling_names(&["*".to_owned()]).is_err());
+        assert!(validate_ceiling_names(&["time.nwo".to_owned()]).is_err());
     }
 }

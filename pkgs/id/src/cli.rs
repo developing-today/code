@@ -442,6 +442,11 @@ pub enum Command {
         /// program uses it.
         #[arg(long, default_value = "deny", requires = "world")]
         world_cap_policy: String,
+        /// Capabilities the server allows any world to use, comma-separated
+        /// (default: the whole catalog). A world may grant less, never more.
+        /// `*` is refused here.
+        #[arg(long, value_name = "NAMES", value_delimiter = ',', requires = "world")]
+        world_allowed_caps: Option<Vec<String>>,
         /// The Roc binary used to compile sources sent to `id world compile`
         /// (default: $`ID_ROC_BIN` or `roc` from PATH).
         #[arg(long, env = "ID_ROC_BIN")]
