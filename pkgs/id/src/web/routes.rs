@@ -210,6 +210,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         // Page routes (return full HTML pages)
         .route("/", get(index_handler))
+        .route("/files", get(files_page_handler))
         .route("/world", get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
@@ -220,6 +221,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/blob/{hash}", get(blob_handler))
         // Partial routes (return HTML fragments for SPA navigation)
         .route("/api/files", get(files_list_handler))
+        .route("/api/home/feed", get(super::home::feed_handler))
         .route("/api/peers", get(peers_partial_handler))
         // File management API routes
         .route("/api/save", post(save_handler))
@@ -278,8 +280,23 @@ fn is_partial_request(headers: &HeaderMap) -> bool {
     is_partial
 }
 
-/// Index page handler - shows file list.
-async fn index_handler(
+/// Index page handler - discovery home.
+async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let worlds = state.world.as_ref().map_or_else(Vec::new, |hub| hub.list());
+    let default_world = state
+        .world
+        .as_ref()
+        .map_or("lobby", |hub| hub.default_world());
+    let content = super::home::render_home(&worlds, default_world, state.world.is_some());
+    if is_partial_request(&headers) {
+        Html(render_main_page_wrapper(&content))
+    } else {
+        Html(render_page("Home", &content, "", &state.assets))
+    }
+}
+
+/// File browser page retained separately from home/discovery.
+async fn files_page_handler(
     State(state): State<AppState>,
     Query(query): Query<FileListQuery>,
     headers: HeaderMap,
