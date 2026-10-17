@@ -1,7 +1,16 @@
 /** Browser presentation for the server-authoritative world session. */
 
 type WorldFrame = {
-  type: "snapshot" | "event" | "view" | "records" | "invite" | "upload_ready" | "module_installed" | "error";
+  type:
+    | "snapshot"
+    | "event"
+    | "view"
+    | "records"
+    | "invite"
+    | "upload_ready"
+    | "module_installed"
+    | "compiled"
+    | "error";
   snapshot?: {
     world_id: string;
     current_sequence: number;
@@ -20,6 +29,7 @@ type WorldFrame = {
   next_after?: string | null;
   chunk_bytes?: number;
   module_hash?: string;
+  diagnostics?: string;
   participant_id?: number;
   display_name?: string;
   message?: string;
@@ -47,8 +57,10 @@ function initWorld(): void {
   const capability = element<HTMLInputElement>(root, "[data-world-capability]");
   const inviteButton = element<HTMLButtonElement>(root, "[data-world-invite]");
   const moduleInput = element<HTMLInputElement>(root, "[data-world-module]");
+  const sourceInput = element<HTMLInputElement>(root, "[data-world-source]");
   const moduleSeed = element<HTMLInputElement>(root, "[data-world-seed]");
   const installButton = element<HTMLButtonElement>(root, "[data-world-install]");
+  const compileButton = element<HTMLButtonElement>(root, "[data-world-compile]");
   const joinButton = element<HTMLButtonElement>(root, "[data-world-join]");
   const chatForm = element<HTMLFormElement>(root, "[data-world-chat-form]");
   const chatInput = element<HTMLInputElement>(root, "[data-world-chat]");
@@ -70,8 +82,10 @@ function initWorld(): void {
     !worldInput ||
     !inviteButton ||
     !moduleInput ||
+    !sourceInput ||
     !moduleSeed ||
     !installButton ||
+    !compileButton ||
     !joinButton ||
     !chatForm ||
     !chatInput ||
@@ -353,6 +367,101 @@ function initWorld(): void {
     upload.addEventListener("error", () => setStatus("Module upload connection failed", "error"));
     upload.addEventListener("close", () => {
       installButton.disabled = false;
+    });
+  });
+
+  compileButton.addEventListener("click", async () => {
+    const secret = admin.value;
+    const selected = Array.from(sourceInput.files ?? []);
+    if (!secret) {
+      setStatus("Enter the world admin token to compile Roc sources", "error");
+      return;
+    }
+    if (selected.length === 0) {
+      setStatus("Choose a .roc source set with main.roc first", "error");
+      return;
+    }
+    if (selected.length > 8) {
+      setStatus("A compile request can contain at most 8 files", "error");
+      return;
+    }
+    const ordered = [...selected].sort((a, b) =>
+      a.name === "main.roc" ? -1 : b.name === "main.roc" ? 1 : a.name.localeCompare(b.name),
+    );
+    if (ordered[0]?.name !== "main.roc") {
+      setStatus("Select main.roc; it must be the first compile file", "error");
+      return;
+    }
+    const files: Array<{ name: string; content: string }> = [];
+    let totalBytes = 0;
+    const names = new Set<string>();
+    for (const file of ordered) {
+      if (!/^(?!\.)[A-Za-z0-9._-]{1,60}\.roc$/.test(file.name)) {
+        setStatus(`${file.name} is not a safe .roc filename`, "error");
+        return;
+      }
+      if (names.has(file.name)) {
+        setStatus(`The source set contains more than one ${file.name}`, "error");
+        return;
+      }
+      names.add(file.name);
+      if (file.size > 128 * 1024) {
+        setStatus(`${file.name} exceeds 128 KiB`, "error");
+        return;
+      }
+      totalBytes += file.size;
+      if (totalBytes > 256 * 1024) {
+        setStatus("Roc sources exceed the 256 KiB total limit", "error");
+        return;
+      }
+      files.push({ name: file.name, content: await file.text() });
+    }
+    const seed = Number(moduleSeed.value);
+    if (!Number.isSafeInteger(seed) || seed < 0) {
+      setStatus("Seed must be a non-negative safe integer", "error");
+      return;
+    }
+    compileButton.disabled = true;
+    setStatus(`Reading ${files.length} Roc source file${files.length === 1 ? "" : "s"} (${totalBytes} bytes)…`);
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    const compiler = new WebSocket(`${scheme}//${location.host}/ws/world`);
+    compiler.addEventListener("open", () => {
+      setStatus("Sources sent; compiling and installing on the host…");
+      compiler.send(
+        JSON.stringify({
+          type: "compile",
+          admin_token: secret,
+          files,
+          seed,
+          native: false,
+          world: selectedWorld(),
+        }),
+      );
+    });
+    compiler.addEventListener("message", (message) => {
+      let frame: WorldFrame;
+      try {
+        frame = JSON.parse(String(message.data)) as WorldFrame;
+      } catch {
+        setStatus("Host returned an invalid compile response", "error");
+        compiler.close();
+        return;
+      }
+      if (frame.type === "error") {
+        setStatus(frame.message ?? "Roc compilation failed", "error");
+        appendLine(log, `compile error: ${frame.message ?? "Roc compilation failed"}`);
+        compiler.close();
+      } else if (frame.type === "compiled") {
+        setStatus(`Roc program installed: ${frame.module_hash ?? "ok"}`, "good");
+        appendLine(log, `Roc program installed ${frame.module_hash ?? ""}`);
+        if (frame.diagnostics) appendLine(log, frame.diagnostics);
+        admin.value = "";
+        compiler.close();
+      }
+    });
+    compiler.addEventListener("error", () => setStatus("Roc compile connection failed", "error"));
+    compiler.addEventListener("close", () => {
+      compileButton.disabled = false;
     });
   });
 
