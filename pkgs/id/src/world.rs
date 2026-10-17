@@ -540,7 +540,7 @@ pub struct RestoredWorld {
 }
 
 /// The profile requested by the world admin and when it takes effect.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionProfileUpdate {
     /// Requested profile; this is not necessarily the active instance's limits.
     pub requested: crate::world_limits::WorldExecutionProfile,

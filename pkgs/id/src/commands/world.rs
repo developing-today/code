@@ -243,19 +243,76 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             admin_token,
             grant,
             revoke,
+            ceiling,
             world,
             addrs,
             no_relay,
         } => {
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
-            let result = if grant.is_empty() && revoke.is_empty() {
-                let capability = capability
-                    .context("a guest capability (--capability) is needed to read the report")?;
-                client.caps(&capability).await
-            } else {
+            let result = if let Some(ceiling) = ceiling {
+                let admin_token = admin_token
+                    .context("the admin token is needed to change the capability ceiling")?;
+                let ceiling_res = client.set_caps_ceiling(&admin_token, &ceiling).await?;
+                if !grant.is_empty() || !revoke.is_empty() {
+                    let updated = client.update_caps(&admin_token, &grant, &revoke).await?;
+                    serde_json::to_value(updated)?
+                } else {
+                    ceiling_res
+                }
+            } else if !grant.is_empty() || !revoke.is_empty() {
                 let admin_token = admin_token
                     .context("the admin token is needed to change what the world may use")?;
-                client.update_caps(&admin_token, &grant, &revoke).await
+                let updated = client.update_caps(&admin_token, &grant, &revoke).await?;
+                serde_json::to_value(updated)?
+            } else {
+                let capability = capability
+                    .context("a guest capability (--capability) is needed to read the report")?;
+                let report = client.caps(&capability).await?;
+                serde_json::to_value(report)?
+            };
+            client.close();
+            endpoint.close().await;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
+        WorldCommand::Profile {
+            node,
+            admin_token,
+            capability,
+            wasm_fuel,
+            wasm_memory_bytes,
+            wasm_message_bytes,
+            native_memory_bytes,
+            native_cpu_seconds,
+            native_call_deadline_ms,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let has_updates = wasm_fuel.is_some()
+                || wasm_memory_bytes.is_some()
+                || wasm_message_bytes.is_some()
+                || native_memory_bytes.is_some()
+                || native_cpu_seconds.is_some()
+                || native_call_deadline_ms.is_some();
+            let result = if has_updates {
+                let admin_token = admin_token.context(
+                    "the admin token is needed to configure the world's execution profile",
+                )?;
+                let profile = crate::world_limits::WorldExecutionProfile {
+                    wasm_fuel,
+                    wasm_memory_bytes,
+                    wasm_message_bytes,
+                    native_memory_bytes,
+                    native_cpu_seconds,
+                    native_call_deadline_ms,
+                };
+                client.set_execution_profile(&admin_token, profile).await
+            } else {
+                client
+                    .execution_profile(admin_token.as_deref(), capability.as_deref())
+                    .await
             };
             client.close();
             endpoint.close().await;

@@ -431,6 +431,38 @@ impl WorldClient {
         Ok(reply)
     }
 
+    /// Read the world's requested execution profile.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if neither a valid admin token nor a valid
+    /// guest capability is supplied.
+    pub async fn execution_profile(
+        &mut self,
+        admin_token: Option<&str>,
+        capability: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        self.send_json(&serde_json::json!({
+            "type": "execution_profile_info",
+            "admin_token": admin_token,
+            "capability": capability,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "execution_profile" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused the execution profile query")
+            );
+        }
+        Ok(reply)
+    }
+
     /// Let other unisolated worlds write into this world, with the admin token.
     /// Returns the world's policy after the change.
     ///
@@ -1109,6 +1141,70 @@ mod tests {
             host.world.caps_report().await.unwrap().ceiling,
             vec!["time.now".to_owned()]
         );
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn execution_profile_can_be_queried_and_updated_over_iroh() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+
+        let mut invite_client = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let capability = invite_client
+            .invite("admin", "ann", None, None)
+            .await
+            .unwrap();
+        invite_client.close();
+
+        // 1. Unauthenticated query is denied
+        let mut outsider = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        assert!(outsider.execution_profile(None, None).await.is_err());
+        outsider.close();
+
+        // 2. Guest with capability can query profile
+        let mut guest = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let res = guest
+            .execution_profile(None, Some(&capability))
+            .await
+            .unwrap();
+        assert_eq!(res["type"], "execution_profile");
+        guest.close();
+
+        // 3. Admin can update profile
+        let mut admin = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let custom_profile = crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(750_000),
+            native_cpu_seconds: Some(15),
+            ..Default::default()
+        };
+        let set_res = admin
+            .set_execution_profile("admin", custom_profile)
+            .await
+            .unwrap();
+        assert_eq!(set_res["type"], "execution_profile");
+        assert_eq!(set_res["update"]["requested"]["wasm_fuel"], 750_000);
+        admin.close();
+
+        // 4. Admin query sees the updated requested profile
+        let mut admin_query = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let query_res = admin_query
+            .execution_profile(Some("admin"), None)
+            .await
+            .unwrap();
+        assert_eq!(query_res["update"]["requested"]["wasm_fuel"], 750_000);
+        admin_query.close();
 
         client_ep.close().await;
         host.router.shutdown().await.unwrap();
