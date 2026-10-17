@@ -36,7 +36,7 @@ Implemented as specified: journal/checkpoint persistence, current-server resolut
 
 ## Rollout compatibility note
 
-A journal that has received an `ExecutionProfile` entry is not readable by binaries predating this entry variant. Same-version restart and checkpoint compaction are covered; rolling back requires a compatible migration or restoring a pre-change journal backup. Older journals with no profile entry remain readable and inherit the empty profile.
+A binary built before #244 treats an `ExecutionProfile` entry that is the last line as a torn append and truncates it, and refuses the journal when the entry is not last. Restore a pre-change journal backup before rolling back. Binaries built after #244 refuse any complete line they cannot read.
 
 - A profile journal event written by this version is not understood by older binaries; rolling back after changing a profile requires a compatible migration or restoring a pre-change journal backup.
 
