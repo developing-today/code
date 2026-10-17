@@ -166,12 +166,7 @@ fn test_a_server_primary_alias_wins_over_the_claims_for_display() {
     deliver(&mut store, &[&by_bo, &by_ann]);
     let claims = store.tag_claims().unwrap();
 
-    let view = rows(
-        &[named(team, "Team")],
-        &claims,
-        &primary,
-        &BTreeMap::new(),
-    );
+    let view = rows(&[named(team, "Team")], &claims, &primary, &BTreeMap::new());
     assert_eq!(view.len(), 1);
     assert_eq!(view[0].shown, Shown::Primary("team".to_owned()));
     // The claims are still there for anyone who looks at the full set.
