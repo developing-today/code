@@ -10,7 +10,7 @@ platform ""
             restore : Str -> model,
         }
     }
-    exposes [Screen, Key, RocJson, RocGrid]
+    exposes [Screen, Key, RocJson, RocGrid, RocCap]
     packages {}
     provides {
         "roc_init": init_for_host,
@@ -31,6 +31,7 @@ import Screen
 import Key
 import RocJson
 import RocGrid
+import RocCap
 
 init_for_host : U64 -> Box(Model)
 init_for_host = |seed| Box.box((program.init)(seed))

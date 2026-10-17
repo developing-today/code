@@ -619,6 +619,84 @@ mod tests {
         assert!(rewrite_platform_path("pf: platform \"unterminated").is_err());
     }
 
+    #[tokio::test]
+    async fn the_capability_helper_issues_matching_requests() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = r#"app [program] { pf: platform "../roc-world/platform.roc" }
+
+import pf.RocCap
+import pf.RocJson
+
+Model : { request : Str }
+
+program = { init, update, view, records, wants, snapshot, restore }
+
+init : U64 -> Model
+init = |seed| {
+	issued = RocCap.issue(RocCap.empty, "chat.say")
+	document = RocCap.chat_request(issued.id, seed.to_str())
+	encoded = match RocJson.encode(document) {
+		Ok(text) => text
+		Err(_) => ""
+	}
+	{ request: encoded }
+}
+
+update : Model, U64, Str -> Model
+update = |model, _pid, _ev| model
+
+view : Model -> Str
+view = |model| {
+	answered = RocCap.answered(RocCap.empty, "r0")
+	"issued=${answered.to_str()} ${model.request}"
+}
+
+records : Model -> Str
+records = |_model| "{}"
+
+wants : Model -> Str
+wants = |_model| "{}"
+
+snapshot : Model -> Str
+snapshot = |model| model.request
+
+restore : Str -> Model
+restore = |text| { request: text }
+"#;
+        let (wasm, _diagnostics, _provenance) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app.to_owned())],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            &["RocCap".to_owned(), "RocJson".to_owned()],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        let view = String::from_utf8(world.view().unwrap()).unwrap();
+        let document = view.split(' ').nth(1).unwrap();
+        let decoded: serde_json::Value = serde_json::from_str(document).unwrap();
+        assert_eq!(decoded["id"], "r0");
+        assert_eq!(decoded["cap"], "chat.say");
+        assert_eq!(decoded["args"]["text"], "7");
+    }
+
     #[test]
     fn the_platform_modules_are_staged_with_the_platform() {
         let from = tempfile::tempdir().unwrap();

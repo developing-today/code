@@ -77,6 +77,13 @@ caller-supplied fallback, and a write outside it returns the grid unchanged.
 Boards, canvases, maps, and inventories build on this instead of re-deriving
 index arithmetic per app. `examples/roc-grid` is the checked-in example.
 
+`RocCap.roc` is exposed as `pf.RocCap` for the request side of the capability
+protocol. `issue` reserves `r0`, `r1`, … ids and records each one's capability;
+`chat_request`, `now_request`, `players_request`, and `world_request` build the
+request documents; `answered` routes a result back to the capability that asked
+(correct under replay, not just live play); and `done` retires it. Apps stop
+re-deriving id counters and pending lists.
+
 One nightly caveat: with
 nightly-2026-10-04-130536d's wasm backend, `List.get` past the second
 element of a string list produced by `Str.split_on` returned truncated
