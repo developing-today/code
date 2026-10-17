@@ -143,6 +143,35 @@ RocCap := {
 	next_after : RocJson -> Str
 	next_after = |value| string_field(value, "next_after")
 
+	## A `schedule.at` request document: ask for one `schedule_id` fire at
+	## `at_ms` (unix milliseconds). A time in the past fires on the next wakeup.
+	## The server refuses ids that are empty, longer than 64 bytes, or not
+	## printable ASCII; a duplicate of a pending id; and times more than 30 days
+	## ahead. The result is `{"id":..,"fires_at":..}` or `bad_args`.
+	schedule_at_request : Str, Str, U64 -> RocJson
+	schedule_at_request = |id, schedule_id, at_ms|
+		RocJson.Object([
+			{ key: "id", value: RocJson.String(id) },
+			{ key: "cap", value: RocJson.String("schedule.at") },
+			{
+				key: "args",
+				value: RocJson.Object([
+					{ key: "id", value: RocJson.String(schedule_id) },
+					{ key: "at", value: RocJson.Number(at_ms.to_str()) },
+				]),
+			},
+		])
+
+	## A `schedule.cancel` request document. The result is `{"cancelled":bool}`:
+	## `true` when a pending schedule with `schedule_id` was dropped before it fired.
+	schedule_cancel_request : Str, Str -> RocJson
+	schedule_cancel_request = |id, schedule_id|
+		RocJson.Object([
+			{ key: "id", value: RocJson.String(id) },
+			{ key: "cap", value: RocJson.String("schedule.cancel") },
+			{ key: "args", value: RocJson.Object([{ key: "id", value: RocJson.String(schedule_id) }]) },
+		])
+
 	## An array field of a JSON object, or `[]` when missing or not an array.
 	list_field : RocJson, Str -> List(RocJson)
 	list_field = |value, key| match RocJson.get(value, key) {
