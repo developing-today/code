@@ -109,6 +109,9 @@ fn platform_modules(platform_dir: &Path) -> Result<Vec<String>> {
 /// Refuse source that imports a platform module the world does not grant.
 /// Imports the platform does not provide are left to the compiler.
 ///
+/// `granted` must be the effective list (granted and within the server and
+/// world ceilings, with `*` expanded), not the raw grants.
+///
 /// # Errors
 ///
 /// Names the file and the module of the first refused import.
@@ -127,7 +130,7 @@ pub fn check_imports(spec: &CompileSpec, modules: &[String], granted: &[String])
                 let is_granted = granted.iter().any(|grant| grant == "*" || grant == segment);
                 ensure!(
                     !is_platform_module || is_granted,
-                    "{name} imports {segment}, which this world does not grant (grant it with `id world caps --grant {segment}`)"
+                    "{name} imports {segment}, which this world does not allow (grant it with `id world caps --grant {segment}`; a capability ceiling may also exclude it)"
                 );
             }
         }
@@ -177,8 +180,8 @@ pub fn validate_spec(spec: &CompileSpec) -> Result<()> {
 }
 
 /// Compile `spec` and return the validated Wasm module plus compiler
-/// diagnostics. `granted` is the world's ceiling: the platform modules the
-/// source may import.
+/// diagnostics. `granted` is the effective list: the platform modules the
+/// source may import, bounded by the server and world ceilings.
 ///
 /// # Errors
 ///
@@ -959,6 +962,47 @@ mod tests {
         assert_eq!(
             resolve_program("no-such-compiler"),
             PathBuf::from("no-such-compiler")
+        );
+    }
+
+    #[test]
+    fn a_ceiling_bounds_the_effective_list_the_gate_sees() {
+        use crate::world_caps::CapLedger;
+        use std::collections::BTreeSet;
+
+        let modules = vec!["Key".to_owned(), "Screen".to_owned()];
+        let app = spec(vec![("main.roc", "import pf.Screen\napp [x] {}")]);
+        // `*` is granted, but the ceiling admits only Key: the gate sees Key alone.
+        let mut ledger = CapLedger::new(BTreeSet::from(["*".to_owned()]), false);
+        ledger.set_allowed(BTreeSet::from(["Key".to_owned()]));
+        let effective: Vec<String> = ledger.effective().into_iter().collect();
+        let refused = check_imports(&app, &modules, &effective)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("main.roc imports Screen"), "{refused}");
+
+        ledger.set_allowed(BTreeSet::from(["Key".to_owned(), "Screen".to_owned()]));
+        let effective: Vec<String> = ledger.effective().into_iter().collect();
+        assert!(check_imports(&app, &modules, &effective).is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_import_outside_the_effective_list_is_refused_before_the_compiler_runs() {
+        // A platform directory that passes `Compiler::new`, with no roc binary.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("platform.roc"), "x").unwrap();
+        std::fs::create_dir_all(root.path().join("targets/wasm32")).unwrap();
+        std::fs::write(root.path().join("targets/wasm32/host.wasm"), b"\0asm").unwrap();
+        std::fs::write(root.path().join("Screen.roc"), "module []\n").unwrap();
+        let compiler =
+            Compiler::new(root.path().to_path_buf(), "/nonexistent/roc".to_owned()).unwrap();
+        let app = spec(vec![("main.roc", "import pf.Screen\napp [x] {}")]);
+        let error = compile(&app, &compiler, &["Key".to_owned()], COMPILE_TIMEOUT)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("main.roc imports Screen"),
+            "{error:#}"
         );
     }
 }

@@ -317,6 +317,8 @@ pub struct ServeOptions {
     pub world_caps: Vec<String>,
     /// `deny` or `grant-on-use`.
     pub world_cap_policy: String,
+    /// Capabilities the server allows any world to use (`None`: the whole catalog).
+    pub world_allowed_caps: Option<Vec<String>>,
     /// Roc binary for on-the-fly compilation.
     pub roc_bin: Option<String>,
     /// Platform directory for on-the-fly compilation.
@@ -473,6 +475,19 @@ fn mail_sink(
     Ok(Some(sink))
 }
 
+/// The server's capability ceiling: the named capabilities, or the whole catalog
+/// when no list is given. Like a world ceiling, it names capabilities; `*` is refused.
+#[cfg(feature = "world")]
+fn allowed_caps(names: Option<&[String]>) -> Result<std::collections::BTreeSet<String>> {
+    match names {
+        None => Ok(crate::world_caps::catalog_names()),
+        Some(names) => {
+            crate::world_caps::validate_ceiling_names(names)?;
+            Ok(names.iter().cloned().collect())
+        }
+    }
+}
+
 #[cfg(feature = "world")]
 struct ServeWorlds {
     ephemeral: bool,
@@ -483,6 +498,7 @@ struct ServeWorlds {
     default_world: String,
     default_module: Option<PathBuf>,
     grant_on_use: bool,
+    server_caps: std::collections::BTreeSet<String>,
     compiler: Option<crate::world_compile::Compiler>,
     native: bool,
     source_only: bool,
@@ -535,6 +551,7 @@ impl ServeWorlds {
         let limits = WorldLimits {
             checkpoint_every: self.checkpoint_every,
             grant_on_use: self.grant_on_use,
+            server_caps: self.server_caps.clone(),
             ..WorldLimits::default()
         };
         let runtime = self.runtime;
@@ -708,6 +725,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_boot_window_secs,
         world_caps,
         world_cap_policy,
+        world_allowed_caps,
         roc_bin,
         roc_platform,
         world_native,
@@ -725,6 +743,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         &world_cap_policy,
         world_source_only,
     )?;
+    #[cfg(not(feature = "world"))]
+    let _ = &world_allowed_caps;
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
@@ -813,6 +833,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let world_hub = if world {
         use crate::world_hub::{HubLimits, WorldHub};
         let runtime = crate::world_limits::RuntimeLimits::from_args(&world_runtime)?;
+        let server_caps = allowed_caps(world_allowed_caps.as_deref())?;
         let compiler = resolve_compiler(roc_bin, roc_platform)?;
         ensure!(
             !world_source_only || compiler.is_some(),
@@ -827,6 +848,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             default_world: world_name.clone(),
             default_module: world_module.clone(),
             grant_on_use: world_cap_policy == "grant-on-use",
+            server_caps: server_caps.clone(),
             compiler,
             native: world_native,
             source_only: world_source_only,
@@ -850,6 +872,13 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         );
         let default_service = hub.open_default().await?;
         if !world_caps.is_empty() {
+            for cap in world_caps.iter().filter(|cap| *cap != "*") {
+                if !server_caps.contains(cap) {
+                    warn!(
+                        "world: --world-cap {cap} is outside --world-allowed-caps; the program will be refused it"
+                    );
+                }
+            }
             default_service
                 .world()
                 .update_caps(world_caps.clone(), Vec::new())
@@ -1321,6 +1350,25 @@ async fn run_gossip_loop(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "world")]
+    #[test]
+    fn the_server_ceiling_is_the_named_list_or_the_whole_catalog() {
+        assert_eq!(
+            allowed_caps(None).unwrap(),
+            crate::world_caps::catalog_names()
+        );
+        let named = ["time.now".to_owned(), "chat.say".to_owned()];
+        assert_eq!(
+            allowed_caps(Some(&named))
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["chat.say".to_owned(), "time.now".to_owned()]
+        );
+        assert!(allowed_caps(Some(&["*".to_owned()])).is_err());
+        assert!(allowed_caps(Some(&["telepathy".to_owned()])).is_err());
+    }
 
     #[test]
     fn world_mode_requires_an_admin_token_but_not_web() {

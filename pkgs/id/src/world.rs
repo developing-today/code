@@ -28,7 +28,7 @@ use subtle::ConstantTimeEq as _;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 /// Bounded limits for one world.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct WorldLimits {
     /// Maximum number of active capabilities in this world.
     pub participants: usize,
@@ -51,6 +51,9 @@ pub struct WorldLimits {
     pub min_tick_ms: u64,
     /// Whether a world's policy grants a capability on its first use.
     pub grant_on_use: bool,
+    /// Capabilities the server allows any world to use. Runtime configuration,
+    /// not journaled; a world's own ceiling and grants only narrow it.
+    pub server_caps: BTreeSet<String>,
 }
 
 impl Default for WorldLimits {
@@ -65,6 +68,7 @@ impl Default for WorldLimits {
             checkpoint_every: 1000,
             min_tick_ms: 1000,
             grant_on_use: false,
+            server_caps: crate::world_caps::catalog_names(),
         }
     }
 }
@@ -418,6 +422,12 @@ pub enum JournalEntry {
         /// Capability names.
         granted: Vec<String>,
     },
+    /// The world's capability ceiling, written whole on every change. Absent
+    /// means the whole catalog. Checkpoints carry it in `caps_ceiling`.
+    CapsCeiling {
+        /// Capability names the world allows.
+        ceiling: Vec<String>,
+    },
     /// The world's requested execution profile. Limits are resolved against
     /// the current server hard ceilings when a program instance is created.
     ExecutionProfile {
@@ -463,6 +473,10 @@ pub enum JournalEntry {
         /// Requested resource profile. Absent in older checkpoints.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         execution_profile: Option<crate::world_limits::WorldExecutionProfile>,
+        /// The world's capability ceiling. Absent in older checkpoints, and
+        /// when it is the whole catalog.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caps_ceiling: Option<Vec<String>>,
         /// The program's own serialization of its state.
         snapshot: String,
         /// Recent events kept for reconnect catch-up.
@@ -715,6 +729,9 @@ pub struct WorldCore {
     active_seed: u64,
     /// What this world's program may ask the server for.
     pub(crate) ledger: crate::world_caps::CapLedger,
+    /// This world's own capability ceiling. The ledger allows the intersection
+    /// of this and the server's `limits.server_caps`.
+    caps_ceiling: BTreeSet<String>,
     isolation: Isolation,
     cross_world_write: bool,
     cross_world_forced: bool,
@@ -751,7 +768,11 @@ impl WorldCore {
             limits.snapshot_bytes > 0,
             "world snapshot limit must be nonzero"
         );
-        Ok(Self {
+        let server_caps: Vec<String> = limits.server_caps.iter().cloned().collect();
+        crate::world_caps::validate_ceiling_names(&server_caps)
+            .context("server capability ceiling")?;
+        let grant_on_use = limits.grant_on_use;
+        let mut core = Self {
             world_id,
             limits,
             execution_profile: crate::world_limits::WorldExecutionProfile::default(),
@@ -760,7 +781,8 @@ impl WorldCore {
             active_module_hash: None,
             active_module_provenance: None,
             active_seed: 0,
-            ledger: crate::world_caps::CapLedger::new(Default::default(), limits.grant_on_use),
+            ledger: crate::world_caps::CapLedger::new(BTreeSet::new(), grant_on_use),
+            caps_ceiling: crate::world_caps::catalog_names(),
             isolation: Isolation::default(),
             cross_world_write: false,
             cross_world_forced: false,
@@ -771,7 +793,21 @@ impl WorldCore {
             events: VecDeque::new(),
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
-        })
+        };
+        core.sync_ledger_ceiling();
+        Ok(core)
+    }
+
+    /// Recompute what the ledger may allow: the server's limit intersected with
+    /// this world's ceiling. Call whenever either one changes.
+    fn sync_ledger_ceiling(&mut self) {
+        let allowed = self
+            .limits
+            .server_caps
+            .intersection(&self.caps_ceiling)
+            .cloned()
+            .collect();
+        self.ledger.set_allowed(allowed);
     }
 
     /// Rebuild a world from its journal.
@@ -887,6 +923,11 @@ impl WorldCore {
                     }
                     core.ledger.set_granted(granted.iter().cloned().collect());
                 }
+                JournalEntry::CapsCeiling { ceiling } => {
+                    crate::world_caps::validate_ceiling_names(&ceiling)
+                        .context("invalid capability ceiling in journal")?;
+                    core.caps_ceiling = ceiling.into_iter().collect();
+                }
                 JournalEntry::ExecutionProfile { profile } => {
                     profile
                         .resolve(crate::world_limits::RuntimeLimits::default())
@@ -966,6 +1007,7 @@ impl WorldCore {
                     seed,
                     provenance,
                     execution_profile,
+                    caps_ceiling,
                     snapshot,
                     events,
                 } => {
@@ -993,6 +1035,16 @@ impl WorldCore {
                         .resolve(crate::world_limits::RuntimeLimits::default())
                         .context("invalid world execution profile in checkpoint")?;
                     core.execution_profile = execution_profile;
+                    // Absent means the whole catalog: older checkpoints and
+                    // default ceilings omit the field.
+                    core.caps_ceiling = match caps_ceiling {
+                        Some(ceiling) => {
+                            crate::world_caps::validate_ceiling_names(&ceiling)
+                                .context("invalid capability ceiling in checkpoint")?;
+                            ceiling.into_iter().collect()
+                        }
+                        None => crate::world_caps::catalog_names(),
+                    };
                     program = Some(RestoredProgram {
                         module_hash,
                         seed,
@@ -1016,6 +1068,7 @@ impl WorldCore {
                 },
             });
         }
+        core.sync_ledger_ceiling();
         Ok(RestoredWorld {
             core,
             program,
@@ -1057,6 +1110,19 @@ impl WorldCore {
         if !granted.is_empty() {
             entries.push(JournalEntry::CapsGranted { granted });
         }
+        // The ceiling rides on the checkpoint, so compaction keeps it; the
+        // default is omitted and reads back as the whole catalog.
+        let caps_ceiling: Option<Vec<String>> = (self.caps_ceiling
+            != crate::world_caps::catalog_names())
+        .then(|| self.caps_ceiling.iter().cloned().collect());
+        if let Some(ceiling) = &caps_ceiling {
+            // An older binary cannot read a `CapsCeiling` entry and refuses the
+            // journal. Without it, the older binary would ignore the checkpoint
+            // field and restore the whole catalog, widening authority silently.
+            entries.push(JournalEntry::CapsCeiling {
+                ceiling: ceiling.clone(),
+            });
+        }
         if self.isolation != Isolation::default() {
             entries.push(JournalEntry::Isolation {
                 isolation: self.isolation,
@@ -1086,6 +1152,7 @@ impl WorldCore {
             seed: self.active_seed,
             provenance: self.active_module_provenance.clone(),
             execution_profile: Some(self.execution_profile),
+            caps_ceiling,
             snapshot,
             events: self.events.iter().cloned().collect(),
         });
@@ -1735,6 +1802,11 @@ enum WorldCommand {
         revoke: Vec<String>,
         reply: oneshot::Sender<Result<CapsReport>>,
     },
+    /// Admin: replace the world's capability ceiling. It applies immediately.
+    SetCapsCeiling {
+        ceiling: Vec<String>,
+        reply: oneshot::Sender<Result<CapsReport>>,
+    },
     /// Admin: durably replace this world's requested runtime profile.
     SetExecutionProfile {
         profile: crate::world_limits::WorldExecutionProfile,
@@ -2279,6 +2351,36 @@ impl WorldActor {
         Ok(self.core.policy())
     }
 
+    /// Replace the world's capability ceiling. It takes effect now: uses and
+    /// subscriptions the ceiling excludes are refused from here on. Grants are
+    /// kept, so lifting the ceiling again restores them.
+    fn set_caps_ceiling(&mut self, ceiling: Vec<String>) -> Result<CapsReport> {
+        crate::world_caps::validate_ceiling_names(&ceiling)?;
+        let ceiling: BTreeSet<String> = ceiling.into_iter().collect();
+        self.persist(JournalEntry::CapsCeiling {
+            ceiling: ceiling.iter().cloned().collect(),
+        })?;
+        self.core.caps_ceiling = ceiling;
+        self.core.sync_ledger_ceiling();
+        self.reconcile_subscriptions();
+        self.caps_report()
+    }
+
+    /// Re-check subscriptions after an authority change. An armed one that is
+    /// no longer granted is dropped and its tick disarmed. Every refused one is
+    /// dropped too, so the next pass decides it again: a refusal that still
+    /// holds is announced again, and one the change now grants is armed.
+    fn reconcile_subscriptions(&mut self) {
+        let ledger = &self.core.ledger;
+        let refused = &self.denied_subs;
+        self.active_subs
+            .retain(|sub| !refused.contains(&sub.spec()) && ledger.is_granted(sub.cap()));
+        self.denied_subs.clear();
+        let active = &self.active_subs;
+        self.ticks
+            .retain(|ms, _| active.contains(&Subscription::Tick(*ms)));
+    }
+
     /// The capability report an admin sees.
     fn caps_report(&mut self) -> Result<CapsReport> {
         let requested = match self.program.wants() {
@@ -2289,9 +2391,10 @@ impl WorldActor {
             Err(_) => Vec::new(),
         };
         let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
+        let effective: Vec<String> = self.core.ledger.effective().into_iter().collect();
         let missing: Vec<String> = requested
             .iter()
-            .filter(|cap| !granted.contains(cap) && !granted.contains(&"*".to_owned()))
+            .filter(|cap| !effective.contains(cap))
             .cloned()
             .collect();
         Ok(CapsReport {
@@ -2303,8 +2406,14 @@ impl WorldActor {
                 "grant-on-use"
             } else {
                 "deny"
-            },
-            catalog: crate::world_caps::CATALOG.to_vec(),
+            }
+            .to_owned(),
+            catalog: crate::world_caps::CATALOG
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            ceiling: self.core.caps_ceiling.iter().cloned().collect(),
+            effective,
         })
     }
 
@@ -2581,10 +2690,13 @@ impl WorldActor {
                         granted: granted.iter().cloned().collect(),
                     })?;
                     self.core.ledger.set_granted(granted);
-                    // A grant can unblock refused subscriptions on the spot.
-                    self.denied_subs.clear();
+                    self.reconcile_subscriptions();
                     self.caps_report()
                 })();
+                let _ = reply.send(result);
+            }
+            WorldCommand::SetCapsCeiling { ceiling, reply } => {
+                let result = self.set_caps_ceiling(ceiling);
                 let _ = reply.send(result);
             }
             WorldCommand::SetExecutionProfile { profile, reply } => {
@@ -2805,6 +2917,24 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped caps response")?
+    }
+
+    /// Replace this world's capability ceiling. It applies immediately to new
+    /// uses and active subscriptions; it does not rewrite the grants.
+    ///
+    /// # Errors
+    ///
+    /// Fails on `*`, on unknown names, or on world storage failure.
+    pub async fn set_caps_ceiling(&self, ceiling: Vec<String>) -> Result<CapsReport> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetCapsCeiling { ceiling, reply })
+            .await
+            .ok()
+            .context("world actor is closed")?;
+        response
+            .await
+            .context("world actor dropped caps ceiling response")?
     }
 
     /// Persist this world's requested resource profile. The current program
@@ -3991,6 +4121,236 @@ mod tests {
         world.input(token, b"3".to_vec()).await.unwrap();
         let usage = world.caps_report().await.unwrap().usage["chat.say"];
         assert_eq!((usage.allowed, usage.denied), (1, 1));
+        world.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn a_caps_ceiling_replays_from_the_journal() {
+        let restored = WorldCore::restore(
+            "ceil",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "ceil".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                JournalEntry::CapsGranted {
+                    granted: vec!["time.now".to_owned(), "chat.say".to_owned()],
+                },
+                JournalEntry::CapsCeiling {
+                    ceiling: vec!["time.now".to_owned()],
+                },
+            ],
+        )
+        .unwrap();
+        assert!(restored.core.ledger.is_granted("time.now"));
+        assert!(!restored.core.ledger.is_granted("chat.say"));
+        assert!(
+            restored.core.ledger.granted().contains("chat.say"),
+            "the grant is kept"
+        );
+
+        let refused = WorldCore::restore(
+            "ceil",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "ceil".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                JournalEntry::CapsCeiling {
+                    ceiling: vec!["*".to_owned()],
+                },
+            ],
+        );
+        assert!(refused.is_err(), "a journaled ceiling may not use `*`");
+    }
+
+    #[test]
+    fn a_caps_ceiling_survives_checkpoint_compaction_and_restore() {
+        let mut core = world(8);
+        core.caps_ceiling = BTreeSet::from(["time.now".to_owned()]);
+        core.sync_ledger_ceiling();
+        core.ledger
+            .set_granted(BTreeSet::from(["chat.say".to_owned()]));
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::Checkpoint { caps_ceiling: Some(ceiling), .. }
+                if ceiling == &vec!["time.now".to_owned()]
+        )));
+        // The entry is what makes an older binary fail loudly on this journal.
+        assert!(entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::CapsCeiling { ceiling } if ceiling == &vec!["time.now".to_owned()]
+        )));
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.ledger.allowed(),
+            &BTreeSet::from(["time.now".to_owned()])
+        );
+        assert!(!restored.core.ledger.is_granted("chat.say"));
+    }
+
+    #[test]
+    fn a_default_ceiling_is_not_written_and_old_journals_allow_the_whole_catalog() {
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(entries.iter().all(|entry| !matches!(
+            entry,
+            JournalEntry::Checkpoint {
+                caps_ceiling: Some(_),
+                ..
+            }
+        )));
+        let old = serde_json::json!({
+            "entry": "checkpoint",
+            "sequence": 0,
+            "module_hash": "h",
+            "seed": 1,
+            "snapshot": "s",
+            "events": []
+        });
+        let restored = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "test-world".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                serde_json::from_value(old).unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            restored.core.ledger.allowed(),
+            &crate::world_caps::catalog_names()
+        );
+    }
+
+    #[test]
+    fn the_server_ceiling_is_runtime_config_and_bounds_a_restored_grant() {
+        let entries = [
+            JournalEntry::Created {
+                world_id: "server".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::CapsGranted {
+                granted: vec!["time.now".to_owned(), "chat.say".to_owned()],
+            },
+        ];
+        let lower = WorldLimits {
+            server_caps: BTreeSet::from(["time.now".to_owned()]),
+            ..WorldLimits::default()
+        };
+        let restored = WorldCore::restore("server", lower, entries.clone()).unwrap();
+        assert!(restored.core.ledger.is_granted("time.now"));
+        assert!(!restored.core.ledger.is_granted("chat.say"));
+        assert!(restored.core.ledger.granted().contains("chat.say"));
+
+        // Nothing about the server ceiling was journaled, so the default
+        // server restores the grant.
+        let restored = WorldCore::restore("server", WorldLimits::default(), entries).unwrap();
+        assert!(restored.core.ledger.is_granted("chat.say"));
+    }
+
+    #[test]
+    fn a_server_ceiling_naming_a_wildcard_is_refused() {
+        let limits = WorldLimits {
+            server_caps: BTreeSet::from(["*".to_owned()]),
+            ..WorldLimits::default()
+        };
+        assert!(WorldCore::new("w", limits).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_ceiling_change_denies_a_use_that_a_prior_grant_allowed() {
+        let core = WorldCore::new("ceiling", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        world
+            .update_caps(vec!["chat.say".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        world.input(token.clone(), b"3".to_vec()).await.unwrap();
+        let usage = world.caps_report().await.unwrap().usage["chat.say"];
+        assert_eq!((usage.allowed, usage.denied), (1, 0));
+
+        let report = world
+            .set_caps_ceiling(vec!["time.now".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(report.ceiling, vec!["time.now".to_owned()]);
+        assert!(
+            report.granted.contains(&"chat.say".to_owned()),
+            "the grant is kept"
+        );
+        assert!(!report.effective.contains(&"chat.say".to_owned()));
+        world.input(token, b"3".to_vec()).await.unwrap();
+        let usage = world.caps_report().await.unwrap().usage["chat.say"];
+        assert_eq!((usage.allowed, usage.denied), (1, 1));
+
+        assert!(world.set_caps_ceiling(vec!["*".to_owned()]).await.is_err());
+        assert!(
+            world
+                .set_caps_ceiling(vec!["time.nwo".to_owned()])
+                .await
+                .is_err()
+        );
+        world.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn lowering_the_ceiling_stops_an_active_subscription_and_reports_it_refused() {
+        let core = WorldCore::new("ceiling-ticks", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        world
+            .update_caps(vec!["time.tick".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        world.presence(1, true).await;
+        let mut views = world.watch_views();
+        // Script 4 subscribes to `time.tick:20`, which arms it while someone is present.
+        world.input(token, b"4".to_vec()).await.unwrap();
+        views.borrow_and_update();
+        tokio::time::timeout(std::time::Duration::from_secs(2), views.changed())
+            .await
+            .expect("no tick arrived while the ceiling allowed it")
+            .unwrap();
+
+        world
+            .set_caps_ceiling(vec!["time.now".to_owned()])
+            .await
+            .unwrap();
+        let report = world.caps_report().await.unwrap();
+        assert!(
+            report
+                .usage
+                .get("time.tick")
+                .is_some_and(|usage| usage.denied > 0),
+            "{report:?}"
+        );
+        assert!(!report.effective.contains(&"time.tick".to_owned()));
+        // The refusal reached the program before this report; no tick follows.
+        views.borrow_and_update();
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert!(
+            views.has_changed().is_ok_and(|changed| !changed),
+            "ticks kept firing after the ceiling dropped them"
+        );
+
+        // Lifting the ceiling admits the refused subscription again.
+        let full: Vec<String> = crate::world_caps::catalog_names().into_iter().collect();
+        world.set_caps_ceiling(full).await.unwrap();
+        views.borrow_and_update();
+        tokio::time::timeout(std::time::Duration::from_secs(2), views.changed())
+            .await
+            .expect("ticks did not resume once the ceiling allowed them")
+            .unwrap();
         world.shutdown().await.unwrap();
     }
 

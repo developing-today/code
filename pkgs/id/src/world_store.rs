@@ -558,6 +558,79 @@ mod tests {
 
     #[cfg(feature = "sandbox")]
     #[tokio::test]
+    async fn a_lower_server_ceiling_refuses_a_restored_grant_and_the_default_keeps_it() {
+        // Lounge subscribes to `time.tick` in every `wants`, so the restored
+        // instance decides that grant on the real restore path.
+        async fn open_lounge(dir: &Path, limits: WorldLimits) -> WorldService {
+            let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+            let (service, _) = open_world(
+                dir,
+                "ceilinged",
+                limits,
+                RuntimeLimits::default(),
+                move |handle| {
+                    WorldService::new(handle, Some("admin".to_owned())).with_blob_store(blobs)
+                },
+            )
+            .await
+            .unwrap();
+            service
+        }
+        let wasm = include_bytes!("../examples/lounge/lounge.wasm").to_vec();
+        let hash = module_hash(&wasm);
+        let dir = TempDir::new().unwrap();
+
+        let service = open_lounge(dir.path(), WorldLimits::default()).await;
+        service
+            .install_wasm(Some("admin"), wasm, 1, &hash)
+            .await
+            .unwrap();
+        service
+            .world()
+            .update_caps(vec!["time.tick".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        service.world().shutdown().await.unwrap();
+
+        let without_tick: std::collections::BTreeSet<String> = crate::world_caps::catalog_names()
+            .into_iter()
+            .filter(|name| name != "time.tick")
+            .collect();
+        let lower = WorldLimits {
+            server_caps: without_tick,
+            ..WorldLimits::default()
+        };
+        let service = open_lounge(dir.path(), lower).await;
+        let report = service.world().caps_report().await.unwrap();
+        assert!(
+            report.granted.contains(&"time.tick".to_owned()),
+            "the grant is kept"
+        );
+        assert!(!report.effective.contains(&"time.tick".to_owned()));
+        assert!(
+            report
+                .usage
+                .get("time.tick")
+                .is_some_and(|usage| usage.denied > 0),
+            "{report:?}"
+        );
+        service.world().shutdown().await.unwrap();
+
+        let service = open_lounge(dir.path(), WorldLimits::default()).await;
+        let report = service.world().caps_report().await.unwrap();
+        assert!(report.effective.contains(&"time.tick".to_owned()));
+        assert!(
+            report
+                .usage
+                .get("time.tick")
+                .is_some_and(|usage| usage.allowed > 0 && usage.denied == 0),
+            "{report:?}"
+        );
+        service.world().shutdown().await.unwrap();
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
     async fn restored_program_uses_the_current_server_runtime_ceiling() {
         use iroh_blobs::store::mem::MemStore;
 
@@ -973,7 +1046,7 @@ mod tests {
         let (svc, _) = open_world(
             dir.path(),
             "lobby",
-            limits,
+            limits.clone(),
             RuntimeLimits::default(),
             make(blobs.clone()),
         )
@@ -1176,6 +1249,7 @@ mod tests {
             seed: 1,
             provenance: None,
             execution_profile: None,
+            caps_ceiling: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
         });

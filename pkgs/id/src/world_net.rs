@@ -367,6 +367,38 @@ impl WorldClient {
         Ok(reply["report"].clone())
     }
 
+    /// Replace the world's capability ceiling. The reply carries the report and
+    /// a notice that the ceiling applies immediately.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or names are refused.
+    pub async fn set_caps_ceiling(
+        &mut self,
+        admin_token: &str,
+        ceiling: &[String],
+    ) -> Result<serde_json::Value> {
+        self.send_json(&serde_json::json!({
+            "type": "set_caps_ceiling",
+            "admin_token": admin_token,
+            "ceiling": ceiling,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "caps_ceiling" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused the capability ceiling change")
+            );
+        }
+        Ok(reply)
+    }
+
     /// Persist the world's requested resource profile. The response includes
     /// an explicit notice that it applies only on the next install or restart.
     ///
@@ -1041,6 +1073,60 @@ mod tests {
 
         client_ep.close().await;
         host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn caps_ceiling_is_admin_only_over_iroh_and_applies_at_once() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+
+        let mut outsider = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        assert!(
+            outsider
+                .set_caps_ceiling("wrong", &["time.now".to_owned()])
+                .await
+                .is_err()
+        );
+
+        let mut admin = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let reply = admin
+            .set_caps_ceiling("admin", &["time.now".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(reply["type"], "caps_ceiling");
+        assert_eq!(reply["report"]["ceiling"], serde_json::json!(["time.now"]));
+        assert!(
+            reply["message"]
+                .as_str()
+                .unwrap()
+                .contains("applies immediately")
+        );
+        assert_eq!(
+            host.world.caps_report().await.unwrap().ceiling,
+            vec!["time.now".to_owned()]
+        );
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn a_caps_report_from_before_ceilings_still_deserializes() {
+        let old = serde_json::json!({
+            "granted": ["time.now"],
+            "requested": ["time.now"],
+            "missing": [],
+            "usage": {},
+            "policy": "deny",
+            "catalog": ["time.now"],
+        });
+        let report: crate::world_caps::CapsReport = serde_json::from_value(old).unwrap();
+        assert_eq!(report.granted, vec!["time.now".to_owned()]);
+        assert!(report.ceiling.is_empty() && report.effective.is_empty());
     }
 
     #[cfg(feature = "sandbox")]
