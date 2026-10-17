@@ -804,6 +804,87 @@ restore = |text| match U64.from_str(text) {
     }
 
     #[tokio::test]
+    async fn text_helpers_trim_case_split_and_prefix() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = r#"app [program] { pf: platform "../roc-world/platform.roc" }
+
+import pf.RocText
+
+Model : { n : U64 }
+
+program = { init, update, view, layout, records, wants, snapshot, restore }
+
+init : U64 -> Model
+init = |seed| { n: seed }
+
+update : Model, U64, Str -> Model
+update = |model, _pid, _ev| model
+
+view : Model -> Str
+view = |model| {
+    trimmed = RocText.trim("  AbC\t\n")
+    lowered = RocText.lowercase(trimmed)
+    prefix = if model.n > 0 "hello" else "nope"
+    prefixed = RocText.starts_with("hello world", prefix)
+    prefixed_text = if prefixed "yes" else "no"
+    dropped = RocText.drop_prefix("cmd:go", "cmd:")
+    missing = RocText.drop_prefix("keep", "cmd:")
+    joined = RocText.join_lines(RocText.lines("a\nb\n"))
+    needle = if model.n > 0 "lo wo" else "zz"
+    found = RocText.contains("hello world", needle)
+    found_text = if found "yes" else "no"
+    "t=${trimmed}|l=${lowered}|p=${prefixed_text}|d=${dropped}|m=${missing}|j=${joined}|c=${found_text}"
+}
+
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
+records : Model -> Str
+records = |_model| "{}"
+
+wants : Model -> Str
+wants = |_model| "{}"
+
+snapshot : Model -> Str
+snapshot = |model| model.n.to_str()
+
+restore : Str -> Model
+restore = |text| match U64.from_str(text) {
+    Ok(n) => { n: n }
+    Err(_) => { n: 0 }
+}
+"#;
+        let (wasm, _diagnostics, _provenance) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app.to_owned())],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            &["RocText".to_owned()],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        let view = String::from_utf8(world.view().unwrap()).unwrap();
+        assert_eq!(view, "t=AbC|l=abc|p=yes|d=go|m=keep|j=a\nb\n|c=yes");
+    }
+
+    #[tokio::test]
     async fn the_counter_source_compiles_installs_and_runs() {
         let Ok(roc_bin) = which_roc() else {
             eprintln!("skipping: no roc binary on PATH");

@@ -64,7 +64,7 @@ exact. A request to a capability the world has not granted is answered with
 `cap_denied` — never silently. See the design doc for the catalog
 (`time.now`, `time.tick`, `random.u64`, `players`, `players.list`,
 `chat.say`, `chat.history`, `records.read`, `world.info`, and the platform modules `Key`,
-`Screen`, `RocJson`, `RocGrid`, `RocCap`).
+`Screen`, `RocJson`, `RocGrid`, `RocCap`, `RocText`).
 
 The platform also exposes the dependency-free `RocJson.roc` module to apps as
 `pf.RocJson`. Its `decode`/`encode`, object `get`, and type-specific `as_*` accessors let
@@ -94,7 +94,11 @@ rebuilds a session from a snapshot. `history_lines` reads the rows of a
 
 `Screen.put_grid` draws a `RocGrid` at a position through a glyph function with
 one style for the whole grid, so maps and single-colour boards need no manual
-row assembly.
+row assembly. `Screen.fill` and `Screen.rule` cover rect fills and separators.
+
+`RocText.roc` is exposed as `pf.RocText`: total, byte-level text helpers
+(`trim`, `lowercase`, `starts_with`, `drop_prefix`, `contains`, `lines`,
+`join_lines`) for the operations the pinned Roc nightly builds reliably.
 
 One nightly caveat: with
 nightly-2026-10-04-130536d's wasm backend, `List.get` past the second

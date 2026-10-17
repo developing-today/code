@@ -67,6 +67,7 @@ pub const CATALOG: &[&str] = &[
     "RocJson",
     "RocGrid",
     "RocCap",
+    "RocText",
 ];
 
 /// Most chat lines one `chat.history` request may return.
@@ -662,6 +663,7 @@ mod tests {
             "RocJson".to_owned(),
             "RocGrid".to_owned(),
             "RocCap".to_owned(),
+            "RocText".to_owned(),
         ])
         .unwrap();
         let error = validate_grant_names(&["time.nwo".to_owned()]).unwrap_err();

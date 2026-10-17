@@ -30,7 +30,7 @@ The immediate slice (P9.1) is a backwards-compatible, validated cell-grid presen
 - **P9.4c in this worktree:** the platform exposes `pf.RocGrid`, a bounds-checked row-major byte grid (`new`, `get`, `set`, `count`, `neighbors4`, `row`) with a checked-in `examples/roc-grid` example and a sandbox test. Record: [RocGrid](../../doc/2026-10-16T15-00-00Z_feature_roc_grid/2026-10-16T15-00-00Z_feature_roc_grid.md).
 - **P9.4d in this worktree:** the platform exposes `pf.RocCap`, shared request bookkeeping for the capability protocol (`issue`, `attach`, `requests`, `from_pending`, the request builders, `answered`, `done`), verified by a compile-and-run test. Record: [RocCap](../../doc/2026-10-16T16-00-00Z_feature_roc_cap/2026-10-16T16-00-00Z_feature_roc_cap.md).
 - **P9.8 complete in this worktree:** guest-aware reflow. The platform requires `layout : model, U64, U64 -> Str`; sessions with a viewport render through `plaza_layout`, without journaling or sequence changes, and cropping remains the fallback. `roc-screen` widens on viewports of at least 30 columns. Record: [guest-aware reflow](../../doc/2026-10-16T19-00-00Z_feature_guest_reflow/2026-10-16T19-00-00Z_feature_guest_reflow.md).
-- **P9.11 partially complete in this worktree:** `Screen.fill` and `Screen.rule` cover rect fills and separators, verified by a compile-and-run test; `RocText` is deferred until a Roc nightly bump because string APIs are the known caveat. Record: [screen widgets](../../doc/2026-10-16T19-30-00Z_feature_screen_widgets/2026-10-16T19-30-00Z_feature_screen_widgets.md).
+- **P9.11 complete in this worktree:** `Screen.fill`/`Screen.rule` cover rect fills and separators, and `pf.RocText` ships proven text helpers (`trim`, `lowercase`, `starts_with`, `drop_prefix`, `contains`, `lines`, `join_lines`), both verified by compile-and-run tests. `RocText` is a grantable module name. Record: [screen widgets and text](../../doc/2026-10-16T19-30-00Z_feature_screen_widgets/2026-10-16T19-30-00Z_feature_screen_widgets.md).
 - **P9.9 complete in this worktree:** `records.read` returns byte-bounded, prefix-scoped pages of the world's published records with an exclusive `after` cursor, requires only the `join` scope, and is exposed as `RocCap.records_request`/`records_page`/`next_after`. Record: [records readback](../../doc/2026-10-16T18-00-00Z_feature_records_readback/2026-10-16T18-00-00Z_feature_records_readback.md).
 - **P9.10 complete in this worktree:** `id world new` scaffolds a buildable Roc app (main.roc, executable build.sh, README), `id world stats` prints module info, capability report, and execution profile as one JSON object, and `id world logs` tails recent event frames for a bounded deadline. Record: [authoring CLI](../../doc/2026-10-16T18-30-00Z_feature_world_authoring_cli/2026-10-16T18-30-00Z_feature_world_authoring_cli.md).
 - **P9.7 complete in this worktree:** `chat.history` returns the newest bounded chat lines (default 16, clamp 64, oldest-first) from the retained-events buffer, requires the CHAT scope, and is exposed to apps as `RocCap.history_request`/`history_lines`. The platform modules `RocJson`, `RocGrid`, and `RocCap` are now grantable catalog names. `examples/roc-chat` is a checked-in chat client built on it, with a sandbox end-to-end test. Record: [chat history](../../doc/2026-10-16T17-00-00Z_feature_chat_history/2026-10-16T17-00-00Z_feature_chat_history.md).
@@ -68,10 +68,9 @@ each one is useful alone and does not depend on a later one.
 - **P9.10 App scaffolding and inspection.** (Done — see status above.)
   `id world new` scaffolds a Roc app; `id world stats` reports module, caps,
   and profile state; `id world logs` tails recent events for a deadline.
-- **P9.11 Library growth: text and widgets.** (Widgets partly done — see
-  status above: `Screen.fill`/`rule`.) A tested `RocText` module (safe
-  split/join/trim/case, bounded) remains deferred until a Roc nightly bump, as
-  do list/table/meter widgets.
+- **P9.11 Library growth: text and widgets.** (Done — see status above:
+  `Screen.fill`/`rule` and `pf.RocText`.) List/table/meter widgets remain a
+  follow-up once two apps need the same one.
 
 ## Phase 10 sketch: worlds as places
 
