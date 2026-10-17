@@ -666,39 +666,6 @@ echo "Built {name}.wasm (import-free Roc world module)"
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::scaffold_world;
-
-    #[test]
-    fn scaffolding_writes_a_buildable_app_skeleton() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("my-world");
-        scaffold_world(&target, "my-world").unwrap();
-        let main = std::fs::read_to_string(target.join("main.roc")).unwrap();
-        assert!(main.contains("app [program]"));
-        assert!(
-            main.contains(
-                "program = { init, update, view, layout, records, wants, snapshot, restore }"
-            ),
-            "{main}"
-        );
-        assert!(
-            main.contains("layout = |model, _width, _height| view(model)"),
-            "{main}"
-        );
-        assert!(main.contains("Screen.render_json"), "{main}");
-        let build = std::fs::read_to_string(target.join("build.sh")).unwrap();
-        assert!(build.contains("my-world.wasm"), "{build}");
-        assert!(target.join("README.md").is_file());
-
-        // A non-empty directory and a path-like name are refused.
-        assert!(scaffold_world(&target, "my-world").is_err());
-        let bad = dir.path().join("bad");
-        assert!(scaffold_world(&bad, "../escape").is_err());
-    }
-}
-
 /// An in-memory iroh-docs replica: enough to sync and verify records
 /// without writing anything to disk.
 struct Replica {
@@ -814,4 +781,38 @@ async fn pump(client: WorldClient) -> Result<()> {
     conn.close(0_u32.into(), b"done");
     reader.abort();
     result
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::scaffold_world;
+
+    #[test]
+    fn scaffolding_writes_a_buildable_app_skeleton() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("my-world");
+        scaffold_world(&target, "my-world").unwrap();
+        let main = std::fs::read_to_string(target.join("main.roc")).unwrap();
+        assert!(main.contains("app [program]"));
+        assert!(
+            main.contains(
+                "program = { init, update, view, layout, records, wants, snapshot, restore }"
+            ),
+            "{main}"
+        );
+        assert!(
+            main.contains("layout = |model, _width, _height| view(model)"),
+            "{main}"
+        );
+        assert!(main.contains("Screen.render_json"), "{main}");
+        let build = std::fs::read_to_string(target.join("build.sh")).unwrap();
+        assert!(build.contains("my-world.wasm"), "{build}");
+        assert!(target.join("README.md").is_file());
+
+        // A non-empty directory and a path-like name are refused.
+        assert!(scaffold_world(&target, "my-world").is_err());
+        let bad = dir.path().join("bad");
+        assert!(scaffold_world(&bad, "../escape").is_err());
+    }
 }
