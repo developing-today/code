@@ -15,7 +15,7 @@ Two concrete steps toward the Phase 10 direction:
 ## Decisions
 
 - **Roles are presets over existing scopes.** `WorldScopes::from_role` maps:
-  - `spectator` → `join` (read events, records, and screens; no chat or input)
+  - `spectator` → `join` (reads the event stream, records, and screens, including chat lines; sends no chat or input)
   - `player` → `join` + `input`
   - `guest` → `join` + `chat` + `input` (the default, unchanged)
   - `delegator` → `guest` + `delegate` (may mint narrower capabilities)
@@ -39,6 +39,25 @@ Two concrete steps toward the Phase 10 direction:
 "open", "default"}]}`. The tab-separated form is unchanged when the flag is
   absent.
 
+## Known gap: join-only participants can read chat
+
+`events_after` and the snapshot return every retained event, chat lines
+included, to any participant with `join`. A spectator therefore reads chat
+through the event stream. The `chat` scope gates sending and `chat.history`
+only, so refusing `chat.history` to a spectator withholds nothing the event
+stream does not already send. The gap predates roles; the presets exposed it.
+The earlier claim that spectators cannot read chat history was wrong.
+
+Decision needed, one of:
+
+- **(a) Redact.** Withhold chat lines from participants without `chat` in
+  `events_after`, the snapshot, and the live stream. This changes the event
+  protocol and leaves sequence gaps that clients must tolerate.
+- **(b) Declare read-all.** Treat `join` as observing everything the world
+  publishes, and gate `chat.history` on `join` so the code matches behaviour.
+
+Until one is chosen, do not describe spectators as unable to read chat.
+
 ## Acceptance
 
 - `role_presets_grant_and_withhold_the_expected_effects` checks each preset's
@@ -55,6 +74,7 @@ Two concrete steps toward the Phase 10 direction:
 
 - Builder/moderator roles with their own authority model (module install,
   removal) and journaled grants.
+- Decide chat visibility for join-only participants (see Known gap).
 - A world directory feed for other nodes: names, presence counts, and
   open/closed, sharing one serializer with `id world list --json`.
 - Showing a participant's role in `players.list` or `id world stats` once a
