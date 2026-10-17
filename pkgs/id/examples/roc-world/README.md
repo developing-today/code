@@ -59,12 +59,20 @@ program holds and the one-shot requests it has outstanding
 The host answers each new request with a host event (participant 0) carrying
 `{"cap":"result","id":"r1","ok":true,"value":...}` or `"ok":false` with an
 error code, and delivers subscription events (`time.tick`, `players`) as host
-events too. Every host event is journaled before delivery, so replay is
-exact. A request to a capability the world has not granted is answered with
-`cap_denied` — never silently. See the design doc for the catalog
+events too. Every host event is journaled once the program accepts it, so
+replay is exact. A request to a capability the world has not granted is
+answered with `cap_denied` — never silently. See the design doc for the catalog
 (`time.now`, `time.tick`, `random.u64`, `players`, `players.list`,
-`chat.say`, `chat.history`, `records.read`, `world.info`, and the platform modules `Key`,
-`Screen`, `RocJson`, `RocGrid`, `RocCap`, `RocText`).
+`chat.say`, `chat.history`, `records.read`, `schedule.at`, `schedule.cancel`,
+`world.info`, and the platform modules `Key`, `Screen`, `RocJson`, `RocGrid`,
+`RocCap`, `RocText`).
+
+`schedule.at` asks for one fire of a named schedule at a unix-millisecond time
+(a time already past fires on the next wakeup; one more than 30 days ahead is refused).
+In a durable world, pending schedules survive a restart, and they fire even when
+nobody is connected. A fire arrives as `{"cap":"schedule","event":"fired","id":...}`, with
+`"late":true` when the world reopened after the time had passed.
+`schedule.cancel` drops a pending schedule and reports whether one was dropped.
 
 The platform also exposes the dependency-free `RocJson.roc` module to apps as
 `pf.RocJson`. Its `decode`/`encode`, object `get`, and type-specific `as_*` accessors let
@@ -87,7 +95,7 @@ index arithmetic per app. `examples/roc-grid` is the checked-in example.
 protocol. `issue` reserves `r0`, `r1`, … ids and records each one's capability;
 `attach` stores the request document so `requests` can re-announce it in
 `wants` after replay; `chat_request`, `now_request`, `players_request`,
-`world_request`, `history_request`, and `records_request` build the documents; `answered` routes a
+`world_request`, `history_request`, `records_request`, `schedule_at_request`, and `schedule_cancel_request` build the documents; `answered` routes a
 result back to the capability that asked; `done` retires it; and `from_pending`
 rebuilds a session from a snapshot. `history_lines` reads the rows of a
 `chat.history` result. Apps stop re-deriving id counters and pending lists.

@@ -3,8 +3,8 @@
 //! A program stays a pure function. What it needs from the server is **data
 //! it returns** (`wants`, a pure projection of its model) and **events it
 //! receives** (delivered through `update` with participant id `0`, every one
-//! journaled before delivery, so replay feeds the program exactly what it saw
-//! the first time).
+//! journaled once the program accepts it, so replay feeds the program exactly
+//! what it saw the first time).
 //!
 //! ```json
 //! {"v":1,
@@ -61,6 +61,8 @@ pub const CATALOG: &[&str] = &[
     "chat.say",
     "chat.history",
     "records.read",
+    "schedule.at",
+    "schedule.cancel",
     "world.info",
     "Key",
     "Screen",
@@ -72,6 +74,35 @@ pub const CATALOG: &[&str] = &[
 
 /// Most chat lines one `chat.history` request may return.
 pub const MAX_CHAT_HISTORY_LINES: usize = 64;
+
+/// Most schedules one world may hold pending at once.
+pub const MAX_PENDING_SCHEDULES: usize = 64;
+/// Longest schedule id, in bytes. Ids are printable ASCII.
+pub const MAX_SCHEDULE_ID_BYTES: usize = 64;
+/// How far past the host clock a schedule may be set, in days.
+pub const MAX_SCHEDULE_HORIZON_DAYS: u64 = 30;
+/// How far past the host clock a schedule may be set, in milliseconds.
+pub const MAX_SCHEDULE_HORIZON_MS: u64 = MAX_SCHEDULE_HORIZON_DAYS * 24 * 60 * 60 * 1000;
+/// Most schedules delivered in one wakeup. Any left due fire on the next.
+pub const MAX_SCHEDULE_FIRES_PER_WAKEUP: usize = 64;
+
+/// Check a schedule id: 1 to [`MAX_SCHEDULE_ID_BYTES`] bytes, all printable
+/// ASCII (space through `~`), so no control characters reach the journal.
+///
+/// # Errors
+///
+/// Names the rule the id breaks.
+pub fn validate_schedule_id(id: &str) -> Result<()> {
+    ensure!(
+        !id.is_empty() && id.len() <= MAX_SCHEDULE_ID_BYTES,
+        "schedule id must be 1 to {MAX_SCHEDULE_ID_BYTES} bytes"
+    );
+    ensure!(
+        id.bytes().all(|byte| (0x20..=0x7e).contains(&byte)),
+        "schedule id must be printable ASCII"
+    );
+    Ok(())
+}
 
 /// Whether `name` is a capability the server can provide.
 #[must_use]
@@ -660,6 +691,8 @@ mod tests {
         validate_grant_names(&[
             "chat.history".to_owned(),
             "records.read".to_owned(),
+            "schedule.at".to_owned(),
+            "schedule.cancel".to_owned(),
             "RocJson".to_owned(),
             "RocGrid".to_owned(),
             "RocCap".to_owned(),
@@ -668,6 +701,24 @@ mod tests {
         .unwrap();
         let error = validate_grant_names(&["time.nwo".to_owned()]).unwrap_err();
         assert!(error.to_string().contains("time.nwo"), "{error}");
+    }
+
+    #[test]
+    fn schedule_ids_are_bounded_printable_ascii() {
+        validate_schedule_id("a").unwrap();
+        validate_schedule_id("round 3: start!").unwrap();
+        validate_schedule_id(&"x".repeat(MAX_SCHEDULE_ID_BYTES)).unwrap();
+        let long = "x".repeat(MAX_SCHEDULE_ID_BYTES + 1);
+        for bad in [
+            "",
+            "a\nb",
+            "tab\there",
+            "del\u{7f}",
+            "caf\u{e9}",
+            long.as_str(),
+        ] {
+            assert!(validate_schedule_id(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
