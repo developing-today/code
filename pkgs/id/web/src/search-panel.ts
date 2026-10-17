@@ -14,8 +14,8 @@ import { keymap } from "prosemirror-keymap";
 import {
   findNext,
   findPrev,
-  getSearchState,
   getMatchHighlights,
+  getSearchState,
   replaceAll,
   replaceNext,
   SearchQuery,
