@@ -29,6 +29,7 @@ The immediate slice (P9.1) is a backwards-compatible, validated cell-grid presen
 - **P9.4b complete in this worktree:** migrated `territory` to `RocJson`, updated `roc-screen` with checked-in artifacts, fixed `lounge` participant decoding, added sandbox screen integration test. Record: [structured apps migration](../../doc/2026-10-16T13-00-00Z_feature_world_apps_structured_migration/2026-10-16T13-00-00Z_feature_world_apps_structured_migration.md).
 - **P9.4c in this worktree:** the platform exposes `pf.RocGrid`, a bounds-checked row-major byte grid (`new`, `get`, `set`, `count`, `neighbors4`, `row`) with a checked-in `examples/roc-grid` example and a sandbox test. Record: [RocGrid](../../doc/2026-10-16T15-00-00Z_feature_roc_grid/2026-10-16T15-00-00Z_feature_roc_grid.md).
 - **P9.4d in this worktree:** the platform exposes `pf.RocCap`, shared request bookkeeping for the capability protocol (`issue`, `attach`, `requests`, `from_pending`, the request builders, `answered`, `done`), verified by a compile-and-run test. Record: [RocCap](../../doc/2026-10-16T16-00-00Z_feature_roc_cap/2026-10-16T16-00-00Z_feature_roc_cap.md).
+- **P9.7 complete in this worktree:** `chat.history` returns the newest bounded chat lines (default 16, clamp 64, oldest-first) from the retained-events buffer, requires the CHAT scope, and is exposed to apps as `RocCap.history_request`/`history_lines`. The platform modules `RocJson`, `RocGrid`, and `RocCap` are now grantable catalog names. Record: [chat history](../../doc/2026-10-16T17-00-00Z_feature_chat_history/2026-10-16T17-00-00Z_feature_chat_history.md).
 - **P9.6 complete in this worktree:** library consolidation. `territory` keeps its board in `pf.RocGrid` (no app-local index arithmetic), `lounge` drives its request lifecycle through `pf.RocCap`, `Screen.put_grid` draws a grid through a glyph function, and the grid example round-trips through `RocGrid.bytes`/`from_cells`. Record: [RocGrid](../../doc/2026-10-16T15-00-00Z_feature_roc_grid/2026-10-16T15-00-00Z_feature_roc_grid.md), [RocCap](../../doc/2026-10-16T16-00-00Z_feature_roc_cap/2026-10-16T16-00-00Z_feature_roc_cap.md).
 - **P9.5 in progress in this worktree:** `territory` renders a portable styled screen (per-seat colours, inverted cursor, scoreboard) at the default fuel budget; `Screen.put_row` batches row draws; the shared host allocator clamps non power-of-two alignments instead of trapping. Record: [screen rendering and alignment](../../doc/2026-10-16T14-00-00Z_feature_screen_render_alignment/2026-10-16T14-00-00Z_feature_screen_render_alignment.md). `ScreenSurface::from_cells` remains the validated Rust buffer-capture interface; Ratatui stays optional and app-owned.
 
@@ -45,12 +46,13 @@ each one is useful alone and does not depend on a later one.
   arithmetic; `lounge` moves its id counter and pending list to `pf.RocCap`.
   Acceptance: no example carries its own `cell_index`, id counter, or pending
   matcher; all checked-in tests keep passing.
-- **P9.7 Server-observed chat history.** Room chat exists but a world program
-  cannot read it, so communication apps cannot show logs, search, or reply in
-  context. Add a `chat.history` capability request (bounded count, oldest-first
-  window, maybe a `since` cursor) served from the journal, with grant checks and
-  replay-safe results. Acceptance: a bounded, granted, journal-derived window
-  with tests that an ungranted request is refused and counts against usage.
+- **P9.7 Server-observed chat history.** (Done — see status above.) Room chat
+  exists but a world program cannot read it, so communication apps cannot show
+  logs, search, or reply in context. Add a `chat.history` capability request
+  (bounded count, oldest-first window, maybe a `since` cursor) served from the
+  journal, with grant checks and replay-safe results. Acceptance: a bounded,
+  granted, journal-derived window with tests that an ungranted request is
+  refused and counts against usage.
 - **P9.8 Guest-aware reflow.** `view` renders one fixed size and every
   connection crops it. Add an opt-in layout path: the host passes the
   connection's viewport to the program (for example a `layout` export or a

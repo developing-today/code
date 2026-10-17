@@ -58,7 +58,8 @@ events too. Every host event is journaled before delivery, so replay is
 exact. A request to a capability the world has not granted is answered with
 `cap_denied` — never silently. See the design doc for the catalog
 (`time.now`, `time.tick`, `random.u64`, `players`, `players.list`,
-`chat.say`, `world.info`), grant policies and bounds.
+`chat.say`, `chat.history`, `world.info`, and the platform modules `Key`,
+`Screen`, `RocJson`, `RocGrid`, `RocCap`).
 
 The platform also exposes the dependency-free `RocJson.roc` module to apps as
 `pf.RocJson`. Its `decode`/`encode`, object `get`, and type-specific `as_*` accessors let
@@ -80,10 +81,11 @@ index arithmetic per app. `examples/roc-grid` is the checked-in example.
 `RocCap.roc` is exposed as `pf.RocCap` for the request side of the capability
 protocol. `issue` reserves `r0`, `r1`, … ids and records each one's capability;
 `attach` stores the request document so `requests` can re-announce it in
-`wants` after replay; `chat_request`, `now_request`, `players_request`, and
-`world_request` build the documents; `answered` routes a result back to the
-capability that asked; `done` retires it; and `from_pending` rebuilds a session
-from a snapshot. Apps stop re-deriving id counters and pending lists.
+`wants` after replay; `chat_request`, `now_request`, `players_request`,
+`world_request`, and `history_request` build the documents; `answered` routes a
+result back to the capability that asked; `done` retires it; and `from_pending`
+rebuilds a session from a snapshot. `history_lines` reads the rows of a
+`chat.history` result. Apps stop re-deriving id counters and pending lists.
 
 `Screen.put_grid` draws a `RocGrid` at a position through a glyph function with
 one style for the whole grid, so maps and single-colour boards need no manual

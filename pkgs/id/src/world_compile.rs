@@ -645,7 +645,10 @@ init : U64 -> Model
 init = |seed| {
 	issued = RocCap.issue(RocCap.empty, "chat.say")
 	document = RocCap.chat_request(issued.id, seed.to_str())
-	session = RocCap.attach(issued.session, issued.id, document)
+	first = RocCap.attach(issued.session, issued.id, document)
+	second = RocCap.issue(first, "chat.history")
+	history = RocCap.history_request(second.id, 5)
+	session = RocCap.attach(second.session, second.id, history)
 	encoded = match RocJson.encode(document) {
 		Ok(text) => text
 		Err(_) => ""
@@ -704,6 +707,9 @@ restore = |text| { session: RocCap.empty, request: text }
         let decoded_wants: serde_json::Value = serde_json::from_str(&wants).unwrap();
         assert_eq!(decoded_wants["requests"][0]["id"], "r0");
         assert_eq!(decoded_wants["requests"][0]["cap"], "chat.say");
+        assert_eq!(decoded_wants["requests"][1]["id"], "r1");
+        assert_eq!(decoded_wants["requests"][1]["cap"], "chat.history");
+        assert_eq!(decoded_wants["requests"][1]["args"]["count"], 5);
     }
 
     #[test]

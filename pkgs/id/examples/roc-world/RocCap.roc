@@ -104,6 +104,26 @@ RocCap := {
 			{ key: "cap", value: RocJson.String("world.info") },
 		])
 
+	## A `chat.history` request document. `count` is clamped by the server to
+	## `MAX_CHAT_HISTORY_LINES` (64).
+	history_request : Str, U64 -> RocJson
+	history_request = |id, count|
+		RocJson.Object([
+			{ key: "id", value: RocJson.String(id) },
+			{ key: "cap", value: RocJson.String("chat.history") },
+			{ key: "args", value: RocJson.Object([{ key: "count", value: RocJson.Number(count.to_str()) }]) },
+		])
+
+	## The lines of a `chat.history` result value (`{"lines":[...]}`), or `[]`.
+	history_lines : RocJson -> List(RocJson)
+	history_lines = |value| match RocJson.get(value, "lines") {
+		Ok(found) => match RocJson.as_array(found) {
+			Ok(lines) => lines
+			Err(_) => []
+		}
+		Err(_) => []
+	}
+
 	## The capability name a result `id` answers, or `""` when the id is not
 	## pending (an earlier model's retry, or somebody else's request). Use it to
 	## route the result exactly as the version that sent it would have.

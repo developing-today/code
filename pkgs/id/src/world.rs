@@ -144,7 +144,7 @@ impl WorldScopes {
     #[must_use]
     pub fn allows_effect(self, cap: &str) -> bool {
         match cap {
-            "chat.say" => self.contains(Self::CHAT),
+            "chat.say" | "chat.history" => self.contains(Self::CHAT),
             _ => self.contains(Self::JOIN),
         }
     }
@@ -571,6 +571,27 @@ fn presence_change(text: &str) -> Option<(u64, bool)> {
         _ => return None,
     };
     Some((value.get("participant")?.get("id")?.as_u64()?, joined))
+}
+
+/// The newest `count` chat lines in `events`, oldest first, each carrying its
+/// sequence, participant id, and text. The retained-events buffer is itself
+/// bounded by the world's limits, so a request can never see unbounded history.
+fn chat_history(events: &VecDeque<WorldEvent>, count: usize) -> Vec<serde_json::Value> {
+    let mut lines: Vec<serde_json::Value> = Vec::new();
+    for event in events.iter().rev() {
+        if lines.len() >= count {
+            break;
+        }
+        if let WorldEventKind::Chat(text) = &event.kind {
+            lines.push(serde_json::json!({
+                "sequence": event.sequence,
+                "participant": event.participant_id,
+                "text": text,
+            }));
+        }
+    }
+    lines.reverse();
+    lines
 }
 
 /// Most records one world may publish.
@@ -2175,6 +2196,17 @@ impl WorldActor {
                 "sequence": self.core.sequence,
             })),
             "chat.say" => self.execute_chat(&request.args),
+            "chat.history" => Ok(serde_json::json!({
+                "lines": chat_history(
+                    &self.core.events,
+                    request
+                        .args
+                        .get("count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(16)
+                        .min(crate::world_caps::MAX_CHAT_HISTORY_LINES as u64) as usize,
+                ),
+            })),
             _ => Err(CapError::Unknown),
         }
     }
@@ -3637,6 +3669,13 @@ mod tests {
                     }],
                 }),
                 4 => serde_json::json!({"subscribe": ["time.tick:20"]}),
+                5 => serde_json::json!({
+                    "requests": [{
+                        "id": id("hist"),
+                        "cap": "chat.history",
+                        "args": {"count": 5},
+                    }],
+                }),
                 _ => serde_json::json!({}),
             };
             Ok(Some(document.to_string()))
@@ -3694,6 +3733,61 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "no answer recorded");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[test]
+    fn chat_history_returns_the_newest_lines_oldest_first() {
+        let mut core = world(16);
+        for (sequence, participant, text) in
+            [(1u64, 1u64, "first"), (2, 28, "second"), (3, 1, "third")]
+        {
+            core.events.push_back(WorldEvent {
+                sequence,
+                participant_id: participant,
+                kind: WorldEventKind::Chat(text.to_owned()),
+            });
+        }
+        let newest = chat_history(&core.events, 2);
+        assert_eq!(newest.len(), 2);
+        assert_eq!(newest[0]["text"], "second");
+        assert_eq!(newest[0]["sequence"], 2);
+        assert_eq!(newest[1]["text"], "third");
+        let all = chat_history(&core.events, 10);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0]["text"], "first");
+        assert_eq!(all[2]["text"], "third");
+        assert!(chat_history(&core.events, 0).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_granted_chat_history_request_is_served_over_the_ledger() {
+        let (world, token) = caps_world_sync(false).await;
+        world
+            .update_caps(
+                vec!["chat.say".to_owned(), "chat.history".to_owned()],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        // The program says one line first, then asks for the history.
+        world.input(token.clone(), b"3".to_vec()).await.unwrap();
+        world.input(token, b"5".to_vec()).await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let report = world.caps_report().await.unwrap();
+            if report
+                .usage
+                .get("chat.history")
+                .is_some_and(|use_| use_.allowed > 0)
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no history answer recorded: {report:?}"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
@@ -4797,8 +4891,10 @@ mod tests {
         );
         assert_eq!(WorldScopes::from_names(["join", "telepathy"]), None);
         assert!(WorldScopes::GUEST.allows_effect("chat.say"));
+        assert!(WorldScopes::GUEST.allows_effect("chat.history"));
         let spectator = WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::INPUT.bits());
         assert!(!spectator.allows_effect("chat.say"));
+        assert!(!spectator.allows_effect("chat.history"));
         assert!(spectator.allows_effect("time.now"));
     }
 
