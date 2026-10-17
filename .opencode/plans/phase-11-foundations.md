@@ -32,7 +32,7 @@ This comes first, because every later task needs a signal it can believe.
 
 - **F11.1 Relay kit location (#238).** Move the deployable kit into `pkgs/id/deploy/relay/` and point the test and the design record at it, or skip `relay_ops` in Nix. Exit: `id-test`, `id-test-web`, and the `id` package build pass in Nix.
 - **F11.2 Firefox E2E isolation (#229).** Reproduce locally per spec file, then give each spec file its own `id serve --ephemeral` server and port, and restart the browser per file. Exit: two consecutive green runs on one commit, and the E2E derivation under 10 minutes.
-- **F11.3 Explain the LogSync reset (#241).** Find which side resets the connection, fix it, and delete the retry. Exit: the bulk test passes 50 consecutive runs under `--test-threads=1` and under full-suite load without a retry.
+- **F11.3 Explain the LogSync flakes (#241).** Find which side resets the connection, fix it, and delete the retry. The retry does not hold under load, and `test_an_interrupted_session_restarts_without_duplicates` flakes the same way, so cover both. Exit: both tests pass 50 consecutive runs under `--test-threads=1` and under full-suite load without a retry.
 - **F11.4 A fast lane.** Split CI into a lane that gives feedback in under 15 minutes (fmt, clippy, unit tests) and a full lane (integration, VM, E2E). Use `--keep-going` in both. Exit: median PR feedback for the fast lane under 15 minutes, measured over ten runs.
 - **F11.5 Injected time.** Introduce a `Clock` that the actor and the scheduler read, with a manual clock for tests, so schedule and tick tests stop sleeping. Exit: no `sleep` in `world.rs` tests, and the schedule tests run in under one second.
 
