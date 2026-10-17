@@ -2,7 +2,7 @@
 //!
 //! One bidirectional QUIC stream carries one session. A frame is a big-endian
 //! `u32` byte length followed by one UTF-8 JSON object of at most
-//! [`MAX_FRAME_BYTES`]; the JSON is exactly the protocol in
+//! [`crate::frames::MAX_FRAME_BYTES`]; the JSON is exactly the protocol in
 //! [`crate::world_session`], so this module only moves frames.
 //!
 //! Iroh proves *which node* connected. That is logged for operators but never
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use iroh::{
     Endpoint, EndpointAddr,
-    endpoint::{Connection, ReadExactError, RecvStream, SendStream},
+    endpoint::{Connection, RecvStream, SendStream},
     protocol::{AcceptError, ProtocolHandler},
 };
 use tokio::{
@@ -24,7 +24,7 @@ use tokio::{
 
 use crate::world_hub::WorldHub;
 use crate::world_session::{
-    Inbound, MAX_FRAME_BYTES, MAX_WORLD_MODULE_CHUNK_BYTES, SessionIo, module_hash, run_session,
+    Inbound, MAX_WORLD_MODULE_CHUNK_BYTES, SessionIo, module_hash, run_session,
 };
 
 /// ALPN for world sessions. Within version 1 frames may gain fields and
@@ -36,49 +36,10 @@ const MAX_SESSIONS_PER_CONNECTION: usize = 16;
 
 use crate::world_session::encode_hex;
 
-/// Write one frame.
-///
-/// # Errors
-///
-/// Fails if the payload exceeds [`MAX_FRAME_BYTES`] or the stream is closed.
-pub async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<()> {
-    if payload.len() > MAX_FRAME_BYTES {
-        bail!("frame of {} bytes exceeds {MAX_FRAME_BYTES}", payload.len());
-    }
-    let len = u32::try_from(payload.len()).context("frame length")?;
-    // One write so a frame is never split by a cancelled caller.
-    let mut framed = Vec::with_capacity(4 + payload.len());
-    framed.extend_from_slice(&len.to_be_bytes());
-    framed.extend_from_slice(payload);
-    send.write_all(&framed).await.context("write frame")?;
-    Ok(())
-}
-
-/// Read one frame. `Ok(None)` means the peer finished cleanly between frames.
-///
-/// This is **not** cancel-safe; run it in its own task, not inside `select!`.
-///
-/// # Errors
-///
-/// Fails on a truncated frame, a stream error, or a length above
-/// [`MAX_FRAME_BYTES`] (the oversized body is never read).
-pub async fn read_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>> {
-    let mut len = [0_u8; 4];
-    match recv.read_exact(&mut len).await {
-        Ok(()) => {}
-        Err(ReadExactError::FinishedEarly(0)) => return Ok(None),
-        Err(e) => return Err(e).context("read frame length"),
-    }
-    let len = u32::from_be_bytes(len) as usize;
-    if len > MAX_FRAME_BYTES {
-        bail!("frame of {len} bytes exceeds {MAX_FRAME_BYTES}");
-    }
-    let mut body = vec![0_u8; len];
-    recv.read_exact(&mut body)
-        .await
-        .context("read frame body")?;
-    Ok(Some(body))
-}
+/// Re-exported so `crate::world_net::{read_frame, write_frame}` keeps working:
+/// the framing helpers now live in [`crate::frames`] so the crate builds
+/// without the `world` feature.
+pub use crate::frames::{read_frame, write_frame};
 
 /// Accepts world sessions over Iroh. Register with
 /// `Router::builder(..).accept(WORLD_ALPN, WorldProtocol::new(hub))`.

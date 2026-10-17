@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
+use crate::time::unix_ms;
 use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
 use anyhow::{Context, Result, bail, ensure};
 use rand::RngExt as _;
@@ -26,6 +27,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
+
+/// Re-exported so `crate::world::Isolation` keeps working: the type now lives
+/// in [`crate::groups::worlds`] so the crate builds without this feature.
+pub use crate::groups::worlds::Isolation;
 
 /// Bounded limits for one world.
 #[derive(Clone, Copy, Debug)]
@@ -232,30 +237,6 @@ pub enum WorldEventKind {
         #[serde(default)]
         seed: u64,
     },
-}
-
-/// Whether a world's directory may be read from other worlds.
-///
-/// Writes never cross worlds, whatever the setting.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Isolation {
-    /// No cross-world reads or writes, in either direction.
-    #[default]
-    Isolated,
-    /// Readable from other unisolated worlds, and only from them.
-    Unisolated,
-}
-
-impl Isolation {
-    /// The wire word: `isolated` or `unisolated`.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Isolated => "isolated",
-            Self::Unisolated => "unisolated",
-        }
-    }
 }
 
 /// Which paths a world's files may name.
@@ -2541,13 +2522,6 @@ impl WorldActor {
             }
         }
     }
-}
-
-/// Milliseconds since the Unix epoch; 0 if the clock is before it.
-pub(crate) fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 impl WorldHandle {

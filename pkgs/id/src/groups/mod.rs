@@ -18,6 +18,7 @@ pub mod fold;
 pub mod friendship;
 pub mod log;
 pub mod policy;
+pub mod warnings;
 pub mod worlds;
 
 mod delegation;

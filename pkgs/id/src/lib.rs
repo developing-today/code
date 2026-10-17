@@ -176,11 +176,13 @@ pub mod discovery;
 pub mod documents;
 #[cfg(feature = "world")]
 pub mod encryption;
+#[cfg(feature = "world")]
 pub mod envelope_net;
 #[cfg(feature = "world")]
 pub mod envelope_outbox;
 pub mod event_store;
 pub mod fileops;
+pub mod frames;
 pub mod groups;
 pub mod helpers;
 pub mod invite;
@@ -211,6 +213,7 @@ pub mod tag_index;
 pub mod tags;
 #[cfg(test)]
 mod test_forgeries;
+pub(crate) mod time;
 pub mod tuple;
 pub mod waiting;
 #[cfg(feature = "world")]

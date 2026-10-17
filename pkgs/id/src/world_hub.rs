@@ -370,7 +370,7 @@ impl WorldHub {
                 sessions: Arc::new(Semaphore::new(limits.max_sessions.max(1))),
                 slots: StdMutex::new(HashMap::new()),
                 replays: StdMutex::new(crate::directory_auth::ReplayGuard::after_boot(
-                    crate::world::unix_ms(),
+                    crate::time::unix_ms(),
                     limits.signed_boot_window,
                 )),
             }),
@@ -420,7 +420,7 @@ impl WorldHub {
             method,
             target,
             body,
-            crate::world::unix_ms(),
+            crate::time::unix_ms(),
         )
     }
 
@@ -702,7 +702,7 @@ impl WorldHub {
                     .collect()
             })
             .unwrap_or_default();
-        let now = crate::world::unix_ms();
+        let now = crate::time::unix_ms();
         for service in services {
             if let Err(error) = service.flush_outbox(endpoint, now).await {
                 tracing::warn!("world hub: outbox flush failed: {error:#}");
