@@ -55,6 +55,7 @@ This comes first, because every later task needs a signal it can believe.
 - **F11.14 Cheaper `Screen`.** Replace the per-cell record list with row strings and style runs, so a full redraw costs less fuel. Exit: territory's view at or under 40 percent of the fuel limit, enforced by the F11.6 budget.
 - **F11.15 Smaller modules.** Run `wasm-opt -Os` and strip in each `build.sh`. Exit: every checked-in module at or under 400 KB, with instantiate time measured.
 - **F11.17 A view trap must not poison the world.** Today a guest view that traps (fuel, memory, or a guest bug) marks the program unhealthy for good. Degrade to an error screen that names the failing call, keep the program's state, retry on the next event, and count the failure in the F11.7 metrics. Exit: a guest that traps on `view` leaves the world accepting input, and the next healthy `view` recovers.
+- **F11.18 Pinned toolchain for checked-in artifacts.** The checked-in territory module was built by an older system `roc` than the one pinned in `nix/roc.nix`, and that alone cost about 4.2M fuel per view. Rebuild every example with the pinned compiler, have each `build.sh` refuse a different one, and add a CI job that rebuilds the examples and checks behavior with the sandbox suite and the fuel budgets. Same-source builds are not byte-stable, so compare behavior, never hashes. Exit: the job fails when an example is built by another compiler.
 - **F11.16 Replay self-check.** `id world verify` replays a world's journal twice, compares the records, and reports any divergence. This is the determinism guard for everything the guests do. Exit: a test with a deliberately nondeterministic guest fails the check.
 
 ## Sequencing
@@ -62,7 +63,7 @@ This comes first, because every later task needs a signal it can believe.
 ```text
 F11.1 -> F11.2 -> F11.4          (CI trust, then speed)
 F11.3, F11.5                     (parallel with the above)
-F11.6 -> F11.14 -> F11.15        (measure, then optimise guests)
+F11.6 -> F11.18 -> F11.14 -> F11.15   (measure, pin the compiler, then optimise guests)
 F11.7, F11.8 -> F11.9            (host metrics, benchmarks, baselines)
 F11.10 -> F11.11 -> F11.12       (split, then project, then format)
 F11.13, F11.16, F11.17           (anytime after F11.10; F11.17 can start earlier)
