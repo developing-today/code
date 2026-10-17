@@ -21,7 +21,7 @@ The relay kit location (#238), seed secrecy (#240), chat visibility, whether to 
 
 ## Progress
 
-- F11.6 per-call fuel metrics and budgets: in progress on `platform-perf-budgets`.
+- F11.6 per-call fuel metrics and budgets: PR #247. It found that territory traps with six or more seats; the fix is in progress on `platform-territory-fuel`, and F11.17 plans the platform-level defence.
 
 ## References
 

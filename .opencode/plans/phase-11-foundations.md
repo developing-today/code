@@ -16,7 +16,7 @@ Phase 9 and 10 added many capabilities quickly. Phase 11 makes them trustworthy,
 | Firefox E2E: 12 failed, 2 flaky of 130 in the only run that reached a summary. One shared server and one browser serve all tests. | Issue #229 |
 | The Rust unit suite takes about 480 seconds in CI. A full run with `--keep-going` takes over an hour. | CI logs |
 | The bulk LogSync test is retried over a mid-stream reset that nobody has explained. | Issue #241 |
-| Territory's styled view uses about 7.1M of the 10M fuel limit, and nothing reports it. | Fuel probe during P9.4 |
+| Territory's styled view uses 78% of the 10M fuel limit with two seats, and each further seat adds about 0.8M, so six or more seats trap, and a trapped view poisons the world. Nothing reported it until F11.6. | PR #247 |
 | `world.rs` is 6,120 lines (about 3,600 before its first test module). `world_session.rs` is 4,017 and `cli.rs` is 3,958. `cmd_world` has a 730 KB stack frame warning. | `wc -l`, clippy |
 | Every example module is 0.5 to 0.7 MB. | `examples/*/*.wasm` |
 | Joiners can read the install seed, chat, and nothing of host events, with no single place that decides visibility. | Issues #240, #242; roles record |
@@ -54,6 +54,7 @@ This comes first, because every later task needs a signal it can believe.
 
 - **F11.14 Cheaper `Screen`.** Replace the per-cell record list with row strings and style runs, so a full redraw costs less fuel. Exit: territory's view at or under 40 percent of the fuel limit, enforced by the F11.6 budget.
 - **F11.15 Smaller modules.** Run `wasm-opt -Os` and strip in each `build.sh`. Exit: every checked-in module at or under 400 KB, with instantiate time measured.
+- **F11.17 A view trap must not poison the world.** Today a guest view that traps (fuel, memory, or a guest bug) marks the program unhealthy for good. Degrade to an error screen that names the failing call, keep the program's state, retry on the next event, and count the failure in the F11.7 metrics. Exit: a guest that traps on `view` leaves the world accepting input, and the next healthy `view` recovers.
 - **F11.16 Replay self-check.** `id world verify` replays a world's journal twice, compares the records, and reports any divergence. This is the determinism guard for everything the guests do. Exit: a test with a deliberately nondeterministic guest fails the check.
 
 ## Sequencing
@@ -64,7 +65,7 @@ F11.3, F11.5                     (parallel with the above)
 F11.6 -> F11.14 -> F11.15        (measure, then optimise guests)
 F11.7, F11.8 -> F11.9            (host metrics, benchmarks, baselines)
 F11.10 -> F11.11 -> F11.12       (split, then project, then format)
-F11.13, F11.16                   (anytime after F11.10)
+F11.13, F11.16, F11.17           (anytime after F11.10; F11.17 can start earlier)
 ```
 
 F11.10 should land before F11.11 and F11.12, because those two touch the code the split moves.
