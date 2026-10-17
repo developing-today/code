@@ -2207,6 +2207,7 @@ impl WorldActor {
                         .min(crate::world_caps::MAX_CHAT_HISTORY_LINES as u64) as usize,
                 ),
             })),
+            "records.read" => self.execute_records_read(&request.args),
             _ => Err(CapError::Unknown),
         }
     }
@@ -2223,6 +2224,49 @@ impl WorldActor {
                 })
             })
             .collect()
+    }
+
+    /// `records.read`: a byte-bounded, prefix-scoped page of the world's
+    /// published records, key-ordered with the same exclusive `after` cursor
+    /// the session protocol uses. Follow `next_after` while it is non-empty.
+    fn execute_records_read(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let records = self.records_sender.borrow().1.clone();
+        let prefix = args.get("prefix").and_then(serde_json::Value::as_str);
+        let after = args.get("after").and_then(serde_json::Value::as_str);
+        let mut page: Vec<serde_json::Value> = Vec::new();
+        let mut used = 0usize;
+        let mut last_included: Option<String> = None;
+        let mut more = false;
+        for (key, value) in records.iter() {
+            if let Some(prefix) = prefix
+                && !key.starts_with(prefix)
+            {
+                continue;
+            }
+            if let Some(after) = after
+                && key.as_str() <= after
+            {
+                continue;
+            }
+            let size = key.len() + serde_json::to_vec(value).map_or(0, |v| v.len()) + 8;
+            if used + size > crate::world_session::MAX_RECORDS_PAGE_BYTES {
+                if page.is_empty() {
+                    return Err(CapError::BadArgs);
+                }
+                more = true;
+                break;
+            }
+            used += size;
+            last_included = Some(key.clone());
+            page.push(serde_json::json!({"key": key, "value": value}));
+        }
+        Ok(serde_json::json!({
+            "records": page,
+            "next_after": more.then_some(last_included).flatten(),
+        }))
     }
 
     /// `chat.say` commits a host chat line; its result is the new sequence.
@@ -5122,6 +5166,105 @@ mod tests {
             } else {
                 format!("{{\"count\":{}}}", self.count)
             }))
+        }
+    }
+
+    #[tokio::test]
+    async fn records_read_returns_a_bounded_prefix_scoped_page() {
+        struct ReaderProgram {
+            asks: u64,
+            read_key: String,
+        }
+        impl WorldProgram for ReaderProgram {
+            fn update(&mut self, event: &WorldEvent) -> Result<()> {
+                match &event.kind {
+                    WorldEventKind::Input(bytes) => {
+                        if bytes.as_slice() == b"read" {
+                            self.asks += 1;
+                        }
+                    }
+                    WorldEventKind::System { event } => {
+                        let value: serde_json::Value =
+                            serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                        if value["cap"] == "result"
+                            && let Some(key) = value["value"]["records"][0]["key"].as_str()
+                        {
+                            self.read_key = key.to_owned();
+                        }
+                    }
+                    WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                }
+                Ok(())
+            }
+
+            fn records(&mut self) -> Result<Option<String>> {
+                Ok(Some(
+                    serde_json::json!({
+                        "count": self.asks,
+                        "read": self.read_key,
+                    })
+                    .to_string(),
+                ))
+            }
+
+            fn wants(&mut self) -> Result<Option<String>> {
+                if self.asks == 0 {
+                    return Ok(Some("{}".to_owned()));
+                }
+                Ok(Some(
+                    serde_json::json!({
+                        "requests": [{
+                            "id": format!("read-{}", self.asks),
+                            "cap": "records.read",
+                            "args": {"prefix": "co", "after": ""},
+                        }],
+                    })
+                    .to_string(),
+                ))
+            }
+        }
+
+        let world = WorldHandle::spawn_with_program(
+            world(16),
+            Box::new(ReaderProgram {
+                asks: 0,
+                read_key: String::new(),
+            }),
+        );
+        let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+
+        // Ungranted: the request is refused and counted.
+        world.input(ann.clone(), b"read".to_vec()).await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let report = world.caps_report().await.unwrap();
+            if report
+                .usage
+                .get("records.read")
+                .is_some_and(|use_| use_.denied > 0)
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no refusal recorded");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // Granted: the program reads its own published `count` record.
+        world
+            .update_caps(vec!["records.read".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        world.input(ann, b"read".to_vec()).await.unwrap();
+        loop {
+            let record = world.records().1["read"].as_str().unwrap_or("").to_owned();
+            if record == "count" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the program never read its record: {record:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 

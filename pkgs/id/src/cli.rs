@@ -1634,6 +1634,35 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Scaffold a new Roc world app directory.
+    ///
+    /// Writes `main.roc`, `build.sh`, and `README.md`. The platform path in the
+    /// scaffold points at `../roc-world/platform.roc`, so create the directory
+    /// next to a checkout of the `examples/roc-world` platform.
+    New {
+        /// Directory to create; it must be absent or empty.
+        dir: PathBuf,
+        /// App name used in the README and the Wasm output.
+        #[arg(long, default_value = "world")]
+        name: String,
+    },
+    /// Print a world's module, capability, and profile state as one JSON object.
+    Stats {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// List the worlds a host serves (needs the host's admin token).
     List {
         /// The host's node ID (64 hex characters).
@@ -3726,6 +3755,27 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { after: Some(7), .. })
+        ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_new_and_stats() {
+        let cli = Cli::parse_from(["id", "world", "new", "apps/ping", "--name", "ping"]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::New { dir, name } => {
+                    assert_eq!(name, "ping");
+                    assert!(dir.ends_with("apps/ping"));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from(["id", "world", "stats", &node, "--capability", "c"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Stats { .. })
         ));
     }
 

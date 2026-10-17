@@ -116,9 +116,38 @@ RocCap := {
 
 	## The lines of a `chat.history` result value (`{"lines":[...]}`), or `[]`.
 	history_lines : RocJson -> List(RocJson)
-	history_lines = |value| match RocJson.get(value, "lines") {
+	history_lines = |value| list_field(value, "lines")
+
+	## A `records.read` request document. `after` is exclusive; `""` starts at
+	## the first key. Pages are byte-bounded; follow `next_after` while it is
+	## non-empty, passing it as the next `after`.
+	records_request : Str, Str, Str -> RocJson
+	records_request = |id, prefix, after|
+		RocJson.Object([
+			{ key: "id", value: RocJson.String(id) },
+			{ key: "cap", value: RocJson.String("records.read") },
+			{
+				key: "args",
+				value: RocJson.Object([
+					{ key: "prefix", value: RocJson.String(prefix) },
+					{ key: "after", value: RocJson.String(after) },
+				]),
+			},
+		])
+
+	## The `{"key":...,"value":...}` entries of a `records.read` result.
+	records_page : RocJson -> List(RocJson)
+	records_page = |value| list_field(value, "records")
+
+	## The cursor for the next `records.read`, or `""` when the page is the last.
+	next_after : RocJson -> Str
+	next_after = |value| string_field(value, "next_after")
+
+	## An array field of a JSON object, or `[]` when missing or not an array.
+	list_field : RocJson, Str -> List(RocJson)
+	list_field = |value, key| match RocJson.get(value, key) {
 		Ok(found) => match RocJson.as_array(found) {
-			Ok(lines) => lines
+			Ok(items) => items
 			Err(_) => []
 		}
 		Err(_) => []

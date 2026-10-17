@@ -60,6 +60,7 @@ pub const CATALOG: &[&str] = &[
     "players.list",
     "chat.say",
     "chat.history",
+    "records.read",
     "world.info",
     "Key",
     "Screen",
@@ -657,6 +658,7 @@ mod tests {
         validate_grant_names(&["time.now".to_owned(), "*".to_owned()]).unwrap();
         validate_grant_names(&[
             "chat.history".to_owned(),
+            "records.read".to_owned(),
             "RocJson".to_owned(),
             "RocGrid".to_owned(),
             "RocCap".to_owned(),

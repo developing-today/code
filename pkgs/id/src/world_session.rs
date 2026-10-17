@@ -1730,7 +1730,7 @@ async fn records_ticket_session<I: SessionIo>(
 
 /// Largest page of records returned in one frame, comfortably inside
 /// [`MAX_FRAME_BYTES`] after JSON framing overhead.
-const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
+pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
 
 async fn records_session<I: SessionIo>(
     world: &WorldHandle,
