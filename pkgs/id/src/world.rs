@@ -19,7 +19,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
-use crate::time::unix_ms;
 use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
 use anyhow::{Context, Result, bail, ensure};
 use rand::RngExt as _;
@@ -31,6 +30,10 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 /// Re-exported so `crate::world::Isolation` keeps working: the type now lives
 /// in [`crate::groups::worlds`] so the crate builds without this feature.
 pub use crate::groups::worlds::Isolation;
+
+/// Re-exported so `crate::world::unix_ms` keeps working: the function now
+/// lives in [`crate::time`] so the crate builds without this feature.
+pub(crate) use crate::time::unix_ms;
 
 /// Bounded limits for one world.
 #[derive(Clone, Copy, Debug)]
