@@ -237,6 +237,7 @@ pub enum WorldEventKind {
         module_hash: String,
         /// Seed passed to the program's `init`; with the module and the
         /// inputs after this event it reproduces the program state exactly.
+        /// Journal/admin only: join projections redact it to zero (#240).
         #[serde(default)]
         seed: u64,
     },
@@ -602,6 +603,22 @@ pub struct WorldSnapshot {
     pub events: Vec<WorldEvent>,
     /// Public participant list.
     pub participants: Vec<Participant>,
+}
+
+/// The projection of an event that a joiner may see (#240): a
+/// `ProgramInstalled` event keeps its module hash — joiners need it to fetch
+/// the module — but its install seed is zeroed, because a program whose
+/// hidden state derives from `init(seed)` must not leak that state to every
+/// participant. The journal, the core's retained events and the admin paths
+/// keep the real seed; only the join projections ([`WorldCore::snapshot`]
+/// and [`WorldCore::events_after`]) redact. Replay that needs the seed uses
+/// the seed the admin installed with, through the journal/admin path.
+fn redact_install_seed(event: &WorldEvent) -> WorldEvent {
+    let mut event = event.clone();
+    if let WorldEventKind::ProgramInstalled { seed, .. } = &mut event.kind {
+        *seed = 0;
+    }
+    event
 }
 
 /// Limits on what a capability may do before it stops working.
@@ -1407,6 +1424,7 @@ impl WorldCore {
     }
 
     /// Return the current bounded snapshot after validating join scope.
+    /// Install seeds are redacted from the events it carries (#240).
     pub fn snapshot(&self, token: &JoinCapability) -> Result<WorldSnapshot> {
         self.authorize(token, WorldScopes::JOIN)?;
         Ok(self.snapshot_unchecked())
@@ -1422,6 +1440,7 @@ impl WorldCore {
 
     /// Return retained events newer than `after_sequence`, plus the current
     /// cursor. If the cursor fell behind retention, the caller must resnapshot.
+    /// Install seeds are redacted from the events it returns (#240).
     pub fn events_after(&self, token: &JoinCapability, after_sequence: u64) -> Result<EventPage> {
         self.authorize(token, WorldScopes::JOIN)?;
         let oldest = self.oldest_sequence();
@@ -1432,7 +1451,7 @@ impl WorldCore {
             self.events
                 .iter()
                 .filter(|event| event.sequence > after_sequence)
-                .cloned()
+                .map(redact_install_seed)
                 .collect()
         };
         Ok(EventPage {
@@ -1509,12 +1528,13 @@ impl WorldCore {
         let mut budget = self.limits.snapshot_bytes;
         let mut events: VecDeque<WorldEvent> = VecDeque::new();
         for event in self.events.iter().rev() {
-            let size = serde_json::to_vec(event).map_or(budget, |encoded| encoded.len());
+            let event = redact_install_seed(event);
+            let size = serde_json::to_vec(&event).map_or(budget, |encoded| encoded.len());
             if size > budget {
                 break;
             }
             budget -= size;
-            events.push_front(event.clone());
+            events.push_front(event);
         }
         let oldest_retained_sequence = events
             .front()
@@ -4310,6 +4330,62 @@ mod tests {
                 }
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn join_projections_redact_the_install_seed_but_the_journal_keeps_it() {
+        // Issue #240: the install seed was serialized to every joiner via
+        // `events_after` and the snapshot. The journal (and the admin paths
+        // fed from it) must keep the real seed; join projections must not.
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "test-world".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::Committed {
+                event: WorldEvent {
+                    sequence: 1,
+                    participant_id: 0,
+                    kind: WorldEventKind::ProgramInstalled {
+                        module_hash: "ab".repeat(32),
+                        seed: 424_242,
+                    },
+                },
+            },
+        ];
+        let restored =
+            WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.program.as_ref().map(|program| program.seed),
+            Some(424_242),
+            "the journal restore path keeps the real seed for the admin"
+        );
+        let mut core = restored.core;
+        assert_eq!(core.active_seed, 424_242, "the core keeps the real seed");
+        let (_, token) = join(&mut core, "Ada");
+        let page = core.events_after(&token, 0).unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert!(
+            matches!(
+                &page.events[0].kind,
+                WorldEventKind::ProgramInstalled { module_hash, seed }
+                    if module_hash == &"ab".repeat(32) && *seed == 0
+            ),
+            "events_after must keep the module hash but redact the seed: {:?}",
+            page.events[0].kind
+        );
+        assert!(
+            !format!("{page:?}").contains("424242"),
+            "events_after leaked the install seed"
+        );
+        let snapshot = core.snapshot(&token).unwrap();
+        assert_eq!(snapshot.events.len(), 1);
+        assert!(
+            !serde_json::to_string(&snapshot)
+                .unwrap()
+                .contains("424242"),
+            "the snapshot leaked the install seed"
         );
     }
 
