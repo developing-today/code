@@ -619,6 +619,102 @@ mod tests {
         assert!(rewrite_platform_path("pf: platform \"unterminated").is_err());
     }
 
+    #[tokio::test]
+    async fn the_capability_helper_issues_matching_requests() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = r#"app [program] { pf: platform "../roc-world/platform.roc" }
+
+import pf.RocCap
+import pf.RocJson
+
+Model : { session : RocCap, request : Str }
+
+program = { init, update, view, layout, records, wants, snapshot, restore }
+
+init : U64 -> Model
+init = |seed| {
+	issued = RocCap.issue(RocCap.empty, "chat.say")
+	document = RocCap.chat_request(issued.id, seed.to_str())
+	first = RocCap.attach(issued.session, issued.id, document)
+	second = RocCap.issue(first, "chat.history")
+	history = RocCap.history_request(second.id, 5)
+	session = RocCap.attach(second.session, second.id, history)
+	encoded = match RocJson.encode(document) {
+		Ok(text) => text
+		Err(_) => ""
+	}
+	{ session: session, request: encoded }
+}
+
+update : Model, U64, Str -> Model
+update = |model, _pid, _ev| model
+
+view : Model -> Str
+view = |model| model.request
+
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
+records : Model -> Str
+records = |_model| "{}"
+
+wants : Model -> Str
+wants = |model| {
+	encoded = List.map(RocCap.requests(model.session), |document| match RocJson.encode(document) {
+		Ok(text) => text
+		Err(_) => ""
+	})
+	"{\"requests\":[${Str.join_with(encoded, ",")}]}"
+}
+
+snapshot : Model -> Str
+snapshot = |model| model.request
+
+restore : Str -> Model
+restore = |text| { session: RocCap.empty, request: text }
+"#;
+        let (wasm, _diagnostics, _provenance) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app.to_owned())],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            &["RocCap".to_owned(), "RocJson".to_owned()],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        let view = String::from_utf8(world.view().unwrap()).unwrap();
+        let decoded: serde_json::Value = serde_json::from_str(&view).unwrap();
+        assert_eq!(decoded["id"], "r0");
+        assert_eq!(decoded["cap"], "chat.say");
+        assert_eq!(decoded["args"]["text"], "7");
+        let wants = crate::world::WorldProgram::wants(&mut world)
+            .unwrap()
+            .unwrap();
+        let decoded_wants: serde_json::Value = serde_json::from_str(&wants).unwrap();
+        assert_eq!(decoded_wants["requests"][0]["id"], "r0");
+        assert_eq!(decoded_wants["requests"][0]["cap"], "chat.say");
+        assert_eq!(decoded_wants["requests"][1]["id"], "r1");
+        assert_eq!(decoded_wants["requests"][1]["cap"], "chat.history");
+        assert_eq!(decoded_wants["requests"][1]["args"]["count"], 5);
+    }
+
     #[test]
     fn the_platform_modules_are_staged_with_the_platform() {
         let from = tempfile::tempdir().unwrap();
@@ -631,6 +727,161 @@ mod tests {
         assert!(job.path().join("platform/platform.roc").is_file());
         assert!(job.path().join("platform/Screen.roc").is_file());
         assert!(!job.path().join("platform/notes.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn screen_widgets_fill_and_rule() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = r#"app [program] { pf: platform "../roc-world/platform.roc" }
+
+import pf.Screen
+
+Model : { n : U64 }
+
+program = { init, update, view, layout, records, wants, snapshot, restore }
+
+init : U64 -> Model
+init = |seed| { n: seed }
+
+update : Model, U64, Str -> Model
+update = |model, _pid, _ev| model
+
+view : Model -> Str
+view = |model| {
+    blank = Screen.new(6, 3)
+    filled = Screen.fill(blank, 0, 0, 3, 2, "x", { fg: 0, bg: 0, bold: Bool.False })
+    ruled = Screen.rule(filled, 0, 2, 6, "-", { fg: 0, bg: 0, bold: Bool.False })
+    written = Screen.put_text(ruled, 4, 1, model.n.to_str(), { fg: 0, bg: 0, bold: Bool.False })
+    Screen.render_plain(written)
+}
+
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
+records : Model -> Str
+records = |_model| "{}"
+
+wants : Model -> Str
+wants = |_model| "{}"
+
+snapshot : Model -> Str
+snapshot = |model| model.n.to_str()
+
+restore : Str -> Model
+restore = |text| match U64.from_str(text) {
+    Ok(n) => { n: n }
+    Err(_) => { n: 0 }
+}
+"#;
+        let (wasm, _diagnostics, _provenance) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app.to_owned())],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            &["Screen".to_owned()],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        let view = String::from_utf8(world.view().unwrap()).unwrap();
+        assert_eq!(view, "xxx   \nxxx 7 \n------");
+    }
+
+    #[tokio::test]
+    async fn text_helpers_trim_case_split_and_prefix() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = r#"app [program] { pf: platform "../roc-world/platform.roc" }
+
+import pf.RocText
+
+Model : { n : U64 }
+
+program = { init, update, view, layout, records, wants, snapshot, restore }
+
+init : U64 -> Model
+init = |seed| { n: seed }
+
+update : Model, U64, Str -> Model
+update = |model, _pid, _ev| model
+
+view : Model -> Str
+view = |model| {
+    trimmed = RocText.trim("  AbC\t\n")
+    lowered = RocText.lowercase(trimmed)
+    prefix = if model.n > 0 "hello" else "nope"
+    prefixed = RocText.starts_with("hello world", prefix)
+    prefixed_text = if prefixed "yes" else "no"
+    dropped = RocText.drop_prefix("cmd:go", "cmd:")
+    missing = RocText.drop_prefix("keep", "cmd:")
+    joined = RocText.join_lines(RocText.lines("a\nb\n"))
+    needle = if model.n > 0 "lo wo" else "zz"
+    found = RocText.contains("hello world", needle)
+    found_text = if found "yes" else "no"
+    "t=${trimmed}|l=${lowered}|p=${prefixed_text}|d=${dropped}|m=${missing}|j=${joined}|c=${found_text}"
+}
+
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
+records : Model -> Str
+records = |_model| "{}"
+
+wants : Model -> Str
+wants = |_model| "{}"
+
+snapshot : Model -> Str
+snapshot = |model| model.n.to_str()
+
+restore : Str -> Model
+restore = |text| match U64.from_str(text) {
+    Ok(n) => { n: n }
+    Err(_) => { n: 0 }
+}
+"#;
+        let (wasm, _diagnostics, _provenance) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app.to_owned())],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            &["RocText".to_owned()],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        let view = String::from_utf8(world.view().unwrap()).unwrap();
+        assert_eq!(view, "t=AbC|l=abc|p=yes|d=go|m=keep|j=a\nb\n|c=yes");
     }
 
     #[tokio::test]

@@ -42,6 +42,11 @@ remains useful for older clients and text-only output.
 In the browser, focus the world screen and use the keyboard to send input. The
 web adapter encodes common keys as terminal bytes (UTF-8 text, control keys,
 and standard navigation sequences), matching SSH PTY input and the existing
+`layout` hook. Apps define `layout : model, U64, U64 -> Str` next to `view`;
+sessions with a viewport render through it (no journal, no sequence change),
+and cropping remains the fallback for programs that return `view(model)`.
+`Screen.fill` and `Screen.rule` cover rect fills and separators.
+
 `Key.parse` helper. Keyboard events are journaled exactly like other world
 input. Resize remains presentation-local and is not sent to shared game state.
 The host crops a structured screen to each participant's connection-local
@@ -58,7 +63,8 @@ events too. Every host event is journaled before delivery, so replay is
 exact. A request to a capability the world has not granted is answered with
 `cap_denied` — never silently. See the design doc for the catalog
 (`time.now`, `time.tick`, `random.u64`, `players`, `players.list`,
-`chat.say`, `world.info`), grant policies and bounds.
+`chat.say`, `chat.history`, `records.read`, `world.info`, and the platform modules `Key`,
+`Screen`, `RocJson`, `RocGrid`, `RocCap`, `RocText`).
 
 The platform also exposes the dependency-free `RocJson.roc` module to apps as
 `pf.RocJson`. Its `decode`/`encode`, object `get`, and type-specific `as_*` accessors let
@@ -69,6 +75,30 @@ nested arrays/objects; exceeding either bound is an explicit error. Encoding
 also validates number lexemes and returns an error rather than emitting
 malformed JSON. Duplicate object keys are preserved, and `get` returns the
 first matching key.
+
+The platform also exposes `RocGrid.roc` as `pf.RocGrid` for row-major byte
+grids. `new`, `in_bounds`, `index`, `get`, `set`, `count`, `neighbors4`, and
+`row` are bounds-checked and never trap: a read outside the grid returns a
+caller-supplied fallback, and a write outside it returns the grid unchanged.
+Boards, canvases, maps, and inventories build on this instead of re-deriving
+index arithmetic per app. `examples/roc-grid` is the checked-in example.
+
+`RocCap.roc` is exposed as `pf.RocCap` for the request side of the capability
+protocol. `issue` reserves `r0`, `r1`, … ids and records each one's capability;
+`attach` stores the request document so `requests` can re-announce it in
+`wants` after replay; `chat_request`, `now_request`, `players_request`,
+`world_request`, `history_request`, and `records_request` build the documents; `answered` routes a
+result back to the capability that asked; `done` retires it; and `from_pending`
+rebuilds a session from a snapshot. `history_lines` reads the rows of a
+`chat.history` result. Apps stop re-deriving id counters and pending lists.
+
+`Screen.put_grid` draws a `RocGrid` at a position through a glyph function with
+one style for the whole grid, so maps and single-colour boards need no manual
+row assembly. `Screen.fill` and `Screen.rule` cover rect fills and separators.
+
+`RocText.roc` is exposed as `pf.RocText`: total, byte-level text helpers
+(`trim`, `lowercase`, `starts_with`, `drop_prefix`, `contains`, `lines`,
+`join_lines`) for the operations the pinned Roc nightly builds reliably.
 
 One nightly caveat: with
 nightly-2026-10-04-130536d's wasm backend, `List.get` past the second

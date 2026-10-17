@@ -94,6 +94,7 @@ impl Sandbox {
                         | "plaza_update"
                         | "plaza_free"
                         | "plaza_view"
+                        | "plaza_layout"
                         | "plaza_records"
                         | "plaza_wants"
                         | "plaza_snapshot"
@@ -172,6 +173,20 @@ impl Sandbox {
         let view = instance
             .get_typed_func::<i32, i32>(&mut store, "plaza_view")
             .map_err(|e| anyhow::anyhow!("guest must export `plaza_view(i32) -> i32`: {e}"))?;
+        // Optional: lay the presentation out for a connection's viewport.
+        let layout = if instance.get_func(&mut store, "plaza_layout").is_some() {
+            Some(
+                instance
+                    .get_typed_func::<(i32, i64, i64), i32>(&mut store, "plaza_layout")
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "guest `plaza_layout` must be `(i32, i64, i64) -> i32`: {e}"
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let out_len = instance
             .get_typed_func::<(), i32>(&mut store, "plaza_out_len")
             .map_err(|e| anyhow::anyhow!("guest must export `plaza_out_len() -> i32`: {e}"))?;
@@ -251,6 +266,7 @@ impl Sandbox {
             free,
             update,
             view,
+            layout,
             records,
             wants,
             snapshot,
@@ -276,6 +292,7 @@ pub struct WorldInstance {
     free: TypedFunc<(i32, i32), ()>,
     update: TypedFunc<(i32, i32, i32, i32), i32>,
     view: TypedFunc<i32, i32>,
+    layout: Option<TypedFunc<(i32, i64, i64), i32>>,
     records: Option<TypedFunc<i32, i32>>,
     wants: Option<TypedFunc<i32, i32>>,
     snapshot: Option<TypedFunc<i32, i32>>,
@@ -364,6 +381,38 @@ impl WorldInstance {
             Err(e) => {
                 return Err(anyhow::anyhow!(
                     "guest `plaza_view` failed (trap or fuel exhausted): {e}{}",
+                    self.guest_error_suffix()
+                ));
+            }
+        };
+        self.read_output(output_ptr)
+    }
+
+    /// Render this world at a viewport. Uses the guest's `plaza_layout` when it
+    /// exports one, and otherwise the fixed [`Self::view`]. Rendering never
+    /// changes the model or the journal.
+    pub fn layout_at(&mut self, width: u16, height: u16) -> Result<Vec<u8>> {
+        ensure!(
+            !self.poisoned,
+            "world guest is poisoned after a previous failure"
+        );
+        let Some(layout) = self.layout.as_ref() else {
+            return self.view();
+        };
+        self.store
+            .set_fuel(self.limits.fuel)
+            .map_err(|e| anyhow::anyhow!("reset guest fuel: {e}"))?;
+        let model = self.model;
+        let rendered = layout.call(
+            &mut self.store,
+            (model, i64::from(width), i64::from(height)),
+        );
+        let output_ptr = match rendered {
+            Ok(ptr) => ptr,
+            Err(e) => {
+                self.poisoned = true;
+                return Err(anyhow::anyhow!(
+                    "guest `plaza_layout` failed (trap or fuel exhausted): {e}{}",
                     self.guest_error_suffix()
                 ));
             }
@@ -646,6 +695,18 @@ impl crate::world::WorldProgram for WorldInstance {
             .context("Roc world view must return valid UTF-8")
     }
 
+    fn layout(
+        &mut self,
+        _viewer: &crate::world::Participant,
+        width: u16,
+        height: u16,
+    ) -> Result<Option<String>> {
+        let output = Self::layout_at(self, width, height)?;
+        String::from_utf8(output)
+            .map(Some)
+            .context("Roc world layout must return valid UTF-8")
+    }
+
     fn records(&mut self) -> Result<Option<String>> {
         Self::records(self)?
             .map(|bytes| String::from_utf8(bytes).context("Roc world records must be valid UTF-8"))
@@ -691,7 +752,7 @@ struct GuestBuffer {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -879,6 +940,187 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_roc_screen_renders_structured_surface() {
+        let wasm = include_bytes!("../examples/roc-screen/roc-screen.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        live.update(1, b"+").unwrap();
+        live.update(1, b"+").unwrap();
+        let view_bytes = live.view().unwrap();
+        let view_str = String::from_utf8(view_bytes).unwrap();
+        let surface = crate::world_presentation::parse_surface(&view_str).unwrap();
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) = surface else {
+            panic!("expected structured Screen surface, got {view_str}");
+        };
+        assert_eq!((screen.width, screen.height), (20, 3));
+        let rows: Vec<String> = screen
+            .cells
+            .chunks(usize::from(screen.width))
+            .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+            .collect();
+        assert!(rows[0].starts_with("+-counter"));
+        assert!(rows[1].starts_with("| count=2"));
+        assert_eq!(rows[2], format!("+{}+", "-".repeat(18)));
+    }
+
+    #[test]
+    fn checked_in_grid_example_uses_bounded_get_set() {
+        let wasm = include_bytes!("../examples/roc-grid/roc-grid.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        let render = |world: &mut WorldInstance| -> String {
+            let view = String::from_utf8(world.view().unwrap()).unwrap();
+            let Some(crate::world_presentation::WorldSurface::Screen(screen)) =
+                crate::world_presentation::parse_surface(&view).unwrap()
+            else {
+                panic!("the grid example must return a structured screen: {view}");
+            };
+            screen
+                .cells
+                .chunks(usize::from(screen.width))
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| cell.symbol.as_str())
+                        .collect::<String>()
+                })
+                .collect::<Vec<String>>()
+                .join("\n")
+        };
+        let text = render(&mut live);
+        assert!(text.contains("cells=12 at11=46 out=63"), "{text}");
+        live.update(1, b"set").unwrap();
+        let text = render(&mut live);
+        assert!(text.contains("cells=11 at11=65 out=63"), "{text}");
+        // The snapshot is the grid's bytes, and restore rebuilds it.
+        let snapshot = live.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        let text = render(&mut restored);
+        assert!(text.contains("cells=11 at11=65 out=63"), "{text}");
+    }
+
+    #[test]
+    fn checked_in_chat_example_sends_and_reads_history() {
+        use crate::world::{WorldEvent, WorldEventKind};
+
+        let wasm = include_bytes!("../examples/roc-chat/roc-chat.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut chat = runner.instantiate(7).unwrap();
+        fn wants_of(chat: &mut WorldInstance) -> String {
+            crate::world::WorldProgram::wants(chat).unwrap().unwrap()
+        }
+        fn send(chat: &mut WorldInstance, ev: &[u8]) {
+            crate::world::WorldProgram::update(
+                chat,
+                &WorldEvent {
+                    sequence: 0,
+                    participant_id: 1,
+                    kind: WorldEventKind::Input(ev.to_vec()),
+                },
+            )
+            .unwrap();
+        }
+        fn host(chat: &mut WorldInstance, event: serde_json::Value) {
+            crate::world::WorldProgram::update(
+                chat,
+                &WorldEvent {
+                    sequence: 0,
+                    participant_id: 0,
+                    kind: WorldEventKind::System {
+                        event: event.to_string(),
+                    },
+                },
+            )
+            .unwrap();
+        }
+        fn view(chat: &mut WorldInstance) -> String {
+            String::from_utf8(chat.view().unwrap()).unwrap()
+        }
+
+        assert_eq!(view(&mut chat), "chat seen=0 last= input=");
+        // Type "hi", then enter: a chat.say request goes out as r0.
+        send(&mut chat, b"h");
+        send(&mut chat, b"i");
+        let typing = view(&mut chat);
+        assert!(typing.contains("input=hi"), "{typing}");
+        send(&mut chat, b"\r");
+        let document = wants_of(&mut chat);
+        assert!(
+            document.contains("chat.say") && document.contains("hi") && document.contains("\"r0\""),
+            "{document}"
+        );
+        // The say is answered and retired; `hist` asks for history as r1.
+        host(
+            &mut chat,
+            serde_json::json!({"cap":"result","id":"r0","ok":true,"value":{"sequence":1}}),
+        );
+        assert!(!wants_of(&mut chat).contains("chat.say"));
+        send(&mut chat, b"hist");
+        send(&mut chat, b"\r");
+        let document = wants_of(&mut chat);
+        assert!(
+            document.contains("chat.history") && document.contains("\"r1\""),
+            "{document}"
+        );
+        // The history answer names the newest line; the view reports it.
+        host(
+            &mut chat,
+            serde_json::json!({
+                "cap": "result",
+                "id": "r1",
+                "ok": true,
+                "value": {"lines": [{"sequence": 1, "participant": 1, "text": "hi"}]},
+            }),
+        );
+        assert_eq!(view(&mut chat), "chat seen=1 last=hi input=");
+        // The snapshot keeps the seen count and the counter.
+        let snapshot = chat.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(view(&mut restored), "chat seen=1 last=hi input=");
+    }
+
+    #[test]
+    fn checked_in_roc_screen_reflows_for_a_wider_viewport() {
+        let wasm = include_bytes!("../examples/roc-screen/roc-screen.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        let width_of = |bytes: Vec<u8>| -> u16 {
+            let text = String::from_utf8(bytes).unwrap();
+            let Some(crate::world_presentation::WorldSurface::Screen(screen)) =
+                crate::world_presentation::parse_surface(&text).unwrap()
+            else {
+                panic!("roc-screen must return a structured screen: {text}");
+            };
+            screen.width
+        };
+        // The fixed view stays 20 wide; the layout path reflows to the viewport.
+        assert_eq!(width_of(live.view().unwrap()), 20);
+        assert_eq!(width_of(live.layout_at(40, 5).unwrap()), 30);
+        assert_eq!(width_of(live.layout_at(24, 5).unwrap()), 20);
+        // Reflow never changes the model or its view.
+        assert_eq!(width_of(live.view().unwrap()), 20);
+    }
+
+    #[test]
+    fn checked_in_territory_renders_a_styled_screen_within_the_default_fuel() {
+        let wasm = include_bytes!("../examples/territory/territory.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        live.update(1, b"l ").unwrap();
+        let view = String::from_utf8(live.view().unwrap()).unwrap();
+        let surface = crate::world_presentation::parse_surface(&view).unwrap();
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) = surface else {
+            panic!("territory must return a structured screen: {view}");
+        };
+        assert_eq!((screen.width, screen.height), (24, 19));
+        assert!(
+            screen.cells.iter().any(|cell| cell.fg != 0 && cell.bold),
+            "the cursor cell must carry a visible style"
+        );
+    }
+
+    #[test]
     fn checked_in_territory_plays_persists_and_rejoins() {
         let wasm = include_bytes!("../examples/territory/territory.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
@@ -924,10 +1166,20 @@ mod tests {
         );
 
         let view = String::from_utf8(live.view().unwrap()).unwrap();
-        assert!(view.contains("free=124"), "{view}");
+        let surface = crate::world_presentation::parse_surface(&view).unwrap();
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) = surface else {
+            panic!("territory must return a structured screen: {view}");
+        };
+        let rendered: Vec<String> = screen
+            .cells
+            .chunks(usize::from(screen.width))
+            .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+            .collect();
+        let text = rendered.join("\n");
+        assert!(text.contains("free=124"), "{text}");
         assert!(
-            view.contains("A ann 2 online") && view.contains("B bob 2 online"),
-            "{view}"
+            text.contains("A ann 2 online") && text.contains("B bob 2 online"),
+            "{text}"
         );
         assert!(!view.contains('\u{1b}'), "{view}");
 
@@ -1043,7 +1295,7 @@ mod tests {
         // program sees, and the request is retired.
         let denied = serde_json::json!({
             "cap": "result",
-            "id": "r1",
+            "id": "r0",
             "ok": false,
             "error": "cap_denied",
         });
@@ -1085,7 +1337,7 @@ mod tests {
         .unwrap();
         let granted = serde_json::json!({
             "cap": "result",
-            "id": "r2",
+            "id": "r1",
             "ok": true,
             "value": {"sequence": 9},
         });

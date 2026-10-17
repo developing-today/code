@@ -59,10 +59,19 @@ pub const CATALOG: &[&str] = &[
     "players",
     "players.list",
     "chat.say",
+    "chat.history",
+    "records.read",
     "world.info",
     "Key",
     "Screen",
+    "RocJson",
+    "RocGrid",
+    "RocCap",
+    "RocText",
 ];
+
+/// Most chat lines one `chat.history` request may return.
+pub const MAX_CHAT_HISTORY_LINES: usize = 64;
 
 /// Whether `name` is a capability the server can provide.
 #[must_use]
@@ -648,6 +657,15 @@ mod tests {
     #[test]
     fn grant_names_must_exist() {
         validate_grant_names(&["time.now".to_owned(), "*".to_owned()]).unwrap();
+        validate_grant_names(&[
+            "chat.history".to_owned(),
+            "records.read".to_owned(),
+            "RocJson".to_owned(),
+            "RocGrid".to_owned(),
+            "RocCap".to_owned(),
+            "RocText".to_owned(),
+        ])
+        .unwrap();
         let error = validate_grant_names(&["time.nwo".to_owned()]).unwrap_err();
         assert!(error.to_string().contains("time.nwo"), "{error}");
     }

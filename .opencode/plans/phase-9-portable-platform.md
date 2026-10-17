@@ -24,11 +24,78 @@ The immediate slice (P9.1) is a backwards-compatible, validated cell-grid presen
 - **P9.3e in PR #231:** server and per-world capability ceilings bound which granted host capabilities authority reaches. The server ceiling is `serve --world-allowed-caps` (runtime configuration); the world ceiling is durable and applies immediately, and it never rewrites grants. Record: [world capability ceilings](../../doc/2026-10-16T11-00-00Z_feature_world_capability_ceilings/2026-10-16T11-00-00Z_feature_world_capability_ceilings.md).
 - **P9.3f complete in this worktree:** operator CLI commands for capability ceilings (`id world caps --ceiling`) and execution profiles (`id world profile`). Record: [world CLI controls](../../doc/2026-10-16T12-00-00Z_feature_world_cli_controls/2026-10-16T12-00-00Z_feature_world_cli_controls.md).
 - **P9.2a complete in this worktree:** focusable browser surfaces encode common keys with terminal-compatible bytes and send them through the existing durable input event. SSH already forwards PTY bytes through that same event.
-- **P9.2b complete in PR #219:** bounded paste is an explicit input event; browser ResizeObserver and SSH PTY/window-change events set connection-local viewport context. Structured screens are cropped per connection without entering the journal. Roc apps still render at their declared dimensions; guest-aware reflow remains a future ABI follow-up.
+- **P9.2b complete in PR #219:** bounded paste is an explicit input event; browser ResizeObserver and SSH PTY/window-change events set connection-local viewport context. Structured screens are cropped per connection without entering the journal. Guest-aware reflow is complete in this worktree (P9.8).
 - **P9.4 first slice complete in this worktree:** pure-Roc `RocJson.roc` decode/encode and typed accessors are exported by the Roc world platform; lounge now decodes host events and encodes requests/records. Broader data/game/communication helpers remain planned.
-- **P9.5 implementation in progress:** `ScreenSurface::from_cells` provides a validated Rust buffer-capture interface; Ratatui stays optional and app-owned. Existing Roc/SSH/browser examples provide producer and presenter paths.
+- **P9.4b complete in this worktree:** migrated `territory` to `RocJson`, updated `roc-screen` with checked-in artifacts, fixed `lounge` participant decoding, added sandbox screen integration test. Record: [structured apps migration](../../doc/2026-10-16T13-00-00Z_feature_world_apps_structured_migration/2026-10-16T13-00-00Z_feature_world_apps_structured_migration.md).
+- **P9.4c in this worktree:** the platform exposes `pf.RocGrid`, a bounds-checked row-major byte grid (`new`, `get`, `set`, `count`, `neighbors4`, `row`) with a checked-in `examples/roc-grid` example and a sandbox test. Record: [RocGrid](../../doc/2026-10-16T15-00-00Z_feature_roc_grid/2026-10-16T15-00-00Z_feature_roc_grid.md).
+- **P9.4d in this worktree:** the platform exposes `pf.RocCap`, shared request bookkeeping for the capability protocol (`issue`, `attach`, `requests`, `from_pending`, the request builders, `answered`, `done`), verified by a compile-and-run test. Record: [RocCap](../../doc/2026-10-16T16-00-00Z_feature_roc_cap/2026-10-16T16-00-00Z_feature_roc_cap.md).
+- **P9.8 complete in this worktree:** guest-aware reflow. The platform requires `layout : model, U64, U64 -> Str`; sessions with a viewport render through `plaza_layout`, without journaling or sequence changes, and cropping remains the fallback. `roc-screen` widens on viewports of at least 30 columns. Record: [guest-aware reflow](../../doc/2026-10-16T19-00-00Z_feature_guest_reflow/2026-10-16T19-00-00Z_feature_guest_reflow.md).
+- **P9.11 complete in this worktree:** `Screen.fill`/`Screen.rule` cover rect fills and separators, and `pf.RocText` ships proven text helpers (`trim`, `lowercase`, `starts_with`, `drop_prefix`, `contains`, `lines`, `join_lines`), both verified by compile-and-run tests. `RocText` is a grantable module name. Record: [screen widgets and text](../../doc/2026-10-16T19-30-00Z_feature_screen_widgets/2026-10-16T19-30-00Z_feature_screen_widgets.md).
+- **P9.9 complete in this worktree:** `records.read` returns byte-bounded, prefix-scoped pages of the world's published records with an exclusive `after` cursor, requires only the `join` scope, and is exposed as `RocCap.records_request`/`records_page`/`next_after`. Record: [records readback](../../doc/2026-10-16T18-00-00Z_feature_records_readback/2026-10-16T18-00-00Z_feature_records_readback.md).
+- **P9.10 complete in this worktree:** `id world new` scaffolds a buildable Roc app (main.roc, executable build.sh, README), `id world stats` prints module info, capability report, and execution profile as one JSON object, and `id world logs` tails recent event frames for a bounded deadline. Record: [authoring CLI](../../doc/2026-10-16T18-30-00Z_feature_world_authoring_cli/2026-10-16T18-30-00Z_feature_world_authoring_cli.md).
+- **P9.7 complete in this worktree:** `chat.history` returns the newest bounded chat lines (default 16, clamp 64, oldest-first) from the retained-events buffer, requires the CHAT scope, and is exposed to apps as `RocCap.history_request`/`history_lines`. The platform modules `RocJson`, `RocGrid`, and `RocCap` are now grantable catalog names. `examples/roc-chat` is a checked-in chat client built on it, with a sandbox end-to-end test. Record: [chat history](../../doc/2026-10-16T17-00-00Z_feature_chat_history/2026-10-16T17-00-00Z_feature_chat_history.md).
+- **P9.6 complete in this worktree:** library consolidation. `territory` keeps its board in `pf.RocGrid` (no app-local index arithmetic), `lounge` drives its request lifecycle through `pf.RocCap`, `Screen.put_grid` draws a grid through a glyph function, and the grid example round-trips through `RocGrid.bytes`/`from_cells`. Record: [RocGrid](../../doc/2026-10-16T15-00-00Z_feature_roc_grid/2026-10-16T15-00-00Z_feature_roc_grid.md), [RocCap](../../doc/2026-10-16T16-00-00Z_feature_roc_cap/2026-10-16T16-00-00Z_feature_roc_cap.md).
+- **P9.5 in progress in this worktree:** `territory` renders a portable styled screen (per-seat colours, inverted cursor, scoreboard) at the default fuel budget; `Screen.put_row` batches row draws; the shared host allocator clamps non power-of-two alignments instead of trapping. Record: [screen rendering and alignment](../../doc/2026-10-16T14-00-00Z_feature_screen_render_alignment/2026-10-16T14-00-00Z_feature_screen_render_alignment.md). `ScreenSurface::from_cells` remains the validated Rust buffer-capture interface; Ratatui stays optional and app-owned.
 
 “Direct control” is limited to explicit named capabilities under an admin-controlled ceiling. This plan does not enable unrestricted filesystem, network, or process access; native execution remains OS-sandboxed.
+
+## Proposed next steps (added 2026-10-16)
+
+These are new slices beyond the original P9.1–P9.5 sequence. They are ordered so
+each one is useful alone and does not depend on a later one.
+
+- **P9.6 Standard-library consolidation.** Finish migrating the checked-in apps
+  onto the shared libraries: `territory` keeps its board in `pf.RocGrid` and
+  `Screen` gains a `put_grid` draw that takes one, so no app re-derives index
+  arithmetic; `lounge` moves its id counter and pending list to `pf.RocCap`.
+  Acceptance: no example carries its own `cell_index`, id counter, or pending
+  matcher; all checked-in tests keep passing.
+- **P9.7 Server-observed chat history.** (Done — see status above.) Room chat
+  exists but a world program cannot read it, so communication apps cannot show
+  logs, search, or reply in context. Add a `chat.history` capability request
+  (bounded count, oldest-first window, maybe a `since` cursor) served from the
+  journal, with grant checks and replay-safe results. Acceptance: a bounded,
+  granted, journal-derived window with tests that an ungranted request is
+  refused and counts against usage.
+- **P9.8 Guest-aware reflow.** (Done — see status above.) The platform now
+  requires a `layout : model, U64, U64 -> Str` entry point; sessions render
+  through it with their viewport and cropping remains the fallback.
+- **P9.9 Presence and records readback.** (Done — see status above.) `players.list`
+  exists, but apps could not read records published by other participants, so
+  multi-terminal and shared-canvas apps were impossible. Add a bounded
+  `records.read` capability request (prefix-scoped, paged) with the same grant
+  and usage accounting as other capabilities.
+- **P9.10 App scaffolding and inspection.** (Done — see status above.)
+  `id world new` scaffolds a Roc app; `id world stats` reports module, caps,
+  and profile state; `id world logs` tails recent events for a deadline.
+- **P9.11 Library growth: text and widgets.** (Done — see status above:
+  `Screen.fill`/`rule` and `pf.RocText`.) List/table/meter widgets remain a
+  follow-up once two apps need the same one.
+
+## Phase 10 progress
+
+- **P10.1 started in this worktree:** role-scoped invites (`spectator`, `player`, `guest`, `delegator`) over the existing scope machinery, and `id world list --json` for directory feeds. Builder/moderator roles with their own authority, and a cross-node directory feed, remain follow-ups. Record: [roles and directory](../../doc/2026-10-17T08-00-00Z_feature_world_roles_directory/2026-10-17T08-00-00Z_feature_world_roles_directory.md).
+
+## Phase 10 sketch: worlds as places
+
+Not committed beyond the slice above, recorded so the direction is visible.
+
+- **World directory feeds and portals.** A browsable directory of worlds a
+  node serves and knows (names, presence counts, open/closed), with the web UI
+  and `id world list` sharing one serializer.
+- **Roles beyond admin/guest.** Builder (may install modules), moderator (may
+  kick), spectator (read-only presence), with the existing scope machinery as
+  the substrate.
+- **World forking and templates.** Clone a world's journal prefix into a new
+  world for tournaments, save-states, and demos, with provenance showing the
+  parent.
+- **Scheduled events.** A first-class `schedule` capability for tournaments and
+  reminders, durable in the journal, delivered as ticks.
+- **Outbound notifications.** An explicit, user-visible capability to post a
+  bounded summary to a room or device when a world reaches a milestone.
+- **Session recording.** Export a world's journal window to a replayable
+  fixture so app authors can test against real sessions, and so bugs can be
+  reproduced exactly.
 
 ## Acceptance for P9.1
 
@@ -59,6 +126,10 @@ P9.3d record: [durable per-world resource profiles](../../doc/2026-10-16T10-30-0
 P9.3e record: [world capability ceilings](../../doc/2026-10-16T11-00-00Z_feature_world_capability_ceilings/2026-10-16T11-00-00Z_feature_world_capability_ceilings.md).
 
 P9.3f record: [world operator CLI controls](../../doc/2026-10-16T12-00-00Z_feature_world_cli_controls/2026-10-16T12-00-00Z_feature_world_cli_controls.md).
+
+P9.4b record: [structured apps migration](../../doc/2026-10-16T13-00-00Z_feature_world_apps_structured_migration/2026-10-16T13-00-00Z_feature_world_apps_structured_migration.md).
+
+P9.5b record: [screen rendering and alignment](../../doc/2026-10-16T14-00-00Z_feature_screen_render_alignment/2026-10-16T14-00-00Z_feature_screen_render_alignment.md).
 
 ## P9.3a acceptance
 

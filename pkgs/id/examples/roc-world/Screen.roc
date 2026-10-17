@@ -1,3 +1,4 @@
+import RocGrid
 Screen := {
     width : U64,
     height : U64,
@@ -54,6 +55,54 @@ Screen := {
             { screen: next, column: column + 1 }
         }).screen
     }
+
+    ## Replace one row's cells from `x` with `cells`, each carrying its own
+    ## style, clipped to the screen. One list update per row instead of one per
+    ## cell, which keeps row-oriented redraws cheap.
+    put_row : Screen, U64, U64, List({ ch : Str, fg : U8, bg : U8, bold : Bool }) -> Screen
+    put_row = |screen, y, x, cells| {
+        if y >= screen.height {
+            screen
+        } else {
+            List.fold_with_index(cells, { width: screen.width, height: screen.height, cells: screen.cells }, |acc, cell, offset| {
+                column = x + offset
+                if column < acc.width {
+                    index = y * acc.width + column
+                    match List.set(acc.cells, index, cell) {
+                        Ok(updated) => { width: acc.width, height: acc.height, cells: updated }
+                        Err(_) => acc
+                    }
+                } else {
+                    acc
+                }
+            })
+        }
+    }
+
+    ## Draw every cell of `grid` at (`x`, `y`) through `glyph`, with one style
+    ## for the whole grid. Cells outside the screen are clipped.
+    put_grid : Screen, U64, U64, RocGrid, (U8 -> Str), { fg : U8, bg : U8, bold : Bool } -> Screen
+    put_grid = |screen, x, y, grid, glyph, style| {
+        dims = RocGrid.dimensions(grid)
+        List.fold(range(0, dims.height), screen, |acc, gy| {
+            cells = List.map(range(0, dims.width), |gx| {
+                { ch: glyph(RocGrid.get(grid, gx, gy, 32)), fg: style.fg, bg: style.bg, bold: style.bold }
+            })
+            put_row(acc, y + gy, x, cells)
+        })
+    }
+
+    ## Fill the rectangle at (`x`, `y`) of size `w` by `h` with `ch` and `style`.
+    fill : Screen, U64, U64, U64, U64, Str, { fg : U8, bg : U8, bold : Bool } -> Screen
+    fill = |screen, x, y, w, h, ch, style| {
+        List.fold(range(0, h), screen, |acc, row| {
+            List.fold(range(0, w), acc, |inner, column| put_text(inner, x + column, y + row, ch, style))
+        })
+    }
+
+    ## A horizontal line of `ch` from (`x`, `y`), `w` cells wide.
+    rule : Screen, U64, U64, U64, Str, { fg : U8, bg : U8, bold : Bool } -> Screen
+    rule = |screen, x, y, w, ch, style| fill(screen, x, y, w, 1, ch, style)
 
     ## Draw an ASCII border around the rectangle at (`x`, `y`) of size `w` by `h`,
     ## with `title` written into the top edge.

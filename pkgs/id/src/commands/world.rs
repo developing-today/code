@@ -67,6 +67,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             node,
             admin_token,
             name,
+            role,
             world,
             addrs,
             no_relay,
@@ -76,7 +77,9 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             crate::world_session::check_invite_bounds(expires_in, uses)
                 .map_err(anyhow::Error::msg)?;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
-            let result = client.invite(&admin_token, &name, expires_in, uses).await;
+            let result = client
+                .invite_with_role(&admin_token, &name, expires_in, uses, role.as_deref())
+                .await;
             client.close();
             endpoint.close().await;
             // Only the capability goes to stdout, so it can be captured.
@@ -387,9 +390,83 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result?)?);
             Ok(())
         }
+        WorldCommand::New { dir, name } => scaffold_world(&dir, &name),
+        WorldCommand::Logs {
+            node,
+            capability,
+            seconds,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            client
+                .send_json(&serde_json::json!({
+                    "type": "join",
+                    "capability": capability,
+                    "after": 0,
+                }))
+                .await?;
+            let deadline =
+                tokio::time::Instant::now() + std::time::Duration::from_secs(seconds.max(1));
+            let result = loop {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break Ok(());
+                }
+                match tokio::time::timeout(remaining, client.recv_json()).await {
+                    Err(_) => break Ok(()),
+                    Ok(Err(error)) => break Err(error),
+                    Ok(Ok(None)) => break Ok(()),
+                    Ok(Ok(Some(frame))) => {
+                        if frame["type"] == "event" {
+                            println!("{}", serde_json::to_string(&frame)?);
+                        } else if frame["type"] == "error" {
+                            break Err(anyhow::anyhow!(
+                                "{}",
+                                frame["message"]
+                                    .as_str()
+                                    .unwrap_or("world refused the event tail")
+                            ));
+                        }
+                    }
+                }
+            };
+            client.close();
+            endpoint.close().await;
+            result
+        }
+        WorldCommand::Stats {
+            node,
+            capability,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let result = async {
+                let info = client.info_details(&capability).await?;
+                let caps = client.caps(&capability).await?;
+                let profile = client.execution_profile(None, Some(&capability)).await?;
+                Ok::<serde_json::Value, anyhow::Error>(serde_json::json!({
+                    "world_id": info.world_id,
+                    "active_module_hash": info.active_module_hash,
+                    "active_module_provenance": info.active_module_provenance,
+                    "current_sequence": info.current_sequence,
+                    "caps": caps,
+                    "profile": profile,
+                }))
+            }
+            .await;
+            client.close();
+            endpoint.close().await;
+            println!("{}", serde_json::to_string_pretty(&result?)?);
+            Ok(())
+        }
         WorldCommand::List {
             node,
             admin_token,
+            json,
             addrs,
             no_relay,
         } => {
@@ -398,12 +475,32 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             client.close();
             endpoint.close().await;
             let (default, worlds) = result?;
-            for (name, open) in worlds {
-                let default_marker = if name == default { " (default)" } else { "" };
+            if json {
+                let worlds: Vec<serde_json::Value> = worlds
+                    .into_iter()
+                    .map(|(name, open)| {
+                        serde_json::json!({
+                            "name": name,
+                            "open": open,
+                            "default": name == default,
+                        })
+                    })
+                    .collect();
                 println!(
-                    "{name}{default_marker}\t{}",
-                    if open { "open" } else { "closed" }
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "default": default,
+                        "worlds": worlds,
+                    }))?
                 );
+            } else {
+                for (name, open) in worlds {
+                    let default_marker = if name == default { " (default)" } else { "" };
+                    println!(
+                        "{name}{default_marker}\t{}",
+                        if open { "open" } else { "closed" }
+                    );
+                }
             }
             Ok(())
         }
@@ -442,6 +539,155 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             result
         }
     }
+}
+
+/// Scaffold a Roc world app in `dir`.
+///
+/// The directory must be absent or empty. Writes `main.roc`, `build.sh`
+/// (executable), and `README.md`, and prints the directory path.
+///
+/// # Errors
+///
+/// A bad name, a non-empty directory, or a filesystem failure.
+fn scaffold_world(dir: &std::path::Path, name: &str) -> Result<()> {
+    anyhow::ensure!(
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "the app name may contain letters, digits, '-' and '_'"
+    );
+    if dir.exists() {
+        anyhow::ensure!(
+            std::fs::read_dir(dir)?.next().is_none(),
+            "{} is not empty",
+            dir.display()
+        );
+    } else {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(dir.join("main.roc"), template_main(name))
+        .with_context(|| format!("write {}", dir.join("main.roc").display()))?;
+    std::fs::write(dir.join("README.md"), template_readme(name))
+        .with_context(|| format!("write {}", dir.join("README.md").display()))?;
+    let build = dir.join("build.sh");
+    std::fs::write(&build, template_build(name))
+        .with_context(|| format!("write {}", build.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&build, std::fs::Permissions::from_mode(0o755))?;
+    }
+    println!("{}", dir.display());
+    Ok(())
+}
+
+fn template_main(name: &str) -> String {
+    format!(
+        r#"app [program] {{ pf: platform "../roc-world/platform.roc" }}
+
+import pf.Screen
+
+# {name}: a scaffolded world app. Replace the model, update, and view with your
+# own. Build with ./build.sh, then install with `id world install` or compile the
+# source with `id world compile`.
+
+Model : {{ count : U64 }}
+
+program = {{ init, update, view, layout, records, wants, snapshot, restore }}
+
+init : U64 -> Model
+init = |_seed| {{ count: 0 }}
+
+update : Model, U64, Str -> Model
+update = |model, _pid, _ev| {{ count: model.count + 1 }}
+
+view : Model -> Str
+view = |model| {{
+    screen = Screen.boxed(Screen.new(24, 3), 0, 0, 24, 3, "{name}")
+    drawn = Screen.put_text(screen, 2, 1, "count=${{model.count.to_str()}}", {{ fg: 2, bg: 0, bold: Bool.True }})
+    Screen.render_json(drawn)
+}}
+
+## Render the same view at any viewport.
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
+records : Model -> Str
+records = |model| "{{\"count\":${{model.count.to_str()}}}}"
+
+wants : Model -> Str
+wants = |_model| "{{}}"
+
+snapshot : Model -> Str
+snapshot = |model| model.count.to_str()
+
+restore : Str -> Model
+restore = |text| match U64.from_str(text) {{
+    Ok(count) => {{ count: count }}
+    Err(_) => {{ count: 0 }}
+}}
+"#
+    )
+}
+
+fn template_readme(name: &str) -> String {
+    format!(
+        r#"# {name}
+
+A world app scaffolded with `id world new`.
+
+## Build
+
+```bash
+./build.sh
+```
+
+The script expects a checkout of the world platform at `../roc-world` and
+produces `{name}.wasm`, validated import-free.
+
+## Run
+
+```bash
+id serve --data-dir ./data --world --world-admin-token "$ADMIN" \
+  --world-module "$PWD/{name}.wasm" --world-ssh-port 2223 --web --port 8787
+```
+
+## Next steps
+
+- Edit `update` to react to input events and `view` to draw a portable screen.
+- Ask for host capabilities through `wants`; grant them with `id world caps`.
+- Keep `snapshot`/`restore` faithful so the host can compact the journal.
+"#
+    )
+}
+
+fn template_build(name: &str) -> String {
+    format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "${{BASH_SOURCE[0]}}")"
+ROC="${{ROC:-roc}}"
+
+if [ -z "${{WASM_TOOLS:-}}" ]; then
+  if command -v wasm-tools >/dev/null 2>&1; then
+    WASM_TOOLS="wasm-tools"
+  else
+    STORE_TOOL=$(ls -d /nix/store/*-wasm-tools-*/bin/wasm-tools 2>/dev/null | head -n1 || true)
+    if [ -n "$STORE_TOOL" ] && [ -x "$STORE_TOOL" ]; then
+      WASM_TOOLS="$STORE_TOOL"
+    else
+      WASM_TOOLS="nix run nixpkgs#wasm-tools --"
+    fi
+  fi
+fi
+
+(cd ../roc-world && ./build-host.sh >/dev/null)
+"$ROC" build main.roc --target=wasm32 --debug --wasm-memory=8454144 --output={name}.wasm
+$WASM_TOOLS validate {name}.wasm
+echo "Built {name}.wasm (import-free Roc world module)"
+"#
+    )
 }
 
 /// An in-memory iroh-docs replica: enough to sync and verify records
@@ -559,4 +805,38 @@ async fn pump(client: WorldClient) -> Result<()> {
     conn.close(0_u32.into(), b"done");
     reader.abort();
     result
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::scaffold_world;
+
+    #[test]
+    fn scaffolding_writes_a_buildable_app_skeleton() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("my-world");
+        scaffold_world(&target, "my-world").unwrap();
+        let main = std::fs::read_to_string(target.join("main.roc")).unwrap();
+        assert!(main.contains("app [program]"));
+        assert!(
+            main.contains(
+                "program = { init, update, view, layout, records, wants, snapshot, restore }"
+            ),
+            "{main}"
+        );
+        assert!(
+            main.contains("layout = |model, _width, _height| view(model)"),
+            "{main}"
+        );
+        assert!(main.contains("Screen.render_json"), "{main}");
+        let build = std::fs::read_to_string(target.join("build.sh")).unwrap();
+        assert!(build.contains("my-world.wasm"), "{build}");
+        assert!(target.join("README.md").is_file());
+
+        // A non-empty directory and a path-like name are refused.
+        assert!(scaffold_world(&target, "my-world").is_err());
+        let bad = dir.path().join("bad");
+        assert!(scaffold_world(&bad, "../escape").is_err());
+    }
 }

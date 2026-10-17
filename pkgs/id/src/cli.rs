@@ -1396,6 +1396,10 @@ pub enum WorldCommand {
         /// Display name for the new participant.
         #[arg(long)]
         name: String,
+        /// Role preset: spectator reads, player also inputs, guest also chats,
+        /// delegator may also mint narrower capabilities. Defaults to guest.
+        #[arg(long, value_parser = ["spectator", "player", "guest", "delegator"])]
+        role: Option<String>,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
         world: Option<String>,
@@ -1634,6 +1638,55 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Scaffold a new Roc world app directory.
+    ///
+    /// Writes `main.roc`, `build.sh`, and `README.md`. The platform path in the
+    /// scaffold points at `../roc-world/platform.roc`, so create the directory
+    /// next to a checkout of the `examples/roc-world` platform.
+    New {
+        /// Directory to create; it must be absent or empty.
+        dir: PathBuf,
+        /// App name used in the README and the Wasm output.
+        #[arg(long, default_value = "world")]
+        name: String,
+    },
+    /// Tail a world's recent events (bounded by retention and a deadline).
+    Logs {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Stop after this many seconds.
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Print a world's module, capability, and profile state as one JSON object.
+    Stats {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// List the worlds a host serves (needs the host's admin token).
     List {
         /// The host's node ID (64 hex characters).
@@ -1641,6 +1694,9 @@ pub enum WorldCommand {
         /// Admin secret configured with `serve --world-admin-token`.
         #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
         admin_token: String,
+        /// Print one JSON object instead of tab-separated lines.
+        #[arg(long)]
+        json: bool,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
         addrs: Vec<SocketAddr>,
@@ -3726,6 +3782,88 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { after: Some(7), .. })
+        ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_roles_and_list_json() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "invite",
+            &node,
+            "--admin-token",
+            "t",
+            "--name",
+            "ann",
+            "--role",
+            "spectator",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Invite { role, .. } => {
+                    assert_eq!(role, Some("spectator".to_owned()));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "invite",
+                &node,
+                "--admin-token",
+                "t",
+                "--name",
+                "ann",
+                "--role",
+                "builder",
+            ])
+            .is_err(),
+            "an unknown role must be refused by the parser"
+        );
+        let cli = Cli::parse_from(["id", "world", "list", &node, "--admin-token", "t", "--json"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::List { json: true, .. })
+        ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_new_and_stats() {
+        let cli = Cli::parse_from(["id", "world", "new", "apps/ping", "--name", "ping"]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::New { dir, name } => {
+                    assert_eq!(name, "ping");
+                    assert!(dir.ends_with("apps/ping"));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from(["id", "world", "stats", &node, "--capability", "c"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Stats { .. })
+        ));
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "logs",
+            &node,
+            "--capability",
+            "c",
+            "--seconds",
+            "9",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds: 9, .. })
         ));
     }
 
