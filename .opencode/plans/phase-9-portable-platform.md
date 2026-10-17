@@ -18,8 +18,9 @@ The immediate slice (P9.1) is a backwards-compatible, validated cell-grid presen
 
 - **P9.1 complete:** portable surface contract and SSH/web presenters are committed on `platform-portable-ui` (PR #214, stacked on #209).
 - **P9.3a complete in PR #215:** server-wide source-only install policy. Source compilation remains enabled and raw artifacts can be refused.
-- **P9.3b in PR #225 (CI pending):** source builds attach server-observed compiler/platform/source digests, target, and stable arguments to the install event; raw artifact installs are labeled as artifacts. Metadata survives restart/checkpoint and is available through the additive module-info field. This is not a trust attestation. Human-readable compiler version and broader allowed-function ceilings remain open.
-- **P9.3c implementation in progress:** define optional per-world resource requests that inherit server limits when absent and clamp to the stricter server hard ceiling when present. This slice does not persist profiles or reconfigure running guests; capability ceilings remain separate.
+- **P9.3b in PR #225:** source builds attach server-observed compiler/platform/source digests, target, and stable arguments to the install event; raw artifact installs are labeled as artifacts. Metadata survives restart/checkpoint and is available through the additive module-info field. This is not a trust attestation. The latest full Nix check failed in Firefox E2E, tracked in issue #229; Rust build/lint checks passed. Human-readable compiler version remains open; server/per-world capability ceilings are tracked in issue #230.
+- **P9.3c complete:** define optional per-world resource requests that inherit server limits when absent and clamp to the stricter server hard ceiling when present. Capability ceilings remain separate.
+- **P9.3d in PR #228:** persist profiles per durable world and apply them only when a new instance is installed or restored. Runtime changes are not applied to an existing guest; the admin API communicates that boundary. Focused Rust tests and the PR run check passed; rollback compatibility is tracked in issue #227.
 - **P9.2a complete in this worktree:** focusable browser surfaces encode common keys with terminal-compatible bytes and send them through the existing durable input event. SSH already forwards PTY bytes through that same event.
 - **P9.2b complete in PR #219:** bounded paste is an explicit input event; browser ResizeObserver and SSH PTY/window-change events set connection-local viewport context. Structured screens are cropped per connection without entering the journal. Roc apps still render at their declared dimensions; guest-aware reflow remains a future ABI follow-up.
 - **P9.4 first slice complete in this worktree:** pure-Roc `RocJson.roc` decode/encode and typed accessors are exported by the Roc world platform; lounge now decodes host events and encodes requests/records. Broader data/game/communication helpers remain planned.
@@ -50,6 +51,8 @@ P9.5 record: [terminal buffer capture interface](../../doc/2026-10-15T16-30-00Z_
 P9.3b record: [observed world module provenance](../../doc/2026-10-16T09-00-00Z_feature_world_module_provenance/2026-10-16T09-00-00Z_feature_world_module_provenance.md).
 
 P9.3c record: [per-world resource profile contract](../../doc/2026-10-16T10-00-00Z_feature_world_resource_profile/2026-10-16T10-00-00Z_feature_world_resource_profile.md).
+
+P9.3d record: [durable per-world resource profiles](../../doc/2026-10-16T10-30-00Z_feature_durable_world_resource_profiles/2026-10-16T10-30-00Z_feature_durable_world_resource_profiles.md).
 
 ## P9.3a acceptance
 

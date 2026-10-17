@@ -367,6 +367,38 @@ impl WorldClient {
         Ok(reply["report"].clone())
     }
 
+    /// Persist the world's requested resource profile. The response includes
+    /// an explicit notice that it applies only on the next install or restart.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or profile is refused.
+    pub async fn set_execution_profile(
+        &mut self,
+        admin_token: &str,
+        profile: crate::world_limits::WorldExecutionProfile,
+    ) -> Result<serde_json::Value> {
+        self.send_json(&serde_json::json!({
+            "type": "set_execution_profile",
+            "admin_token": admin_token,
+            "profile": profile,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "execution_profile" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused the execution profile change")
+            );
+        }
+        Ok(reply)
+    }
+
     /// Let other unisolated worlds write into this world, with the admin token.
     /// Returns the world's policy after the change.
     ///

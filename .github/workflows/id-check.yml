@@ -51,4 +51,4 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Run nix flake check
-        run: nix flake check ./pkgs/id/ -L
+        run: nix flake check ./pkgs/id/ -L --keep-going
