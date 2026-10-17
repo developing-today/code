@@ -903,6 +903,24 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_territory_renders_a_styled_screen_within_the_default_fuel() {
+        let wasm = include_bytes!("../examples/territory/territory.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        live.update(1, b"l ").unwrap();
+        let view = String::from_utf8(live.view().unwrap()).unwrap();
+        let surface = crate::world_presentation::parse_surface(&view).unwrap();
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) = surface else {
+            panic!("territory must return a structured screen: {view}");
+        };
+        assert_eq!((screen.width, screen.height), (24, 19));
+        assert!(
+            screen.cells.iter().any(|cell| cell.fg != 0 && cell.bold),
+            "the cursor cell must carry a visible style"
+        );
+    }
+
+    #[test]
     fn checked_in_territory_plays_persists_and_rejoins() {
         let wasm = include_bytes!("../examples/territory/territory.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
@@ -948,10 +966,20 @@ mod tests {
         );
 
         let view = String::from_utf8(live.view().unwrap()).unwrap();
-        assert!(view.contains("free=124"), "{view}");
+        let surface = crate::world_presentation::parse_surface(&view).unwrap();
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) = surface else {
+            panic!("territory must return a structured screen: {view}");
+        };
+        let rendered: Vec<String> = screen
+            .cells
+            .chunks(usize::from(screen.width))
+            .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+            .collect();
+        let text = rendered.join("\n");
+        assert!(text.contains("free=124"), "{text}");
         assert!(
-            view.contains("A ann 2 online") && view.contains("B bob 2 online"),
-            "{view}"
+            text.contains("A ann 2 online") && text.contains("B bob 2 online"),
+            "{text}"
         );
         assert!(!view.contains('\u{1b}'), "{view}");
 

@@ -59,11 +59,21 @@ update = |model, pid, ev|
 
 view : Model -> Str
 view = |model| {
+    screen = Screen.boxed(Screen.new(24, 19), 0, 0, 18, 10, "territory")
+    with_cells = List.fold(row_indices, screen, |acc, y| {
+        row = List.map(column_indices, |x| {
+            b = cell_byte(model, x, y)
+            st = style_for_cell(b)
+            { ch: bytes_to_str([b]), fg: st.fg, bg: st.bg, bold: st.bold }
+        })
+        Screen.put_row(acc, y + 1, 1, row)
+    })
     free = List.len(List.keep_if(model.cells, |cell| cell == empty))
-    rows = List.map(row_indices, |y| "|${row_text(model, y)}|")
-    scores = List.map(model.seats, |seat| seat_line(model, seat))
-    lines = List.concat(List.concat(List.concat([border], rows), [border, "free=${free.to_str()}  move: arrows/hjkl  claim: enter/space"]), scores)
-    Str.join_with(lines, "\n")
+    status_text = "free=${free.to_str()} [hjkl/space]"
+    with_status = Screen.put_text(with_cells, 0, 10, status_text, { fg: 0, bg: 0, bold: Bool.False })
+    with_scores = List.fold_with_index(model.seats, with_status, |acc, seat, i|
+        Screen.put_text(acc, 0, 11 + i, seat_line(model, seat), mark_style(seat.mark)))
+    Screen.render_json(with_scores)
 }
 
 ## Everything here is derived from the grid and the seats, so the record

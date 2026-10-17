@@ -55,6 +55,29 @@ Screen := {
         }).screen
     }
 
+    ## Replace one row's cells from `x` with `cells`, each carrying its own
+    ## style, clipped to the screen. One list update per row instead of one per
+    ## cell, which keeps row-oriented redraws cheap.
+    put_row : Screen, U64, U64, List({ ch : Str, fg : U8, bg : U8, bold : Bool }) -> Screen
+    put_row = |screen, y, x, cells| {
+        if y >= screen.height {
+            screen
+        } else {
+            List.fold_with_index(cells, { width: screen.width, height: screen.height, cells: screen.cells }, |acc, cell, offset| {
+                column = x + offset
+                if column < acc.width {
+                    index = y * acc.width + column
+                    match List.set(acc.cells, index, cell) {
+                        Ok(updated) => { width: acc.width, height: acc.height, cells: updated }
+                        Err(_) => acc
+                    }
+                } else {
+                    acc
+                }
+            })
+        }
+    }
+
     ## Draw an ASCII border around the rectangle at (`x`, `y`) of size `w` by `h`,
     ## with `title` written into the top edge.
     boxed : Screen, U64, U64, U64, U64, Str -> Screen

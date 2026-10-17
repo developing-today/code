@@ -27,7 +27,7 @@ The immediate slice (P9.1) is a backwards-compatible, validated cell-grid presen
 - **P9.2b complete in PR #219:** bounded paste is an explicit input event; browser ResizeObserver and SSH PTY/window-change events set connection-local viewport context. Structured screens are cropped per connection without entering the journal. Roc apps still render at their declared dimensions; guest-aware reflow remains a future ABI follow-up.
 - **P9.4 first slice complete in this worktree:** pure-Roc `RocJson.roc` decode/encode and typed accessors are exported by the Roc world platform; lounge now decodes host events and encodes requests/records. Broader data/game/communication helpers remain planned.
 - **P9.4b complete in this worktree:** migrated `territory` to `RocJson`, updated `roc-screen` with checked-in artifacts, fixed `lounge` participant decoding, added sandbox screen integration test. Record: [structured apps migration](../../doc/2026-10-16T13-00-00Z_feature_world_apps_structured_migration/2026-10-16T13-00-00Z_feature_world_apps_structured_migration.md).
-- **P9.5 implementation in progress:** `ScreenSurface::from_cells` provides a validated Rust buffer-capture interface; Ratatui stays optional and app-owned. Existing Roc/SSH/browser examples provide producer and presenter paths.
+- **P9.5 in progress in this worktree:** `territory` renders a portable styled screen (per-seat colours, inverted cursor, scoreboard) at the default fuel budget; `Screen.put_row` batches row draws; the shared host allocator clamps non power-of-two alignments instead of trapping. Record: [screen rendering and alignment](../../doc/2026-10-16T14-00-00Z_feature_screen_render_alignment/2026-10-16T14-00-00Z_feature_screen_render_alignment.md). `ScreenSurface::from_cells` remains the validated Rust buffer-capture interface; Ratatui stays optional and app-owned.
 
 “Direct control” is limited to explicit named capabilities under an admin-controlled ceiling. This plan does not enable unrestricted filesystem, network, or process access; native execution remains OS-sandboxed.
 
@@ -62,6 +62,8 @@ P9.3e record: [world capability ceilings](../../doc/2026-10-16T11-00-00Z_feature
 P9.3f record: [world operator CLI controls](../../doc/2026-10-16T12-00-00Z_feature_world_cli_controls/2026-10-16T12-00-00Z_feature_world_cli_controls.md).
 
 P9.4b record: [structured apps migration](../../doc/2026-10-16T13-00-00Z_feature_world_apps_structured_migration/2026-10-16T13-00-00Z_feature_world_apps_structured_migration.md).
+
+P9.5b record: [screen rendering and alignment](../../doc/2026-10-16T14-00-00Z_feature_screen_render_alignment/2026-10-16T14-00-00Z_feature_screen_render_alignment.md).
 
 ## P9.3a acceptance
 
