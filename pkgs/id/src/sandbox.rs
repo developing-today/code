@@ -1850,14 +1850,38 @@ mod tests {
         host_event(world, &joined(1, "ann"));
         host_event(world, &joined(2, "bob"));
         // The opening of a two-player game: each seat has claimed a few
-        // cells. A crowded late game costs more; see the record's headroom
-        // section.
+        // cells. `territory-full` budgets the crowded game.
         for (participant, moves) in [(1u64, "l "), (2, " "), (2, "l "), (2, "hj "), (1, "j ")] {
             world.update(participant, moves.as_bytes()).unwrap();
         }
     }
 
-    fn examples() -> [Example; 7] {
+    /// A crowded territory game: `seats` players join, then each claims
+    /// `per_seat` cells along its own row, so every seat is online with a
+    /// cursor on the board and the grid is mostly claimed.
+    fn crowd_territory(world: &mut WorldInstance, seats: u64, per_seat: usize) {
+        for id in 1..=seats {
+            host_event(
+                world,
+                &format!(
+                    r#"{{"cap":"players","event":"joined","participant":{{"id":{id},"name":"p{id}"}}}}"#
+                ),
+            );
+        }
+        for id in 1..=seats {
+            let mut keys = "j".repeat(usize::try_from(id - 1).unwrap());
+            keys.push(' ');
+            keys.push_str(&"l ".repeat(per_seat.saturating_sub(1)));
+            world.update(id, keys.as_bytes()).unwrap();
+        }
+    }
+
+    /// Territory at its seat limit with most of the board claimed.
+    fn drive_territory_full(world: &mut WorldInstance) {
+        crowd_territory(world, 8, 14);
+    }
+
+    fn examples() -> [Example; 8] {
         [
             Example {
                 name: "roc-counter",
@@ -1893,6 +1917,11 @@ mod tests {
                 name: "territory",
                 wasm: include_bytes!("../examples/territory/territory.wasm"),
                 drive: drive_territory,
+            },
+            Example {
+                name: "territory-full",
+                wasm: include_bytes!("../examples/territory/territory.wasm"),
+                drive: drive_territory_full,
             },
         ]
     }
@@ -1982,22 +2011,22 @@ mod tests {
         ("tic-tac-toe", GuestCall::Wants, 100_000), // baseline 1664
         ("tic-tac-toe", GuestCall::Snapshot, 100_000), // baseline 769
         ("tic-tac-toe", GuestCall::Restore, 100_000), // baseline 14204
-        ("roc-screen", GuestCall::Init, 100_000),  // baseline 1215
-        ("roc-screen", GuestCall::Update, 100_000), // baseline 11491
-        ("roc-screen", GuestCall::View, 400_000),  // baseline 257078
-        ("roc-screen", GuestCall::Layout, 1_500_000), // baseline 1192583
-        ("roc-screen", GuestCall::Records, 100_000), // baseline 2795
-        ("roc-screen", GuestCall::Wants, 100_000), // baseline 733
-        ("roc-screen", GuestCall::Snapshot, 100_000), // baseline 870
-        ("roc-screen", GuestCall::Restore, 100_000), // baseline 3243
-        ("roc-grid", GuestCall::Init, 100_000),    // baseline 1242
-        ("roc-grid", GuestCall::Update, 100_000),  // baseline 5035
-        ("roc-grid", GuestCall::View, 1_300_000),  // baseline 981969
-        ("roc-grid", GuestCall::Layout, 1_300_000), // baseline 981300
-        ("roc-grid", GuestCall::Records, 100_000), // baseline 1664
-        ("roc-grid", GuestCall::Wants, 100_000),   // baseline 737
-        ("roc-grid", GuestCall::Snapshot, 100_000), // baseline 1143
-        ("roc-grid", GuestCall::Restore, 100_000), // baseline 5688
+        ("roc-screen", GuestCall::Init, 100_000),  // baseline 1573
+        ("roc-screen", GuestCall::Update, 100_000), // baseline 13141
+        ("roc-screen", GuestCall::View, 200_000),  // baseline 123675
+        ("roc-screen", GuestCall::Layout, 500_000), // baseline 378384
+        ("roc-screen", GuestCall::Records, 100_000), // baseline 3217
+        ("roc-screen", GuestCall::Wants, 100_000), // baseline 904
+        ("roc-screen", GuestCall::Snapshot, 100_000), // baseline 1061
+        ("roc-screen", GuestCall::Restore, 100_000), // baseline 4129
+        ("roc-grid", GuestCall::Init, 100_000),    // baseline 1585
+        ("roc-grid", GuestCall::Update, 100_000),  // baseline 6150
+        ("roc-grid", GuestCall::View, 500_000),    // baseline 391196
+        ("roc-grid", GuestCall::Layout, 500_000),  // baseline 389763
+        ("roc-grid", GuestCall::Records, 100_000), // baseline 2232
+        ("roc-grid", GuestCall::Wants, 100_000),   // baseline 1082
+        ("roc-grid", GuestCall::Snapshot, 100_000), // baseline 1341
+        ("roc-grid", GuestCall::Restore, 100_000), // baseline 4953
         ("roc-chat", GuestCall::Init, 100_000),    // baseline 1271
         ("roc-chat", GuestCall::Update, 200_000),  // baseline 89763
         ("roc-chat", GuestCall::View, 100_000),    // baseline 5997
@@ -2014,15 +2043,105 @@ mod tests {
         ("lounge", GuestCall::Wants, 300_000),     // baseline 194873
         ("lounge", GuestCall::Snapshot, 100_000),  // baseline 70261
         ("lounge", GuestCall::Restore, 100_000),   // baseline 33299
-        ("territory", GuestCall::Init, 100_000),   // baseline 1255
-        ("territory", GuestCall::Update, 100_000), // baseline 64520
-        ("territory", GuestCall::View, 9_800_000), // baseline 7798929
-        ("territory", GuestCall::Layout, 9_800_000), // baseline 7798260
-        ("territory", GuestCall::Records, 100_000), // baseline 56536
-        ("territory", GuestCall::Wants, 100_000),  // baseline 2444
-        ("territory", GuestCall::Snapshot, 100_000), // baseline 7794
-        ("territory", GuestCall::Restore, 100_000), // baseline 21745
+        ("territory", GuestCall::Init, 100_000),   // baseline 1593
+        ("territory", GuestCall::Update, 100_000), // baseline 68643
+        ("territory", GuestCall::View, 1_500_000), // baseline 1134256
+        ("territory", GuestCall::Layout, 1_500_000), // baseline 1133740
+        ("territory", GuestCall::Records, 100_000), // baseline 58449
+        ("territory", GuestCall::Wants, 100_000),  // baseline 3375
+        ("territory", GuestCall::Snapshot, 100_000), // baseline 10713
+        ("territory", GuestCall::Restore, 100_000), // baseline 23335
+        ("territory-full", GuestCall::Init, 100_000), // baseline 1593
+        ("territory-full", GuestCall::Update, 1_100_000), // baseline 831551
+        ("territory-full", GuestCall::View, 2_100_000), // baseline 1611425
+        ("territory-full", GuestCall::Layout, 2_100_000), // baseline 1612121
+        ("territory-full", GuestCall::Records, 600_000), // baseline 436803
+        ("territory-full", GuestCall::Wants, 100_000), // baseline 3375
+        ("territory-full", GuestCall::Snapshot, 100_000), // baseline 12801
+        ("territory-full", GuestCall::Restore, 100_000), // baseline 32317
     ];
+
+    #[test]
+    fn territory_view_fits_the_default_fuel_with_every_seat_taken() {
+        let wasm = include_bytes!("../examples/territory/territory.wasm");
+        let limits = SandboxLimits::default();
+        let runner = Sandbox::compile(wasm, limits).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        crowd_territory(&mut live, 8, 14);
+        let view = live
+            .view()
+            .unwrap_or_else(|error| panic!("a full territory view must not trap: {error:#}"));
+        let view = String::from_utf8(view).unwrap();
+        let surface = crate::world_presentation::parse_surface(&view).unwrap();
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) = surface else {
+            panic!("territory must return a structured screen: {view}");
+        };
+        let rows: Vec<String> = screen
+            .cells
+            .chunks(usize::from(screen.width))
+            .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+            .collect();
+        let text = rows.join("\n");
+        assert!(text.contains("free=16"), "{text}");
+        assert!(text.contains("H p8 14 online"), "{text}");
+        // One view may use at most 40 percent of the limit, so a full
+        // house leaves room for growth.
+        let spent = live.last_fuel(GuestCall::View);
+        assert!(
+            spent <= limits.fuel * 2 / 5,
+            "a full-house view used {spent} of {} fuel",
+            limits.fuel
+        );
+    }
+
+    #[test]
+    fn territory_scoreboard_lines_are_cut_at_the_screen_width() {
+        let wasm = include_bytes!("../examples/territory/territory.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        host_event(
+            &mut live,
+            r#"{"cap":"players","event":"joined","participant":{"id":1,"name":"abcdefghijklmnopqrst"}}"#,
+        );
+        live.update(1, b" ").unwrap();
+        let view = String::from_utf8(live.view().unwrap()).unwrap();
+        let surface = crate::world_presentation::parse_surface(&view).unwrap();
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) = surface else {
+            panic!("territory must return a structured screen: {view}");
+        };
+        let rows: Vec<String> = screen
+            .cells
+            .chunks(usize::from(screen.width))
+            .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+            .collect();
+        // Names keep 16 bytes; "A " + 16 + " 1 " leaves three columns of "online".
+        assert_eq!(rows[11], "A abcdefghijklmnop 1 onl", "{rows:?}");
+        assert_eq!(rows[0], "+-territory------+      ");
+        assert_eq!(rows[9], "+----------------+      ");
+        assert_eq!(rows[10], "free=127 [hjkl/space]   ");
+        assert_eq!(rows[1], "|a...............|      ");
+        assert_eq!(rows[12], " ".repeat(24));
+    }
+
+    #[test]
+    #[ignore = "prints territory view fuel by seat count"]
+    fn print_territory_view_fuel_by_seats() {
+        // `TERRITORY_WASM=FILE` measures a variant build instead.
+        let wasm = match std::env::var_os("TERRITORY_WASM") {
+            Some(path) => std::fs::read(path).unwrap(),
+            None => include_bytes!("../examples/territory/territory.wasm").to_vec(),
+        };
+        let runner = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
+        for (seats, per_seat) in [(0, 0), (1, 1), (2, 14), (4, 14), (8, 1), (8, 14)] {
+            let mut live = runner.instantiate(7).unwrap();
+            crowd_territory(&mut live, seats, per_seat);
+            let outcome = live.view().map_or("trap", |_| "ok");
+            println!(
+                "seats={seats} per_seat={per_seat} view={outcome} fuel={}",
+                live.last_fuel(GuestCall::View)
+            );
+        }
+    }
 
     #[test]
     fn checked_in_examples_stay_within_fuel_budgets() {
