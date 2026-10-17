@@ -79,10 +79,15 @@ index arithmetic per app. `examples/roc-grid` is the checked-in example.
 
 `RocCap.roc` is exposed as `pf.RocCap` for the request side of the capability
 protocol. `issue` reserves `r0`, `r1`, … ids and records each one's capability;
-`chat_request`, `now_request`, `players_request`, and `world_request` build the
-request documents; `answered` routes a result back to the capability that asked
-(correct under replay, not just live play); and `done` retires it. Apps stop
-re-deriving id counters and pending lists.
+`attach` stores the request document so `requests` can re-announce it in
+`wants` after replay; `chat_request`, `now_request`, `players_request`, and
+`world_request` build the documents; `answered` routes a result back to the
+capability that asked; `done` retires it; and `from_pending` rebuilds a session
+from a snapshot. Apps stop re-deriving id counters and pending lists.
+
+`Screen.put_grid` draws a `RocGrid` at a position through a glyph function with
+one style for the whole grid, so maps and single-colour boards need no manual
+row assembly.
 
 One nightly caveat: with
 nightly-2026-10-04-130536d's wasm backend, `List.get` past the second

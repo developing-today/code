@@ -1,6 +1,7 @@
 app [program] { pf: platform "../roc-world/platform.roc" }
 
 import pf.RocJson
+import pf.RocCap
 
 # A lounge world: the first example that uses the server's capability
 # system. It subscribes to arrivals and ticks, greets every newcomer through
@@ -12,15 +13,14 @@ import pf.RocJson
 Model : {
 	joins : U64,
 	denied : U64,
-	next : U64,
+	cap : RocCap,
 	last_now : Str,
-	pending : List(RocJson),
 }
 
 program = { init, update, view, records, wants, snapshot, restore }
 
 init : U64 -> Model
-init = |_seed| { joins: 0, denied: 0, next: 0, last_now: "", pending: [] }
+init = |_seed| { joins: 0, denied: 0, cap: RocCap.empty, last_now: "" }
 
 update : Model, U64, Str -> Model
 update = |model, _pid, ev| {
@@ -31,28 +31,26 @@ update = |model, _pid, ev| {
 			event_name = string_field(event, "event")
 			if cap == "players" and event_name == "joined" {
 				name = sanitize(string_field(field(event, "participant"), "name"))
-				next = model.next + 1
-				request = chat_request(next, Str.concat("Welcome, ", Str.concat(name, "!")))
-				{ joins: model.joins + 1, denied: model.denied, next: next, last_now: model.last_now, pending: List.append(model.pending, request) }
+				issued = RocCap.issue(model.cap, "chat.say")
+				request = RocCap.chat_request(issued.id, Str.concat("Welcome, ", Str.concat(name, "!")))
+				{ joins: model.joins + 1, denied: model.denied, cap: RocCap.attach(issued.session, issued.id, request), last_now: model.last_now }
 			} else if cap == "time.tick" {
-				next = model.next + 1
-				request = time_request(next)
-				{ joins: model.joins, denied: model.denied, next: next, last_now: model.last_now, pending: List.append(model.pending, request) }
+				issued = RocCap.issue(model.cap, "time.now")
+				request = RocCap.now_request(issued.id)
+				{ joins: model.joins, denied: model.denied, cap: RocCap.attach(issued.session, issued.id, request), last_now: model.last_now }
 			} else if cap == "result" {
 				id = string_field(event, "id")
-				request_cap = string_field(pending_request(model.pending, id), "cap")
+				answered = RocCap.answered(model.cap, id)
 				ok = bool_field(event, "ok")
-				denied = if request_cap == "chat.say" and ok == Bool.False {
-					model.denied + 1
+				if answered == "chat.say" {
+					denied = if ok { model.denied } else { model.denied + 1 }
+					{ joins: model.joins, denied: denied, cap: RocCap.done(model.cap, id), last_now: model.last_now }
+				} else if answered == "time.now" {
+					last_now = if ok { number_field(field(event, "value"), "now") } else { model.last_now }
+					{ joins: model.joins, denied: model.denied, cap: RocCap.done(model.cap, id), last_now: last_now }
 				} else {
-					model.denied
+					model
 				}
-				last_now = if request_cap == "time.now" and ok == Bool.True {
-					number_field(field(event, "value"), "now")
-				} else {
-					model.last_now
-				}
-				{ joins: model.joins, denied: denied, next: model.next, last_now: last_now, pending: drop_pending(model.pending, id) }
 			} else {
 				model
 			}
@@ -79,14 +77,14 @@ wants = |model| encode_or_crash(
 	RocJson.Object([
 		{ key: "v", value: RocJson.Number("1") },
 		{ key: "subscribe", value: RocJson.Array([RocJson.String("players"), RocJson.String("time.tick:5000")]) },
-		{ key: "requests", value: RocJson.Array(model.pending) },
+		{ key: "requests", value: RocJson.Array(RocCap.requests(model.cap)) },
 	]),
 )
 
 ## Keep the existing checkpoint format stable; each pending line is compact JSON.
 snapshot : Model -> Str
 snapshot = |model|
-	"${model.joins.to_str()} ${model.denied.to_str()} ${model.next.to_str()} ${model.last_now}\n${Str.join_with(List.map(model.pending, encode_or_crash), "\n")}"
+	"${model.joins.to_str()} ${model.denied.to_str()} ${RocCap.counter(model.cap).to_str()} ${model.last_now}\n${Str.join_with(List.map(RocCap.requests(model.cap), encode_or_crash), "\n")}"
 
 restore : Str -> Model
 restore = |text| {
@@ -96,7 +94,7 @@ restore = |text| {
 		Err(_) => ""
 	}
 	fields = Str.split_on(head, " ")
-	pending = List.fold(
+	documents = List.fold(
 		List.drop_first(parts, 1),
 		[],
 		|acc, line| match RocJson.decode(line) {
@@ -107,9 +105,8 @@ restore = |text| {
 	{
 		joins: num(fields, 0),
 		denied: num(fields, 1),
-		next: num(fields, 2),
+		cap: RocCap.from_pending(num(fields, 2), documents),
 		last_now: part(fields, 3),
-		pending: pending,
 	}
 }
 
@@ -159,26 +156,6 @@ sanitize = |text| {
 		Err(_) => ""
 	}
 }
-
-chat_request = |next, text| RocJson.Object([
-	{ key: "id", value: RocJson.String(Str.concat("r", next.to_str())) },
-	{ key: "cap", value: RocJson.String("chat.say") },
-	{ key: "args", value: RocJson.Object([{ key: "text", value: RocJson.String(text) }]) },
-])
-
-time_request = |next| RocJson.Object([
-	{ key: "id", value: RocJson.String(Str.concat("r", next.to_str())) },
-	{ key: "cap", value: RocJson.String("time.now") },
-])
-
-pending_request = |pending, id|
-	match List.first(List.keep_if(pending, |request| string_field(request, "id") == id)) {
-		Ok(request) => request
-		Err(_) => RocJson.Null
-	}
-
-drop_pending = |pending, id|
-	List.keep_if(pending, |request| string_field(request, "id") != id)
 
 # --- snapshot scalar helpers ----------------------------------------------
 

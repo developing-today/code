@@ -1,3 +1,4 @@
+import RocGrid
 Screen := {
     width : U64,
     height : U64,
@@ -76,6 +77,19 @@ Screen := {
                 }
             })
         }
+    }
+
+    ## Draw every cell of `grid` at (`x`, `y`) through `glyph`, with one style
+    ## for the whole grid. Cells outside the screen are clipped.
+    put_grid : Screen, U64, U64, RocGrid, (U8 -> Str), { fg : U8, bg : U8, bold : Bool } -> Screen
+    put_grid = |screen, x, y, grid, glyph, style| {
+        dims = RocGrid.dimensions(grid)
+        List.fold(range(0, dims.height), screen, |acc, gy| {
+            cells = List.map(range(0, dims.width), |gx| {
+                { ch: glyph(RocGrid.get(grid, gx, gy, 32)), fg: style.fg, bg: style.bg, bold: style.bold }
+            })
+            put_row(acc, y + gy, x, cells)
+        })
     }
 
     ## Draw an ASCII border around the rectangle at (`x`, `y`) of size `w` by `h`,

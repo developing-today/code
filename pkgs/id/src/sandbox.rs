@@ -907,9 +907,35 @@ mod tests {
         let wasm = include_bytes!("../examples/roc-grid/roc-grid.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
         let mut live = runner.instantiate(7).unwrap();
-        assert_eq!(live.view().unwrap(), b"cells=12 cursor=46 outside=63");
+        let render = |world: &mut WorldInstance| -> String {
+            let view = String::from_utf8(world.view().unwrap()).unwrap();
+            let Some(crate::world_presentation::WorldSurface::Screen(screen)) =
+                crate::world_presentation::parse_surface(&view).unwrap()
+            else {
+                panic!("the grid example must return a structured screen: {view}");
+            };
+            screen
+                .cells
+                .chunks(usize::from(screen.width))
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| cell.symbol.as_str())
+                        .collect::<String>()
+                })
+                .collect::<Vec<String>>()
+                .join("\n")
+        };
+        let text = render(&mut live);
+        assert!(text.contains("cells=12 at11=46 out=63"), "{text}");
         live.update(1, b"set").unwrap();
-        assert_eq!(live.view().unwrap(), b"cells=11 cursor=65 outside=63");
+        let text = render(&mut live);
+        assert!(text.contains("cells=11 at11=65 out=63"), "{text}");
+        // The snapshot is the grid's bytes, and restore rebuilds it.
+        let snapshot = live.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        let text = render(&mut restored);
+        assert!(text.contains("cells=11 at11=65 out=63"), "{text}");
     }
 
     #[test]
@@ -1105,7 +1131,7 @@ mod tests {
         // program sees, and the request is retired.
         let denied = serde_json::json!({
             "cap": "result",
-            "id": "r1",
+            "id": "r0",
             "ok": false,
             "error": "cap_denied",
         });
@@ -1147,7 +1173,7 @@ mod tests {
         .unwrap();
         let granted = serde_json::json!({
             "cap": "result",
-            "id": "r2",
+            "id": "r1",
             "ok": true,
             "value": {"sequence": 9},
         });

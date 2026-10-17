@@ -74,4 +74,21 @@ RocGrid := {
 		} else {
 			[]
 		}
+
+	## Every cell, row-major, as a byte list (a reference, not a copy).
+	bytes : RocGrid -> List(U8)
+	bytes = |grid| grid.cells
+
+	## The grid's size.
+	dimensions : RocGrid -> { width : U64, height : U64 }
+	dimensions = |grid| { width: grid.width, height: grid.height }
+
+	## A grid of `width` by `height` from up to that many bytes of `cells`,
+	## padding short input with `fill` and ignoring extra input.
+	from_cells : U64, U64, List(U8), U8 -> RocGrid
+	from_cells = |width, height, cells, fill| {
+		taken = List.take_first(cells, width * height)
+		padded = List.concat(taken, List.repeat(fill, width * height - List.len(taken)))
+		{ width: width, height: height, cells: padded }
+	}
 }

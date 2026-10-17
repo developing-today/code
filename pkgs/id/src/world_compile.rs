@@ -637,7 +637,7 @@ mod tests {
 import pf.RocCap
 import pf.RocJson
 
-Model : { request : Str }
+Model : { session : RocCap, request : Str }
 
 program = { init, update, view, records, wants, snapshot, restore }
 
@@ -645,33 +645,37 @@ init : U64 -> Model
 init = |seed| {
 	issued = RocCap.issue(RocCap.empty, "chat.say")
 	document = RocCap.chat_request(issued.id, seed.to_str())
+	session = RocCap.attach(issued.session, issued.id, document)
 	encoded = match RocJson.encode(document) {
 		Ok(text) => text
 		Err(_) => ""
 	}
-	{ request: encoded }
+	{ session: session, request: encoded }
 }
 
 update : Model, U64, Str -> Model
 update = |model, _pid, _ev| model
 
 view : Model -> Str
-view = |model| {
-	answered = RocCap.answered(RocCap.empty, "r0")
-	"issued=${answered.to_str()} ${model.request}"
-}
+view = |model| model.request
 
 records : Model -> Str
 records = |_model| "{}"
 
 wants : Model -> Str
-wants = |_model| "{}"
+wants = |model| {
+	encoded = List.map(RocCap.requests(model.session), |document| match RocJson.encode(document) {
+		Ok(text) => text
+		Err(_) => ""
+	})
+	"{\"requests\":[${Str.join_with(encoded, ",")}]}"
+}
 
 snapshot : Model -> Str
 snapshot = |model| model.request
 
 restore : Str -> Model
-restore = |text| { request: text }
+restore = |text| { session: RocCap.empty, request: text }
 "#;
         let (wasm, _diagnostics, _provenance) = compile(
             &CompileSpec {
@@ -690,11 +694,16 @@ restore = |text| { request: text }
                 .unwrap();
         let mut world = runner.instantiate(7).unwrap();
         let view = String::from_utf8(world.view().unwrap()).unwrap();
-        let document = view.split(' ').nth(1).unwrap();
-        let decoded: serde_json::Value = serde_json::from_str(document).unwrap();
+        let decoded: serde_json::Value = serde_json::from_str(&view).unwrap();
         assert_eq!(decoded["id"], "r0");
         assert_eq!(decoded["cap"], "chat.say");
         assert_eq!(decoded["args"]["text"], "7");
+        let wants = crate::world::WorldProgram::wants(&mut world)
+            .unwrap()
+            .unwrap();
+        let decoded_wants: serde_json::Value = serde_json::from_str(&wants).unwrap();
+        assert_eq!(decoded_wants["requests"][0]["id"], "r0");
+        assert_eq!(decoded_wants["requests"][0]["cap"], "chat.say");
     }
 
     #[test]

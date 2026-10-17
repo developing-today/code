@@ -29,8 +29,11 @@ List(U8) }`. Bytes keep the representation small and interoperate with
 ## Acceptance
 
 - `pkgs/id/examples/roc-grid` is the checked-in example. It builds an
-  import-free Wasm module and shows count, in-bounds get, and out-of-bounds
-  fallback in its view.
+  import-free Wasm module and draws its board with `Screen.put_grid`, then
+  reports count, an in-bounds read, and an out-of-bounds fallback on a status
+  line.
+- `bytes`, `from_cells`, and `dimensions` round out the module; `Screen.roc`
+  imports it for `put_grid`, and `territory` keeps its board in it.
 - `checked_in_grid_example_uses_bounded_get_set` compiles the checked-in
   module in the sandbox, asserts `cells=12 cursor=46 outside=63`, plays one
   `set`, and asserts `cells=11 cursor=65 outside=63`.
@@ -38,8 +41,8 @@ List(U8) }`. Bytes keep the representation small and interoperate with
 
 ## Follow-ups
 
-- `Screen.roc` and `RocGrid.roc` still duplicate index arithmetic; a later
-  slice can draw a `RocGrid` directly.
+- A colour-per-cell grid draw (the shape `territory` needs) could become a
+  `Screen` bulk API once a second app needs it.
 - A text renderer for grids (`RocGrid.render`) was left out because the
   available string helpers differ across Roc nightlies; add it once the
   pinned nightly can build it.

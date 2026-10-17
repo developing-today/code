@@ -11,24 +11,64 @@
 import RocJson
 RocCap := {
 	next : U64,
-	pending : List({ id : Str, cap : Str }),
+	pending : List({ id : Str, cap : Str, document : RocJson }),
 }.{
 	## A session with no outstanding requests.
 	empty : RocCap
 	empty = { next: 0, pending: [] }
 
-	## Track a pending request under its capability name and get the request
-	## `id` to use. Call once per request document you append to `wants`.
+	## Reserve the next request id under `cap`. Build the document with
+	## `chat_request`/`now_request`/`players_request`/`world_request`, then pass
+	## it to `attach` so `requests` can re-announce it after replay.
 	issue : RocCap, Str -> { session : RocCap, id : Str }
 	issue = |session, cap| {
 		id = Str.concat("r", session.next.to_str())
 		{
 			session: {
 				next: session.next + 1,
-				pending: List.append(session.pending, { id: id, cap: cap }),
+				pending: List.append(session.pending, { id: id, cap: cap, document: RocJson.Null }),
 			},
 			id: id,
 		}
+	}
+
+	## Store the request document under its id.
+	attach : RocCap, Str, RocJson -> RocCap
+	attach = |session, id, document| {
+		pending = List.map(
+			session.pending,
+			|entry| if entry.id == id { { id: entry.id, cap: entry.cap, document: document } } else { entry },
+		)
+		{ next: session.next, pending: pending }
+	}
+
+	## The outstanding request documents, in issue order, for `wants`.
+	requests : RocCap -> List(RocJson)
+	requests = |session| List.map(session.pending, |entry| entry.document)
+
+	## The request counter, for snapshotting.
+	counter : RocCap -> U64
+	counter = |session| session.next
+
+	## Rebuild a session from a counter and its pending documents.
+	from_pending : U64, List(RocJson) -> RocCap
+	from_pending = |next, documents| {
+		entries = List.map(documents, |document| {
+			id = string_field(document, "id")
+			cap = string_field(document, "cap")
+			{ id: id, cap: cap, document: document }
+		})
+		{ next: next, pending: entries }
+	}
+
+	## A string field of a JSON object, or `""` when missing or not a string.
+	string_field : RocJson, Str -> Str
+	string_field = |value, key| match RocJson.get(value, key) {
+		Ok(found) => match RocJson.as_string(found) {
+			Ok(text) => text
+			Err(_) => ""
+		}
+		Err(_) => ""
 	}
 
 	## A `chat.say` request document.
@@ -65,11 +105,10 @@ RocCap := {
 		])
 
 	## The capability name a result `id` answers, or `""` when the id is not
-	## pending (an earlier model's retry, or somebody else's request). Use it
-	## to route the result exactly as the version that sent it would have.
+	## pending (an earlier model's retry, or somebody else's request). Use it to
+	## route the result exactly as the version that sent it would have.
 	answered : RocCap, Str -> Str
-	answered = |session, id|
-		route(session.pending, id)
+	answered = |session, id| route(session.pending, id)
 
 	## Retire the request a result answers.
 	done : RocCap, Str -> RocCap
@@ -80,7 +119,7 @@ RocCap := {
 	is_empty : RocCap -> Bool
 	is_empty = |session| List.is_empty(session.pending)
 
-	route : List({ id : Str, cap : Str }), Str -> Str
+	route : List({ id : Str, cap : Str, document : RocJson }), Str -> Str
 	route = |pending, id|
 		List.fold(pending, "", |found, entry| if found == "" and entry.id == id { entry.cap } else { found })
 }
