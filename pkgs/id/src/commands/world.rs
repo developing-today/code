@@ -463,6 +463,33 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result?)?);
             Ok(())
         }
+        WorldCommand::Record {
+            node,
+            capability,
+            out,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            // Boxed so that `cmd_world`, already a large state machine, does not
+            // grow by the recording's futures.
+            Box::pin(record_command(
+                &node,
+                &capability,
+                out.as_deref(),
+                world.as_deref(),
+                &addrs,
+                no_relay,
+            ))
+            .await
+        }
+        #[cfg(feature = "sandbox")]
+        WorldCommand::Replay {
+            module,
+            fixture,
+            seed,
+            allow_partial,
+        } => replay_fixture(&module, &fixture, seed, allow_partial),
         WorldCommand::List {
             node,
             admin_token,
@@ -539,6 +566,115 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             result
         }
     }
+}
+
+/// Record a world to a fixture: the file at `out`, or standard output.
+///
+/// # Errors
+///
+/// A host that cannot be reached, a refused capability, or a file that cannot
+/// be written.
+async fn record_command(
+    node: &str,
+    capability: &str,
+    out: Option<&std::path::Path>,
+    world: Option<&str>,
+    addrs: &[SocketAddr],
+    no_relay: bool,
+) -> Result<()> {
+    let (endpoint, mut client) = connect(node, addrs, no_relay, world).await?;
+    let result = crate::world_fixture::record(&mut client, capability).await;
+    client.close();
+    endpoint.close().await;
+    let fixture = result?;
+    let text = crate::world_fixture::encode(&fixture.header, &fixture.events);
+    match out {
+        Some(path) => {
+            tokio::fs::write(path, &text)
+                .await
+                .with_context(|| format!("write fixture to {}", path.display()))?;
+            eprintln!(
+                "recorded {} events through sequence {} ({}) to {}",
+                fixture.events.len(),
+                fixture.header.current_sequence,
+                if fixture.header.complete {
+                    "complete"
+                } else {
+                    "partial"
+                },
+                path.display()
+            );
+        }
+        None => print!("{text}"),
+    }
+    Ok(())
+}
+
+/// Replay a fixture offline and print the verdict, the records, and the view.
+///
+/// The verdict line comes first. Records that differ from the fixture's make
+/// the command fail, after the expected and replayed records are printed.
+///
+/// # Errors
+///
+/// An unreadable or oversized file, a module the fixture was not recorded
+/// under, a refused replay, or records that differ from the fixture's.
+#[cfg(feature = "sandbox")]
+fn replay_fixture(
+    module: &std::path::Path,
+    fixture_path: &std::path::Path,
+    seed: u64,
+    allow_partial: bool,
+) -> Result<()> {
+    use crate::world_fixture::Verdict;
+
+    let wasm = read_bounded(
+        module,
+        crate::world_session::MAX_WORLD_MODULE_BYTES as u64,
+        "module",
+    )?;
+    let text = String::from_utf8(read_bounded(
+        fixture_path,
+        crate::world_fixture::MAX_FIXTURE_BYTES,
+        "fixture",
+    )?)
+    .context("the fixture is not UTF-8")?;
+    let fixture = crate::world_fixture::decode(&text)?;
+    crate::world_fixture::check_module(&fixture.header, &wasm)?;
+    let runner = crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())?;
+    let replayed = crate::world_fixture::replay(&runner, seed, &fixture, allow_partial)?;
+    match &replayed.verdict {
+        Verdict::Match => println!("records match"),
+        Verdict::Mismatch => println!("records differ"),
+        Verdict::NotCompared(reason) => println!("records not compared ({reason})"),
+    }
+    if let Some(records) = &replayed.records {
+        let value: serde_json::Value =
+            serde_json::from_str(records).context("the replayed records")?;
+        println!("records: {}", serde_json::to_string_pretty(&value)?);
+    }
+    if let Some(view) = &replayed.view {
+        println!("view:\n{view}");
+    }
+    if replayed.verdict == Verdict::Mismatch {
+        if let Some(expected) = &fixture.header.records {
+            println!(
+                "expected records: {}",
+                serde_json::to_string_pretty(expected)?
+            );
+        }
+        bail!("the replayed records differ from the fixture's");
+    }
+    Ok(())
+}
+
+/// Read a file no larger than `limit` bytes.
+#[cfg(feature = "sandbox")]
+fn read_bounded(path: &std::path::Path, limit: u64, what: &str) -> Result<Vec<u8>> {
+    let metadata =
+        std::fs::metadata(path).with_context(|| format!("read {what} {}", path.display()))?;
+    anyhow::ensure!(metadata.len() <= limit, "{what} exceeds {limit} bytes");
+    std::fs::read(path).with_context(|| format!("read {what} {}", path.display()))
 }
 
 /// Scaffold a Roc world app in `dir`.

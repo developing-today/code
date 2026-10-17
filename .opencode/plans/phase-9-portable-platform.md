@@ -76,6 +76,8 @@ each one is useful alone and does not depend on a later one.
 
 - **P10.1 started in this worktree:** role-scoped invites (`spectator`, `player`, `guest`, `delegator`) over the existing scope machinery, and `id world list --json` for directory feeds. Builder/moderator roles with their own authority, and a cross-node directory feed, remain follow-ups. Record: [roles and directory](../../doc/2026-10-17T08-00-00Z_feature_world_roles_directory/2026-10-17T08-00-00Z_feature_world_roles_directory.md).
 
+- **P10.2 started in this worktree:** session recording to replayable fixtures. `id world record` writes a world's retained history and records to a JSON Lines fixture through a join capability, and `id world replay` runs that fixture offline in the sandbox under the operator's seed and compares the records. Host events (presence, capability results, ticks) never enter the event stream, so a fixture replays faithfully only for programs that do not consume them; the records check reports the difference. Reinstall windows and partial histories need follow-ups. Record: [session recording](../../doc/2026-10-17T09-00-00Z_feature_world_fixtures/2026-10-17T09-00-00Z_feature_world_fixtures.md).
+
 ## Phase 10 sketch: worlds as places
 
 Not committed beyond the slice above, recorded so the direction is visible.
