@@ -94,6 +94,7 @@ impl Sandbox {
                         | "plaza_update"
                         | "plaza_free"
                         | "plaza_view"
+                        | "plaza_layout"
                         | "plaza_records"
                         | "plaza_wants"
                         | "plaza_snapshot"
@@ -172,6 +173,20 @@ impl Sandbox {
         let view = instance
             .get_typed_func::<i32, i32>(&mut store, "plaza_view")
             .map_err(|e| anyhow::anyhow!("guest must export `plaza_view(i32) -> i32`: {e}"))?;
+        // Optional: lay the presentation out for a connection's viewport.
+        let layout = if instance.get_func(&mut store, "plaza_layout").is_some() {
+            Some(
+                instance
+                    .get_typed_func::<(i32, i64, i64), i32>(&mut store, "plaza_layout")
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "guest `plaza_layout` must be `(i32, i64, i64) -> i32`: {e}"
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let out_len = instance
             .get_typed_func::<(), i32>(&mut store, "plaza_out_len")
             .map_err(|e| anyhow::anyhow!("guest must export `plaza_out_len() -> i32`: {e}"))?;
@@ -251,6 +266,7 @@ impl Sandbox {
             free,
             update,
             view,
+            layout,
             records,
             wants,
             snapshot,
@@ -276,6 +292,7 @@ pub struct WorldInstance {
     free: TypedFunc<(i32, i32), ()>,
     update: TypedFunc<(i32, i32, i32, i32), i32>,
     view: TypedFunc<i32, i32>,
+    layout: Option<TypedFunc<(i32, i64, i64), i32>>,
     records: Option<TypedFunc<i32, i32>>,
     wants: Option<TypedFunc<i32, i32>>,
     snapshot: Option<TypedFunc<i32, i32>>,
@@ -364,6 +381,38 @@ impl WorldInstance {
             Err(e) => {
                 return Err(anyhow::anyhow!(
                     "guest `plaza_view` failed (trap or fuel exhausted): {e}{}",
+                    self.guest_error_suffix()
+                ));
+            }
+        };
+        self.read_output(output_ptr)
+    }
+
+    /// Render this world at a viewport. Uses the guest's `plaza_layout` when it
+    /// exports one, and otherwise the fixed [`Self::view`]. Rendering never
+    /// changes the model or the journal.
+    pub fn layout_at(&mut self, width: u16, height: u16) -> Result<Vec<u8>> {
+        ensure!(
+            !self.poisoned,
+            "world guest is poisoned after a previous failure"
+        );
+        let Some(layout) = self.layout.as_ref() else {
+            return self.view();
+        };
+        self.store
+            .set_fuel(self.limits.fuel)
+            .map_err(|e| anyhow::anyhow!("reset guest fuel: {e}"))?;
+        let model = self.model;
+        let rendered = layout.call(
+            &mut self.store,
+            (model, i64::from(width), i64::from(height)),
+        );
+        let output_ptr = match rendered {
+            Ok(ptr) => ptr,
+            Err(e) => {
+                self.poisoned = true;
+                return Err(anyhow::anyhow!(
+                    "guest `plaza_layout` failed (trap or fuel exhausted): {e}{}",
                     self.guest_error_suffix()
                 ));
             }
@@ -644,6 +693,18 @@ impl crate::world::WorldProgram for WorldInstance {
         String::from_utf8(output)
             .map(Some)
             .context("Roc world view must return valid UTF-8")
+    }
+
+    fn layout(
+        &mut self,
+        _viewer: &crate::world::Participant,
+        width: u16,
+        height: u16,
+    ) -> Result<Option<String>> {
+        let output = Self::layout_at(self, width, height)?;
+        String::from_utf8(output)
+            .map(Some)
+            .context("Roc world layout must return valid UTF-8")
     }
 
     fn records(&mut self) -> Result<Option<String>> {
@@ -1017,6 +1078,28 @@ mod tests {
         let mut restored = runner.instantiate(7).unwrap();
         restored.restore(&snapshot).unwrap();
         assert_eq!(view(&mut restored), "chat seen=1 last=hi input=");
+    }
+
+    #[test]
+    fn checked_in_roc_screen_reflows_for_a_wider_viewport() {
+        let wasm = include_bytes!("../examples/roc-screen/roc-screen.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        let width_of = |bytes: Vec<u8>| -> u16 {
+            let text = String::from_utf8(bytes).unwrap();
+            let Some(crate::world_presentation::WorldSurface::Screen(screen)) =
+                crate::world_presentation::parse_surface(&text).unwrap()
+            else {
+                panic!("roc-screen must return a structured screen: {text}");
+            };
+            screen.width
+        };
+        // The fixed view stays 20 wide; the layout path reflows to the viewport.
+        assert_eq!(width_of(live.view().unwrap()), 20);
+        assert_eq!(width_of(live.layout_at(40, 5).unwrap()), 30);
+        assert_eq!(width_of(live.layout_at(24, 5).unwrap()), 20);
+        // Reflow never changes the model or its view.
+        assert_eq!(width_of(live.view().unwrap()), 20);
     }
 
     #[test]

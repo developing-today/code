@@ -24,11 +24,13 @@ The immediate slice (P9.1) is a backwards-compatible, validated cell-grid presen
 - **P9.3e in PR #231:** server and per-world capability ceilings bound which granted host capabilities authority reaches. The server ceiling is `serve --world-allowed-caps` (runtime configuration); the world ceiling is durable and applies immediately, and it never rewrites grants. Record: [world capability ceilings](../../doc/2026-10-16T11-00-00Z_feature_world_capability_ceilings/2026-10-16T11-00-00Z_feature_world_capability_ceilings.md).
 - **P9.3f complete in this worktree:** operator CLI commands for capability ceilings (`id world caps --ceiling`) and execution profiles (`id world profile`). Record: [world CLI controls](../../doc/2026-10-16T12-00-00Z_feature_world_cli_controls/2026-10-16T12-00-00Z_feature_world_cli_controls.md).
 - **P9.2a complete in this worktree:** focusable browser surfaces encode common keys with terminal-compatible bytes and send them through the existing durable input event. SSH already forwards PTY bytes through that same event.
-- **P9.2b complete in PR #219:** bounded paste is an explicit input event; browser ResizeObserver and SSH PTY/window-change events set connection-local viewport context. Structured screens are cropped per connection without entering the journal. Roc apps still render at their declared dimensions; guest-aware reflow remains a future ABI follow-up.
+- **P9.2b complete in PR #219:** bounded paste is an explicit input event; browser ResizeObserver and SSH PTY/window-change events set connection-local viewport context. Structured screens are cropped per connection without entering the journal. Guest-aware reflow is complete in this worktree (P9.8).
 - **P9.4 first slice complete in this worktree:** pure-Roc `RocJson.roc` decode/encode and typed accessors are exported by the Roc world platform; lounge now decodes host events and encodes requests/records. Broader data/game/communication helpers remain planned.
 - **P9.4b complete in this worktree:** migrated `territory` to `RocJson`, updated `roc-screen` with checked-in artifacts, fixed `lounge` participant decoding, added sandbox screen integration test. Record: [structured apps migration](../../doc/2026-10-16T13-00-00Z_feature_world_apps_structured_migration/2026-10-16T13-00-00Z_feature_world_apps_structured_migration.md).
 - **P9.4c in this worktree:** the platform exposes `pf.RocGrid`, a bounds-checked row-major byte grid (`new`, `get`, `set`, `count`, `neighbors4`, `row`) with a checked-in `examples/roc-grid` example and a sandbox test. Record: [RocGrid](../../doc/2026-10-16T15-00-00Z_feature_roc_grid/2026-10-16T15-00-00Z_feature_roc_grid.md).
 - **P9.4d in this worktree:** the platform exposes `pf.RocCap`, shared request bookkeeping for the capability protocol (`issue`, `attach`, `requests`, `from_pending`, the request builders, `answered`, `done`), verified by a compile-and-run test. Record: [RocCap](../../doc/2026-10-16T16-00-00Z_feature_roc_cap/2026-10-16T16-00-00Z_feature_roc_cap.md).
+- **P9.8 complete in this worktree:** guest-aware reflow. The platform requires `layout : model, U64, U64 -> Str`; sessions with a viewport render through `plaza_layout`, without journaling or sequence changes, and cropping remains the fallback. `roc-screen` widens on viewports of at least 30 columns. Record: [guest-aware reflow](../../doc/2026-10-16T19-00-00Z_feature_guest_reflow/2026-10-16T19-00-00Z_feature_guest_reflow.md).
+- **P9.11 partially complete in this worktree:** `Screen.fill` and `Screen.rule` cover rect fills and separators, verified by a compile-and-run test; `RocText` is deferred until a Roc nightly bump because string APIs are the known caveat. Record: [screen widgets](../../doc/2026-10-16T19-30-00Z_feature_screen_widgets/2026-10-16T19-30-00Z_feature_screen_widgets.md).
 - **P9.9 complete in this worktree:** `records.read` returns byte-bounded, prefix-scoped pages of the world's published records with an exclusive `after` cursor, requires only the `join` scope, and is exposed as `RocCap.records_request`/`records_page`/`next_after`. Record: [records readback](../../doc/2026-10-16T18-00-00Z_feature_records_readback/2026-10-16T18-00-00Z_feature_records_readback.md).
 - **P9.10 complete in this worktree:** `id world new` scaffolds a buildable Roc app (main.roc, executable build.sh, README) and `id world stats` prints module info, capability report, and execution profile as one JSON object. Record: [authoring CLI](../../doc/2026-10-16T18-30-00Z_feature_world_authoring_cli/2026-10-16T18-30-00Z_feature_world_authoring_cli.md).
 - **P9.7 complete in this worktree:** `chat.history` returns the newest bounded chat lines (default 16, clamp 64, oldest-first) from the retained-events buffer, requires the CHAT scope, and is exposed to apps as `RocCap.history_request`/`history_lines`. The platform modules `RocJson`, `RocGrid`, and `RocCap` are now grantable catalog names. `examples/roc-chat` is a checked-in chat client built on it, with a sandbox end-to-end test. Record: [chat history](../../doc/2026-10-16T17-00-00Z_feature_chat_history/2026-10-16T17-00-00Z_feature_chat_history.md).
@@ -55,13 +57,9 @@ each one is useful alone and does not depend on a later one.
   journal, with grant checks and replay-safe results. Acceptance: a bounded,
   granted, journal-derived window with tests that an ungranted request is
   refused and counts against usage.
-- **P9.8 Guest-aware reflow.** `view` renders one fixed size and every
-  connection crops it. Add an opt-in layout path: the host passes the
-  connection's viewport to the program (for example a `layout` export or a
-  `view`-adjacent `resize` event) so a program can reflow, and keep cropping as
-  the compatibility path for programs that ignore it. Acceptance: an example
-  shows two widths; the journal still stores one durable view; a resize still
-  never advances the sequence.
+- **P9.8 Guest-aware reflow.** (Done — see status above.) The platform now
+  requires a `layout : model, U64, U64 -> Str` entry point; sessions render
+  through it with their viewport and cropping remains the fallback.
 - **P9.9 Presence and records readback.** (Done — see status above.) `players.list`
   exists, but apps could not read records published by other participants, so
   multi-terminal and shared-canvas apps were impossible. Add a bounded
@@ -70,10 +68,10 @@ each one is useful alone and does not depend on a later one.
 - **P9.10 App scaffolding and inspection.** (Scaffolding and stats done — see
   status above; `id world logs` remains.) `id world new` scaffolds a Roc app;
   `id world stats` reports module, caps, and profile state.
-- **P9.11 Library growth: text and widgets.** A tested `RocText` module (safe
-  split/join/trim/case, bounded) because the pinned Roc nightly's string
-  helpers have caveats, plus common `Screen` widgets (list, table, meter) built
-  from `put_text`/`put_row` so every app stops hand-rolling them.
+- **P9.11 Library growth: text and widgets.** (Widgets partly done — see
+  status above: `Screen.fill`/`rule`.) A tested `RocText` module (safe
+  split/join/trim/case, bounded) remains deferred until a Roc nightly bump, as
+  do list/table/meter widgets.
 
 ## Phase 10 sketch: worlds as places
 

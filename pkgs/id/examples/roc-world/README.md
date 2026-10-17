@@ -42,6 +42,11 @@ remains useful for older clients and text-only output.
 In the browser, focus the world screen and use the keyboard to send input. The
 web adapter encodes common keys as terminal bytes (UTF-8 text, control keys,
 and standard navigation sequences), matching SSH PTY input and the existing
+`layout` hook. Apps define `layout : model, U64, U64 -> Str` next to `view`;
+sessions with a viewport render through it (no journal, no sequence change),
+and cropping remains the fallback for programs that return `view(model)`.
+`Screen.fill` and `Screen.rule` cover rect fills and separators.
+
 `Key.parse` helper. Keyboard events are journaled exactly like other world
 input. Resize remains presentation-local and is not sent to shared game state.
 The host crops a structured screen to each participant's connection-local

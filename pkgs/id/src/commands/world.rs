@@ -525,7 +525,7 @@ import pf.Screen
 
 Model : {{ count : U64 }}
 
-program = {{ init, update, view, records, wants, snapshot, restore }}
+program = {{ init, update, view, layout, records, wants, snapshot, restore }}
 
 init : U64 -> Model
 init = |_seed| {{ count: 0 }}
@@ -539,6 +539,10 @@ view = |model| {{
     drawn = Screen.put_text(screen, 2, 1, "count=${{model.count.to_str()}}", {{ fg: 2, bg: 0, bold: Bool.True }})
     Screen.render_json(drawn)
 }}
+
+## Render the same view at any viewport.
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
 
 records : Model -> Str
 records = |model| "{{\"count\":${{model.count.to_str()}}}}"
@@ -629,7 +633,13 @@ mod tests {
         let main = std::fs::read_to_string(target.join("main.roc")).unwrap();
         assert!(main.contains("app [program]"));
         assert!(
-            main.contains("program = { init, update, view, records, wants, snapshot, restore }"),
+            main.contains(
+                "program = { init, update, view, layout, records, wants, snapshot, restore }"
+            ),
+            "{main}"
+        );
+        assert!(
+            main.contains("layout = |model, _width, _height| view(model)"),
             "{main}"
         );
         assert!(main.contains("Screen.render_json"), "{main}");

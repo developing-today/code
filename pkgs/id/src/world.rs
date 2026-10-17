@@ -661,6 +661,18 @@ pub trait WorldProgram: Send + 'static {
         Ok(None)
     }
 
+    /// Return this participant's presentation laid out for a `width` by
+    /// `height` viewport. Defaults to [`Self::view`]; a program that can reflow
+    /// overrides it. Rendering must not change state.
+    fn layout(
+        &mut self,
+        viewer: &Participant,
+        _width: u16,
+        _height: u16,
+    ) -> Result<Option<String>> {
+        self.view(viewer)
+    }
+
     /// Structured records projected from the program state: a JSON object
     /// mapping record keys to JSON values, or `None` if the program keeps no
     /// records. Must be a pure function of state (it is recomputed on replay).
@@ -1805,6 +1817,12 @@ enum WorldCommand {
         token: JoinCapability,
         reply: oneshot::Sender<Result<Option<String>>>,
     },
+    ViewAt {
+        token: JoinCapability,
+        width: u16,
+        height: u16,
+        reply: oneshot::Sender<Result<Option<String>>>,
+    },
     InstallProgram {
         module_hash: String,
         seed: u64,
@@ -2693,6 +2711,43 @@ impl WorldActor {
                 };
                 let _ = reply.send(result);
             }
+            WorldCommand::ViewAt {
+                token,
+                width,
+                height,
+                reply,
+            } => {
+                let result = match self.core.viewer(&token) {
+                    Ok(viewer) if self.program_healthy => {
+                        match self.program.layout(&viewer, width, height) {
+                            Ok(view) => {
+                                if let Some(text) = &view {
+                                    if text.len() > self.core.limits.presentation_bytes {
+                                        self.program_healthy = false;
+                                        Err(anyhow::anyhow!(
+                                            "world presentation exceeds {} bytes",
+                                            self.core.limits.presentation_bytes
+                                        ))
+                                    } else {
+                                        Ok(view)
+                                    }
+                                } else {
+                                    Ok(None)
+                                }
+                            }
+                            Err(error) => {
+                                self.program_healthy = false;
+                                Err(error.context("world program layout failed"))
+                            }
+                        }
+                    }
+                    Ok(_) => Err(anyhow::anyhow!(
+                        "world program is unavailable after a previous failure"
+                    )),
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(result);
+            }
             WorldCommand::InstallProgram {
                 module_hash,
                 seed,
@@ -3403,6 +3458,29 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped view response")?
+    }
+
+    /// Render for one viewer at a viewport. Programs that cannot reflow fall
+    /// back to their fixed view, and rendering never advances the sequence.
+    pub async fn view_at(
+        &self,
+        token: JoinCapability,
+        width: u16,
+        height: u16,
+    ) -> Result<Option<String>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ViewAt {
+                token,
+                width,
+                height,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped layout response")?
     }
 
     /// Atomically replace the active program and sequence a host-authored

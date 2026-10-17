@@ -9,7 +9,7 @@ import pf.Screen
 
 Model : { grid : RocGrid }
 
-program = { init, update, view, records, wants, snapshot, restore }
+program = { init, update, view, layout, records, wants, snapshot, restore }
 
 init : U64 -> Model
 init = |_seed| { grid: RocGrid.new(4, 3, 46) }
@@ -37,6 +37,10 @@ glyph = |byte| match Str.from_utf8([byte]) {
     Ok(text) => text
     Err(_) => "?"
 }
+
+## This program renders the same layout at any viewport.
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
 
 records : Model -> Str
 records = |_model| "{}"

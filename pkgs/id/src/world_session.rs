@@ -2132,7 +2132,15 @@ async fn send_view<I: SessionIo>(
     sequence: u64,
     viewport: Option<Viewport>,
 ) -> bool {
-    match world.view(token.clone()).await {
+    let view = match viewport {
+        Some(viewport) => {
+            let width = u16::try_from(viewport.width).unwrap_or(u16::MAX);
+            let height = u16::try_from(viewport.height).unwrap_or(u16::MAX);
+            world.view_at(token.clone(), width, height).await
+        }
+        None => world.view(token.clone()).await,
+    };
+    match view {
         Ok(Some(data)) => {
             if data.len() > MAX_FRAME_BYTES {
                 return send_error(io, "world presentation is too large").await;

@@ -17,7 +17,7 @@ Model : {
 	last_now : Str,
 }
 
-program = { init, update, view, records, wants, snapshot, restore }
+program = { init, update, view, layout, records, wants, snapshot, restore }
 
 init : U64 -> Model
 init = |_seed| { joins: 0, denied: 0, cap: RocCap.empty, last_now: "" }
@@ -61,6 +61,10 @@ update = |model, _pid, ev| {
 view : Model -> Str
 view = |model|
 	"lounge joins=${model.joins.to_str()} denied=${model.denied.to_str()} last=${model.last_now}"
+
+## This program renders the same layout at any viewport.
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
 
 records : Model -> Str
 records = |model| encode_or_crash(

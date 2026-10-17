@@ -639,7 +639,7 @@ import pf.RocJson
 
 Model : { session : RocCap, request : Str }
 
-program = { init, update, view, records, wants, snapshot, restore }
+program = { init, update, view, layout, records, wants, snapshot, restore }
 
 init : U64 -> Model
 init = |seed| {
@@ -661,6 +661,9 @@ update = |model, _pid, _ev| model
 
 view : Model -> Str
 view = |model| model.request
+
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
 
 records : Model -> Str
 records = |_model| "{}"
@@ -724,6 +727,80 @@ restore = |text| { session: RocCap.empty, request: text }
         assert!(job.path().join("platform/platform.roc").is_file());
         assert!(job.path().join("platform/Screen.roc").is_file());
         assert!(!job.path().join("platform/notes.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn screen_widgets_fill_and_rule() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = r#"app [program] { pf: platform "../roc-world/platform.roc" }
+
+import pf.Screen
+
+Model : { n : U64 }
+
+program = { init, update, view, layout, records, wants, snapshot, restore }
+
+init : U64 -> Model
+init = |seed| { n: seed }
+
+update : Model, U64, Str -> Model
+update = |model, _pid, _ev| model
+
+view : Model -> Str
+view = |model| {
+    blank = Screen.new(6, 3)
+    filled = Screen.fill(blank, 0, 0, 3, 2, "x", { fg: 0, bg: 0, bold: Bool.False })
+    ruled = Screen.rule(filled, 0, 2, 6, "-", { fg: 0, bg: 0, bold: Bool.False })
+    written = Screen.put_text(ruled, 4, 1, model.n.to_str(), { fg: 0, bg: 0, bold: Bool.False })
+    Screen.render_plain(written)
+}
+
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
+records : Model -> Str
+records = |_model| "{}"
+
+wants : Model -> Str
+wants = |_model| "{}"
+
+snapshot : Model -> Str
+snapshot = |model| model.n.to_str()
+
+restore : Str -> Model
+restore = |text| match U64.from_str(text) {
+    Ok(n) => { n: n }
+    Err(_) => { n: 0 }
+}
+"#;
+        let (wasm, _diagnostics, _provenance) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app.to_owned())],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            &["Screen".to_owned()],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        let view = String::from_utf8(world.view().unwrap()).unwrap();
+        assert_eq!(view, "xxx   \nxxx 7 \n------");
     }
 
     #[tokio::test]

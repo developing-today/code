@@ -19,7 +19,7 @@ Model : {
 	line : Str,
 }
 
-program = { init, update, view, records, wants, snapshot, restore }
+program = { init, update, view, layout, records, wants, snapshot, restore }
 
 init : U64 -> Model
 init = |_seed| { cap: RocCap.empty, seen: 0, last: "", line: "" }
@@ -81,6 +81,10 @@ host = |model, ev| match RocJson.decode(ev) {
 view : Model -> Str
 view = |model|
 	"chat seen=${model.seen.to_str()} last=${model.last} input=${model.line}"
+
+## This program renders the same layout at any viewport.
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
 
 records : Model -> Str
 records = |model| encode_or_crash(

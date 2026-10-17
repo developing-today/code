@@ -45,7 +45,7 @@ Model : {
     seats : List(Seat),
 }
 
-program = { init, update, view, records, wants, snapshot, restore }
+program = { init, update, view, layout, records, wants, snapshot, restore }
 
 init : U64 -> Model
 init = |_seed| { grid: RocGrid.new(width, height, empty), seats: [] }
@@ -79,6 +79,10 @@ view = |model| {
 
 ## Everything here is derived from the grid and the seats, so the record
 ## is a pure function of the state a snapshot already carries.
+## This program renders the same layout at any viewport.
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
 records : Model -> Str
 records = |model| {
     seats = Str.join_with(List.map(model.seats, |seat| seat_json(model, seat)), ",")

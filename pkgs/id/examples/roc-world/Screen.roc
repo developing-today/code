@@ -92,6 +92,18 @@ Screen := {
         })
     }
 
+    ## Fill the rectangle at (`x`, `y`) of size `w` by `h` with `ch` and `style`.
+    fill : Screen, U64, U64, U64, U64, Str, { fg : U8, bg : U8, bold : Bool } -> Screen
+    fill = |screen, x, y, w, h, ch, style| {
+        List.fold(range(0, h), screen, |acc, row| {
+            List.fold(range(0, w), acc, |inner, column| put_text(inner, x + column, y + row, ch, style))
+        })
+    }
+
+    ## A horizontal line of `ch` from (`x`, `y`), `w` cells wide.
+    rule : Screen, U64, U64, U64, Str, { fg : U8, bg : U8, bold : Bool } -> Screen
+    rule = |screen, x, y, w, ch, style| fill(screen, x, y, w, 1, ch, style)
+
     ## Draw an ASCII border around the rectangle at (`x`, `y`) of size `w` by `h`,
     ## with `title` written into the top edge.
     boxed : Screen, U64, U64, U64, U64, Str -> Screen
