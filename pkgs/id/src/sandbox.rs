@@ -939,6 +939,87 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_chat_example_sends_and_reads_history() {
+        use crate::world::{WorldEvent, WorldEventKind};
+
+        let wasm = include_bytes!("../examples/roc-chat/roc-chat.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut chat = runner.instantiate(7).unwrap();
+        fn wants_of(chat: &mut WorldInstance) -> String {
+            crate::world::WorldProgram::wants(chat).unwrap().unwrap()
+        }
+        fn send(chat: &mut WorldInstance, ev: &[u8]) {
+            crate::world::WorldProgram::update(
+                chat,
+                &WorldEvent {
+                    sequence: 0,
+                    participant_id: 1,
+                    kind: WorldEventKind::Input(ev.to_vec()),
+                },
+            )
+            .unwrap();
+        }
+        fn host(chat: &mut WorldInstance, event: serde_json::Value) {
+            crate::world::WorldProgram::update(
+                chat,
+                &WorldEvent {
+                    sequence: 0,
+                    participant_id: 0,
+                    kind: WorldEventKind::System {
+                        event: event.to_string(),
+                    },
+                },
+            )
+            .unwrap();
+        }
+        fn view(chat: &mut WorldInstance) -> String {
+            String::from_utf8(chat.view().unwrap()).unwrap()
+        }
+
+        assert_eq!(view(&mut chat), "chat seen=0 last= input=");
+        // Type "hi", then enter: a chat.say request goes out as r0.
+        send(&mut chat, b"h");
+        send(&mut chat, b"i");
+        let typing = view(&mut chat);
+        assert!(typing.contains("input=hi"), "{typing}");
+        send(&mut chat, b"\r");
+        let document = wants_of(&mut chat);
+        assert!(
+            document.contains("chat.say") && document.contains("hi") && document.contains("\"r0\""),
+            "{document}"
+        );
+        // The say is answered and retired; `hist` asks for history as r1.
+        host(
+            &mut chat,
+            serde_json::json!({"cap":"result","id":"r0","ok":true,"value":{"sequence":1}}),
+        );
+        assert!(!wants_of(&mut chat).contains("chat.say"));
+        send(&mut chat, b"hist");
+        send(&mut chat, b"\r");
+        let document = wants_of(&mut chat);
+        assert!(
+            document.contains("chat.history") && document.contains("\"r1\""),
+            "{document}"
+        );
+        // The history answer names the newest line; the view reports it.
+        host(
+            &mut chat,
+            serde_json::json!({
+                "cap": "result",
+                "id": "r1",
+                "ok": true,
+                "value": {"lines": [{"sequence": 1, "participant": 1, "text": "hi"}]},
+            }),
+        );
+        assert_eq!(view(&mut chat), "chat seen=1 last=hi input=");
+        // The snapshot keeps the seen count and the counter.
+        let snapshot = chat.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(view(&mut restored), "chat seen=1 last=hi input=");
+    }
+
+    #[test]
     fn checked_in_territory_renders_a_styled_screen_within_the_default_fuel() {
         let wasm = include_bytes!("../examples/territory/territory.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();

@@ -43,10 +43,11 @@ See the [Phase 9 plan](../../.opencode/plans/phase-9-portable-platform.md), the 
 - `pf.RocCap` gains `history_request` and `history_lines`; the compile test now
   issues both a `chat.say` and a `chat.history` request and asserts both are
   re-announced through `wants`.
-- Full library suite: 1,320 passed, 4 ignored.
+- Full library suite: 1,321 passed, 4 ignored.
 
 ## Follow-ups
 
 - Paging with a `since` sequence cursor for longer transcripts.
-- A checked-in example that shows a chat client built on `chat.history`.
 - Participant display names in history lines once names are stable per seat.
+- The example treats the literal input `hist` as the history command; a real
+  client would use a slash prefix once `RocText` prefix helpers exist.
