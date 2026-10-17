@@ -161,6 +161,13 @@
           name: justCmd:
           pkgs.stdenv.mkDerivation {
             name = "id-${name}";
+            # Every check builds its own debug test binaries in parallel on a
+            # runner with limited disk. Full debuginfo and the incremental cache
+            # filled the disk (ENOSPC, then a linker bus error). Line tables keep
+            # file:line in panics and backtraces.
+            CARGO_INCREMENTAL = "0";
+            CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
+            CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
             src = ./.;
             inherit buildInputs;
             nativeBuildInputs = nativeBuildInputs ++ [
