@@ -41,9 +41,9 @@ use crate::directory_auth::Caller;
 use crate::directory_view::{DirectoryAction, DirectoryOutcome};
 use crate::envelope_net::{Reply, answer_frames, send};
 use crate::envelope_outbox::{Outcome, check_target};
+use crate::frames::{read_frame, write_frame};
 use crate::world::hex_encode;
 use crate::world_hub::WorldHub;
-use crate::world_net::{read_frame, write_frame};
 use crate::world_session::MAX_FRAME_BYTES;
 
 /// The file, beside `directory.jsonl`, that holds a world's artifacts.

@@ -19,10 +19,9 @@
 
 use std::collections::BTreeMap;
 
-use id::aliases::{ALIAS_NAME, Named, Shown, aliases_of, rows};
+use id::aliases::{ALIAS_NAME, Named, Object, Shown, aliases_of, rows};
 use id::chain::{ChainExt, Event, sign};
 use id::event_store::{EventStore, Ingest};
-use id::server_config::ServerConfig;
 use id::tag_claims::{SET_KIND, TagOp};
 use id::waiting::{AuthorKey, WaitingLimits};
 use p2panda_core::{Hash, SeqNum, SigningKey};
@@ -92,15 +91,12 @@ fn named(subject: Hash, name: &str) -> Named {
     }
 }
 
-/// A config with one user, `ann`, and a group `team` that she creates. The group's primary alias
-/// is `team`. The group's ID is the subject its alias claims name.
-fn team_config(ann: AuthorKey) -> ServerConfig {
-    let text = format!(
-        "[[users]]\nkey = \"ann\"\nid = \"{}\"\n\n[[groups]]\nkey = \"team\"\nname = \"Team\"\n\
-         creator = \"ann\"\nalias = \"team\"\n",
-        Hash::from_bytes(ann).to_hex()
-    );
-    ServerConfig::parse(&text).unwrap()
+/// A group `team` with primary alias `team`, and its ID. The ID is the subject its alias
+/// claims name.
+fn team_subject_and_primary() -> (Hash, BTreeMap<Object, String>) {
+    let team = id_ending_in(7);
+    let primary = BTreeMap::from([(Object::Group(team), "team".to_owned())]);
+    (team, primary)
 }
 
 /// An ID whose first five bytes are fixed, so two such IDs share their first eight hex digits.
@@ -146,7 +142,7 @@ fn test_two_aliases_for_one_identity_are_both_shown_as_contested() {
     let view = rows(
         &[named(identity.id, "ann")],
         &claims,
-        None,
+        &BTreeMap::new(),
         &BTreeMap::new(),
     );
     assert_eq!(view.len(), 1);
@@ -162,8 +158,7 @@ fn test_two_aliases_for_one_identity_are_both_shown_as_contested() {
 fn test_a_server_primary_alias_wins_over_the_claims_for_display() {
     let mut ann = Writer::new(1);
     let mut bo = Writer::new(2);
-    let config = team_config(ann.author());
-    let team = config.groups()[0].id;
+    let (team, primary) = team_subject_and_primary();
     let by_bo = bo.tag(team, ALIAS_NAME, Some("Team Alpha"));
     let by_ann = ann.tag(team, ALIAS_NAME, Some("alpha"));
 
@@ -174,7 +169,7 @@ fn test_a_server_primary_alias_wins_over_the_claims_for_display() {
     let view = rows(
         &[named(team, "Team")],
         &claims,
-        Some(&config),
+        &primary,
         &BTreeMap::new(),
     );
     assert_eq!(view.len(), 1);
@@ -186,8 +181,7 @@ fn test_a_server_primary_alias_wins_over_the_claims_for_display() {
 #[test]
 fn test_a_pet_name_wins_over_the_primary_alias_and_adds_no_claim() {
     let mut ann = Writer::new(1);
-    let config = team_config(ann.author());
-    let team = config.groups()[0].id;
+    let (team, primary) = team_subject_and_primary();
     let by_ann = ann.tag(team, ALIAS_NAME, Some("alpha"));
 
     let (_dir, mut store) = open();
@@ -196,7 +190,7 @@ fn test_a_pet_name_wins_over_the_primary_alias_and_adds_no_claim() {
     let before = claims.len();
 
     let pets = BTreeMap::from([(team, "Our crew".to_owned())]);
-    let view = rows(&[named(team, "Team")], &claims, Some(&config), &pets);
+    let view = rows(&[named(team, "Team")], &claims, &primary, &pets);
     assert_eq!(view[0].shown, Shown::PetName("Our crew".to_owned()));
     // A pet name is local. It is not an event, so the store holds the same claims.
     assert_eq!(store.tag_claims().unwrap().len(), before);
@@ -228,7 +222,7 @@ fn test_two_identities_may_claim_the_same_alias_and_both_are_returned() {
     let view = rows(
         &[named(ann_identity.id, "ann"), named(bo_identity.id, "bo")],
         &claims,
-        None,
+        &BTreeMap::new(),
         &BTreeMap::new(),
     );
     assert_eq!(view.len(), 2);
@@ -249,7 +243,7 @@ fn test_each_row_shows_a_prefix_of_its_subject_unique_among_the_rows() {
     let view = rows(
         &[named(x, "ann"), named(y, "ann"), named(z, "zed")],
         &[],
-        None,
+        &BTreeMap::new(),
         &BTreeMap::new(),
     );
     assert_eq!(view.len(), 3);
@@ -282,7 +276,7 @@ fn test_the_full_id_is_shown_when_no_prefix_is_unique() {
     let view = rows(
         &[named(subject, "ann"), named(subject, "ann")],
         &[],
-        None,
+        &BTreeMap::new(),
         &BTreeMap::new(),
     );
     assert_eq!(view.len(), 2);

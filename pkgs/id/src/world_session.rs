@@ -28,23 +28,20 @@ use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
 use crate::directory_auth::Signed;
+use crate::time::unix_ms;
 use crate::world::{
     Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, WorldEvent,
-    WorldHandle, WorldPolicy, WorldScopes, WorldSnapshot, unix_ms,
+    WorldHandle, WorldPolicy, WorldScopes, WorldSnapshot,
 };
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
 use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec};
 use crate::world_hub::{WorldHub, WorldInfo, WorldLease};
 
-/// Largest accepted or emitted frame, in bytes.
-///
-/// Snapshots and records pages are bounded to fit inside this (see
-/// [`crate::world::WorldLimits::snapshot_bytes`] and
-/// [`MAX_RECORDS_PAGE_BYTES`]), and both transports enforce it: the Iroh
-/// frame reader refuses longer frames and the WebSocket has
-/// `max_message_size(MAX_FRAME_BYTES)`.
-pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+/// Re-exported so `crate::world_session::MAX_FRAME_BYTES` keeps working: the
+/// limit now lives in [`crate::frames`] so the crate builds without the
+/// `world` feature.
+pub use crate::frames::MAX_FRAME_BYTES;
 
 /// Largest Wasm world module that may be installed (16 MiB).
 pub const MAX_WORLD_MODULE_BYTES: usize = 16 * 1024 * 1024;

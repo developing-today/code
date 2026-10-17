@@ -45,11 +45,11 @@ use tokio::time::timeout;
 use crate::chain::ChainExt;
 use crate::connectivity::connect;
 use crate::event_store::Ingest;
+use crate::frames::{read_frame, write_frame};
 use crate::pull_policy::PullGate;
 use crate::store_traits::{ChainLog, SharedEventStore};
 use crate::sync_method::{Answer, Request, SyncMethod, SyncStats, SyncSupport, choose};
-use crate::world::unix_ms;
-use crate::world_net::{read_frame, write_frame};
+use crate::time::unix_ms;
 
 /// The ALPN for sync sessions. This is P3.1's ID, so range sync joins as a method of the same
 /// session, and the first frame of every session is the [`Request`].

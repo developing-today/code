@@ -21,8 +21,8 @@ use crate::directory::{Envelope, Received, Refusal};
 use crate::directory_auth::Caller;
 use crate::directory_view::{DirectoryAction, DirectoryOutcome};
 use crate::envelope_outbox::Outcome;
+use crate::frames::{read_frame, write_frame};
 use crate::world_hub::WorldHub;
-use crate::world_net::{read_frame, write_frame};
 
 /// ALPN for friend envelopes. Within version 1 fields may be added; removing or
 /// changing one needs `/id-envelope/2`.
@@ -283,7 +283,7 @@ mod tests {
         let server = endpoint().await;
         let (_router, addr, bo) = lobby(&server).await;
         let client = endpoint().await;
-        let at = crate::world::unix_ms();
+        let at = crate::time::unix_ms();
         let envelope = sent_from_home(&bo, "lobby", at);
 
         assert_eq!(
@@ -322,7 +322,7 @@ mod tests {
         let gone = endpoint().await;
         let gone_id = gone.id();
         gone.close().await;
-        let envelope = sent_from_home(&"ab".repeat(32), "lobby", crate::world::unix_ms());
+        let envelope = sent_from_home(&"ab".repeat(32), "lobby", crate::time::unix_ms());
         assert!(matches!(
             deliver(&client, gone_id, &envelope).await,
             Outcome::Retry(_)
@@ -337,7 +337,7 @@ mod tests {
         let lookup = MemoryLookup::new();
         lookup.add_endpoint_info(addr.clone());
         let client = endpoint_with(&lookup).await;
-        let at = crate::world::unix_ms();
+        let at = crate::time::unix_ms();
 
         let mut queue = Outbox::open(dir.path().join("outbox.jsonl")).unwrap();
         let target = addr.id.to_string();
