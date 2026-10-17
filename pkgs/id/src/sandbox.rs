@@ -903,6 +903,16 @@ mod tests {
     }
 
     #[test]
+    fn checked_in_grid_example_uses_bounded_get_set() {
+        let wasm = include_bytes!("../examples/roc-grid/roc-grid.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        assert_eq!(live.view().unwrap(), b"cells=12 cursor=46 outside=63");
+        live.update(1, b"set").unwrap();
+        assert_eq!(live.view().unwrap(), b"cells=11 cursor=65 outside=63");
+    }
+
+    #[test]
     fn checked_in_territory_renders_a_styled_screen_within_the_default_fuel() {
         let wasm = include_bytes!("../examples/territory/territory.wasm");
         let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();

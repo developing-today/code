@@ -70,6 +70,13 @@ also validates number lexemes and returns an error rather than emitting
 malformed JSON. Duplicate object keys are preserved, and `get` returns the
 first matching key.
 
+The platform also exposes `RocGrid.roc` as `pf.RocGrid` for row-major byte
+grids. `new`, `in_bounds`, `index`, `get`, `set`, `count`, `neighbors4`, and
+`row` are bounds-checked and never trap: a read outside the grid returns a
+caller-supplied fallback, and a write outside it returns the grid unchanged.
+Boards, canvases, maps, and inventories build on this instead of re-deriving
+index arithmetic per app. `examples/roc-grid` is the checked-in example.
+
 One nightly caveat: with
 nightly-2026-10-04-130536d's wasm backend, `List.get` past the second
 element of a string list produced by `Str.split_on` returned truncated
