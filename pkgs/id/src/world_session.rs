@@ -138,6 +138,10 @@ enum ClientFrame {
         expires_in_secs: Option<u64>,
         /// Committed actions the invite may take; absent means no limit.
         uses: Option<u32>,
+        /// Role preset (`spectator`, `player`, `guest`, `delegator`); absent
+        /// means `guest`.
+        #[serde(default)]
+        role: Option<String>,
     },
     /// Admin: list the worlds this server hosts.
     ListWorlds {
@@ -804,14 +808,30 @@ impl WorldService {
         expires_in_secs: Option<u64>,
         uses: Option<u32>,
     ) -> Result<InviteResponse, InviteError> {
+        self.invite_scoped(
+            supplied,
+            display_name,
+            expires_in_secs,
+            uses,
+            WorldScopes::GUEST,
+        )
+        .await
+    }
+
+    /// Like [`Self::invite`], with the invited participant's scopes chosen by
+    /// the caller (see `WorldScopes::from_role`).
+    pub async fn invite_scoped(
+        &self,
+        supplied: Option<&str>,
+        display_name: String,
+        expires_in_secs: Option<u64>,
+        uses: Option<u32>,
+        scopes: WorldScopes,
+    ) -> Result<InviteResponse, InviteError> {
         self.authorize_admin(supplied)?;
         let bounds =
             invite_bounds(expires_in_secs, uses, unix_ms()).map_err(InviteError::InvalidBounds)?;
-        match self
-            .world
-            .issue_bounded(display_name, WorldScopes::GUEST, bounds)
-            .await
-        {
+        match self.world.issue_bounded(display_name, scopes, bounds).await {
             Ok((participant, capability)) => Ok(InviteResponse {
                 capability: capability.expose().to_owned(),
                 participant_id: participant.id,
@@ -1377,25 +1397,41 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             display_name,
             expires_in_secs,
             uses,
-        } => match service
-            .invite(Some(&admin_token), display_name, expires_in_secs, uses)
-            .await
-        {
-            Ok(invite) => {
-                let _ = send_json(io, &ServerFrame::Invite(&invite)).await;
+            role,
+        } => match role.as_deref().map(WorldScopes::from_role) {
+            Some(None) => {
+                let _ = send_error(
+                    io,
+                    "unknown invite role; use spectator, player, guest, or delegator",
+                )
+                .await;
             }
-            Err(InviteError::InvalidBounds(message)) => {
-                let _ = send_error(io, message).await;
-            }
-            Err(InviteError::Disabled) => {
-                let _ = send_error(io, "invites are not enabled").await;
-            }
-            Err(InviteError::Unauthorized) => {
-                let _ = send_error(io, "invite denied").await;
-            }
-            Err(InviteError::Unavailable) => {
-                let _ = send_error(io, "world cannot issue another invite").await;
-            }
+            role_scopes => match service
+                .invite_scoped(
+                    Some(&admin_token),
+                    display_name,
+                    expires_in_secs,
+                    uses,
+                    role_scopes.flatten().unwrap_or(WorldScopes::GUEST),
+                )
+                .await
+            {
+                Ok(invite) => {
+                    let _ = send_json(io, &ServerFrame::Invite(&invite)).await;
+                }
+                Err(InviteError::InvalidBounds(message)) => {
+                    let _ = send_error(io, message).await;
+                }
+                Err(InviteError::Disabled) => {
+                    let _ = send_error(io, "invites are not enabled").await;
+                }
+                Err(InviteError::Unauthorized) => {
+                    let _ = send_error(io, "invite denied").await;
+                }
+                Err(InviteError::Unavailable) => {
+                    let _ = send_error(io, "world cannot issue another invite").await;
+                }
+            },
         },
         // Query frames keep the session open for further queries: a client
         // can page through records, and may still join later on.
@@ -3245,6 +3281,84 @@ mod tests {
             .say(serde_json::json!({"type":"join","capability":capability}))
             .await;
         assert_eq!(guest.next().await.unwrap()["type"], "snapshot");
+    }
+
+    #[tokio::test]
+    async fn invite_roles_grant_and_withhold_the_expected_scopes() {
+        let svc = service(Some("admin"));
+
+        // An unknown role is refused by name.
+        let mut bad = Peer::connect(svc.clone(), SessionConfig::default());
+        bad.say(serde_json::json!({
+            "type": "invite",
+            "admin_token": "admin",
+            "display_name": "spec",
+            "role": "builder",
+        }))
+        .await;
+        let message = bad.next().await.unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(message.contains("unknown invite role"), "{message}");
+
+        // A spectator may join and read, but not chat or submit input.
+        let mut host = Peer::connect(svc.clone(), SessionConfig::default());
+        host.say(serde_json::json!({
+            "type": "invite",
+            "admin_token": "admin",
+            "display_name": "spec",
+            "role": "spectator",
+        }))
+        .await;
+        let capability = host.next().await.unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut spectator = Peer::connect(svc.clone(), SessionConfig::default());
+        spectator
+            .say(serde_json::json!({"type":"join","capability":capability}))
+            .await;
+        assert_eq!(spectator.next().await.unwrap()["type"], "snapshot");
+        spectator
+            .say(serde_json::json!({"type":"chat","text":"hello"}))
+            .await;
+        let refusal = spectator.next().await.unwrap();
+        assert_eq!(refusal["type"], "error", "{refusal}");
+        spectator
+            .say(serde_json::json!({"type":"input","data_hex":"6c"}))
+            .await;
+        let refusal = spectator.next().await.unwrap();
+        assert_eq!(refusal["type"], "error", "{refusal}");
+
+        // A player may submit input but not chat.
+        let mut host = Peer::connect(svc.clone(), SessionConfig::default());
+        host.say(serde_json::json!({
+            "type": "invite",
+            "admin_token": "admin",
+            "display_name": "player",
+            "role": "player",
+        }))
+        .await;
+        let capability = host.next().await.unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut player = Peer::connect(svc, SessionConfig::default());
+        player
+            .say(serde_json::json!({"type":"join","capability":capability}))
+            .await;
+        assert_eq!(player.next().await.unwrap()["type"], "snapshot");
+        player
+            .say(serde_json::json!({"type":"input","data_hex":"6c"}))
+            .await;
+        let event = player.next().await.unwrap();
+        assert_eq!(event["type"], "event", "{event}");
+        player
+            .say(serde_json::json!({"type":"chat","text":"hello"}))
+            .await;
+        let refusal = player.next().await.unwrap();
+        assert_eq!(refusal["type"], "error", "{refusal}");
     }
 
     #[tokio::test]

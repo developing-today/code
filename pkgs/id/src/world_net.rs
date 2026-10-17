@@ -656,12 +656,31 @@ impl WorldClient {
         expires_in_secs: Option<u64>,
         uses: Option<u32>,
     ) -> Result<String> {
+        self.invite_with_role(admin_token, display_name, expires_in_secs, uses, None)
+            .await
+    }
+
+    /// Mint a guest capability with an explicit role preset (`spectator`,
+    /// `player`, `guest`, `delegator`; `None` means `guest`).
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the invite or the role is refused.
+    pub async fn invite_with_role(
+        &mut self,
+        admin_token: &str,
+        display_name: &str,
+        expires_in_secs: Option<u64>,
+        uses: Option<u32>,
+        role: Option<&str>,
+    ) -> Result<String> {
         self.send_json(&serde_json::json!({
             "type": "invite",
             "admin_token": admin_token,
             "display_name": display_name,
             "expires_in_secs": expires_in_secs,
             "uses": uses,
+            "role": role,
         }))
         .await?;
         let reply = self

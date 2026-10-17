@@ -91,6 +91,25 @@ impl WorldScopes {
     /// Every scope.
     pub const ALL: Self = Self(Self::GUEST.0 | Self::DELEGATE.0);
 
+    /// Role presets used by `id world invite --role`. `spectator` joins and
+    /// reads; `player` also submits input; `guest` (the default) also chats;
+    /// `delegator` additionally mints narrower capabilities for others.
+    ///
+    /// The names are stable; the mapping to scopes is part of the protocol.
+    #[must_use]
+    pub fn from_role(name: &str) -> Option<Self> {
+        match name {
+            "spectator" => Some(Self::JOIN),
+            "player" => Some(Self(Self::JOIN.0 | Self::INPUT.0)),
+            "guest" => Some(Self::GUEST),
+            "delegator" => Some(Self(Self::GUEST.0 | Self::DELEGATE.0)),
+            _ => None,
+        }
+    }
+
+    /// The names accepted by [`Self::from_role`].
+    pub const ROLES: &'static [&'static str] = &["spectator", "player", "guest", "delegator"];
+
     /// Raw scope bits, as journaled.
     #[must_use]
     pub const fn bits(self) -> u8 {
@@ -4981,6 +5000,33 @@ mod tests {
         assert_eq!(
             from_ada, accepted,
             "every line accepted before the removal is kept, and none after it"
+        );
+    }
+
+    #[test]
+    fn role_presets_grant_and_withhold_the_expected_effects() {
+        let spectator = WorldScopes::from_role("spectator").unwrap();
+        assert!(spectator.allows_effect("time.now"));
+        assert!(!spectator.allows_effect("chat.say"));
+        assert!(spectator.attenuate(WorldScopes::INPUT).is_none());
+
+        let player = WorldScopes::from_role("player").unwrap();
+        assert!(player.contains(WorldScopes::INPUT));
+        assert!(!player.contains(WorldScopes::CHAT));
+        assert!(!player.contains(WorldScopes::DELEGATE));
+
+        let guest = WorldScopes::from_role("guest").unwrap();
+        assert_eq!(guest, WorldScopes::GUEST);
+        assert!(guest.allows_effect("chat.say"));
+
+        let delegator = WorldScopes::from_role("delegator").unwrap();
+        assert!(delegator.contains(WorldScopes::DELEGATE));
+        assert!(delegator.attenuate(WorldScopes::JOIN).is_some());
+
+        assert_eq!(WorldScopes::from_role("builder"), None);
+        assert_eq!(
+            WorldScopes::ROLES,
+            &["spectator", "player", "guest", "delegator"]
         );
     }
 

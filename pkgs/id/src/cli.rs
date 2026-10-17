@@ -1396,6 +1396,10 @@ pub enum WorldCommand {
         /// Display name for the new participant.
         #[arg(long)]
         name: String,
+        /// Role preset: spectator reads, player also inputs, guest also chats,
+        /// delegator may also mint narrower capabilities. Defaults to guest.
+        #[arg(long, value_parser = ["spectator", "player", "guest", "delegator"])]
+        role: Option<String>,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
         world: Option<String>,
@@ -1690,6 +1694,9 @@ pub enum WorldCommand {
         /// Admin secret configured with `serve --world-admin-token`.
         #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
         admin_token: String,
+        /// Print one JSON object instead of tab-separated lines.
+        #[arg(long)]
+        json: bool,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
         addrs: Vec<SocketAddr>,
@@ -3775,6 +3782,53 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { after: Some(7), .. })
+        ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_roles_and_list_json() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "invite",
+            &node,
+            "--admin-token",
+            "t",
+            "--name",
+            "ann",
+            "--role",
+            "spectator",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Invite { role, .. } => {
+                    assert_eq!(role, Some("spectator".to_owned()));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "invite",
+                &node,
+                "--admin-token",
+                "t",
+                "--name",
+                "ann",
+                "--role",
+                "builder",
+            ])
+            .is_err(),
+            "an unknown role must be refused by the parser"
+        );
+        let cli = Cli::parse_from(["id", "world", "list", &node, "--admin-token", "t", "--json"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::List { json: true, .. })
         ));
     }
 

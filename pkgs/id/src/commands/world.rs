@@ -67,6 +67,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             node,
             admin_token,
             name,
+            role,
             world,
             addrs,
             no_relay,
@@ -76,7 +77,9 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             crate::world_session::check_invite_bounds(expires_in, uses)
                 .map_err(anyhow::Error::msg)?;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
-            let result = client.invite(&admin_token, &name, expires_in, uses).await;
+            let result = client
+                .invite_with_role(&admin_token, &name, expires_in, uses, role.as_deref())
+                .await;
             client.close();
             endpoint.close().await;
             // Only the capability goes to stdout, so it can be captured.
@@ -463,6 +466,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
         WorldCommand::List {
             node,
             admin_token,
+            json,
             addrs,
             no_relay,
         } => {
@@ -471,12 +475,32 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             client.close();
             endpoint.close().await;
             let (default, worlds) = result?;
-            for (name, open) in worlds {
-                let default_marker = if name == default { " (default)" } else { "" };
+            if json {
+                let worlds: Vec<serde_json::Value> = worlds
+                    .into_iter()
+                    .map(|(name, open)| {
+                        serde_json::json!({
+                            "name": name,
+                            "open": open,
+                            "default": name == default,
+                        })
+                    })
+                    .collect();
                 println!(
-                    "{name}{default_marker}\t{}",
-                    if open { "open" } else { "closed" }
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "default": default,
+                        "worlds": worlds,
+                    }))?
                 );
+            } else {
+                for (name, open) in worlds {
+                    let default_marker = if name == default { " (default)" } else { "" };
+                    println!(
+                        "{name}{default_marker}\t{}",
+                        if open { "open" } else { "closed" }
+                    );
+                }
             }
             Ok(())
         }

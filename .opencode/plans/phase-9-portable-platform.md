@@ -72,9 +72,13 @@ each one is useful alone and does not depend on a later one.
   `Screen.fill`/`rule` and `pf.RocText`.) List/table/meter widgets remain a
   follow-up once two apps need the same one.
 
+## Phase 10 progress
+
+- **P10.1 started in this worktree:** role-scoped invites (`spectator`, `player`, `guest`, `delegator`) over the existing scope machinery, and `id world list --json` for directory feeds. Builder/moderator roles with their own authority, and a cross-node directory feed, remain follow-ups. Record: [roles and directory](../../doc/2026-10-17T08-00-00Z_feature_world_roles_directory/2026-10-17T08-00-00Z_feature_world_roles_directory.md).
+
 ## Phase 10 sketch: worlds as places
 
-Not committed, recorded so the direction is visible.
+Not committed beyond the slice above, recorded so the direction is visible.
 
 - **World directory feeds and portals.** A browsable directory of worlds a
   node serves and knows (names, presence counts, open/closed), with the web UI
