@@ -388,6 +388,51 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             Ok(())
         }
         WorldCommand::New { dir, name } => scaffold_world(&dir, &name),
+        WorldCommand::Logs {
+            node,
+            capability,
+            seconds,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            client
+                .send_json(&serde_json::json!({
+                    "type": "join",
+                    "capability": capability,
+                    "after": 0,
+                }))
+                .await?;
+            let deadline =
+                tokio::time::Instant::now() + std::time::Duration::from_secs(seconds.max(1));
+            let result = loop {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break Ok(());
+                }
+                match tokio::time::timeout(remaining, client.recv_json()).await {
+                    Err(_) => break Ok(()),
+                    Ok(Err(error)) => break Err(error),
+                    Ok(Ok(None)) => break Ok(()),
+                    Ok(Ok(Some(frame))) => {
+                        if frame["type"] == "event" {
+                            println!("{}", serde_json::to_string(&frame)?);
+                        } else if frame["type"] == "error" {
+                            break Err(anyhow::anyhow!(
+                                "{}",
+                                frame["message"]
+                                    .as_str()
+                                    .unwrap_or("world refused the event tail")
+                            ));
+                        }
+                    }
+                }
+            };
+            client.close();
+            endpoint.close().await;
+            result
+        }
         WorldCommand::Stats {
             node,
             capability,

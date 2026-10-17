@@ -1646,6 +1646,26 @@ pub enum WorldCommand {
         #[arg(long, default_value = "world")]
         name: String,
     },
+    /// Tail a world's recent events (bounded by retention and a deadline).
+    Logs {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Stop after this many seconds.
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// Print a world's module, capability, and profile state as one JSON object.
     Stats {
         /// The host's node ID (64 hex characters).
@@ -3776,6 +3796,20 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Stats { .. })
+        ));
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "logs",
+            &node,
+            "--capability",
+            "c",
+            "--seconds",
+            "9",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds: 9, .. })
         ));
     }
 

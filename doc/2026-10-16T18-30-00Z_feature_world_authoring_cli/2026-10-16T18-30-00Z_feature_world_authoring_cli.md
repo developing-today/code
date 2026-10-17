@@ -26,6 +26,10 @@ and a single read-only status object.
   the module info (hash, provenance, sequence), the capability report, and the
   current execution profile into one JSON object. It is read-only and needs
   only a guest capability; no admin token.
+- **`id world logs NODE --capability CAP [--seconds N]`** joins with
+  `after: 0` and prints `event` frames until the deadline (default five
+  seconds) or the host closes. Retention bounds the tail; the deadline bounds
+  the command. Errors from the host stop it with the host's message.
 
 ## Acceptance
 
@@ -34,13 +38,13 @@ and a single read-only status object.
   for a non-empty directory and a path-like name.
 - The scaffold was built during this slice (`world new` then `./build.sh`) and
   produced a validated import-free Wasm module; the probe was removed.
-- `test_cli_parse_world_new_and_stats` covers both new subcommands.
+- `test_cli_parse_world_new_and_stats` covers `new`, `stats`, and `logs`
+  (including `--seconds`).
 - `id world stats` composes existing client calls; its output shape is the
   three documented frames, and the client calls already have protocol tests.
 
 ## Follow-ups
 
-- `id world logs` (bounded event tail) and a `--json` output variant for
-  `stats`.
+- A `--json` output variant for `logs` and `stats`.
 - Template selection (`--template game|chat|dashboard`) once more than one
   scaffold exists.
