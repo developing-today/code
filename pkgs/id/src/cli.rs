@@ -1687,6 +1687,46 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Write a world's retained history and records to a replayable fixture
+    /// (JSON Lines). Needs only a join capability, never admin rights.
+    Record {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Write the fixture here instead of standard output.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Replay a recorded fixture offline through a module and compare records.
+    /// Prints a verdict line first; exits nonzero when the records differ.
+    #[cfg(feature = "sandbox")]
+    Replay {
+        /// The Wasm module the fixture was recorded under.
+        #[arg(long, value_name = "FILE")]
+        module: PathBuf,
+        /// Fixture written by `id world record`.
+        #[arg(long, value_name = "FILE")]
+        fixture: PathBuf,
+        /// Seed the module was installed with. The admin supplied it at install
+        /// time; the fixture does not carry it.
+        #[arg(long)]
+        seed: u64,
+        /// Replay a window that does not start at sequence 1. Its records are
+        /// not compared.
+        #[arg(long)]
+        allow_partial: bool,
+    },
     /// List the worlds a host serves (needs the host's admin token).
     List {
         /// The host's node ID (64 hex characters).
@@ -3865,6 +3905,79 @@ mod tests {
             cli.command,
             Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds: 9, .. })
         ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_record() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "record",
+            &node,
+            "--capability",
+            "c",
+            "--out",
+            "run.jsonl",
+            "--no-relay",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Record { out, no_relay, .. } => {
+                    assert_eq!(out, Some(PathBuf::from("run.jsonl")));
+                    assert!(no_relay);
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn test_cli_parse_world_replay() {
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "replay",
+            "--module",
+            "game.wasm",
+            "--fixture",
+            "run.jsonl",
+            "--seed",
+            "7",
+            "--allow-partial",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Replay {
+                    module,
+                    fixture,
+                    seed,
+                    allow_partial,
+                } => {
+                    assert_eq!(module, PathBuf::from("game.wasm"));
+                    assert_eq!(fixture, PathBuf::from("run.jsonl"));
+                    assert_eq!(seed, 7);
+                    assert!(allow_partial);
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "replay",
+                "--module",
+                "game.wasm",
+                "--fixture",
+                "run.jsonl",
+            ])
+            .is_err(),
+            "a replay needs the seed the module was installed with"
+        );
     }
 
     #[test]
