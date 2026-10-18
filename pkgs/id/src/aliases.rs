@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use p2panda_core::Hash;
 
-use crate::server_config::{Object, ServerConfig};
+use crate::groups::Key;
 use crate::tag_claims::Claim;
 use crate::waiting::AuthorKey;
 
@@ -99,13 +99,26 @@ pub fn aliases_of(claims: &[Claim], subject: &Hash) -> Vec<Alias> {
         .collect()
 }
 
-/// The rows of a view over `named`, with the rules above. `server` is the server config, if this
-/// server has one. `pet_names` maps a subject to the owner's pet name for it.
+/// Something that can carry an alias: a user by its public key, or a group by its ID.
+///
+/// Lives here (rather than in `crate::server_config`) so alias display builds without the
+/// `world` feature; the server config re-exports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Object {
+    /// A user, by its account key.
+    User(Key),
+    /// A group, by its ID.
+    Group(Hash),
+}
+
+/// The rows of a view over `named`, with the rules above. `primary_aliases` maps objects to the
+/// server's stored primary alias for them, if this server keeps one. `pet_names` maps a subject
+/// to the owner's pet name for it.
 #[must_use]
 pub fn rows(
     named: &[Named],
     claims: &[Claim],
-    server: Option<&ServerConfig>,
+    primary_aliases: &BTreeMap<Object, String>,
     pet_names: &BTreeMap<Hash, String>,
 ) -> Vec<Row> {
     let hexes: Vec<String> = named.iter().map(|object| object.subject.to_hex()).collect();
@@ -115,8 +128,9 @@ pub fn rows(
         .map(|(index, object)| {
             let aliases = aliases_of(claims, &object.subject);
             // A group's subject is its create event ID, which is the config's group ID.
-            let primary =
-                server.and_then(|config| config.primary_alias(&Object::Group(object.subject)));
+            let primary = primary_aliases
+                .get(&Object::Group(object.subject))
+                .map(String::as_str);
             let pet = pet_names.get(&object.subject).map(String::as_str);
             Row {
                 subject: object.subject,
@@ -220,7 +234,7 @@ mod tests {
                 name: "ann".to_owned(),
             }],
             &[],
-            None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
         );
         assert_eq!(view[0].prefix.len(), MIN_PREFIX);

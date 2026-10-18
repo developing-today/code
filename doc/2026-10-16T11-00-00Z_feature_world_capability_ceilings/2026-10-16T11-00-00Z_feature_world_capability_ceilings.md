@@ -54,12 +54,7 @@ Implemented as specified: the effective-authority formula, the server flag, the 
 
 ## Rollback caveat
 
-Rollback is not transparent, but it fails loudly. A journal that has received a ceiling is not readable by binaries that predate this change:
-
-- A `CapsCeiling` entry is an unknown variant to older binaries, so the world refuses to open. This is the same limitation tracked in issue #227.
-- Compaction also writes a `CapsCeiling` entry whenever the ceiling is not the full catalog, next to the checkpoint's `caps_ceiling` field. An older binary therefore refuses the compacted journal rather than ignoring the field and restoring the full catalog. The checkpoint field alone would have been silently dropped by older binaries.
-
-Restoring a pre-change journal backup is the safe rollback.
+Rollback is not safe without a backup. A binary built before #244 treats an unknown entry as a torn append when it is the last line of the journal, and truncates it. That silently drops the newest ceiling change. An unknown entry that is not last makes such a binary refuse the journal. Compaction writes `CapsCeiling` before the checkpoint, so a compacted journal refuses, but the first change after compaction can be last. Restore a pre-change journal backup before rolling back. Binaries built after #244 refuse any complete line they cannot read. This is the limitation tracked in issue #227.
 
 ## Follow-ups
 
