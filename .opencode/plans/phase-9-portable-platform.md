@@ -76,6 +76,10 @@ each one is useful alone and does not depend on a later one.
 
 - **P10.1 started in this worktree:** role-scoped invites (`spectator`, `player`, `guest`, `delegator`) over the existing scope machinery, and `id world list --json` for directory feeds. Builder/moderator roles with their own authority, and a cross-node directory feed, remain follow-ups. Record: [roles and directory](../../doc/2026-10-17T08-00-00Z_feature_world_roles_directory/2026-10-17T08-00-00Z_feature_world_roles_directory.md).
 
+## Next stage
+
+Phase 11 ([foundations](phase-11-foundations.md)) and Phase 12 ([platform flexibility](phase-12-platform-flexibility.md)) continue from here. Phase 10 items still open: builder and moderator roles (F12.3), world forking and templates (F12.2), outbound notifications (F12.5), and the directory feed.
+
 ## Phase 10 sketch: worlds as places
 
 Not committed beyond the slice above, recorded so the direction is visible.
