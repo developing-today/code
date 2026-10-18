@@ -1184,6 +1184,11 @@ func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"status": "restarting"})
 	go func() {
 		time.Sleep(defaults.DaemonRestartSettle)
+		// syscall.Exec replaces this process image instantly, so a
+		// background orphan-session DELETE from this daemon's takeover
+		// would die in flight and leak the session upstream. Wait for
+		// the terminations (bounded) before re-executing (#301).
+		s.waitOrphanTerminations()
 		if s.reg != nil {
 			if err := s.reg.SaveCache(); err != nil && s.logger != nil {
 				s.logger.Printf("save cache before restart: %v", err)
