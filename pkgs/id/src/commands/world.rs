@@ -392,6 +392,20 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             Ok(())
         }
         WorldCommand::New { dir, name } => scaffold_world(&dir, &name),
+        #[cfg(feature = "sandbox")]
+        WorldCommand::Measure {
+            module,
+            seed,
+            inputs,
+            width,
+            height,
+        } => {
+            let wasm = std::fs::read(&module)
+                .with_context(|| format!("read Wasm module {}", module.display()))?;
+            let report = measure_module(&wasm, seed, &inputs, width.zip(height))?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
         WorldCommand::Logs {
             node,
             capability,
@@ -676,6 +690,72 @@ fn read_bounded(path: &std::path::Path, limit: u64, what: &str) -> Result<Vec<u8
         std::fs::metadata(path).with_context(|| format!("read {what} {}", path.display()))?;
     anyhow::ensure!(metadata.len() <= limit, "{what} exceeds {limit} bytes");
     std::fs::read(path).with_context(|| format!("read {what} {}", path.display()))
+}
+
+/// Drive a module through the calls `id world measure` reports on and return
+/// the JSON report.
+///
+/// # Errors
+///
+/// A module that fails to compile, a malformed `--input`, or a call that traps.
+#[cfg(feature = "sandbox")]
+fn measure_module(
+    wasm: &[u8],
+    seed: u64,
+    inputs: &[String],
+    viewport: Option<(u16, u16)>,
+) -> Result<serde_json::Value> {
+    use crate::sandbox::{GuestCall, Sandbox, SandboxLimits};
+
+    let events = inputs
+        .iter()
+        .map(|hex| {
+            crate::world_session::decode_hex(hex)
+                .with_context(|| format!("`{hex}` is not an even-length hex string"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let limits = SandboxLimits::default();
+    let sandbox = Sandbox::compile(wasm, limits)?;
+    let mut world = sandbox.instantiate(seed)?;
+    world.view()?;
+    if let Some((width, height)) = viewport {
+        world.layout_at(width, height)?;
+    }
+    world.records()?;
+    world.wants()?;
+    world.snapshot()?;
+    for event in &events {
+        world.update(1, event)?;
+        world.view()?;
+    }
+
+    let mut calls = serde_json::Map::new();
+    let mut worst = (GuestCall::Init, 0);
+    for (call, stats) in world.metrics().iter() {
+        if stats.calls == 0 {
+            continue;
+        }
+        if stats.fuel_max > worst.1 {
+            worst = (call, stats.fuel_max);
+        }
+        calls.insert(
+            call.name().to_owned(),
+            serde_json::json!({
+                "calls": stats.calls,
+                "fuel_total": stats.fuel_total,
+                "fuel_max": stats.fuel_max,
+            }),
+        );
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let worst_percent = worst.1 as f64 * 100.0 / limits.fuel as f64;
+    Ok(serde_json::json!({
+        "module_bytes": wasm.len(),
+        "fuel_limit": limits.fuel,
+        "calls": calls,
+        "worst_call": worst.0.name(),
+        "worst_call_percent_of_limit": (worst_percent * 100.0).round() / 100.0,
+    }))
 }
 
 /// Scaffold a Roc world app in `dir`.
@@ -975,5 +1055,31 @@ mod tests {
         assert!(scaffold_world(&target, "my-world").is_err());
         let bad = dir.path().join("bad");
         assert!(scaffold_world(&bad, "../escape").is_err());
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn measure_reports_fuel_per_call_kind_for_a_checked_in_module() {
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
+        let report =
+            super::measure_module(wasm, 7, &["696e63".to_owned()], Some((40, 20))).unwrap();
+        assert_eq!(report["module_bytes"], wasm.len());
+        assert_eq!(report["fuel_limit"], 10_000_000);
+        let calls = &report["calls"];
+        // The initial view plus one after the input.
+        assert_eq!(calls["view"]["calls"], 2);
+        for kind in ["init", "update", "layout", "records", "wants", "snapshot"] {
+            assert_eq!(calls[kind]["calls"], 1, "{kind}: {report}");
+            assert!(calls[kind]["fuel_max"].as_u64().unwrap() > 0, "{kind}");
+        }
+        assert!(calls.get("restore").is_none(), "{report}");
+        assert!(report["worst_call_percent_of_limit"].as_f64().unwrap() < 1.0);
+
+        // Without a viewport there is no layout call; bad hex is refused
+        // before the module runs.
+        let report = super::measure_module(wasm, 7, &[], None).unwrap();
+        assert!(report["calls"].get("layout").is_none());
+        assert!(super::measure_module(wasm, 7, &["zz".to_owned()], None).is_err());
+        assert!(super::measure_module(b"not wasm", 7, &[], None).is_err());
     }
 }

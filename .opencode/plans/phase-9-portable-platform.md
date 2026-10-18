@@ -78,6 +78,10 @@ each one is useful alone and does not depend on a later one.
 
 - **P10.2 started in this worktree:** session recording to replayable fixtures. `id world record` writes a world's retained history and records to a JSON Lines fixture through a join capability, and `id world replay` runs that fixture offline in the sandbox under the operator's seed and compares the records. Host events (presence, capability results, ticks) never enter the event stream, so a fixture replays faithfully only for programs that do not consume them; the records check reports the difference. Reinstall windows and partial histories need follow-ups. Record: [session recording](../../doc/2026-10-17T09-00-00Z_feature_world_fixtures/2026-10-17T09-00-00Z_feature_world_fixtures.md).
 
+## Next stage
+
+Phase 11 ([foundations](phase-11-foundations.md)) and Phase 12 ([platform flexibility](phase-12-platform-flexibility.md)) continue from here. Phase 10 items still open: builder and moderator roles (F12.3), world forking and templates (F12.2), outbound notifications (F12.5), and the directory feed.
+
 ## Phase 10 sketch: worlds as places
 
 Not committed beyond the slice above, recorded so the direction is visible.

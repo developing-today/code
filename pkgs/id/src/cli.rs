@@ -1651,6 +1651,32 @@ pub enum WorldCommand {
         #[arg(long, default_value = "world")]
         name: String,
     },
+    /// Measure a compiled `.wasm` world program's fuel use, offline.
+    ///
+    /// Compiles the module with the default limits, runs `view`, then
+    /// `layout` (with `--width`/`--height`), `records`, `wants`, and
+    /// `snapshot`, then each `--input` as participant 1 followed by a `view`.
+    /// Prints one JSON object with, per call kind, the calls made, total and
+    /// worst fuel, and the worst call as a percent of the fuel limit. Exits
+    /// nonzero only if the module fails to compile or a call traps.
+    #[cfg(feature = "sandbox")]
+    Measure {
+        /// Wasm module built for the `id` Roc world ABI.
+        #[arg(long)]
+        module: PathBuf,
+        /// Deterministic seed supplied to the guest initializer.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Event to apply as participant 1, hex-encoded (repeatable, in order).
+        #[arg(long = "input", value_name = "HEX")]
+        inputs: Vec<String>,
+        /// Viewport width for the `layout` call (needs `--height`).
+        #[arg(long, requires = "height")]
+        width: Option<u16>,
+        /// Viewport height for the `layout` call (needs `--width`).
+        #[arg(long, requires = "width")]
+        height: Option<u16>,
+    },
     /// Tail a world's recent events (bounded by retention and a deadline).
     Logs {
         /// The host's node ID (64 hex characters).
@@ -3885,6 +3911,34 @@ mod tests {
                 other => panic!("unexpected: {other:?}"),
             },
             other => panic!("unexpected: {other:?}"),
+        }
+        #[cfg(feature = "sandbox")]
+        {
+            let cli = Cli::parse_from([
+                "id", "world", "measure", "--module", "a.wasm", "--input", "ff", "--input", "00",
+                "--width", "40", "--height", "20",
+            ]);
+            match cli.command {
+                Some(Command::World(cmd)) => match *cmd {
+                    WorldCommand::Measure {
+                        inputs,
+                        width,
+                        height,
+                        seed,
+                        ..
+                    } => {
+                        assert_eq!(inputs, ["ff", "00"]);
+                        assert_eq!((width, height, seed), (Some(40), Some(20), 1));
+                    }
+                    other => panic!("unexpected: {other:?}"),
+                },
+                other => panic!("unexpected: {other:?}"),
+            }
+            // A width alone has no viewport to lay out.
+            assert!(
+                Cli::try_parse_from(["id", "world", "measure", "--module", "a", "--width", "9"])
+                    .is_err()
+            );
         }
         let node = "a".repeat(64);
         let cli = Cli::parse_from(["id", "world", "stats", &node, "--capability", "c"]);
