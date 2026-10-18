@@ -30,9 +30,9 @@ Tasks are numbered F11.n. Each names an exit criterion that a test or a CI job c
 
 This comes first, because every later task needs a signal it can believe.
 
-- **F11.1 Relay kit location (#238).** Move the deployable kit into `pkgs/id/deploy/relay/` and point the test and the design record at it, or skip `relay_ops` in Nix. Exit: `id-test`, `id-test-web`, and the `id` package build pass in Nix.
+- **F11.1 Relay kit location (#238).** Done on `main` by #249: the kit is vendored under `pkgs/id/tests/fixtures/relay`, the doc copy stays canonical, and a drift test fails whenever the doc copy is present and differs. Residual risk: drift is only caught in a full checkout, not in the Nix sandbox. Exit met: `id-test`, `id-test-web`, and the `id` package build no longer fail on the kit.
 - **F11.2 Firefox E2E isolation (#229).** Reproduce locally per spec file, then give each spec file its own `id serve --ephemeral` server and port, and restart the browser per file. Exit: two consecutive green runs on one commit, and the E2E derivation under 10 minutes.
-- **F11.3 Explain the LogSync flakes (#241).** Find which side resets the connection, fix it, and delete the retry. The retry does not hold under load, and `test_an_interrupted_session_restarts_without_duplicates` flakes the same way, so cover both. Exit: both tests pass 50 consecutive runs under `--test-threads=1` and under full-suite load without a retry.
+- **F11.3 Explain the LogSync flakes (#241).** `main` fixed the interrupted-session test (#254). The live failure on `main` is the bulk test hitting `Timeout(30s)`: it takes about 23.5s on an idle machine, so the shared 30s test deadline has no headroom, and #224 aligns it with the 60s production deadline. Still open: why a bulk transfer of that size takes 23s, and the connection reset seen only in `--keep-going` runs. Exit: both tests pass 50 consecutive runs under full-suite load without a retry, and the bulk test runs in under 10s.
 - **F11.4 A fast lane.** Split CI into a lane that gives feedback in under 15 minutes (fmt, clippy, unit tests) and a full lane (integration, VM, E2E). Use `--keep-going` in both. Exit: median PR feedback for the fast lane under 15 minutes, measured over ten runs.
 - **F11.5 Injected time.** Introduce a `Clock` that the actor and the scheduler read, with a manual clock for tests, so schedule and tick tests stop sleeping. Exit: no `sleep` in `world.rs` tests, and the schedule tests run in under one second.
 
@@ -46,7 +46,7 @@ This comes first, because every later task needs a signal it can believe.
 ### C. Make the code easy to change
 
 - **F11.10 Split the large modules, with no behavior change.** `world.rs` into scopes and roles, journal entries and replay, the capability ledger and providers, the actor, and tests. `world_session.rs` into frames, session loop, and hub glue. `cli.rs` into one file per command group. Box large command variants so `cmd_world` stays under a stack budget. Exit: no file over 2,500 lines of production code, the full test suite passes unchanged, and `git diff --stat` shows moves only.
-- **F11.11 One client projection.** A single function maps core events and snapshots to what a given scope may see. It owns the decisions in #240 (install seed), the chat-visibility gap, and #242 (host events), each with a policy table and a test per row. Exit: no code path serializes a `WorldEvent` to a client except through the projection, enforced by a test that greps for the old call sites.
+- **F11.11 One client projection.** A single function maps core events and snapshots to what a given scope may see, used by `events_after`, the snapshot, and the live stream. Decided by the project owner: the install seed is secret (done on `main` in #250 for `events_after` and the snapshot) and join-only participants do not see chat, with an explicit `history` scope to opt in to reading it (in progress on `fix-chat-visibility`, which also unifies the three paths and checks the live stream for a seed leak). Host events (#242) remain open. Exit: no code path serializes a `WorldEvent` to a client except through the projection, enforced by a test.
 - **F11.12 Journal format management.** A version header, `id world journal check`, `id world journal backup`, and a writer that refuses to open a journal written by a newer format. This turns the rollback rule into tooling. Exit: a test opens a journal with a future version and gets a clear refusal, and `backup` produces a file that restores byte for byte.
 - **F11.13 Error taxonomy.** Typed errors with stable codes and reasons on the wire, including the reason that `schedule.at` currently drops. Exit: every `CapError` carries a documented code, and the guide lists them.
 
@@ -69,13 +69,13 @@ F11.10 -> F11.11 -> F11.12       (split, then project, then format)
 F11.13, F11.16, F11.17           (anytime after F11.10; F11.17 can start earlier)
 ```
 
-F11.10 should land before F11.11 and F11.12, because those two touch the code the split moves.
+F11.10 should land before F11.12, because that task touches the code the split moves. F11.10 must wait until the open platform stack (#209 to #248) has merged: `world.rs`, `world_session.rs`, and `cli.rs` are edited by every one of those PRs, so a split now would conflict with all of them.
 
-## Decisions needed before work starts
+## Decisions
 
-1. F11.1: move the relay kit into `pkgs/id`, or skip the test in Nix.
-2. F11.11: install seeds secret or public; chat visible to join-only participants or not. Recommendation: secret and not visible, with an explicit scope to opt in.
-3. F11.2: whether to take the E2E work on now.
+1. Relay kit (#238): settled on `main` by #249 with a vendored copy and a drift test, not a move. The move into `pkgs/id/deploy/relay/` was approved but is not needed now.
+2. Seeds and chat (F11.11): seeds secret, join-only participants do not see chat, an explicit `history` scope opts in. Approved.
+3. Firefox E2E (#229, F11.2): not yet decided. It remains the last red check once the sync tests are fixed.
 
 ## Out of scope
 

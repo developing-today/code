@@ -17,11 +17,14 @@ Phases 9 and 10 delivered portable screens, structured Roc libraries, per-world 
 
 ## What is not decided here
 
-The relay kit location (#238), seed secrecy (#240), chat visibility, whether to take the Firefox E2E work on (#229), and the choice between the Wasm component model and the current ABI as the long-term interface (F12.8). The Phase 11 plan lists the first three as decisions needed before work starts.
+Whether to take the Firefox E2E work on (#229), and the choice between the Wasm component model and the current ABI as the long-term interface (F12.8). The relay kit (#238) was settled on `main` by #249, and the project owner decided that install seeds stay secret and join-only participants do not see chat, with an explicit `history` scope to opt in.
 
 ## Progress
 
 - F11.6 per-call fuel metrics and budgets: PR #247. It found that territory traps with six or more seats; the fix is PR #248 (full house 1.6M fuel, 16% of the limit; part of the saving was a stale compiler, see F11.18), and F11.17 plans the platform-level defence.
+
+- Seed redaction landed on `main` (#250); chat visibility and a single projection are in progress on `fix-chat-visibility`.
+- Main CI: the live failure is the bulk LogSync test hitting its 30s deadline; #224 aligns it to 60s and carries the disk cap and `--keep-going`.
 
 ## References
 
