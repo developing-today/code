@@ -25,10 +25,14 @@ on:
     paths:
       - "pkgs/id/**"
       - ".github/workflows/id-check.yml"
+      - ".github/scripts/id-pr-checks.txt"
+      - ".github/scripts/check-id-pr-checks.sh"
   pull_request:
     paths:
       - "pkgs/id/**"
       - ".github/workflows/id-check.yml"
+      - ".github/scripts/id-pr-checks.txt"
+      - ".github/scripts/check-id-pr-checks.sh"
 
 permissions:
   contents: read
@@ -62,24 +66,24 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # The PR list is enumerated, so guard it against the flake (#300):
+      # a new flake check that is neither listed nor excluded fails here
+      # by name instead of silently getting no PR coverage.
+      - name: Guard PR check list against flake drift
+        run: .github/scripts/check-id-pr-checks.sh
+
       - name: Run PR checks
         run: |
           # Fast PR set: unit + integration tests, lint, format, typecheck,
-          # doc and the crash gate. The heavy remainder — test-e2e
-          # (Playwright), nixos-serve, nixos-e2e, nixos-integration and
-          # nixos-playwright-e2e — runs nightly in id-e2e-nightly.yml,
-          # which also runs the full `nix flake check` as a safety net.
-          # The aggregate `default` check is intentionally not listed: it
-          # re-runs this same set inside a single derivation.
-          checks=(
-            cargo-fmt-check rustfmt-check web-fmt-check prettier-check
-            nix-fmt-check treefmt-check biome-check shellcheck-check
-            shfmt-check statix-check taplo-check
-            clippy-lint web-lint cargo-check
-            test test-unit test-int
-            test-web test-web-unit test-web-typecheck
-            crash-gate doc
-          )
+          # doc and the crash gate, listed in id-pr-checks.txt. The heavy
+          # remainder — test-e2e (Playwright), nixos-serve, nixos-e2e,
+          # nixos-integration and nixos-playwright-e2e — runs nightly in
+          # id-e2e-nightly.yml, which also runs the full `nix flake check`
+          # as a safety net. The aggregate `default` check is intentionally
+          # not listed: it re-runs this same set inside a single
+          # derivation. check-id-pr-checks.sh holds the exclusion list and
+          # keeps this list in sync with pkgs/id/flake.nix.
+          mapfile -t checks < <(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' .github/scripts/id-pr-checks.txt)
           args=()
           for c in "${checks[@]}"; do
             args+=("./pkgs/id#checks.x86_64-linux.$c")
