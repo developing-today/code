@@ -408,6 +408,14 @@ export const OPS: Record<string, OpSpec> = {
     params: {},
     response: "json",
   },
+  preflight: {
+    method: "POST",
+    path: "/v1/preflight",
+    params: {
+      source: { in: "body", required: true },
+    },
+    response: "json",
+  },
   prompt_get: {
     method: "POST",
     path: "/v1/prompt",
@@ -487,6 +495,12 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "json",
   },
+  reload: {
+    method: "POST",
+    path: "/v1/reload",
+    params: {},
+    response: "json",
+  },
   resolve: {
     method: "GET",
     path: "/v1/resolve",
@@ -541,6 +555,51 @@ export const OPS: Record<string, OpSpec> = {
     },
     response: "json",
   },
+  secret_request_decline: {
+    method: "DELETE",
+    path: "/v1/secret-requests/{id}",
+    params: {
+      id: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  secret_request_get: {
+    method: "GET",
+    path: "/v1/secret-requests/{id}",
+    params: {
+      id: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  secret_requests_list: {
+    method: "GET",
+    path: "/v1/secret-requests",
+    params: {},
+    response: "json",
+  },
+  secrets_list: {
+    method: "GET",
+    path: "/v1/secrets",
+    params: {},
+    response: "json",
+  },
+  secrets_set: {
+    method: "PUT",
+    path: "/v1/secrets/{name}",
+    params: {
+      name: { in: "path", required: true },
+      value: { in: "body", required: true },
+    },
+    response: "json",
+  },
+  secrets_unset: {
+    method: "DELETE",
+    path: "/v1/secrets/{name}",
+    params: {
+      name: { in: "path", required: true },
+    },
+    response: "json",
+  },
   servers_add: {
     method: "POST",
     path: "/v1/servers",
@@ -555,6 +614,14 @@ export const OPS: Record<string, OpSpec> = {
       mcpx: { in: "body" },
       scope: { in: "body" },
       replace: { in: "body" },
+    },
+    response: "json",
+  },
+  servers_get: {
+    method: "GET",
+    path: "/v1/servers/{name}",
+    params: {
+      name: { in: "path", required: true },
     },
     response: "json",
   },
@@ -1081,6 +1148,13 @@ export class DaemonOps {
   }
 
   /**
+   * Check a script's servers are ready before running it. `POST /v1/preflight`.
+   */
+  preflight(args: { source: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("preflight", args, opts) as Promise<unknown>
+  }
+
+  /**
    * Render one prompt with its arguments filled in. `POST /v1/prompt`.
    */
   promptGet(args: { server: string; name: string; arguments?: Record<string, unknown>; sessionId?: string; callId?: string }, opts: CallOptions = {}): Promise<unknown> {
@@ -1145,6 +1219,14 @@ export class DaemonOps {
   }
 
   /**
+   * Re-read the configuration and swap server pools without restarting unchanged servers. `POST /v1/reload`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  reload(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("reload", args, opts) as Promise<unknown>
+  }
+
+  /**
    * Which daemon serves a directory. `GET /v1/resolve`.
    */
   resolve(args: { dir: string }, opts: CallOptions = {}): Promise<unknown> {
@@ -1189,11 +1271,64 @@ export class DaemonOps {
   }
 
   /**
+   * Decline a secret request. `DELETE /v1/secret-requests/{id}`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  secretRequestDecline(args: { id: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secret_request_decline", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * One secret request, and whether it is still waiting. `GET /v1/secret-requests/{id}`.
+   */
+  secretRequestGet(args: { id: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secret_request_get", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Requests waiting for a person to give secrets. `GET /v1/secret-requests`.
+   */
+  secretRequestsList(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secret_requests_list", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Which secrets servers need, and which of them have a value. `GET /v1/secrets`.
+   */
+  secretsList(args: Record<string, never> = {}, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secrets_list", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Give a secret a value, in memory only. `PUT /v1/secrets/{name}`.
+   * Privileged: it changes the daemon rather than reading it.
+   */
+  secretsSet(args: { name: string; value: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secrets_set", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Forget a runtime value for a secret. `DELETE /v1/secrets/{name}`.
+   * Privileged: it changes the daemon rather than reading it.
+   * Destructive: it cannot be undone, and other callers are affected.
+   */
+  secretsUnset(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("secrets_unset", args, opts) as Promise<unknown>
+  }
+
+  /**
    * Add a server, live. `POST /v1/servers`.
    * Privileged: it changes the daemon rather than reading it.
    */
   serversAdd(args: { name: string; command?: string; args?: unknown[]; env?: Record<string, unknown>; url?: string; headers?: Record<string, unknown>; transport?: "stdio" | "http" | "sse"; mcpx?: Record<string, unknown>; scope?: "project" | "user"; replace?: boolean }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("servers_add", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * One configured server, and whether it can run now. `GET /v1/servers/{name}`.
+   */
+  serversGet(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("servers_get", args, opts) as Promise<unknown>
   }
 
   /**

@@ -24,6 +24,9 @@ on:
   pull_request:
     paths:
       - "pkgs/mcpx/**"
+      # The dogfood copy of the plugin under .opencode/plugin, so a PR that
+      # only touches it still runs the sync guard below (#314).
+      - ".opencode/plugin/**"
       - "flake.nix"
       - "flake.lock"
       # Itself, so a bot bumping one of the actions below is tested by the
@@ -33,6 +36,7 @@ on:
     branches: [main]
     paths:
       - "pkgs/mcpx/**"
+      - ".opencode/plugin/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -52,6 +56,18 @@ jobs:
           # The Renovate branch itself, so a fixed hash can be pushed back.
           ref: ${{ github.head_ref || github.ref }}
           fetch-depth: 0
+
+      # The repo dogfoods the plugin: .opencode/plugin is a copy of
+      # pkgs/mcpx/plugin/opencode, and the two must stay identical. The
+      # generated ops table in the copy once fell 9 operations behind
+      # (secrets, reload, preflight, servers_get) because the generation
+      # guard inside pkgs/mcpx only compares the pkgs copy (#314). This
+      # guard lives here, not in pkgs/mcpx, because that package also
+      # stands alone in dezren39/nix with no repo-root .opencode copy.
+      - name: Check the dogfood plugin copy is in sync
+        run: |
+          diff -r pkgs/mcpx/plugin/opencode/mcpx .opencode/plugin/mcpx
+          diff pkgs/mcpx/plugin/opencode/mcpx-session.ts .opencode/plugin/mcpx-session.ts
 
       - uses: actions/setup-go@v7
         with:
