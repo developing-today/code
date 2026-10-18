@@ -3,9 +3,10 @@
 # Exclude pkgs/id/ — it has its own treefmt/formatter
 [global]
 excludes = [
-  "pkgs/id/**",   # has its own treefmt/formatter
-  "pkgs/dht/**",  # WIP package with syntax errors
-  ".opencode/**", # managed by opencode, may have permission issues
+  "pkgs/id/**",              # has its own treefmt/formatter
+  "pkgs/dht/**",             # WIP package with syntax errors
+  ".opencode/**",            # managed by opencode, may have permission issues
+  "pkgs/mcpx/docs/parity.md", # generated; TestParityDocumentIsCurrent compares it byte-for-byte with the generator, so prettier's table padding can never be applied
 ]
 
 # [formatter.<name>]

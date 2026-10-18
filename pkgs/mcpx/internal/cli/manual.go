@@ -134,7 +134,7 @@ func handCommands() []Command {
 			Local:   "Manages embedded agent skills.",
 			Usage:   "[list|install] [--agent <name>] [--to <dir>]",
 			Summary: "list or install embedded mcpx agent skills",
-			Detail: "Lists available agent skills embedded with mcpx or installs them into the target agent configuration.",
+			Detail:  "Lists available agent skills embedded with mcpx or installs them into the target agent configuration.",
 		},
 		{
 			Name: "recipes", Group: "running",
