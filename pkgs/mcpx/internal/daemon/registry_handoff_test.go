@@ -208,6 +208,104 @@ func TestTakeoverOrphanTerminationDoesNotBlockAttach(t *testing.T) {
 	}
 }
 
+// #298: a successor that shuts down while its background orphan DELETE is
+// still in flight must not exit first — process exit would kill the DELETE
+// and leak the session upstream. shutdown() waits for the termination the
+// committed takeover started; the upstream still sees exactly one DELETE.
+func TestSuccessorShutdownWaitsForABlockedOrphanTermination(t *testing.T) {
+	up := newOrphanUpstream(t)
+	up.blockDelete = make(chan struct{})
+	up.deleteStarted = make(chan struct{}, 1)
+	paths := handoffPaths(t)
+	oldCfg := &config.Config{MCPServers: map[string]*config.Server{
+		"remote": {Name: "remote", URL: up.URL + "/mcp"},
+	}}
+	old := startOldServer(t, paths, oldCfg)
+	p, ok := old.Registry().Pool("remote")
+	if !ok {
+		t.Fatal("no pool for remote")
+	}
+	lease, err := p.Acquire(context.Background(), "global")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Client().Ping(context.Background()); err != nil {
+		lease.Release()
+		t.Fatalf("ping: %v", err)
+	}
+	lease.Release()
+
+	// The successor's configuration no longer has the server, so the
+	// session is orphaned by the takeover.
+	successor, err := NewServer(handoffOptions(paths, &config.Config{MCPServers: map[string]*config.Server{}}, "new"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(successor.reg.Close)
+	h, err := successor.TakeOver()
+	if err != nil {
+		t.Fatalf("takeover: %v", err)
+	}
+	defer func() { _ = h.Done() }()
+
+	select {
+	case <-up.deleteStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no orphan DELETE was started in the background after the takeover")
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- successor.shutdown() }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("shutdown returned (%v) while the orphan DELETE was still blocked; the session would leak", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(up.blockDelete)
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not return after the orphan DELETE completed")
+	}
+	if deletes, _ := up.counts(); deletes != 1 {
+		t.Fatalf("upstream saw %d DELETE(s), want exactly 1", deletes)
+	}
+}
+
+// #298: the orphan wait is bounded. A termination that outlives the bound
+// is logged and the exit proceeds; a daemon that never took over waits not
+// at all.
+func TestWaitOrphanTerminationsIsBoundedAndSkipsNonSuccessors(t *testing.T) {
+	old := shutdownOrphanWait
+	shutdownOrphanWait = 100 * time.Millisecond
+	t.Cleanup(func() { shutdownOrphanWait = old })
+
+	srv, err := NewServer(handoffOptions(handoffPaths(t), &config.Config{MCPServers: map[string]*config.Server{}}, "v"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(srv.reg.Close)
+
+	start := time.Now()
+	srv.waitOrphanTerminations()
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("a daemon that never took over waited %v for orphan terminations", elapsed)
+	}
+
+	ad := &Adoption{}
+	ad.orphanWG.Add(1) // a termination that never finishes
+	srv.adoption.Store(ad)
+	start = time.Now()
+	srv.waitOrphanTerminations()
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("the orphan wait was not bounded: still blocked after %v", elapsed)
+	}
+	ad.orphanWG.Done()
+}
+
 // On the abort path the predecessor still owns the session: no DELETE, and
 // the predecessor goes on serving it.
 func TestAbortedTakeoverLeavesARemovedServersSessionAlone(t *testing.T) {
