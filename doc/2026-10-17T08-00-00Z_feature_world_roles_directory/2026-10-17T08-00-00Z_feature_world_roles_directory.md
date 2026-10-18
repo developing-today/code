@@ -15,7 +15,8 @@ Two concrete steps toward the Phase 10 direction:
 ## Decisions
 
 - **Roles are presets over existing scopes.** `WorldScopes::from_role` maps:
-  - `spectator` → `join` (reads the event stream, records, and screens, including chat lines; sends no chat or input)
+  - `spectator` → `join` (sees the world, records, and screens; no chat lines, and sends no chat or input)
+  - `observer` → `join` + `history` (as spectator, and reads chat lines; sends no chat or input)
   - `player` → `join` + `input`
   - `guest` → `join` + `chat` + `input` (the default, unchanged)
   - `delegator` → `guest` + `delegate` (may mint narrower capabilities)
@@ -39,24 +40,16 @@ Two concrete steps toward the Phase 10 direction:
 "open", "default"}]}`. The tab-separated form is unchanged when the flag is
   absent.
 
-## Known gap: join-only participants can read chat
+## Resolved: join-only participants no longer read chat
 
-`events_after` and the snapshot return every retained event, chat lines
-included, to any participant with `join`. A spectator therefore reads chat
-through the event stream. The `chat` scope gates sending and `chat.history`
-only, so refusing `chat.history` to a spectator withholds nothing the event
-stream does not already send. The gap predates roles; the presets exposed it.
-The earlier claim that spectators cannot read chat history was wrong.
+This record first noted that `events_after` and the snapshot returned chat to any participant with `join`, so a spectator read chat through the event stream. The project owner decided that join-only participants must not see chat, and #256 implemented it: one projection (`project_event_for`) hides chat from viewers with neither `chat` nor the new `history` scope, for the snapshot, catch-up pages, and the live stream. Install seeds stay redacted by the same projection.
 
-Decision needed, one of:
+Two consequences for the roles in this record:
 
-- **(a) Redact.** Withhold chat lines from participants without `chat` in
-  `events_after`, the snapshot, and the live stream. This changes the event
-  protocol and leaves sequence gaps that clients must tolerate.
-- **(b) Declare read-all.** Treat `join` as observing everything the world
-  publishes, and gate `chat.history` on `join` so the code matches behaviour.
+- `spectator` (join only) sees the world, not the chat.
+- `observer` (join + `history`) is the read-only role that also reads chat. `chat.history` accepts `chat` or `history`, the same rule the event stream applies.
 
-Until one is chosen, do not describe spectators as unable to read chat.
+See `doc/2026-10-18T04-00-00Z_fix_world_chat_visibility/`. Existing join-only capabilities stop seeing chat when they meet a binary with the projection. Older binaries ignore the `history` bit, so downgrading is not safe for chat privacy.
 
 ## Acceptance
 
@@ -74,7 +67,6 @@ Until one is chosen, do not describe spectators as unable to read chat.
 
 - Builder/moderator roles with their own authority model (module install,
   removal) and journaled grants.
-- Decide chat visibility for join-only participants (see Known gap).
 - A world directory feed for other nodes: names, presence counts, and
   open/closed, sharing one serializer with `id world list --json`.
 - Showing a participant's role in `players.list` or `id world stats` once a
