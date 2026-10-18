@@ -1274,11 +1274,40 @@ mod tests {
             provenance: None,
             execution_profile: None,
             caps_ceiling: None,
+            schedules: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
         });
         let error = WorldCore::restore("w", WorldLimits::default(), entries).unwrap_err();
         assert!(error.to_string().contains("checkpoint"), "{error:#}");
+    }
+
+    #[test]
+    fn schedule_entries_survive_the_file_journal() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let written = [
+            JournalEntry::ScheduleSet {
+                id: "a".to_owned(),
+                at_ms: 9,
+            },
+            JournalEntry::ScheduleCancelled { id: "a".to_owned() },
+            JournalEntry::ScheduleSet {
+                id: "b".to_owned(),
+                at_ms: 10,
+            },
+            JournalEntry::ScheduleFired { id: "b".to_owned() },
+        ];
+        {
+            // Opening a new journal writes its header first.
+            let (mut journal, header) = FileJournal::open(&path, "w").unwrap();
+            assert_eq!(header.len(), 1);
+            for entry in &written {
+                journal.append(entry).unwrap();
+            }
+        }
+        let (_, reread) = FileJournal::open(&path, "w").unwrap();
+        assert_eq!(reread[1..], written);
     }
 
     #[cfg(feature = "sandbox")]

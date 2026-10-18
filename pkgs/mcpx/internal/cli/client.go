@@ -325,6 +325,13 @@ func (c *Client) Ping(ctx context.Context) bool {
 // waits for it to become reachable. This is what makes every command work with
 // no setup step.
 func (c *Client) EnsureDaemon(ctx context.Context) error {
+	// A cancelled caller wants nothing started and nothing waited for:
+	// without this check a failed Ping (which a cancelled context always
+	// produces) is read as "no daemon", so a daemon gets spawned and the
+	// poll below waits out the whole connect timeout (#284).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if c.Remote() {
 		// Starting a local daemon because a remote one is unreachable would
 		// silently answer from the wrong machine, which is worse than
@@ -332,10 +339,16 @@ func (c *Client) EnsureDaemon(ctx context.Context) error {
 		if c.Ping(ctx) {
 			return nil
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("no mcpx daemon at %s; it is not started from here", c.endpoint)
 	}
 	if c.Ping(ctx) {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if !c.set.Bool("daemon.autostart") {
 		return fmt.Errorf("%w and daemon.autostart is off, so mcpx will not start one",
@@ -383,7 +396,11 @@ func (c *Client) EnsureDaemon(ctx context.Context) error {
 		if c.Ping(ctx) {
 			return nil
 		}
-		time.Sleep(c.set.Duration("autostart.pollInterval"))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(c.set.Duration("autostart.pollInterval")):
+		}
 	}
 	tail, _ := os.ReadFile(logPath)
 	if max := c.set.Bytes("autostart.logTail"); int64(len(tail)) > max {
