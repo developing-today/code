@@ -448,8 +448,9 @@ fn ingest_arrivals(
 /// Collects one batch of arrivals, starting from `first`. The batch holds at most
 /// [`INGEST_BATCH`] headers (refusals do not count towards the cap, as before). Everything
 /// already queued is taken at once; then, while the batch is not full, the worker waits out
-/// [`BATCH_GRACE`] for more arrivals before giving up on the batch, so arrivals paced by the
-/// stream still land in the same write transaction. The wait ends early when the stream
+/// an idle [`BATCH_GRACE`] for more arrivals before giving up on the batch — each arrival
+/// restarts the wait — so arrivals paced by the stream still land in the same write
+/// transaction, however long their run spans. The wait ends early when the stream
 /// closes (every sender dropped), so a session's last, partial batch is not held back.
 fn collect_batch(first: Arrival, arrivals: &mut mpsc::Receiver<Arrival>) -> Vec<Arrival> {
     use tokio::sync::mpsc::error::TryRecvError;
@@ -468,7 +469,13 @@ fn collect_batch(first: Arrival, arrivals: &mut mpsc::Receiver<Arrival>) -> Vec<
         }
         next = loop {
             match arrivals.try_recv() {
-                Ok(arrival) => break Some(arrival),
+                Ok(arrival) => {
+                    // The grace is an idle wait: an arrival restarts it, so a stream that
+                    // keeps arriving inside the grace keeps sharing this batch, however
+                    // long the whole run spans.
+                    grace_end = None;
+                    break Some(arrival);
+                }
                 Err(TryRecvError::Disconnected) => break None,
                 Err(TryRecvError::Empty) => {
                     let end =
@@ -874,6 +881,39 @@ mod tests {
             batch
                 .iter()
                 .all(|arrival| matches!(arrival, Arrival::Header(_)))
+        );
+    }
+
+    /// The grace is an idle wait, not a total window: arrivals that keep coming, each within
+    /// the grace of the one before, share one batch even when the whole run spans far longer
+    /// than [`BATCH_GRACE`]. A pacing peer must not be cut back to one transaction per
+    /// operation just because its stream outlasts the first grace window.
+    #[test]
+    fn test_batch_collection_grace_restarts_on_each_arrival() {
+        const PACED: usize = 8;
+        let (tx, mut rx) = mpsc::channel::<Arrival>(16);
+        let pacer = std::thread::spawn(move || {
+            for n in 0..PACED {
+                tx.try_send(Arrival::Header(vec![n as u8])).unwrap();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        });
+        let first = loop {
+            match rx.try_recv() {
+                Ok(arrival) => break arrival,
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("the pacer went away: {error}"),
+            }
+        };
+        let batch = collect_batch(first, &mut rx);
+        pacer.join().unwrap();
+
+        assert_eq!(
+            batch.len(),
+            PACED,
+            "arrivals each inside the grace of the previous one share one batch"
         );
     }
 
