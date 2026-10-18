@@ -39,6 +39,113 @@ impl Default for SandboxLimits {
     }
 }
 
+/// One kind of guest invocation, as counted by [`CallMetrics`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestCall {
+    /// Module start function plus `plaza_init`, run once at instantiation.
+    Init,
+    /// `plaza_update`, including the input allocation and free around it.
+    Update,
+    /// `plaza_view`; also the fallback of [`WorldInstance::layout_at`] when
+    /// the guest exports no `plaza_layout`.
+    View,
+    /// `plaza_layout`.
+    Layout,
+    /// `plaza_records`.
+    Records,
+    /// `plaza_wants`.
+    Wants,
+    /// `plaza_snapshot`.
+    Snapshot,
+    /// `plaza_restore`, including the snapshot allocation and free around it.
+    Restore,
+}
+
+impl GuestCall {
+    /// Every call kind, in the order metrics are reported.
+    pub const ALL: [Self; 8] = [
+        Self::Init,
+        Self::Update,
+        Self::View,
+        Self::Layout,
+        Self::Records,
+        Self::Wants,
+        Self::Snapshot,
+        Self::Restore,
+    ];
+
+    /// Stable lowercase name used in reports.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Init => "init",
+            Self::Update => "update",
+            Self::View => "view",
+            Self::Layout => "layout",
+            Self::Records => "records",
+            Self::Wants => "wants",
+            Self::Snapshot => "snapshot",
+            Self::Restore => "restore",
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Init => 0,
+            Self::Update => 1,
+            Self::View => 2,
+            Self::Layout => 3,
+            Self::Records => 4,
+            Self::Wants => 5,
+            Self::Snapshot => 6,
+            Self::Restore => 7,
+        }
+    }
+}
+
+/// Fuel spent by one kind of guest call over a world instance's lifetime.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CallStats {
+    /// Calls made, including ones that trapped.
+    pub calls: u64,
+    /// Fuel spent across all calls.
+    pub fuel_total: u64,
+    /// Most fuel any single call spent.
+    pub fuel_max: u64,
+    /// Fuel the most recent call spent.
+    pub fuel_last: u64,
+}
+
+/// Per-call-kind fuel statistics for one [`WorldInstance`].
+///
+/// A fixed array indexed by [`GuestCall`]: recording a call allocates and
+/// locks nothing. In-memory only; never journaled, sent, or snapshotted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CallMetrics {
+    stats: [CallStats; GuestCall::ALL.len()],
+}
+
+impl CallMetrics {
+    /// Statistics for `call`; all zero if it was never made.
+    pub const fn get(&self, call: GuestCall) -> CallStats {
+        self.stats[call.index()]
+    }
+
+    /// Every call kind with its statistics, in [`GuestCall::ALL`] order.
+    pub fn iter(&self) -> impl Iterator<Item = (GuestCall, CallStats)> + '_ {
+        GuestCall::ALL
+            .into_iter()
+            .map(|call| (call, self.get(call)))
+    }
+
+    fn record(&mut self, call: GuestCall, fuel: u64) {
+        let stats = &mut self.stats[call.index()];
+        stats.calls = stats.calls.saturating_add(1);
+        stats.fuel_total = stats.fuel_total.saturating_add(fuel);
+        stats.fuel_max = stats.fuel_max.max(fuel);
+        stats.fuel_last = fuel;
+    }
+}
+
 /// Validated, compiled, import-free Wasm module.
 #[derive(Clone, Debug)]
 pub struct Sandbox {
@@ -256,10 +363,16 @@ impl Sandbox {
         let model = init.call(&mut store, seed.cast_signed()).map_err(|e| {
             anyhow::anyhow!("guest `plaza_init` failed (trap or fuel exhausted): {e}")
         })?;
+        // One budget covers the start function and `plaza_init`: both ran
+        // on the fuel set above.
+        let mut metrics = CallMetrics::default();
+        metrics.record(GuestCall::Init, fuel_spent(&store, self.limits.fuel));
         Ok(WorldInstance {
             runner: self.clone(),
             seed,
             limits: self.limits,
+            metrics,
+            trap_fuel: None,
             store,
             memory,
             alloc,
@@ -286,6 +399,10 @@ pub struct WorldInstance {
     runner: Sandbox,
     seed: u64,
     limits: SandboxLimits,
+    metrics: CallMetrics,
+    /// Fuel a trapped call had spent, captured before the diagnostic getters
+    /// refill the store; taken by [`Self::settle`].
+    trap_fuel: Option<u64>,
     store: Store<StoreLimits>,
     memory: Memory,
     alloc: TypedFunc<i32, i32>,
@@ -312,7 +429,34 @@ impl std::fmt::Debug for WorldInstance {
     }
 }
 
+/// Fuel the store has spent since it was last set to `limit`. A call that
+/// exhausted its fuel leaves the store at zero, which reads as the full limit.
+fn fuel_spent(store: &Store<StoreLimits>, limit: u64) -> u64 {
+    limit.saturating_sub(store.get_fuel().unwrap_or(limit))
+}
+
 impl WorldInstance {
+    /// Fuel statistics per guest call kind since this instance was created.
+    /// In-memory only: never journaled, sent on the wire, or snapshotted.
+    pub const fn metrics(&self) -> &CallMetrics {
+        &self.metrics
+    }
+
+    /// Fuel the most recent `call` spent; zero if it has not run.
+    pub const fn last_fuel(&self, call: GuestCall) -> u64 {
+        self.metrics.get(call).fuel_last
+    }
+
+    /// Record the fuel the call that just finished spent. Runs after every
+    /// call that reached the guest, whether it succeeded or trapped.
+    fn settle(&mut self, call: GuestCall) {
+        let spent = self
+            .trap_fuel
+            .take()
+            .unwrap_or_else(|| fuel_spent(&self.store, self.limits.fuel));
+        self.metrics.record(call, spent);
+    }
+
     /// Apply one event from `participant`. The model pointer is committed
     /// only if guest update succeeds.
     pub fn update(&mut self, participant: u64, event: &[u8]) -> Result<()> {
@@ -325,6 +469,7 @@ impl WorldInstance {
         // defensively so a hostile caller can never wrap the guest argument.
         let participant = i32::try_from(participant).unwrap_or(i32::MAX);
         let result = self.update_inner(participant, event);
+        self.settle(GuestCall::Update);
         if result.is_err() {
             self.poisoned = true;
         }
@@ -365,6 +510,7 @@ impl WorldInstance {
             "world guest is poisoned after a previous failure"
         );
         let result = self.view_inner();
+        self.settle(GuestCall::View);
         if result.is_err() {
             self.poisoned = true;
         }
@@ -396,9 +542,23 @@ impl WorldInstance {
             !self.poisoned,
             "world guest is poisoned after a previous failure"
         );
-        let Some(layout) = self.layout.as_ref() else {
+        let Some(layout) = self.layout.clone() else {
             return self.view();
         };
+        let result = self.layout_inner(&layout, width, height);
+        self.settle(GuestCall::Layout);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    fn layout_inner(
+        &mut self,
+        layout: &TypedFunc<(i32, i64, i64), i32>,
+        width: u16,
+        height: u16,
+    ) -> Result<Vec<u8>> {
         self.store
             .set_fuel(self.limits.fuel)
             .map_err(|e| anyhow::anyhow!("reset guest fuel: {e}"))?;
@@ -410,7 +570,6 @@ impl WorldInstance {
         let output_ptr = match rendered {
             Ok(ptr) => ptr,
             Err(e) => {
-                self.poisoned = true;
                 return Err(anyhow::anyhow!(
                     "guest `plaza_layout` failed (trap or fuel exhausted): {e}{}",
                     self.guest_error_suffix()
@@ -430,6 +589,7 @@ impl WorldInstance {
             return Ok(None);
         };
         let result = self.records_inner(&records);
+        self.settle(GuestCall::Records);
         if result.is_err() {
             self.poisoned = true;
         }
@@ -459,6 +619,7 @@ impl WorldInstance {
             return Ok(None);
         };
         let result = self.wants_inner(&wants);
+        self.settle(GuestCall::Wants);
         if result.is_err() {
             self.poisoned = true;
         }
@@ -489,6 +650,7 @@ impl WorldInstance {
             return Ok(None);
         };
         let result = self.snapshot_inner(&snapshot);
+        self.settle(GuestCall::Snapshot);
         if result.is_err() {
             self.poisoned = true;
         }
@@ -522,6 +684,7 @@ impl WorldInstance {
         };
         self.check_message_size(snapshot)?;
         let result = self.restore_inner(&restore, snapshot);
+        self.settle(GuestCall::Restore);
         if result.is_err() {
             self.poisoned = true;
         }
@@ -629,6 +792,8 @@ impl WorldInstance {
     /// Read optional diagnostic exports after a guest trap. This invokes only
     /// no-argument, guest-local getters; no host capability is introduced.
     fn guest_error_suffix(&mut self) -> String {
+        // The trap left its fuel in the store; read it before the refill below.
+        self.trap_fuel = Some(fuel_spent(&self.store, self.limits.fuel));
         let (Some(ptr_fn), Some(len_fn)) = (&self.error_ptr, &self.error_len) else {
             return String::new();
         };
@@ -1524,5 +1689,494 @@ mod tests {
         let error = world.update(1, b"event").unwrap_err().to_string();
         assert!(error.contains("memory.grow") || error.contains("failed"));
         assert!(world.view().unwrap_err().to_string().contains("poisoned"));
+    }
+
+    #[test]
+    fn metrics_count_each_call_kind_and_track_max_and_last() {
+        let runner = compile(ECHO, SandboxLimits::default()).unwrap();
+        let mut world = runner.instantiate(0).unwrap();
+        // Instantiation already ran `plaza_init`; nothing else has run.
+        assert_eq!(world.metrics().get(GuestCall::Init).calls, 1);
+        assert!(world.last_fuel(GuestCall::Init) > 0);
+        assert_eq!(world.metrics().get(GuestCall::View), CallStats::default());
+
+        world.view().unwrap();
+        world.view().unwrap();
+        world.update(1, b"event").unwrap();
+        let view = world.metrics().get(GuestCall::View);
+        assert_eq!(view.calls, 2);
+        assert_eq!(view.fuel_total, view.fuel_last * 2);
+        assert_eq!(view.fuel_max, view.fuel_last);
+        assert!(view.fuel_last > 0);
+        assert_eq!(world.metrics().get(GuestCall::Update).calls, 1);
+        // Optional exports that are absent never reach the guest.
+        assert_eq!(world.records().unwrap(), None);
+        assert_eq!(world.metrics().get(GuestCall::Records).calls, 0);
+        assert_eq!(
+            world
+                .metrics()
+                .iter()
+                .map(|(call, _)| call)
+                .collect::<Vec<_>>(),
+            GuestCall::ALL
+        );
+    }
+
+    #[test]
+    fn metrics_record_the_full_limit_for_a_call_that_exhausted_its_fuel() {
+        let loop_module = r#"
+            (module
+              (memory (export "memory") 1 1)
+              (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+              (func (export "plaza_free") (param i32 i32))
+              (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+              (func (export "plaza_update") (param i32 i32 i32 i32) (result i32) (i32.const 0))
+              (func (export "plaza_view") (param i32) (result i32) (i32.const 0)
+                (loop $again (br $again)))
+              (func (export "plaza_out_len") (result i32) (i32.const 0)))
+        "#;
+        let mut world = compile(
+            loop_module,
+            SandboxLimits {
+                fuel: 1_000,
+                ..SandboxLimits::default()
+            },
+        )
+        .unwrap()
+        .instantiate(0)
+        .unwrap();
+        world.view().unwrap_err();
+        assert_eq!(world.last_fuel(GuestCall::View), 1_000);
+        // A poisoned world refuses the call before the guest runs.
+        world.view().unwrap_err();
+        assert_eq!(world.metrics().get(GuestCall::View).calls, 1);
+    }
+
+    #[test]
+    fn metrics_survive_a_trap_with_guest_diagnostics() {
+        // The diagnostic getters refill the store; the trap's fuel must be
+        // read before that.
+        let diagnostic_module = r#"
+            (module
+              (memory (export "memory") 1 1)
+              (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+              (func (export "plaza_free") (param i32 i32))
+              (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+              (func (export "plaza_update") (param i32 i32 i32 i32) (result i32) unreachable)
+              (func (export "plaza_view") (param i32) (result i32) (i32.const 0))
+              (func (export "plaza_out_len") (result i32) (i32.const 0))
+              (func (export "plaza_error_ptr") (result i32) (i32.const 0))
+              (func (export "plaza_error_len") (result i32) (i32.const 0)))
+        "#;
+        let mut world = compile(diagnostic_module, SandboxLimits::default())
+            .unwrap()
+            .instantiate(0)
+            .unwrap();
+        world.update(1, b"event").unwrap_err();
+        let spent = world.last_fuel(GuestCall::Update);
+        assert!(spent > 0 && spent < 1_000, "{spent}");
+    }
+
+    /// A checked-in example and the scripted session that exercises it.
+    struct Example {
+        name: &'static str,
+        wasm: &'static [u8],
+        drive: fn(&mut WorldInstance),
+    }
+
+    fn host_event(world: &mut WorldInstance, json: &str) {
+        world.update(0, json.as_bytes()).unwrap();
+    }
+
+    fn drive_counter(world: &mut WorldInstance) {
+        world.update(1, b"inc").unwrap();
+        world.update(1, b"inc").unwrap();
+    }
+
+    fn drive_tic_tac_toe(world: &mut WorldInstance) {
+        for (participant, cell) in [(1u64, "0"), (2, "3"), (1, "1"), (2, "4"), (1, "2")] {
+            world.update(participant, cell.as_bytes()).unwrap();
+        }
+    }
+
+    fn drive_screen(world: &mut WorldInstance) {
+        world.update(1, b"+").unwrap();
+        world.update(1, b"+").unwrap();
+    }
+
+    fn drive_grid(world: &mut WorldInstance) {
+        world.update(1, b"set").unwrap();
+    }
+
+    fn drive_chat(world: &mut WorldInstance) {
+        for key in [&b"h"[..], b"i", b"\r"] {
+            world.update(1, key).unwrap();
+        }
+        host_event(
+            world,
+            r#"{"cap":"result","id":"r0","ok":true,"value":{"sequence":1}}"#,
+        );
+        for key in [&b"h"[..], b"i", b"s", b"t", b"\r"] {
+            world.update(1, key).unwrap();
+        }
+        host_event(
+            world,
+            r#"{"cap":"result","id":"r1","ok":true,"value":{"lines":[{"sequence":1,"participant":1,"text":"hi"}]}}"#,
+        );
+    }
+
+    fn drive_lounge(world: &mut WorldInstance) {
+        host_event(
+            world,
+            r#"{"cap":"players","event":"joined","participant":{"id":1,"name":"ann"}}"#,
+        );
+        host_event(
+            world,
+            r#"{"cap":"result","id":"r0","ok":false,"error":"cap_denied"}"#,
+        );
+        host_event(world, r#"{"cap":"time.tick"}"#);
+        host_event(
+            world,
+            r#"{"cap":"result","id":"r2","ok":true,"value":{"now":5000}}"#,
+        );
+    }
+
+    fn drive_territory(world: &mut WorldInstance) {
+        let joined = |id: u64, name: &str| {
+            format!(
+                r#"{{"cap":"players","event":"joined","participant":{{"id":{id},"name":"{name}"}}}}"#
+            )
+        };
+        host_event(world, &joined(1, "ann"));
+        host_event(world, &joined(2, "bob"));
+        // The opening of a two-player game: each seat has claimed a few
+        // cells. `territory-full` budgets the crowded game.
+        for (participant, moves) in [(1u64, "l "), (2, " "), (2, "l "), (2, "hj "), (1, "j ")] {
+            world.update(participant, moves.as_bytes()).unwrap();
+        }
+    }
+
+    /// A crowded territory game: `seats` players join, then each claims
+    /// `per_seat` cells along its own row, so every seat is online with a
+    /// cursor on the board and the grid is mostly claimed.
+    fn crowd_territory(world: &mut WorldInstance, seats: u64, per_seat: usize) {
+        for id in 1..=seats {
+            host_event(
+                world,
+                &format!(
+                    r#"{{"cap":"players","event":"joined","participant":{{"id":{id},"name":"p{id}"}}}}"#
+                ),
+            );
+        }
+        for id in 1..=seats {
+            let mut keys = "j".repeat(usize::try_from(id - 1).unwrap());
+            keys.push(' ');
+            keys.push_str(&"l ".repeat(per_seat.saturating_sub(1)));
+            world.update(id, keys.as_bytes()).unwrap();
+        }
+    }
+
+    /// Territory at its seat limit with most of the board claimed.
+    fn drive_territory_full(world: &mut WorldInstance) {
+        crowd_territory(world, 8, 14);
+    }
+
+    fn examples() -> [Example; 8] {
+        [
+            Example {
+                name: "roc-counter",
+                wasm: include_bytes!("../examples/roc-counter/counter.wasm"),
+                drive: drive_counter,
+            },
+            Example {
+                name: "tic-tac-toe",
+                wasm: include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm"),
+                drive: drive_tic_tac_toe,
+            },
+            Example {
+                name: "roc-screen",
+                wasm: include_bytes!("../examples/roc-screen/roc-screen.wasm"),
+                drive: drive_screen,
+            },
+            Example {
+                name: "roc-grid",
+                wasm: include_bytes!("../examples/roc-grid/roc-grid.wasm"),
+                drive: drive_grid,
+            },
+            Example {
+                name: "roc-chat",
+                wasm: include_bytes!("../examples/roc-chat/roc-chat.wasm"),
+                drive: drive_chat,
+            },
+            Example {
+                name: "lounge",
+                wasm: include_bytes!("../examples/lounge/lounge.wasm"),
+                drive: drive_lounge,
+            },
+            Example {
+                name: "territory",
+                wasm: include_bytes!("../examples/territory/territory.wasm"),
+                drive: drive_territory,
+            },
+            Example {
+                name: "territory-full",
+                wasm: include_bytes!("../examples/territory/territory.wasm"),
+                drive: drive_territory_full,
+            },
+        ]
+    }
+
+    /// Worst single-call fuel per call kind for one example's scripted
+    /// session: init, the driven updates, then every read at the final state,
+    /// and a restore of the snapshot on a fresh instance. Kinds the module
+    /// does not export are absent.
+    fn measure_example(example: &Example) -> Vec<(GuestCall, u64)> {
+        let runner = Sandbox::compile(example.wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        (example.drive)(&mut live);
+        live.view().unwrap();
+        live.layout_at(40, 20).unwrap();
+        live.records().unwrap();
+        live.wants().unwrap();
+        let snapshot = live.snapshot().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        if let Some(snapshot) = snapshot {
+            restored.restore(&snapshot).unwrap();
+        }
+        GuestCall::ALL
+            .into_iter()
+            .filter_map(|call| {
+                let max = live
+                    .metrics()
+                    .get(call)
+                    .fuel_max
+                    .max(restored.metrics().get(call).fuel_max);
+                let ran = live.metrics().get(call).calls + restored.metrics().get(call).calls > 0;
+                ran.then_some((call, max))
+            })
+            .collect()
+    }
+
+    /// Baseline plus 25 percent, rounded up to the next `100_000`.
+    fn budget_for(baseline: u64) -> u64 {
+        (baseline * 5).div_ceil(4).div_ceil(100_000) * 100_000
+    }
+
+    /// `1234567` as `1_234_567`, the way the table is written.
+    fn grouped(number: u64) -> String {
+        let digits = number.to_string();
+        let mut out = String::new();
+        for (i, digit) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                out.push('_');
+            }
+            out.push(digit);
+        }
+        out
+    }
+
+    /// Prints the budget table for the current guests, ready to paste into
+    /// `FUEL_BUDGETS`:
+    /// `cargo test --lib -- --ignored print_fuel_baseline --nocapture`.
+    #[test]
+    #[ignore = "prints the baseline to re-baseline FUEL_BUDGETS by hand"]
+    fn print_fuel_baseline() {
+        for example in examples() {
+            for (call, fuel) in measure_example(&example) {
+                println!(
+                    "    (\"{}\", GuestCall::{call:?}, {}), // baseline {fuel}",
+                    example.name,
+                    grouped(budget_for(fuel))
+                );
+            }
+        }
+    }
+
+    /// Per-call fuel budgets: the measured baseline plus 25 percent, rounded
+    /// up to the next `100_000`. Regenerate with `print_fuel_baseline`.
+    const FUEL_BUDGETS: &[(&str, GuestCall, u64)] = &[
+        ("roc-counter", GuestCall::Init, 100_000), // baseline 1215
+        ("roc-counter", GuestCall::Update, 100_000), // baseline 3759
+        ("roc-counter", GuestCall::View, 100_000), // baseline 1327
+        ("roc-counter", GuestCall::Layout, 100_000), // baseline 1337
+        ("roc-counter", GuestCall::Records, 100_000), // baseline 1866
+        ("roc-counter", GuestCall::Wants, 100_000), // baseline 733
+        ("roc-counter", GuestCall::Snapshot, 100_000), // baseline 874
+        ("roc-counter", GuestCall::Restore, 100_000), // baseline 3238
+        ("tic-tac-toe", GuestCall::Init, 100_000), // baseline 1242
+        ("tic-tac-toe", GuestCall::Update, 100_000), // baseline 7839
+        ("tic-tac-toe", GuestCall::View, 100_000), // baseline 5329
+        ("tic-tac-toe", GuestCall::Layout, 100_000), // baseline 6265
+        ("tic-tac-toe", GuestCall::Records, 100_000), // baseline 7347
+        ("tic-tac-toe", GuestCall::Wants, 100_000), // baseline 1664
+        ("tic-tac-toe", GuestCall::Snapshot, 100_000), // baseline 769
+        ("tic-tac-toe", GuestCall::Restore, 100_000), // baseline 14204
+        ("roc-screen", GuestCall::Init, 100_000),  // baseline 1573
+        ("roc-screen", GuestCall::Update, 100_000), // baseline 13141
+        ("roc-screen", GuestCall::View, 200_000),  // baseline 123675
+        ("roc-screen", GuestCall::Layout, 500_000), // baseline 378384
+        ("roc-screen", GuestCall::Records, 100_000), // baseline 3217
+        ("roc-screen", GuestCall::Wants, 100_000), // baseline 904
+        ("roc-screen", GuestCall::Snapshot, 100_000), // baseline 1061
+        ("roc-screen", GuestCall::Restore, 100_000), // baseline 4129
+        ("roc-grid", GuestCall::Init, 100_000),    // baseline 1585
+        ("roc-grid", GuestCall::Update, 100_000),  // baseline 6150
+        ("roc-grid", GuestCall::View, 500_000),    // baseline 391196
+        ("roc-grid", GuestCall::Layout, 500_000),  // baseline 389763
+        ("roc-grid", GuestCall::Records, 100_000), // baseline 2232
+        ("roc-grid", GuestCall::Wants, 100_000),   // baseline 1082
+        ("roc-grid", GuestCall::Snapshot, 100_000), // baseline 1341
+        ("roc-grid", GuestCall::Restore, 100_000), // baseline 4953
+        ("roc-chat", GuestCall::Init, 100_000),    // baseline 1271
+        ("roc-chat", GuestCall::Update, 200_000),  // baseline 89763
+        ("roc-chat", GuestCall::View, 100_000),    // baseline 5997
+        ("roc-chat", GuestCall::Layout, 100_000),  // baseline 6949
+        ("roc-chat", GuestCall::Records, 100_000), // baseline 23438
+        ("roc-chat", GuestCall::Wants, 100_000),   // baseline 42766
+        ("roc-chat", GuestCall::Snapshot, 100_000), // baseline 4767
+        ("roc-chat", GuestCall::Restore, 100_000), // baseline 7884
+        ("lounge", GuestCall::Init, 100_000),      // baseline 1271
+        ("lounge", GuestCall::Update, 100_000),    // baseline 69255
+        ("lounge", GuestCall::View, 100_000),      // baseline 5550
+        ("lounge", GuestCall::Layout, 100_000),    // baseline 6502
+        ("lounge", GuestCall::Records, 100_000),   // baseline 71278
+        ("lounge", GuestCall::Wants, 300_000),     // baseline 194873
+        ("lounge", GuestCall::Snapshot, 100_000),  // baseline 70261
+        ("lounge", GuestCall::Restore, 100_000),   // baseline 33299
+        ("territory", GuestCall::Init, 100_000),   // baseline 1593
+        ("territory", GuestCall::Update, 100_000), // baseline 68643
+        ("territory", GuestCall::View, 1_500_000), // baseline 1134256
+        ("territory", GuestCall::Layout, 1_500_000), // baseline 1133740
+        ("territory", GuestCall::Records, 100_000), // baseline 58449
+        ("territory", GuestCall::Wants, 100_000),  // baseline 3375
+        ("territory", GuestCall::Snapshot, 100_000), // baseline 10713
+        ("territory", GuestCall::Restore, 100_000), // baseline 23335
+        ("territory-full", GuestCall::Init, 100_000), // baseline 1593
+        ("territory-full", GuestCall::Update, 1_100_000), // baseline 831551
+        ("territory-full", GuestCall::View, 2_100_000), // baseline 1611425
+        ("territory-full", GuestCall::Layout, 2_100_000), // baseline 1612121
+        ("territory-full", GuestCall::Records, 600_000), // baseline 436803
+        ("territory-full", GuestCall::Wants, 100_000), // baseline 3375
+        ("territory-full", GuestCall::Snapshot, 100_000), // baseline 12801
+        ("territory-full", GuestCall::Restore, 100_000), // baseline 32317
+    ];
+
+    #[test]
+    fn territory_view_fits_the_default_fuel_with_every_seat_taken() {
+        let wasm = include_bytes!("../examples/territory/territory.wasm");
+        let limits = SandboxLimits::default();
+        let runner = Sandbox::compile(wasm, limits).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        crowd_territory(&mut live, 8, 14);
+        let view = live
+            .view()
+            .unwrap_or_else(|error| panic!("a full territory view must not trap: {error:#}"));
+        let view = String::from_utf8(view).unwrap();
+        let surface = crate::world_presentation::parse_surface(&view).unwrap();
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) = surface else {
+            panic!("territory must return a structured screen: {view}");
+        };
+        let rows: Vec<String> = screen
+            .cells
+            .chunks(usize::from(screen.width))
+            .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+            .collect();
+        let text = rows.join("\n");
+        assert!(text.contains("free=16"), "{text}");
+        assert!(text.contains("H p8 14 online"), "{text}");
+        // One view may use at most 40 percent of the limit, so a full
+        // house leaves room for growth.
+        let spent = live.last_fuel(GuestCall::View);
+        assert!(
+            spent <= limits.fuel * 2 / 5,
+            "a full-house view used {spent} of {} fuel",
+            limits.fuel
+        );
+    }
+
+    #[test]
+    fn territory_scoreboard_lines_are_cut_at_the_screen_width() {
+        let wasm = include_bytes!("../examples/territory/territory.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        host_event(
+            &mut live,
+            r#"{"cap":"players","event":"joined","participant":{"id":1,"name":"abcdefghijklmnopqrst"}}"#,
+        );
+        live.update(1, b" ").unwrap();
+        let view = String::from_utf8(live.view().unwrap()).unwrap();
+        let surface = crate::world_presentation::parse_surface(&view).unwrap();
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) = surface else {
+            panic!("territory must return a structured screen: {view}");
+        };
+        let rows: Vec<String> = screen
+            .cells
+            .chunks(usize::from(screen.width))
+            .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+            .collect();
+        // Names keep 16 bytes; "A " + 16 + " 1 " leaves three columns of "online".
+        assert_eq!(rows[11], "A abcdefghijklmnop 1 onl", "{rows:?}");
+        assert_eq!(rows[0], "+-territory------+      ");
+        assert_eq!(rows[9], "+----------------+      ");
+        assert_eq!(rows[10], "free=127 [hjkl/space]   ");
+        assert_eq!(rows[1], "|a...............|      ");
+        assert_eq!(rows[12], " ".repeat(24));
+    }
+
+    #[test]
+    #[ignore = "prints territory view fuel by seat count"]
+    fn print_territory_view_fuel_by_seats() {
+        // `TERRITORY_WASM=FILE` measures a variant build instead.
+        let wasm = match std::env::var_os("TERRITORY_WASM") {
+            Some(path) => std::fs::read(path).unwrap(),
+            None => include_bytes!("../examples/territory/territory.wasm").to_vec(),
+        };
+        let runner = Sandbox::compile(&wasm, SandboxLimits::default()).unwrap();
+        for (seats, per_seat) in [(0, 0), (1, 1), (2, 14), (4, 14), (8, 1), (8, 14)] {
+            let mut live = runner.instantiate(7).unwrap();
+            crowd_territory(&mut live, seats, per_seat);
+            let outcome = live.view().map_or("trap", |_| "ok");
+            println!(
+                "seats={seats} per_seat={per_seat} view={outcome} fuel={}",
+                live.last_fuel(GuestCall::View)
+            );
+        }
+    }
+
+    #[test]
+    fn checked_in_examples_stay_within_fuel_budgets() {
+        let mut failures = Vec::new();
+        for example in examples() {
+            assert!(
+                example.wasm.len() <= 1024 * 1024,
+                "{} is {} bytes, over the 1 MiB module budget",
+                example.name,
+                example.wasm.len()
+            );
+            for (call, actual) in measure_example(&example) {
+                let budget = FUEL_BUDGETS
+                    .iter()
+                    .find(|(name, kind, _)| *name == example.name && *kind == call)
+                    .map(|(_, _, budget)| *budget);
+                match budget {
+                    Some(budget) if actual <= budget => {}
+                    Some(budget) => failures.push(format!(
+                        "{} {}: used {actual} fuel, budget {budget}",
+                        example.name,
+                        call.name()
+                    )),
+                    None => failures.push(format!(
+                        "{} {}: used {actual} fuel, no budget in FUEL_BUDGETS",
+                        example.name,
+                        call.name()
+                    )),
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "fuel budgets exceeded:\n{}\nre-baseline deliberately: update the table and say why in the commit",
+            failures.join("\n")
+        );
     }
 }

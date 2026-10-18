@@ -84,11 +84,15 @@ impl FileJournal {
                         good_len += read as u64;
                     }
                     parsed => {
-                        // Only an unterminated or unparsable *last* line is a
-                        // torn append; anything after it means corruption.
+                        // An unterminated last line is a torn append: the crash
+                        // came before the entry was acknowledged. A newline-
+                        // terminated line that does not parse was fully written,
+                        // so it is corruption or an entry from a newer binary,
+                        // and it must never be dropped silently, even as the
+                        // last line.
                         let mut rest = Vec::new();
                         reader.read_to_end(&mut rest)?;
-                        if !rest.is_empty() {
+                        if complete || !rest.is_empty() {
                             bail!(
                                 "world journal {} is corrupt at byte {good_len}: {}",
                                 path.display(),
@@ -877,6 +881,26 @@ mod tests {
         std::fs::write(&path, &corrupt).unwrap();
         let err = FileJournal::open(&path, "w").unwrap_err();
         assert!(err.to_string().contains("corrupt"), "{err:#}");
+    }
+
+    #[test]
+    fn a_terminated_entry_this_binary_cannot_read_is_refused_not_dropped() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        drop(FileJournal::open(&path, "w").unwrap());
+        let good = std::fs::read(&path).unwrap();
+
+        // An entry from a newer binary, fully written, as the final line.
+        let mut newer = good.clone();
+        newer.extend_from_slice(b"{\"entry\":\"future_variant\",\"x\":1}\n");
+        std::fs::write(&path, &newer).unwrap();
+        let err = FileJournal::open(&path, "w").unwrap_err();
+        assert!(err.to_string().contains("corrupt"), "{err:#}");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            newer,
+            "the unreadable entry is left in place, not truncated"
+        );
     }
 
     #[tokio::test]
