@@ -14,8 +14,11 @@ name: mcpx
 # The old workflow also ran a full "Nix build" that recompiled the same
 # code a second time (~5.4 of the old ~10.6 min); that leg is gone from
 # this workflow (#286). The flake is still evaluated on every PR by
-# nix-ci, and vendorHash repair keeps its own bot-only job below because
-# it genuinely needs nix.
+# nix-ci, vendorHash repair keeps its own bot-only job below because it
+# genuinely needs nix, and the package build itself is verified by the
+# companion mcpx-nixbuild workflow — but only on PRs that change
+# go.mod, go.sum or package.nix, where a stale vendorHash can appear
+# (#297).
 
 on:
   pull_request:
