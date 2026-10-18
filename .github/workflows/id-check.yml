@@ -9,6 +9,13 @@
 #
 # All checks run in the nix sandbox — no ambient tool installation needed.
 # See pkgs/id/flake.nix checks section for the full list.
+#
+# Shape (2026-10, #292): this gate used to run the FULL flake check on every
+# PR and averaged ~116 minutes — most of it the Playwright browser E2E and
+# NixOS VM checks. Those now live in id-e2e-nightly.yml (nightly + manual).
+# This workflow builds the fast checks explicitly: unit + integration tests,
+# lint, format and type checks. The nix store is cached between runs
+# (magic-nix-cache) so unchanged derivations are not rebuilt from cold.
 
 name: id
 
@@ -35,6 +42,7 @@ jobs:
   check:
     name: nix flake check
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -43,6 +51,10 @@ jobs:
           extra-conf: |
             accept-flake-config = true
 
+      # Cache the nix store on GitHub's cache so PRs do not rebuild
+      # unchanged derivations from a cold store every run (#288).
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
       # Enable KVM for NixOS VM integration tests
       - name: Enable KVM
         run: |
@@ -50,5 +62,26 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run nix flake check
-        run: nix flake check ./pkgs/id/ -L --keep-going
+      - name: Run PR checks
+        run: |
+          # Fast PR set: unit + integration tests, lint, format, typecheck,
+          # doc and the crash gate. The heavy remainder — test-e2e
+          # (Playwright), nixos-serve, nixos-e2e, nixos-integration and
+          # nixos-playwright-e2e — runs nightly in id-e2e-nightly.yml,
+          # which also runs the full `nix flake check` as a safety net.
+          # The aggregate `default` check is intentionally not listed: it
+          # re-runs this same set inside a single derivation.
+          checks=(
+            cargo-fmt-check rustfmt-check web-fmt-check prettier-check
+            nix-fmt-check treefmt-check biome-check shellcheck-check
+            shfmt-check statix-check taplo-check
+            clippy-lint web-lint cargo-check
+            test test-unit test-int
+            test-web test-web-unit test-web-typecheck
+            crash-gate doc
+          )
+          args=()
+          for c in "${checks[@]}"; do
+            args+=("./pkgs/id#checks.x86_64-linux.$c")
+          done
+          nix build -L --keep-going --no-link "${args[@]}"
