@@ -8,7 +8,7 @@ import (
 // TestZshCompletionCommandsAreQuoted is the regression test for issue #272:
 // `mcpx completion zsh | zsh -n` failed with "parse error near `;;'".
 // Summaries carry apostrophes, parens and glob brackets, so every entry in
-// the _describe commands array must be single-quoted; an unquoted '\'' escape
+// the _describe commands array must be single-quoted; an unquoted '\” escape
 // is only valid inside quotes.
 func TestZshCompletionCommandsAreQuoted(t *testing.T) {
 	out, err := Completion("zsh")
