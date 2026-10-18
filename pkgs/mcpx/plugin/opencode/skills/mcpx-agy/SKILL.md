@@ -20,6 +20,7 @@ In Antigravity, agents can communicate with MCP servers through the centralized 
 Calling individual MCP tools that return large JSON responses causes transcripts (`transcript.jsonl` / `transcript_full.jsonl`) to grow rapidly.
 
 Instead of calling verbose MCP tools directly:
+
 - Use `run_command` with `mcpx exec` to execute TypeScript that transforms and aggregates data on the daemon side before returning output.
 
 ---
@@ -27,6 +28,7 @@ Instead of calling verbose MCP tools directly:
 ## 2. Using mcpx via `run_command`
 
 ### Discovery
+
 ```bash
 # Check running servers
 mcpx ls
@@ -37,6 +39,7 @@ mcpx types context7
 ```
 
 ### Executing Code Mode Scripts
+
 ```bash
 mcpx exec '
   const status = await tools.codedb.status({});
@@ -45,6 +48,7 @@ mcpx exec '
 ```
 
 ### Chaining Across Multiple Servers
+
 ```bash
 mcpx exec '
   const doc = await tools.context7.query_docs({
@@ -60,11 +64,13 @@ mcpx exec '
 ## 3. Daemon REST / Socket Access
 
 The `mcpx` daemon publishes an HTTP API on its local unix socket or localhost port:
+
 - `GET /v1/namespaces`: List active namespaces
 - `POST /v1/exec`: Run TypeScript against tools
 - `GET /v1/log`: Inspect durable execution log
 
 When debugging a failing tool without re-running destructive operations:
+
 ```bash
 mcpx log --since 10m
 ```

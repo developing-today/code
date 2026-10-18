@@ -373,4 +373,3 @@ func TestUpstreamSkillsRelayedInListAndGet(t *testing.T) {
 		t.Fatalf("resources/directory/read for upstream skill returned 0 items")
 	}
 }
-
