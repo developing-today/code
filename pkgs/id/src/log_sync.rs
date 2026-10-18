@@ -65,6 +65,17 @@ const EVENT_BUFFER: usize = 16;
 /// Operations the ingest worker takes in one write transaction, at most.
 const INGEST_BATCH: usize = 256;
 
+/// How long the ingest worker waits for more arrivals before committing a batch that is not
+/// full. A batch is one write transaction, so a batch per arrival pays one commit (and one
+/// fsync) per operation. Arrivals are paced by the peer's page reads and the stream, not by
+/// this worker, so without a grace the batch collapses to whatever has arrived in the instant
+/// the worker wakes, and a bulk session pays a commit for nearly every operation.
+const BATCH_GRACE: Duration = Duration::from_millis(5);
+
+/// How often the ingest worker re-checks the arrivals channel while it waits out
+/// [`BATCH_GRACE`]. The worker runs on a blocking thread, so sleeping is safe.
+const BATCH_POLL: Duration = Duration::from_micros(250);
+
 /// Operations the stream may queue for the ingest worker before it waits for the worker.
 const ARRIVAL_BUFFER: usize = 256;
 
@@ -415,17 +426,11 @@ fn ingest_arrivals(
     let mut tally = Tally::default();
     while let Some(first) = arrivals.blocking_recv() {
         let mut batch: Vec<Vec<u8>> = Vec::new();
-        let mut next = Some(first);
-        while let Some(arrival) = next {
+        for arrival in collect_batch(first, &mut arrivals) {
             match arrival {
                 Arrival::Header(bytes) => batch.push(bytes),
                 Arrival::Refused => tally.refused += 1,
             }
-            next = if batch.len() < INGEST_BATCH {
-                arrivals.try_recv().ok()
-            } else {
-                None
-            };
         }
         if batch.is_empty() {
             continue;
@@ -438,6 +443,45 @@ fn ingest_arrivals(
         }
     }
     Ok(tally)
+}
+
+/// Collects one batch of arrivals, starting from `first`. The batch holds at most
+/// [`INGEST_BATCH`] headers (refusals do not count towards the cap, as before). Everything
+/// already queued is taken at once; then, while the batch is not full, the worker waits out
+/// [`BATCH_GRACE`] for more arrivals before giving up on the batch, so arrivals paced by the
+/// stream still land in the same write transaction. The wait ends early when the stream
+/// closes (every sender dropped), so a session's last, partial batch is not held back.
+fn collect_batch(first: Arrival, arrivals: &mut mpsc::Receiver<Arrival>) -> Vec<Arrival> {
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    let mut batch = Vec::new();
+    let mut headers = 0_usize;
+    let mut next = Some(first);
+    let mut grace_end = None;
+    while let Some(arrival) = next {
+        if matches!(arrival, Arrival::Header(_)) {
+            headers += 1;
+        }
+        batch.push(arrival);
+        if headers >= INGEST_BATCH {
+            break;
+        }
+        next = loop {
+            match arrivals.try_recv() {
+                Ok(arrival) => break Some(arrival),
+                Err(TryRecvError::Disconnected) => break None,
+                Err(TryRecvError::Empty) => {
+                    let end =
+                        *grace_end.get_or_insert_with(|| std::time::Instant::now() + BATCH_GRACE);
+                    if std::time::Instant::now() >= end {
+                        break None;
+                    }
+                    std::thread::sleep(BATCH_POLL);
+                }
+            }
+        };
+    }
+    batch
 }
 
 /// One stream pair. A task of its own reads the receive half and forwards whole frames over a
@@ -799,6 +843,74 @@ mod tests {
         let refs: Vec<&SigningKey> = authors.iter().collect();
         assert_eq!(applied(&store_a, &refs, 69), applied(&store_b, &refs, 69));
         store_b.check_invariants().unwrap();
+    }
+
+    /// Arrivals paced a few milliseconds apart — as a bulk stream paces them — still land in
+    /// one batch, so the session pays one write transaction for them, not one per operation.
+    #[test]
+    fn test_batch_collection_coalesces_paced_arrivals() {
+        let (tx, mut rx) = mpsc::channel::<Arrival>(16);
+        let pacer = std::thread::spawn(move || {
+            for n in 0..3_u8 {
+                tx.try_send(Arrival::Header(vec![n])).unwrap();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        });
+        // The first arrival, however it gets here, starts the batch.
+        let first = loop {
+            match rx.try_recv() {
+                Ok(arrival) => break arrival,
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("the pacer went away: {error}"),
+            }
+        };
+        let batch = collect_batch(first, &mut rx);
+        pacer.join().unwrap();
+
+        assert_eq!(batch.len(), 3, "paced arrivals share one batch");
+        assert!(
+            batch
+                .iter()
+                .all(|arrival| matches!(arrival, Arrival::Header(_)))
+        );
+    }
+
+    /// A lone arrival is committed after the grace, not held for a full batch that may never
+    /// come: a small session's last batch is not delayed.
+    #[test]
+    fn test_batch_collection_releases_a_lone_arrival() {
+        let (tx, mut rx) = mpsc::channel::<Arrival>(16);
+        tx.try_send(Arrival::Header(vec![7])).unwrap();
+        let first = rx.try_recv().unwrap();
+        let started = std::time::Instant::now();
+        let batch = collect_batch(first, &mut rx);
+
+        assert_eq!(batch.len(), 1);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a lone arrival waits out the grace only, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A full batch is capped at [`INGEST_BATCH`] headers, however much is queued behind it.
+    #[test]
+    fn test_batch_collection_stops_at_a_full_batch() {
+        let (tx, mut rx) = mpsc::channel::<Arrival>(INGEST_BATCH + 16);
+        for n in 0..INGEST_BATCH + 10 {
+            tx.try_send(Arrival::Header(vec![(n % 251) as u8])).unwrap();
+        }
+        let first = rx.try_recv().unwrap();
+        let batch = collect_batch(first, &mut rx);
+
+        assert_eq!(batch.len(), INGEST_BATCH, "the batch is capped");
+        let mut left = 0;
+        while rx.try_recv().is_ok() {
+            left += 1;
+        }
+        assert_eq!(left, 10, "the rest stays queued for the next batch");
     }
 
     /// A store that has forked `alice`. It holds the first `held` events of the honest chain, which
