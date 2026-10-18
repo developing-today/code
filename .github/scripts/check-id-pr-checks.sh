@@ -32,13 +32,13 @@ excluded=(
   nixos-integration
 )
 
-if [[ -n "${ID_FLAKE_CHECKS_FILE:-}" ]]; then
+if [[ -n ${ID_FLAKE_CHECKS_FILE:-} ]]; then
   flake_checks="$(sort "$ID_FLAKE_CHECKS_FILE")"
 else
   flake_checks="$(
     nix eval --raw "$repo_root/pkgs/id#checks.x86_64-linux" \
-      --apply 'checks: builtins.concatStringsSep "\n" (builtins.attrNames checks)' \
-      | sort
+      --apply 'checks: builtins.concatStringsSep "\n" (builtins.attrNames checks)' |
+      sort
   )"
 fi
 
@@ -50,19 +50,19 @@ unlisted="$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed"))"
 stale="$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed"))"
 
 failed=0
-if [[ -n "$unlisted" ]]; then
+if [[ -n $unlisted ]]; then
   failed=1
   while IFS= read -r name; do
     echo "::error::pkgs/id flake check '$name' is not in ${list_file#"$repo_root"/} — add it to the PR gate list, or to the exclusion list in check-id-pr-checks.sh if it belongs in the nightly only."
   done <<<"$unlisted"
 fi
-if [[ -n "$stale" ]]; then
+if [[ -n $stale ]]; then
   failed=1
   while IFS= read -r name; do
     echo "::error::${list_file#"$repo_root"/} lists '$name', which pkgs/id/flake.nix no longer defines — remove or rename the entry."
   done <<<"$stale"
 fi
-if [[ "$failed" -ne 0 ]]; then
+if [[ $failed -ne 0 ]]; then
   exit 1
 fi
 
