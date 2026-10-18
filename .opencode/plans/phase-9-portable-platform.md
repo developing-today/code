@@ -75,6 +75,7 @@ each one is useful alone and does not depend on a later one.
 ## Phase 10 progress
 
 - **P10.1 started in this worktree:** role-scoped invites (`spectator`, `player`, `guest`, `delegator`) over the existing scope machinery, and `id world list --json` for directory feeds. Builder/moderator roles with their own authority, and a cross-node directory feed, remain follow-ups. Record: [roles and directory](../../doc/2026-10-17T08-00-00Z_feature_world_roles_directory/2026-10-17T08-00-00Z_feature_world_roles_directory.md).
+- **P10.3 started in this worktree:** scheduled events. `schedule.at` and `schedule.cancel` capability requests (JOIN scope, granted and ceiling-checked), durable in the journal, with bounds of 64 pending schedules per world, 64-byte printable ids, and a 30-day horizon. A fire is delivered to the program as a host event and never reaches joiners; recurring and cross-world schedules remain follow-ups. Record: [scheduled events](../../doc/2026-10-17T10-00-00Z_feature_scheduled_events/2026-10-17T10-00-00Z_feature_scheduled_events.md).
 
 ## Next stage
 

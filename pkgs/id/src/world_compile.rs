@@ -715,6 +715,91 @@ restore = |text| { session: RocCap.empty, request: text }
         assert_eq!(decoded_wants["requests"][1]["args"]["count"], 5);
     }
 
+    #[tokio::test]
+    async fn the_schedule_helpers_build_schedule_requests() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = r#"app [program] { pf: platform "../roc-world/platform.roc" }
+
+import pf.RocCap
+import pf.RocJson
+
+Model : { documents : List(RocJson) }
+
+program = { init, update, view, layout, records, wants, snapshot, restore }
+
+init : U64 -> Model
+init = |seed| {
+	scheduled = RocCap.schedule_at_request("r0", "nap", seed * 1000)
+	cancelled = RocCap.schedule_cancel_request("r1", "nap")
+	{ documents: [scheduled, cancelled] }
+}
+
+update : Model, U64, Str -> Model
+update = |model, _pid, _ev| model
+
+view : Model -> Str
+view = |_model| ""
+
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
+records : Model -> Str
+records = |_model| "{}"
+
+wants : Model -> Str
+wants = |model| {
+	encoded = List.map(model.documents, |document| match RocJson.encode(document) {
+		Ok(text) => text
+		Err(_) => ""
+	})
+	"{\"requests\":[${Str.join_with(encoded, ",")}]}"
+}
+
+snapshot : Model -> Str
+snapshot = |_model| ""
+
+restore : Str -> Model
+restore = |_text| { documents: [] }
+"#;
+        let (wasm, _diagnostics, _provenance) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app.to_owned())],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            &["RocCap".to_owned(), "RocJson".to_owned()],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        let wants = crate::world::WorldProgram::wants(&mut world)
+            .unwrap()
+            .unwrap();
+        let decoded: serde_json::Value = serde_json::from_str(&wants).unwrap();
+        assert_eq!(decoded["requests"][0]["id"], "r0");
+        assert_eq!(decoded["requests"][0]["cap"], "schedule.at");
+        assert_eq!(decoded["requests"][0]["args"]["id"], "nap");
+        assert_eq!(decoded["requests"][0]["args"]["at"], 7000);
+        assert_eq!(decoded["requests"][1]["id"], "r1");
+        assert_eq!(decoded["requests"][1]["cap"], "schedule.cancel");
+        assert_eq!(decoded["requests"][1]["args"]["id"], "nap");
+    }
+
     #[test]
     fn the_platform_modules_are_staged_with_the_platform() {
         let from = tempfile::tempdir().unwrap();
