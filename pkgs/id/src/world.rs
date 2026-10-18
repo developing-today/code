@@ -4354,8 +4354,7 @@ mod tests {
                 },
             },
         ];
-        let restored =
-            WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
         assert_eq!(
             restored.program.as_ref().map(|program| program.seed),
             Some(424_242),
@@ -4382,9 +4381,7 @@ mod tests {
         let snapshot = core.snapshot(&token).unwrap();
         assert_eq!(snapshot.events.len(), 1);
         assert!(
-            !serde_json::to_string(&snapshot)
-                .unwrap()
-                .contains("424242"),
+            !serde_json::to_string(&snapshot).unwrap().contains("424242"),
             "the snapshot leaked the install seed"
         );
     }
