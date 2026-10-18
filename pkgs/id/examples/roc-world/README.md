@@ -108,6 +108,12 @@ elements in some module compositions (observed while building
 positional access beyond index 1; prefer `after`/`between`-style extraction
 for now and re-check with a newer nightly before relying on it.
 
+A second one, found while making `Screen` cheaper: using a `Str` again after
+passing it to `Str.to_utf8` corrupts memory in that backend (`roc test` does
+not show it; the wasm build returns rows made of other allocations). Read the
+bytes once and rebuild the `Str` from them when you need both, as
+`Screen.json_quote` does.
+
 `snapshot`/`restore` let the host trim a world's journal. Without them a
 world restarts by replaying every input it ever received; with them the host
 periodically replaces the journal's history by a checkpoint holding

@@ -60,22 +60,43 @@ update = |model, pid, ev|
 
 view : Model -> Str
 view = |model| {
-    screen = Screen.boxed(Screen.new(24, 19), 0, 0, 18, 10, "territory")
-    with_cells = List.fold(row_indices, screen, |acc, y| {
-        row = List.map(column_indices, |x| {
-            b = cell_byte(model, x, y)
-            st = style_for_cell(b)
-            { ch: bytes_to_str([b]), fg: st.fg, bg: st.bg, bold: st.bold }
-        })
-        Screen.put_row(acc, y + 1, 1, row)
-    })
+    plain = { fg: 0, bg: 0, bold: Bool.False }
+    edge = [{ text: Screen.box_edge(18, "territory"), style: plain }]
+    bottom = [{ text: Screen.box_edge(18, ""), style: plain }]
+    grid_rows = List.map(row_indices, |y| grid_row(model, y))
     free = RocGrid.count(model.grid, empty)
-    status_text = "free=${free.to_str()} [hjkl/space]"
-    with_status = Screen.put_text(with_cells, 0, 10, status_text, { fg: 0, bg: 0, bold: Bool.False })
-    with_scores = List.fold_with_index(model.seats, with_status, |acc, seat, i|
-        Screen.put_text(acc, 0, 11 + i, seat_line(model, seat), mark_style(seat.mark)))
-    Screen.render_json(with_scores)
+    status = [{ text: "free=${free.to_str()} [hjkl/space]", style: plain }]
+    scores = List.map(model.seats, |seat| [{ text: seat_line(model, seat), style: mark_style(seat.mark) }])
+    rows = List.concat(List.concat([edge], grid_rows), List.concat([bottom, status], scores))
+    Screen.render_rows_json(24, 19, rows)
 }
+
+## One boxed grid row as styled pieces: the borders, then the cells with equal
+## styles merged into runs, so a row costs a handful of pieces and not 16 cells.
+grid_row : Model, U64 -> List({ text : Str, style : { fg : U8, bg : U8, bold : Bool } })
+grid_row = |model, y| {
+    plain = { fg: 0, bg: 0, bold: Bool.False }
+    bytes = List.map(column_indices, |x| cell_byte(model, x, y))
+    List.concat([{ text: "|", style: plain }], List.append(style_runs(bytes), { text: "|", style: plain }))
+}
+
+## Group consecutive bytes that share a style into one piece of text.
+style_runs : List(U8) -> List({ text : Str, style : { fg : U8, bg : U8, bold : Bool } })
+style_runs = |bytes| {
+    start = { runs: [], run: [], style: { fg: 0, bg: 0, bold: Bool.False } }
+    done = List.fold(bytes, start, |acc, b| {
+        style = style_for_cell(b)
+        if List.is_empty(acc.run) or same_style(style, acc.style) {
+            { runs: acc.runs, run: List.append(acc.run, b), style: style }
+        } else {
+            { runs: List.append(acc.runs, { text: bytes_to_str(acc.run), style: acc.style }), run: [b], style: style }
+        }
+    })
+    if List.is_empty(done.run) { done.runs } else { List.append(done.runs, { text: bytes_to_str(done.run), style: done.style }) }
+}
+
+same_style : { fg : U8, bg : U8, bold : Bool }, { fg : U8, bg : U8, bold : Bool } -> Bool
+same_style = |a, b| a.fg == b.fg and a.bg == b.bg and a.bold == b.bold
 
 ## Everything here is derived from the grid and the seats, so the record
 ## is a pure function of the state a snapshot already carries.

@@ -17,8 +17,11 @@ Screen := {
 
     ## Split text into one string per Unicode scalar value.
     chars : Str -> List(Str)
-    chars = |text| {
-        split = List.fold(Str.to_utf8(text), { done: [], current: [] }, |acc, byte| {
+    chars = |text| split_chars(Str.to_utf8(text))
+
+    split_chars : List(U8) -> List(Str)
+    split_chars = |bytes| {
+        split = List.fold(bytes, { done: [], current: [] }, |acc, byte| {
             if byte >= 128 and byte < 192 {
                 { done: acc.done, current: List.append(acc.current, byte) }
             } else if List.is_empty(acc.current) {
@@ -137,19 +140,121 @@ Screen := {
     render_json = |screen| {
         rows = List.map(range(0, screen.height), |row| json_quote(row_text(screen, row)))
         styles = List.map(range(0, screen.height), |row| row_styles_json(screen, row))
-        width = screen.width.to_str()
-        height = screen.height.to_str()
-        row_json = Str.join_with(rows, ",")
-        styles_json = Str.join_with(styles, ",")
-        prefix = Str.concat("{\"kind\":\"screen\",\"version\":1,\"width\":", width)
-        with_height = Str.concat(prefix, Str.concat(",\"height\":", height))
+        document_json(screen.width, screen.height, Str.join_with(rows, ","), Str.join_with(styles, ","))
+    }
+
+    document_json : U64, U64, Str, Str -> Str
+    document_json = |width, height, row_json, styles_json| {
+        prefix = Str.concat("{\"kind\":\"screen\",\"version\":1,\"width\":", width.to_str())
+        with_height = Str.concat(prefix, Str.concat(",\"height\":", height.to_str()))
         with_rows = Str.concat(with_height, Str.concat(",\"rows\":[", Str.concat(row_json, "]")))
         Str.concat(with_rows, Str.concat(",\"styles\":[", Str.concat(styles_json, "]}")))
     }
 
+    ## The same document as `render_json`, built from whole rows instead of a
+    ## cell list. Each entry of `rows` is one screen row: pieces of text with
+    ## one style each, laid end to end. A row is padded with spaces to `width`
+    ## columns and cut off at it; missing rows are blank and rows past
+    ## `height` are dropped. A column is one Unicode scalar value, as in
+    ## `chars`. Adjacent pieces with equal styles merge, and the default style
+    ## (all zero) writes no span, so the output matches `render_json` for the
+    ## same picture. Cost grows with the number of pieces, not the number of
+    ## cells, so prefer a few long pieces per row to one piece per cell.
+    render_rows_json : U64, U64, List(List({ text : Str, style : { fg : U8, bg : U8, bold : Bool } })) -> Str
+    render_rows_json = |width, height, rows| {
+        built = List.map(range(0, height), |row| {
+            pieces = match List.get(rows, row) {
+                Ok(found) => found
+                Err(_) => []
+            }
+            build_row(width, pieces)
+        })
+        texts = List.map(built, |row| json_quote(row.text))
+        styles = List.map(built, |row| Str.concat("[", Str.concat(Str.join_with(row.spans, ","), "]")))
+        document_json(width, height, Str.join_with(texts, ","), Str.join_with(styles, ","))
+    }
+
+    ## One row of `render_rows_json`: its padded text and its style spans.
+    build_row : U64, List({ text : Str, style : { fg : U8, bg : U8, bold : Bool } }) -> { text : Str, spans : List(Str) }
+    build_row = |width, pieces| {
+        start = { text: "", spans: [], x: 0, run_x: 0, run_len: 0, fg: 0, bg: 0, bold: Bool.False }
+        done = List.fold(pieces, start, |acc, piece| {
+            fitted = fit(piece.text, width - acc.x)
+            style = piece.style
+            if fitted.columns == 0 {
+                acc
+            } else if acc.run_len > 0 and style.fg == acc.fg and style.bg == acc.bg and style.bold == acc.bold {
+                { text: Str.concat(acc.text, fitted.text), spans: acc.spans, x: acc.x + fitted.columns, run_x: acc.run_x, run_len: acc.run_len + fitted.columns, fg: acc.fg, bg: acc.bg, bold: acc.bold }
+            } else {
+                spans = close_run(acc.spans, acc.run_x, acc.run_len, acc.fg, acc.bg, acc.bold)
+                { text: Str.concat(acc.text, fitted.text), spans: spans, x: acc.x + fitted.columns, run_x: acc.x, run_len: fitted.columns, fg: style.fg, bg: style.bg, bold: style.bold }
+            }
+        })
+        padding = Str.join_with(List.repeat(" ", width - done.x), "")
+        {
+            text: Str.concat(done.text, padding),
+            spans: close_run(done.spans, done.run_x, done.run_len, done.fg, done.bg, done.bold),
+        }
+    }
+
+    ## `text` cut to at most `room` columns, with the columns it kept.
+    ## The text is only read through its bytes: using a `Str` again after
+    ## `Str.to_utf8` consumed it corrupts memory in the wasm backend.
+    fit : Str, U64 -> { text : Str, columns : U64 }
+    fit = |text, room| {
+        bytes = Str.to_utf8(text)
+        columns = List.count_if(bytes, |byte| byte < 128 or byte >= 192)
+        if columns <= room {
+            { text: bytes_to_str(bytes), columns: columns }
+        } else {
+            { text: Str.join_with(List.take_first(split_chars(bytes), room), ""), columns: room }
+        }
+    }
+
+    ## Append the span of a finished run, unless it is empty or default-styled.
+    close_run : List(Str), U64, U64, U8, U8, Bool -> List(Str)
+    close_run = |spans, x, length, fg, bg, bold| {
+        if length == 0 or (fg == 0 and bg == 0 and bold == Bool.False) {
+            spans
+        } else {
+            List.append(spans, style_span_json(x, length, fg, bg, bold))
+        }
+    }
+
+    ## The top or bottom edge of a box `w` columns wide: `+---+`, with `title`
+    ## written over it from the third column and cut off before the corner.
+    ## Use it with `render_rows_json` where `boxed` would need a cell list.
+    box_edge : U64, Str -> Str
+    box_edge = |w, title| {
+        if w < 2 {
+            ""
+        } else {
+            edge = chars(Str.concat("+", Str.concat(Str.join_with(List.repeat("-", w - 2), ""), "+")))
+            if w < 4 or title == "" {
+                Str.join_with(edge, "")
+            } else {
+                label = List.take_first(chars(title), w - 3)
+                tail = List.drop_first(edge, 2 + List.len(label))
+                Str.join_with(List.concat(List.concat(List.take_first(edge, 2), label), tail), "")
+            }
+        }
+    }
+
     json_quote : Str -> Str
     json_quote = |text| {
-        escaped = List.fold(Str.to_utf8(text), [], |out, byte| {
+        # Read the text only through its bytes: using `text` again after
+        # `Str.to_utf8` consumed it corrupts memory in the wasm backend.
+        bytes = Str.to_utf8(text)
+        if List.any(bytes, |byte| byte == 34 or byte == 92 or byte < 32) {
+            Str.concat("\"", Str.concat(escape_bytes(bytes), "\""))
+        } else {
+            Str.concat("\"", Str.concat(bytes_to_str(bytes), "\""))
+        }
+    }
+
+    escape_bytes : List(U8) -> Str
+    escape_bytes = |bytes| {
+        escaped = List.fold(bytes, [], |out, byte| {
             next = if byte == 34 {
                 [92, 34]
             } else if byte == 92 {
@@ -171,7 +276,7 @@ Screen := {
             }
             List.fold(next, out, |acc, value| List.append(acc, value))
         })
-        Str.concat("\"", Str.concat(bytes_to_str(escaped), "\""))
+        bytes_to_str(escaped)
     }
 
     hex_digit : U8 -> U8
@@ -271,3 +376,9 @@ expect Screen.render_plain(Screen.boxed(Screen.new(6, 3), 0, 0, 6, 3, "t")) == "
 expect Screen.render_json(Screen.put_text(Screen.new(2, 1), 0, 0, "ok", { fg: 0, bg: 0, bold: Bool.False })) == "{\"kind\":\"screen\",\"version\":1,\"width\":2,\"height\":1,\"rows\":[\"ok\"],\"styles\":[[]]}"
 expect Screen.render_json(Screen.put_text(Screen.new(3, 1), 0, 0, "abc", { fg: 196, bg: 0, bold: Bool.True })) == "{\"kind\":\"screen\",\"version\":1,\"width\":3,\"height\":1,\"rows\":[\"abc\"],\"styles\":[[{\"x\":0,\"length\":3,\"fg\":196,\"bg\":0,\"bold\":true}]]}"
 expect Screen.json_quote("a\"\\\n") == "\"a\\\"\\\\\\n\""
+expect Screen.render_rows_json(4, 1, [[{ text: "ab", style: { fg: 0, bg: 0, bold: Bool.False } }]]) == "{\"kind\":\"screen\",\"version\":1,\"width\":4,\"height\":1,\"rows\":[\"ab  \"],\"styles\":[[]]}"
+expect Screen.render_rows_json(3, 2, [[{ text: "a", style: { fg: 196, bg: 0, bold: Bool.True } }, { text: "bc", style: { fg: 196, bg: 0, bold: Bool.True } }]]) == "{\"kind\":\"screen\",\"version\":1,\"width\":3,\"height\":2,\"rows\":[\"abc\",\"   \"],\"styles\":[[{\"x\":0,\"length\":3,\"fg\":196,\"bg\":0,\"bold\":true}],[]]}"
+expect Screen.render_rows_json(3, 1, [[{ text: "a\"", style: { fg: 0, bg: 0, bold: Bool.False } }, { text: "xyz", style: { fg: 2, bg: 0, bold: Bool.False } }]]) == "{\"kind\":\"screen\",\"version\":1,\"width\":3,\"height\":1,\"rows\":[\"a\\\"x\"],\"styles\":[[{\"x\":2,\"length\":1,\"fg\":2,\"bg\":0,\"bold\":false}]]}"
+expect Screen.box_edge(8, "ti") == "+-ti---+"
+expect Screen.box_edge(6, "toolong") == "+-too+"
+expect Screen.box_edge(4, "") == "+--+"
