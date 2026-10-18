@@ -2,7 +2,7 @@ app [program] { pf: platform "../roc-world/platform.roc" }
 
 Model := { count : I64 }
 
-program = { init, update, view, records, wants, snapshot, restore }
+program = { init, update, view, layout, records, wants, snapshot, restore }
 
 init : U64 -> Model
 init = |_seed| { count: 0 }
@@ -14,6 +14,10 @@ view : Model -> Str
 view = |model| Str.concat("count=", model.count.to_str())
 
 ## Structured data the host stores and replicates: a JSON object of records.
+## This program renders the same layout at any viewport.
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
 records : Model -> Str
 records = |model| "{\"count\":${model.count.to_str()}}"
 

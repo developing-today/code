@@ -40,6 +40,9 @@ use p2panda_core::Hash;
 
 use crate::groups::{Key, Projection, Role};
 
+/// Re-exported so `crate::server_config::Object` keeps working: the type now lives in
+/// [`crate::aliases`] so alias display builds without the `world` feature.
+pub use crate::aliases::Object;
 pub use parse::ConfigError;
 pub use provision::{ProvisionError, Provisioned, Report};
 
@@ -53,15 +56,6 @@ pub struct ServerConfig {
     names: BTreeMap<String, Object>,
     /// The primary alias of each object that has one.
     aliases: BTreeMap<Object, String>,
-}
-
-/// Something the config names: a user by its public key, or a group by its ID.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Object {
-    /// A user, by its account key.
-    User(Key),
-    /// A group, by its ID.
-    Group(Hash),
 }
 
 /// A user the config creates.

@@ -5,8 +5,14 @@
 //! `relay.kit.toml` has one table per mode. `tunnel` is a Cloudflare Tunnel
 //! (no inbound port, plain HTTP on loopback). `vps` is a public address (TLS on
 //! 80 and 443, QUIC address discovery). A mode's unit is the shared
-//! `iroh-relay.service` plus the mode's drop-in, if it has one. The kit lives in
-//! the design doc, so the paths are relative to this crate.
+//! `iroh-relay.service` plus the mode's drop-in, if it has one.
+//!
+//! The kit is vendored under `tests/fixtures/relay` so it is inside this
+//! crate's source tree: the Nix flake cannot see the design doc copy at the
+//! repo root (`doc/2026-10-11T03-44-33Z_design_groups_events_delegation/
+//! connectivity/relay`, #238), which stays canonical. Edit the doc copy and
+//! re-copy it here; `test_vendored_kit_matches_the_design_doc_copy` fails
+//! whenever the doc copy is present and the two have drifted.
 //!
 //! Each check runs on the kit's real files, and also on mutated copies, so a
 //! check that accepts everything fails.
@@ -15,10 +21,24 @@
 
 use std::{net::SocketAddr, path::Path};
 
-const KIT: &str = concat!(
+const KIT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/relay");
+
+/// The canonical kit, in the design doc at the repo root. Outside this
+/// crate's source tree, so it does not exist in the Nix sandbox; the
+/// vendored copy above is what the checks read there.
+const CANONICAL_KIT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../doc/2026-10-11T03-44-33Z_design_groups_events_delegation/connectivity/relay"
 );
+
+/// Every file in the kit, relative to the kit root.
+const KIT_FILES: [&str; 5] = [
+    "relay.kit.toml",
+    "tunnel.toml",
+    "vps.toml",
+    "iroh-relay.service",
+    "iroh-relay.service.d/vps.conf",
+];
 
 const KIT_FILE: &str = "relay.kit.toml";
 const UNIT: &str = "iroh-relay.service";
@@ -505,4 +525,27 @@ fn test_config_check_accepts_loopback_ipv6() {
         "metrics_bind_addr = \"[::1]:9090\"",
     );
     check_config(&config).unwrap();
+}
+
+/// The vendored kit must match the canonical design-doc copy, so the two
+/// cannot drift silently. The doc copy lives outside this crate's source
+/// tree and is absent in the Nix sandbox; there the vendored copy is the
+/// only one and this check has nothing to compare against. When the doc
+/// copy IS present, any difference fails loudly.
+#[test]
+fn test_vendored_kit_matches_the_design_doc_copy() {
+    let canonical = Path::new(CANONICAL_KIT);
+    if !canonical.is_dir() {
+        return;
+    }
+    for name in KIT_FILES {
+        let vendored = kit_file(name);
+        let original = std::fs::read_to_string(canonical.join(name))
+            .expect("every vendored kit file exists in the design doc copy");
+        assert_eq!(
+            vendored, original,
+            "vendored kit file {name} differs from the design doc copy; \
+             edit the doc copy and re-copy it into tests/fixtures/relay"
+        );
+    }
 }
