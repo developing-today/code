@@ -116,7 +116,9 @@ impl SaveRateLimiter {
         if let Some(last) = map.get(name) {
             let elapsed = last.elapsed();
             if elapsed < self.cooldown {
-                return Err(self.cooldown.checked_sub(elapsed).unwrap());
+                // checked_sub is Some exactly because elapsed < cooldown;
+                // ZERO is the unreachable fallback (no time remaining).
+                return Err(self.cooldown.checked_sub(elapsed).unwrap_or(Duration::ZERO));
             }
         }
         Ok(())

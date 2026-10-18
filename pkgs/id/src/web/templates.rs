@@ -793,6 +793,11 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
         <input data-world-seed class="input input-bordered w-24" type="number" value="1" aria-label="World seed">
         <button data-world-install class="btn btn-warning" type="button">Install Wasm module</button>
       </div>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <input data-world-source class="file-input file-input-bordered" type="file" accept=".roc,text/plain" multiple aria-label="Roc world sources">
+        <button data-world-compile class="btn btn-warning" type="button">Compile &amp; install Roc sources</button>
+      </div>
+      <p class="text-xs opacity-60">Choose main.roc and up to 7 additional .roc files. Each file is limited to 128 KiB and all sources together to 256 KiB. Compilation runs on the host (up to 120 seconds).</p>
       <p class="text-xs opacity-60">Uploads run in the host's import-free Wasmtime sandbox. The current world restarts at its module seed.</p>
     </details>
   </section>
@@ -800,7 +805,7 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
   <section class="grid gap-4 md:grid-cols-2">
     <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
       <h2 class="font-bold">World view</h2>
-      <pre data-world-view class="min-h-32 whitespace-pre-wrap rounded bg-base-200 p-4 font-mono text-lg" aria-live="polite">Waiting for a world view…</pre>
+      <div data-world-view tabindex="0" aria-label="World screen. Focus here to send keyboard input." class="min-h-32 max-h-[70vh] overflow-auto whitespace-pre-wrap rounded bg-base-200 p-4 font-mono text-lg leading-none" aria-live="polite">Waiting for a world view…</div>
       <p class="text-xs opacity-60">Rendered by the host's world program; clients do not decide authoritative state.</p>
       <div class="flex items-center justify-between">
         <h2 class="font-bold">Records</h2>

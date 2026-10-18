@@ -1,6 +1,9 @@
 app [program] { pf: platform "../roc-world/platform.roc" }
 
 import pf.Key
+import pf.Screen
+import pf.RocJson
+import pf.RocGrid
 
 # A territory world for up to eight players on a 16x8 grid.
 #
@@ -38,14 +41,14 @@ Seat : {
 }
 
 Model : {
-    cells : List(U8),
+    grid : RocGrid,
     seats : List(Seat),
 }
 
-program = { init, update, view, records, wants, snapshot, restore }
+program = { init, update, view, layout, records, wants, snapshot, restore }
 
 init : U64 -> Model
-init = |_seed| { cells: List.repeat(empty, width * height), seats: [] }
+init = |_seed| { grid: RocGrid.new(width, height, empty), seats: [] }
 
 update : Model, U64, Str -> Model
 update = |model, pid, ev|
@@ -57,19 +60,54 @@ update = |model, pid, ev|
 
 view : Model -> Str
 view = |model| {
-    free = List.len(List.keep_if(model.cells, |cell| cell == empty))
-    rows = List.map(row_indices, |y| "|${row_text(model, y)}|")
-    scores = List.map(model.seats, |seat| seat_line(model, seat))
-    lines = List.concat(List.concat(List.concat([border], rows), [border, "free=${free.to_str()}  move: arrows/hjkl  claim: enter/space"]), scores)
-    Str.join_with(lines, "\n")
+    plain = { fg: 0, bg: 0, bold: Bool.False }
+    edge = [{ text: Screen.box_edge(18, "territory"), style: plain }]
+    bottom = [{ text: Screen.box_edge(18, ""), style: plain }]
+    grid_rows = List.map(row_indices, |y| grid_row(model, y))
+    free = RocGrid.count(model.grid, empty)
+    status = [{ text: "free=${free.to_str()} [hjkl/space]", style: plain }]
+    scores = List.map(model.seats, |seat| [{ text: seat_line(model, seat), style: mark_style(seat.mark) }])
+    rows = List.concat(List.concat([edge], grid_rows), List.concat([bottom, status], scores))
+    Screen.render_rows_json(24, 19, rows)
 }
+
+## One boxed grid row as styled pieces: the borders, then the cells with equal
+## styles merged into runs, so a row costs a handful of pieces and not 16 cells.
+grid_row : Model, U64 -> List({ text : Str, style : { fg : U8, bg : U8, bold : Bool } })
+grid_row = |model, y| {
+    plain = { fg: 0, bg: 0, bold: Bool.False }
+    bytes = List.map(column_indices, |x| cell_byte(model, x, y))
+    List.concat([{ text: "|", style: plain }], List.append(style_runs(bytes), { text: "|", style: plain }))
+}
+
+## Group consecutive bytes that share a style into one piece of text.
+style_runs : List(U8) -> List({ text : Str, style : { fg : U8, bg : U8, bold : Bool } })
+style_runs = |bytes| {
+    start = { runs: [], run: [], style: { fg: 0, bg: 0, bold: Bool.False } }
+    done = List.fold(bytes, start, |acc, b| {
+        style = style_for_cell(b)
+        if List.is_empty(acc.run) or same_style(style, acc.style) {
+            { runs: acc.runs, run: List.append(acc.run, b), style: style }
+        } else {
+            { runs: List.append(acc.runs, { text: bytes_to_str(acc.run), style: acc.style }), run: [b], style: style }
+        }
+    })
+    if List.is_empty(done.run) { done.runs } else { List.append(done.runs, { text: bytes_to_str(done.run), style: done.style }) }
+}
+
+same_style : { fg : U8, bg : U8, bold : Bool }, { fg : U8, bg : U8, bold : Bool } -> Bool
+same_style = |a, b| a.fg == b.fg and a.bg == b.bg and a.bold == b.bold
 
 ## Everything here is derived from the grid and the seats, so the record
 ## is a pure function of the state a snapshot already carries.
+## This program renders the same layout at any viewport.
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
 records : Model -> Str
 records = |model| {
     seats = Str.join_with(List.map(model.seats, |seat| seat_json(model, seat)), ",")
-    "{\"width\":${width.to_str()},\"height\":${height.to_str()},\"cells\":\"${bytes_to_str(model.cells)}\",\"seats\":[${seats}]}"
+    "{\"width\":${width.to_str()},\"height\":${height.to_str()},\"cells\":\"${bytes_to_str(RocGrid.bytes(model.grid))}\",\"seats\":[${seats}]}"
 }
 
 ## Presence is subscribed so joins name their seats; nothing else is requested.
@@ -78,41 +116,45 @@ wants = |_model| "{\"v\":1,\"subscribe\":[\"players\"],\"requests\":[]}"
 
 snapshot : Model -> Str
 snapshot = |model|
-    Str.join_with(List.concat([bytes_to_str(model.cells)], List.map(model.seats, |seat| seat.name)), "\n")
+    Str.join_with(List.concat([bytes_to_str(RocGrid.bytes(model.grid))], List.map(model.seats, |seat| seat.name)), "\n")
 
 restore : Str -> Model
 restore = |text| {
     grid = Str.to_utf8(until(text, "\n"))
     names = List.drop_first(Str.split_on(text, "\n"), 1)
-    cells = if List.len(grid) == width * height grid else List.repeat(empty, width * height)
+    board = RocGrid.from_cells(width, height, grid, empty)
     seats = List.fold(names, [], |acc, name|
         if List.len(acc) < max_seats {
             List.append(acc, { mark: mark_for(List.len(acc)), pid: 0, name: name, x: 0, y: 0, online: Bool.False })
         } else {
             acc
         })
-    { cells: cells, seats: seats }
+    { grid: board, seats: seats }
 }
 
 # --- presence --------------------------------------------------------------
 
 presence : Model, Str -> Model
-presence = |model, ev| {
-    pid = parse_pid(ev)
-    if Str.contains(ev, "\"event\":\"joined\"") {
-        join(model, pid, sanitize(until(after(ev, "\"name\":\""), "\"")))
-    } else if Str.contains(ev, "\"event\":\"left\"") {
-        leave(model, pid)
-    } else {
-        model
-    }
-}
-
-parse_pid : Str -> U64
-parse_pid = |ev|
-    match U64.from_str(until(until(after(ev, "\"id\":"), ","), "}")) {
-        Ok(pid) => pid
-        Err(_) => 0
+presence = |model, ev|
+    match RocJson.decode(ev) {
+        Ok(event) => {
+            event_name = string_field(event, "event")
+            part = field(event, "participant")
+            pid_str = number_field(part, "id")
+            name = sanitize(string_field(part, "name"))
+            pid = match U64.from_str(pid_str) {
+                Ok(n) => n
+                Err(_) => 0
+            }
+            if event_name == "joined" {
+                join(model, pid, name)
+            } else if event_name == "left" {
+                leave(model, pid)
+            } else {
+                model
+            }
+        }
+        Err(_) => model
     }
 
 join : Model, U64, Str -> Model
@@ -144,7 +186,7 @@ add_seat : Model, U64, Str -> Model
 add_seat = |model, pid, name|
     if List.len(model.seats) < max_seats {
         seat = { mark: mark_for(List.len(model.seats)), pid: pid, name: name, x: 0, y: 0, online: Bool.True }
-        { cells: model.cells, seats: List.append(model.seats, seat) }
+        { grid: model.grid, seats: List.append(model.seats, seat) }
     } else {
         model
     }
@@ -177,44 +219,25 @@ step = |model, seat, key|
 go : Model, Seat, U64, U64 -> Model
 go = |model, seat, x, y|
     if x < width and y < height {
-        { cells: model.cells, seats: set_seat_list(model.seats, { ..seat, x: x, y: y }) }
+        { grid: model.grid, seats: set_seat_list(model.seats, { ..seat, x: x, y: y }) }
     } else {
         model
     }
 
 claim : Model, Seat -> Model
 claim = |model, seat|
-    if owner_at(model.cells, seat.x, seat.y) == empty and (owned_by(model.cells, seat.mark) == 0 or touches(model.cells, seat)) {
-        match List.set(model.cells, cell_index(seat.x, seat.y), seat.mark) {
-            Ok(cells) => { cells: cells, seats: model.seats }
-            Err(_) => model
-        }
+    if RocGrid.get(model.grid, seat.x, seat.y, empty) == empty and (RocGrid.count(model.grid, seat.mark) == 0 or touches(model.grid, seat)) {
+        { grid: RocGrid.set(model.grid, seat.x, seat.y, seat.mark), seats: model.seats }
     } else {
         model
     }
 
-touches : List(U8), Seat -> Bool
-touches = |cells, seat|
-    (seat.x > 0 and owner_at(cells, seat.x - 1, seat.y) == seat.mark) or owner_at(cells, seat.x + 1, seat.y) == seat.mark or (seat.y > 0 and owner_at(cells, seat.x, seat.y - 1) == seat.mark) or owner_at(cells, seat.x, seat.y + 1) == seat.mark
+touches : RocGrid, Seat -> Bool
+touches = |grid, seat|
+    List.fold(RocGrid.neighbors4(grid, seat.x, seat.y), Bool.False, |found, cell|
+        found or RocGrid.get(grid, cell.x, cell.y, empty) == seat.mark)
 
 # --- grid and seats --------------------------------------------------------
-
-cell_index : U64, U64 -> U64
-cell_index = |x, y| y * width + x
-
-owner_at : List(U8), U64, U64 -> U8
-owner_at = |cells, x, y|
-    if x < width and y < height {
-        match List.get(cells, cell_index(x, y)) {
-            Ok(owner) => owner
-            Err(_) => empty
-        }
-    } else {
-        empty
-    }
-
-owned_by : List(U8), U8 -> U64
-owned_by = |cells, mark| List.len(List.keep_if(cells, |cell| cell == mark))
 
 ## The lowercase mark of the first online seat whose cursor is on the cell, or 0.
 cursor_at : List(Seat), U64, U64 -> U8
@@ -225,7 +248,7 @@ cursor_at = |seats, x, y|
 cell_byte : Model, U64, U64 -> U8
 cell_byte = |model, x, y| {
     cursor = cursor_at(model.seats, x, y)
-    if cursor == 0 { owner_at(model.cells, x, y) } else { cursor }
+    if cursor == 0 { RocGrid.get(model.grid, x, y, empty) } else { cursor }
 }
 
 row_text : Model, U64 -> Str
@@ -235,13 +258,13 @@ row_text = |model, y|
 seat_line : Model, Seat -> Str
 seat_line = |model, seat| {
     status = if seat.online "online" else "away"
-    "${bytes_to_str([seat.mark])} ${seat.name} ${owned_by(model.cells, seat.mark).to_str()} ${status}"
+    "${bytes_to_str([seat.mark])} ${seat.name} ${RocGrid.count(model.grid, seat.mark).to_str()} ${status}"
 }
 
 seat_json : Model, Seat -> Str
 seat_json = |model, seat| {
     online = if seat.online "true" else "false"
-    "{\"mark\":\"${bytes_to_str([seat.mark])}\",\"name\":\"${seat.name}\",\"cells\":${owned_by(model.cells, seat.mark).to_str()},\"online\":${online},\"x\":${seat.x.to_str()},\"y\":${seat.y.to_str()}}"
+    "{\"mark\":\"${bytes_to_str([seat.mark])}\",\"name\":\"${seat.name}\",\"cells\":${RocGrid.count(model.grid, seat.mark).to_str()},\"online\":${online},\"x\":${seat.x.to_str()},\"y\":${seat.y.to_str()}}"
 }
 
 find_seat = |seats, pred| List.first(List.keep_if(seats, pred))
@@ -253,7 +276,7 @@ column_indices : List(U64)
 column_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
 set_seat : Model, Seat -> Model
-set_seat = |model, seat| { cells: model.cells, seats: set_seat_list(model.seats, seat) }
+set_seat = |model, seat| { grid: model.grid, seats: set_seat_list(model.seats, seat) }
 
 set_seat_list : List(Seat), Seat -> List(Seat)
 set_seat_list = |seats, seat| List.map(seats, |other| if other.mark == seat.mark { seat } else { other })
@@ -265,19 +288,67 @@ mark_for = |n|
         Err(_) => 63
     }
 
+# --- styles and helpers ----------------------------------------------------
+
+mark_style : U8 -> { fg : U8, bg : U8, bold : Bool }
+mark_style = |mark|
+    match mark {
+        65 => { fg: 10, bg: 0, bold: Bool.True }
+        66 => { fg: 12, bg: 0, bold: Bool.True }
+        67 => { fg: 11, bg: 0, bold: Bool.True }
+        68 => { fg: 13, bg: 0, bold: Bool.True }
+        69 => { fg: 14, bg: 0, bold: Bool.True }
+        70 => { fg: 9,  bg: 0, bold: Bool.True }
+        71 => { fg: 15, bg: 0, bold: Bool.True }
+        72 => { fg: 8,  bg: 0, bold: Bool.True }
+        _  => { fg: 0,  bg: 0, bold: Bool.False }
+    }
+
+cursor_style : U8 -> { fg : U8, bg : U8, bold : Bool }
+cursor_style = |cursor_mark|
+    match cursor_mark {
+        97  => { fg: 0, bg: 10, bold: Bool.True }
+        98  => { fg: 0, bg: 12, bold: Bool.True }
+        99  => { fg: 0, bg: 11, bold: Bool.True }
+        100 => { fg: 0, bg: 13, bold: Bool.True }
+        101 => { fg: 0, bg: 14, bold: Bool.True }
+        102 => { fg: 0, bg: 9,  bold: Bool.True }
+        103 => { fg: 0, bg: 15, bold: Bool.True }
+        104 => { fg: 15, bg: 8, bold: Bool.True }
+        _   => { fg: 0, bg: 7,  bold: Bool.True }
+    }
+
+style_for_cell : U8 -> { fg : U8, bg : U8, bold : Bool }
+style_for_cell = |b|
+    if b >= 97 and b <= 104 {
+        cursor_style(b)
+    } else if b >= 65 and b <= 72 {
+        mark_style(b)
+    } else {
+        { fg: 8, bg: 0, bold: Bool.False }
+    }
+
+field = |value, key| match RocJson.get(value, key) {
+    Ok(found) => found
+    Err(_) => RocJson.Null
+}
+
+string_field = |value, key| match RocJson.as_string(field(value, key)) {
+    Ok(text) => text
+    Err(_) => ""
+}
+
+number_field = |value, key| match RocJson.as_number(field(value, key)) {
+    Ok(text) => text
+    Err(_) => ""
+}
+
 # --- text helpers ----------------------------------------------------------
 
 bytes_to_str : List(U8) -> Str
 bytes_to_str = |bytes|
     match Str.from_utf8(bytes) {
         Ok(text) => text
-        Err(_) => ""
-    }
-
-after : Str, Str -> Str
-after = |text, marker|
-    match List.get(Str.split_on(text, marker), 1) {
-        Ok(rest) => rest
         Err(_) => ""
     }
 

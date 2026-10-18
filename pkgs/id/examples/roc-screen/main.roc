@@ -5,7 +5,7 @@ import pf.Key
 
 Model := { count : I64 }
 
-program = { init, update, view, records, wants, snapshot, restore }
+program = { init, update, view, layout, records, wants, snapshot, restore }
 
 init : U64 -> Model
 init = |_seed| { count: 0 }
@@ -19,7 +19,16 @@ update = |model, _pid, ev| {
 view : Model -> Str
 view = |model| {
     base = Screen.boxed(Screen.new(20, 3), 0, 0, 20, 3, "counter")
-    Screen.render_plain(Screen.put_text(base, 2, 1, "count=${model.count.to_str()}", { fg: 0, bg: 0, bold: Bool.False }))
+    Screen.render_json(Screen.put_text(base, 2, 1, "count=${model.count.to_str()}", { fg: 0, bg: 0, bold: Bool.False }))
+}
+
+# Reflow: a wide viewport gets a wider box, a short one keeps three rows.
+layout : Model, U64, U64 -> Str
+layout = |model, width, height| {
+    w = if width >= 30 30 else 20
+    h = if height >= 4 3 else 3
+    base = Screen.boxed(Screen.new(w, h), 0, 0, w, h, "counter")
+    Screen.render_json(Screen.put_text(base, 2, 1, "count=${model.count.to_str()}", { fg: 0, bg: 0, bold: Bool.False }))
 }
 
 records : Model -> Str
