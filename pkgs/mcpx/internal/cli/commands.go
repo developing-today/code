@@ -91,6 +91,7 @@ func (a *App) ensure(ctx context.Context) (*Client, error) {
 		return nil, err
 	}
 	a.client, a.connected, a.ladder = c, true, ladder
+	a.checkDaemonVersion(ctx, c, ladder)
 	return c, nil
 }
 
@@ -1911,7 +1912,6 @@ func (a *App) CmdSkills(ctx context.Context, args []string) error {
 
 	return fmt.Errorf("unknown skills command %q (use 'list' or 'install')", subcmd)
 }
-
 
 func mustGetwd() string {
 	wd, err := os.Getwd()
