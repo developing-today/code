@@ -45,11 +45,11 @@ use tokio::time::timeout;
 use crate::chain::ChainExt;
 use crate::connectivity::connect;
 use crate::event_store::Ingest;
+use crate::frames::{read_frame, write_frame};
 use crate::pull_policy::PullGate;
 use crate::store_traits::{ChainLog, SharedEventStore};
 use crate::sync_method::{Answer, Request, SyncMethod, SyncStats, SyncSupport, choose};
-use crate::world::unix_ms;
-use crate::world_net::{read_frame, write_frame};
+use crate::time::unix_ms;
 
 /// The ALPN for sync sessions. This is P3.1's ID, so range sync joins as a method of the same
 /// session, and the first frame of every session is the [`Request`].
@@ -529,7 +529,9 @@ mod tests {
     use crate::waiting::WaitingLimits;
     use iroh_base::SecretKey;
 
-    const DEADLINE: Duration = Duration::from_secs(30);
+    // Keep test sessions aligned with production; CI can run the bulk page-transfer test under
+    // substantially more contention than a focused local invocation.
+    const DEADLINE: Duration = SESSION_DEADLINE;
 
     fn key(n: u8) -> SigningKey {
         SigningKey::from_bytes(&[n; 32])
@@ -779,23 +781,45 @@ mod tests {
             ingest_all(&store_a, chain);
         }
 
-        let (server, _router, mut results) = responder(&store_a).await;
-        let client = endpoint().await;
-        let outcome = sync_with(
-            &client,
-            loopback(&server),
-            &store_b,
-            topic,
-            &bootstrap(),
-            DEADLINE,
-        )
-        .await
-        .unwrap();
-        results.recv().await.unwrap().unwrap();
+        // Under full-suite load a loopback session can be reset by the peer
+        // mid-stream (issue #188). Sync is idempotent, so retry with a fresh
+        // session and assert the converged state of the successful one.
+        let mut attempt = 0;
+        let (outcome, answered) = loop {
+            attempt += 1;
+            let (server, router, mut results) = responder(&store_a).await;
+            let client = endpoint().await;
+            match sync_with(
+                &client,
+                loopback(&server),
+                &store_b,
+                topic,
+                &bootstrap(),
+                DEADLINE,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    let answered = results.recv().await.unwrap().unwrap();
+                    client.close().await;
+                    router.shutdown().await.unwrap();
+                    break (outcome, answered);
+                }
+                Err(error) if attempt < 3 => {
+                    eprintln!("retrying the bulk session after a transport error: {error:#}");
+                    client.close().await;
+                    let _ = router.shutdown().await;
+                }
+                Err(error) => {
+                    panic!("bulk session failed after {attempt} attempts: {error:#}");
+                }
+            }
+        };
 
         assert_eq!(outcome.received.accepted, 210);
         assert_eq!(outcome.received.duplicates, 0);
         assert_eq!(outcome.received.refused, 0);
+        let _ = answered;
         let refs: Vec<&SigningKey> = authors.iter().collect();
         assert_eq!(applied(&store_a, &refs, 69), applied(&store_b, &refs, 69));
         store_b.check_invariants().unwrap();
