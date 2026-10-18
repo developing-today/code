@@ -1453,7 +1453,7 @@ fn scopes_of(names: &[String]) -> Result<WorldScopes> {
 /// An account may only grant permissions it holds itself; the admin is not held to this.
 fn within_ceiling(directory: &Directory, actor: Actor<'_>, scopes: WorldScopes) -> Result<()> {
     if let Actor::Account(id) = actor
-        && !directory.ceiling(id).contains(scopes)
+        && !directory.ceiling(id).implied().contains(scopes)
     {
         return Err(Refusal::Forbidden(
             "a group cannot grant permissions you do not hold".to_owned(),
@@ -1570,6 +1570,7 @@ fn scope_names(scopes: WorldScopes) -> Vec<String> {
     [
         (WorldScopes::JOIN, "join"),
         (WorldScopes::CHAT, "chat"),
+        (WorldScopes::HISTORY, "history"),
         (WorldScopes::INPUT, "input"),
         (WorldScopes::DELEGATE, "delegate"),
     ]

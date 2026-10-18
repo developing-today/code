@@ -646,7 +646,7 @@ mod tests {
     }
 
     fn signed_directory_request(key: &SigningKey, nonce: &str, body: &str) -> Request<Body> {
-        let at = crate::world::unix_ms();
+        let at = crate::time::unix_ms();
         let signed = sign_request(
             key,
             "POST",
@@ -750,7 +750,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "id-mail-http-{}-{}",
             std::process::id(),
-            crate::world::unix_ms()
+            crate::time::unix_ms()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let service = WorldService::new(lobby(), None).with_mail(std::sync::Arc::new(
