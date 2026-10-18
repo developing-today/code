@@ -4,6 +4,7 @@
  */
 
 import "@starfederation/datastar";
+import { initHome } from "./home";
 import "./world";
 import "./world";
 import { type CollabConnection, initCollab } from "./collab";
@@ -749,6 +750,7 @@ function onMainSwapped(): void {
     // Populate display name input on settings page
     initSettingsIdentity();
   }
+  initHome();
 }
 
 /**
@@ -1759,6 +1761,7 @@ async function init(): Promise<void> {
   initPeersAutoRefresh();
   // Populate display name on settings page (if direct navigation)
   initSettingsIdentity();
+  initHome();
 
   // Check if we're on an editor page (direct navigation)
   const editorContainer = document.getElementById("editor-container");

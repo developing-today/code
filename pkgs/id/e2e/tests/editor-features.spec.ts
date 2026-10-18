@@ -21,7 +21,7 @@ import { expect, type Page, test } from "@playwright/test";
 
 /** Create a file and navigate to its editor */
 async function createFile(page: Page, name: string): Promise<void> {
-  await page.goto("/");
+  await page.goto("/files");
   await page.fill("#new-file-name", name);
   await page.click("#new-file-form button[type='submit']");
   await page.waitForURL(/\/(file|edit)\//, { timeout: 15_000 });
@@ -1085,7 +1085,7 @@ test.describe("Image Upload", () => {
     const filename = `e2e-test-${Date.now()}.png`;
     await uploadPng(page, baseURL!, filename);
 
-    await page.goto("/");
+    await page.goto("/files");
     // Wait for the file list to load and contain our filename
     await page.waitForFunction((name) => document.body.textContent?.includes(name) ?? false, filename, {
       timeout: 15_000,

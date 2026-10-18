@@ -35,6 +35,10 @@ pub use crate::groups::worlds::Isolation;
 /// lives in [`crate::time`] so the crate builds without this feature.
 pub(crate) use crate::time::unix_ms;
 
+/// A chat participant may send at most this many lines during the rolling window.
+const CHAT_RATE_BURST: u8 = 50;
+const CHAT_RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Bounded limits for one world.
 #[derive(Clone, Debug)]
 pub struct WorldLimits {
@@ -889,6 +893,8 @@ pub struct WorldCore {
     /// Events committed since the journal last started from a checkpoint.
     since_checkpoint: u64,
     capabilities: HashMap<u64, CapabilityRecord>,
+    /// Recent chat timestamps, pruned to the active rolling window on each send.
+    chat_rates: HashMap<u64, VecDeque<std::time::Instant>>,
     events: VecDeque<WorldEvent>,
     directory: crate::directory::Directory,
     petnames: crate::petname::Petnames,
@@ -940,6 +946,7 @@ impl WorldCore {
             file_write_override: false,
             since_checkpoint: 0,
             capabilities: HashMap::new(),
+            chat_rates: HashMap::new(),
             events: VecDeque::new(),
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
@@ -1770,7 +1777,27 @@ impl WorldCore {
         );
         let text = sanitize_chat(text);
         ensure!(!text.is_empty(), "chat message must not be empty");
-        self.commit(participant_id, WorldEventKind::Chat(text))
+        let now = std::time::Instant::now();
+        self.chat_rates.retain(|_, sent| {
+            while sent
+                .front()
+                .is_some_and(|at| now.duration_since(*at) >= CHAT_RATE_WINDOW)
+            {
+                sent.pop_front();
+            }
+            !sent.is_empty()
+        });
+        let current = self.chat_rates.get(&participant_id);
+        ensure!(
+            current.is_none_or(|sent| sent.len() < usize::from(CHAT_RATE_BURST)),
+            "chat rate exceeded; try again later"
+        );
+        let event = self.commit(participant_id, WorldEventKind::Chat(text))?;
+        self.chat_rates
+            .entry(participant_id)
+            .or_default()
+            .push_back(now);
+        Ok(event)
     }
 
     /// Commit an opaque game input after validating capability and bounds.
@@ -4969,6 +4996,17 @@ mod tests {
         assert!(core.snapshot(&join_only).is_ok());
         assert!(core.chat(&join_only, "no").is_err());
         assert!(core.input(&join_only, b"no").is_err());
+    }
+
+    #[test]
+    fn chat_is_rate_limited_per_participant_within_a_ten_second_window() {
+        let mut core = world(64);
+        let (_, token) = join(&mut core, "Guest");
+        for index in 0..CHAT_RATE_BURST {
+            core.chat(&token, &format!("message {index}")).unwrap();
+        }
+        assert!(core.chat(&token, "one too many").is_err());
+        assert_eq!(core.current_sequence(), u64::from(CHAT_RATE_BURST));
     }
 
     fn in_an_hour() -> u64 {
