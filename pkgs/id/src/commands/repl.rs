@@ -1143,7 +1143,8 @@ impl ReplContext {
                 blobs_conn,
                 store,
                 ..
-            } | ReplContextInner::RemoteNode {
+            }
+            | ReplContextInner::RemoteNode {
                 endpoint,
                 meta_conn,
                 blobs_conn,

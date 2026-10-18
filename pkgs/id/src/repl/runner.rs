@@ -386,11 +386,13 @@ async fn execute_repl_command(
             ctx.del_tag(subject, key, Some(value)).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tags" | "labels" | "links"]) | (None, ["tag" | "label" | "link", "list" | "ls"]) => {
+        (None, ["tags" | "labels" | "links"])
+        | (None, ["tag" | "label" | "link", "list" | "ls"]) => {
             ctx.get_tags(None).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tags" | "labels" | "links", subject]) | (None, ["tag" | "label" | "link", "list" | "ls", subject]) => {
+        (None, ["tags" | "labels" | "links", subject])
+        | (None, ["tag" | "label" | "link", "list" | "ls", subject]) => {
             ctx.get_tags(Some(subject)).await?;
             Ok(ReplAction::Continue)
         }
