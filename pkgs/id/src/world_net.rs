@@ -31,6 +31,19 @@ use crate::world_session::{
 /// variants; removing or changing one needs `/id-world/2`.
 pub const WORLD_ALPN: &[u8] = b"/id-world/1";
 
+/// Public module state returned by a world's `info` frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldModuleInfo {
+    /// World identifier.
+    pub world_id: String,
+    /// Hash of the active module, if any.
+    pub active_module_hash: Option<String>,
+    /// Server-observed build origin, if recorded by this host.
+    pub active_module_provenance: Option<crate::world::ModuleProvenance>,
+    /// Latest committed world sequence.
+    pub current_sequence: u64,
+}
+
 /// Concurrent sessions allowed on one connection.
 const MAX_SESSIONS_PER_CONNECTION: usize = 16;
 
@@ -315,6 +328,102 @@ impl WorldClient {
         Ok(reply["report"].clone())
     }
 
+    /// Replace the world's capability ceiling. The reply carries the report and
+    /// a notice that the ceiling applies immediately.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or names are refused.
+    pub async fn set_caps_ceiling(
+        &mut self,
+        admin_token: &str,
+        ceiling: &[String],
+    ) -> Result<serde_json::Value> {
+        self.send_json(&serde_json::json!({
+            "type": "set_caps_ceiling",
+            "admin_token": admin_token,
+            "ceiling": ceiling,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "caps_ceiling" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused the capability ceiling change")
+            );
+        }
+        Ok(reply)
+    }
+
+    /// Persist the world's requested resource profile. The response includes
+    /// an explicit notice that it applies only on the next install or restart.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or profile is refused.
+    pub async fn set_execution_profile(
+        &mut self,
+        admin_token: &str,
+        profile: crate::world_limits::WorldExecutionProfile,
+    ) -> Result<serde_json::Value> {
+        self.send_json(&serde_json::json!({
+            "type": "set_execution_profile",
+            "admin_token": admin_token,
+            "profile": profile,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "execution_profile" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused the execution profile change")
+            );
+        }
+        Ok(reply)
+    }
+
+    /// Read the world's requested execution profile.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if neither a valid admin token nor a valid
+    /// guest capability is supplied.
+    pub async fn execution_profile(
+        &mut self,
+        admin_token: Option<&str>,
+        capability: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        self.send_json(&serde_json::json!({
+            "type": "execution_profile_info",
+            "admin_token": admin_token,
+            "capability": capability,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        if reply["type"] != "execution_profile" {
+            bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused the execution profile query")
+            );
+        }
+        Ok(reply)
+    }
+
     /// Let other unisolated worlds write into this world, with the admin token.
     /// Returns the world's policy after the change.
     ///
@@ -508,12 +617,31 @@ impl WorldClient {
         expires_in_secs: Option<u64>,
         uses: Option<u32>,
     ) -> Result<String> {
+        self.invite_with_role(admin_token, display_name, expires_in_secs, uses, None)
+            .await
+    }
+
+    /// Mint a guest capability with an explicit role preset (`spectator`,
+    /// `player`, `guest`, `delegator`; `None` means `guest`).
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the invite or the role is refused.
+    pub async fn invite_with_role(
+        &mut self,
+        admin_token: &str,
+        display_name: &str,
+        expires_in_secs: Option<u64>,
+        uses: Option<u32>,
+        role: Option<&str>,
+    ) -> Result<String> {
         self.send_json(&serde_json::json!({
             "type": "invite",
             "admin_token": admin_token,
             "display_name": display_name,
             "expires_in_secs": expires_in_secs,
             "uses": uses,
+            "role": role,
         }))
         .await?;
         let reply = self
@@ -617,6 +745,17 @@ impl WorldClient {
     ///
     /// Fails if the capability is refused or the stream breaks.
     pub async fn info(&mut self, capability: &str) -> Result<(String, Option<String>, u64)> {
+        let info = self.info_details(capability).await?;
+        Ok((
+            info.world_id,
+            info.active_module_hash,
+            info.current_sequence,
+        ))
+    }
+
+    /// Query module state, including observed build provenance where available.
+    /// Older hosts that do not send provenance continue to decode as `None`.
+    pub async fn info_details(&mut self, capability: &str) -> Result<WorldModuleInfo> {
         self.send_json(&serde_json::json!({
             "type": "info",
             "capability": capability,
@@ -636,7 +775,18 @@ impl WorldClient {
                 let current_sequence = reply["current_sequence"]
                     .as_u64()
                     .context("host omitted sequence")?;
-                Ok((world_id, active_module_hash, current_sequence))
+                let active_module_provenance = reply
+                    .get("active_module_provenance")
+                    .filter(|value| !value.is_null())
+                    .map(|value| serde_json::from_value(value.clone()))
+                    .transpose()
+                    .context("host sent invalid module provenance")?;
+                Ok(WorldModuleInfo {
+                    world_id,
+                    active_module_hash,
+                    active_module_provenance,
+                    current_sequence,
+                })
             }
             _ => bail!(
                 "{}",
@@ -937,6 +1087,124 @@ mod tests {
         host.router.shutdown().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn caps_ceiling_is_admin_only_over_iroh_and_applies_at_once() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+
+        let mut outsider = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        assert!(
+            outsider
+                .set_caps_ceiling("wrong", &["time.now".to_owned()])
+                .await
+                .is_err()
+        );
+
+        let mut admin = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let reply = admin
+            .set_caps_ceiling("admin", &["time.now".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(reply["type"], "caps_ceiling");
+        assert_eq!(reply["report"]["ceiling"], serde_json::json!(["time.now"]));
+        assert!(
+            reply["message"]
+                .as_str()
+                .unwrap()
+                .contains("applies immediately")
+        );
+        assert_eq!(
+            host.world.caps_report().await.unwrap().ceiling,
+            vec!["time.now".to_owned()]
+        );
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn execution_profile_can_be_queried_and_updated_over_iroh() {
+        let host = host(Some("admin")).await;
+        let client_ep = endpoint().await;
+
+        let mut invite_client = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let capability = invite_client
+            .invite("admin", "ann", None, None)
+            .await
+            .unwrap();
+        invite_client.close();
+
+        // 1. Unauthenticated query is denied
+        let mut outsider = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        assert!(outsider.execution_profile(None, None).await.is_err());
+        outsider.close();
+
+        // 2. Guest with capability can query profile
+        let mut guest = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let res = guest
+            .execution_profile(None, Some(&capability))
+            .await
+            .unwrap();
+        assert_eq!(res["type"], "execution_profile");
+        guest.close();
+
+        // 3. Admin can update profile
+        let mut admin = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let custom_profile = crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(750_000),
+            native_cpu_seconds: Some(15),
+            ..Default::default()
+        };
+        let set_res = admin
+            .set_execution_profile("admin", custom_profile)
+            .await
+            .unwrap();
+        assert_eq!(set_res["type"], "execution_profile");
+        assert_eq!(set_res["update"]["requested"]["wasm_fuel"], 750_000);
+        admin.close();
+
+        // 4. Admin query sees the updated requested profile
+        let mut admin_query = WorldClient::connect(&client_ep, host.addr.clone())
+            .await
+            .unwrap();
+        let query_res = admin_query
+            .execution_profile(Some("admin"), None)
+            .await
+            .unwrap();
+        assert_eq!(query_res["update"]["requested"]["wasm_fuel"], 750_000);
+        admin_query.close();
+
+        client_ep.close().await;
+        host.router.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn a_caps_report_from_before_ceilings_still_deserializes() {
+        let old = serde_json::json!({
+            "granted": ["time.now"],
+            "requested": ["time.now"],
+            "missing": [],
+            "usage": {},
+            "policy": "deny",
+            "catalog": ["time.now"],
+        });
+        let report: crate::world_caps::CapsReport = serde_json::from_value(old).unwrap();
+        assert_eq!(report.granted, vec!["time.now".to_owned()]);
+        assert!(report.ceiling.is_empty() && report.effective.is_empty());
+    }
+
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn roc_guest_updates_authoritative_state_over_iroh() {
@@ -1046,9 +1314,13 @@ mod tests {
         let mut query = WorldClient::connect(&client_ep, addr.clone())
             .await
             .unwrap();
-        let (_, active, _) = query.info(&capability).await.unwrap();
+        let info = query.info_details(&capability).await.unwrap();
         query.close();
-        assert_eq!(active.as_deref(), Some(hash.as_str()));
+        assert_eq!(info.active_module_hash.as_deref(), Some(hash.as_str()));
+        assert_eq!(
+            info.active_module_provenance,
+            Some(crate::world::ModuleProvenance::Artifact)
+        );
 
         let mut fetch = WorldClient::connect(&client_ep, addr.clone())
             .await

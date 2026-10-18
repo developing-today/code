@@ -54,6 +54,9 @@ const MAX_CAPABILITY_BYTES: usize = 256;
 
 /// Longest accepted admin secret, in bytes.
 const MAX_ADMIN_TOKEN_BYTES: usize = 256;
+/// Sent with a capability ceiling change: unlike a profile, it takes effect now.
+const CAPS_CEILING_NOTICE: &str =
+    "ceiling saved; it applies immediately to new uses and active subscriptions";
 
 /// Simultaneous bounded module uploads accepted by a world service.
 const MAX_CONCURRENT_MODULE_UPLOADS: usize = 2;
@@ -132,6 +135,10 @@ enum ClientFrame {
         expires_in_secs: Option<u64>,
         /// Committed actions the invite may take; absent means no limit.
         uses: Option<u32>,
+        /// Role preset (`spectator`, `observer`, `player`, `guest`, `delegator`); absent
+        /// means `guest`.
+        #[serde(default)]
+        role: Option<String>,
     },
     /// Admin: list the worlds this server hosts.
     ListWorlds {
@@ -184,6 +191,23 @@ enum ClientFrame {
         grant: Vec<String>,
         revoke: Vec<String>,
     },
+    /// Admin: replace this world's capability ceiling. It applies immediately;
+    /// grants are kept, and an empty list allows no capability.
+    SetCapsCeiling {
+        admin_token: String,
+        ceiling: Vec<String>,
+    },
+    /// Admin: persist requested per-world runtime bounds. They do not change
+    /// a running guest; they apply on its next install or process restart.
+    SetExecutionProfile {
+        admin_token: String,
+        profile: crate::world_limits::WorldExecutionProfile,
+    },
+    /// Read the world's requested runtime bounds (needs either admin token or guest capability).
+    ExecutionProfileInfo {
+        admin_token: Option<String>,
+        capability: Option<String>,
+    },
     /// Show this world's capability grants, wants and usage.
     Caps {
         capability: String,
@@ -208,6 +232,15 @@ enum ClientFrame {
     },
     Input {
         data_hex: String,
+    },
+    /// Ephemeral dimensions for this connection's presentation only. Never journaled.
+    Resize {
+        width: u16,
+        height: u16,
+    },
+    /// Explicit bounded clipboard text, delivered as one durable input event.
+    Paste {
+        text: String,
     },
     InstallBegin {
         admin_token: String,
@@ -239,10 +272,15 @@ enum ServerFrame<'a> {
     View {
         sequence: u64,
         data: &'a str,
+        /// Optional typed screen surface. Older clients can continue using `data`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        surface: Option<&'a crate::world_presentation::WorldSurface>,
     },
     ModuleInfo {
         world_id: String,
         active_module_hash: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active_module_provenance: Option<crate::world::ModuleProvenance>,
         current_sequence: u64,
     },
     /// One page of structured records, with the sequence they were read at.
@@ -289,6 +327,17 @@ enum ServerFrame<'a> {
     /// The world's capability report.
     Caps {
         report: crate::world_caps::CapsReport,
+    },
+    /// The requested profile and an explicit deferred-application notice.
+    ExecutionProfile {
+        update: crate::world::ExecutionProfileUpdate,
+        message: &'static str,
+    },
+    /// The capability report after a ceiling change, and a notice that the
+    /// change applied immediately.
+    CapsCeiling {
+        report: crate::world_caps::CapsReport,
+        message: &'static str,
     },
     /// A compiled module was installed.
     Compiled {
@@ -383,6 +432,8 @@ pub enum InstallError {
     Unauthorized,
     /// Size or content hash validation failed.
     InvalidUpload,
+    /// Raw artifacts are disabled by this world's source-only policy.
+    RawModuleDisabled,
     /// Wasmtime rejected or could not instantiate the module.
     InvalidModule,
     /// The blob could not be pinned or the world actor refused activation.
@@ -410,9 +461,12 @@ pub struct WorldService {
     records: Option<Arc<crate::world_records::RecordsStore>>,
     compiler: Option<Arc<Compiler>>,
     native: bool,
+    /// Raw artifact installs are refused; compiled source remains permitted.
+    source_only: bool,
     runtime: crate::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
     outbox: Option<Arc<Mutex<crate::envelope_outbox::Outbox>>>,
+    profile_operation: Arc<Mutex<()>>,
 }
 
 impl std::fmt::Debug for WorldService {
@@ -432,6 +486,20 @@ impl WorldService {
     pub const fn with_native_enabled(mut self) -> Self {
         self.native = true;
         self
+    }
+
+    /// Require new Wasm programs to be compiled from source by this server.
+    /// This disables raw artifact installation, but not the compiled output path.
+    #[must_use]
+    pub const fn with_source_only(mut self, enabled: bool) -> Self {
+        self.source_only = enabled;
+        self
+    }
+
+    /// Whether raw Wasm/native uploads are disabled for this world.
+    #[must_use]
+    pub(crate) const fn source_only(&self) -> bool {
+        self.source_only
     }
 
     /// Read or change this world's directory as the caller.
@@ -527,9 +595,11 @@ impl WorldService {
             records: None,
             compiler: None,
             native: false,
+            source_only: false,
             runtime: crate::world_limits::RuntimeLimits::default(),
             mail: None,
             outbox: None,
+            profile_operation: Arc::new(Mutex::new(())),
         }
     }
 
@@ -541,6 +611,39 @@ impl WorldService {
     ) -> Self {
         self.runtime = runtime;
         self
+    }
+
+    /// Replace the world's capability ceiling, admin only. Unlike a profile,
+    /// the ceiling applies at once: the next use or subscription sees it.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `admin denied` for a wrong token, and with the world's
+    /// message for an invalid or unstorable ceiling.
+    pub async fn set_caps_ceiling(
+        &self,
+        supplied_admin: Option<&str>,
+        ceiling: Vec<String>,
+    ) -> anyhow::Result<crate::world_caps::CapsReport> {
+        anyhow::ensure!(self.authorize_admin(supplied_admin).is_ok(), "admin denied");
+        self.world.set_caps_ceiling(ceiling).await
+    }
+
+    /// Persist a per-world resource profile. The running program keeps its
+    /// existing limits; the request applies on the next install or restart.
+    pub async fn set_execution_profile(
+        &self,
+        supplied_admin: Option<&str>,
+        profile: crate::world_limits::WorldExecutionProfile,
+    ) -> anyhow::Result<crate::world::ExecutionProfileUpdate> {
+        self.authorize_admin(supplied_admin)
+            .map_err(|_| anyhow::anyhow!("admin denied"))?;
+        // Resolve now for validation and to ensure this request is valid under
+        // this process's hard ceilings. The stored request remains unclamped,
+        // so a later server with lower ceilings still wins at instantiation.
+        profile.resolve(self.runtime)?;
+        let _operation = self.profile_operation.lock().await;
+        self.world.set_execution_profile(profile).await
     }
 
     /// Let admins compile Roc sources into this world on the fly.
@@ -573,13 +676,15 @@ impl WorldService {
         if spec.native && !self.native {
             return Err("native modules are not enabled on this server".to_owned());
         }
+        // The effective list, not the raw grants: a platform module outside a
+        // server or world ceiling is refused at compile time too.
         let granted = self
             .world
             .caps_report()
             .await
             .map_err(|error| format!("compile failed: {error:#}"))?
-            .granted;
-        let (wasm, diagnostics) =
+            .effective;
+        let (wasm, diagnostics, provenance) =
             crate::world_compile::compile(spec, compiler, &granted, COMPILE_TIMEOUT)
                 .await
                 .map_err(|error| {
@@ -587,8 +692,19 @@ impl WorldService {
                     format!("compile failed: {error:#}")
                 })?;
         let hash = module_hash(&wasm);
+        let permit = self
+            .try_reserve_module_upload()
+            .map_err(|error| format!("install failed: {error:?}"))?;
         let (_, sequence) = self
-            .install_wasm(supplied_admin, wasm, spec.seed, &hash)
+            .install_wasm_reserved(
+                supplied_admin,
+                wasm,
+                spec.seed,
+                &hash,
+                permit,
+                true,
+                Some(provenance),
+            )
             .await
             .map_err(|error| format!("install failed: {error:?}"))?;
         Ok((hash, sequence, diagnostics))
@@ -689,14 +805,30 @@ impl WorldService {
         expires_in_secs: Option<u64>,
         uses: Option<u32>,
     ) -> Result<InviteResponse, InviteError> {
+        self.invite_scoped(
+            supplied,
+            display_name,
+            expires_in_secs,
+            uses,
+            WorldScopes::GUEST,
+        )
+        .await
+    }
+
+    /// Like [`Self::invite`], with the invited participant's scopes chosen by
+    /// the caller (see `WorldScopes::from_role`).
+    pub async fn invite_scoped(
+        &self,
+        supplied: Option<&str>,
+        display_name: String,
+        expires_in_secs: Option<u64>,
+        uses: Option<u32>,
+        scopes: WorldScopes,
+    ) -> Result<InviteResponse, InviteError> {
         self.authorize_admin(supplied)?;
         let bounds =
             invite_bounds(expires_in_secs, uses, unix_ms()).map_err(InviteError::InvalidBounds)?;
-        match self
-            .world
-            .issue_bounded(display_name, WorldScopes::GUEST, bounds)
-            .await
-        {
+        match self.world.issue_bounded(display_name, scopes, bounds).await {
             Ok((participant, capability)) => Ok(InviteResponse {
                 capability: capability.expose().to_owned(),
                 participant_id: participant.id,
@@ -736,8 +868,16 @@ impl WorldService {
         claimed_hash: &str,
     ) -> Result<(String, u64), InstallError> {
         let permit = self.try_reserve_module_upload()?;
-        self.install_wasm_reserved(supplied_admin, wasm, seed, claimed_hash, permit)
-            .await
+        self.install_wasm_reserved(
+            supplied_admin,
+            wasm,
+            seed,
+            claimed_hash,
+            permit,
+            false,
+            None,
+        )
+        .await
     }
 
     #[cfg(feature = "sandbox")]
@@ -748,7 +888,10 @@ impl WorldService {
         seed: u64,
         claimed_hash: &str,
         _permit: OwnedSemaphorePermit,
+        compiled_from_source: bool,
+        provenance: Option<crate::world::ModuleProvenance>,
     ) -> Result<(String, u64), InstallError> {
+        let _profile_operation = self.profile_operation.lock().await;
         self.authorize_admin(supplied_admin)
             .map_err(|error| match error {
                 InviteError::Disabled => InstallError::Disabled,
@@ -756,6 +899,12 @@ impl WorldService {
                 InviteError::Unavailable => InstallError::Unavailable,
                 InviteError::InvalidBounds(_) => InstallError::InvalidUpload,
             })?;
+        if self.source_only && !compiled_from_source {
+            return Err(InstallError::RawModuleDisabled);
+        }
+        if compiled_from_source && provenance.is_none() {
+            return Err(InstallError::InvalidModule);
+        }
         if wasm.is_empty() || wasm.len() > MAX_WORLD_MODULE_BYTES {
             return Err(InstallError::InvalidUpload);
         }
@@ -793,7 +942,14 @@ impl WorldService {
                     .await
                     .map_err(|_| InstallError::Unavailable)?;
             }
-            let native_limits = self.runtime.native;
+            let runtime = self
+                .world
+                .execution_profile()
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .resolve(self.runtime)
+                .map_err(|_| InstallError::InvalidModule)?;
+            let native_limits = runtime.native;
             let program = tokio::task::spawn_blocking(move || {
                 crate::world_native::NativeProgram::new(&path, seed, native_limits, None)
             })
@@ -808,7 +964,14 @@ impl WorldService {
             })?;
             Box::new(program)
         } else {
-            let limits = self.runtime.sandbox;
+            let runtime = self
+                .world
+                .execution_profile()
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .resolve(self.runtime)
+                .map_err(|_| InstallError::InvalidModule)?;
+            let limits = runtime.sandbox;
             let compile_bytes = wasm.clone();
             let program = tokio::task::spawn_blocking(move || {
                 crate::sandbox::Sandbox::compile(&compile_bytes, limits)?.instantiate(seed)
@@ -855,7 +1018,12 @@ impl WorldService {
         };
         let installed = self
             .world
-            .install_program(module_hash.clone(), seed, guest)
+            .install_program_with_provenance(
+                module_hash.clone(),
+                seed,
+                Some(provenance.unwrap_or(crate::world::ModuleProvenance::Artifact)),
+                guest,
+            )
             .await
             .map_err(|_| InstallError::Unavailable)?;
         if !matches!(
@@ -920,8 +1088,10 @@ fn frame_admin_token(frame: &ClientFrame) -> Option<&str> {
     match frame {
         ClientFrame::Invite { admin_token, .. }
         | ClientFrame::InstallBegin { admin_token, .. }
+        | ClientFrame::Compile { admin_token, .. }
         | ClientFrame::CreateWorld { admin_token }
         | ClientFrame::ListWorlds { admin_token } => Some(admin_token),
+        ClientFrame::SetExecutionProfile { admin_token, .. } => Some(admin_token),
         _ => None,
     }
 }
@@ -1224,25 +1394,41 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             display_name,
             expires_in_secs,
             uses,
-        } => match service
-            .invite(Some(&admin_token), display_name, expires_in_secs, uses)
-            .await
-        {
-            Ok(invite) => {
-                let _ = send_json(io, &ServerFrame::Invite(&invite)).await;
+            role,
+        } => match role.as_deref().map(WorldScopes::from_role) {
+            Some(None) => {
+                let _ = send_error(
+                    io,
+                    "unknown invite role; use spectator, observer, player, guest, or delegator",
+                )
+                .await;
             }
-            Err(InviteError::InvalidBounds(message)) => {
-                let _ = send_error(io, message).await;
-            }
-            Err(InviteError::Disabled) => {
-                let _ = send_error(io, "invites are not enabled").await;
-            }
-            Err(InviteError::Unauthorized) => {
-                let _ = send_error(io, "invite denied").await;
-            }
-            Err(InviteError::Unavailable) => {
-                let _ = send_error(io, "world cannot issue another invite").await;
-            }
+            role_scopes => match service
+                .invite_scoped(
+                    Some(&admin_token),
+                    display_name,
+                    expires_in_secs,
+                    uses,
+                    role_scopes.flatten().unwrap_or(WorldScopes::GUEST),
+                )
+                .await
+            {
+                Ok(invite) => {
+                    let _ = send_json(io, &ServerFrame::Invite(&invite)).await;
+                }
+                Err(InviteError::InvalidBounds(message)) => {
+                    let _ = send_error(io, message).await;
+                }
+                Err(InviteError::Disabled) => {
+                    let _ = send_error(io, "invites are not enabled").await;
+                }
+                Err(InviteError::Unauthorized) => {
+                    let _ = send_error(io, "invite denied").await;
+                }
+                Err(InviteError::Unavailable) => {
+                    let _ = send_error(io, "world cannot issue another invite").await;
+                }
+            },
         },
         // Query frames keep the session open for further queries: a client
         // can page through records, and may still join later on.
@@ -1258,6 +1444,15 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             module_hash,
             seed,
         } => {
+            if service.source_only() {
+                if service.authorize_admin(Some(&admin_token)).is_err() {
+                    let _ = send_error(io, "module install denied").await;
+                    return;
+                }
+                let _ =
+                    send_error(io, "raw module uploads are disabled by source-only policy").await;
+                return;
+            }
             if let Err(message) = install_module_session(
                 service,
                 io,
@@ -1303,6 +1498,80 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 let _ = send_error(io, "admin denied").await;
             }
         },
+        ClientFrame::SetCapsCeiling {
+            admin_token,
+            ceiling,
+        } => match service.set_caps_ceiling(Some(&admin_token), ceiling).await {
+            Ok(report) => {
+                let _ = send_json(
+                    io,
+                    &ServerFrame::CapsCeiling {
+                        report,
+                        message: CAPS_CEILING_NOTICE,
+                    },
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = send_error(io, &format!("{error:#}")).await;
+            }
+        },
+        ClientFrame::SetExecutionProfile {
+            admin_token,
+            profile,
+        } => match service
+            .set_execution_profile(Some(&admin_token), profile)
+            .await
+        {
+            Ok(update) => {
+                let _ = send_json(
+                    io,
+                    &ServerFrame::ExecutionProfile {
+                        update,
+                        message: "profile saved; it applies on the next program install or process restart, not to the running instance",
+                    },
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = send_error(io, &format!("{error:#}")).await;
+            }
+        },
+        ClientFrame::ExecutionProfileInfo {
+            admin_token,
+            capability,
+        } => {
+            let auth_ok = if let Some(admin) = admin_token.as_deref() {
+                service.authorize_admin(Some(admin)).is_ok()
+            } else if let Some(cap) = capability.as_deref() {
+                let token = JoinCapability::from_wire(cap.to_string());
+                service.world().participant_id(token).await.is_ok()
+            } else {
+                false
+            };
+            if !auth_ok {
+                let _ = send_error(io, "access denied").await;
+            } else {
+                match service.world().execution_profile().await {
+                    Ok(profile) => {
+                        let _ = send_json(
+                            io,
+                            &ServerFrame::ExecutionProfile {
+                                update: crate::world::ExecutionProfileUpdate {
+                                    requested: profile,
+                                    applies_on_next_program_install_or_process_restart: false,
+                                },
+                                message: "current persisted execution profile",
+                            },
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        let _ = send_error(io, &format!("{error:#}")).await;
+                    }
+                }
+            }
+        }
         #[cfg(feature = "sandbox")]
         ClientFrame::Compile {
             admin_token,
@@ -1351,7 +1620,9 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
         | ClientFrame::Chat { .. }
         | ClientFrame::Attenuate { .. }
         | ClientFrame::DelegateToFriend { .. }
-        | ClientFrame::Input { .. } => {
+        | ClientFrame::Input { .. }
+        | ClientFrame::Resize { .. }
+        | ClientFrame::Paste { .. } => {
             let _ = send_error(io, "first frame must be join, invite or install_begin").await;
         }
     }
@@ -1402,6 +1673,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
                         &ServerFrame::ModuleInfo {
                             world_id: snapshot.world_id,
                             active_module_hash: snapshot.active_module_hash,
+                            active_module_provenance: snapshot.active_module_provenance,
                             current_sequence: snapshot.current_sequence,
                         },
                     )
@@ -1491,7 +1763,7 @@ async fn records_ticket_session<I: SessionIo>(
 
 /// Largest page of records returned in one frame, comfortably inside
 /// [`MAX_FRAME_BYTES`] after JSON framing overhead.
-const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
+pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
 
 async fn records_session<I: SessionIo>(
     world: &WorldHandle,
@@ -1680,12 +1952,23 @@ async fn install_module_session<I: SessionIo>(
             return Err("module content hash mismatch");
         }
         let (module_hash, sequence) = service
-            .install_wasm_reserved(Some(admin_token), bytes, seed, &actual_hash, upload_permit)
+            .install_wasm_reserved(
+                Some(admin_token),
+                bytes,
+                seed,
+                &actual_hash,
+                upload_permit,
+                false,
+                None,
+            )
             .await
             .map_err(|error| match error {
                 InstallError::Disabled => "module installation is not enabled on this host",
                 InstallError::Unauthorized => "module install denied",
                 InstallError::InvalidUpload => "invalid module upload",
+                InstallError::RawModuleDisabled => {
+                    "raw module uploads are disabled by source-only policy"
+                }
                 InstallError::InvalidModule => "Wasm module failed validation or initialization",
                 InstallError::Unavailable => "world could not activate the module",
             })?;
@@ -1724,6 +2007,7 @@ async fn joined<I: SessionIo>(
         return;
     };
     let mut cursor = snapshot.current_sequence;
+    let mut viewport = None;
     if let Some(after) = after {
         match world.events_after(token.clone(), after).await {
             Ok(page) if page.needs_snapshot => {
@@ -1741,7 +2025,7 @@ async fn joined<I: SessionIo>(
                     if !send_json(io, &ServerFrame::Event { event }).await {
                         return;
                     }
-                    if !send_view(world, io, &token, event.sequence).await {
+                    if !send_view(world, io, &token, event.sequence, viewport).await {
                         return;
                     }
                 }
@@ -1761,7 +2045,7 @@ async fn joined<I: SessionIo>(
     {
         return;
     }
-    if !send_view(world, io, &token, cursor).await {
+    if !send_view(world, io, &token, cursor, viewport).await {
         return;
     }
 
@@ -1779,7 +2063,7 @@ async fn joined<I: SessionIo>(
         tokio::select! {
             inbound = io.recv() => match inbound {
                 Inbound::Text(text) => {
-                    if !handle_client_frame(service, io, &token, &text).await {
+                    if !handle_client_frame(service, io, &token, &text, &mut viewport, cursor).await {
                         break;
                     }
                 }
@@ -1803,7 +2087,7 @@ async fn joined<I: SessionIo>(
                             if !send_json(io, &ServerFrame::ProgramChanged {
                                 module_hash,
                                 sequence: cursor,
-                            }).await || !send_view(world, io, &token, cursor).await {
+                            }).await || !send_view(world, io, &token, cursor, viewport).await {
                                 break;
                             }
                         }
@@ -1826,7 +2110,7 @@ async fn joined<I: SessionIo>(
                     if !send_json(io, &ServerFrame::Event { event: &shown }).await {
                         break;
                     }
-                    if !send_view(world, io, &token, cursor).await {
+                    if !send_view(world, io, &token, cursor, viewport).await {
                         break;
                     }
                 }
@@ -1836,7 +2120,7 @@ async fn joined<I: SessionIo>(
                         break;
                     }
                     cursor = snapshot.current_sequence;
-                    if !send_view(world, io, &token, cursor).await {
+                    if !send_view(world, io, &token, cursor, viewport).await {
                         break;
                     }
                 }
@@ -1845,7 +2129,7 @@ async fn joined<I: SessionIo>(
             changed = views.changed() => match changed {
                 Ok(()) => {
                     let sequence = *views.borrow_and_update();
-                    if !send_view(world, io, &token, sequence).await {
+                    if !send_view(world, io, &token, sequence, viewport).await {
                         break;
                     }
                 }
@@ -1884,17 +2168,37 @@ async fn send_view<I: SessionIo>(
     io: &mut I,
     token: &JoinCapability,
     sequence: u64,
+    viewport: Option<Viewport>,
 ) -> bool {
-    match world.view(token.clone()).await {
+    let view = match viewport {
+        Some(viewport) => {
+            let width = u16::try_from(viewport.width).unwrap_or(u16::MAX);
+            let height = u16::try_from(viewport.height).unwrap_or(u16::MAX);
+            world.view_at(token.clone(), width, height).await
+        }
+        None => world.view(token.clone()).await,
+    };
+    match view {
         Ok(Some(data)) => {
             if data.len() > MAX_FRAME_BYTES {
                 return send_error(io, "world presentation is too large").await;
             }
+            let surface = match crate::world_presentation::parse_surface(&data) {
+                Ok(Some(crate::world_presentation::WorldSurface::Screen(screen))) => {
+                    let screen = viewport.map_or(screen.clone(), |viewport| {
+                        screen.fit(viewport.width, viewport.height)
+                    });
+                    Some(crate::world_presentation::WorldSurface::Screen(screen))
+                }
+                Ok(surface) => surface,
+                Err(_) => return send_error(io, "invalid world screen presentation").await,
+            };
             send_json(
                 io,
                 &ServerFrame::View {
                     sequence,
                     data: &data,
+                    surface: surface.as_ref(),
                 },
             )
             .await
@@ -1902,6 +2206,26 @@ async fn send_view<I: SessionIo>(
         Ok(None) => true,
         Err(_) => false,
     }
+}
+
+/// Connection-local terminal/browser dimensions. This value is intentionally
+/// absent from world events and snapshots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Viewport {
+    width: usize,
+    height: usize,
+}
+
+fn normalize_paste(text: &str) -> Result<Vec<u8>, &'static str> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    if normalized.len() > 4096
+        || normalized
+            .chars()
+            .any(|ch| ch.is_control() && ch != '\n' && ch != '\t')
+    {
+        return Err("paste must be at most 4096 UTF-8 bytes and contain no control characters");
+    }
+    Ok(normalized.into_bytes())
 }
 
 const USES_REFUSED: &str = "a delegation may not carry `uses`: a delegated grant has no use count, and the host's limit still applies";
@@ -1934,6 +2258,8 @@ async fn handle_client_frame<I: SessionIo>(
     io: &mut I,
     token: &JoinCapability,
     text: &str,
+    viewport: &mut Option<Viewport>,
+    sequence: u64,
 ) -> bool {
     let world = service.world();
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
@@ -1980,6 +2306,30 @@ async fn handle_client_frame<I: SessionIo>(
             return send_delegation(io, result).await;
         }
         ClientFrame::Chat { text } => world.chat(token.clone(), text).await,
+        ClientFrame::Resize { width, height } => {
+            if width == 0 || height == 0 || width > 500 || height > 200 {
+                return send_error(
+                    io,
+                    "viewport dimensions must be width 1..=500 and height 1..=200",
+                )
+                .await;
+            }
+            *viewport = Some(Viewport {
+                width: usize::from(width),
+                height: usize::from(height),
+            });
+            return send_view(world, io, token, sequence, *viewport).await;
+        }
+        ClientFrame::Paste { text } => {
+            let Ok(bytes) = normalize_paste(&text) else {
+                return send_error(
+                    io,
+                    "paste must be at most 4096 UTF-8 bytes and contain no control characters",
+                )
+                .await;
+            };
+            world.input(token.clone(), bytes).await
+        }
         ClientFrame::Input { data_hex } => match decode_hex(&data_hex) {
             Some(data) => world.input(token.clone(), data).await,
             None => return send_error(io, "input data must be hexadecimal").await,
@@ -1996,6 +2346,47 @@ async fn handle_client_frame<I: SessionIo>(
             .await
             {
                 return send_error(io, message).await;
+            }
+            return true;
+        }
+        ClientFrame::SetExecutionProfile {
+            admin_token,
+            profile,
+        } => {
+            match service
+                .set_execution_profile(Some(&admin_token), profile)
+                .await
+            {
+                Ok(update) => {
+                    let _ = send_json(
+                        io,
+                        &ServerFrame::ExecutionProfile {
+                            update,
+                            message: "profile saved; it applies on the next program install or process restart, not to the running instance",
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => return send_error(io, &format!("{error:#}")).await,
+            }
+            return true;
+        }
+        ClientFrame::ExecutionProfileInfo { .. } => {
+            match service.world().execution_profile().await {
+                Ok(profile) => {
+                    let _ = send_json(
+                        io,
+                        &ServerFrame::ExecutionProfile {
+                            update: crate::world::ExecutionProfileUpdate {
+                                requested: profile,
+                                applies_on_next_program_install_or_process_restart: false,
+                            },
+                            message: "current persisted execution profile",
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => return send_error(io, &format!("{error:#}")).await,
             }
             return true;
         }
@@ -2033,6 +2424,25 @@ async fn handle_client_frame<I: SessionIo>(
                 Err(_) => {
                     return send_error(io, "admin denied").await;
                 }
+            }
+            return true;
+        }
+        ClientFrame::SetCapsCeiling {
+            admin_token,
+            ceiling,
+        } => {
+            match service.set_caps_ceiling(Some(&admin_token), ceiling).await {
+                Ok(report) => {
+                    let _ = send_json(
+                        io,
+                        &ServerFrame::CapsCeiling {
+                            report,
+                            message: CAPS_CEILING_NOTICE,
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => return send_error(io, &format!("{error:#}")).await,
             }
             return true;
         }
@@ -2265,6 +2675,239 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn execution_profile_change_is_admin_only_and_does_not_replace_live_program() {
+        struct MarkerProgram;
+        impl crate::world::WorldProgram for MarkerProgram {
+            fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                Ok(Some("existing instance".to_owned()))
+            }
+        }
+
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(MarkerProgram),
+        );
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()));
+        let requested = crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(1000),
+            ..Default::default()
+        };
+        assert!(
+            service
+                .set_execution_profile(Some("wrong"), requested)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            world.execution_profile().await.unwrap(),
+            crate::world_limits::WorldExecutionProfile::default()
+        );
+
+        let update = service
+            .set_execution_profile(Some("admin"), requested)
+            .await
+            .unwrap();
+        assert_eq!(update.requested, requested);
+        assert!(update.applies_on_next_program_install_or_process_restart);
+        let (_, token) = world.issue("guest", WorldScopes::GUEST).await.unwrap();
+        assert_eq!(
+            world.view(token).await.unwrap().as_deref(),
+            Some("existing instance"),
+            "updating the profile must not replace or mutate the running program"
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_profile_protocol_returns_the_deferred_application_notice() {
+        let service = service(Some("admin"));
+        let mut peer = Peer::connect(service, SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "set_execution_profile",
+            "admin_token": "admin",
+            "profile": {"wasm_fuel": 1234},
+        }))
+        .await;
+        let response = peer.next().await.unwrap();
+        assert_eq!(response["type"], "execution_profile");
+        assert_eq!(response["update"]["requested"]["wasm_fuel"], 1234);
+        assert_eq!(
+            response["update"]["applies_on_next_program_install_or_process_restart"],
+            true
+        );
+        assert!(
+            response["message"]
+                .as_str()
+                .unwrap()
+                .contains("not to the running instance")
+        );
+    }
+
+    #[tokio::test]
+    async fn caps_ceiling_is_admin_only_and_applies_at_once() {
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()));
+        let full = world.caps_report().await.unwrap().ceiling;
+        assert!(
+            service
+                .set_caps_ceiling(Some("wrong"), vec!["time.now".to_owned()])
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .set_caps_ceiling(None, vec!["time.now".to_owned()])
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            world.caps_report().await.unwrap().ceiling,
+            full,
+            "a refused change changes nothing"
+        );
+
+        let report = service
+            .set_caps_ceiling(Some("admin"), vec!["time.now".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(report.ceiling, vec!["time.now".to_owned()]);
+        assert_eq!(
+            world.caps_report().await.unwrap().ceiling,
+            vec!["time.now".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn caps_ceiling_protocol_round_trips_and_says_it_applies_now() {
+        let mut peer = Peer::connect(service(Some("admin")), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "set_caps_ceiling",
+            "admin_token": "admin",
+            "ceiling": ["time.now"],
+        }))
+        .await;
+        let response = peer.next().await.unwrap();
+        assert_eq!(response["type"], "caps_ceiling");
+        assert_eq!(
+            response["report"]["ceiling"],
+            serde_json::json!(["time.now"])
+        );
+        assert!(
+            response["message"]
+                .as_str()
+                .unwrap()
+                .contains("applies immediately")
+        );
+
+        let mut peer = Peer::connect(service(Some("admin")), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "set_caps_ceiling",
+            "admin_token": "wrong",
+            "ceiling": [],
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "error");
+
+        let mut peer = Peer::connect(service(Some("admin")), SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "set_caps_ceiling",
+            "admin_token": "admin",
+            "ceiling": ["*"],
+        }))
+        .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "error");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn source_compile_sees_the_effective_list_not_the_raw_grants() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("platform.roc"), "x").unwrap();
+        std::fs::create_dir_all(root.path().join("targets/wasm32")).unwrap();
+        std::fs::write(root.path().join("targets/wasm32/host.wasm"), b"\0asm").unwrap();
+        std::fs::write(root.path().join("Key.roc"), "module []\n").unwrap();
+        std::fs::write(root.path().join("Screen.roc"), "module []\n").unwrap();
+        let compiler =
+            Compiler::new(root.path().to_path_buf(), "/nonexistent/roc".to_owned()).unwrap();
+        let svc = service(Some("admin")).with_compiler(compiler);
+        svc.world()
+            .update_caps(vec!["*".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        let spec = CompileSpec {
+            files: vec![(
+                "main.roc".to_owned(),
+                "import pf.Screen\napp [x] {}".to_owned(),
+            )],
+            seed: 1,
+            native: false,
+        };
+
+        svc.set_caps_ceiling(Some("admin"), vec!["Key".to_owned()])
+            .await
+            .unwrap();
+        let error = svc
+            .compile_and_install(Some("admin"), &spec)
+            .await
+            .unwrap_err();
+        assert!(error.contains("main.roc imports Screen"), "{error}");
+
+        // Inside the ceiling the same import passes the gate and reaches the
+        // compiler, which is not installed here.
+        svc.set_caps_ceiling(Some("admin"), vec!["Key".to_owned(), "Screen".to_owned()])
+            .await
+            .unwrap();
+        let error = svc
+            .compile_and_install(Some("admin"), &spec)
+            .await
+            .unwrap_err();
+        assert!(!error.contains("imports Screen"), "{error}");
+    }
+
+    struct FixedScreen;
+
+    impl crate::world::WorldProgram for FixedScreen {
+        fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+            Ok(Some(
+                r#"{"kind":"screen","version":1,"width":4,"height":2,"rows":["界ab","wxyz"]}"#
+                    .to_owned(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn viewport_is_session_local_and_never_advances_the_world_sequence() {
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(FixedScreen),
+        );
+        let svc = WorldService::new(world.clone(), None);
+        let scopes = WorldScopes::from_names(["join", "input"]).unwrap();
+        let (_, capability) = world.issue("player".to_owned(), scopes).await.unwrap();
+        let mut peer = Peer::connect(svc, SessionConfig::default());
+        peer.say(serde_json::json!({"type":"join","capability":capability.expose()}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        assert_eq!(peer.next().await.unwrap()["type"], "view");
+        let sequence = world
+            .snapshot(capability.clone())
+            .await
+            .unwrap()
+            .current_sequence;
+
+        peer.say(serde_json::json!({"type":"resize","width":1,"height":1}))
+            .await;
+        let view = peer.next().await.unwrap();
+        assert_eq!(view["type"], "view");
+        assert_eq!(view["surface"]["width"], 1);
+        assert_eq!(view["surface"]["height"], 1);
+        assert_eq!(view["surface"]["cells"][0]["symbol"], " ");
+        assert_eq!(
+            world.snapshot(capability).await.unwrap().current_sequence,
+            sequence
+        );
+    }
+
     /// A server with Ann and Bo as friends and no outbox. When `bo_home_is_remote`,
     /// Bo's artifacts are held on another server, so removing Bo must be sent.
     async fn friends_without_outbox(
@@ -2469,6 +3112,18 @@ mod tests {
     }
 
     #[test]
+    fn paste_is_normalized_bounded_and_rejects_controls() {
+        assert_eq!(normalize_paste("a\r\nb\rc\t"), Ok(b"a\nb\nc\t".to_vec()));
+        assert_eq!(normalize_paste(&"x".repeat(4096)).unwrap().len(), 4096);
+        assert!(normalize_paste(&"x".repeat(4097)).is_err());
+        assert!(normalize_paste("a\u{1b}b").is_err());
+        assert_eq!(
+            normalize_paste(&"界".repeat(1366)).unwrap_err(),
+            "paste must be at most 4096 UTF-8 bytes and contain no control characters"
+        );
+    }
+
+    #[test]
     fn wire_event_and_view_shape_are_presentation_neutral() {
         use crate::world::WorldEventKind;
         let event = WorldEvent {
@@ -2484,10 +3139,29 @@ mod tests {
         let view = serde_json::to_string(&ServerFrame::View {
             sequence: 3,
             data: "count=1",
+            surface: None,
         })
         .unwrap();
         assert!(view.contains("\"type\":\"view\""));
         assert!(view.contains("\"data\":\"count=1\""));
+    }
+
+    #[test]
+    fn typed_screen_is_an_optional_view_surface_without_dropping_legacy_data() {
+        let data =
+            r#"{"kind":"screen","version":1,"width":2,"height":1,"rows":["ok"],"styles":[[]]}"#;
+        let surface = crate::world_presentation::parse_surface(data)
+            .unwrap()
+            .unwrap();
+        let encoded = serde_json::to_string(&ServerFrame::View {
+            sequence: 8,
+            data,
+            surface: Some(&surface),
+        })
+        .unwrap();
+        assert!(encoded.contains("\"data\":\"{\\\"kind\\\":\\\"screen\\\""));
+        assert!(encoded.contains("\"surface\":{\"kind\":\"screen\",\"version\":1"));
+        assert!(encoded.contains("\"symbol\":\"o\""));
     }
 
     #[test]
@@ -2614,6 +3288,84 @@ mod tests {
             .say(serde_json::json!({"type":"join","capability":capability}))
             .await;
         assert_eq!(guest.next().await.unwrap()["type"], "snapshot");
+    }
+
+    #[tokio::test]
+    async fn invite_roles_grant_and_withhold_the_expected_scopes() {
+        let svc = service(Some("admin"));
+
+        // An unknown role is refused by name.
+        let mut bad = Peer::connect(svc.clone(), SessionConfig::default());
+        bad.say(serde_json::json!({
+            "type": "invite",
+            "admin_token": "admin",
+            "display_name": "spec",
+            "role": "builder",
+        }))
+        .await;
+        let message = bad.next().await.unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(message.contains("unknown invite role"), "{message}");
+
+        // A spectator may join and read, but not chat or submit input.
+        let mut host = Peer::connect(svc.clone(), SessionConfig::default());
+        host.say(serde_json::json!({
+            "type": "invite",
+            "admin_token": "admin",
+            "display_name": "spec",
+            "role": "spectator",
+        }))
+        .await;
+        let capability = host.next().await.unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut spectator = Peer::connect(svc.clone(), SessionConfig::default());
+        spectator
+            .say(serde_json::json!({"type":"join","capability":capability}))
+            .await;
+        assert_eq!(spectator.next().await.unwrap()["type"], "snapshot");
+        spectator
+            .say(serde_json::json!({"type":"chat","text":"hello"}))
+            .await;
+        let refusal = spectator.next().await.unwrap();
+        assert_eq!(refusal["type"], "error", "{refusal}");
+        spectator
+            .say(serde_json::json!({"type":"input","data_hex":"6c"}))
+            .await;
+        let refusal = spectator.next().await.unwrap();
+        assert_eq!(refusal["type"], "error", "{refusal}");
+
+        // A player may submit input but not chat.
+        let mut host = Peer::connect(svc.clone(), SessionConfig::default());
+        host.say(serde_json::json!({
+            "type": "invite",
+            "admin_token": "admin",
+            "display_name": "player",
+            "role": "player",
+        }))
+        .await;
+        let capability = host.next().await.unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut player = Peer::connect(svc, SessionConfig::default());
+        player
+            .say(serde_json::json!({"type":"join","capability":capability}))
+            .await;
+        assert_eq!(player.next().await.unwrap()["type"], "snapshot");
+        player
+            .say(serde_json::json!({"type":"input","data_hex":"6c"}))
+            .await;
+        let event = player.next().await.unwrap();
+        assert_eq!(event["type"], "event", "{event}");
+        player
+            .say(serde_json::json!({"type":"chat","text":"hello"}))
+            .await;
+        let refusal = player.next().await.unwrap();
+        assert_eq!(refusal["type"], "error", "{refusal}");
     }
 
     #[tokio::test]
@@ -3095,9 +3847,84 @@ mod tests {
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let svc = WorldService::new(world, Some("admin".to_owned()))
             .with_blob_store(MemStore::new().into());
+        svc.set_execution_profile(
+            Some("admin"),
+            crate::world_limits::WorldExecutionProfile {
+                wasm_fuel: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            svc.install_wasm(Some("admin"), wasm.clone(), 12, &hash)
+                .await,
+            Err(InstallError::InvalidModule)
+        ));
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let svc = WorldService::new(world, Some("admin".to_owned()))
+            .with_blob_store(MemStore::new().into());
         svc.install_wasm(Some("admin"), wasm, 12, &hash)
             .await
             .expect("default limits install");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn source_only_policy_rejects_raw_modules_but_preserves_normal_mode() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let hash = module_hash(&wasm);
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(MemStore::new().into())
+            .with_source_only(true);
+
+        assert!(service.source_only());
+        assert!(matches!(
+            service
+                .install_wasm(Some("wrong"), wasm.clone(), 1, &hash)
+                .await,
+            Err(InstallError::Unauthorized)
+        ));
+        assert!(matches!(
+            service
+                .install_wasm(Some("admin"), wasm.clone(), 1, &hash)
+                .await,
+            Err(InstallError::RawModuleDisabled)
+        ));
+        assert_eq!(service.active_module_hash().await, None);
+
+        let normal = WorldService::new(
+            WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap()),
+            Some("admin".to_owned()),
+        )
+        .with_blob_store(MemStore::new().into());
+        normal
+            .install_wasm(Some("admin"), wasm, 1, &hash)
+            .await
+            .expect("raw modules stay supported by default");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn source_only_policy_rejects_streaming_upload_before_accepting_chunks() {
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world, Some("admin".to_owned())).with_source_only(true);
+        let mut peer = Peer::connect(service, SessionConfig::default());
+        peer.say(serde_json::json!({
+            "type": "install_begin",
+            "admin_token": "admin",
+            "total_bytes": 32,
+            "module_hash": null,
+            "seed": 1,
+        }))
+        .await;
+        let error = peer.next().await.unwrap();
+        assert_eq!(error["type"], "error");
+        assert!(error["message"].as_str().unwrap().contains("source-only"));
     }
 
     #[cfg(feature = "sandbox")]

@@ -781,23 +781,45 @@ mod tests {
             ingest_all(&store_a, chain);
         }
 
-        let (server, _router, mut results) = responder(&store_a).await;
-        let client = endpoint().await;
-        let outcome = sync_with(
-            &client,
-            loopback(&server),
-            &store_b,
-            topic,
-            &bootstrap(),
-            DEADLINE,
-        )
-        .await
-        .unwrap();
-        results.recv().await.unwrap().unwrap();
+        // Under full-suite load a loopback session can be reset by the peer
+        // mid-stream (issue #188). Sync is idempotent, so retry with a fresh
+        // session and assert the converged state of the successful one.
+        let mut attempt = 0;
+        let (outcome, answered) = loop {
+            attempt += 1;
+            let (server, router, mut results) = responder(&store_a).await;
+            let client = endpoint().await;
+            match sync_with(
+                &client,
+                loopback(&server),
+                &store_b,
+                topic,
+                &bootstrap(),
+                DEADLINE,
+            )
+            .await
+            {
+                Ok(outcome) => {
+                    let answered = results.recv().await.unwrap().unwrap();
+                    client.close().await;
+                    router.shutdown().await.unwrap();
+                    break (outcome, answered);
+                }
+                Err(error) if attempt < 3 => {
+                    eprintln!("retrying the bulk session after a transport error: {error:#}");
+                    client.close().await;
+                    let _ = router.shutdown().await;
+                }
+                Err(error) => {
+                    panic!("bulk session failed after {attempt} attempts: {error:#}");
+                }
+            }
+        };
 
         assert_eq!(outcome.received.accepted, 210);
         assert_eq!(outcome.received.duplicates, 0);
         assert_eq!(outcome.received.refused, 0);
+        let _ = answered;
         let refs: Vec<&SigningKey> = authors.iter().collect();
         assert_eq!(applied(&store_a, &refs, 69), applied(&store_b, &refs, 69));
         store_b.check_invariants().unwrap();

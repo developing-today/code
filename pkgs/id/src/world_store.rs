@@ -351,7 +351,14 @@ pub async fn open_world(
     let mut restored_module = None;
     let program: Box<dyn WorldProgram> = match &restored.program {
         None => Box::new(EmptyProgram),
-        Some(spec) => match restore_program(&modules, spec, &restored.replay, runtime).await {
+        Some(spec) => match restore_program(
+            &modules,
+            spec,
+            &restored.replay,
+            restored.core.execution_profile().resolve(runtime)?,
+        )
+        .await
+        {
             Ok((program, wasm)) => {
                 report.replayed_inputs = restored.replay.len();
                 restored_module = Some(wasm);
@@ -504,6 +511,191 @@ mod tests {
 
         let (svc, _) = open().await.unwrap();
         assert_eq!(svc.world().policy().await.unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn execution_profile_survives_restart_and_current_server_limits_win() {
+        let dir = TempDir::new().unwrap();
+        let mut tighter_server = RuntimeLimits::default();
+        tighter_server.native.cpu_seconds = 2;
+        let open = |runtime| {
+            open_world(
+                dir.path(),
+                "profiled",
+                WorldLimits::default(),
+                runtime,
+                move |handle| {
+                    WorldService::new(handle, Some("admin".to_owned())).with_runtime_limits(runtime)
+                },
+            )
+        };
+        let (service, _) = open(RuntimeLimits::default()).await.unwrap();
+        let requested = crate::world_limits::WorldExecutionProfile {
+            native_cpu_seconds: Some(100),
+            ..Default::default()
+        };
+        service
+            .set_execution_profile(Some("admin"), requested)
+            .await
+            .unwrap();
+        service.world().shutdown().await.unwrap();
+
+        let (service, _) = open(tighter_server).await.unwrap();
+        assert_eq!(
+            service.world().execution_profile().await.unwrap(),
+            requested
+        );
+        assert_eq!(
+            requested
+                .resolve(tighter_server)
+                .unwrap()
+                .native
+                .cpu_seconds,
+            2,
+            "a persisted request must not raise the new server's hard ceiling"
+        );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn a_lower_server_ceiling_refuses_a_restored_grant_and_the_default_keeps_it() {
+        // Lounge subscribes to `time.tick` in every `wants`, so the restored
+        // instance decides that grant on the real restore path.
+        async fn open_lounge(dir: &Path, limits: WorldLimits) -> WorldService {
+            let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+            let (service, _) = open_world(
+                dir,
+                "ceilinged",
+                limits,
+                RuntimeLimits::default(),
+                move |handle| {
+                    WorldService::new(handle, Some("admin".to_owned())).with_blob_store(blobs)
+                },
+            )
+            .await
+            .unwrap();
+            service
+        }
+        let wasm = include_bytes!("../examples/lounge/lounge.wasm").to_vec();
+        let hash = module_hash(&wasm);
+        let dir = TempDir::new().unwrap();
+
+        let service = open_lounge(dir.path(), WorldLimits::default()).await;
+        service
+            .install_wasm(Some("admin"), wasm, 1, &hash)
+            .await
+            .unwrap();
+        service
+            .world()
+            .update_caps(vec!["time.tick".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        service.world().shutdown().await.unwrap();
+
+        let without_tick: std::collections::BTreeSet<String> = crate::world_caps::catalog_names()
+            .into_iter()
+            .filter(|name| name != "time.tick")
+            .collect();
+        let lower = WorldLimits {
+            server_caps: without_tick,
+            ..WorldLimits::default()
+        };
+        let service = open_lounge(dir.path(), lower).await;
+        let report = service.world().caps_report().await.unwrap();
+        assert!(
+            report.granted.contains(&"time.tick".to_owned()),
+            "the grant is kept"
+        );
+        assert!(!report.effective.contains(&"time.tick".to_owned()));
+        assert!(
+            report
+                .usage
+                .get("time.tick")
+                .is_some_and(|usage| usage.denied > 0),
+            "{report:?}"
+        );
+        service.world().shutdown().await.unwrap();
+
+        let service = open_lounge(dir.path(), WorldLimits::default()).await;
+        let report = service.world().caps_report().await.unwrap();
+        assert!(report.effective.contains(&"time.tick".to_owned()));
+        assert!(
+            report
+                .usage
+                .get("time.tick")
+                .is_some_and(|usage| usage.allowed > 0 && usage.denied == 0),
+            "{report:?}"
+        );
+        service.world().shutdown().await.unwrap();
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn restored_program_uses_the_current_server_runtime_ceiling() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let hash = module_hash(&wasm);
+        let dir = TempDir::new().unwrap();
+        let blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let (service, _) = open_world(
+            dir.path(),
+            "profiled-restore",
+            WorldLimits::default(),
+            RuntimeLimits::default(),
+            move |handle| {
+                WorldService::new(handle, Some("admin".to_owned()))
+                    .with_blob_store(blobs)
+                    .with_runtime_limits(RuntimeLimits::default())
+            },
+        )
+        .await
+        .unwrap();
+
+        service
+            .set_execution_profile(
+                Some("admin"),
+                crate::world_limits::WorldExecutionProfile {
+                    wasm_fuel: Some(u64::MAX),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        service
+            .install_wasm(Some("admin"), wasm, 1, &hash)
+            .await
+            .unwrap();
+        service.world().shutdown().await.unwrap();
+
+        let constrained_server = RuntimeLimits {
+            sandbox: crate::sandbox::SandboxLimits {
+                fuel: 1,
+                ..crate::sandbox::SandboxLimits::default()
+            },
+            ..RuntimeLimits::default()
+        };
+        let fresh_blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let (restored, report) = open_world(
+            dir.path(),
+            "profiled-restore",
+            WorldLimits::default(),
+            constrained_server,
+            move |handle| {
+                WorldService::new(handle, Some("admin".to_owned()))
+                    .with_blob_store(fresh_blobs)
+                    .with_runtime_limits(constrained_server)
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.module_hash.as_deref(), Some(hash.as_str()));
+        assert!(
+            report.program_error.is_some(),
+            "restoration should use the server's stricter fuel ceiling"
+        );
+        assert_eq!(restored.active_module_hash().await, None);
     }
 
     #[tokio::test]
@@ -854,7 +1046,7 @@ mod tests {
         let (svc, _) = open_world(
             dir.path(),
             "lobby",
-            limits,
+            limits.clone(),
             RuntimeLimits::default(),
             make(blobs.clone()),
         )
@@ -1047,6 +1239,7 @@ mod tests {
                 kind: crate::world::WorldEventKind::ProgramInstalled {
                     module_hash: "h".to_owned(),
                     seed: 1,
+                    provenance: None,
                 },
             },
         });
@@ -1054,6 +1247,9 @@ mod tests {
             sequence: 1,
             module_hash: "h".to_owned(),
             seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
             snapshot: "s".to_owned(),
             events: Vec::new(),
         });

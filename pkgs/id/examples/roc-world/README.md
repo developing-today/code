@@ -17,7 +17,7 @@ A world program provides these functions:
 ```
 init    : U64 -> model                    # seed from the host
 update  : model, U64, Str -> model        # second argument is the participant id
-view    : model -> Str                    # the presentation as text
+view    : model -> Str                    # legacy text or a portable screen document
 records : model -> Str                    # optional JSON object projection
 wants : model -> Str                      # optional: subscriptions and requests
 snapshot : model -> Str                   # state as text, for journal checkpoints
@@ -31,6 +31,28 @@ requires no `Task`, and modules are compiled to an import-free Wasm module.
 keys to JSON values, which the host validates and mirrors into the world's
 iroh-docs document.
 
+`view` may return ordinary UTF-8 text, or a versioned portable screen JSON
+document produced by `Screen.render_json`. The host validates the grid (at
+most 120×50 cells), Unicode display widths, palette indices, and style ranges.
+The SSH presenter emits only trusted cursor/colour escape codes, while the web
+presenter creates text-only DOM nodes with fixed palette styles. Never put
+terminal escape sequences, HTML, or CSS in a guest view. `Screen.render_plain`
+remains useful for older clients and text-only output.
+
+In the browser, focus the world screen and use the keyboard to send input. The
+web adapter encodes common keys as terminal bytes (UTF-8 text, control keys,
+and standard navigation sequences), matching SSH PTY input and the existing
+`layout` hook. Apps define `layout : model, U64, U64 -> Str` next to `view`;
+sessions with a viewport render through it (no journal, no sequence change),
+and cropping remains the fallback for programs that return `view(model)`.
+`Screen.fill` and `Screen.rule` cover rect fills and separators.
+
+`Key.parse` helper. Keyboard events are journaled exactly like other world
+input. Resize remains presentation-local and is not sent to shared game state.
+The host crops a structured screen to each participant's connection-local
+viewport; Roc apps still render at their declared dimensions and do not receive
+viewport metadata.
+
 `wants` is the capability protocol: a JSON document of the subscriptions the
 program holds and the one-shot requests it has outstanding
 (`{"v":1,"subscribe":["players","time.tick:5000"],"requests":[{"id":"r1","cap":"time.now"}]}`).
@@ -41,7 +63,42 @@ events too. Every host event is journaled before delivery, so replay is
 exact. A request to a capability the world has not granted is answered with
 `cap_denied` — never silently. See the design doc for the catalog
 (`time.now`, `time.tick`, `random.u64`, `players`, `players.list`,
-`chat.say`, `world.info`), grant policies and bounds.
+`chat.say`, `chat.history`, `records.read`, `world.info`, and the platform modules `Key`,
+`Screen`, `RocJson`, `RocGrid`, `RocCap`, `RocText`).
+
+The platform also exposes the dependency-free `RocJson.roc` module to apps as
+`pf.RocJson`. Its `decode`/`encode`, object `get`, and type-specific `as_*` accessors let
+apps handle host events and produce request/record documents without string
+splicing. JSON number lexemes are preserved as strings to avoid implicit
+floating-point conversion. Decode accepts at most 65,536 UTF-8 bytes and 64
+nested arrays/objects; exceeding either bound is an explicit error. Encoding
+also validates number lexemes and returns an error rather than emitting
+malformed JSON. Duplicate object keys are preserved, and `get` returns the
+first matching key.
+
+The platform also exposes `RocGrid.roc` as `pf.RocGrid` for row-major byte
+grids. `new`, `in_bounds`, `index`, `get`, `set`, `count`, `neighbors4`, and
+`row` are bounds-checked and never trap: a read outside the grid returns a
+caller-supplied fallback, and a write outside it returns the grid unchanged.
+Boards, canvases, maps, and inventories build on this instead of re-deriving
+index arithmetic per app. `examples/roc-grid` is the checked-in example.
+
+`RocCap.roc` is exposed as `pf.RocCap` for the request side of the capability
+protocol. `issue` reserves `r0`, `r1`, … ids and records each one's capability;
+`attach` stores the request document so `requests` can re-announce it in
+`wants` after replay; `chat_request`, `now_request`, `players_request`,
+`world_request`, `history_request`, and `records_request` build the documents; `answered` routes a
+result back to the capability that asked; `done` retires it; and `from_pending`
+rebuilds a session from a snapshot. `history_lines` reads the rows of a
+`chat.history` result. Apps stop re-deriving id counters and pending lists.
+
+`Screen.put_grid` draws a `RocGrid` at a position through a glyph function with
+one style for the whole grid, so maps and single-colour boards need no manual
+row assembly. `Screen.fill` and `Screen.rule` cover rect fills and separators.
+
+`RocText.roc` is exposed as `pf.RocText`: total, byte-level text helpers
+(`trim`, `lowercase`, `starts_with`, `drop_prefix`, `contains`, `lines`,
+`join_lines`) for the operations the pinned Roc nightly builds reliably.
 
 One nightly caveat: with
 nightly-2026-10-04-130536d's wasm backend, `List.get` past the second
@@ -61,6 +118,25 @@ the probe re-snapshots to identical text and publishes identical records.
 `restore` should be total (return a sensible model for text it cannot parse).
 Both exports are optional at the Wasm level, so older modules keep working and
 keep their full journals.
+
+## Source-only server policy
+
+For a server that accepts guest programs only as Roc source, enable
+`id serve --world --world-admin-token <secret> --world-source-only` and configure
+the trusted compiler/platform with `--roc-bin` and `--roc-platform` (or their
+`ID_ROC_BIN` / `ID_ROC_PLATFORM` environment variables). The server refuses
+startup if source-only mode has no compiler/platform, and the flag cannot be
+combined with a raw `--world-module` bootstrap. It rejects raw Wasm/native
+uploads before receiving upload chunks; authorized source compilation still
+installs through the normal Wasm validation and execution bounds. The default
+remains backward-compatible and accepts admin-authenticated raw modules.
+
+Source-only mode is not a compiler sandbox or compiler provenance guarantee:
+the server operator must trust the configured compiler and platform. The
+compiler version/digest is not yet recorded with each module; see the [source
+policy design record](../../../../doc/2026-10-14T20-00-05Z_feature_source_only_world_installs/2026-10-14T20-00-05Z_feature_source_only_world_installs.md)
+for tracked follow-ups. Native execution remains a separate opt-in and retains
+OS sandboxing.
 
 The host passes the id of the participant who sent an event as the second
 argument of `update`, so programs can implement turn-taking or per-player

@@ -36,7 +36,7 @@ pub use crate::groups::worlds::Isolation;
 pub(crate) use crate::time::unix_ms;
 
 /// Bounded limits for one world.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct WorldLimits {
     /// Maximum number of active capabilities in this world.
     pub participants: usize,
@@ -59,6 +59,9 @@ pub struct WorldLimits {
     pub min_tick_ms: u64,
     /// Whether a world's policy grants a capability on its first use.
     pub grant_on_use: bool,
+    /// Capabilities the server allows any world to use. Runtime configuration,
+    /// not journaled; a world's own ceiling and grants only narrow it.
+    pub server_caps: BTreeSet<String>,
 }
 
 impl Default for WorldLimits {
@@ -73,6 +76,7 @@ impl Default for WorldLimits {
             checkpoint_every: 1000,
             min_tick_ms: 1000,
             grant_on_use: false,
+            server_caps: crate::world_caps::catalog_names(),
         }
     }
 }
@@ -96,6 +100,28 @@ impl WorldScopes {
     pub const GUEST: Self = Self(Self::JOIN.0 | Self::CHAT.0 | Self::INPUT.0);
     /// Every scope.
     pub const ALL: Self = Self(Self::GUEST.0 | Self::DELEGATE.0 | Self::HISTORY.0);
+
+    /// Role presets used by `id world invite --role`. `spectator` joins and
+    /// sees the world but not the chat; `observer` also reads chat without
+    /// sending it; `player` submits input; `guest` (the default) also chats;
+    /// `delegator` additionally mints narrower capabilities for others.
+    ///
+    /// The names are stable; the mapping to scopes is part of the protocol.
+    #[must_use]
+    pub fn from_role(name: &str) -> Option<Self> {
+        match name {
+            "spectator" => Some(Self::JOIN),
+            "observer" => Some(Self(Self::JOIN.0 | Self::HISTORY.0)),
+            "player" => Some(Self(Self::JOIN.0 | Self::INPUT.0)),
+            "guest" => Some(Self::GUEST),
+            "delegator" => Some(Self(Self::GUEST.0 | Self::DELEGATE.0)),
+            _ => None,
+        }
+    }
+
+    /// The names accepted by [`Self::from_role`].
+    pub const ROLES: &'static [&'static str] =
+        &["spectator", "observer", "player", "guest", "delegator"];
 
     /// Raw scope bits, as journaled.
     #[must_use]
@@ -169,6 +195,9 @@ impl WorldScopes {
     pub fn allows_effect(self, cap: &str) -> bool {
         match cap {
             "chat.say" => self.contains(Self::CHAT),
+            // Reading chat needs only the right to read it (`CHAT` or
+            // `HISTORY`), the same rule the event stream applies.
+            "chat.history" => self.reads_chat(),
             _ => self.contains(Self::JOIN),
         }
     }
@@ -261,7 +290,38 @@ pub enum WorldEventKind {
         /// Journal/admin only: join projections redact it to zero (#240).
         #[serde(default)]
         seed: u64,
+        /// Server-observed origin metadata. Absent on older journal entries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provenance: Option<ModuleProvenance>,
     },
+}
+
+/// How the active module artifact entered the world.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "origin", content = "build", rename_all = "snake_case")]
+pub enum ModuleProvenance {
+    /// A raw module artifact was installed; no compiler identity is asserted.
+    Artifact,
+    /// The server observed a successful source build. These hashes identify
+    /// inputs; they are not a signature or a trust attestation.
+    SourceBuild(SourceBuildProvenance),
+}
+
+/// Bounded, deterministic metadata observed for one source compilation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceBuildProvenance {
+    /// Provenance record schema, independent of the world journal version.
+    pub schema_version: u8,
+    /// Domain-separated BLAKE3 digest of the compiler executable bytes.
+    pub compiler_blake3: String,
+    /// BLAKE3 digest of the platform tree, including relative paths.
+    pub platform_blake3: String,
+    /// BLAKE3 digest of the submitted source filenames and contents.
+    pub source_blake3: String,
+    /// Compiler target (`wasm32` or `x64musl`).
+    pub target: String,
+    /// Stable compiler arguments, excluding the temporary output path.
+    pub arguments: Vec<String>,
 }
 
 /// Which paths a world's files may name.
@@ -393,6 +453,18 @@ pub enum JournalEntry {
         /// Capability names.
         granted: Vec<String>,
     },
+    /// The world's capability ceiling, written whole on every change. Absent
+    /// means the whole catalog. Checkpoints carry it in `caps_ceiling`.
+    CapsCeiling {
+        /// Capability names the world allows.
+        ceiling: Vec<String>,
+    },
+    /// The world's requested execution profile. Limits are resolved against
+    /// the current server hard ceilings when a program instance is created.
+    ExecutionProfile {
+        /// Per-world resource requests; omitted fields inherit server limits.
+        profile: crate::world_limits::WorldExecutionProfile,
+    },
     /// The world's isolation, written whole on every change. Absent means
     /// [`Isolation::Isolated`].
     Isolation {
@@ -426,6 +498,16 @@ pub enum JournalEntry {
         module_hash: String,
         /// Seed the program was initialized with.
         seed: u64,
+        /// Provenance of the active module, if it was recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provenance: Option<ModuleProvenance>,
+        /// Requested resource profile. Absent in older checkpoints.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_profile: Option<crate::world_limits::WorldExecutionProfile>,
+        /// The world's capability ceiling. Absent in older checkpoints, and
+        /// when it is the whole catalog.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caps_ceiling: Option<Vec<String>>,
         /// The program's own serialization of its state.
         snapshot: String,
         /// Recent events kept for reconnect catch-up.
@@ -472,6 +554,8 @@ pub struct RestoredProgram {
     /// State to restore before replaying, if the journal was compacted behind
     /// a checkpoint; otherwise the program starts from `init(seed)`.
     pub snapshot: Option<String>,
+    /// Server-observed module origin, if this journal version recorded it.
+    pub provenance: Option<ModuleProvenance>,
 }
 
 /// A world rebuilt from its journal, before its program is re-instantiated.
@@ -484,6 +568,15 @@ pub struct RestoredWorld {
     /// Inputs committed after the install or checkpoint, in order, to replay
     /// through it.
     pub replay: Vec<WorldEvent>,
+}
+
+/// The profile requested by the world admin and when it takes effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionProfileUpdate {
+    /// Requested profile; this is not necessarily the active instance's limits.
+    pub requested: crate::world_limits::WorldExecutionProfile,
+    /// True when a program is currently running with its previously resolved limits.
+    pub applies_on_next_program_install_or_process_restart: bool,
 }
 
 /// Structured records a program publishes: key to JSON value, key-ordered.
@@ -509,6 +602,27 @@ fn presence_change(text: &str) -> Option<(u64, bool)> {
         _ => return None,
     };
     Some((value.get("participant")?.get("id")?.as_u64()?, joined))
+}
+
+/// The newest `count` chat lines in `events`, oldest first, each carrying its
+/// sequence, participant id, and text. The retained-events buffer is itself
+/// bounded by the world's limits, so a request can never see unbounded history.
+fn chat_history(events: &VecDeque<WorldEvent>, count: usize) -> Vec<serde_json::Value> {
+    let mut lines: Vec<serde_json::Value> = Vec::new();
+    for event in events.iter().rev() {
+        if lines.len() >= count {
+            break;
+        }
+        if let WorldEventKind::Chat(text) = &event.kind {
+            lines.push(serde_json::json!({
+                "sequence": event.sequence,
+                "participant": event.participant_id,
+                "text": text,
+            }));
+        }
+    }
+    lines.reverse();
+    lines
 }
 
 /// Most records one world may publish.
@@ -578,6 +692,18 @@ pub trait WorldProgram: Send + 'static {
         Ok(None)
     }
 
+    /// Return this participant's presentation laid out for a `width` by
+    /// `height` viewport. Defaults to [`Self::view`]; a program that can reflow
+    /// overrides it. Rendering must not change state.
+    fn layout(
+        &mut self,
+        viewer: &Participant,
+        _width: u16,
+        _height: u16,
+    ) -> Result<Option<String>> {
+        self.view(viewer)
+    }
+
     /// Structured records projected from the program state: a JSON object
     /// mapping record keys to JSON values, or `None` if the program keeps no
     /// records. Must be a pure function of state (it is recomputed on replay).
@@ -614,6 +740,9 @@ pub struct WorldSnapshot {
     pub world_id: String,
     /// Content hash of the active program, if this world executes one.
     pub active_module_hash: Option<String>,
+    /// Provenance for the active module, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_module_provenance: Option<ModuleProvenance>,
     /// Latest committed sequence at snapshot time.
     pub current_sequence: u64,
     /// Earliest event sequence present in this snapshot, or the current
@@ -646,13 +775,15 @@ pub struct WorldSnapshot {
 pub fn project_event_for(scopes: WorldScopes, event: &WorldEvent) -> Option<WorldEvent> {
     match &event.kind {
         WorldEventKind::Chat(_) if !scopes.reads_chat() => None,
-        WorldEventKind::ProgramInstalled { module_hash, .. } => Some(WorldEvent {
-            kind: WorldEventKind::ProgramInstalled {
-                module_hash: module_hash.clone(),
-                seed: 0,
-            },
-            ..event.clone()
-        }),
+        WorldEventKind::ProgramInstalled { .. } => {
+            // Mutate in place so every other field, including the observed
+            // build provenance, is kept as it is.
+            let mut shown = event.clone();
+            if let WorldEventKind::ProgramInstalled { seed, .. } = &mut shown.kind {
+                *seed = 0;
+            }
+            Some(shown)
+        }
         _ => Some(event.clone()),
     }
 }
@@ -687,12 +818,17 @@ struct CapabilityRecord {
 pub struct WorldCore {
     world_id: String,
     limits: WorldLimits,
+    execution_profile: crate::world_limits::WorldExecutionProfile,
     next_participant_id: u64,
     sequence: u64,
     active_module_hash: Option<String>,
+    active_module_provenance: Option<ModuleProvenance>,
     active_seed: u64,
     /// What this world's program may ask the server for.
     pub(crate) ledger: crate::world_caps::CapLedger,
+    /// This world's own capability ceiling. The ledger allows the intersection
+    /// of this and the server's `limits.server_caps`.
+    caps_ceiling: BTreeSet<String>,
     isolation: Isolation,
     cross_world_write: bool,
     cross_world_forced: bool,
@@ -729,14 +865,21 @@ impl WorldCore {
             limits.snapshot_bytes > 0,
             "world snapshot limit must be nonzero"
         );
-        Ok(Self {
+        let server_caps: Vec<String> = limits.server_caps.iter().cloned().collect();
+        crate::world_caps::validate_ceiling_names(&server_caps)
+            .context("server capability ceiling")?;
+        let grant_on_use = limits.grant_on_use;
+        let mut core = Self {
             world_id,
             limits,
+            execution_profile: crate::world_limits::WorldExecutionProfile::default(),
             next_participant_id: 1,
             sequence: 0,
             active_module_hash: None,
+            active_module_provenance: None,
             active_seed: 0,
-            ledger: crate::world_caps::CapLedger::new(Default::default(), limits.grant_on_use),
+            ledger: crate::world_caps::CapLedger::new(BTreeSet::new(), grant_on_use),
+            caps_ceiling: crate::world_caps::catalog_names(),
             isolation: Isolation::default(),
             cross_world_write: false,
             cross_world_forced: false,
@@ -747,7 +890,21 @@ impl WorldCore {
             events: VecDeque::new(),
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
-        })
+        };
+        core.sync_ledger_ceiling();
+        Ok(core)
+    }
+
+    /// Recompute what the ledger may allow: the server's limit intersected with
+    /// this world's ceiling. Call whenever either one changes.
+    fn sync_ledger_ceiling(&mut self) {
+        let allowed = self
+            .limits
+            .server_caps
+            .intersection(&self.caps_ceiling)
+            .cloned()
+            .collect();
+        self.ledger.set_allowed(allowed);
     }
 
     /// Rebuild a world from its journal.
@@ -863,6 +1020,17 @@ impl WorldCore {
                     }
                     core.ledger.set_granted(granted.iter().cloned().collect());
                 }
+                JournalEntry::CapsCeiling { ceiling } => {
+                    crate::world_caps::validate_ceiling_names(&ceiling)
+                        .context("invalid capability ceiling in journal")?;
+                    core.caps_ceiling = ceiling.into_iter().collect();
+                }
+                JournalEntry::ExecutionProfile { profile } => {
+                    profile
+                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .context("invalid world execution profile in journal")?;
+                    core.execution_profile = profile;
+                }
                 JournalEntry::Isolation { isolation } => core.isolation = isolation,
                 JournalEntry::CrossWorldWrite { enabled } => {
                     core.cross_world_write = enabled;
@@ -907,13 +1075,19 @@ impl WorldCore {
                         event.sequence
                     );
                     match &event.kind {
-                        WorldEventKind::ProgramInstalled { module_hash, seed } => {
+                        WorldEventKind::ProgramInstalled {
+                            module_hash,
+                            seed,
+                            provenance,
+                        } => {
                             core.active_module_hash = Some(module_hash.clone());
+                            core.active_module_provenance = provenance.clone();
                             core.active_seed = *seed;
                             program = Some(RestoredProgram {
                                 module_hash: module_hash.clone(),
                                 seed: *seed,
                                 snapshot: None,
+                                provenance: provenance.clone(),
                             });
                             replay.clear();
                         }
@@ -928,6 +1102,9 @@ impl WorldCore {
                     sequence,
                     module_hash,
                     seed,
+                    provenance,
+                    execution_profile,
+                    caps_ceiling,
                     snapshot,
                     events,
                 } => {
@@ -948,11 +1125,28 @@ impl WorldCore {
                         core.events.pop_front();
                     }
                     core.active_module_hash = Some(module_hash.clone());
+                    core.active_module_provenance = provenance.clone();
                     core.active_seed = seed;
+                    let execution_profile = execution_profile.unwrap_or_default();
+                    execution_profile
+                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .context("invalid world execution profile in checkpoint")?;
+                    core.execution_profile = execution_profile;
+                    // Absent means the whole catalog: older checkpoints and
+                    // default ceilings omit the field.
+                    core.caps_ceiling = match caps_ceiling {
+                        Some(ceiling) => {
+                            crate::world_caps::validate_ceiling_names(&ceiling)
+                                .context("invalid capability ceiling in checkpoint")?;
+                            ceiling.into_iter().collect()
+                        }
+                        None => crate::world_caps::catalog_names(),
+                    };
                     program = Some(RestoredProgram {
                         module_hash,
                         seed,
                         snapshot: Some(snapshot),
+                        provenance,
                     });
                 }
             }
@@ -971,6 +1165,7 @@ impl WorldCore {
                 },
             });
         }
+        core.sync_ledger_ceiling();
         Ok(RestoredWorld {
             core,
             program,
@@ -1012,6 +1207,19 @@ impl WorldCore {
         if !granted.is_empty() {
             entries.push(JournalEntry::CapsGranted { granted });
         }
+        // The ceiling rides on the checkpoint, so compaction keeps it; the
+        // default is omitted and reads back as the whole catalog.
+        let caps_ceiling: Option<Vec<String>> = (self.caps_ceiling
+            != crate::world_caps::catalog_names())
+        .then(|| self.caps_ceiling.iter().cloned().collect());
+        if let Some(ceiling) = &caps_ceiling {
+            // An older binary cannot read a `CapsCeiling` entry and refuses the
+            // journal. Without it, the older binary would ignore the checkpoint
+            // field and restore the whole catalog, widening authority silently.
+            entries.push(JournalEntry::CapsCeiling {
+                ceiling: ceiling.clone(),
+            });
+        }
         if self.isolation != Isolation::default() {
             entries.push(JournalEntry::Isolation {
                 isolation: self.isolation,
@@ -1030,10 +1238,18 @@ impl WorldCore {
         if self.file_write_override {
             entries.push(JournalEntry::FileWriteOverride { enabled: true });
         }
+        if self.execution_profile != crate::world_limits::WorldExecutionProfile::default() {
+            entries.push(JournalEntry::ExecutionProfile {
+                profile: self.execution_profile,
+            });
+        }
         entries.push(JournalEntry::Checkpoint {
             sequence: self.sequence,
             module_hash,
             seed: self.active_seed,
+            provenance: self.active_module_provenance.clone(),
+            execution_profile: Some(self.execution_profile),
+            caps_ceiling,
             snapshot,
             events: self.events.iter().cloned().collect(),
         });
@@ -1100,6 +1316,12 @@ impl WorldCore {
     #[must_use]
     pub fn world_id(&self) -> &str {
         &self.world_id
+    }
+
+    /// The per-world resource requests, independent of current server ceilings.
+    #[must_use]
+    pub const fn execution_profile(&self) -> crate::world_limits::WorldExecutionProfile {
+        self.execution_profile
     }
 
     /// Issue a capability for a participant. Only `JOIN`-scoped capabilities
@@ -1607,6 +1829,7 @@ impl WorldCore {
         WorldSnapshot {
             world_id: self.world_id.clone(),
             active_module_hash: self.active_module_hash.clone(),
+            active_module_provenance: self.active_module_provenance.clone(),
             current_sequence: self.sequence,
             oldest_retained_sequence,
             events: events.into_iter().collect(),
@@ -1695,9 +1918,16 @@ enum WorldCommand {
         token: JoinCapability,
         reply: oneshot::Sender<Result<Option<String>>>,
     },
+    ViewAt {
+        token: JoinCapability,
+        width: u16,
+        height: u16,
+        reply: oneshot::Sender<Result<Option<String>>>,
+    },
     InstallProgram {
         module_hash: String,
         seed: u64,
+        provenance: Option<ModuleProvenance>,
         program: Box<dyn WorldProgram>,
         reply: oneshot::Sender<Result<WorldEvent>>,
     },
@@ -1711,6 +1941,20 @@ enum WorldCommand {
         grant: Vec<String>,
         revoke: Vec<String>,
         reply: oneshot::Sender<Result<CapsReport>>,
+    },
+    /// Admin: replace the world's capability ceiling. It applies immediately.
+    SetCapsCeiling {
+        ceiling: Vec<String>,
+        reply: oneshot::Sender<Result<CapsReport>>,
+    },
+    /// Admin: durably replace this world's requested runtime profile.
+    SetExecutionProfile {
+        profile: crate::world_limits::WorldExecutionProfile,
+        reply: oneshot::Sender<Result<ExecutionProfileUpdate>>,
+    },
+    /// Read this world's requested runtime profile.
+    ExecutionProfileInfo {
+        reply: oneshot::Sender<crate::world_limits::WorldExecutionProfile>,
     },
     /// Admin: read the capability report.
     CapsInfo {
@@ -2071,6 +2315,18 @@ impl WorldActor {
                 "sequence": self.core.sequence,
             })),
             "chat.say" => self.execute_chat(&request.args),
+            "chat.history" => Ok(serde_json::json!({
+                "lines": chat_history(
+                    &self.core.events,
+                    request
+                        .args
+                        .get("count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(16)
+                        .min(crate::world_caps::MAX_CHAT_HISTORY_LINES as u64) as usize,
+                ),
+            })),
+            "records.read" => self.execute_records_read(&request.args),
             _ => Err(CapError::Unknown),
         }
     }
@@ -2087,6 +2343,49 @@ impl WorldActor {
                 })
             })
             .collect()
+    }
+
+    /// `records.read`: a byte-bounded, prefix-scoped page of the world's
+    /// published records, key-ordered with the same exclusive `after` cursor
+    /// the session protocol uses. Follow `next_after` while it is non-empty.
+    fn execute_records_read(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let records = self.records_sender.borrow().1.clone();
+        let prefix = args.get("prefix").and_then(serde_json::Value::as_str);
+        let after = args.get("after").and_then(serde_json::Value::as_str);
+        let mut page: Vec<serde_json::Value> = Vec::new();
+        let mut used = 0usize;
+        let mut last_included: Option<String> = None;
+        let mut more = false;
+        for (key, value) in records.iter() {
+            if let Some(prefix) = prefix
+                && !key.starts_with(prefix)
+            {
+                continue;
+            }
+            if let Some(after) = after
+                && key.as_str() <= after
+            {
+                continue;
+            }
+            let size = key.len() + serde_json::to_vec(value).map_or(0, |v| v.len()) + 8;
+            if used + size > crate::world_session::MAX_RECORDS_PAGE_BYTES {
+                if page.is_empty() {
+                    return Err(CapError::BadArgs);
+                }
+                more = true;
+                break;
+            }
+            used += size;
+            last_included = Some(key.clone());
+            page.push(serde_json::json!({"key": key, "value": value}));
+        }
+        Ok(serde_json::json!({
+            "records": page,
+            "next_after": more.then_some(last_included).flatten(),
+        }))
     }
 
     /// `chat.say` commits a host chat line; its result is the new sequence.
@@ -2247,6 +2546,36 @@ impl WorldActor {
         Ok(self.core.policy())
     }
 
+    /// Replace the world's capability ceiling. It takes effect now: uses and
+    /// subscriptions the ceiling excludes are refused from here on. Grants are
+    /// kept, so lifting the ceiling again restores them.
+    fn set_caps_ceiling(&mut self, ceiling: Vec<String>) -> Result<CapsReport> {
+        crate::world_caps::validate_ceiling_names(&ceiling)?;
+        let ceiling: BTreeSet<String> = ceiling.into_iter().collect();
+        self.persist(JournalEntry::CapsCeiling {
+            ceiling: ceiling.iter().cloned().collect(),
+        })?;
+        self.core.caps_ceiling = ceiling;
+        self.core.sync_ledger_ceiling();
+        self.reconcile_subscriptions();
+        self.caps_report()
+    }
+
+    /// Re-check subscriptions after an authority change. An armed one that is
+    /// no longer granted is dropped and its tick disarmed. Every refused one is
+    /// dropped too, so the next pass decides it again: a refusal that still
+    /// holds is announced again, and one the change now grants is armed.
+    fn reconcile_subscriptions(&mut self) {
+        let ledger = &self.core.ledger;
+        let refused = &self.denied_subs;
+        self.active_subs
+            .retain(|sub| !refused.contains(&sub.spec()) && ledger.is_granted(sub.cap()));
+        self.denied_subs.clear();
+        let active = &self.active_subs;
+        self.ticks
+            .retain(|ms, _| active.contains(&Subscription::Tick(*ms)));
+    }
+
     /// The capability report an admin sees.
     fn caps_report(&mut self) -> Result<CapsReport> {
         let requested = match self.program.wants() {
@@ -2257,9 +2586,10 @@ impl WorldActor {
             Err(_) => Vec::new(),
         };
         let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
+        let effective: Vec<String> = self.core.ledger.effective().into_iter().collect();
         let missing: Vec<String> = requested
             .iter()
-            .filter(|cap| !granted.contains(cap) && !granted.contains(&"*".to_owned()))
+            .filter(|cap| !effective.contains(cap))
             .cloned()
             .collect();
         Ok(CapsReport {
@@ -2271,8 +2601,14 @@ impl WorldActor {
                 "grant-on-use"
             } else {
                 "deny"
-            },
-            catalog: crate::world_caps::CATALOG.to_vec(),
+            }
+            .to_owned(),
+            catalog: crate::world_caps::CATALOG
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            ceiling: self.core.caps_ceiling.iter().cloned().collect(),
+            effective,
         })
     }
 
@@ -2483,9 +2819,47 @@ impl WorldActor {
                 };
                 let _ = reply.send(result);
             }
+            WorldCommand::ViewAt {
+                token,
+                width,
+                height,
+                reply,
+            } => {
+                let result = match self.core.viewer(&token) {
+                    Ok(viewer) if self.program_healthy => {
+                        match self.program.layout(&viewer, width, height) {
+                            Ok(view) => {
+                                if let Some(text) = &view {
+                                    if text.len() > self.core.limits.presentation_bytes {
+                                        self.program_healthy = false;
+                                        Err(anyhow::anyhow!(
+                                            "world presentation exceeds {} bytes",
+                                            self.core.limits.presentation_bytes
+                                        ))
+                                    } else {
+                                        Ok(view)
+                                    }
+                                } else {
+                                    Ok(None)
+                                }
+                            }
+                            Err(error) => {
+                                self.program_healthy = false;
+                                Err(error.context("world program layout failed"))
+                            }
+                        }
+                    }
+                    Ok(_) => Err(anyhow::anyhow!(
+                        "world program is unavailable after a previous failure"
+                    )),
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(result);
+            }
             WorldCommand::InstallProgram {
                 module_hash,
                 seed,
+                provenance,
                 program: mut replacement,
                 reply,
             } => {
@@ -2503,7 +2877,11 @@ impl WorldActor {
                 let candidate = WorldEvent {
                     sequence: self.core.sequence.saturating_add(1),
                     participant_id: 0,
-                    kind: WorldEventKind::ProgramInstalled { module_hash, seed },
+                    kind: WorldEventKind::ProgramInstalled {
+                        module_hash,
+                        seed,
+                        provenance: provenance.clone(),
+                    },
                 };
                 let result = self
                     .persist(JournalEntry::Committed {
@@ -2515,6 +2893,7 @@ impl WorldActor {
                         if let WorldEventKind::ProgramInstalled { module_hash, .. } = &event.kind {
                             self.core.active_module_hash = Some(module_hash.clone());
                         }
+                        self.core.active_module_provenance = provenance;
                         self.core.active_seed = seed;
                         self.program = replacement;
                         self.program_healthy = true;
@@ -2550,11 +2929,29 @@ impl WorldActor {
                         granted: granted.iter().cloned().collect(),
                     })?;
                     self.core.ledger.set_granted(granted);
-                    // A grant can unblock refused subscriptions on the spot.
-                    self.denied_subs.clear();
+                    self.reconcile_subscriptions();
                     self.caps_report()
                 })();
                 let _ = reply.send(result);
+            }
+            WorldCommand::SetCapsCeiling { ceiling, reply } => {
+                let result = self.set_caps_ceiling(ceiling);
+                let _ = reply.send(result);
+            }
+            WorldCommand::SetExecutionProfile { profile, reply } => {
+                let result = self
+                    .persist(JournalEntry::ExecutionProfile { profile })
+                    .map(|()| {
+                        self.core.execution_profile = profile;
+                        ExecutionProfileUpdate {
+                            requested: profile,
+                            applies_on_next_program_install_or_process_restart: true,
+                        }
+                    });
+                let _ = reply.send(result);
+            }
+            WorldCommand::ExecutionProfileInfo { reply } => {
+                let _ = reply.send(self.core.execution_profile);
             }
             WorldCommand::SetIsolation {
                 authority,
@@ -2755,6 +3152,52 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped caps response")?
+    }
+
+    /// Replace this world's capability ceiling. It applies immediately to new
+    /// uses and active subscriptions; it does not rewrite the grants.
+    ///
+    /// # Errors
+    ///
+    /// Fails on `*`, on unknown names, or on world storage failure.
+    pub async fn set_caps_ceiling(&self, ceiling: Vec<String>) -> Result<CapsReport> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetCapsCeiling { ceiling, reply })
+            .await
+            .ok()
+            .context("world actor is closed")?;
+        response
+            .await
+            .context("world actor dropped caps ceiling response")?
+    }
+
+    /// Persist this world's requested resource profile. The current program
+    /// instance is deliberately left untouched.
+    pub async fn set_execution_profile(
+        &self,
+        profile: crate::world_limits::WorldExecutionProfile,
+    ) -> Result<ExecutionProfileUpdate> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetExecutionProfile { profile, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped execution profile response")?
+    }
+
+    /// Read this world's currently requested resource profile.
+    pub async fn execution_profile(&self) -> Result<crate::world_limits::WorldExecutionProfile> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ExecutionProfileInfo { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped execution profile")
     }
 
     /// Change the world's isolation.
@@ -3144,6 +3587,29 @@ impl WorldHandle {
             .context("world actor dropped view response")?
     }
 
+    /// Render for one viewer at a viewport. Programs that cannot reflow fall
+    /// back to their fixed view, and rendering never advances the sequence.
+    pub async fn view_at(
+        &self,
+        token: JoinCapability,
+        width: u16,
+        height: u16,
+    ) -> Result<Option<String>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ViewAt {
+                token,
+                width,
+                height,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped layout response")?
+    }
+
     /// Atomically replace the active program and sequence a host-authored
     /// module-installed event. The new program is used after this command.
     pub async fn install_program(
@@ -3152,11 +3618,24 @@ impl WorldHandle {
         seed: u64,
         program: Box<dyn WorldProgram>,
     ) -> Result<WorldEvent> {
+        self.install_program_with_provenance(module_hash, seed, None, program)
+            .await
+    }
+
+    /// As [`Self::install_program`], preserving server-observed origin metadata.
+    pub async fn install_program_with_provenance(
+        &self,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
+        program: Box<dyn WorldProgram>,
+    ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::InstallProgram {
                 module_hash,
                 seed,
+                provenance,
                 program,
                 reply,
             })
@@ -3273,6 +3752,120 @@ mod tests {
             .unwrap()
     }
 
+    fn sample_source_provenance() -> ModuleProvenance {
+        ModuleProvenance::SourceBuild(SourceBuildProvenance {
+            schema_version: 1,
+            compiler_blake3: "compiler".to_owned(),
+            platform_blake3: "platform".to_owned(),
+            source_blake3: "source".to_owned(),
+            target: "wasm32".to_owned(),
+            arguments: vec!["build".to_owned(), "main.roc".to_owned()],
+        })
+    }
+
+    #[test]
+    fn provenance_is_optional_and_old_install_events_keep_their_wire_shape() {
+        let old = serde_json::json!({
+            "sequence": 1,
+            "participant_id": 0,
+            "kind": { "kind": "program_installed", "data": { "module_hash": "h", "seed": 3 } }
+        });
+        let parsed: WorldEvent = serde_json::from_value(old.clone()).unwrap();
+        assert!(matches!(
+            parsed.kind,
+            WorldEventKind::ProgramInstalled {
+                provenance: None,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), old);
+
+        let event = WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "h".to_owned(),
+                seed: 3,
+                provenance: Some(sample_source_provenance()),
+            },
+        };
+        let encoded = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            serde_json::from_value::<WorldEvent>(encoded).unwrap(),
+            event
+        );
+    }
+
+    #[test]
+    fn checkpoint_defaults_missing_provenance_and_round_trips_recorded_provenance() {
+        let old = serde_json::json!({
+            "entry": "checkpoint",
+            "sequence": 0,
+            "module_hash": "h",
+            "seed": 1,
+            "snapshot": "s",
+            "events": []
+        });
+        let parsed: JournalEntry = serde_json::from_value(old.clone()).unwrap();
+        assert!(matches!(
+            parsed,
+            JournalEntry::Checkpoint {
+                provenance: None,
+                execution_profile: None,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), old);
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                serde_json::from_value(old).unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            restored.core.execution_profile(),
+            crate::world_limits::WorldExecutionProfile::default()
+        );
+    }
+
+    #[test]
+    fn execution_profile_survives_checkpoint_compaction_and_restore() {
+        let profile = crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(1234),
+            native_cpu_seconds: Some(3),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.execution_profile(), profile);
+    }
+
+    #[test]
+    fn recorded_provenance_survives_checkpoint_compaction_and_restore() {
+        let provenance = sample_source_provenance();
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.active_module_provenance = Some(provenance.clone());
+        core.active_seed = 7;
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.active_module_provenance,
+            Some(provenance.clone())
+        );
+        assert_eq!(restored.program.unwrap().provenance, Some(provenance));
+    }
+
     /// A program driven by numeric inputs: each input switches its `wants`
     /// script, and every host event is recorded. Request ids embed the input
     /// count, so re-sending an input asks again.
@@ -3325,6 +3918,13 @@ mod tests {
                     }],
                 }),
                 4 => serde_json::json!({"subscribe": ["time.tick:20"]}),
+                5 => serde_json::json!({
+                    "requests": [{
+                        "id": id("hist"),
+                        "cap": "chat.history",
+                        "args": {"count": 5},
+                    }],
+                }),
                 _ => serde_json::json!({}),
             };
             Ok(Some(document.to_string()))
@@ -3382,6 +3982,61 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "no answer recorded");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[test]
+    fn chat_history_returns_the_newest_lines_oldest_first() {
+        let mut core = world(16);
+        for (sequence, participant, text) in
+            [(1u64, 1u64, "first"), (2, 28, "second"), (3, 1, "third")]
+        {
+            core.events.push_back(WorldEvent {
+                sequence,
+                participant_id: participant,
+                kind: WorldEventKind::Chat(text.to_owned()),
+            });
+        }
+        let newest = chat_history(&core.events, 2);
+        assert_eq!(newest.len(), 2);
+        assert_eq!(newest[0]["text"], "second");
+        assert_eq!(newest[0]["sequence"], 2);
+        assert_eq!(newest[1]["text"], "third");
+        let all = chat_history(&core.events, 10);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0]["text"], "first");
+        assert_eq!(all[2]["text"], "third");
+        assert!(chat_history(&core.events, 0).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_granted_chat_history_request_is_served_over_the_ledger() {
+        let (world, token) = caps_world_sync(false).await;
+        world
+            .update_caps(
+                vec!["chat.say".to_owned(), "chat.history".to_owned()],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        // The program says one line first, then asks for the history.
+        world.input(token.clone(), b"3".to_vec()).await.unwrap();
+        world.input(token, b"5".to_vec()).await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let report = world.caps_report().await.unwrap();
+            if report
+                .usage
+                .get("chat.history")
+                .is_some_and(|use_| use_.allowed > 0)
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no history answer recorded: {report:?}"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
@@ -3813,6 +4468,236 @@ mod tests {
     }
 
     #[test]
+    fn a_caps_ceiling_replays_from_the_journal() {
+        let restored = WorldCore::restore(
+            "ceil",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "ceil".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                JournalEntry::CapsGranted {
+                    granted: vec!["time.now".to_owned(), "chat.say".to_owned()],
+                },
+                JournalEntry::CapsCeiling {
+                    ceiling: vec!["time.now".to_owned()],
+                },
+            ],
+        )
+        .unwrap();
+        assert!(restored.core.ledger.is_granted("time.now"));
+        assert!(!restored.core.ledger.is_granted("chat.say"));
+        assert!(
+            restored.core.ledger.granted().contains("chat.say"),
+            "the grant is kept"
+        );
+
+        let refused = WorldCore::restore(
+            "ceil",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "ceil".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                JournalEntry::CapsCeiling {
+                    ceiling: vec!["*".to_owned()],
+                },
+            ],
+        );
+        assert!(refused.is_err(), "a journaled ceiling may not use `*`");
+    }
+
+    #[test]
+    fn a_caps_ceiling_survives_checkpoint_compaction_and_restore() {
+        let mut core = world(8);
+        core.caps_ceiling = BTreeSet::from(["time.now".to_owned()]);
+        core.sync_ledger_ceiling();
+        core.ledger
+            .set_granted(BTreeSet::from(["chat.say".to_owned()]));
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::Checkpoint { caps_ceiling: Some(ceiling), .. }
+                if ceiling == &vec!["time.now".to_owned()]
+        )));
+        // The entry is what makes an older binary fail loudly on this journal.
+        assert!(entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::CapsCeiling { ceiling } if ceiling == &vec!["time.now".to_owned()]
+        )));
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.ledger.allowed(),
+            &BTreeSet::from(["time.now".to_owned()])
+        );
+        assert!(!restored.core.ledger.is_granted("chat.say"));
+    }
+
+    #[test]
+    fn a_default_ceiling_is_not_written_and_old_journals_allow_the_whole_catalog() {
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(entries.iter().all(|entry| !matches!(
+            entry,
+            JournalEntry::Checkpoint {
+                caps_ceiling: Some(_),
+                ..
+            }
+        )));
+        let old = serde_json::json!({
+            "entry": "checkpoint",
+            "sequence": 0,
+            "module_hash": "h",
+            "seed": 1,
+            "snapshot": "s",
+            "events": []
+        });
+        let restored = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "test-world".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                serde_json::from_value(old).unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            restored.core.ledger.allowed(),
+            &crate::world_caps::catalog_names()
+        );
+    }
+
+    #[test]
+    fn the_server_ceiling_is_runtime_config_and_bounds_a_restored_grant() {
+        let entries = [
+            JournalEntry::Created {
+                world_id: "server".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::CapsGranted {
+                granted: vec!["time.now".to_owned(), "chat.say".to_owned()],
+            },
+        ];
+        let lower = WorldLimits {
+            server_caps: BTreeSet::from(["time.now".to_owned()]),
+            ..WorldLimits::default()
+        };
+        let restored = WorldCore::restore("server", lower, entries.clone()).unwrap();
+        assert!(restored.core.ledger.is_granted("time.now"));
+        assert!(!restored.core.ledger.is_granted("chat.say"));
+        assert!(restored.core.ledger.granted().contains("chat.say"));
+
+        // Nothing about the server ceiling was journaled, so the default
+        // server restores the grant.
+        let restored = WorldCore::restore("server", WorldLimits::default(), entries).unwrap();
+        assert!(restored.core.ledger.is_granted("chat.say"));
+    }
+
+    #[test]
+    fn a_server_ceiling_naming_a_wildcard_is_refused() {
+        let limits = WorldLimits {
+            server_caps: BTreeSet::from(["*".to_owned()]),
+            ..WorldLimits::default()
+        };
+        assert!(WorldCore::new("w", limits).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_ceiling_change_denies_a_use_that_a_prior_grant_allowed() {
+        let core = WorldCore::new("ceiling", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        world
+            .update_caps(vec!["chat.say".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        world.input(token.clone(), b"3".to_vec()).await.unwrap();
+        let usage = world.caps_report().await.unwrap().usage["chat.say"];
+        assert_eq!((usage.allowed, usage.denied), (1, 0));
+
+        let report = world
+            .set_caps_ceiling(vec!["time.now".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(report.ceiling, vec!["time.now".to_owned()]);
+        assert!(
+            report.granted.contains(&"chat.say".to_owned()),
+            "the grant is kept"
+        );
+        assert!(!report.effective.contains(&"chat.say".to_owned()));
+        world.input(token, b"3".to_vec()).await.unwrap();
+        let usage = world.caps_report().await.unwrap().usage["chat.say"];
+        assert_eq!((usage.allowed, usage.denied), (1, 1));
+
+        assert!(world.set_caps_ceiling(vec!["*".to_owned()]).await.is_err());
+        assert!(
+            world
+                .set_caps_ceiling(vec!["time.nwo".to_owned()])
+                .await
+                .is_err()
+        );
+        world.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn lowering_the_ceiling_stops_an_active_subscription_and_reports_it_refused() {
+        let core = WorldCore::new("ceiling-ticks", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        world
+            .update_caps(vec!["time.tick".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        world.presence(1, true).await;
+        let mut views = world.watch_views();
+        // Script 4 subscribes to `time.tick:20`, which arms it while someone is present.
+        world.input(token, b"4".to_vec()).await.unwrap();
+        views.borrow_and_update();
+        tokio::time::timeout(std::time::Duration::from_secs(2), views.changed())
+            .await
+            .expect("no tick arrived while the ceiling allowed it")
+            .unwrap();
+
+        world
+            .set_caps_ceiling(vec!["time.now".to_owned()])
+            .await
+            .unwrap();
+        let report = world.caps_report().await.unwrap();
+        assert!(
+            report
+                .usage
+                .get("time.tick")
+                .is_some_and(|usage| usage.denied > 0),
+            "{report:?}"
+        );
+        assert!(!report.effective.contains(&"time.tick".to_owned()));
+        // The refusal reached the program before this report; no tick follows.
+        views.borrow_and_update();
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert!(
+            views.has_changed().is_ok_and(|changed| !changed),
+            "ticks kept firing after the ceiling dropped them"
+        );
+
+        // Lifting the ceiling admits the refused subscription again.
+        let full: Vec<String> = crate::world_caps::catalog_names().into_iter().collect();
+        world.set_caps_ceiling(full).await.unwrap();
+        views.borrow_and_update();
+        tokio::time::timeout(std::time::Duration::from_secs(2), views.changed())
+            .await
+            .expect("ticks did not resume once the ceiling allowed them")
+            .unwrap();
+        world.shutdown().await.unwrap();
+    }
+
+    #[test]
     fn capability_scopes_isolate_actions() {
         let mut core = world(8);
         let (_, token) = join(&mut core, "Guest");
@@ -4227,6 +5112,43 @@ mod tests {
     }
 
     #[test]
+    fn role_presets_grant_and_withhold_the_expected_effects() {
+        let spectator = WorldScopes::from_role("spectator").unwrap();
+        assert!(spectator.allows_effect("time.now"));
+        assert!(!spectator.allows_effect("chat.say"));
+        assert!(!spectator.allows_effect("chat.history"));
+        assert!(!spectator.reads_chat());
+        assert!(spectator.attenuate(WorldScopes::INPUT).is_none());
+
+        // An observer reads chat, through the stream and `chat.history`
+        // alike, and still cannot send it or act.
+        let observer = WorldScopes::from_role("observer").unwrap();
+        assert!(observer.reads_chat());
+        assert!(observer.allows_effect("chat.history"));
+        assert!(!observer.allows_effect("chat.say"));
+        assert!(!observer.contains(WorldScopes::INPUT));
+
+        let player = WorldScopes::from_role("player").unwrap();
+        assert!(player.contains(WorldScopes::INPUT));
+        assert!(!player.contains(WorldScopes::CHAT));
+        assert!(!player.contains(WorldScopes::DELEGATE));
+
+        let guest = WorldScopes::from_role("guest").unwrap();
+        assert_eq!(guest, WorldScopes::GUEST);
+        assert!(guest.allows_effect("chat.say"));
+
+        let delegator = WorldScopes::from_role("delegator").unwrap();
+        assert!(delegator.contains(WorldScopes::DELEGATE));
+        assert!(delegator.attenuate(WorldScopes::JOIN).is_some());
+
+        assert_eq!(WorldScopes::from_role("builder"), None);
+        assert_eq!(
+            WorldScopes::ROLES,
+            &["spectator", "observer", "player", "guest", "delegator"]
+        );
+    }
+
+    #[test]
     fn attenuation_only_narrows_and_needs_delegate() {
         let join = WorldScopes::JOIN;
         let delegator = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
@@ -4255,8 +5177,10 @@ mod tests {
         );
         assert_eq!(WorldScopes::from_names(["join", "telepathy"]), None);
         assert!(WorldScopes::GUEST.allows_effect("chat.say"));
+        assert!(WorldScopes::GUEST.allows_effect("chat.history"));
         let spectator = WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::INPUT.bits());
         assert!(!spectator.allows_effect("chat.say"));
+        assert!(!spectator.allows_effect("chat.history"));
         assert!(spectator.allows_effect("time.now"));
     }
 
@@ -4453,6 +5377,7 @@ mod tests {
                     kind: WorldEventKind::ProgramInstalled {
                         module_hash: "ab".repeat(32),
                         seed: 424_242,
+                        provenance: None,
                     },
                 },
             },
@@ -4471,7 +5396,7 @@ mod tests {
         assert!(
             matches!(
                 &page.events[0].kind,
-                WorldEventKind::ProgramInstalled { module_hash, seed }
+                WorldEventKind::ProgramInstalled { module_hash, seed, .. }
                     if module_hash == &"ab".repeat(32) && *seed == 0
             ),
             "events_after must keep the module hash but redact the seed: {:?}",
@@ -4656,6 +5581,7 @@ mod tests {
             kind: WorldEventKind::ProgramInstalled {
                 module_hash: "ab".repeat(32),
                 seed: 424_242,
+                provenance: None,
             },
         };
         for scopes in [WorldScopes::JOIN, WorldScopes::GUEST, WorldScopes::ALL] {
@@ -4664,7 +5590,8 @@ mod tests {
                 shown.kind,
                 WorldEventKind::ProgramInstalled {
                     module_hash: "ab".repeat(32),
-                    seed: 0
+                    seed: 0,
+                    provenance: None,
                 }
             );
         }
@@ -4860,6 +5787,105 @@ mod tests {
             } else {
                 format!("{{\"count\":{}}}", self.count)
             }))
+        }
+    }
+
+    #[tokio::test]
+    async fn records_read_returns_a_bounded_prefix_scoped_page() {
+        struct ReaderProgram {
+            asks: u64,
+            read_key: String,
+        }
+        impl WorldProgram for ReaderProgram {
+            fn update(&mut self, event: &WorldEvent) -> Result<()> {
+                match &event.kind {
+                    WorldEventKind::Input(bytes) => {
+                        if bytes.as_slice() == b"read" {
+                            self.asks += 1;
+                        }
+                    }
+                    WorldEventKind::System { event } => {
+                        let value: serde_json::Value =
+                            serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                        if value["cap"] == "result"
+                            && let Some(key) = value["value"]["records"][0]["key"].as_str()
+                        {
+                            self.read_key = key.to_owned();
+                        }
+                    }
+                    WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                }
+                Ok(())
+            }
+
+            fn records(&mut self) -> Result<Option<String>> {
+                Ok(Some(
+                    serde_json::json!({
+                        "count": self.asks,
+                        "read": self.read_key,
+                    })
+                    .to_string(),
+                ))
+            }
+
+            fn wants(&mut self) -> Result<Option<String>> {
+                if self.asks == 0 {
+                    return Ok(Some("{}".to_owned()));
+                }
+                Ok(Some(
+                    serde_json::json!({
+                        "requests": [{
+                            "id": format!("read-{}", self.asks),
+                            "cap": "records.read",
+                            "args": {"prefix": "co", "after": ""},
+                        }],
+                    })
+                    .to_string(),
+                ))
+            }
+        }
+
+        let world = WorldHandle::spawn_with_program(
+            world(16),
+            Box::new(ReaderProgram {
+                asks: 0,
+                read_key: String::new(),
+            }),
+        );
+        let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+
+        // Ungranted: the request is refused and counted.
+        world.input(ann.clone(), b"read".to_vec()).await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let report = world.caps_report().await.unwrap();
+            if report
+                .usage
+                .get("records.read")
+                .is_some_and(|use_| use_.denied > 0)
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no refusal recorded");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // Granted: the program reads its own published `count` record.
+        world
+            .update_caps(vec!["records.read".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        world.input(ann, b"read".to_vec()).await.unwrap();
+        loop {
+            let record = world.records().1["read"].as_str().unwrap_or("").to_owned();
+            if record == "count" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the program never read its record: {record:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 

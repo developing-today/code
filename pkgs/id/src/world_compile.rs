@@ -109,6 +109,9 @@ fn platform_modules(platform_dir: &Path) -> Result<Vec<String>> {
 /// Refuse source that imports a platform module the world does not grant.
 /// Imports the platform does not provide are left to the compiler.
 ///
+/// `granted` must be the effective list (granted and within the server and
+/// world ceilings, with `*` expanded), not the raw grants.
+///
 /// # Errors
 ///
 /// Names the file and the module of the first refused import.
@@ -127,7 +130,7 @@ pub fn check_imports(spec: &CompileSpec, modules: &[String], granted: &[String])
                 let is_granted = granted.iter().any(|grant| grant == "*" || grant == segment);
                 ensure!(
                     !is_platform_module || is_granted,
-                    "{name} imports {segment}, which this world does not grant (grant it with `id world caps --grant {segment}`)"
+                    "{name} imports {segment}, which this world does not allow (grant it with `id world caps --grant {segment}`; a capability ceiling may also exclude it)"
                 );
             }
         }
@@ -177,8 +180,8 @@ pub fn validate_spec(spec: &CompileSpec) -> Result<()> {
 }
 
 /// Compile `spec` and return the validated Wasm module plus compiler
-/// diagnostics. `granted` is the world's ceiling: the platform modules the
-/// source may import.
+/// diagnostics. `granted` is the effective list: the platform modules the
+/// source may import, bounded by the server and world ceilings.
 ///
 /// # Errors
 ///
@@ -189,7 +192,7 @@ pub async fn compile(
     compiler: &Compiler,
     granted: &[String],
     timeout: Duration,
-) -> Result<(Vec<u8>, String)> {
+) -> Result<(Vec<u8>, String, crate::world::ModuleProvenance)> {
     use crate::world_session::MAX_WORLD_MODULE_BYTES;
 
     validate_spec(spec)?;
@@ -206,8 +209,10 @@ pub async fn compile(
     } else {
         "wasm32"
     };
+    let source_blake3 = digest_sources(&spec.files)?;
     let job = tempfile::tempdir().context("create compile job directory")?;
     copy_platform(&compiler.platform_dir, job.path())?;
+    let platform_blake3 = digest_tree(&job.path().join("platform"))?;
     for (name, content) in &spec.files {
         let path = job.path().join(sanitize_file_name(name)?);
         tokio::fs::write(&path, content)
@@ -223,7 +228,9 @@ pub async fn compile(
     tokio::fs::write(&main_path, rewritten).await?;
 
     let output_path = job.path().join("out");
-    let roc_bin = resolve_program(&compiler.roc_bin);
+    let roc_bin = std::fs::canonicalize(resolve_program(&compiler.roc_bin))
+        .context("resolve Roc compiler executable")?;
+    let compiler_blake3 = digest_file(&roc_bin)?;
     let job_dir = job.path().to_owned();
     let output = PathBuf::from(&output_path);
     // The compiler is a whole LLVM process; run it on a blocking thread and
@@ -240,6 +247,11 @@ pub async fn compile(
         if target == "wasm32" {
             args.push(format!("--wasm-memory={WASM_MEMORY_BYTES}"));
         }
+        let stable_arguments: Vec<String> = args
+            .iter()
+            .filter(|argument| !argument.starts_with("--output="))
+            .cloned()
+            .collect();
         command
             .current_dir(&job_dir)
             .args(&args)
@@ -290,9 +302,9 @@ pub async fn compile(
         };
         let captured_err = readers.1.join().unwrap_or_default();
         let captured_out = readers.0.join().unwrap_or_default();
-        Ok((status, captured_err, captured_out))
+        Ok((status, captured_err, captured_out, stable_arguments))
     });
-    let (status, captured_err, _captured_out) = run
+    let (status, captured_err, _captured_out, arguments) = run
         .await
         .context("compile task")?
         .map_err(|error| error.context("compilation failed"))?;
@@ -302,6 +314,15 @@ pub async fn compile(
             tail(&captured_err, MAX_CAPTURE_BYTES)
         );
     }
+    let provenance =
+        crate::world::ModuleProvenance::SourceBuild(crate::world::SourceBuildProvenance {
+            schema_version: 1,
+            compiler_blake3,
+            platform_blake3,
+            source_blake3,
+            target: target.to_owned(),
+            arguments,
+        });
 
     let wasm = tokio::fs::read(&output_path)
         .await
@@ -317,7 +338,7 @@ pub async fn compile(
             crate::world_native::is_native_module(&wasm),
             "the compiler did not produce a native executable"
         );
-        return Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES)));
+        return Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES), provenance));
     }
     // Same policy as an upload: import-free and allowlisted.
     #[cfg(feature = "sandbox")]
@@ -329,7 +350,92 @@ pub async fn compile(
         },
     )
     .context("the compiled module is not a valid world module")?;
-    Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES)))
+    Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES), provenance))
+}
+
+fn digest_file(path: &Path) -> Result<String> {
+    let mut file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"roc-compiler-binary-v1\0");
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        use std::io::Read as _;
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn digest_tree(root: &Path) -> Result<String> {
+    fn visit(root: &Path, dir: &Path, hasher: &mut blake3::Hasher) -> Result<()> {
+        let mut entries = std::fs::read_dir(dir)
+            .with_context(|| format!("read {}", dir.display()))?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            ensure!(
+                !entry.file_type()?.is_symlink(),
+                "no symlinks in the platform"
+            );
+            let path = entry.path();
+            if path.is_dir() {
+                let relative = path.strip_prefix(root)?;
+                let name = relative.to_string_lossy();
+                let name_bytes = name.as_bytes();
+                let name_len = u64::try_from(name_bytes.len()).context("platform path length")?;
+                hasher.update(b"D");
+                hasher.update(&name_len.to_le_bytes());
+                hasher.update(name_bytes);
+                visit(root, &path, hasher)?;
+                continue;
+            }
+            let relative = path.strip_prefix(root)?;
+            let name = relative.to_string_lossy();
+            let name_bytes = name.as_bytes();
+            let name_len = u64::try_from(name_bytes.len()).context("platform path length")?;
+            hasher.update(b"F");
+            hasher.update(&name_len.to_le_bytes());
+            hasher.update(name_bytes);
+            let mut file = std::fs::File::open(&path)?;
+            let file_len = file.metadata()?.len();
+            hasher.update(&file_len.to_le_bytes());
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                use std::io::Read as _;
+                let read = file.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+        }
+        Ok(())
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    visit(root, root, &mut hasher)?;
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn digest_sources(files: &[(String, String)]) -> Result<String> {
+    let mut sorted: Vec<_> = files.iter().collect();
+    sorted.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"roc-source-files-v1\0");
+    for (name, content) in sorted {
+        let name = name.as_bytes();
+        let content = content.as_bytes();
+        let name_len = u64::try_from(name.len()).context("source filename length")?;
+        let content_len = u64::try_from(content.len()).context("source file length")?;
+        hasher.update(&name_len.to_le_bytes());
+        hasher.update(name);
+        hasher.update(&content_len.to_le_bytes());
+        hasher.update(content);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 /// Copy the platform pieces a compilation needs (its `.roc` modules, including
@@ -466,6 +572,43 @@ mod tests {
     }
 
     #[test]
+    fn source_digest_is_independent_of_file_order_but_tracks_names_and_contents() {
+        let first = vec![
+            ("main.roc".to_owned(), "app [] {}".to_owned()),
+            ("lib.roc".to_owned(), "value = 1".to_owned()),
+        ];
+        let reversed = vec![first[1].clone(), first[0].clone()];
+        assert_eq!(
+            digest_sources(&first).unwrap(),
+            digest_sources(&reversed).unwrap()
+        );
+
+        let changed = vec![
+            first[0].clone(),
+            ("lib.roc".to_owned(), "value = 2".to_owned()),
+        ];
+        assert_ne!(
+            digest_sources(&first).unwrap(),
+            digest_sources(&changed).unwrap()
+        );
+    }
+
+    #[test]
+    fn platform_digest_is_stable_and_includes_relative_names() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("targets/wasm32")).unwrap();
+        std::fs::write(root.path().join("platform.roc"), "platform").unwrap();
+        std::fs::write(root.path().join("targets/wasm32/host.wasm"), b"host").unwrap();
+
+        let before = digest_tree(root.path()).unwrap();
+        assert_eq!(before, digest_tree(root.path()).unwrap());
+        std::fs::create_dir(root.path().join("empty")).unwrap();
+        assert_ne!(before, digest_tree(root.path()).unwrap());
+        std::fs::write(root.path().join("targets/wasm32/host.wasm"), b"other").unwrap();
+        assert_ne!(before, digest_tree(root.path()).unwrap());
+    }
+
+    #[test]
     fn the_platform_path_is_rewritten_to_the_staged_copy() {
         let main = "app [program] { pf: platform \"../roc-world/platform.roc\" }\n";
         assert_eq!(
@@ -474,6 +617,102 @@ mod tests {
         );
         assert!(rewrite_platform_path("app [x] {}").is_err());
         assert!(rewrite_platform_path("pf: platform \"unterminated").is_err());
+    }
+
+    #[tokio::test]
+    async fn the_capability_helper_issues_matching_requests() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = r#"app [program] { pf: platform "../roc-world/platform.roc" }
+
+import pf.RocCap
+import pf.RocJson
+
+Model : { session : RocCap, request : Str }
+
+program = { init, update, view, layout, records, wants, snapshot, restore }
+
+init : U64 -> Model
+init = |seed| {
+	issued = RocCap.issue(RocCap.empty, "chat.say")
+	document = RocCap.chat_request(issued.id, seed.to_str())
+	first = RocCap.attach(issued.session, issued.id, document)
+	second = RocCap.issue(first, "chat.history")
+	history = RocCap.history_request(second.id, 5)
+	session = RocCap.attach(second.session, second.id, history)
+	encoded = match RocJson.encode(document) {
+		Ok(text) => text
+		Err(_) => ""
+	}
+	{ session: session, request: encoded }
+}
+
+update : Model, U64, Str -> Model
+update = |model, _pid, _ev| model
+
+view : Model -> Str
+view = |model| model.request
+
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
+records : Model -> Str
+records = |_model| "{}"
+
+wants : Model -> Str
+wants = |model| {
+	encoded = List.map(RocCap.requests(model.session), |document| match RocJson.encode(document) {
+		Ok(text) => text
+		Err(_) => ""
+	})
+	"{\"requests\":[${Str.join_with(encoded, ",")}]}"
+}
+
+snapshot : Model -> Str
+snapshot = |model| model.request
+
+restore : Str -> Model
+restore = |text| { session: RocCap.empty, request: text }
+"#;
+        let (wasm, _diagnostics, _provenance) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app.to_owned())],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            &["RocCap".to_owned(), "RocJson".to_owned()],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        let view = String::from_utf8(world.view().unwrap()).unwrap();
+        let decoded: serde_json::Value = serde_json::from_str(&view).unwrap();
+        assert_eq!(decoded["id"], "r0");
+        assert_eq!(decoded["cap"], "chat.say");
+        assert_eq!(decoded["args"]["text"], "7");
+        let wants = crate::world::WorldProgram::wants(&mut world)
+            .unwrap()
+            .unwrap();
+        let decoded_wants: serde_json::Value = serde_json::from_str(&wants).unwrap();
+        assert_eq!(decoded_wants["requests"][0]["id"], "r0");
+        assert_eq!(decoded_wants["requests"][0]["cap"], "chat.say");
+        assert_eq!(decoded_wants["requests"][1]["id"], "r1");
+        assert_eq!(decoded_wants["requests"][1]["cap"], "chat.history");
+        assert_eq!(decoded_wants["requests"][1]["args"]["count"], 5);
     }
 
     #[test]
@@ -488,6 +727,161 @@ mod tests {
         assert!(job.path().join("platform/platform.roc").is_file());
         assert!(job.path().join("platform/Screen.roc").is_file());
         assert!(!job.path().join("platform/notes.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn screen_widgets_fill_and_rule() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = r#"app [program] { pf: platform "../roc-world/platform.roc" }
+
+import pf.Screen
+
+Model : { n : U64 }
+
+program = { init, update, view, layout, records, wants, snapshot, restore }
+
+init : U64 -> Model
+init = |seed| { n: seed }
+
+update : Model, U64, Str -> Model
+update = |model, _pid, _ev| model
+
+view : Model -> Str
+view = |model| {
+    blank = Screen.new(6, 3)
+    filled = Screen.fill(blank, 0, 0, 3, 2, "x", { fg: 0, bg: 0, bold: Bool.False })
+    ruled = Screen.rule(filled, 0, 2, 6, "-", { fg: 0, bg: 0, bold: Bool.False })
+    written = Screen.put_text(ruled, 4, 1, model.n.to_str(), { fg: 0, bg: 0, bold: Bool.False })
+    Screen.render_plain(written)
+}
+
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
+records : Model -> Str
+records = |_model| "{}"
+
+wants : Model -> Str
+wants = |_model| "{}"
+
+snapshot : Model -> Str
+snapshot = |model| model.n.to_str()
+
+restore : Str -> Model
+restore = |text| match U64.from_str(text) {
+    Ok(n) => { n: n }
+    Err(_) => { n: 0 }
+}
+"#;
+        let (wasm, _diagnostics, _provenance) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app.to_owned())],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            &["Screen".to_owned()],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        let view = String::from_utf8(world.view().unwrap()).unwrap();
+        assert_eq!(view, "xxx   \nxxx 7 \n------");
+    }
+
+    #[tokio::test]
+    async fn text_helpers_trim_case_split_and_prefix() {
+        let Ok(roc_bin) = which_roc() else {
+            eprintln!("skipping: no roc binary on PATH");
+            return;
+        };
+        let Some(platform_dir) = default_platform_dir() else {
+            eprintln!(
+                "skipping: no roc-world platform with targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        };
+        let compiler = Compiler::new(platform_dir, roc_bin).unwrap();
+        let app = r#"app [program] { pf: platform "../roc-world/platform.roc" }
+
+import pf.RocText
+
+Model : { n : U64 }
+
+program = { init, update, view, layout, records, wants, snapshot, restore }
+
+init : U64 -> Model
+init = |seed| { n: seed }
+
+update : Model, U64, Str -> Model
+update = |model, _pid, _ev| model
+
+view : Model -> Str
+view = |model| {
+    trimmed = RocText.trim("  AbC\t\n")
+    lowered = RocText.lowercase(trimmed)
+    prefix = if model.n > 0 "hello" else "nope"
+    prefixed = RocText.starts_with("hello world", prefix)
+    prefixed_text = if prefixed "yes" else "no"
+    dropped = RocText.drop_prefix("cmd:go", "cmd:")
+    missing = RocText.drop_prefix("keep", "cmd:")
+    joined = RocText.join_lines(RocText.lines("a\nb\n"))
+    needle = if model.n > 0 "lo wo" else "zz"
+    found = RocText.contains("hello world", needle)
+    found_text = if found "yes" else "no"
+    "t=${trimmed}|l=${lowered}|p=${prefixed_text}|d=${dropped}|m=${missing}|j=${joined}|c=${found_text}"
+}
+
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
+
+records : Model -> Str
+records = |_model| "{}"
+
+wants : Model -> Str
+wants = |_model| "{}"
+
+snapshot : Model -> Str
+snapshot = |model| model.n.to_str()
+
+restore : Str -> Model
+restore = |text| match U64.from_str(text) {
+    Ok(n) => { n: n }
+    Err(_) => { n: 0 }
+}
+"#;
+        let (wasm, _diagnostics, _provenance) = compile(
+            &CompileSpec {
+                files: vec![("main.roc".to_owned(), app.to_owned())],
+                seed: 7,
+                native: false,
+            },
+            &compiler,
+            &["RocText".to_owned()],
+            COMPILE_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        let runner =
+            crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
+                .unwrap();
+        let mut world = runner.instantiate(7).unwrap();
+        let view = String::from_utf8(world.view().unwrap()).unwrap();
+        assert_eq!(view, "t=AbC|l=abc|p=yes|d=go|m=keep|j=a\nb\n|c=yes");
     }
 
     #[tokio::test]
@@ -509,7 +903,7 @@ mod tests {
         ))
         .unwrap();
         eprintln!("PROBE roc={}", compiler.roc_bin);
-        let (wasm, _diagnostics) = compile(
+        let (wasm, _diagnostics, provenance) = compile(
             &CompileSpec {
                 files: vec![("main.roc".to_owned(), counter)],
                 seed: 42,
@@ -521,6 +915,15 @@ mod tests {
         )
         .await
         .unwrap();
+        let crate::world::ModuleProvenance::SourceBuild(build) = provenance else {
+            panic!("source compilation must return build provenance");
+        };
+        assert_eq!(build.schema_version, 1);
+        assert_eq!(build.target, "wasm32");
+        assert_eq!(build.arguments[0], "build");
+        assert_eq!(build.compiler_blake3.len(), 64);
+        assert_eq!(build.platform_blake3.len(), 64);
+        assert_eq!(build.source_blake3.len(), 64);
         // The compiled module behaves like the checked-in one.
         let runner =
             crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
@@ -556,7 +959,7 @@ mod tests {
             "/examples/roc-screen/main.roc"
         ))
         .unwrap();
-        let (wasm, _diagnostics) = compile(
+        let (wasm, _diagnostics, provenance) = compile(
             &CompileSpec {
                 files: vec![("main.roc".to_owned(), app)],
                 seed: 7,
@@ -568,6 +971,10 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(matches!(
+            provenance,
+            crate::world::ModuleProvenance::SourceBuild(_)
+        ));
         let runner =
             crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())
                 .unwrap();
@@ -582,8 +989,17 @@ mod tests {
         )
         .unwrap();
         let frame = String::from_utf8(world.view().unwrap()).unwrap();
-        let rows: Vec<&str> = frame.split('\n').collect();
-        assert_eq!(rows.len(), 3);
+        let Some(crate::world_presentation::WorldSurface::Screen(screen)) =
+            crate::world_presentation::parse_surface(&frame).unwrap()
+        else {
+            panic!("Roc screen example must return a structured screen");
+        };
+        assert_eq!((screen.width, screen.height), (20, 3));
+        let rows: Vec<String> = screen
+            .cells
+            .chunks(usize::from(screen.width))
+            .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+            .collect();
         assert!(rows[0].starts_with("+-counter"));
         assert!(rows[1].starts_with("| count=1"));
         assert_eq!(rows[2], format!("+{}+", "-".repeat(18)));
@@ -612,7 +1028,7 @@ mod tests {
             "/examples/roc-counter/main.roc"
         ))
         .unwrap();
-        let (native, _diagnostics) = compile(
+        let (native, _diagnostics, provenance) = compile(
             &CompileSpec {
                 files: vec![("main.roc".to_owned(), counter)],
                 seed: 42,
@@ -624,6 +1040,10 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(matches!(
+            provenance,
+            crate::world::ModuleProvenance::SourceBuild(_)
+        ));
         assert!(crate::world_native::is_native_module(&native));
         let job = tempfile::tempdir().unwrap();
         let path = job.path().join("counter");
@@ -793,6 +1213,47 @@ mod tests {
         assert_eq!(
             resolve_program("no-such-compiler"),
             PathBuf::from("no-such-compiler")
+        );
+    }
+
+    #[test]
+    fn a_ceiling_bounds_the_effective_list_the_gate_sees() {
+        use crate::world_caps::CapLedger;
+        use std::collections::BTreeSet;
+
+        let modules = vec!["Key".to_owned(), "Screen".to_owned()];
+        let app = spec(vec![("main.roc", "import pf.Screen\napp [x] {}")]);
+        // `*` is granted, but the ceiling admits only Key: the gate sees Key alone.
+        let mut ledger = CapLedger::new(BTreeSet::from(["*".to_owned()]), false);
+        ledger.set_allowed(BTreeSet::from(["Key".to_owned()]));
+        let effective: Vec<String> = ledger.effective().into_iter().collect();
+        let refused = check_imports(&app, &modules, &effective)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("main.roc imports Screen"), "{refused}");
+
+        ledger.set_allowed(BTreeSet::from(["Key".to_owned(), "Screen".to_owned()]));
+        let effective: Vec<String> = ledger.effective().into_iter().collect();
+        assert!(check_imports(&app, &modules, &effective).is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_import_outside_the_effective_list_is_refused_before_the_compiler_runs() {
+        // A platform directory that passes `Compiler::new`, with no roc binary.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("platform.roc"), "x").unwrap();
+        std::fs::create_dir_all(root.path().join("targets/wasm32")).unwrap();
+        std::fs::write(root.path().join("targets/wasm32/host.wasm"), b"\0asm").unwrap();
+        std::fs::write(root.path().join("Screen.roc"), "module []\n").unwrap();
+        let compiler =
+            Compiler::new(root.path().to_path_buf(), "/nonexistent/roc".to_owned()).unwrap();
+        let app = spec(vec![("main.roc", "import pf.Screen\napp [x] {}")]);
+        let error = compile(&app, &compiler, &["Key".to_owned()], COMPILE_TIMEOUT)
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("main.roc imports Screen"),
+            "{error:#}"
         );
     }
 }
