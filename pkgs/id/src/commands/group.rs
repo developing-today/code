@@ -19,10 +19,10 @@ use p2panda_core::Hash;
 use serde_json::{Map, Value, json};
 
 use crate::cli::{DelegateArgs, GroupCommand, GroupTemplate, RevokeArgs};
-use crate::encryption::warnings::{Evaluator, Observation, Warning, size_tier};
 use crate::groups::actions::{Action, NewGroup};
 use crate::groups::log::{FILE_NAME, GroupLog, hash_from_hex, key_from_hex};
 use crate::groups::policy::{History, Join, OnMemberRemoved, Removal};
+use crate::groups::warnings::{Evaluator, Observation, Warning, size_tier};
 use crate::groups::{Delegate, GroupView, Key, Outcome};
 use crate::invites::Invitation;
 use crate::{KEY_FILE, load_or_create_keypair};

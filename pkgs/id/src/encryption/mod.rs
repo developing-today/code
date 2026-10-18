@@ -23,8 +23,11 @@ pub mod notice;
 pub mod ordering;
 pub mod roster;
 pub mod scheme;
-pub mod warnings;
 pub mod welcome;
+
+/// Re-exported so `crate::encryption::warnings` keeps working: the warnings now live in
+/// [`crate::groups::warnings`] so the crate builds without the `world` feature.
+pub use crate::groups::warnings;
 
 pub use history::{HistoryMode, HistoryModeError};
 pub use ordering::{Envelope, Orderer, OrdererError};

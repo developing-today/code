@@ -27,6 +27,14 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
+/// Re-exported so `crate::world::Isolation` keeps working: the type now lives
+/// in [`crate::groups::worlds`] so the crate builds without this feature.
+pub use crate::groups::worlds::Isolation;
+
+/// Re-exported so `crate::world::unix_ms` keeps working: the function now
+/// lives in [`crate::time`] so the crate builds without this feature.
+pub(crate) use crate::time::unix_ms;
+
 /// Bounded limits for one world.
 #[derive(Clone, Debug)]
 pub struct WorldLimits {
@@ -86,13 +94,16 @@ impl WorldScopes {
     pub const INPUT: Self = Self(0b100);
     /// Mint capabilities with a subset of this set.
     pub const DELEGATE: Self = Self(0b1000);
+    /// Read chat lines without being able to send them. `CHAT` also reads.
+    pub const HISTORY: Self = Self(0b1_0000);
     /// Default guest permissions.
     pub const GUEST: Self = Self(Self::JOIN.0 | Self::CHAT.0 | Self::INPUT.0);
     /// Every scope.
-    pub const ALL: Self = Self(Self::GUEST.0 | Self::DELEGATE.0);
+    pub const ALL: Self = Self(Self::GUEST.0 | Self::DELEGATE.0 | Self::HISTORY.0);
 
     /// Role presets used by `id world invite --role`. `spectator` joins and
-    /// reads; `player` also submits input; `guest` (the default) also chats;
+    /// sees the world but not the chat; `observer` also reads chat without
+    /// sending it; `player` submits input; `guest` (the default) also chats;
     /// `delegator` additionally mints narrower capabilities for others.
     ///
     /// The names are stable; the mapping to scopes is part of the protocol.
@@ -100,6 +111,7 @@ impl WorldScopes {
     pub fn from_role(name: &str) -> Option<Self> {
         match name {
             "spectator" => Some(Self::JOIN),
+            "observer" => Some(Self(Self::JOIN.0 | Self::HISTORY.0)),
             "player" => Some(Self(Self::JOIN.0 | Self::INPUT.0)),
             "guest" => Some(Self::GUEST),
             "delegator" => Some(Self(Self::GUEST.0 | Self::DELEGATE.0)),
@@ -108,7 +120,8 @@ impl WorldScopes {
     }
 
     /// The names accepted by [`Self::from_role`].
-    pub const ROLES: &'static [&'static str] = &["spectator", "player", "guest", "delegator"];
+    pub const ROLES: &'static [&'static str] =
+        &["spectator", "observer", "player", "guest", "delegator"];
 
     /// Raw scope bits, as journaled.
     #[must_use]
@@ -144,13 +157,31 @@ impl WorldScopes {
         self.0 & required.0 == required.0
     }
 
+    /// This set with the scopes it includes by implication: `CHAT` reads, so
+    /// it carries `HISTORY`. Apply it wherever sets are compared as sets.
+    #[must_use]
+    pub const fn implied(self) -> Self {
+        if self.contains(Self::CHAT) {
+            Self(self.0 | Self::HISTORY.0)
+        } else {
+            self
+        }
+    }
+
+    /// Whether a participant with this set may see chat lines.
+    #[must_use]
+    pub const fn reads_chat(self) -> bool {
+        self.0 & (Self::CHAT.0 | Self::HISTORY.0) != 0
+    }
+
     /// The scopes a delegate of this set may hold: a subset that keeps `JOIN`.
     /// `None` unless this set includes `DELEGATE` and `requested` is a subset.
+    /// A set with `CHAT` may delegate `HISTORY`, which `CHAT` includes.
     #[must_use]
     pub const fn attenuate(self, requested: Self) -> Option<Self> {
         if self.contains(Self::DELEGATE)
             && requested.contains(Self::JOIN)
-            && self.contains(requested)
+            && self.implied().contains(requested)
         {
             Some(requested)
         } else {
@@ -163,19 +194,23 @@ impl WorldScopes {
     #[must_use]
     pub fn allows_effect(self, cap: &str) -> bool {
         match cap {
-            "chat.say" | "chat.history" => self.contains(Self::CHAT),
+            "chat.say" => self.contains(Self::CHAT),
+            // Reading chat needs only the right to read it (`CHAT` or
+            // `HISTORY`), the same rule the event stream applies.
+            "chat.history" => self.reads_chat(),
             _ => self.contains(Self::JOIN),
         }
     }
 
-    /// Scopes named on the wire (`join`, `chat`, `input`, `delegate`), or
-    /// `None` if a name is unknown.
+    /// Scopes named on the wire (`join`, `chat`, `history`, `input`,
+    /// `delegate`), or `None` if a name is unknown.
     #[must_use]
     pub fn from_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<Self> {
         names.into_iter().try_fold(Self(0), |scopes, name| {
             let bit = match name {
                 "join" => Self::JOIN,
                 "chat" => Self::CHAT,
+                "history" => Self::HISTORY,
                 "input" => Self::INPUT,
                 "delegate" => Self::DELEGATE,
                 _ => return None,
@@ -252,6 +287,7 @@ pub enum WorldEventKind {
         module_hash: String,
         /// Seed passed to the program's `init`; with the module and the
         /// inputs after this event it reproduces the program state exactly.
+        /// Journal/admin only: join projections redact it to zero (#240).
         #[serde(default)]
         seed: u64,
         /// Server-observed origin metadata. Absent on older journal entries.
@@ -286,30 +322,6 @@ pub struct SourceBuildProvenance {
     pub target: String,
     /// Stable compiler arguments, excluding the temporary output path.
     pub arguments: Vec<String>,
-}
-
-/// Whether a world's directory may be read from other worlds.
-///
-/// Writes never cross worlds, whatever the setting.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Isolation {
-    /// No cross-world reads or writes, in either direction.
-    #[default]
-    Isolated,
-    /// Readable from other unisolated worlds, and only from them.
-    Unisolated,
-}
-
-impl Isolation {
-    /// The wire word: `isolated` or `unisolated`.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Isolated => "isolated",
-            Self::Unisolated => "unisolated",
-        }
-    }
 }
 
 /// Which paths a world's files may name.
@@ -741,6 +753,39 @@ pub struct WorldSnapshot {
     pub events: Vec<WorldEvent>,
     /// Public participant list.
     pub participants: Vec<Participant>,
+}
+
+/// The one projection of an event onto a viewer holding `scopes`.
+///
+/// Every path that hands an event to a participant — the snapshot, catch-up
+/// pages and the live stream — goes through it.
+///
+/// - A chat line is `None` unless `scopes` may read chat (`CHAT` or
+///   `HISTORY`): a join-only participant sees the world, not the talk.
+/// - A `ProgramInstalled` event keeps its module hash — joiners need it to
+///   fetch the module — but its install seed is zeroed (#240), because a
+///   program whose hidden state derives from `init(seed)` must not leak that
+///   state to every participant.
+/// - Anything else is returned as is.
+///
+/// The journal, the core's retained events and the admin paths keep the real
+/// events; replay that needs the seed uses the seed the admin installed with,
+/// through the journal/admin path.
+#[must_use]
+pub fn project_event_for(scopes: WorldScopes, event: &WorldEvent) -> Option<WorldEvent> {
+    match &event.kind {
+        WorldEventKind::Chat(_) if !scopes.reads_chat() => None,
+        WorldEventKind::ProgramInstalled { .. } => {
+            // Mutate in place so every other field, including the observed
+            // build provenance, is kept as it is.
+            let mut shown = event.clone();
+            if let WorldEventKind::ProgramInstalled { seed, .. } = &mut shown.kind {
+                *seed = 0;
+            }
+            Some(shown)
+        }
+        _ => Some(event.clone()),
+    }
 }
 
 /// Limits on what a capability may do before it stops working.
@@ -1304,7 +1349,7 @@ impl WorldCore {
             .account_for(credential)
             .context("invalid account credential")?;
         ensure!(
-            self.directory.ceiling(&account).contains(scopes),
+            self.directory.ceiling(&account).implied().contains(scopes),
             "this account may not hold those scopes"
         );
         self.mint(display_name, scopes, None, Some(account), bounds)
@@ -1346,7 +1391,7 @@ impl WorldCore {
             "you can only delegate to a friend"
         );
         ensure!(
-            self.directory.ceiling(friend).contains(scopes),
+            self.directory.ceiling(friend).implied().contains(scopes),
             "that friend may not hold those scopes"
         );
         self.delegate(token, scopes, bounds, display_name, Some(friend.to_owned()))
@@ -1399,9 +1444,9 @@ impl WorldCore {
         let mut scopes = WorldScopes::ALL;
         let mut current = Some(participant_id);
         while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
-            scopes = scopes.intersect(record.scopes);
+            scopes = scopes.intersect(record.scopes.implied());
             if let Some(subject) = &record.subject {
-                scopes = scopes.intersect(self.directory.ceiling(subject));
+                scopes = scopes.intersect(self.directory.ceiling(subject).implied());
             }
             let parent = record.parent.and_then(|id| self.capabilities.get(&id));
             if let Some(subject) = &record.subject
@@ -1636,10 +1681,30 @@ impl WorldCore {
         Ok(event)
     }
 
-    /// Return the current bounded snapshot after validating join scope.
+    /// Return the current bounded snapshot after validating join scope. Its
+    /// events are the viewer's projection: no chat without `chat` or
+    /// `history`, and no install seeds (#240).
     pub fn snapshot(&self, token: &JoinCapability) -> Result<WorldSnapshot> {
-        self.authorize(token, WorldScopes::JOIN)?;
-        Ok(self.snapshot_unchecked())
+        let participant_id = self.authorize(token, WorldScopes::JOIN)?;
+        Ok(self.snapshot_unchecked(self.viewer_scopes(participant_id)))
+    }
+
+    /// What the viewer holding `token` may see of `event`, as it is delivered
+    /// live. `Err` if the capability no longer joins (revoked, expired, or its
+    /// chain was cut), so a session can end; `Ok(None)` if the event is not
+    /// for this viewer.
+    pub fn project_for(
+        &self,
+        token: &JoinCapability,
+        event: &WorldEvent,
+    ) -> Result<Option<WorldEvent>> {
+        let participant_id = self.authorize(token, WorldScopes::JOIN)?;
+        Ok(project_event_for(self.viewer_scopes(participant_id), event))
+    }
+
+    fn viewer_scopes(&self, participant_id: u64) -> WorldScopes {
+        self.effective_scopes(participant_id)
+            .unwrap_or(WorldScopes(0))
     }
 
     fn viewer(&self, token: &JoinCapability) -> Result<Participant> {
@@ -1652,8 +1717,13 @@ impl WorldCore {
 
     /// Return retained events newer than `after_sequence`, plus the current
     /// cursor. If the cursor fell behind retention, the caller must resnapshot.
+    /// The events are the viewer's projection (see [`project_event_for`]), so
+    /// their sequences may skip withheld lines: a caller advances to
+    /// `current_sequence`, not to the last sequence it was given plus one.
+    /// Retention and `needs_snapshot` do not depend on the viewer.
     pub fn events_after(&self, token: &JoinCapability, after_sequence: u64) -> Result<EventPage> {
-        self.authorize(token, WorldScopes::JOIN)?;
+        let participant_id = self.authorize(token, WorldScopes::JOIN)?;
+        let scopes = self.viewer_scopes(participant_id);
         let oldest = self.oldest_sequence();
         let needs_snapshot = after_sequence.saturating_add(1) < oldest;
         let events = if needs_snapshot {
@@ -1662,7 +1732,7 @@ impl WorldCore {
             self.events
                 .iter()
                 .filter(|event| event.sequence > after_sequence)
-                .cloned()
+                .filter_map(|event| project_event_for(scopes, event))
                 .collect()
         };
         Ok(EventPage {
@@ -1726,7 +1796,7 @@ impl WorldCore {
             .map_or_else(|| self.sequence.saturating_add(1), |event| event.sequence)
     }
 
-    fn snapshot_unchecked(&self) -> WorldSnapshot {
+    fn snapshot_unchecked(&self, viewer: WorldScopes) -> WorldSnapshot {
         let participants = self
             .capabilities
             .values()
@@ -1735,16 +1805,23 @@ impl WorldCore {
             .collect();
         // Take the most recent events that fit the snapshot budget, newest
         // first. A snapshot is a baseline, not a complete replay: clients
-        // adopt its sequence as their cursor.
+        // adopt its sequence as their cursor. Events the viewer may not see
+        // are dropped before the budget is spent, so it counts only what the
+        // snapshot carries.
         let mut budget = self.limits.snapshot_bytes;
         let mut events: VecDeque<WorldEvent> = VecDeque::new();
-        for event in self.events.iter().rev() {
-            let size = serde_json::to_vec(event).map_or(budget, |encoded| encoded.len());
+        for event in self
+            .events
+            .iter()
+            .rev()
+            .filter_map(|event| project_event_for(viewer, event))
+        {
+            let size = serde_json::to_vec(&event).map_or(budget, |encoded| encoded.len());
             if size > budget {
                 break;
             }
             budget -= size;
-            events.push_front(event.clone());
+            events.push_front(event);
         }
         let oldest_retained_sequence = events
             .front()
@@ -1831,6 +1908,11 @@ enum WorldCommand {
         token: JoinCapability,
         sequence: u64,
         reply: oneshot::Sender<Result<EventPage>>,
+    },
+    ProjectEvent {
+        token: JoinCapability,
+        event: WorldEvent,
+        reply: oneshot::Sender<Result<Option<WorldEvent>>>,
     },
     View {
         token: JoinCapability,
@@ -2700,6 +2782,13 @@ impl WorldActor {
             } => {
                 let _ = reply.send(self.core.events_after(&token, sequence));
             }
+            WorldCommand::ProjectEvent {
+                token,
+                event,
+                reply,
+            } => {
+                let _ = reply.send(self.core.project_for(&token, &event));
+            }
             WorldCommand::View { token, reply } => {
                 let result = match self.core.viewer(&token) {
                     Ok(viewer) if self.program_healthy => match self.program.view(&viewer) {
@@ -2932,13 +3021,6 @@ impl WorldActor {
     }
 }
 
-/// Milliseconds since the Unix epoch; 0 if the clock is before it.
-pub(crate) fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
-}
-
 impl WorldHandle {
     /// Spawn a world actor on the current Tokio runtime.
     pub fn spawn(core: WorldCore) -> Self {
@@ -3017,7 +3099,10 @@ impl WorldHandle {
         self.records.clone()
     }
 
-    /// Subscribe to newly committed world events.
+    /// Subscribe to newly committed world events, as the host committed them:
+    /// unprojected, with chat and the real install seed. Whatever forwards
+    /// these to a participant must first pass each through
+    /// [`WorldHandle::project_event`].
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<WorldEvent> {
         self.events.subscribe()
@@ -3448,6 +3533,29 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped snapshot response")?
+    }
+
+    /// What the holder of `token` may see of a live `event` (from
+    /// [`WorldHandle::subscribe`]): `Ok(None)` if the event is not for this
+    /// viewer, `Err` if the capability no longer joins. Judged by the
+    /// viewer's scopes at this moment.
+    pub async fn project_event(
+        &self,
+        token: JoinCapability,
+        event: WorldEvent,
+    ) -> Result<Option<WorldEvent>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ProjectEvent {
+                token,
+                event,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped projection response")?
     }
 
     /// Catch up from an event cursor, or learn that a new snapshot is needed.
@@ -5008,7 +5116,17 @@ mod tests {
         let spectator = WorldScopes::from_role("spectator").unwrap();
         assert!(spectator.allows_effect("time.now"));
         assert!(!spectator.allows_effect("chat.say"));
+        assert!(!spectator.allows_effect("chat.history"));
+        assert!(!spectator.reads_chat());
         assert!(spectator.attenuate(WorldScopes::INPUT).is_none());
+
+        // An observer reads chat, through the stream and `chat.history`
+        // alike, and still cannot send it or act.
+        let observer = WorldScopes::from_role("observer").unwrap();
+        assert!(observer.reads_chat());
+        assert!(observer.allows_effect("chat.history"));
+        assert!(!observer.allows_effect("chat.say"));
+        assert!(!observer.contains(WorldScopes::INPUT));
 
         let player = WorldScopes::from_role("player").unwrap();
         assert!(player.contains(WorldScopes::INPUT));
@@ -5026,7 +5144,7 @@ mod tests {
         assert_eq!(WorldScopes::from_role("builder"), None);
         assert_eq!(
             WorldScopes::ROLES,
-            &["spectator", "player", "guest", "delegator"]
+            &["spectator", "observer", "player", "guest", "delegator"]
         );
     }
 
@@ -5240,6 +5358,385 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn join_projections_redact_the_install_seed_but_the_journal_keeps_it() {
+        // Issue #240: the install seed was serialized to every joiner via
+        // `events_after` and the snapshot. The journal (and the admin paths
+        // fed from it) must keep the real seed; join projections must not.
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "test-world".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::Committed {
+                event: WorldEvent {
+                    sequence: 1,
+                    participant_id: 0,
+                    kind: WorldEventKind::ProgramInstalled {
+                        module_hash: "ab".repeat(32),
+                        seed: 424_242,
+                        provenance: None,
+                    },
+                },
+            },
+        ];
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.program.as_ref().map(|program| program.seed),
+            Some(424_242),
+            "the journal restore path keeps the real seed for the admin"
+        );
+        let mut core = restored.core;
+        assert_eq!(core.active_seed, 424_242, "the core keeps the real seed");
+        let (_, token) = join(&mut core, "Ada");
+        let page = core.events_after(&token, 0).unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert!(
+            matches!(
+                &page.events[0].kind,
+                WorldEventKind::ProgramInstalled { module_hash, seed, .. }
+                    if module_hash == &"ab".repeat(32) && *seed == 0
+            ),
+            "events_after must keep the module hash but redact the seed: {:?}",
+            page.events[0].kind
+        );
+        assert!(
+            !format!("{page:?}").contains("424242"),
+            "events_after leaked the install seed"
+        );
+        let snapshot = core.snapshot(&token).unwrap();
+        assert_eq!(snapshot.events.len(), 1);
+        assert!(
+            !serde_json::to_string(&snapshot).unwrap().contains("424242"),
+            "the snapshot leaked the install seed"
+        );
+    }
+
+    fn scoped(core: &mut WorldCore, name: &str, names: &[&str]) -> JoinCapability {
+        let scopes = WorldScopes::from_names(names.iter().copied()).unwrap();
+        core.issue_capability(name, scopes, CapabilityBounds::default())
+            .unwrap()
+            .1
+    }
+
+    fn chat_texts(events: &[WorldEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                WorldEventKind::Chat(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Chat line, input, chat line, input: sequences 1..=4.
+    fn talk(core: &mut WorldCore, speaker: &JoinCapability) {
+        core.chat(speaker, "one").unwrap();
+        core.input(speaker, b"a").unwrap();
+        core.chat(speaker, "two").unwrap();
+        core.input(speaker, b"b").unwrap();
+    }
+
+    #[test]
+    fn chat_visibility_follows_the_viewers_scopes() {
+        let mut core = world(16);
+        let (_, speaker) = join(&mut core, "Ada");
+        let watcher = scoped(&mut core, "watch", &["join"]);
+        let reader = scoped(&mut core, "read", &["join", "history"]);
+        talk(&mut core, &speaker);
+
+        let sequences = |events: &[WorldEvent]| -> Vec<u64> {
+            events.iter().map(|event| event.sequence).collect()
+        };
+        for (token, sees_chat) in [(&speaker, true), (&reader, true), (&watcher, false)] {
+            let page = core.events_after(token, 0).unwrap();
+            let snapshot = core.snapshot(token).unwrap();
+            for events in [&page.events, &snapshot.events] {
+                let (lines, kept): (Vec<&str>, Vec<u64>) = if sees_chat {
+                    (vec!["one", "two"], vec![1, 2, 3, 4])
+                } else {
+                    (Vec::new(), vec![2, 4])
+                };
+                assert_eq!(chat_texts(events), lines);
+                assert_eq!(sequences(events), kept, "non-chat events are kept");
+            }
+        }
+    }
+
+    #[test]
+    fn chat_visibility_history_reads_without_sending() {
+        let mut core = world(16);
+        let (_, speaker) = join(&mut core, "Ada");
+        let reader = scoped(&mut core, "read", &["join", "history"]);
+        core.chat(&speaker, "hello").unwrap();
+        assert!(core.chat(&reader, "hi").is_err(), "history does not send");
+        assert!(core.input(&reader, b"a").is_err());
+        assert_eq!(
+            chat_texts(&core.events_after(&reader, 0).unwrap().events),
+            ["hello"]
+        );
+        assert_eq!(core.current_sequence(), 1, "a refused line commits nothing");
+    }
+
+    #[test]
+    fn chat_visibility_cursors_advance_across_gaps() {
+        let mut core = world(16);
+        let (_, speaker) = join(&mut core, "Ada");
+        let watcher = scoped(&mut core, "watch", &["join"]);
+        core.chat(&speaker, "one").unwrap();
+        core.chat(&speaker, "two").unwrap();
+
+        // Only chat so far: nothing to show, yet the cursor moves to the end
+        // and retention is judged on the world, not the viewer.
+        let page = core.events_after(&watcher, 0).unwrap();
+        assert!(page.events.is_empty());
+        assert!(!page.needs_snapshot);
+        assert_eq!(page.current_sequence, 2);
+        assert_eq!(page.oldest_retained_sequence, 1);
+        let again = core.events_after(&watcher, page.current_sequence).unwrap();
+        assert!(again.events.is_empty() && !again.needs_snapshot);
+
+        core.chat(&speaker, "three").unwrap();
+        core.input(&speaker, b"a").unwrap();
+        let page = core.events_after(&watcher, page.current_sequence).unwrap();
+        assert_eq!(
+            page.events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+            [4]
+        );
+        // Resuming from the last sequence it was given, across the gap, misses
+        // nothing and repeats nothing.
+        let last = page.events[0].sequence;
+        core.input(&speaker, b"b").unwrap();
+        let page = core.events_after(&watcher, last).unwrap();
+        assert_eq!(
+            page.events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+            [5]
+        );
+    }
+
+    #[test]
+    fn chat_visibility_retention_does_not_depend_on_the_viewer() {
+        let mut core = world(3);
+        let (_, speaker) = join(&mut core, "Ada");
+        let watcher = scoped(&mut core, "watch", &["join"]);
+        for line in ["one", "two", "three", "four"] {
+            core.chat(&speaker, line).unwrap();
+        }
+        // Sequences 1..=4 committed; 2..=4 retained, all of them chat.
+        let page = core.events_after(&watcher, 0).unwrap();
+        assert!(page.needs_snapshot, "the cursor fell behind retention");
+        assert_eq!(page.oldest_retained_sequence, 2);
+        let snapshot = core.snapshot(&watcher).unwrap();
+        assert!(snapshot.events.is_empty());
+        assert_eq!(snapshot.current_sequence, 4);
+        assert_eq!(snapshot.oldest_retained_sequence, 5, "carries no events");
+    }
+
+    #[test]
+    fn chat_visibility_the_snapshot_budget_counts_only_what_it_carries() {
+        let mut core = WorldCore::new(
+            "budget",
+            WorldLimits {
+                snapshot_bytes: 400,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        let (_, speaker) = join(&mut core, "Ada");
+        let watcher = scoped(&mut core, "watch", &["join"]);
+        core.input(&speaker, b"a").unwrap();
+        core.input(&speaker, b"b").unwrap();
+        for _ in 0..20 {
+            core.chat(&speaker, &"x".repeat(100)).unwrap();
+        }
+        let guest = core.snapshot(&speaker).unwrap();
+        assert!(
+            guest.events.len() < 22
+                && guest
+                    .events
+                    .iter()
+                    .all(|e| matches!(e.kind, WorldEventKind::Chat(_))),
+            "chat fills the budget for a viewer who sees it"
+        );
+        let snapshot = core.snapshot(&watcher).unwrap();
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .map(|e| e.sequence)
+                .collect::<Vec<_>>(),
+            [1, 2],
+            "withheld chat spends none of the budget"
+        );
+        assert_eq!(snapshot.oldest_retained_sequence, 1);
+    }
+
+    #[test]
+    fn chat_visibility_the_install_seed_stays_secret_for_every_scope() {
+        let event = WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "ab".repeat(32),
+                seed: 424_242,
+                provenance: None,
+            },
+        };
+        for scopes in [WorldScopes::JOIN, WorldScopes::GUEST, WorldScopes::ALL] {
+            let shown = project_event_for(scopes, &event).unwrap();
+            assert_eq!(
+                shown.kind,
+                WorldEventKind::ProgramInstalled {
+                    module_hash: "ab".repeat(32),
+                    seed: 0,
+                    provenance: None,
+                }
+            );
+        }
+        let chat = WorldEvent {
+            sequence: 2,
+            participant_id: 1,
+            kind: WorldEventKind::Chat("hi".to_owned()),
+        };
+        assert_eq!(project_event_for(WorldScopes::JOIN, &chat), None);
+        assert_eq!(
+            project_event_for(WorldScopes::CHAT, &chat),
+            Some(chat.clone())
+        );
+        assert_eq!(project_event_for(WorldScopes::HISTORY, &chat), Some(chat));
+    }
+
+    #[tokio::test]
+    async fn chat_visibility_the_live_stream_is_projected_per_viewer() {
+        let core = world(16);
+        let world = WorldHandle::spawn(core);
+        let (_, guest) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        let (_, watcher) = world.issue("watch", WorldScopes::JOIN).await.unwrap();
+        let mut live = world.subscribe();
+
+        world.chat(guest.clone(), "secret").await.unwrap();
+        world
+            .install_program(
+                "cd".repeat(32),
+                424_242,
+                Box::new(Counter {
+                    count: 0,
+                    bad: false,
+                }),
+            )
+            .await
+            .unwrap();
+
+        let chat = live.recv().await.unwrap();
+        let install = live.recv().await.unwrap();
+        // The raw stream is the host's: it carries the line and the real seed.
+        assert_eq!(chat_texts(std::slice::from_ref(&chat)), ["secret"]);
+        assert!(matches!(
+            install.kind,
+            WorldEventKind::ProgramInstalled { seed: 424_242, .. }
+        ));
+
+        // What a participant may be sent is the projection.
+        assert_eq!(
+            world
+                .project_event(watcher.clone(), chat.clone())
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            world
+                .project_event(guest.clone(), chat.clone())
+                .await
+                .unwrap(),
+            Some(chat)
+        );
+        for token in [&guest, &watcher] {
+            let shown = world
+                .project_event(token.clone(), install.clone())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(shown.kind, WorldEventKind::ProgramInstalled { seed: 0, .. }),
+                "{shown:?}"
+            );
+        }
+        // A revoked participant is an error, so its session ends.
+        let (revoked, gone) = world.issue("gone", WorldScopes::JOIN).await.unwrap();
+        assert!(world.revoke(revoked.id).await.unwrap());
+        assert!(world.project_event(gone, install).await.is_err());
+    }
+
+    #[test]
+    fn chat_visibility_scope_names_attenuation_and_chains() {
+        assert_eq!(
+            WorldScopes::from_names(["history"]),
+            Some(WorldScopes::HISTORY)
+        );
+        assert_eq!(WorldScopes::HISTORY.bits(), 0b1_0000);
+        assert_eq!(WorldScopes::from_names(["join", "telepathy"]), None);
+        assert_eq!(WorldScopes::from_bits(0b1_0000), Some(WorldScopes::HISTORY));
+        assert_eq!(WorldScopes::from_bits(0b10_0000), None);
+
+        let join_history = WorldScopes::JOIN.union(WorldScopes::HISTORY);
+        let chat_delegator = WorldScopes::GUEST.union(WorldScopes::DELEGATE);
+        let history_delegator = join_history.union(WorldScopes::DELEGATE);
+        // A reader delegates what it holds and no more; chat includes history.
+        assert_eq!(
+            history_delegator.attenuate(join_history),
+            Some(join_history)
+        );
+        assert_eq!(
+            history_delegator.attenuate(WorldScopes::JOIN),
+            Some(WorldScopes::JOIN)
+        );
+        assert!(history_delegator.attenuate(WorldScopes::GUEST).is_none());
+        assert!(
+            history_delegator
+                .attenuate(WorldScopes::JOIN.union(WorldScopes::CHAT))
+                .is_none(),
+            "reading does not include sending"
+        );
+        assert_eq!(chat_delegator.attenuate(join_history), Some(join_history));
+        assert!(
+            WorldScopes::GUEST.attenuate(join_history).is_none(),
+            "no delegate"
+        );
+        assert!(WorldScopes::GUEST.reads_chat() && join_history.reads_chat());
+        assert!(!WorldScopes::JOIN.union(WorldScopes::INPUT).reads_chat());
+        assert!(WorldScopes::ALL.contains(WorldScopes::HISTORY));
+    }
+
+    #[test]
+    fn chat_visibility_a_guest_can_hand_out_a_read_only_link() {
+        let mut core = world(16);
+        let owner = scoped(&mut core, "owner", &["join", "chat", "input", "delegate"]);
+        let (_, reader) = core
+            .attenuate(
+                &owner,
+                WorldScopes::JOIN.union(WorldScopes::HISTORY),
+                CapabilityBounds::default(),
+                "reader",
+            )
+            .unwrap();
+        let (_, watcher) = core
+            .attenuate(
+                &owner,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "watch",
+            )
+            .unwrap();
+        core.chat(&owner, "hello").unwrap();
+        assert_eq!(
+            chat_texts(&core.snapshot(&reader).unwrap().events),
+            ["hello"]
+        );
+        assert!(chat_texts(&core.snapshot(&watcher).unwrap().events).is_empty());
+        assert!(core.chat(&reader, "hi").is_err());
     }
 
     #[test]
@@ -5598,6 +6095,31 @@ mod account_tests {
         core.directory_mut()
             .accept_friend(b_credential, a, &world, 2)
             .unwrap();
+    }
+
+    #[test]
+    fn a_ceiling_that_allows_chat_allows_reading_it() {
+        let mut core = core();
+        let (_, ann_credential) = account(&mut core, "Ann");
+        let (_, guest) = core
+            .issue_for_account(
+                &ann_credential,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Ann",
+            )
+            .unwrap();
+        let (_, reader) = core
+            .issue_for_account(
+                &ann_credential,
+                WorldScopes::JOIN.union(WorldScopes::HISTORY),
+                CapabilityBounds::default(),
+                "Ann reads",
+            )
+            .unwrap();
+        core.chat(&guest, "hello").unwrap();
+        assert_eq!(core.snapshot(&reader).unwrap().events.len(), 1);
+        assert!(core.chat(&reader, "hi").is_err());
     }
 
     #[test]
