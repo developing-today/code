@@ -1,0 +1,53 @@
+# Nightly full check for pkgs/id — the heavy half of the old PR gate (#292).
+#
+# Runs the complete `nix flake check` for pkgs/id, including the checks that
+# were moved out of id-check.yml: Playwright browser E2E (test-e2e) and the
+# NixOS VM tests (nixos-serve, nixos-e2e, nixos-integration,
+# nixos-playwright-e2e). Nightly on a schedule, and on demand via
+# workflow_dispatch.
+#
+# The timeout is deliberately larger than the PR gate's 60 minutes: a full
+# check including VM image builds legitimately takes longer. It runs off
+# the PR path, so the cost lands on a schedule, not on a review.
+
+name: id e2e nightly
+
+on:
+  schedule:
+    # 07:23 UTC ≈ 01:23–02:23 local — off the hour, away from other dailies.
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: nix flake check (full)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@main
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      # Same store cache as the PR gate, so the nightly run starts warm
+      # and unchanged derivations are not rebuilt from cold (#288).
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # Enable KVM for NixOS VM integration tests
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run full nix flake check
+        run: nix flake check ./pkgs/id/ -L --keep-going
