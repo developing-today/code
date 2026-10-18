@@ -19,7 +19,8 @@
 //! event: the connection closes with an application code, and the peer's next read fails.
 
 use std::collections::HashSet;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -115,8 +116,34 @@ impl Tally {
     }
 }
 
+/// The events one side has committed, shared between the two sides of a loopback session so
+/// a cut can wait for a commit instead of guessing from a record count. Test plumbing only:
+/// production sessions ([`sync_over`]) never create one.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CommitSignal {
+    count: Arc<AtomicUsize>,
+}
+
+impl CommitSignal {
+    /// Records that `events` more events were committed, in one batch.
+    fn note(&self, events: usize) {
+        self.count.fetch_add(events, Ordering::SeqCst);
+    }
+
+    /// How many events have been committed so far.
+    fn committed(&self) -> usize {
+        self.count.load(Ordering::SeqCst)
+    }
+}
+
 /// Where to cut the connection, for the interruption test. The cut closes the connection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Some variants are not constructed by any current test: they are the rest of the
+/// interruption toolkit, kept for the next test that needs a flight- or record-counted
+/// cut. (Until the commit-waiting variant landed, the derived `PartialEq` was what kept
+/// them from reading as dead.)
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
 pub(crate) enum Cut {
     /// No cut.
     Never,
@@ -124,6 +151,23 @@ pub(crate) enum Cut {
     AfterFlights(u32),
     /// Close before this side writes event `n + 1`.
     AfterRecords(usize),
+    /// Close before this side writes event `records + 1`, but only once the peer has
+    /// committed `committed` events, as reported through `signal`.
+    ///
+    /// Closing a connection discards the stream data the peer has not read yet, so a cut
+    /// counted in records alone can land before the peer has read a whole batch: under
+    /// load the batch then never commits, and the interruption test sees 0 committed
+    /// events instead of one batch. Waiting for the commit makes the cut deterministic.
+    /// The wait is capped (see `wait_for_commit`): if the commit never comes, the cut
+    /// happens anyway and the test's assertions report the state the peer reached.
+    AfterRecordsWhenCommitted {
+        /// Events to write before the cut, as in [`Cut::AfterRecords`].
+        records: usize,
+        /// The commits the peer reports as it flushes each batch.
+        signal: CommitSignal,
+        /// How many committed events to wait for before cutting.
+        committed: usize,
+    },
 }
 
 /// Runs one range session over an open connection. The dialer opens the stream and passes
@@ -146,7 +190,16 @@ pub async fn sync_over(
 ) -> Result<Outcome> {
     match tokio::time::timeout(
         deadline,
-        run(store, conn, initiator, params, now_ms, Cut::Never, gate),
+        run(
+            store,
+            conn,
+            initiator,
+            params,
+            now_ms,
+            Cut::Never,
+            gate,
+            None,
+        ),
     )
     .await
     {
@@ -243,6 +296,19 @@ async fn read_frame(recv: &mut RecvStream) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Waits until `signal` reports at least `committed` events, capped at 30 s. The cap keeps
+/// a peer that never commits from hanging the session: the cut then happens anyway, and
+/// the caller's assertions report the state the peer actually reached.
+async fn wait_for_commit(signal: &CommitSignal, committed: usize) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while signal.committed() < committed {
+        if tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 /// Writes one message as frames, or closes the connection if the cut is due.
 async fn write_flight(
     send: &mut SendStream,
@@ -250,9 +316,9 @@ async fn write_flight(
     out: &mut Outcome,
     msg: &[Entry],
     params: Params,
-    cut: Cut,
+    cut: &Cut,
 ) -> Result<()> {
-    if cut == Cut::AfterFlights(out.flights) {
+    if matches!(cut, Cut::AfterFlights(flights) if *flights == out.flights) {
         conn.close(1u32.into(), b"cut");
         bail!("cut before flight {}", out.flights + 1);
     }
@@ -351,6 +417,7 @@ async fn run(
     now_ms: u64,
     cut: Cut,
     gate: &PullGate,
+    commits: Option<CommitSignal>,
 ) -> Result<Outcome> {
     let (mut send, mut recv) = if initiator {
         conn.open_bi().await?
@@ -378,7 +445,7 @@ async fn run(
             &mut out,
             &[party.full_range()],
             params,
-            cut,
+            &cut,
         )
         .await?;
     }
@@ -389,7 +456,7 @@ async fn run(
         }
         let reply = party.respond(&incoming, params, &mut learned);
         let last = all_skip(&reply);
-        write_flight(&mut send, conn, &mut out, &reply, params, cut).await?;
+        write_flight(&mut send, conn, &mut out, &reply, params, &cut).await?;
         if last {
             break;
         }
@@ -416,13 +483,30 @@ async fn run(
     out.learned = learned;
     let store = Mutex::new(store);
 
+    // The record cut, resolved once: how many events to write before closing, and the
+    // commit to wait for first, if the cut is one that waits.
+    let cut_records: Option<(usize, Option<(CommitSignal, usize)>)> = match &cut {
+        Cut::AfterRecords(records) => Some((*records, None)),
+        Cut::AfterRecordsWhenCommitted {
+            records,
+            signal,
+            committed,
+        } => Some((*records, Some((signal.clone(), *committed)))),
+        Cut::Never | Cut::AfterFlights(_) => None,
+    };
+
     let sending = async {
         let count = u32::try_from(offers.len())?;
         let mut bytes = write_frame(&mut send, &count.to_be_bytes()).await?;
         for (sent, id) in offers.iter().enumerate() {
-            if cut == Cut::AfterRecords(sent) {
-                conn.close(1u32.into(), b"cut");
-                bail!("cut before event {}", sent + 1);
+            if let Some((records, wait)) = &cut_records {
+                if sent == *records {
+                    if let Some((signal, committed)) = wait {
+                        wait_for_commit(signal, *committed).await;
+                    }
+                    conn.close(1u32.into(), b"cut");
+                    bail!("cut before event {}", sent + 1);
+                }
             }
             let record = lock(&store)?
                 .sync_bytes(id)?
@@ -456,10 +540,10 @@ async fn run(
             );
             pending.push(event);
             if pending.len() == BATCH_EVENTS {
-                flush(&store, &mut pending, now_ms, &mut tally)?;
+                flush(&store, &mut pending, now_ms, &mut tally, &commits)?;
             }
         }
-        flush(&store, &mut pending, now_ms, &mut tally)?;
+        flush(&store, &mut pending, now_ms, &mut tally, &commits)?;
         anyhow::Ok((count, tally))
     };
 
@@ -481,13 +565,21 @@ fn flush(
     pending: &mut Vec<Event>,
     now_ms: u64,
     tally: &mut Tally,
+    commits: &Option<CommitSignal>,
 ) -> Result<()> {
     if pending.is_empty() {
         return Ok(());
     }
     let events = std::mem::take(pending);
+    let committed = events.len();
     let mut guard = lock(store)?;
-    apply_batch(&mut guard, events, now_ms, tally)
+    apply_batch(&mut guard, events, now_ms, tally)?;
+    // Only a batch that committed is reported: an error above ends the batch, and
+    // nothing in it commits.
+    if let Some(signal) = commits {
+        signal.note(committed);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -626,18 +718,24 @@ mod tests {
         let server = endpoint(vec![ALPN.to_vec()]).await?;
         let client = endpoint_as(dialer, vec![]).await?;
         let target = loopback_addr(&server);
+        // A cut that waits for a commit is fed by the acceptor: it reports each batch it
+        // commits into the cut's signal, so the dialer cuts on committed state.
+        let acceptor_commits = match &cut {
+            Cut::AfterRecordsWhenCommitted { signal, .. } => Some(signal.clone()),
+            _ => None,
+        };
         let accepting = async {
             let incoming = server
                 .accept()
                 .await
                 .context("endpoint closed before a connection")?;
             let conn = incoming.await?;
-            let out = run(b, &conn, false, pb, NOW, Cut::Never, gate).await;
+            let out = run(b, &conn, false, pb, NOW, Cut::Never, gate, acceptor_commits).await;
             anyhow::Ok((out, conn))
         };
         let dialing = async {
             let conn = client.connect(target, ALPN).await?;
-            let out = run(a, &conn, true, pa, NOW, cut, &open).await;
+            let out = run(a, &conn, true, pa, NOW, cut, &open, None).await;
             anyhow::Ok((out, conn))
         };
         let (dialed, accepted) = tokio::time::timeout(Duration::from_secs(300), async {
@@ -824,6 +922,44 @@ mod tests {
         }
     }
 
+    /// The commit signal is shared between the two sides of a loopback session: every clone
+    /// sees the batches each clone reports.
+    #[test]
+    fn test_commit_signal_counts_the_batches_each_clone_reports() {
+        let signal = CommitSignal::default();
+        let clone = signal.clone();
+        assert_eq!(signal.committed(), 0);
+        clone.note(BATCH_EVENTS);
+        signal.note(144);
+        assert_eq!(signal.committed(), BATCH_EVENTS + 144);
+        assert_eq!(clone.committed(), BATCH_EVENTS + 144);
+    }
+
+    /// A cut that waits for a commit is released by the commit it waits for, and a commit
+    /// that already happened releases it at once.
+    #[tokio::test]
+    async fn test_wait_for_commit_is_released_by_the_commit_it_waits_for() {
+        let signal = CommitSignal::default();
+        let waiting = {
+            let signal = signal.clone();
+            tokio::spawn(async move {
+                wait_for_commit(&signal, BATCH_EVENTS).await;
+            })
+        };
+        signal.note(BATCH_EVENTS);
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        let ready = CommitSignal::default();
+        ready.note(BATCH_EVENTS);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            wait_for_commit(&ready, BATCH_EVENTS).await;
+        })
+        .await
+        .unwrap();
+    }
+
     /// An interrupted session commits whole batches only. A restart from scratch sends only the
     /// missing events, with no duplicate.
     #[tokio::test(flavor = "multi_thread")]
@@ -833,14 +969,21 @@ mod tests {
         populate(&mut a, &[(1, 300), (2, 300)]);
         let total = ids(&a);
 
-        // A cuts after 400 events. B has decided one full batch of 256, and the other 144 died
-        // with the session.
+        // A cuts after 400 events, but the cut waits until B has committed its first
+        // batch: closing the connection discards whatever B has not read yet, so a cut
+        // counted in records alone can land before B reads 256 events under load, and
+        // the batch then never commits (#188). B has decided one full batch of 256, and
+        // the other 144 died with the session.
         let (first_a, first_b) = loopback(
             &mut a,
             &mut b,
             Params::default(),
             Params::default(),
-            Cut::AfterRecords(400),
+            Cut::AfterRecordsWhenCommitted {
+                records: 400,
+                signal: CommitSignal::default(),
+                committed: BATCH_EVENTS,
+            },
         )
         .await
         .unwrap();

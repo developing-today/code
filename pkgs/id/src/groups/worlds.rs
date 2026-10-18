@@ -25,9 +25,38 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 use super::fold::{FoldError, Projection, fold};
 use super::{Event, Grant, Key, Role};
-use crate::world::Isolation;
+
+/// Whether a world's directory may be read from other worlds.
+///
+/// Writes never cross worlds, whatever the setting.
+///
+/// Lives here (rather than in `crate::world`) so the cross-world authority
+/// model — and the `crate::blob_gate` access checks built on it — compile
+/// without the `world` feature. `crate::world` re-exports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Isolation {
+    /// No cross-world reads or writes, in either direction.
+    #[default]
+    Isolated,
+    /// Readable from other unisolated worlds, and only from them.
+    Unisolated,
+}
+
+impl Isolation {
+    /// The wire word: `isolated` or `unisolated`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Isolated => "isolated",
+            Self::Unisolated => "unisolated",
+        }
+    }
+}
 
 /// A world's name, as `WorldCore::world_id` names it.
 pub type World = String;
@@ -156,13 +185,12 @@ mod tests {
     use p2panda_core::Hash;
     use proptest::prelude::*;
 
-    use super::{Markers, Worlds};
+    use super::{Isolation, Markers, Worlds};
     use crate::groups::policy::Policy;
     use crate::groups::{
         Body, Create, Delegate, Event, Key, MemberOp, Outcome, Refusal, Role, Template,
     };
-    use crate::world::Isolation;
-    use crate::world::Isolation::{Isolated, Unisolated};
+    use Isolation::{Isolated, Unisolated};
 
     /// The accounts the tests use. Account 1 founds each world and is its Admin.
     const KEYS: [Key; 5] = [[1; 32], [2; 32], [3; 32], [4; 32], [5; 32]];

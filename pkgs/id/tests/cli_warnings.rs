@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::str::FromStr;
 
-use id::encryption::warnings::Warning;
 use id::groups::Role;
 use id::groups::log::GroupLog;
+use id::groups::warnings::Warning;
 use p2panda_core::Hash;
 use tempfile::TempDir;
 
