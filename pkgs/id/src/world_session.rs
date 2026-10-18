@@ -1812,15 +1812,20 @@ async fn joined<I: SessionIo>(
                     if event.sequence <= cursor {
                         continue;
                     }
-                    // Re-validating the capability on every delivery is what
-                    // disconnects a revoked participant.
-                    if world.snapshot(token.clone()).await.is_err() {
+                    // Projecting the event re-validates the capability on every
+                    // delivery, which is what disconnects a revoked
+                    // participant, and applies what this viewer may see now.
+                    let Ok(projected) = world.project_event(token.clone(), event.clone()).await else {
                         break;
-                    }
-                    if !send_json(io, &ServerFrame::Event { event: &event }).await {
-                        break;
-                    }
+                    };
+                    // A withheld event still moves the cursor past it.
                     cursor = event.sequence;
+                    let Some(shown) = projected else {
+                        continue;
+                    };
+                    if !send_json(io, &ServerFrame::Event { event: &shown }).await {
+                        break;
+                    }
                     if !send_view(world, io, &token, cursor).await {
                         break;
                     }
@@ -2218,6 +2223,11 @@ mod tests {
             Some(serde_json::from_str(&frame).unwrap())
         }
     }
+
+    /// A program that does nothing, for tests that only install one.
+    struct NoProgram;
+
+    impl crate::world::WorldProgram for NoProgram {}
 
     /// Publishes 1024 records of about 1 KiB, so one query needs several
     /// pages (the page budget is 768 KiB).
@@ -3167,13 +3177,20 @@ mod tests {
             .await;
         assert_eq!(w.next().await.unwrap()["message"], "world event rejected");
 
+        // Chat reaches the guest; the join-only watcher hears the next
+        // non-chat event instead, past a gap in sequence numbers.
         a.say(serde_json::json!({"type":"chat","text":"hello"}))
             .await;
-        for peer in [&mut a, &mut w] {
-            let frame = peer.next().await.unwrap();
-            assert_eq!(frame["type"], "event");
-            assert!(frame.to_string().contains("hello"));
-        }
+        let frame = a.next().await.unwrap();
+        assert_eq!(frame["type"], "event");
+        assert!(frame.to_string().contains("hello"));
+        a.say(serde_json::json!({"type":"input","data_hex":"00"}))
+            .await;
+        let frame = w.next().await.unwrap();
+        assert_eq!(frame["type"], "event");
+        assert_eq!(frame["event"]["sequence"], 2, "{frame}");
+        assert!(!frame.to_string().contains("hello"), "{frame}");
+        assert_eq!(a.next().await.unwrap()["event"]["sequence"], 2);
         a.say(serde_json::json!({"type":"input","data_hex":"xyz"}))
             .await;
         assert_eq!(
@@ -3183,5 +3200,154 @@ mod tests {
         a.say(serde_json::json!({"type":"join","capability":"x"}))
             .await;
         assert_eq!(a.next().await.unwrap()["message"], "already joined");
+    }
+
+    fn kinds(events: &serde_json::Value) -> Vec<String> {
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["kind"]["kind"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn chat_visibility_a_join_only_joiner_gets_a_snapshot_without_chat() {
+        let svc = service(None);
+        let world = svc.world();
+        let (_, guest) = world
+            .issue("guest".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let (_, join_only) = world
+            .issue("join".to_owned(), WorldScopes::JOIN)
+            .await
+            .unwrap();
+        let (_, reader) = world
+            .issue(
+                "reader".to_owned(),
+                WorldScopes::from_names(["join", "history"]).unwrap(),
+            )
+            .await
+            .unwrap();
+        world
+            .chat(guest.clone(), "secret".to_owned())
+            .await
+            .unwrap();
+        world.input(guest.clone(), b"move".to_vec()).await.unwrap();
+
+        for (token, sees_chat) in [(&guest, true), (&reader, true), (&join_only, false)] {
+            let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+            peer.say(serde_json::json!({"type":"join","capability":token.expose()}))
+                .await;
+            let frame = peer.next().await.unwrap();
+            assert_eq!(frame["type"], "snapshot");
+            let events = &frame["snapshot"]["events"];
+            assert_eq!(frame["snapshot"]["current_sequence"], 2);
+            assert_eq!(
+                kinds(events),
+                if sees_chat {
+                    vec!["chat", "input"]
+                } else {
+                    vec!["input"]
+                },
+                "{frame}"
+            );
+            assert_eq!(frame.to_string().contains("secret"), sees_chat, "{frame}");
+        }
+
+        // A rejoin from a cursor goes through catch-up, which projects too.
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({"type":"join","capability":join_only.expose(),"after":0}))
+            .await;
+        let frame = peer.next().await.unwrap();
+        assert_eq!(frame["type"], "event", "{frame}");
+        assert_eq!(frame["event"]["sequence"], 2);
+        assert!(!frame.to_string().contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn chat_visibility_a_live_install_never_shows_a_session_the_seed() {
+        // The raw broadcast carries the real seed; the session sends a
+        // snapshot and a program-changed frame instead, and every frame it
+        // sends is built from the projection.
+        let svc = service(None);
+        let world = svc.world();
+        let (_, guest) = world
+            .issue("guest".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
+        peer.say(serde_json::json!({"type":"join","capability":guest.expose()}))
+            .await;
+        assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        world
+            .install_program("ab".repeat(32), 424_242, Box::new(NoProgram))
+            .await
+            .unwrap();
+        let mut frames = Vec::new();
+        loop {
+            let frame = peer.next().await.unwrap();
+            let done = frame["type"] == "program_changed";
+            frames.push(frame);
+            if done {
+                break;
+            }
+        }
+        let text = serde_json::to_string(&frames).unwrap();
+        assert!(!text.contains("424242"), "{text}");
+        assert!(text.contains(&"ab".repeat(32)), "the module hash is kept");
+    }
+
+    #[tokio::test]
+    async fn chat_visibility_the_live_stream_follows_the_viewers_scopes() {
+        let svc = service(None);
+        let world = svc.world();
+        let (_, guest) = world
+            .issue("guest".to_owned(), WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let (_, join_only) = world
+            .issue("join".to_owned(), WorldScopes::JOIN)
+            .await
+            .unwrap();
+        let (_, reader) = world
+            .issue(
+                "reader".to_owned(),
+                WorldScopes::from_names(["join", "history"]).unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut watcher = Peer::connect(svc.clone(), SessionConfig::default());
+        let mut reading = Peer::connect(svc.clone(), SessionConfig::default());
+        for (peer, token) in [(&mut watcher, &join_only), (&mut reading, &reader)] {
+            peer.say(serde_json::json!({"type":"join","capability":token.expose()}))
+                .await;
+            assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+        }
+
+        world
+            .chat(guest.clone(), "secret".to_owned())
+            .await
+            .unwrap();
+        world.input(guest.clone(), b"move".to_vec()).await.unwrap();
+
+        let frame = reading.next().await.unwrap();
+        assert!(frame.to_string().contains("secret"), "{frame}");
+        assert_eq!(reading.next().await.unwrap()["event"]["sequence"], 2);
+        // The join-only watcher's first event is the input, after the gap.
+        let frame = watcher.next().await.unwrap();
+        assert_eq!(frame["type"], "event", "{frame}");
+        assert_eq!(frame["event"]["sequence"], 2, "{frame}");
+        assert!(!frame.to_string().contains("secret"));
+
+        // A reader may not speak.
+        reading
+            .say(serde_json::json!({"type":"chat","text":"hi"}))
+            .await;
+        assert_eq!(
+            reading.next().await.unwrap()["message"],
+            "world event rejected"
+        );
     }
 }
