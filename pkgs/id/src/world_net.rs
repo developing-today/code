@@ -808,6 +808,43 @@ impl WorldClient {
         prefix: Option<&str>,
     ) -> Result<crate::world::Records> {
         let mut all = crate::world::Records::new();
+        for (_, page) in self.record_pages(capability, prefix).await? {
+            all.extend(page);
+        }
+        Ok(all)
+    }
+
+    /// As [`Self::records`], also returning the sequence the records were
+    /// read at. Every page must report that sequence: a world that moved
+    /// mid-read would otherwise answer with a mix of two states.
+    ///
+    /// # Errors
+    ///
+    /// Host refusal, a malformed page, or a world that changed while paging.
+    pub async fn records_sequenced(
+        &mut self,
+        capability: &str,
+        prefix: Option<&str>,
+    ) -> Result<(u64, crate::world::Records)> {
+        let mut pages = self.record_pages(capability, prefix).await?.into_iter();
+        let (sequence, mut all) = pages.next().context("host sent no records page")?;
+        for (page_sequence, page) in pages {
+            anyhow::ensure!(
+                page_sequence == sequence,
+                "the world changed while its records were read"
+            );
+            all.extend(page);
+        }
+        Ok((sequence, all))
+    }
+
+    /// Every page of the records query, each tagged with its sequence.
+    async fn record_pages(
+        &mut self,
+        capability: &str,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(u64, crate::world::Records)>> {
+        let mut pages = Vec::new();
         let mut after: Option<String> = None;
         loop {
             self.send_json(&serde_json::json!({
@@ -829,16 +866,15 @@ impl WorldClient {
                         .unwrap_or("host refused the records query")
                 );
             }
-            anyhow::ensure!(
-                reply["sequence"].as_u64().is_some(),
-                "records reply has no sequence"
-            );
+            let sequence = reply["sequence"]
+                .as_u64()
+                .context("records reply has no sequence")?;
             let page: crate::world::Records =
                 serde_json::from_value(reply["records"].clone()).context("decode records page")?;
-            all.extend(page);
+            pages.push((sequence, page));
             match reply["next_after"].as_str() {
                 Some(next) => after = Some(next.to_owned()),
-                None => return Ok(all),
+                None => return Ok(pages),
             }
         }
     }
