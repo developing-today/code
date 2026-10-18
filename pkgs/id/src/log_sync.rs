@@ -529,7 +529,9 @@ mod tests {
     use crate::waiting::WaitingLimits;
     use iroh_base::SecretKey;
 
-    const DEADLINE: Duration = Duration::from_secs(30);
+    // Keep test sessions aligned with production; CI can run the bulk page-transfer test under
+    // substantially more contention than a focused local invocation.
+    const DEADLINE: Duration = SESSION_DEADLINE;
 
     fn key(n: u8) -> SigningKey {
         SigningKey::from_bytes(&[n; 32])
