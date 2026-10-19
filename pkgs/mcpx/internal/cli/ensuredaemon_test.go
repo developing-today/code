@@ -60,7 +60,7 @@ func TestEnsureDaemonAlreadyCancelledContext(t *testing.T) {
 // Regression for #284: cancelling while EnsureDaemon waits for the
 // started daemon must end the wait promptly, not at the deadline.
 func TestEnsureDaemonCancelledWhileWaiting(t *testing.T) {
-	c, _ := ensureTestClient(t, "30s")
+	c, marker := ensureTestClient(t, "30s")
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		time.Sleep(200 * time.Millisecond)
@@ -73,6 +73,31 @@ func TestEnsureDaemonCancelledWhileWaiting(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("took %v after cancellation, want a prompt return", elapsed)
+	}
+	// The prompt return above is only the right behaviour if the daemon
+	// was actually started and the cancellation unwound the wait for it:
+	// a context.Canceled return with no spawn at all (a cancellation
+	// check ahead of the spawn, say) would pass both assertions while
+	// never starting anything. The spawn is cmd.Start + Release
+	// (client.go): Start returns once the process exists, before the
+	// child has run any code, and this test's whole point is that
+	// EnsureDaemon returns the instant cancellation lands — so the
+	// child's touch can legitimately land after the return. Asserting
+	// the marker instantly races the child's scheduling (the flake that
+	// got the dezren39/nix copy of this test skipped in its darwin nix
+	// build, dezren39/nix#428). The child is Setsid and Released, so it
+	// still runs: wait for the marker instead, and fail only if it never
+	// appears. Ported from the dezren39/nix copy in #361; its
+	// TestEnsureDaemonCancelWhilePolling has asserted this all along.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, statErr := os.Stat(marker); statErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected the daemon spawn to have happened before cancellation")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
