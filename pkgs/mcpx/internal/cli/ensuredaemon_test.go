@@ -92,3 +92,14 @@ func TestEnsureDaemonNeverReadyStillTimesOut(t *testing.T) {
 		t.Fatal("the fake daemon was never spawned")
 	}
 }
+
+// A cancelled context against a remote endpoint reports the cancellation,
+// not the generic "no daemon there" error.
+func TestEnsureDaemonRemoteCancelledContext(t *testing.T) {
+	c := NewClientAt(daemon.Paths{}, "", "http://127.0.0.1:1")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.EnsureDaemon(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("EnsureDaemon(remote, cancelled ctx) = %v, want context.Canceled", err)
+	}
+}
