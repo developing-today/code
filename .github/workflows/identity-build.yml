@@ -1,0 +1,55 @@
+name: identity build
+
+# Build verification for the pkgs/identity Go module (#340).
+#
+# pkgs/identity builds only with a build tag: its charm fork keeps the
+# sqlite/libsql migration variants behind the `sqlite` and `libsql` tags,
+# so a plain `go build ./...` fails on undefined Migration0003/0005/0006
+# symbols. Nothing built pkgs/identity in CI at all, so a change breaking
+# either tagged variant would rot silently. This workflow builds and
+# vets both variants whenever the module changes.
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/identity/**"
+      - ".github/workflows/identity-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/identity/**"
+      - ".github/workflows/identity-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: go build (${{ matrix.tags }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        tags: [sqlite, libsql]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/identity/go.mod
+          cache-dependency-path: pkgs/identity/go.sum
+
+      - name: Build
+        working-directory: pkgs/identity
+        run: go build -tags ${{ matrix.tags }} ./...
+
+      - name: Vet
+        working-directory: pkgs/identity
+        run: go vet -tags ${{ matrix.tags }} ./...
