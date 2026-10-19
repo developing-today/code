@@ -1,2 +1,4 @@
 .iroh*
 test.*
+.identity.db
+.identity.redb
