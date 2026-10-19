@@ -93,9 +93,9 @@ pub fn render_main_page_wrapper(content: &str) -> String {
     html.push_str("            <a href=\"/peers\" data-nav class=\"crt-glow\">peers</a>\n");
     html.push_str("            <a href=\"/settings\" data-nav class=\"crt-glow\">settings</a>\n");
     html.push_str("            <span class=\"flex items-center gap-1\">\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\"></button>\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\" aria-label=\"Sneak theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\" aria-label=\"Arch theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\" aria-label=\"Mech theme\"></button>\n");
     html.push_str("            </span>\n");
     html.push_str("        </nav>\n");
     html.push_str("    </header>\n");
@@ -458,9 +458,9 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("            <a href=\"/peers\" data-nav>peers</a>\n");
     html.push_str("            <a href=\"/settings\" data-nav>settings</a>\n");
     html.push_str("            <span class=\"flex items-center gap-1\">\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\"></button>\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\" aria-label=\"Sneak theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\" aria-label=\"Arch theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\" aria-label=\"Mech theme\"></button>\n");
     html.push_str("            </span>\n");
     html.push_str("        </nav>\n");
     html.push_str("    </div>\n");
@@ -474,7 +474,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("        <span class=\"flex items-center gap-1\" id=\"tag-add-inline\">\n");
     html.push_str("            <input type=\"text\" id=\"tag-add-key\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"key\" />\n");
     html.push_str("            <input type=\"text\" id=\"tag-add-value\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"value\" />\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" onclick=\"window.idApp?.addTagInline?.()\">+</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" onclick=\"window.idApp?.addTagInline?.()\" aria-label=\"Add tag\">+</button>\n");
     html.push_str("        </span>\n");
     html.push_str("    </div>\n");
 
