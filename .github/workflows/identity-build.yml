@@ -51,9 +51,17 @@ jobs:
         # Same gap as pkgs/map (#349): build/vet pass on an untidy
         # module, so drift would be silent. Tidy is build-tag agnostic,
         # so this one step covers both matrix tag variants.
-        # `go mod tidy -diff` prints the diff and exits nonzero when
-        # go.mod or go.sum is not tidy, without modifying the files.
-        run: go mod tidy -diff
+        # Pattern copied from go-modules-build.yml: these modules pin
+        # Go 1.21/1.22, whose `go mod tidy` has no -diff flag (added in
+        # Go 1.24; mcpx.yml can use it only because mcpx pins Go 1.27),
+        # so run tidy and fail if it changed anything.
+        run: |
+          go mod tidy
+          if [[ -n "$(git status --short -- go.mod go.sum)" ]]; then
+            echo "go mod tidy changed go.mod or go.sum; commit the tidy changes."
+            git diff -- go.mod go.sum
+            exit 1
+          fi
 
       - name: Build
         working-directory: pkgs/identity
