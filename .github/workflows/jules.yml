@@ -26,8 +26,14 @@ on:
   issues:
     types: [labeled]
   workflow_run:
-    workflows: ["*"]
+    # Only the CI workflows ci-failure-fix can act on (#304). "*" created a
+    # skipped no-op run for every workflow completion in the repo (48 of the
+    # last 100 runs at filing time were exactly that).
+    workflows: ["mcpx", "mcpx conformance", "mcpx nix build", "nix ci", "id"]
     types: [completed]
+    # ci-failure-fix ignores main-branch failures, so main completions
+    # should not create a run at all.
+    branches-ignore: ["main"]
   workflow_dispatch:
     inputs:
       prompt:
@@ -35,9 +41,11 @@ on:
         required: true
         type: string
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+# No workflow-level concurrency group (#304): for workflow_run events
+# github.ref is the default branch, so one shared group let any noise
+# completion cancel a pending ci-failure-fix run (queue: single). Each job
+# carries its own group below, keyed by its target, so a run whose jobs all
+# skip can never displace a run that would act.
 
 permissions:
   contents: read
@@ -46,6 +54,9 @@ permissions:
 jobs:
   weekly-cleanup:
     if: github.event_name == 'schedule'
+    concurrency:
+      group: ${{ github.workflow }}-weekly-cleanup
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -64,6 +75,9 @@ jobs:
   # avoid two agents racing on the same issue.
   issue-labeled:
     if: github.event_name == 'issues' && github.event.label.name == 'jules'
+    concurrency:
+      group: ${{ github.workflow }}-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -81,6 +95,12 @@ jobs:
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.head_branch != 'main'
+    concurrency:
+      group: >-
+        ${{ github.workflow }}-ci-failure-fix-${{
+        github.event.workflow_run.name }}-${{
+        github.event.workflow_run.head_branch }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -97,6 +117,9 @@ jobs:
 
   manual:
     if: github.event_name == 'workflow_dispatch'
+    concurrency:
+      group: ${{ github.workflow }}-manual
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
