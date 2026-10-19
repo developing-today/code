@@ -9,6 +9,13 @@ name: go modules build
 # compile and vet clean today; this workflow keeps them that way. One
 # matrix job per module so a failure names the module.
 #
+# Its first run immediately earned its keep: pkgs/database failed on its
+# own Go 1.21.3 with "ambiguous import: found package database in
+# multiple modules" — its go.mod was the bare `module database`, whose
+# root import path collides with the stdlib database tree (newer Go
+# accepts it, which hid the break). This PR also renames that module to
+# github.com/developing-today/code/src/database, matching chat/tea.
+#
 # pkgs/graph is deliberately excluded: its build failure is #166 and the
 # mod-tidy workflow already watches it. pkgs/map and pkgs/identity keep
 # their dedicated workflows (identity needs build tags).
