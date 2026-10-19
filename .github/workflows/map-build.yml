@@ -42,6 +42,24 @@ jobs:
           go-version-file: pkgs/map/go.mod
           cache-dependency-path: pkgs/map/go.sum
 
+      - name: Verify go.mod and go.sum are tidy
+        working-directory: pkgs/map
+        # Every sibling module already has this guard (go-modules-build
+        # for #347, mcpx.yml for nix#436, mod-tidy.yml for graph); map and
+        # identity were the last two without one, and build/vet pass on
+        # an untidy module, so drift here would be silent (#349).
+        # Pattern copied from go-modules-build.yml: these modules pin
+        # Go 1.21/1.22, whose `go mod tidy` has no -diff flag (added in
+        # Go 1.24; mcpx.yml can use it only because mcpx pins Go 1.27),
+        # so run tidy and fail if it changed anything.
+        run: |
+          go mod tidy
+          if [[ -n "$(git status --short -- go.mod go.sum)" ]]; then
+            echo "go mod tidy changed go.mod or go.sum; commit the tidy changes."
+            git diff -- go.mod go.sum
+            exit 1
+          fi
+
       - name: Build
         working-directory: pkgs/map
         run: go build ./...
