@@ -1,0 +1,50 @@
+name: research-workflow
+
+on:
+  pull_request:
+    paths:
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - '.agents/**'
+      - '.claude/skills/**'
+      - 'planning/**'
+      - 'doc/**/main.md'
+      - 'doc/**/concepts/**'
+      - 'doc/DOCUMENTATION_PROTOCOL.md'
+      - 'scripts/*research*workflow*.py'
+      - 'scripts/tests/test_*workflow*.py'
+      - '.github/workflows/research-workflow.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - '.agents/**'
+      - '.claude/skills/**'
+      - 'planning/**'
+      - 'doc/**/main.md'
+      - 'doc/**/concepts/**'
+      - 'doc/DOCUMENTATION_PROTOCOL.md'
+      - 'scripts/*research*workflow*.py'
+      - 'scripts/tests/test_*workflow*.py'
+      - '.github/workflows/research-workflow.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-workflow-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Exercise lossless intake and validation failures
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*workflow*.py' -v
+      - name: Check workflow profiles, skills, links, and actual packages
+        run: python3 scripts/research_workflow.py check --repo-root .
