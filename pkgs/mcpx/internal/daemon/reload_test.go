@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -45,6 +46,43 @@ func waitGone(t *testing.T, pid int) {
 			t.Fatalf("pid %d still running after reload", pid)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestStampConfigNoticesARepointedSymlinkWithSameSizeAndMtime(t *testing.T) {
+	// Nix store files all carry mtime 1, so a re-pointed config link whose
+	// new target has the same byte length as the old one is invisible to a
+	// stamp built from the followed file's mtime+size alone (#368). The
+	// stamp must notice the link itself moved.
+	dir := t.TempDir()
+	stampTime := time.Unix(1, 0)
+	genA := filepath.Join(t.TempDir(), "config.json")
+	genB := filepath.Join(t.TempDir(), "config.json")
+	// Same length, different content.
+	for p, body := range map[string]string{genA: `{"a":1}`, genB: `{"b":2}`} {
+		if err := os.WriteFile(p, []byte(body), 0o444); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, stampTime, stampTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := filepath.Join(dir, "config.json")
+	repoint := func(target string) {
+		t.Helper()
+		_ = os.Remove(cfg)
+		if err := os.Symlink(target, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repoint(genA)
+	before := stampConfig([]string{cfg})
+	if again := stampConfig([]string{cfg}); again != before {
+		t.Fatalf("stamp is not stable when nothing moved: %q vs %q", before, again)
+	}
+	repoint(genB)
+	if after := stampConfig([]string{cfg}); after == before {
+		t.Errorf("stamp did not notice the config link was re-pointed at a same-size, same-mtime file")
 	}
 }
 

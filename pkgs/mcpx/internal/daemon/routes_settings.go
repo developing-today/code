@@ -723,15 +723,30 @@ func (s *Server) watchConfig() {
 }
 
 // stampConfig is a cheap "did anything move" check: no file is read.
+//
+// A symlinked config needs both halves stamped (#368): the followed file's
+// mtime+size (an in-place edit to the target) and the link itself -- its
+// own mtime+size plus where it points. Nix store targets all carry mtime 1,
+// so a re-pointed link whose new target happens to have the same byte
+// length as the old one is invisible to the followed stat alone.
 func stampConfig(paths []string) string {
 	var b strings.Builder
 	for _, p := range paths {
-		st, err := os.Stat(p)
+		st, err := os.Lstat(p)
 		if err != nil {
 			b.WriteString(p + ":gone;")
 			continue
 		}
 		fmt.Fprintf(&b, "%s:%d:%d;", p, st.ModTime().UnixNano(), st.Size())
+		if st.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		if target, err := os.Readlink(p); err == nil {
+			b.WriteString("->" + target + ";")
+		}
+		if tst, err := os.Stat(p); err == nil {
+			fmt.Fprintf(&b, "target:%d:%d;", tst.ModTime().UnixNano(), tst.Size())
+		}
 	}
 	return b.String()
 }

@@ -133,6 +133,63 @@ func TestOneConfigReachedThroughASymlinkIsOneDaemon(t *testing.T) {
 	}
 }
 
+func TestAConfigBehindARepointedSymlinkKeepsItsDaemon(t *testing.T) {
+	// A nix/home-manager config is a symlink whose target is
+	// content-addressed: every content change re-points the link at a new
+	// store path. Resolving the file's own link made the daemon key follow
+	// the target (#368), so each edit moved the socket, the running daemon
+	// became unreachable, and a second daemon was started.
+	t.Setenv("MCPX_SOCKET", "")
+	dir := t.TempDir()
+	genA := filepath.Join(t.TempDir(), "config.json")
+	genB := filepath.Join(t.TempDir(), "config.json")
+	for p, body := range map[string]string{
+		genA: `{"mcpServers":{}}`,
+		genB: `{"mcpServers":{"added":{"command":"x"}}}`,
+	} {
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := filepath.Join(dir, "config.json")
+	repoint := func(target string) {
+		t.Helper()
+		_ = os.Remove(cfg)
+		if err := os.Symlink(target, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := daemon.Paths{State: "/tmp/s"}
+
+	repoint(genA)
+	before := daemon.FingerprintConfig([]string{cfg})
+	beforeContent := daemon.ContentFingerprint([]string{cfg})
+	repoint(genB)
+	after := daemon.FingerprintConfig([]string{cfg})
+	if before != after {
+		t.Errorf("re-pointing the config symlink moved the daemon key: %s vs %s", before, after)
+	}
+	if base.ForConfig(before) != base.ForConfig(after) {
+		t.Errorf("re-pointing the config symlink moved the daemon socket/info paths")
+	}
+	// The content fingerprint is what notices the new content behind the
+	// same key, so it must still change.
+	if daemon.ContentFingerprint([]string{cfg}) == beforeContent {
+		t.Error("content fingerprint did not change when the re-pointed link's content changed")
+	}
+
+	// A re-point at identical content (a rebuild that changed nothing)
+	// must not look like a content change either.
+	genC := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(genC, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repoint(genC)
+	if got := daemon.ContentFingerprint([]string{cfg}); got != beforeContent {
+		t.Errorf("re-pointing at identical content changed the content fingerprint: %s vs %s", got, beforeContent)
+	}
+}
+
 // ForConfig's key is the config file set, and both halves of that are
 // load-bearing (#183). Stable across an edit is why a daemon that reloads stays
 // reachable by the client that edited it (#56); unstable across the set is why
