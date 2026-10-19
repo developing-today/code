@@ -178,10 +178,20 @@ func privateRuntimeDir() (string, error) {
 // places stay separate.
 //
 // "Different places" means different files, not different spellings of one.
-// Each path is resolved through symlinks first: /tmp is a symlink to
-// /private/tmp on macOS, and a process whose $PWD holds the unresolved form
-// -- a shell, an editor, the opencode plugin -- otherwise computed a second
-// key for the same file, reported no daemon running, and started another.
+// Each path's *directory* is resolved through symlinks first: /tmp is a
+// symlink to /private/tmp on macOS, and a process whose $PWD holds the
+// unresolved form -- a shell, an editor, the opencode plugin -- otherwise
+// computed a second key for the same file, reported no daemon running, and
+// started another.
+//
+// The file's own link is deliberately NOT resolved (#368). A nix or
+// home-manager config is a symlink whose target is content-addressed, so
+// resolving it made the key follow the target: every content change moved
+// the socket, the running daemon became unreachable, and the CLI started a
+// second one, which the first then fought over the new socket name. The
+// path the user names -- directory resolved, file name as given -- is the
+// stable identity; content changes behind the link are the content
+// fingerprint's and the watch stamp's job, not the key's.
 //
 // The *contents* used to be in the key as well, so that editing a config got
 // a fresh daemon rather than a stale one. That stopped being a good trade the
@@ -195,13 +205,21 @@ func privateRuntimeDir() (string, error) {
 //
 // So the key is the file set, and staleness is handled where it belongs: the
 // daemon notices its files changed and re-reads them.
+// keyPath is the identity a config path contributes to a fingerprint: its
+// directory resolved through symlinks, its file name as given. See
+// FingerprintConfig for why the file's own link is not resolved.
+func keyPath(p string) string {
+	dir := filepath.Dir(p)
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	return filepath.Join(dir, filepath.Base(p))
+}
+
 func FingerprintConfig(paths []string) string {
 	h := sha256.New()
 	for _, p := range paths {
-		if real, err := filepath.EvalSymlinks(p); err == nil {
-			p = real
-		}
-		h.Write([]byte(p))
+		h.Write([]byte(keyPath(p)))
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
@@ -210,14 +228,14 @@ func FingerprintConfig(paths []string) string {
 // ContentFingerprint hashes what the config files currently say.
 //
 // Not the daemon key -- that is the file set -- but the thing the daemon
-// compares against to notice somebody edited one behind its back.
+// compares against to notice somebody edited one behind its back. The path
+// hashed is the same keyPath the daemon key uses, so re-pointing a config
+// symlink at identical content is not a content change, while different
+// content behind the same link is.
 func ContentFingerprint(paths []string) string {
 	h := sha256.New()
 	for _, p := range paths {
-		if real, err := filepath.EvalSymlinks(p); err == nil {
-			p = real
-		}
-		h.Write([]byte(p))
+		h.Write([]byte(keyPath(p)))
 		h.Write([]byte{0})
 		if b, err := os.ReadFile(p); err == nil {
 			h.Write(b)
