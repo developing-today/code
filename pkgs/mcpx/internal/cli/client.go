@@ -402,6 +402,13 @@ func (c *Client) EnsureDaemon(ctx context.Context) error {
 		case <-time.After(c.set.Duration("autostart.pollInterval")):
 		}
 	}
+	// A cancellation that only becomes visible as the loop exits on the
+	// deadline (Done not yet fired, Err already set) is the caller's
+	// cancellation, not a daemon failure (#328; the dezren39/nix copy has
+	// had this post-loop check since its #233 fix).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	tail, _ := os.ReadFile(logPath)
 	if max := c.set.Bytes("autostart.logTail"); int64(len(tail)) > max {
 		tail = tail[int64(len(tail))-max:]
