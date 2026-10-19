@@ -120,6 +120,7 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-manual
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
