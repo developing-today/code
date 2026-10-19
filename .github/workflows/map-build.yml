@@ -1,0 +1,51 @@
+name: map build
+
+# Build verification for the small pkgs/map Go module (#338).
+#
+# Nothing built pkgs/map in CI at all, so it rotted silently: its
+# charm -> keygen v0.4.2 -> caarlos0/sshmarshal chain stopped compiling
+# against golang.org/x/crypto v0.16.0 and nobody noticed. This workflow
+# builds and vets the module whenever it changes so that cannot recur.
+# (pkgs/graph has the same class of break under #166 and already has
+# the mod-tidy workflow watching it; it is deliberately not added here.)
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/map/**"
+      - ".github/workflows/map-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/map/**"
+      - ".github/workflows/map-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: go build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/map/go.mod
+          cache-dependency-path: pkgs/map/go.sum
+
+      - name: Build
+        working-directory: pkgs/map
+        run: go build ./...
+
+      - name: Vet
+        working-directory: pkgs/map
+        run: go vet ./...
