@@ -40,9 +40,6 @@ const RECONNECT_CLEANUP_DELAY_MS = 3_000; // Wait 3s after Init before cleanup (
 const HOVER_RESTORE_DELAY_MS = 1_000; // 1s delay before restoring after hover
 const PENDING_REMOVAL_MS = 5_000; // Show fading cursor for 5s after disconnect
 
-// Global counter to force widget recreation on every decoration call
-let decorationGeneration = 0;
-
 export interface CursorInfo {
   clientID: string | number;
   head: number;
@@ -457,10 +454,6 @@ function createCursorDecorations(
   const now = Date.now();
   const localHead = state.selection.head;
 
-  // Increment generation to force widget recreation
-  decorationGeneration++;
-  const gen = decorationGeneration;
-
   // Normalize myClientID to number for comparison (handles string/number mismatch)
   const myClientIDNum = myClientID !== null ? Number(myClientID) : null;
 
@@ -655,7 +648,7 @@ function createCursorDecorations(
         decorations.push(
           Decoration.widget(ownCursor.head, ownCursorLine, {
             side: 1,
-            key: `cursor-own-${ownCursor.clientID}-g${gen}`,
+            key: `cursor-own-${ownCursor.clientID}-c${ownCursor.color}`,
           }),
         );
       }
@@ -719,7 +712,7 @@ function createCursorDecorations(
           decorations.push(
             Decoration.widget(group.position, cursorLine, {
               side: 1,
-              key: `cursor-cluster-${group.position}-${clusterKey}-g${gen}`,
+              key: `cursor-cluster-${group.position}-${clusterKey}-c${group.mostRecentColor}`,
             }),
           );
         });
@@ -742,7 +735,7 @@ function createCursorDecorations(
         decorations.push(
           Decoration.widget(cursor.head, cursorWidget, {
             side: 1,
-            key: `cursor-${cursor.clientID}-g${gen}`,
+            key: `cursor-${cursor.clientID}-o${cursor.opacity}-c${connectionState}`,
           }),
         );
       }
@@ -765,7 +758,7 @@ function createCursorDecorations(
               style: `background-color: ${cursor.color}${selectionOpacity};`,
             },
             {
-              key: `selection-${cursor.clientID}-g${gen}`,
+              key: `selection-${cursor.clientID}-o${cursor.opacity}`,
             },
           ),
         );
