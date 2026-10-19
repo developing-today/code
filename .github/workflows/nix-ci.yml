@@ -16,6 +16,7 @@ jobs:
   treefmt:
     name: treefmt check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,6 +44,7 @@ jobs:
   flake-check:
     name: Nix flake evaluation
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: DeterminateSystems/nix-installer-action@main
