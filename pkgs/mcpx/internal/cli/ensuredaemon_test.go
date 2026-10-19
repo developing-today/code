@@ -103,3 +103,34 @@ func TestEnsureDaemonRemoteCancelledContext(t *testing.T) {
 		t.Fatalf("EnsureDaemon(remote, cancelled ctx) = %v, want context.Canceled", err)
 	}
 }
+
+// errAfterContext reports context.Canceled from Err once its deadline
+// passes, but its Done channel never fires. It models a cancellation that
+// only becomes visible as a poll loop exits on its own deadline: an
+// in-loop select on Done cannot catch it, only a post-loop Err check can.
+type errAfterContext struct {
+	context.Context
+	at time.Time
+}
+
+func (c errAfterContext) Done() <-chan struct{} { return nil }
+
+func (c errAfterContext) Err() error {
+	if time.Now().Before(c.at) {
+		return nil
+	}
+	return context.Canceled
+}
+
+// Regression for #328: a cancellation visible only at the poll loop's
+// deadline exit was reported as "daemon did not become ready" instead of
+// context.Canceled, because EnsureDaemon never re-checked ctx.Err()
+// after the loop (the dezren39/nix copy has had that check since #233).
+func TestEnsureDaemonCancelVisibleOnlyAtDeadline(t *testing.T) {
+	c, _ := ensureTestClient(t, "300ms")
+	ctx := errAfterContext{Context: context.Background(), at: time.Now().Add(100 * time.Millisecond)}
+	err := c.EnsureDaemon(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
