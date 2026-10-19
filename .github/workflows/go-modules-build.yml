@@ -19,6 +19,11 @@ name: go modules build
 # pkgs/graph is deliberately excluded: its build failure is #166 and the
 # mod-tidy workflow already watches it. pkgs/map and pkgs/identity keep
 # their dedicated workflows (identity needs build tags).
+#
+# Each job also verifies the module is tidy (#347): build/vet pass on an
+# untidy module, and mod-tidy.yml only watches pkgs/graph — pkgs/import
+# had drifted (lib/pq recorded indirect though directly imported, stale
+# pgx/cockroach indirects) with nothing noticing.
 
 on:
   pull_request:
@@ -64,6 +69,16 @@ jobs:
         with:
           go-version-file: pkgs/${{ matrix.module }}/go.mod
           cache-dependency-path: pkgs/${{ matrix.module }}/go.sum
+
+      - name: Verify go.mod and go.sum are tidy
+        working-directory: pkgs/${{ matrix.module }}
+        run: |
+          go mod tidy
+          if [[ -n "$(git status --short -- go.mod go.sum)" ]]; then
+            echo "go mod tidy changed go.mod or go.sum; commit the tidy changes."
+            git diff -- go.mod go.sum
+            exit 1
+          fi
 
       - name: Build
         working-directory: pkgs/${{ matrix.module }}
