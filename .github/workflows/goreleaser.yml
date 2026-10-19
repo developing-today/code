@@ -11,6 +11,7 @@ permissions:
 jobs:
   dump_contexts_to_log:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Dump GitHub context
         env:
@@ -42,6 +43,7 @@ jobs:
       matrix:
         include: [ { working-directory: "." } ]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Dump job context
         env:
