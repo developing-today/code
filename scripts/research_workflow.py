@@ -543,10 +543,20 @@ def issue_drafts(text):
         if "workflow:issue" in block:
             if not closed:
                 # The draft's fence was never closed at document level,
-                # so a trailing bare fence line in the block was the
+                # so a trailing bare fence line in the block may be the
                 # draft's own closing fence, consumed as the embedded
-                # example's close (#401): drop it so draft_prose() sees
-                # the example as the unclosed one it is.
+                # example's close (#401): dropping it lets draft_prose()
+                # see that example as the unclosed one it is and recover
+                # the draft prose trapped inside it. But the same shape
+                # arises when the trailing fence is a properly closed
+                # example's genuine close and the example is simply the
+                # draft's last element (#410): dropping it there strips
+                # the closed example's exemption and link-checks its
+                # contents. The shapes are indistinguishable from the
+                # block alone, so drop the fence only when doing so is
+                # what surfaces the draft's own marker into the prose —
+                # i.e. the marker itself was trapped inside the example
+                # the fence appeared to close.
                 lines = block.splitlines()
                 found = (
                     re.match(r"^ {0,3}(`{3,}|~{3,})\s*(.*?)\s*$", lines[-1])
@@ -554,7 +564,11 @@ def issue_drafts(text):
                     else None
                 )
                 if found and not found[2]:
-                    block = "\n".join(lines[:-1])
+                    dropped = "\n".join(lines[:-1])
+                    if "workflow:issue" not in draft_prose(
+                        block
+                    ) and "workflow:issue" in draft_prose(dropped):
+                        block = dropped
             # Nested fenced blocks inside a draft are embedded code
             # examples, not draft prose: strip them whole (as
             # unfenced() does at document level) so their contents are
