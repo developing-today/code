@@ -679,10 +679,12 @@ in
     state="''${XDG_STATE_HOME:-$HOME/.local/state}/mcpx/deployed"
     key='${mcpxKey}'
     if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
-      if ${pkgs.systemd}/bin/systemctl --user is-active --quiet mcpx.service; then
-        run ${mcpx}/bin/mcpx upgrade || run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
-      else
-        run ${pkgs.systemd}/bin/systemctl --user start mcpx.service
+      if ${pkgs.systemd}/bin/systemctl --user is-system-running --quiet 2>/dev/null; then
+        if ${pkgs.systemd}/bin/systemctl --user is-active --quiet mcpx.service; then
+          run ${mcpx}/bin/mcpx upgrade || run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
+        else
+          run ${pkgs.systemd}/bin/systemctl --user start mcpx.service || true
+        fi
       fi
       run mkdir -p "$(dirname "$state")"
       run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
@@ -774,7 +776,11 @@ in
     target="${inputs.opencode.packages.${system}.opencode}/bin/opencode"
     previous="$(readlink "$link" 2>/dev/null)"
     active=0
-    ${pkgs.systemd}/bin/systemctl --user is-active --quiet openchamber.service && active=1
+    if ${pkgs.systemd}/bin/systemctl --user is-system-running --quiet 2>/dev/null; then
+      if ${pkgs.systemd}/bin/systemctl --user is-active --quiet openchamber.service 2>/dev/null; then
+        active=1
+      fi
+    fi
     run mkdir -p "$HOME/.local/state/openchamber/bin"
     run ln -sfn "$target" "$link"
     if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
