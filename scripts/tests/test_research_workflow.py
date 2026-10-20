@@ -778,6 +778,35 @@ class ResearchWorkflowTests(unittest.TestCase):
             ok=False,
         )
 
+    def append_issue_draft(self, package, concept_pointer):
+        document = package / "concepts" / "C001-source-preservation.md"
+        # Byte-level append: read_text/write_text would translate the
+        # excerpt block's preserved \r\n line endings and corrupt it.
+        draft = (
+            "\n\n## Trigger Issue Draft\n\n```markdown\n"
+            "# Research: Exact source preservation\n\n"
+            "- Package Reference: [main.md](../main.md#c001)\n"
+            f"- Concept Document: [concept]({concept_pointer})\n"
+            "- Source Transcript: [transcript.txt](../transcript.txt)\n\n"
+            '<!-- workflow:issue {"package": "pkg", "concept": "C001", '
+            '"stage": "S1"} -->\n```\n'
+        )
+        document.write_bytes(document.read_bytes() + draft.encode("utf-8"))
+
+    def test_fenced_issue_draft_links_are_checked_and_pass_when_valid(self):
+        package = self.init()
+        self.append_issue_draft(package, "C001-source-preservation.md")
+        self.check(package, ok=True)
+
+    def test_fenced_issue_draft_with_a_broken_pointer_fails_check(self):
+        package = self.init()
+        # The pointer as originally shipped in the C001 draft: package-root
+        # relative, so from concepts/ it resolves to a nonexistent
+        # concepts/concepts/... path — prose link checking cannot see it
+        # because the draft sits inside a fenced block.
+        self.append_issue_draft(package, "concepts/C001-source-preservation.md")
+        self.check(package, ok=False)
+
     def test_root_relative_links_and_inline_code_links_pass(self):
         package = self.init()
         main = package / "main.md"

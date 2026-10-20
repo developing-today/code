@@ -425,14 +425,52 @@ def prose(text):
     return re.sub(r"(`+)(?:(?!\1).)+?\1", "", clean)
 
 
-def links(path, root):
-    text = prose(path.read_text())
+def fenced_blocks(text):
+    """Yield the contents of each fenced code block, in order."""
+    blocks, fence, current = [], None, []
+    for line in text.splitlines():
+        found = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if found:
+            token = found[1]
+            if fence is None:
+                fence, current = token, []
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                blocks.append("\n".join(current))
+                fence = None
+        elif fence is not None:
+            current.append(line)
+    return blocks
+
+
+def issue_drafts(text):
+    """Yield fenced trigger-issue drafts: blocks carrying a workflow:issue marker.
+
+    A draft is authored to be copied out of its document into a GitHub issue,
+    so its links must resolve from the document's own directory — the same
+    base check_link applies to ordinary prose links. Other fenced blocks are
+    raw evidence/code and stay exempt, as unfenced() documents.
+    """
+    for block in fenced_blocks(text):
+        if "workflow:issue" in block:
+            clean = re.sub(r"<!--.*?-->", "", block, flags=re.S)
+            yield re.sub(r"(`+)(?:(?!\1).)+?\1", "", clean)
+
+
+def link_targets(text):
     targets = []
     for match in re.finditer(
         r'!?\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+["\'][^"\']*["\'])?\)', text
     ):
         targets.append(match[1] or match[2])
     targets += re.findall(r"^ {0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?", text, re.M)
+    return targets
+
+
+def links(path, root):
+    raw = path.read_text()
+    targets = link_targets(prose(raw))
+    for draft in issue_drafts(raw):
+        targets += link_targets(draft)
     for href in targets:
         check_link(path, root, href)
 
