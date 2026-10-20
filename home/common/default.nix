@@ -1851,6 +1851,11 @@ in
         # nixpkgs 4.94.0 vs npm 4.147.0 -- 53 minor versions behind, the
         # largest gap in this config. See pkgs/wrangler.
         (pkgs.callPackage ../../pkgs/wrangler { })
+        # cf is Wrangler's successor (open beta 2026-09-28, not in
+        # nixpkgs). Standing direction 2026-10-20: prefer cf for
+        # Cloudflare work; wrangler stays for existing projects until
+        # migrated (`cf migrate`). See pkgs/cf.
+        (pkgs.callPackage ../../pkgs/cf { })
         wtf
         wttrbar
         xclip
