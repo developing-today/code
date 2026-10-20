@@ -76,6 +76,7 @@ in
       package = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.id-web;
       instances.primary = {
         enable = true;
+        port = 3005;
         extraArgs = [
           "--world"
           "--world-mail-command"
