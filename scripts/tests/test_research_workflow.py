@@ -807,6 +807,62 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.append_issue_draft(package, "concepts/C001-source-preservation.md")
         self.check(package, ok=False)
 
+    def append_issue_draft_with_inner_code(
+        self, package, concept_pointer, close=True, code_link=True
+    ):
+        document = package / "concepts" / "C001-source-preservation.md"
+        # Byte-level append, for the same \r\n reason as append_issue_draft.
+        # The draft embeds a fenced code example between its Context
+        # Pointers and the trailing workflow:issue marker (#393). The
+        # broken-pointer tests pass code_link=False on purpose: with a
+        # link-shaped line in the example, the pre-fix checker failed
+        # those checks for the wrong reason (the example leaked into
+        # prose), masking that the pointer itself went unchecked.
+        example = "# [not a pointer](missing/code-example.md)\n" if code_link else ""
+        example += "print('example')\n"
+        draft = (
+            "\n\n## Trigger Issue Draft\n\n```markdown\n"
+            "# Research: Exact source preservation\n\n"
+            f"- Concept Document: [concept]({concept_pointer})\n\n"
+            "```python\n"
+            f"{example}"
+            "```\n\n"
+            '<!-- workflow:issue {"package": "pkg", "concept": "C001", '
+            '"stage": "S1"} -->\n'
+        )
+        if close:
+            draft += "```\n"
+        document.write_bytes(document.read_bytes() + draft.encode("utf-8"))
+
+    def test_fenced_issue_draft_with_an_inner_code_block_passes_when_valid(self):
+        package = self.init()
+        self.append_issue_draft_with_inner_code(package, "C001-source-preservation.md")
+        self.check(package, ok=True)
+
+    def test_fenced_issue_draft_with_an_inner_code_block_and_a_broken_pointer_fails_check(
+        self,
+    ):
+        package = self.init()
+        # #393: the inner fence used to split the draft, so the pointer
+        # fragment had no marker and the marker fragment had no links —
+        # neither was checked and this broken pointer passed silently.
+        self.append_issue_draft_with_inner_code(
+            package, "concepts/C001-source-preservation.md", code_link=False
+        )
+        self.check(package, ok=False)
+
+    def test_unclosed_issue_draft_with_a_broken_pointer_fails_check(self):
+        package = self.init()
+        # #393: a draft whose fence is never closed used to be dropped
+        # by the fence parser entirely; it is checked like any draft.
+        self.append_issue_draft_with_inner_code(
+            package,
+            "concepts/C001-source-preservation.md",
+            close=False,
+            code_link=False,
+        )
+        self.check(package, ok=False)
+
     def test_root_relative_links_and_inline_code_links_pass(self):
         package = self.init()
         main = package / "main.md"
