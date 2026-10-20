@@ -93,7 +93,7 @@ export class CrawlerContainer extends Container<Env> {
 }
 
 async function crawlWithContainer(env: Env, url: string) {
-  const container = getContainer(env.CRAWLER, "crawler-3");
+  const container = getContainer(env.CRAWLER, "crawler-4");
   const res = await container.fetch(
     new Request("http://container/crawl", {
       method: "POST",
