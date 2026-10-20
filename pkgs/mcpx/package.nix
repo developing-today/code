@@ -29,12 +29,7 @@ buildGo127Module {
       let
         base = baseNameOf path;
       in
-      !(
-        base == "bin"
-        || base == "result"
-        || lib.hasPrefix "result-" base
-        || base == "mcpx-client.ts"
-      );
+      !(base == "bin" || base == "result" || lib.hasPrefix "result-" base || base == "mcpx-client.ts");
   };
 
   # Five direct Go dependencies.
@@ -114,7 +109,9 @@ buildGo127Module {
       export HOME=$TMPDIR/home MCPX_STATE_DIR=$TMPDIR/state MCPX_CACHE_DIR=$TMPDIR/cache
       mkdir -p "$HOME"
       pkgs=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... \
-        | grep -vxF -e "" ${lib.concatMapStringsSep " " (p: "-e github.com/dezren39/mcpx/${p}") checkExclude})
+        | grep -vxF -e "" ${
+          lib.concatMapStringsSep " " (p: "-e github.com/dezren39/mcpx/${p}") checkExclude
+        })
       echo "testing $(echo "$pkgs" | wc -l) packages: $pkgs"
       # Go's default per-package timeout is 10m. On a 2-CPU machine the
       # internal/e2e package was still making progress when that cap killed
