@@ -6,11 +6,11 @@ This repo is the primary source for `mcpx`. The macOS flake in `dezren39/nix` ca
 
 ## Now
 
-| Title                                           | Status      | Intent                                                                                                                                   | Links                                                |
-| ----------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| One source for mcpx                             | in-progress | The copy in `dezren39/nix` is removed. This repo ports the useful differences and becomes the only place the code lives.                 | #308, #309, #237, the removal plan in `dezren39/nix` |
-| Takeover tests on darwin                        | proposed    | The package builds and tests on aarch64-darwin without a skip list kept in another repo.                                                 | #237                                                 |
-| Unreliable orphan-session test in the Nix build | proposed    | `TestTerminateOrphanedSessionEndsTheUpstreamSession` sees 0 DELETEs in the Nix build and hides why.                                      | #290                                                 |
+| Title                                           | Status      | Intent                                                                                                                   | Links                                                |
+| ----------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| One source for mcpx                             | in-progress | The copy in `dezren39/nix` is removed. This repo ports the useful differences and becomes the only place the code lives. | #308, #309, #237, the removal plan in `dezren39/nix` |
+| Takeover tests on darwin                        | proposed    | The package builds and tests on aarch64-darwin without a skip list kept in another repo.                                 | #237                                                 |
+| Unreliable orphan-session test in the Nix build | proposed    | `TestTerminateOrphanedSessionEndsTheUpstreamSession` sees 0 DELETEs in the Nix build and hides why.                      | #290                                                 |
 
 ## Next
 
@@ -52,11 +52,11 @@ This repo is the primary source for `mcpx`. The macOS flake in `dezren39/nix` ca
 
 ## Done
 
-| Title                                                              | Date       | Result                               |
-| ------------------------------------------------------------------ | ---------- | ------------------------------------ |
-| Orphan-session DELETEs off the takeover serving path               | 2026-10-18 | #296                                 |
-| Wait for orphan-session DELETEs on orderly exit                    | 2026-10-18 | #299                                 |
-| Daemon restart waits for orphan DELETEs                            | 2026-10-18 | #307 (closes #301)                   |
-| `MCPX_STATE_DIR` in daemon discovery                               | 2026-10-18 | #306 (closes #305)                   |
-| `EnsureDaemon` honours a cancelled context                         | 2026-10-18 | #285                                 |
-| PR gate is one direct-Go job, Nix build only on dependency changes | 2026-10-18 | #295, `mcpx-nixbuild.yml`            |
+| Title                                                              | Date       | Result                    |
+| ------------------------------------------------------------------ | ---------- | ------------------------- |
+| Orphan-session DELETEs off the takeover serving path               | 2026-10-18 | #296                      |
+| Wait for orphan-session DELETEs on orderly exit                    | 2026-10-18 | #299                      |
+| Daemon restart waits for orphan DELETEs                            | 2026-10-18 | #307 (closes #301)        |
+| `MCPX_STATE_DIR` in daemon discovery                               | 2026-10-18 | #306 (closes #305)        |
+| `EnsureDaemon` honours a cancelled context                         | 2026-10-18 | #285                      |
+| PR gate is one direct-Go job, Nix build only on dependency changes | 2026-10-18 | #295, `mcpx-nixbuild.yml` |
