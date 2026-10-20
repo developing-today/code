@@ -7,6 +7,12 @@
   ...
 }:
 let
+  # The codex proxy's port, defined ONCE. It flows to the systemd user
+  # service (which binds it), to the shell session (CODEX_PROXY_PORT), and
+  # into opencode.jsonc's openai-codex baseURL via {env:CODEX_PROXY_PORT}
+  # substitution — so the three can never drift apart, and a new device
+  # that applies this config gets a consistent port automatically.
+  codexProxyPort = 18744;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -503,7 +509,7 @@ in
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "CODEX_PROXY_PORT=18744"
+        "CODEX_PROXY_PORT=${toString codexProxyPort}"
         "CODEX_PROXY_HOST=127.0.0.1"
       ];
     };
@@ -1176,6 +1182,9 @@ in
       OPENCODE_EXPERIMENTAL_OXFMT = "1";
       OPENCODE_EXPERIMENTAL_EXA = "1";
       OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
+      # Single source for the codex proxy port (see the let block):
+      # opencode.jsonc reads it via {env:CODEX_PROXY_PORT}.
+      CODEX_PROXY_PORT = toString codexProxyPort;
       OPENCODE_EXPERIMENTAL_ICON_DISCOVERY = "1";
       OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
       # File watcher off by default (Drew, 2026-10-20): the working trees
