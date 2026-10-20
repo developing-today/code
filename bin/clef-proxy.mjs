@@ -7,6 +7,39 @@ import os from 'node:os';
 const PORT = parseInt(process.env.CLEF_PROXY_PORT || '18742', 10);
 const HOST = process.env.CLEF_PROXY_HOST || '127.0.0.1';
 
+// Publish the bound endpoint so other tools can find this proxy without
+// knowing its port in advance: $XDG_STATE_HOME/<name>/endpoint.json
+// (default ~/.local/state/<name>/endpoint.json), written on listen,
+// removed on exit.
+const publishEndpoint = () => {
+  try {
+    const stateHome =
+      process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+    const dir = path.join(stateHome, 'clef-proxy');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'endpoint.json');
+    fs.writeFileSync(
+      `${file}.tmp`,
+      JSON.stringify({ host: HOST, port: PORT, pid: process.pid, url: `http://${HOST}:${PORT}` }) + '\n',
+    );
+    fs.renameSync(`${file}.tmp`, file);
+    const cleanup = () => {
+      try {
+        fs.unlinkSync(file);
+      } catch {}
+    };
+    process.on('exit', cleanup);
+    process.on('SIGTERM', () => {
+      cleanup();
+      process.exit(0);
+    });
+    process.on('SIGINT', () => {
+      cleanup();
+      process.exit(0);
+    });
+  } catch {}
+};
+
 const readConfigFileSync = (filename, fallback = '') => {
   try {
     const fullPath = path.join(os.homedir(), '.config', 'cloudflare', filename);
@@ -129,6 +162,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  publishEndpoint();
   console.log(`Clef System One Proxy listening on http://${HOST}:${PORT}`);
   console.log(`Endpoint: http://${HOST}:${PORT}/v1/systemone`);
 });
