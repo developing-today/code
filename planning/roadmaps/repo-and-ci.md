@@ -39,3 +39,4 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 | mcpx-conformance artifact majors aligned (v7)       | 2026-10-20 | #399 (closes #398)  |
 | Last lagging action pins aligned                    | 2026-10-20 | #406 (closes #405)  |
 | mcpx workflow setup-deno/setup-bun SHA-pinned       | 2026-10-20 | #409 (closes #408)  |
+| Jules action pinned to commit SHA                   | 2026-10-20 | #424 (opencode#184) |
