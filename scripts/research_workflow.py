@@ -404,20 +404,48 @@ def anchor(text):
     return re.sub(r"[^\w\- ]", "", text.lower()).replace(" ", "-")
 
 
+def fence_events(text):
+    """Classify each line as text, open, content or close of a fence.
+
+    Fences nest: a fence line carrying an info string (e.g. ```python)
+    can never close a block — a CommonMark closing fence has no info
+    string — so inside a block it opens a nested fence instead, and
+    only a bare fence at least as long as the innermost one closes a
+    level. A naive open/close toggle splits a block at the first
+    inner fence (#393): a trigger-issue draft embedding a code example
+    fell into two fragments, neither carrying both its links and its
+    trailing workflow:issue marker, so neither was checked; the code
+    example's own contents also leaked out and were read as prose.
+    """
+    stack = []
+    for line in text.splitlines():
+        found = re.match(r"^ {0,3}(`{3,}|~{3,})\s*(.*?)\s*$", line)
+        if not found:
+            yield ("content" if stack else "text"), line
+            continue
+        token, info = found[1], found[2]
+        if not stack:
+            stack = [token]
+            yield "open", line
+        elif token[0] != stack[-1][0]:
+            # A fence of the other character is literal block content.
+            yield "content", line
+        elif not info and len(token) >= len(stack[-1]):
+            stack.pop()
+            # An inner fence's closing line stays in the outer block
+            # so the nested block can be stripped whole downstream.
+            yield ("content" if stack else "close"), line
+        else:
+            # An info-string fence opens a nested block; a bare fence
+            # shorter than the innermost one is its literal content.
+            if info:
+                stack.append(token)
+            yield "content", line
+
+
 def unfenced(text):
     """Exclude raw evidence/code from authored workflow syntax and link checks."""
-    result, fence = [], None
-    for line in text.splitlines():
-        found = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
-        if found:
-            token = found[1]
-            if fence is None:
-                fence = token
-            elif token[0] == fence[0] and len(token) >= len(fence):
-                fence = None
-        elif fence is None:
-            result.append(line)
-    return "\n".join(result)
+    return "\n".join(line for kind, line in fence_events(text) if kind == "text")
 
 
 def prose(text):
@@ -426,19 +454,23 @@ def prose(text):
 
 
 def fenced_blocks(text):
-    """Yield the contents of each fenced code block, in order."""
-    blocks, fence, current = [], None, []
-    for line in text.splitlines():
-        found = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
-        if found:
-            token = found[1]
-            if fence is None:
-                fence, current = token, []
-            elif token[0] == fence[0] and len(token) >= len(fence):
-                blocks.append("\n".join(current))
-                fence = None
-        elif fence is not None:
+    """Return the contents of each fenced code block, in order.
+
+    A trailing block whose fence is never closed is returned as well,
+    so a trigger-issue draft in an unclosed fence is checked rather
+    than silently dropped (#393).
+    """
+    blocks, current = [], None
+    for kind, line in fence_events(text):
+        if kind == "open":
+            current = []
+        elif kind == "content" and current is not None:
             current.append(line)
+        elif kind == "close":
+            blocks.append("\n".join(current))
+            current = None
+    if current is not None:
+        blocks.append("\n".join(current))
     return blocks
 
 
@@ -452,7 +484,11 @@ def issue_drafts(text):
     """
     for block in fenced_blocks(text):
         if "workflow:issue" in block:
-            clean = re.sub(r"<!--.*?-->", "", block, flags=re.S)
+            # Nested fenced blocks inside a draft are embedded code
+            # examples, not draft prose: strip them whole (as
+            # unfenced() does at document level) so their contents are
+            # not link-checked either (#393).
+            clean = re.sub(r"<!--.*?-->", "", unfenced(block), flags=re.S)
             yield re.sub(r"(`+)(?:(?!\1).)+?\1", "", clean)
 
 
