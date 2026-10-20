@@ -478,7 +478,6 @@ in
   # Antigravity CLI (agy) Local Proxy Bridge
   # Disabled per user request (too slow due to per-turn CLI spawning; replaced by antigravity-ls-proxy)
   systemd.user.services.agy-proxy = {
-    enable = false;
     Unit = {
       Description = "Antigravity CLI (agy) Local Proxy Bridge for OpenCode (DISABLED)";
       After = [ "network-online.target" ];

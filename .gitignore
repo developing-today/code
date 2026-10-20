@@ -156,3 +156,5 @@ codedb.snapshot
 /justbetter-mcp/
 /.unisonHistory
 /*.log
+.opencode/antigravity-accounts.json
+.opencode/opencode-notifier-state.json
