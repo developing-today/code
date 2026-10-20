@@ -118,6 +118,7 @@ ses_*/*.json
 .id-worlds/
 .identity.db
 .identity.redb
+.ssh-host-key
 events.redb
 events.redb.tmp
 groups.jsonl
