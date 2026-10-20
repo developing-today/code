@@ -453,6 +453,26 @@ def prose(text):
     return re.sub(r"(`+)(?:(?!\1).)+?\1", "", clean)
 
 
+def _fenced_blocks(text):
+    """Yield (content, closed) for each fenced block, in order.
+
+    A trailing block whose fence is never closed is yielded as well
+    (closed=False), so a trigger-issue draft in an unclosed fence is
+    checked rather than silently dropped (#393).
+    """
+    current = None
+    for kind, line in fence_events(text):
+        if kind == "open":
+            current = []
+        elif kind == "content" and current is not None:
+            current.append(line)
+        elif kind == "close":
+            yield "\n".join(current), True
+            current = None
+    if current is not None:
+        yield "\n".join(current), False
+
+
 def fenced_blocks(text):
     """Return the contents of each fenced code block, in order.
 
@@ -460,18 +480,55 @@ def fenced_blocks(text):
     so a trigger-issue draft in an unclosed fence is checked rather
     than silently dropped (#393).
     """
-    blocks, current = [], None
-    for kind, line in fence_events(text):
-        if kind == "open":
-            current = []
-        elif kind == "content" and current is not None:
-            current.append(line)
-        elif kind == "close":
-            blocks.append("\n".join(current))
-            current = None
-    if current is not None:
-        blocks.append("\n".join(current))
-    return blocks
+    return [block for block, _closed in _fenced_blocks(text)]
+
+
+def draft_prose(block):
+    """Return a draft's prose with embedded code examples stripped.
+
+    Examples are buffered while their fence is open and discarded
+    when it closes, so a properly closed example's contents stay
+    exempt from link checks (#393). Two authoring slips are recovered
+    instead of silently dropping the rest of the draft (#401):
+
+    - a bare fence closes the innermost example whatever its length:
+      an example opened with four backticks and closed with three
+      was left open by fence_events()' length rule, and every line
+      after the attempted close went unchecked;
+    - an example still open at the end of the draft has no known
+      end, so its buffered lines are kept as prose and checked
+      rather than dropped: a draft whose example is never closed
+      cannot exempt everything after the example's opening fence.
+      Authors who want example contents exempt must close the
+      example.
+    """
+    out, buffer, stack = [], [], []
+    for line in block.splitlines():
+        found = re.match(r"^ {0,3}(`{3,}|~{3,})\s*(.*?)\s*$", line)
+        if not found:
+            (buffer if stack else out).append(line)
+            continue
+        token, info = found[1], found[2]
+        if stack and token[0] == stack[-1][0] and not info:
+            stack.pop()
+            if stack:
+                buffer.append(line)
+            else:
+                buffer = []
+        elif stack and token[0] != stack[-1][0]:
+            # A fence of the other character is literal example content.
+            buffer.append(line)
+        else:
+            if stack:
+                # An info-string fence opens a nested example.
+                stack.append(token)
+                buffer.append(line)
+            else:
+                stack = [token]
+                buffer = [line]
+    if stack:
+        out.extend(buffer)
+    return "\n".join(out)
 
 
 def issue_drafts(text):
@@ -482,13 +539,28 @@ def issue_drafts(text):
     base check_link applies to ordinary prose links. Other fenced blocks are
     raw evidence/code and stay exempt, as unfenced() documents.
     """
-    for block in fenced_blocks(text):
+    for block, closed in _fenced_blocks(text):
         if "workflow:issue" in block:
+            if not closed:
+                # The draft's fence was never closed at document level,
+                # so a trailing bare fence line in the block was the
+                # draft's own closing fence, consumed as the embedded
+                # example's close (#401): drop it so draft_prose() sees
+                # the example as the unclosed one it is.
+                lines = block.splitlines()
+                found = (
+                    re.match(r"^ {0,3}(`{3,}|~{3,})\s*(.*?)\s*$", lines[-1])
+                    if lines
+                    else None
+                )
+                if found and not found[2]:
+                    block = "\n".join(lines[:-1])
             # Nested fenced blocks inside a draft are embedded code
             # examples, not draft prose: strip them whole (as
             # unfenced() does at document level) so their contents are
-            # not link-checked either (#393).
-            clean = re.sub(r"<!--.*?-->", "", unfenced(block), flags=re.S)
+            # not link-checked either (#393); draft_prose() recovers
+            # the parts after an unclosed example instead (#401).
+            clean = re.sub(r"<!--.*?-->", "", draft_prose(block), flags=re.S)
             yield re.sub(r"(`+)(?:(?!\1).)+?\1", "", clean)
 
 

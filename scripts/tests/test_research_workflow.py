@@ -851,6 +851,71 @@ class ResearchWorkflowTests(unittest.TestCase):
         )
         self.check(package, ok=False)
 
+    def append_issue_draft_with_unclosed_inner_code(
+        self, package, concept_pointer, short_close=False
+    ):
+        document = package / "concepts" / "C001-source-preservation.md"
+        # Byte-level append, for the same \r\n reason as append_issue_draft.
+        # The draft's embedded code example is never closed (#401): with
+        # short_close=False its only closing fence is the draft's own, so
+        # the example consumes it; with short_close=True the example opens
+        # with four backticks and its attempted close uses three. Either
+        # way the Context Pointer sits after the example, past where the
+        # pre-fix checker stopped looking.
+        if short_close:
+            example = "````python\nprint('example')\n```\n"
+        else:
+            example = "```python\nprint('example')\n"
+        draft = (
+            "\n\n## Trigger Issue Draft\n\n```markdown\n"
+            "# Research: Exact source preservation\n\n"
+            f"{example}"
+            f"- Concept Document: [concept]({concept_pointer})\n"
+            '<!-- workflow:issue {"package": "pkg", "concept": "C001", '
+            '"stage": "S1"} -->\n'
+            "```\n"
+        )
+        document.write_bytes(document.read_bytes() + draft.encode("utf-8"))
+
+    def test_issue_draft_with_an_unclosed_inner_code_block_and_a_broken_pointer_fails_check(
+        self,
+    ):
+        package = self.init()
+        # #401: the unclosed inner example used to exempt every line
+        # after its opening fence, so this broken pointer passed silently.
+        self.append_issue_draft_with_unclosed_inner_code(
+            package, "concepts/C001-source-preservation.md"
+        )
+        self.check(package, ok=False)
+
+    def test_issue_draft_with_an_unclosed_inner_code_block_passes_when_valid(self):
+        package = self.init()
+        self.append_issue_draft_with_unclosed_inner_code(
+            package, "C001-source-preservation.md"
+        )
+        self.check(package, ok=True)
+
+    def test_issue_draft_with_a_short_closed_inner_code_block_and_a_broken_pointer_fails_check(
+        self,
+    ):
+        package = self.init()
+        # #401: an example opened with four backticks and closed with
+        # three was treated as unclosed, so the pointer after its
+        # attempted close went unchecked.
+        self.append_issue_draft_with_unclosed_inner_code(
+            package, "concepts/C001-source-preservation.md", short_close=True
+        )
+        self.check(package, ok=False)
+
+    def test_issue_draft_with_a_short_closed_inner_code_block_passes_when_valid(
+        self,
+    ):
+        package = self.init()
+        self.append_issue_draft_with_unclosed_inner_code(
+            package, "C001-source-preservation.md", short_close=True
+        )
+        self.check(package, ok=True)
+
     def test_unclosed_issue_draft_with_a_broken_pointer_fails_check(self):
         package = self.init()
         # #393: a draft whose fence is never closed used to be dropped
