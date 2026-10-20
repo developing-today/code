@@ -18,18 +18,23 @@ let
   };
 
   mailEnv =
-    if cfg.transport == "rest" then
-      ''
-        ID_MAIL_TRANSPORT=rest
-        CLOUDFLARE_API_TOKEN=${config.sops.placeholder.cloudflare_email_sending_token}
-        CLOUDFLARE_ACCOUNT_ID=${config.sops.placeholder.cloudflare_account_id}
-      ''
-    else
-      ''
-        ID_MAIL_TRANSPORT=worker
-        ID_MAIL_WORKER_URL=${cfg.workerUrl}
-        ID_MAIL_WORKER_TOKEN=${config.sops.placeholder.id_mail_worker_token}
-      '';
+    (
+      if cfg.transport == "rest" then
+        ''
+          ID_MAIL_TRANSPORT=rest
+          CLOUDFLARE_API_TOKEN=${config.sops.placeholder.cloudflare_email_sending_token}
+          CLOUDFLARE_ACCOUNT_ID=${config.sops.placeholder.cloudflare_account_id}
+        ''
+      else
+        ''
+          ID_MAIL_TRANSPORT=worker
+          ID_MAIL_WORKER_URL=${cfg.workerUrl}
+          ID_MAIL_WORKER_TOKEN=${config.sops.placeholder.id_mail_worker_token}
+        ''
+    )
+    + ''
+      ID_WORLD_ADMIN_TOKEN=${config.sops.placeholder.id_mail_worker_token}
+    '';
 in
 {
   imports = [ (lib.from-root "pkgs/id/nix/id-module.nix") ];
@@ -72,6 +77,7 @@ in
       instances.primary = {
         enable = true;
         extraArgs = [
+          "--world"
           "--world-mail-command"
           "${mailSender}/bin/id-cloudflare-mail"
         ];
