@@ -7,12 +7,17 @@
   ...
 }:
 let
-  # The codex proxy's port, defined ONCE. It flows to the systemd user
-  # service (which binds it), to the shell session (CODEX_PROXY_PORT), and
-  # into opencode.jsonc's openai-codex baseURL via {env:CODEX_PROXY_PORT}
-  # substitution — so the three can never drift apart, and a new device
-  # that applies this config gets a consistent port automatically.
+  # Local proxy ports, each defined ONCE. Each value flows to the systemd
+  # user service that binds it, to the shell session (<NAME>_PROXY_PORT),
+  # and — for the proxies opencode talks to — into opencode.jsonc's
+  # baseURL via {env:...} substitution, so the copies can never drift
+  # apart and a new device that applies this config gets consistent ports
+  # automatically. The bin/*.mjs proxies keep the same numbers as fallback
+  # defaults when the env var is absent.
+  clefProxyPort = 18742;
+  agyProxyPort = 18743;
   codexProxyPort = 18744;
+  antigravityLsProxyPort = 18745;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -463,7 +468,7 @@ in
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "CLEF_PROXY_PORT=18742"
+        "CLEF_PROXY_PORT=${toString clefProxyPort}"
         "CLEF_PROXY_HOST=127.0.0.1"
       ];
     };
@@ -486,7 +491,7 @@ in
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "AGY_PROXY_PORT=18743"
+        "AGY_PROXY_PORT=${toString agyProxyPort}"
         "AGY_PROXY_HOST=127.0.0.1"
       ];
     };
@@ -532,7 +537,7 @@ in
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "ANTIGRAVITY_LS_PROXY_PORT=18745"
+        "ANTIGRAVITY_LS_PROXY_PORT=${toString antigravityLsProxyPort}"
         "ANTIGRAVITY_LS_PROXY_HOST=127.0.0.1"
         "ANTIGRAVITY_LS_BIN=${antigravity-hub}/share/antigravity/resources/bin/language_server"
       ];
@@ -1182,9 +1187,12 @@ in
       OPENCODE_EXPERIMENTAL_OXFMT = "1";
       OPENCODE_EXPERIMENTAL_EXA = "1";
       OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
-      # Single source for the codex proxy port (see the let block):
-      # opencode.jsonc reads it via {env:CODEX_PROXY_PORT}.
+      # Single source for the local proxy ports (see the let block):
+      # opencode.jsonc reads them via {env:...} substitution.
+      CLEF_PROXY_PORT = toString clefProxyPort;
+      AGY_PROXY_PORT = toString agyProxyPort;
       CODEX_PROXY_PORT = toString codexProxyPort;
+      ANTIGRAVITY_LS_PROXY_PORT = toString antigravityLsProxyPort;
       OPENCODE_EXPERIMENTAL_ICON_DISCOVERY = "1";
       OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
       # File watcher off by default (Drew, 2026-10-20): the working trees

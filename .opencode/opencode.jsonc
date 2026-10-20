@@ -1847,7 +1847,10 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity CLI (via agy)",
       "options": {
-        "baseURL": "http://127.0.0.1:18743/v1",
+        // Port comes from AGY_PROXY_PORT (set by home config from the
+        // same single definition the agy-proxy service binds) — never
+        // hardcode a port here; see the openai-codex provider note.
+        "baseURL": "http://127.0.0.1:{env:AGY_PROXY_PORT}/v1",
         "apiKey": "agy-local"
       },
       "models": {
@@ -1929,7 +1932,11 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity Language Server (Direct gRPC/ConnectRPC)",
       "options": {
-        "baseURL": "http://127.0.0.1:18745/v1",
+        // Port comes from ANTIGRAVITY_LS_PROXY_PORT (set by home config
+        // from the same single definition the antigravity-ls-proxy
+        // service binds) — never hardcode a port here; see the
+        // openai-codex provider note.
+        "baseURL": "http://127.0.0.1:{env:ANTIGRAVITY_LS_PROXY_PORT}/v1",
         "apiKey": "antigravity-local"
       },
       "models": {
