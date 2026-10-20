@@ -111,7 +111,15 @@ def marker(kind, data):
 
 def excerpt(identifier, pair, lines, transcript):
     start, end = pair
-    raw = "".join(lines[start - 1 : end])
+
+    def clean_line(line):
+        if line.endswith("\r\n"):
+            return line[:-2].rstrip(" \t") + "\r\n"
+        elif line.endswith("\n"):
+            return line[:-1].rstrip(" \t") + "\n"
+        return line.rstrip(" \t")
+
+    raw = "".join(clean_line(line) for line in lines[start - 1 : end])
     fence = "`" * max(3, max((len(x) + 1 for x in re.findall(r"`+", raw)), default=0))
     return (
         f"<!-- workflow:excerpt {identifier} {start} {end} -->\n\n"
