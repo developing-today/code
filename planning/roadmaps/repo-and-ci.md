@@ -35,3 +35,5 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 | PR gate cannot drift from the flake                 | 2026-10-18 | #318 (closes #300)  |
 | `mcpx` and `id` workflow speed-up                   | 2026-10-18 | #295                |
 | Package build check when dependencies change        | 2026-10-18 | `mcpx-nixbuild.yml` |
+| Action pins aligned to the repo-standard v7         | 2026-10-20 | #395 (closes #394)  |
+| mcpx-conformance artifact majors aligned (v7)       | 2026-10-20 | #399 (closes #398)  |
