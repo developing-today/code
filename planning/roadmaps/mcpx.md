@@ -2,15 +2,15 @@
 
 `mcpx` is the Go MCP gateway and Code Mode runner in `pkgs/mcpx`. It pools MCP servers behind one daemon, runs TypeScript scripts against them, and hands a running daemon to its successor during upgrades.
 
-This repo is the primary source for `mcpx`. The macOS flake in `dezren39/nix` carries a vendored copy that is being removed, and the OpenCode and OpenChamber forks consume the result. Sources: [`pkgs/mcpx/TODO.md`](../../pkgs/mcpx/TODO.md), [`pkgs/mcpx/docs/`](../../pkgs/mcpx/docs/), and the large mcpx backlog in `dezren39/nix`, which issue #309 moves here. Backlog numbers below are written as `nix#N`. How to read this file: [planning README](../README.md).
+This repo is the only source for `mcpx`. The macOS flake in `dezren39/nix` deleted its vendored copy on 2026-10-19 (dezren39/nix#468) and now builds mcpx from a pinned source-only input of this repo, and the OpenCode and OpenChamber forks consume the result. Sources: [`pkgs/mcpx/TODO.md`](../../pkgs/mcpx/TODO.md), [`pkgs/mcpx/docs/`](../../pkgs/mcpx/docs/), and the large mcpx backlog in `dezren39/nix`, which issue #309 moves here. Backlog numbers below are written as `nix#N`. How to read this file: [planning README](../README.md).
 
 ## Now
 
-| Title                                           | Status      | Intent                                                                                                                   | Links                                                |
-| ----------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| One source for mcpx                             | in-progress | The copy in `dezren39/nix` is removed. This repo ports the useful differences and becomes the only place the code lives. | #308, #309, #237, the removal plan in `dezren39/nix` |
-| Takeover tests on darwin                        | proposed    | The package builds and tests on aarch64-darwin without a skip list kept in another repo.                                 | #237                                                 |
-| Unreliable orphan-session test in the Nix build | proposed    | `TestTerminateOrphanedSessionEndsTheUpstreamSession` sees 0 DELETEs in the Nix build and hides why.                      | #290                                                 |
+| Title                                           | Status      | Intent                                                                                                                                                                                     | Links      |
+| ----------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- |
+| How downstream flakes consume mcpx              | in-progress | This repo is the single source (the `dezren39/nix` copy was deleted on 2026-10-19). What remains is the consumption decision and re-homing the backlog that still lives in `dezren39/nix`. | #308, #309 |
+| Takeover tests on darwin                        | proposed    | The package builds and tests on aarch64-darwin without a skip list kept in another repo.                                                                                                   | #237       |
+| Unreliable orphan-session test in the Nix build | proposed    | `TestTerminateOrphanedSessionEndsTheUpstreamSession` sees 0 DELETEs in the Nix build and hides why.                                                                                        | #290       |
 
 ## Next
 
@@ -52,11 +52,12 @@ This repo is the primary source for `mcpx`. The macOS flake in `dezren39/nix` ca
 
 ## Done
 
-| Title                                                              | Date       | Result                    |
-| ------------------------------------------------------------------ | ---------- | ------------------------- |
-| Orphan-session DELETEs off the takeover serving path               | 2026-10-18 | #296                      |
-| Wait for orphan-session DELETEs on orderly exit                    | 2026-10-18 | #299                      |
-| Daemon restart waits for orphan DELETEs                            | 2026-10-18 | #307 (closes #301)        |
-| `MCPX_STATE_DIR` in daemon discovery                               | 2026-10-18 | #306 (closes #305)        |
-| `EnsureDaemon` honours a cancelled context                         | 2026-10-18 | #285                      |
-| PR gate is one direct-Go job, Nix build only on dependency changes | 2026-10-18 | #295, `mcpx-nixbuild.yml` |
+| Title                                                                                                                         | Date       | Result                    |
+| ----------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------------- |
+| Orphan-session DELETEs off the takeover serving path                                                                          | 2026-10-18 | #296                      |
+| Wait for orphan-session DELETEs on orderly exit                                                                               | 2026-10-18 | #299                      |
+| Daemon restart waits for orphan DELETEs                                                                                       | 2026-10-18 | #307 (closes #301)        |
+| `MCPX_STATE_DIR` in daemon discovery                                                                                          | 2026-10-18 | #306 (closes #305)        |
+| `EnsureDaemon` honours a cancelled context                                                                                    | 2026-10-18 | #285                      |
+| PR gate is one direct-Go job, Nix build only on dependency changes                                                            | 2026-10-18 | #295, `mcpx-nixbuild.yml` |
+| mcpx is the single source; the `dezren39/nix` vendored copy is deleted and that flake builds from a pinned input of this repo | 2026-10-19 | #362, dezren39/nix#469    |
