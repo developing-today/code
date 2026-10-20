@@ -91,10 +91,10 @@ jobs:
       # All three runtimes, because each reaches the daemon differently --
       # Deno and Bun over the unix socket, Node over TCP -- and a test that
       # skips a runtime it cannot find is a test that silently covers less.
-      - uses: denoland/setup-deno@v2
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.x
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - uses: actions/setup-node@v7
         with:
           node-version: 24
