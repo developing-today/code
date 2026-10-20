@@ -570,17 +570,24 @@ def issue_drafts(text):
                 # contents. The shapes are indistinguishable from the
                 # block alone, so drop the fence only when doing so
                 # surfaces a draft-defining element the kept prose
-                # lacks: the workflow:issue marker itself (#401, #411),
-                # or a Concept Document pointer line the kept prose
-                # does not already carry (#414 — a draft whose marker
-                # sits before an unclosed example traps its pointer
-                # inside the example the same way). A properly closed
-                # appendix example (#410) surfaces neither: its marker
-                # and pointer already sit in the kept prose, so its
-                # exemption stands. Trapped prose that is neither
-                # element, in a draft already carrying both before the
-                # example, remains indistinguishable from a closed
-                # example's contents and stays exempt (#414).
+                # lacks entirely: the workflow:issue marker itself
+                # (#401, #411), or a Concept Document pointer when the
+                # kept prose carries no pointer at all (#414 — a draft
+                # whose marker sits before an unclosed example traps
+                # its only pointer inside the example the same way).
+                # The pointer signal must stay that narrow: a properly
+                # closed appendix example (#410) that itself depicts a
+                # draft carries its own distinct pointer line, and the
+                # broader #414 set-difference signal fired on exactly
+                # that, stripping the closed example's exemption
+                # (#422). So a draft already carrying a pointer in its
+                # kept prose never drops the fence on the pointer
+                # signal, and its appendix example stays exempt.
+                # Trapped prose that is neither element, and a second
+                # pointer trapped in a draft already carrying one
+                # before the example, remain indistinguishable from a
+                # closed example's contents and stay exempt (#414,
+                # #422).
                 lines = block.splitlines()
                 found = (
                     re.match(r"^ {0,3}(`{3,}|~{3,})\s*(.*?)\s*$", lines[-1])
@@ -593,7 +600,7 @@ def issue_drafts(text):
                     recovered = draft_prose(dropped)
                     if (
                         "workflow:issue" not in kept and "workflow:issue" in recovered
-                    ) or concept_pointers(recovered) - concept_pointers(kept):
+                    ) or (not concept_pointers(kept) and concept_pointers(recovered)):
                         block = dropped
             # Nested fenced blocks inside a draft are embedded code
             # examples, not draft prose: strip them whole (as

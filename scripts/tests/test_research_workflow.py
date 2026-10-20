@@ -1006,6 +1006,53 @@ class ResearchWorkflowTests(unittest.TestCase):
         )
         self.check(package, ok=True)
 
+    def append_issue_draft_ending_with_closed_inner_code_example_pointer(
+        self, package, concept_pointer
+    ):
+        document = package / "concepts" / "C001-source-preservation.md"
+        # Byte-level append, for the same \\r\\n reason as append_issue_draft.
+        # The #410 appendix shape, except the properly closed example
+        # itself depicts a draft and so carries its own distinct
+        # Concept Document pointer line (#422), pointing at a target
+        # that does not resolve: the example must stay exempt, so only
+        # the draft's own pointer is checked.
+        draft = (
+            "\n\n## Trigger Issue Draft\n\n```markdown\n"
+            "# Research: Exact source preservation\n\n"
+            f"- Concept Document: [concept]({concept_pointer})\n\n"
+            '<!-- workflow:issue {"package": "pkg", "concept": "C001", '
+            '"stage": "S1"} -->\n\n'
+            "```python\n"
+            "- Concept Document: [example](missing/example-pointer.md)\n"
+            "print('example')\n"
+            "```\n"
+        )
+        document.write_bytes(document.read_bytes() + draft.encode("utf-8"))
+
+    def test_unclosed_issue_draft_ending_with_a_closed_inner_code_block_with_its_own_pointer_passes_when_valid(
+        self,
+    ):
+        package = self.init()
+        # #422: PR #419's set-difference pointer signal fired on the
+        # closed example's distinct pointer, dropped its genuine
+        # closing fence, and link-checked the example's broken pointer
+        # as draft prose — failing this valid draft.
+        self.append_issue_draft_ending_with_closed_inner_code_example_pointer(
+            package, "C001-source-preservation.md"
+        )
+        self.check(package, ok=True)
+
+    def test_unclosed_issue_draft_ending_with_a_closed_inner_code_block_with_its_own_pointer_and_a_broken_pointer_fails_check(
+        self,
+    ):
+        package = self.init()
+        # #422: keeping the example exempt must not exempt the draft's
+        # own prose — its broken pointer is still checked.
+        self.append_issue_draft_ending_with_closed_inner_code_example_pointer(
+            package, "concepts/C001-source-preservation.md"
+        )
+        self.check(package, ok=False)
+
     def test_unclosed_issue_draft_with_a_broken_pointer_fails_check(self):
         package = self.init()
         # #393: a draft whose fence is never closed used to be dropped
