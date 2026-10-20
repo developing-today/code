@@ -83,8 +83,8 @@ func TestCheckPhaseTestsEveryPackageWithTests(t *testing.T) {
 	if !strings.Contains(nix, derivedList) {
 		t.Fatalf("checkPhase must compute its packages with\n  %s\nso new packages are tested by default", derivedList)
 	}
-	if !strings.Contains(nix, "go test $pkgs") {
-		t.Fatal("checkPhase must run `go test $pkgs` on the computed list")
+	if !strings.Contains(nix, "go test -timeout 30m $pkgs") {
+		t.Fatal("checkPhase must run `go test -timeout 30m $pkgs` on the computed list (the 30m per-package budget keeps internal/e2e from hitting Go's 10m default on small machines, dezren39/nix#510)")
 	}
 	// A hand-written package list next to the computed one would silently
 	// narrow it again.

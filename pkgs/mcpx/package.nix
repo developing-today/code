@@ -116,7 +116,13 @@ buildGo127Module {
       pkgs=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... \
         | grep -vxF -e "" ${lib.concatMapStringsSep " " (p: "-e github.com/dezren39/mcpx/${p}") checkExclude})
       echo "testing $(echo "$pkgs" | wc -l) packages: $pkgs"
-      go test $pkgs
+      # Go's default per-package timeout is 10m. On a 2-CPU machine the
+      # internal/e2e package was still making progress when that cap killed
+      # it, which failed the whole mcpx build and blocked the packages that
+      # depend on it (dezren39/nix#510). The timeout is per package, so one
+      # explicit 30m budget covers e2e without sharding the suite; the
+      # other packages finish far under it.
+      go test -timeout 30m $pkgs
       runHook postCheck
     '';
 
