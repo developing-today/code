@@ -4,12 +4,12 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 
 ## Now
 
-| Title                                  | Status      | Intent                                                                                                                                                              | Links      |
-| -------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| One Jules workflow                     | proposed    | Three Jules workflow files become one.                                                                                                                              | #287       |
-| Cache the Go build and reuse artifacts | proposed    | Build cache by `go.sum` hash.                                                                                                                                       | #288       |
-| `nix flake check` out of disk          | proposed    | It dies intermittently with "No space left on device" in `id-test` and `id-ci`.                                                                                     | #257       |
-| Triage stale PRs                       | proposed    | Overlapping Jules drafts, old Renovate security PRs and one PR with conflicts.                                                                                      | #310, #311 |
+| Title                                  | Status   | Intent                                                                          | Links      |
+| -------------------------------------- | -------- | ------------------------------------------------------------------------------- | ---------- |
+| One Jules workflow                     | proposed | Three Jules workflow files become one.                                          | #287       |
+| Cache the Go build and reuse artifacts | proposed | Build cache by `go.sum` hash.                                                   | #288       |
+| `nix flake check` out of disk          | proposed | It dies intermittently with "No space left on device" in `id-test` and `id-ci`. | #257       |
+| Triage stale PRs                       | proposed | Overlapping Jules drafts, old Renovate security PRs and one PR with conflicts.  | #310, #311 |
 
 ## Next
 
