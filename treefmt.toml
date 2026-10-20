@@ -6,6 +6,8 @@ excludes = [
   "pkgs/id/**",               # has its own treefmt/formatter
   "pkgs/dht/**",              # WIP package with syntax errors
   ".opencode/**",             # managed by opencode, may have permission issues
+  ".claude/skills",           # symlink to .agents/skills; formatted via the real path
+  ".claude/skills/**",
   "pkgs/mcpx/docs/parity.md", # generated; TestParityDocumentIsCurrent compares it byte-for-byte with the generator, so prettier's table padding can never be applied
 ]
 

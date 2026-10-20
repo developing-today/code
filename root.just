@@ -140,7 +140,7 @@ strip-whitespace:
     #!/usr/bin/env bash
     set -euo pipefail
     git grep -rl '[[:space:]]$' -- \
-      ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \
+      ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' ':!*/transcript.txt' \
       ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \
       ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \
       ':!*.mp4' ':!*.mkv' ':!*.avi' ':!*.mov' ':!*.wmv' ':!*.flv' ':!*.webm' \
@@ -149,6 +149,7 @@ strip-whitespace:
       ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \
       2>/dev/null | while IFS= read -r f; do
       case "$f" in
+        */transcript.txt) continue ;;
         */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;
         */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;
         */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;

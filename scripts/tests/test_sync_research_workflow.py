@@ -11,7 +11,9 @@ import tempfile
 import unittest
 
 
-SPEC = importlib.util.spec_from_file_location("sync_workflow", Path(__file__).parents[1] / "sync_research_workflow.py")
+SPEC = importlib.util.spec_from_file_location(
+    "sync_workflow", Path(__file__).parents[1] / "sync_research_workflow.py"
+)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
@@ -22,9 +24,14 @@ class SyncWorkflowTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         self.source, self.target = root / "cairn", root / "code"
-        for directory, docs in ((self.source, "docs/workflow"), (self.target, "planning/workflow")):
+        for directory, docs in (
+            (self.source, "docs/workflow"),
+            (self.target, "planning/workflow"),
+        ):
             (directory / ".agents").mkdir(parents=True)
-            (directory / ".agents/research-workflow.json").write_text(json.dumps({"workflow_docs": docs, "issue_repository": directory.name}))
+            (directory / ".agents/research-workflow.json").write_text(
+                json.dumps({"workflow_docs": docs, "issue_repository": directory.name})
+            )
         (self.source / "docs/workflow").mkdir(parents=True)
         (self.source / "docs/workflow/README.md").write_bytes(b"# Portable workflow\n")
         for name in MODULE.SKILLS:
@@ -33,19 +40,44 @@ class SyncWorkflowTest(unittest.TestCase):
             path.write_text(f"---\nname: {name}\n---\n")
         (self.source / "scripts/tests").mkdir(parents=True)
         (self.source / "scripts/research_workflow.py").write_text("print('workflow')\n")
-        (self.source / "scripts/tests/test_research_workflow.py").write_text("# Portable tests\n")
+        (self.source / "scripts/tests/test_research_workflow.py").write_text(
+            "# Portable tests\n"
+        )
         subprocess.run(["git", "init", "-q", str(self.source)], check=True)
-        paths = [str(path.relative_to(self.source)) for path in self.source.rglob("*") if path.is_file() and ".git" not in path.parts]
+        paths = [
+            str(path.relative_to(self.source))
+            for path in self.source.rglob("*")
+            if path.is_file() and ".git" not in path.parts
+        ]
         subprocess.run(["git", "-C", str(self.source), "add", "--", *paths], check=True)
-        subprocess.run(["git", "-C", str(self.source), "-c", "user.name=Workflow test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.source),
+                "-c",
+                "user.name=Workflow test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+            check=True,
+        )
 
     def test_copy_is_repeatable_and_keeps_repository_adapter(self):
         profile = (self.target / ".agents/research-workflow.json").read_bytes()
         MODULE.sync(self.source, self.target, write=True)
         count, changed = MODULE.sync(self.source, self.target)
         self.assertEqual((count, changed), (12, 0))
-        self.assertEqual((self.target / "planning/workflow/README.md").read_bytes(), b"# Portable workflow\n")
-        self.assertEqual((self.target / ".agents/research-workflow.json").read_bytes(), profile)
+        self.assertEqual(
+            (self.target / "planning/workflow/README.md").read_bytes(),
+            b"# Portable workflow\n",
+        )
+        self.assertEqual(
+            (self.target / ".agents/research-workflow.json").read_bytes(), profile
+        )
         self.assertEqual(MODULE.sync(self.source, self.target, write=True)[1], 0)
 
     def test_local_edits_block_all_writes(self):
@@ -70,7 +102,9 @@ class SyncWorkflowTest(unittest.TestCase):
         outside = Path(self.temp.name) / "outside"
         outside.mkdir()
         (self.target / "planning").mkdir()
-        (self.target / "planning/workflow").symlink_to(outside, target_is_directory=True)
+        (self.target / "planning/workflow").symlink_to(
+            outside, target_is_directory=True
+        )
         with self.assertRaisesRegex(ValueError, "escapes repository"):
             MODULE.sync(self.source, self.target, write=True)
         self.assertEqual(list(outside.iterdir()), [])

@@ -13,8 +13,14 @@ import sys
 
 
 SKILLS = (
-    "research-workflow", "request-intake", "research-prepare", "concept-research",
-    "notes-reconcile", "issue-handoff", "design-orchestrate", "feature-plan",
+    "research-workflow",
+    "request-intake",
+    "research-prepare",
+    "concept-research",
+    "notes-reconcile",
+    "issue-handoff",
+    "design-orchestrate",
+    "feature-plan",
     "implementation-orchestrate",
 )
 MANIFEST = ".agents/research-workflow.upstream.json"
@@ -37,8 +43,12 @@ def inside(root, relative):
 def source_files(source, target):
     profile = json.loads((target / ".agents/research-workflow.json").read_text())
     source_profile = json.loads((source / ".agents/research-workflow.json").read_text())
+    skills = source_profile.get("lifecycle_skills", SKILLS)
     mappings = [(Path(source_profile["workflow_docs"]), Path(profile["workflow_docs"]))]
-    mappings += [(Path(".agents/skills") / name, Path(".agents/skills") / name) for name in SKILLS]
+    mappings += [
+        (Path(".agents/skills") / name, Path(".agents/skills") / name)
+        for name in skills
+    ]
     result = {}
     for source_dir, target_dir in mappings:
         directory = inside(source, source_dir)
@@ -52,7 +62,10 @@ def source_files(source, target):
             destination = target_dir / path.relative_to(directory)
             inside(target, destination)
             result[destination.as_posix()] = (path, path.read_bytes())
-    for relative in ("scripts/research_workflow.py", "scripts/tests/test_research_workflow.py"):
+    for relative in (
+        "scripts/research_workflow.py",
+        "scripts/tests/test_research_workflow.py",
+    ):
         path = inside(source, relative)
         if not path.is_file():
             raise ValueError(f"missing portable tool: {relative}")
@@ -60,11 +73,32 @@ def source_files(source, target):
     return result
 
 
-def sync(source, target, write=False):
+def sync(source, target, write=False, require_clean=False):
     source, target = source.resolve(), target.resolve()
+    if require_clean:
+        dirty = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(source),
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+            ],
+            text=True,
+        ).strip()
+        if dirty:
+            raise ValueError(
+                "source checkout has uncommitted or untracked files; commit or clean it first:\n"
+                + dirty
+            )
     files = source_files(source, target)
     manifest_path = inside(target, MANIFEST)
-    old = json.loads(manifest_path.read_text()) if manifest_path.exists() else {"files": {}}
+    old = (
+        json.loads(manifest_path.read_text())
+        if manifest_path.exists()
+        else {"files": {}}
+    )
     issues, changed = [], []
     for relative, (_, content) in files.items():
         path = inside(target, relative)
@@ -81,19 +115,25 @@ def sync(source, target, write=False):
         raise ValueError("\n".join(issues))
     if not write:
         if changed or not manifest_path.exists():
-            raise ValueError("workflow mirror differs: " + ", ".join(changed or [MANIFEST]))
+            raise ValueError(
+                "workflow mirror differs: " + ", ".join(changed or [MANIFEST])
+            )
         for relative, (_, content) in files.items():
             if old["files"].get(relative) != digest(content):
                 raise ValueError(f"provenance digest differs: {relative}")
         return len(files), 0
     # Validate the complete copy before creating or updating any destination.
-    commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    commit = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+    ).strip()
     manifest = {
         "version": 1,
         "source_repository": "dezren39/cairn",
         "source_commit": commit,
         "local_adapter": ".agents/research-workflow.json",
-        "files": {relative: digest(data) for relative, (_, data) in sorted(files.items())},
+        "files": {
+            relative: digest(data) for relative, (_, data) in sorted(files.items())
+        },
     }
     for relative in changed:
         path = inside(target, relative)
@@ -106,14 +146,29 @@ def sync(source, target, write=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", required=True, type=Path, help="local Cairn checkout")
-    parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--source", required=True, type=Path, help="local Cairn checkout"
+    )
+    parser.add_argument(
+        "--repo-root", type=Path, default=Path(__file__).resolve().parents[1]
+    )
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="allow syncing from uncommitted/dirty source",
+    )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true", help="compare without writing")
-    mode.add_argument("--write", action="store_true", help="copy reviewed changes, protecting local edits")
+    mode.add_argument(
+        "--write",
+        action="store_true",
+        help="copy reviewed changes, protecting local edits",
+    )
     args = parser.parse_args()
     try:
-        count, changed = sync(args.source, args.repo_root, args.write)
+        count, changed = sync(
+            args.source, args.repo_root, args.write, require_clean=not args.allow_dirty
+        )
         print(f"Workflow mirror: {count} files verified; {changed} updated")
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError) as error:
         print(str(error), file=sys.stderr)

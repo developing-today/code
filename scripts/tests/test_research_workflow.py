@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -129,8 +130,15 @@ class ResearchWorkflowTests(unittest.TestCase):
 
     def init(self, outline=None, slug="assorted-ideas", single=False, ok=True):
         args = [
-            "init", "--repo-root", self.root, "--input", self.input,
-            "--slug", slug, "--timestamp", TIMESTAMP,
+            "init",
+            "--repo-root",
+            self.root,
+            "--input",
+            self.input,
+            "--slug",
+            slug,
+            "--timestamp",
+            TIMESTAMP,
         ]
         if single:
             args += ["--concept", "One coherent concept"]
@@ -165,29 +173,49 @@ class ResearchWorkflowTests(unittest.TestCase):
         before, remainder = text.split(STATE_START, 1)
         _, after = remainder.split(STATE_END, 1)
         main.write_text(
-            before + STATE_START + "\n" + json.dumps(state, indent=2)
-            + "\n" + STATE_END + after,
+            before
+            + STATE_START
+            + "\n"
+            + json.dumps(state, indent=2)
+            + "\n"
+            + STATE_END
+            + after,
             encoding="utf-8",
         )
 
     def check(self, package, ok=True, *extra):
         return self.cli(
-            "check", "--repo-root", self.root, "--package", package,
-            *extra, ok=ok,
+            "check",
+            "--repo-root",
+            self.root,
+            "--package",
+            package,
+            *extra,
+            ok=ok,
         )
 
     def snapshot(self):
         return {
             str(path.relative_to(self.root)): path.read_bytes()
-            for path in self.root.rglob("*") if path.is_file()
+            for path in self.root.rglob("*")
+            if path.is_file()
         }
 
     def create_note(self, package):
         body = self.scratch / "cross-agent-note.txt"
         body.write_bytes(b"Keep the original sender's evidence intact.\n")
         result = self.cli(
-            "note", "--repo-root", self.root, "--package", package,
-            "--from", "C001", "--to", "C002", "--input", body,
+            "note",
+            "--repo-root",
+            self.root,
+            "--package",
+            package,
+            "--from",
+            "C001",
+            "--to",
+            "C002",
+            "--input",
+            body,
         )
         return json.loads(result.stdout)["note"]
 
@@ -199,9 +227,13 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.assertEqual(state["created_at"], TIMESTAMP)
         self.assertEqual(state["stage"], "intake")
         self.assertEqual(state["status"], "prepared")
-        self.assertEqual(state["transcript"]["sha256"], hashlib.sha256(self.raw).hexdigest())
+        self.assertEqual(
+            state["transcript"]["sha256"], hashlib.sha256(self.raw).hexdigest()
+        )
         self.assertEqual(len(state["concepts"]), 2)
-        for concept, line in zip(state["concepts"], self.raw.splitlines(keepends=True)[::2]):
+        for concept, line in zip(
+            state["concepts"], self.raw.splitlines(keepends=True)[::2]
+        ):
             document = package / concept["path"]
             self.assertIn(line, document.read_bytes())
             self.assertEqual(concept["status"], "created")
@@ -263,7 +295,9 @@ class ResearchWorkflowTests(unittest.TestCase):
 
     def test_transcript_tampering_invalidates_provenance(self):
         package = self.init()
-        (package / "transcript.txt").write_bytes(self.raw + b"Not the original request.\n")
+        (package / "transcript.txt").write_bytes(
+            self.raw + b"Not the original request.\n"
+        )
         self.check(package, ok=False)
 
     def test_relevant_excerpt_cannot_be_silently_cleaned_up(self):
@@ -293,7 +327,9 @@ class ResearchWorkflowTests(unittest.TestCase):
         package = self.init()
         document = package / self.state(package)["concepts"][0]["path"]
         with document.open("a", encoding="utf-8") as handle:
-            handle.write("\n[Missing section](../main.md#this-heading-does-not-exist)\n")
+            handle.write(
+                "\n[Missing section](../main.md#this-heading-does-not-exist)\n"
+            )
         self.check(package, ok=False)
 
     def test_hard_dependency_cycle_is_rejected_before_writes(self):
@@ -317,8 +353,18 @@ class ResearchWorkflowTests(unittest.TestCase):
     def test_soft_ordering_cycle_does_not_become_a_hard_blocker(self):
         outline = self.outline()
         outline["dependencies"] = [
-            {"from": "C001", "to": "C002", "kind": "recommended-after", "reason": "Helpful order."},
-            {"from": "C002", "to": "C001", "kind": "recommended-after", "reason": "Alternative order."},
+            {
+                "from": "C001",
+                "to": "C002",
+                "kind": "recommended-after",
+                "reason": "Helpful order.",
+            },
+            {
+                "from": "C002",
+                "to": "C001",
+                "kind": "recommended-after",
+                "reason": "Alternative order.",
+            },
         ]
         package = self.init(outline=outline)
         self.check(package)
@@ -339,7 +385,12 @@ class ResearchWorkflowTests(unittest.TestCase):
         state = self.state(package)
         state["tasks"] = [
             {"id": "T1", "owner": "alpha", "status": "running", "paths": ["concepts/"]},
-            {"id": "T2", "owner": "beta", "status": "running", "paths": [state["concepts"][0]["path"]]},
+            {
+                "id": "T2",
+                "owner": "beta",
+                "status": "running",
+                "paths": [state["concepts"][0]["path"]],
+            },
         ]
         self.write_state(package, state)
         self.check(package, ok=False)
@@ -356,30 +407,55 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.write_state(package, state)
         self.check(package)
 
-    def test_unresolved_note_blocks_reconciliation_until_receiver_records_disposition(self):
+    def test_unresolved_note_blocks_reconciliation_until_receiver_records_disposition(
+        self,
+    ):
         package = self.init()
         content = self.scratch / "note.txt"
-        content.write_text("Please account for the ownership constraint.\n", encoding="utf-8")
+        content.write_text(
+            "Please account for the ownership constraint.\n", encoding="utf-8"
+        )
         before = set(package.rglob("*.md"))
         self.cli(
-            "note", "--repo-root", self.root, "--package", package,
-            "--from", "C001", "--to", "C002", "--input", content,
+            "note",
+            "--repo-root",
+            self.root,
+            "--package",
+            package,
+            "--from",
+            "C001",
+            "--to",
+            "C002",
+            "--input",
+            content,
         )
         created = set(package.rglob("*.md")) - before
-        self.assertEqual(len(created), 1, "Each cross-agent note needs one dedicated artifact.")
+        self.assertEqual(
+            len(created), 1, "Each cross-agent note needs one dedicated artifact."
+        )
         note = created.pop()
         raw_note = note.read_bytes()
         receiver = package / self.state(package)["concepts"][1]["path"]
         self.check(package, False, "--require-resolved")
         self.cli(
-            "resolve-note", "--package", package,
-            "--note", note.relative_to(package),
-            "--disposition", "acknowledged",
-            "--target", self.state(package)["concepts"][1]["path"],
-            "--reason", "Kept as an explicit research constraint for the next stage.",
+            "resolve-note",
+            "--package",
+            package,
+            "--note",
+            note.relative_to(package),
+            "--disposition",
+            "acknowledged",
+            "--target",
+            self.state(package)["concepts"][1]["path"],
+            "--reason",
+            "Kept as an explicit research constraint for the next stage.",
         )
-        self.assertEqual(note.read_bytes(), raw_note, "Resolving cannot rewrite the sender's note.")
-        self.assertIn("<!-- workflow:resolution -->", receiver.read_text(encoding="utf-8"))
+        self.assertEqual(
+            note.read_bytes(), raw_note, "Resolving cannot rewrite the sender's note."
+        )
+        self.assertIn(
+            "<!-- workflow:resolution -->", receiver.read_text(encoding="utf-8")
+        )
         self.check(package, True, "--require-resolved")
 
     def test_completed_concept_cannot_still_be_an_unfilled_generated_stub(self):
@@ -394,7 +470,9 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.cli("status", "--repo-root", self.root, "--package", package)
         self.cli("ready", "--repo-root", self.root, "--package", package)
 
-    def test_literal_workflow_markers_in_fenced_raw_input_are_preserved_as_evidence(self):
+    def test_literal_workflow_markers_in_fenced_raw_input_are_preserved_as_evidence(
+        self,
+    ):
         self.raw += (
             "```example\r\n"
             "<!-- workflow:state -->\r\n"
@@ -417,8 +495,17 @@ class ResearchWorkflowTests(unittest.TestCase):
         body = self.scratch / "note-body.txt"
         body.write_bytes("Keep § this exact suggestion.\r\n".encode("utf-8"))
         result = self.cli(
-            "note", "--repo-root", self.root, "--package", package,
-            "--from", "C001", "--to", "C002", "--input", body,
+            "note",
+            "--repo-root",
+            self.root,
+            "--package",
+            package,
+            "--from",
+            "C001",
+            "--to",
+            "C002",
+            "--input",
+            body,
         )
         note = package / json.loads(result.stdout)["note"]
         self.check(package)
@@ -440,7 +527,9 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.init(ok=False)
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(list(outside.iterdir()), [sentinel])
-        self.assertEqual(sentinel.read_bytes(), b"Existing external work must survive.\n")
+        self.assertEqual(
+            sentinel.read_bytes(), b"Existing external work must survive.\n"
+        )
 
     def test_workflow_document_directory_checks_links_in_each_nested_document(self):
         package = self.init()
@@ -463,10 +552,17 @@ class ResearchWorkflowTests(unittest.TestCase):
         note.write_bytes(changed)
         before = self.snapshot()
         self.cli(
-            "resolve-note", "--package", package, "--note", relative,
-            "--disposition", "acknowledged",
-            "--target", self.state(package)["concepts"][1]["path"],
-            "--reason", "This must not be recorded against corrupted source.",
+            "resolve-note",
+            "--package",
+            package,
+            "--note",
+            relative,
+            "--disposition",
+            "acknowledged",
+            "--target",
+            self.state(package)["concepts"][1]["path"],
+            "--reason",
+            "This must not be recorded against corrupted source.",
             ok=False,
         )
         self.assertEqual(self.snapshot(), before)
@@ -477,10 +573,17 @@ class ResearchWorkflowTests(unittest.TestCase):
         before = self.snapshot()
         target = self.state(package)["concepts"][1]["path"]
         self.cli(
-            "resolve-note", "--package", package, "--note", relative,
-            "--disposition", "incorporated",
-            "--target", target + "#heading-that-was-never-written",
-            "--reason", "A missing section cannot substantiate incorporation.",
+            "resolve-note",
+            "--package",
+            package,
+            "--note",
+            relative,
+            "--disposition",
+            "incorporated",
+            "--target",
+            target + "#heading-that-was-never-written",
+            "--reason",
+            "A missing section cannot substantiate incorporation.",
             ok=False,
         )
         self.assertEqual(self.snapshot(), before)
@@ -502,7 +605,8 @@ class ResearchWorkflowTests(unittest.TestCase):
         }
         with (package / target).open("a", encoding="utf-8") as handle:
             handle.write(
-                "\n<!-- workflow:resolution -->\n" + json.dumps(entry)
+                "\n<!-- workflow:resolution -->\n"
+                + json.dumps(entry)
                 + "\n<!-- /workflow:resolution -->\n"
             )
         self.check(package, False, "--require-resolved")
@@ -535,6 +639,155 @@ class ResearchWorkflowTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.check(package, ok=False)
+
+    def test_package_discovery_ignores_non_research_records(self):
+        package = self.init()
+        requests_root = self.root / self.profile["requests_root"]
+        non_research = requests_root / "2026-10-19T06-09-02Z_design_research_workflow"
+        non_research.mkdir(parents=True)
+        (non_research / "2026-10-19T06-09-02Z_design_research_workflow.md").write_text(
+            "# Design\n", encoding="utf-8"
+        )
+        self.cli("check", "--repo-root", self.root, ok=True)
+
+    def test_dotted_concept_ids_are_accepted(self):
+        package = self.init()
+        main = package / "main.md"
+        state = self.state(package)
+        state["concepts"][0]["id"] = "C001.1"
+        state["concepts"][0]["path"] = "concepts/C001.1-source-preservation.md"
+        if state.get("dependencies"):
+            for dep in state["dependencies"]:
+                if dep["to"] == "C001":
+                    dep["to"] = "C001.1"
+                if dep["from"] == "C001":
+                    dep["from"] = "C001.1"
+        concept_file = package / "concepts/C001-source-preservation.md"
+        new_concept_file = package / "concepts/C001.1-source-preservation.md"
+        new_content = (
+            concept_file.read_bytes()
+            .replace(b"C001", b"C001.1")
+            .replace(b"c001", b"c0011")
+        )
+        concept_file.unlink()
+        new_concept_file.write_bytes(new_content)
+        main_raw = (
+            main.read_bytes().replace(b"C001", b"C001.1").replace(b"c001", b"c0011")
+        )
+        new_state_json = json.dumps(state).encode("utf-8")
+        main.write_bytes(
+            re.sub(
+                rb"<!-- workflow:state -->.*?<!-- /workflow:state -->",
+                b"<!-- workflow:state -->\n"
+                + new_state_json
+                + b"\n<!-- /workflow:state -->",
+                main_raw,
+                flags=re.S,
+            )
+        )
+        self.check(package, ok=True)
+
+    def test_frontier_excludes_active_concepts(self):
+        package = self.init()
+        main = package / "main.md"
+        state = self.state(package)
+        state["concepts"][0]["status"] = "running"
+        main.write_text(
+            re.sub(
+                r"<!-- workflow:state -->.*?<!-- /workflow:state -->",
+                "<!-- workflow:state -->\n"
+                + json.dumps(state)
+                + "\n<!-- /workflow:state -->",
+                main.read_text(),
+                flags=re.S,
+            ),
+            encoding="utf-8",
+        )
+        output = json.loads(
+            self.cli("status", "--package", package, "--repo-root", self.root).stdout
+        )
+        self.assertNotIn("C001", output["ready"])
+
+    def test_concept_title_rejects_newlines(self):
+        outline = {
+            "title": "Title",
+            "concepts": [
+                {
+                    "title": "Title with\nnewline",
+                    "slug": "bad",
+                    "summary": "test",
+                    "source_lines": [[1, 2]],
+                }
+            ],
+        }
+        outline_file = self.root / "outline.json"
+        outline_file.write_text(json.dumps(outline), encoding="utf-8")
+        self.cli(
+            "init",
+            "--repo-root",
+            self.root,
+            "--input",
+            self.input,
+            "--slug",
+            "bad-pkg",
+            "--outline",
+            outline_file,
+            ok=False,
+        )
+
+    def test_duplicate_transcript_is_refused_without_allow_duplicate(self):
+        self.init(slug="first-pkg")
+        self.cli(
+            "init",
+            "--repo-root",
+            self.root,
+            "--input",
+            self.input,
+            "--slug",
+            "second-pkg",
+            ok=False,
+        )
+        self.cli(
+            "init",
+            "--repo-root",
+            self.root,
+            "--input",
+            self.input,
+            "--slug",
+            "second-pkg",
+            "--allow-duplicate",
+            ok=True,
+        )
+
+    def test_resolve_note_rejects_non_note_target(self):
+        package = self.init()
+        self.cli(
+            "resolve-note",
+            "--repo-root",
+            self.root,
+            "--package",
+            package,
+            "--note",
+            "main.md",
+            "--disposition",
+            "acknowledged",
+            "--target",
+            "main.md",
+            "--reason",
+            "test",
+            ok=False,
+        )
+
+    def test_root_relative_links_and_inline_code_links_pass(self):
+        package = self.init()
+        main = package / "main.md"
+        # root relative link to docs/README.md and inline code link `[fake](does/not/exist.md)`
+        main.write_text(
+            main.read_text()
+            + "\n\nSee [/docs/README.md](/docs/README.md) and inline `[label](does/not/exist.md)`.\n",
+            encoding="utf-8",
+        )
+        self.check(package, ok=True)
 
 
 if __name__ == "__main__":
