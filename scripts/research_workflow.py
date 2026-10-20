@@ -434,6 +434,8 @@ def check_link(path, root, href):
     parsed = urlsplit(href)
     if parsed.scheme or parsed.netloc:
         return
+    if "{{" in href and "}}" in href:
+        return
     base = root if parsed.path.startswith("/") else path.parent
     target = (
         (base / parsed.path.lstrip("/")).resolve() if parsed.path else path.resolve()

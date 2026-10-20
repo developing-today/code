@@ -3,31 +3,43 @@ name: research-workflow
 on:
   pull_request:
     paths:
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - '.agents/**'
-      - '.claude/skills/**'
-      - 'planning/**'
-      - 'doc/**/main.md'
-      - 'doc/**/concepts/**'
-      - 'doc/DOCUMENTATION_PROTOCOL.md'
-      - 'scripts/*research*workflow*.py'
-      - 'scripts/tests/test_*workflow*.py'
-      - '.github/workflows/research-workflow.yml'
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - ".agents/**"
+      - ".claude/skills"
+      - ".claude/skills/**"
+      - "planning/**"
+      - "doc/README.md"
+      - "doc/DOCUMENTATION_PROTOCOL.md"
+      - "doc/**/main.md"
+      - "doc/**/transcript.txt"
+      - "doc/**/concepts/**"
+      - "doc/**/notes/**"
+      - "doc/**/receipts/**"
+      - "doc/**/decisions/**"
+      - "scripts/*research*workflow*.py"
+      - "scripts/tests/test_*workflow*.py"
+      - ".github/workflows/research-workflow.yml"
   push:
     branches: [main]
     paths:
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - '.agents/**'
-      - '.claude/skills/**'
-      - 'planning/**'
-      - 'doc/**/main.md'
-      - 'doc/**/concepts/**'
-      - 'doc/DOCUMENTATION_PROTOCOL.md'
-      - 'scripts/*research*workflow*.py'
-      - 'scripts/tests/test_*workflow*.py'
-      - '.github/workflows/research-workflow.yml'
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - ".agents/**"
+      - ".claude/skills"
+      - ".claude/skills/**"
+      - "planning/**"
+      - "doc/README.md"
+      - "doc/DOCUMENTATION_PROTOCOL.md"
+      - "doc/**/main.md"
+      - "doc/**/transcript.txt"
+      - "doc/**/concepts/**"
+      - "doc/**/notes/**"
+      - "doc/**/receipts/**"
+      - "doc/**/decisions/**"
+      - "scripts/*research*workflow*.py"
+      - "scripts/tests/test_*workflow*.py"
+      - ".github/workflows/research-workflow.yml"
 
 permissions:
   contents: read
@@ -39,11 +51,15 @@ concurrency:
 jobs:
   workflow-contract:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
       - name: Exercise lossless intake and validation failures
         run: python3 -m unittest discover -s scripts/tests -p 'test_*workflow*.py' -v
       - name: Check workflow profiles, skills, links, and actual packages

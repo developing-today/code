@@ -1,6 +1,27 @@
-# docs
+# Documentation Catalog & Topic Map
 
-to be written
+This directory contains design records, architecture decisions, research collections, and specifications across the repository.
+
+## Documentation Index
+
+- **Protocol & Placement**: See [Documentation Protocol](DOCUMENTATION_PROTOCOL.md) and [Planning Architecture](../planning/DOCUMENTATION_ARCHITECTURE.md).
+- **Planning Framework**: See [Planning Framework](../planning/README.md) and [Active Implementation Plans](../planning/plans/README.md).
+- **Workflow Library**: See [Research & Delivery Workflow](../planning/workflow/README.md).
+- **Dependencies & Relations**: See [Dependency Taxonomy](../planning/DEPENDENCIES.md).
+- **Shared References**: See [References](references/README.md).
+
+## Recent Architecture & Design Records
+
+- [Next Stage Platform Architecture](2026-10-17T15-00-00Z_architecture_next_stage_platform/2026-10-17T15-00-00Z_architecture_next_stage_platform.md)
+- [Portable World Surfaces](2026-10-14T19-39-30Z_architecture_portable_world_surfaces/2026-10-14T19-39-30Z_architecture_portable_world_surfaces.md)
+- [Research Workflow Design](2026-10-19T06-09-02Z_design_research_workflow/2026-10-19T06-09-02Z_design_research_workflow.md)
+
+---
+
+## Legacy Notes
+
+The following unfiled notes precede the documentation architecture:
+
 flake.nix
 -> hosts
 hosts/<host>/(<user>)

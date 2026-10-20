@@ -1,4 +1,5 @@
 <!-- Copyright developing.today LLC & contributors. SPDX-License-Identifier: MIT OR Apache-2.0 -->
+
 # Research workflow change record
 
 ## 2026-10-19T06:09:02Z Created: framework preparation

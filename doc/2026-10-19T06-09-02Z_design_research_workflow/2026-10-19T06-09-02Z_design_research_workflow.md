@@ -1,4 +1,5 @@
 <!-- Copyright developing.today LLC & contributors. SPDX-License-Identifier: MIT OR Apache-2.0 -->
+
 # From rough requests to researched designs and parallel delivery
 
 - Status: draft, implementing the authorized documentation framework.
@@ -18,16 +19,16 @@ This change prepares that workflow, its skills, its documentation homes, and che
 
 Use the existing [three planning levels](../../planning/README.md):
 
-| Home | Purpose |
-| --- | --- |
-| Root README, AGENTS, ROADMAP | Entry points, agent routing, and short portfolio priorities |
-| [Planning architecture](../../planning/DOCUMENTATION_ARCHITECTURE.md) | Placement defaults and reasons to make an exception |
-| `doc/<UTC>_research_<slug>/` | A dated request collection with raw transcript and owned concept records |
-| `doc/<UTC>_<kind>_<slug>/` | Other historical design and architecture records, including this one |
-| [New implementation plans](../../planning/plans/README.md) | Granular steps, tests, dependencies, and implementation handoffs |
-| Component README/architecture/docs | Living product and development references owned by that component |
-| [Portable workflow library](../../planning/workflow/README.md) | Stage contracts, record formats, collaboration, and templates |
-| [Repository profile](../../.agents/research-workflow.json) | Local paths and issue destination used by portable skills and tools |
+| Home                                                                  | Purpose                                                                  |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Root README, AGENTS, ROADMAP                                          | Entry points, agent routing, and short portfolio priorities              |
+| [Planning architecture](../../planning/DOCUMENTATION_ARCHITECTURE.md) | Placement defaults and reasons to make an exception                      |
+| `doc/<UTC>_research_<slug>/`                                          | A dated request collection with raw transcript and owned concept records |
+| `doc/<UTC>_<kind>_<slug>/`                                            | Other historical design and architecture records, including this one     |
+| [New implementation plans](../../planning/plans/README.md)            | Granular steps, tests, dependencies, and implementation handoffs         |
+| Component README/architecture/docs                                    | Living product and development references owned by that component        |
+| [Portable workflow library](../../planning/workflow/README.md)        | Stage contracts, record formats, collaboration, and templates            |
+| [Repository profile](../../.agents/research-workflow.json)            | Local paths and issue destination used by portable skills and tools      |
 
 Old records and `.opencode/plans/` remain where existing links expect them. Existing historical prose stays intact. The documentation protocol now distinguishes historical evidence from maintained control documents rather than treating every Markdown file as immutable.
 
@@ -48,17 +49,17 @@ The main reference owns structured state in a delimited JSON block. This keeps i
 
 ## Skills and stage boundaries
 
-| Skill | Result and boundary |
-| --- | --- |
-| [research-workflow](../../.agents/skills/research-workflow/SKILL.md) | Discover the current phase, reverify artifacts and external state, and dispatch the requested next work |
-| [request-intake](../../.agents/skills/request-intake/SKILL.md) | Exact input, coverage, reference and minimal owned stubs; stop at intake when that is the requested scope |
-| [research-prepare](../../.agents/skills/research-prepare/SKILL.md) | A first repository/code/doc map, relevant questions, and a researcher-ready brief per concept |
-| [concept-research](../../.agents/skills/concept-research/SKILL.md) | Deep evidence, alternatives, feasibility, use cases, anecdotes identified as such, risks, and design findings |
-| [notes-reconcile](../../.agents/skills/notes-reconcile/SKILL.md) | Every directed note incorporated or explicitly acknowledged, deferred, or declined with its reason |
-| [issue-handoff](../../.agents/skills/issue-handoff/SKILL.md) | A self-contained, idempotent parent, fanout, or orchestration issue for a specified next stage |
-| [design-orchestrate](../../.agents/skills/design-orchestrate/SKILL.md) | Execute research/design issues through workers, reconcile, independently review/critique, and consolidate decisions |
-| [feature-plan](../../.agents/skills/feature-plan/SKILL.md) | A feature plan and implementation issue graph with contracts, granular steps, tests, blockers, and rollout |
-| [implementation-orchestrate](../../.agents/skills/implementation-orchestrate/SKILL.md) | Execute ready implementation issues through workers and verified merge-commit PRs, then hand off the result |
+| Skill                                                                                  | Result and boundary                                                                                                 |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| [research-workflow](../../.agents/skills/research-workflow/SKILL.md)                   | Discover the current phase, reverify artifacts and external state, and dispatch the requested next work             |
+| [request-intake](../../.agents/skills/request-intake/SKILL.md)                         | Exact input, coverage, reference and minimal owned stubs; stop at intake when that is the requested scope           |
+| [research-prepare](../../.agents/skills/research-prepare/SKILL.md)                     | A first repository/code/doc map, relevant questions, and a researcher-ready brief per concept                       |
+| [concept-research](../../.agents/skills/concept-research/SKILL.md)                     | Deep evidence, alternatives, feasibility, use cases, anecdotes identified as such, risks, and design findings       |
+| [notes-reconcile](../../.agents/skills/notes-reconcile/SKILL.md)                       | Every directed note incorporated or explicitly acknowledged, deferred, or declined with its reason                  |
+| [issue-handoff](../../.agents/skills/issue-handoff/SKILL.md)                           | A self-contained, idempotent parent, fanout, or orchestration issue for a specified next stage                      |
+| [design-orchestrate](../../.agents/skills/design-orchestrate/SKILL.md)                 | Execute research/design issues through workers, reconcile, independently review/critique, and consolidate decisions |
+| [feature-plan](../../.agents/skills/feature-plan/SKILL.md)                             | A feature plan and implementation issue graph with contracts, granular steps, tests, blockers, and rollout          |
+| [implementation-orchestrate](../../.agents/skills/implementation-orchestrate/SKILL.md) | Execute ready implementation issues through workers and verified merge-commit PRs, then hand off the result         |
 
 Handoffs identify the exact next stage. Issue planning does not recursively create copies of itself. Every issue includes source links, baseline, relevant excerpts or a self-contained summary, owned outputs, acceptance evidence, prerequisites, known uncertainties, and what the next agent should do first. A fresh reader tests the handoff before it is considered ready.
 
