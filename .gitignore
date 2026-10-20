@@ -115,6 +115,7 @@ ses_*/*.json
 .opencode/plugin/subtask2/logs/*.log
 .opencode/worktrees/
 .iroh*
+.id-worlds/
 .identity.db
 .identity.redb
 events.redb
