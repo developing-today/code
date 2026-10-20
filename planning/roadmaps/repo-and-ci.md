@@ -37,5 +37,5 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 | Package build check when dependencies change        | 2026-10-18 | `mcpx-nixbuild.yml` |
 | Action pins aligned to the repo-standard v7         | 2026-10-20 | #395 (closes #394)  |
 | mcpx-conformance artifact majors aligned (v7)       | 2026-10-20 | #399 (closes #398)  |
-| Last lagging action pins aligned (goreleaser, setup-python) | 2026-10-20 | #406 (closes #405)  |
+| Last lagging action pins aligned                    | 2026-10-20 | #406 (closes #405)  |
 | mcpx workflow setup-deno/setup-bun SHA-pinned       | 2026-10-20 | #409 (closes #408)  |
