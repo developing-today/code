@@ -964,6 +964,48 @@ class ResearchWorkflowTests(unittest.TestCase):
         )
         self.check(package, ok=False)
 
+    def append_issue_draft_marker_before_unclosed_inner_code(
+        self, package, concept_pointer
+    ):
+        document = package / "concepts" / "C001-source-preservation.md"
+        # Byte-level append, for the same \r\n reason as append_issue_draft.
+        # The marker sits before the draft's embedded code example, as
+        # in the #410 appendix shape, but the example is never closed
+        # (#414): the draft's own closing fence is consumed as the
+        # example's close, so the Concept Document pointer written
+        # after the example's opening fence is trapped inside it.
+        draft = (
+            "\n\n## Trigger Issue Draft\n\n```markdown\n"
+            "# Research: Exact source preservation\n\n"
+            '<!-- workflow:issue {"package": "pkg", "concept": "C001", '
+            '"stage": "S1"} -->\n\n'
+            "```python\n"
+            "print('example')\n"
+            f"- Concept Document: [concept]({concept_pointer})\n"
+            "```\n"
+        )
+        document.write_bytes(document.read_bytes() + draft.encode("utf-8"))
+
+    def test_issue_draft_marker_before_unclosed_inner_code_and_a_broken_pointer_fails_check(
+        self,
+    ):
+        package = self.init()
+        # #414: the #411 recovery keyed only on a trapped marker, so a
+        # marker-before draft's trapped broken pointer passed silently.
+        self.append_issue_draft_marker_before_unclosed_inner_code(
+            package, "concepts/C001-source-preservation.md"
+        )
+        self.check(package, ok=False)
+
+    def test_issue_draft_marker_before_unclosed_inner_code_passes_when_valid(
+        self,
+    ):
+        package = self.init()
+        self.append_issue_draft_marker_before_unclosed_inner_code(
+            package, "C001-source-preservation.md"
+        )
+        self.check(package, ok=True)
+
     def test_unclosed_issue_draft_with_a_broken_pointer_fails_check(self):
         package = self.init()
         # #393: a draft whose fence is never closed used to be dropped
