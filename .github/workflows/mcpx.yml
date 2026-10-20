@@ -156,7 +156,7 @@ jobs:
           ref: ${{ github.head_ref || github.ref }}
           fetch-depth: 0
 
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       - name: Repair vendorHash on a dependency bump
         # Only on bot branches. A human changing dependencies should see the

@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Check formatting for changed files
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -47,7 +47,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Evaluate root flake outputs
         run: |
           nix eval .#devShells.x86_64-linux.default.drvPath
