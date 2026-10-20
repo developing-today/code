@@ -48,6 +48,7 @@ mod assets;
 mod collab;
 mod content_mode;
 mod explore;
+mod home;
 mod identity;
 mod markdown;
 mod routes;
@@ -115,7 +116,9 @@ impl SaveRateLimiter {
         if let Some(last) = map.get(name) {
             let elapsed = last.elapsed();
             if elapsed < self.cooldown {
-                return Err(self.cooldown.checked_sub(elapsed).unwrap());
+                // checked_sub is Some exactly because elapsed < cooldown;
+                // ZERO is the unreachable fallback (no time remaining).
+                return Err(self.cooldown.checked_sub(elapsed).unwrap_or(Duration::ZERO));
             }
         }
         Ok(())
@@ -150,6 +153,8 @@ pub struct AppState {
     pub save_limiter: SaveRateLimiter,
     /// Client identity store for persistent client sessions.
     pub identity: IdentityStore,
+    /// Node-signed event log used to publish durable document revisions.
+    pub(crate) local_events: Arc<Mutex<crate::local_events::LocalEvents>>,
     /// Optional hosted world (and its invite secret) for the WebSocket bridge.
     pub world: Option<crate::world_hub::WorldHub>,
     /// Mark the directory explorer's session cookies `Secure`.
@@ -167,6 +172,7 @@ impl std::fmt::Debug for AppState {
             .field("tag_store", &"<TagStore>")
             .field("save_limiter", &self.save_limiter)
             .field("identity", &self.identity)
+            .field("local_events", &"<LocalEvents>")
             .field("world", &self.world)
             .field("cookie_secure", &self.cookie_secure)
             .finish()
@@ -186,6 +192,12 @@ impl AppState {
         secret_key: [u8; 32],
         identity_db_path: std::path::PathBuf,
     ) -> anyhow::Result<Self> {
+        let events_dir = identity_db_path.with_file_name(crate::local_events::DIR_NAME);
+        let local_events = Arc::new(Mutex::new(crate::local_events::LocalEvents::open(
+            &events_dir,
+            p2panda_core::SigningKey::from_bytes(&secret_key),
+        )?));
+
         Ok(Self {
             store,
             collab: Arc::new(CollabState::new()),
@@ -195,6 +207,7 @@ impl AppState {
             tag_store,
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
             identity: IdentityStore::new(secret_key, identity_db_path).await?,
+            local_events,
             world: None,
             cookie_secure: false,
         })

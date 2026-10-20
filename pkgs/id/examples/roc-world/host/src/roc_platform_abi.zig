@@ -734,12 +734,22 @@ pub extern fn roc_crashed(bytes: [*]const u8, len: usize) callconv(.c) void;
 /// size metadata so that dealloc/realloc can recover the original
 /// allocation size (required because `roc_dealloc` receives no length).
 pub const DefaultAllocators = struct {
+    /// The alignment to allocate and free with. Roc may ask for an alignment
+    /// that is not a power of two; the allocator requires one, so round down
+    /// to the largest power of two that still satisfies the request. The same
+    /// value doubles as the metadata header size, so alloc, realloc and
+    /// dealloc always agree on where the user pointer starts even if Roc's
+    /// requested alignment differs between calls.
+    fn alignmentFor(alignment: usize) usize {
+        return std.math.floorPowerOfTwo(usize, @max(alignment, @alignOf(usize)));
+    }
+
     /// Allocate memory for the Roc runtime.
     pub fn rocAlloc(roc_host: *RocHost, length: usize, alignment: usize) callconv(.c) *anyopaque {
         const env: *RocEnv = @ptrCast(@alignCast(roc_host.env));
         const allocator = env.allocator;
 
-        const min_alignment: usize = @max(alignment, @alignOf(usize));
+        const min_alignment: usize = alignmentFor(alignment);
         const align_enum = std.mem.Alignment.fromByteUnits(min_alignment);
         const size_storage_bytes = min_alignment;
         const total_size = length + size_storage_bytes;
@@ -761,7 +771,7 @@ pub const DefaultAllocators = struct {
         const env: *RocEnv = @ptrCast(@alignCast(roc_host.env));
         const allocator = env.allocator;
 
-        const min_alignment: usize = @max(alignment, @alignOf(usize));
+        const min_alignment: usize = alignmentFor(alignment);
         const align_enum = std.mem.Alignment.fromByteUnits(min_alignment);
         const size_storage_bytes = min_alignment;
 
@@ -778,7 +788,7 @@ pub const DefaultAllocators = struct {
         const env: *RocEnv = @ptrCast(@alignCast(roc_host.env));
         const allocator = env.allocator;
 
-        const min_alignment: usize = @max(alignment, @alignOf(usize));
+        const min_alignment: usize = alignmentFor(alignment);
         const align_enum = std.mem.Alignment.fromByteUnits(min_alignment);
         const size_storage_bytes = min_alignment;
 
@@ -875,6 +885,8 @@ pub extern fn roc_update(arg0: RocBox, arg1: u64, arg2: RocStr) callconv(.c) Roc
 
 /// Entrypoint: view_for_host
 pub extern fn roc_view(arg0: RocBox) callconv(.c) RocStr;
+
+pub extern fn roc_layout(arg0: RocBox, arg1: u64, arg2: u64) callconv(.c) RocStr;
 
 /// Entrypoint: records_for_host
 pub extern fn roc_records(arg0: RocBox) callconv(.c) RocStr;

@@ -82,6 +82,8 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-normalization = "0.1"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
 
 # Web feature dependencies (optional)
 axum = { version = "0.8", features = ["ws", "multipart"], optional = true }
@@ -102,6 +104,7 @@ aes-gcm = { version = "0.11", default-features = false, features = [
   "alloc",
 ], optional = true }
 base64 = { version = "0.22", optional = true }
+blake3 = "1"
 qrcode = { version = "0.14.1", default-features = false, optional = true }
 hkdf = { version = "0.13", optional = true }
 sha2 = { version = "0.11", optional = true }

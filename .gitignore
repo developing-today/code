@@ -102,6 +102,7 @@ terraform.rc
 
 *tfplan*
 .env.local
+.claude/settings.local.json
 .opencode/worktree-session-state.json
 *_ses_*.json
 ses_*.json
@@ -148,3 +149,5 @@ codedb.snapshot
 
 /dezren39-nix/
 /justbetter-mcp/
+/.unisonHistory
+/*.log

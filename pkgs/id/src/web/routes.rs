@@ -210,6 +210,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         // Page routes (return full HTML pages)
         .route("/", get(index_handler))
+        .route("/files", get(files_page_handler))
         .route("/world", get(world_page_handler))
         .route("/settings", get(settings_handler))
         .route("/peers", get(peers_handler))
@@ -220,6 +221,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/blob/{hash}", get(blob_handler))
         // Partial routes (return HTML fragments for SPA navigation)
         .route("/api/files", get(files_list_handler))
+        .route("/api/home/feed", get(super::home::feed_handler))
         .route("/api/peers", get(peers_partial_handler))
         // File management API routes
         .route("/api/save", post(save_handler))
@@ -278,8 +280,23 @@ fn is_partial_request(headers: &HeaderMap) -> bool {
     is_partial
 }
 
-/// Index page handler - shows file list.
-async fn index_handler(
+/// Index page handler - discovery home.
+async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let worlds = state.world.as_ref().map_or_else(Vec::new, |hub| hub.list());
+    let default_world = state
+        .world
+        .as_ref()
+        .map_or("lobby", |hub| hub.default_world());
+    let content = super::home::render_home(&worlds, default_world, state.world.is_some());
+    if is_partial_request(&headers) {
+        Html(render_main_page_wrapper(&content))
+    } else {
+        Html(render_page("Home", &content, "", &state.assets))
+    }
+}
+
+/// File browser page retained separately from home/discovery.
+async fn files_page_handler(
     State(state): State<AppState>,
     Query(query): Query<FileListQuery>,
     headers: HeaderMap,
@@ -915,6 +932,8 @@ struct SaveRequest {
 struct SaveResponse {
     /// New blob hash after save.
     hash: String,
+    /// The signed `document.put` event ID for this saved revision.
+    document_id: String,
     /// File name.
     name: String,
     /// Archive tag name (if original was archived).
@@ -1013,8 +1032,8 @@ struct DownloadRequest {
 /// Save the current editor document to the blob store.
 ///
 /// Converts the `ProseMirror` JSON to the appropriate format based on filename,
-/// creates a new blob, archives the original under a timestamped name, and
-/// updates the tag to point to the new blob.
+/// creates a new blob and signed document revision, archives the original under
+/// a timestamped name, and updates the legacy filename tag to point to the new blob.
 ///
 /// Rate-limited: rejects saves within the cooldown period (default 5s) per file.
 async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest>) -> Response {
@@ -1050,7 +1069,7 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
     };
 
     // Add new blob to store
-    let add_result = state.store.blobs().add_bytes(bytes).await;
+    let add_result = state.store.blobs().add_bytes(bytes.clone()).await;
     let outcome = match add_result {
         Ok(outcome) => outcome,
         Err(err) => {
@@ -1060,6 +1079,27 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
     };
     let new_hash = outcome.hash;
     let new_hash_str = new_hash.to_string();
+
+    // A saved revision is durable only once its bytes are addressable and its signed event is
+    // applied. The mutex protects LocalEvents' synchronous redb writes and is released before any
+    // subsequent network-backed metadata operations.
+    let filename_tag = [("filename".to_owned(), Some(req.name.clone()))];
+    let publish_result = {
+        let mut events = state.local_events.lock().await;
+        events.publish(get_content_type(&req.name), &bytes, &filename_tag)
+    };
+    let published = match publish_result {
+        Ok(published) => published,
+        Err(err) => {
+            tracing::error!("[routes] Failed to publish saved revision: {:#}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to publish document revision",
+            )
+                .into_response();
+        }
+    };
+    let document_id = published.id.to_hex();
 
     // Archive the original blob under a timestamped tag
     let archive_name = archive_original_tag(&state.store, &req.name, &req.doc_id).await;
@@ -1132,6 +1172,7 @@ async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest
 
     Json(SaveResponse {
         hash: new_hash_str,
+        document_id,
         name: req.name,
         archive_name,
     })
@@ -1878,6 +1919,143 @@ async fn archive_original_tag(
             tracing::error!("[routes] Failed to create archive tag: {}", err);
             None
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod save_publication_tests {
+    use std::{sync::Arc, time::Duration};
+
+    use axum::{body::to_bytes, extract::State};
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+    use serde_json::json;
+
+    use super::*;
+    use crate::{
+        local_events::Entry,
+        tags::TagStore,
+        web::{AppState, SaveRateLimiter},
+    };
+
+    async fn state() -> (AppState, Endpoint, Docs) {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "save-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let state = AppState::new(
+            store,
+            None,
+            "save-test".to_owned(),
+            tags,
+            [3; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        (state, endpoint, docs)
+    }
+
+    async fn save(state: AppState, name: &str, text: &str) -> Response {
+        save_handler(
+            State(state),
+            Json(SaveRequest {
+                doc_id: iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+                name: name.to_owned(),
+                doc: json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":text}]}]}),
+            }),
+        )
+        .await
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn successful_save_publishes_an_applied_signed_document_and_keeps_the_blob_fetchable() {
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+        let response = save(state.clone(), "revision.md", "first revision").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let event_id: p2panda_core::Hash = body["document_id"].as_str().unwrap().parse().unwrap();
+        let history = state.local_events.lock().await.history(event_id).unwrap();
+        let (author, document) = history
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Document {
+                    id,
+                    author,
+                    document,
+                } if *id == event_id => Some((*author, document.clone())),
+                _ => None,
+            })
+            .unwrap();
+        let blob_hash = iroh_blobs::Hash::from_bytes(*document.content.as_bytes());
+        assert_eq!(body["hash"].as_str().unwrap(), blob_hash.to_string());
+        let bytes = state.store.blobs().get_bytes(blob_hash).await.unwrap();
+        document.verify_content(&bytes).unwrap();
+        assert_eq!(document.blob_hash().to_string(), blob_hash.to_string());
+        assert_eq!(document.size, u64::try_from(bytes.len()).unwrap());
+        assert_eq!(document.media_type, "text/markdown; charset=utf-8");
+        assert_eq!(
+            author,
+            p2panda_core::SigningKey::from_bytes(&[3; 32])
+                .verifying_key()
+                .as_bytes()
+                .to_owned()
+        );
+        assert!(history.iter().any(|entry| matches!(
+            entry,
+            Entry::Set { subject, name, value: Some(value), .. }
+                if *subject == event_id && name == "filename" && value == "revision.md"
+        )));
+
+        // Repeated successful checkpoints get distinct durable revision events.
+        let second = save(state.clone(), "revision.md", "second revision").await;
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_body = response_json(second).await;
+        assert_ne!(body["document_id"], second_body["document_id"]);
+        let second_id: p2panda_core::Hash = second_body["document_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(state.local_events.lock().await.history(event_id).is_ok());
+        assert!(state.local_events.lock().await.history(second_id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn refused_filename_tag_does_not_return_a_success_response() {
+        let (state, _endpoint, _docs) = state().await;
+        let response = save(state.clone(), &format!("{}.md", "x".repeat(600)), "content").await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            state
+                .local_events
+                .lock()
+                .await
+                .frontier()
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 

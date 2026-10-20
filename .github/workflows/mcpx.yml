@@ -10,10 +10,23 @@ name: mcpx
 # commits it to the Renovate branch, and fails any PR that still does not
 # build.
 
+# CI shape (2026-10): the gate is a single direct-Go test job -- no nix.
+# The old workflow also ran a full "Nix build" that recompiled the same
+# code a second time (~5.4 of the old ~10.6 min); that leg is gone from
+# this workflow (#286). The flake is still evaluated on every PR by
+# nix-ci, vendorHash repair keeps its own bot-only job below because it
+# genuinely needs nix, and the package build itself is verified by the
+# companion mcpx-nixbuild workflow — but only on PRs that change
+# go.mod, go.sum or package.nix, where a stale vendorHash can appear
+# (#297).
+
 on:
   pull_request:
     paths:
       - "pkgs/mcpx/**"
+      # The dogfood copy of the plugin under .opencode/plugin, so a PR that
+      # only touches it still runs the sync guard below (#314).
+      - ".opencode/plugin/**"
       - "flake.nix"
       - "flake.lock"
       # Itself, so a bot bumping one of the actions below is tested by the
@@ -23,15 +36,20 @@ on:
     branches: [main]
     paths:
       - "pkgs/mcpx/**"
+      - ".opencode/plugin/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
   pull-requests: read
 
-
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -39,16 +57,36 @@ jobs:
           ref: ${{ github.head_ref || github.ref }}
           fetch-depth: 0
 
-      - uses: DeterminateSystems/nix-installer-action@main
+      # The repo dogfoods the plugin: .opencode/plugin is a copy of
+      # pkgs/mcpx/plugin/opencode, and the two must stay identical. The
+      # generated ops table in the copy once fell 9 operations behind
+      # (secrets, reload, preflight, servers_get) because the generation
+      # guard inside pkgs/mcpx only compares the pkgs copy (#314). This
+      # guard lives here, not in pkgs/mcpx, because that package also
+      # stands alone in dezren39/nix with no repo-root .opencode copy.
+      - name: Check the dogfood plugin copy is in sync
+        run: |
+          diff -r pkgs/mcpx/plugin/opencode/mcpx .opencode/plugin/mcpx
+          diff pkgs/mcpx/plugin/opencode/mcpx-session.ts .opencode/plugin/mcpx-session.ts
 
       - uses: actions/setup-go@v7
         with:
           go-version-file: pkgs/mcpx/go.mod
+          cache: true
           # setup-go looks for go.sum at the repository root unless told
           # otherwise, and this is a monorepo. Without this the cache step
           # logged "Restore cache failed: Dependencies file is not found" on
           # every run and the module cache was rebuilt from scratch each time.
           cache-dependency-path: pkgs/mcpx/go.sum
+
+      - name: Check go.mod and go.sum are tidy
+        working-directory: pkgs/mcpx
+        # dezren39/nix#436: this module drifted untidy once (wazero
+        # recorded indirect though imported directly; go.sum kept the
+        # previous sqlite version's graph) because nothing checked.
+        # `go mod tidy -diff` prints the diff and exits nonzero when
+        # go.mod or go.sum is not tidy, without modifying the files.
+        run: go mod tidy -diff
 
       # All three runtimes, because each reaches the daemon differently --
       # Deno and Bun over the unix socket, Node over TCP -- and a test that
@@ -101,13 +139,29 @@ jobs:
           fi
           exit "$rc"
 
+  vendorhash-repair:
+    name: vendorHash repair (bot dependency bumps only)
+    # Only on bot branches. A human changing dependencies should see the
+    # failure and fix it deliberately rather than have it rewritten under
+    # them. This is the one job here that still needs nix on a PR.
+    if: >-
+      github.event_name == 'pull_request' &&
+      (startsWith(github.head_ref, 'renovate/') || startsWith(github.head_ref, 'dependabot/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The Renovate branch itself, so a fixed hash can be pushed back.
+          ref: ${{ github.head_ref || github.ref }}
+          fetch-depth: 0
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
       - name: Repair vendorHash on a dependency bump
         # Only on bot branches. A human changing dependencies should see the
         # failure and fix it deliberately rather than have it rewritten under
         # them.
-        if: >-
-          github.event_name == 'pull_request' &&
-          (startsWith(github.head_ref, 'renovate/') || startsWith(github.head_ref, 'dependabot/'))
         run: |
           set -euo pipefail
           file=pkgs/mcpx/package.nix
@@ -130,6 +184,3 @@ jobs:
           git add "$file"
           git commit -m "mcpx: update vendorHash for the dependency bump"
           git push
-
-      - name: Nix build
-        run: nix build .#packages.x86_64-linux.mcpx --print-build-logs

@@ -25,7 +25,7 @@ use crate::directory_view::{
 };
 use crate::world::hex_encode;
 use crate::world_hub::{ResolveError, WorldHub};
-use crate::world_session::{Inbound, SessionIo, run_session};
+use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
 
 /// File, beside the other server keys, that holds the SSH host key.
 pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
@@ -33,6 +33,8 @@ pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
 const INPUT_QUEUE: usize = 256;
 /// User-name prefix that opens the directory explorer for a world.
 const EXPLORE_PREFIX: &str = "explore:";
+/// User-name prefix that opens the line-buffered command shell for a world.
+const COMMAND_PREFIX: &str = "cmd:";
 const MAX_PACKET_BYTES: u32 = 32 * 1024;
 const INACTIVITY_TIMEOUT: Duration = Duration::from_mins(10);
 /// Concurrent SSH connections the server accepts; the rest are refused at auth.
@@ -111,14 +113,22 @@ impl Server for SshServer {
             permit: Arc::clone(&self.connections).try_acquire_owned().ok(),
             login: None,
             input: None,
+            viewport: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellMode {
+    Raw,
+    Command,
 }
 
 struct Login {
     world: Option<String>,
     capability: String,
     explore: bool,
+    command_mode: bool,
     /// The public key the client proved, as hex. Only explorers have one.
     key: Option<String>,
 }
@@ -128,7 +138,13 @@ struct SshClient {
     blobs: iroh_blobs::api::Store,
     permit: Option<OwnedSemaphorePermit>,
     login: Option<Login>,
-    input: Option<mpsc::Sender<Vec<u8>>>,
+    input: Option<mpsc::Sender<SshInputFrame>>,
+    viewport: Option<(u32, u32)>,
+}
+
+enum SshInputFrame {
+    Bytes(Vec<u8>),
+    Resize(u32, u32),
 }
 
 impl Handler for SshClient {
@@ -140,14 +156,19 @@ impl Handler for SshClient {
         if self.permit.is_none() {
             return Ok(Auth::reject());
         }
-        let (world, explore) = match user.strip_prefix(EXPLORE_PREFIX) {
-            Some(world) => (world, true),
-            None => (user, false),
+        let (world, explore, command_mode) = if let Some(world) = user.strip_prefix(EXPLORE_PREFIX)
+        {
+            (world, true, false)
+        } else if let Some(world) = user.strip_prefix(COMMAND_PREFIX) {
+            (world, false, true)
+        } else {
+            (user, false, false)
         };
         self.login = Some(Login {
             world: (!world.is_empty()).then(|| world.to_owned()),
             capability: password.to_owned(),
             explore,
+            command_mode,
             key: None,
         });
         Ok(Auth::Accept)
@@ -171,6 +192,7 @@ impl Handler for SshClient {
             world: (!world.is_empty()).then(|| world.to_owned()),
             capability: String::new(),
             explore: true,
+            command_mode: false,
             key: Some(hex_encode(&ed25519.0)),
         });
         Ok(Auth::Accept)
@@ -238,13 +260,30 @@ impl Handler for SshClient {
         &mut self,
         channel: ChannelId,
         _term: &str,
-        _col_width: u32,
-        _row_height: u32,
+        col_width: u32,
+        row_height: u32,
         _pix_width: u32,
         _pix_height: u32,
         _modes: &[(Pty, u32)],
         session: &mut Session,
     ) -> Result<(), russh::Error> {
+        self.viewport = Some((col_width, row_height));
+        session.channel_success(channel)
+    }
+
+    async fn window_change_request(
+        &mut self,
+        channel: ChannelId,
+        col_width: u32,
+        row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        session: &mut Session,
+    ) -> Result<(), russh::Error> {
+        self.viewport = Some((col_width, row_height));
+        if let Some(input) = &self.input {
+            let _ = input.try_send(SshInputFrame::Resize(col_width, row_height));
+        }
         session.channel_success(channel)
     }
 
@@ -269,14 +308,22 @@ impl Handler for SshClient {
         session.channel_success(channel)?;
 
         let (input, frames) = mpsc::channel(INPUT_QUEUE);
+        let first_resize = self.viewport.take();
         self.input = Some(input);
+        let mode = if login.command_mode {
+            ShellMode::Command
+        } else {
+            ShellMode::Raw
+        };
         let mut io = SshIo {
             handle: session.handle(),
             channel,
             frames,
             blobs: self.blobs.clone(),
             first: Some(first),
+            first_resize,
             capability: login.capability.clone(),
+            mode,
             lines: WorldLineBuffer::default(),
             commands: VecDeque::new(),
             records_prefix: None,
@@ -304,7 +351,7 @@ impl Handler for SshClient {
         };
         // Never wait for queue space: this handler runs on the same loop that
         // flushes the world's output, so waiting here could deadlock.
-        if let Err(error) = input.try_send(data.to_vec()) {
+        if let Err(error) = input.try_send(SshInputFrame::Bytes(data.to_vec())) {
             match error {
                 mpsc::error::TrySendError::Full(_) => {
                     tracing::debug!("world ssh input queue full; dropping input");
@@ -347,10 +394,12 @@ fn join_frame(login: &Login) -> String {
 struct SshIo {
     handle: Handle,
     channel: ChannelId,
-    frames: mpsc::Receiver<Vec<u8>>,
+    frames: mpsc::Receiver<SshInputFrame>,
     blobs: iroh_blobs::api::Store,
     first: Option<String>,
+    first_resize: Option<(u32, u32)>,
     capability: String,
+    mode: ShellMode,
     lines: WorldLineBuffer,
     commands: VecDeque<WorldCommand>,
     /// `Some(prefix)` while draining records pages from a `/records` command.
@@ -363,87 +412,113 @@ impl SessionIo for SshIo {
         if let Some(join) = self.first.take() {
             return Inbound::Text(join);
         }
-        loop {
-            if let Some(command) = self.commands.pop_front() {
-                match command {
-                    WorldCommand::Chat(text) => {
-                        return Inbound::Text(json!({ "type": "chat", "text": text }).to_string());
-                    }
-                    WorldCommand::Input(data_hex) => {
-                        return Inbound::Text(
-                            json!({ "type": "input", "data_hex": data_hex }).to_string(),
-                        );
-                    }
-                    WorldCommand::Records { prefix } => {
-                        self.records_prefix = Some(prefix.clone());
-                        return Inbound::Text(
-                            json!({
-                                "type": "records", "capability": self.capability,
-                                "prefix": prefix, "after": null
-                            })
-                            .to_string(),
-                        );
-                    }
-                    WorldCommand::Documents { prefix } => {
-                        let text = match list_public_documents(&self.blobs, prefix.as_deref()).await
-                        {
-                            Ok(text) => text,
-                            Err(_) => "documents unavailable".to_owned(),
-                        };
-                        if self
-                            .handle
-                            .data(
-                                self.channel,
-                                terminal_text(&format!("\r\n{text}\r\nworld> ")),
-                            )
-                            .await
-                            .is_err()
-                        {
-                            return Inbound::Closed;
+        if let Some((width, height)) = self.first_resize.take() {
+            return Inbound::Text(
+                json!({ "type": "resize", "width": width, "height": height }).to_string(),
+            );
+        }
+        match self.mode {
+            ShellMode::Raw => match self.frames.recv().await {
+                Some(SshInputFrame::Bytes(bytes)) => Inbound::Text(
+                    json!({ "type": "input", "data_hex": encode_hex(&bytes) }).to_string(),
+                ),
+                Some(SshInputFrame::Resize(width, height)) => Inbound::Text(
+                    json!({ "type": "resize", "width": width, "height": height }).to_string(),
+                ),
+                None => Inbound::Closed,
+            },
+            ShellMode::Command => loop {
+                if let Some(command) = self.commands.pop_front() {
+                    match command {
+                        WorldCommand::Chat(text) => {
+                            return Inbound::Text(
+                                json!({ "type": "chat", "text": text }).to_string(),
+                            );
                         }
-                    }
-                    WorldCommand::Document(name) => {
-                        let text = match read_public_document(&self.blobs, &name).await {
-                            Ok(text) => format!("\r\n{text}\r\nworld> "),
-                            Err(error) => format!("\r\n{}\r\nworld> ", error.message()),
-                        };
-                        if self
-                            .handle
-                            .data(self.channel, terminal_text(&text))
-                            .await
-                            .is_err()
-                        {
-                            return Inbound::Closed;
+                        WorldCommand::Input(data_hex) => {
+                            return Inbound::Text(
+                                json!({ "type": "input", "data_hex": data_hex }).to_string(),
+                            );
                         }
-                    }
-                    WorldCommand::RecordsContinue { prefix, after } => {
-                        return Inbound::Text(
-                            json!({
-                                "type": "records", "capability": self.capability,
-                                "prefix": prefix, "after": after
-                            })
-                            .to_string(),
-                        );
-                    }
-                    WorldCommand::Help => {
-                        let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /documents [prefix], /document <name>, /help, /quit\r\n";
-                        if self.handle.data(self.channel, help).await.is_err() {
-                            return Inbound::Closed;
+                        WorldCommand::Records { prefix } => {
+                            self.records_prefix = Some(prefix.clone());
+                            return Inbound::Text(
+                                json!({
+                                    "type": "records", "capability": self.capability,
+                                    "prefix": prefix, "after": null
+                                })
+                                .to_string(),
+                            );
                         }
-                    }
-                    WorldCommand::Message(message) => {
-                        let text = format!("{message}\r\n");
-                        if self.handle.data(self.channel, text).await.is_err() {
-                            return Inbound::Closed;
+                        WorldCommand::Documents { prefix } => {
+                            let text =
+                                match list_public_documents(&self.blobs, prefix.as_deref()).await {
+                                    Ok(text) => text,
+                                    Err(_) => "documents unavailable".to_owned(),
+                                };
+                            if self
+                                .handle
+                                .data(
+                                    self.channel,
+                                    terminal_text(&format!("\r\n{text}\r\nworld> ")),
+                                )
+                                .await
+                                .is_err()
+                            {
+                                return Inbound::Closed;
+                            }
                         }
+                        WorldCommand::Document(name) => {
+                            let text = match read_public_document(&self.blobs, &name).await {
+                                Ok(text) => format!("\r\n{text}\r\nworld> "),
+                                Err(error) => format!("\r\n{}\r\nworld> ", error.message()),
+                            };
+                            if self
+                                .handle
+                                .data(self.channel, terminal_text(&text))
+                                .await
+                                .is_err()
+                            {
+                                return Inbound::Closed;
+                            }
+                        }
+                        WorldCommand::RecordsContinue { prefix, after } => {
+                            return Inbound::Text(
+                                json!({
+                                    "type": "records", "capability": self.capability,
+                                    "prefix": prefix, "after": after
+                                })
+                                .to_string(),
+                            );
+                        }
+                        WorldCommand::Help => {
+                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
+                            if self.handle.data(self.channel, help).await.is_err() {
+                                return Inbound::Closed;
+                            }
+                        }
+                        WorldCommand::Message(message) => {
+                            let text = format!("{message}\r\nworld> ");
+                            if self.handle.data(self.channel, text).await.is_err() {
+                                return Inbound::Closed;
+                            }
+                        }
+                        WorldCommand::Quit => return Inbound::Closed,
                     }
-                    WorldCommand::Quit => return Inbound::Closed,
                 }
-            }
-            let Some(bytes) = self.frames.recv().await else {
-                return Inbound::Closed;
-            };
-            self.commands.extend(self.lines.push(&bytes));
+                match self.frames.recv().await {
+                    Some(SshInputFrame::Bytes(bytes)) => {
+                        self.commands.extend(self.lines.push(&bytes));
+                    }
+                    Some(SshInputFrame::Resize(width, height)) => {
+                        return Inbound::Text(
+                            json!({ "type": "resize", "width": width, "height": height })
+                                .to_string(),
+                        );
+                    }
+                    None => return Inbound::Closed,
+                }
+            },
         }
     }
 
@@ -453,15 +528,44 @@ impl SessionIo for SshIo {
         };
         let text = match value["type"].as_str() {
             Some("snapshot") => {
-                "World chat: type a line to chat; /help lists commands.\r\nworld> ".to_owned()
+                if matches!(self.mode, ShellMode::Command) {
+                    "World chat: type a line to chat; /help lists commands.\r\nworld> ".to_owned()
+                } else {
+                    return true;
+                }
             }
-            Some("view") => match value["data"].as_str() {
-                Some(data) => format!(
-                    "\x1b[H\x1b[2J{}\r\nType a line to chat; /help lists commands.\r\nworld> ",
-                    terminal_text(data)
-                ),
-                None => return true,
-            },
+            Some("view") => {
+                let rendered = if let Some(surface) = value.get("surface") {
+                    if let Ok(crate::world_presentation::WorldSurface::Screen(screen)) =
+                        serde_json::from_value(surface.clone())
+                    {
+                        if let Some(rendered) = screen.render_ansi() {
+                            rendered
+                        } else if let Some(data) = value["data"].as_str() {
+                            format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                        } else {
+                            return true;
+                        }
+                    } else if let Some(data) = value["data"].as_str() {
+                        format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                    } else {
+                        return true;
+                    }
+                } else if let Some(data) = value["data"].as_str() {
+                    format!("\x1b[H\x1b[2J{}", terminal_text(data))
+                } else {
+                    return true;
+                };
+
+                if matches!(self.mode, ShellMode::Command) {
+                    format!(
+                        "\x1b[H\x1b[2J{}\r\nType a line to chat; /help lists commands.\r\nworld> ",
+                        rendered
+                    )
+                } else {
+                    rendered
+                }
+            }
             Some("error") => {
                 self.errored = true;
                 self.records_prefix = None;
@@ -925,7 +1029,7 @@ async fn run_explorer(
     mut explorer: Explorer,
     handle: Handle,
     channel: ChannelId,
-    mut bytes: mpsc::Receiver<Vec<u8>>,
+    mut bytes: mpsc::Receiver<SshInputFrame>,
 ) {
     let greeting = match explorer.act(DirectoryAction::View).await {
         Ok(outcome) => format!(
@@ -949,7 +1053,10 @@ async fn run_explorer(
         return;
     }
     let mut typing = Typing::default();
-    'input: while let Some(chunk) = bytes.recv().await {
+    'input: while let Some(frame) = bytes.recv().await {
+        let SshInputFrame::Bytes(chunk) = frame else {
+            continue;
+        };
         let mut out = Vec::new();
         let mut done = false;
         for byte in chunk {
@@ -1443,7 +1550,7 @@ mod tests {
             .unwrap()
             .to_owned();
         let (port, server) = start(hub).await;
-        let session = connect(port, &capability).await;
+        let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
         let mut terminal = vt100::Parser::new(24, 80, 0);
         read_until(&mut channel, &mut terminal, "world>").await;
@@ -1657,7 +1764,7 @@ mod tests {
             .unwrap()
             .to_owned();
         let (port, server) = start_with_store(hub, store).await;
-        let session = connect(port, &capability).await;
+        let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
         let mut terminal = vt100::Parser::new(24, 80, 0);
         read_until(&mut channel, &mut terminal, "world>").await;
@@ -1700,6 +1807,44 @@ mod tests {
         let (port, server) = start(hub).await;
 
         let session = connect(port, &capability).await;
+        let mut channel = shell(&session).await;
+        let mut terminal = vt100::Parser::new(24, 80, 0);
+        read_until(&mut channel, &mut terminal, "count=0").await;
+        channel.data(&b"inc"[..]).await.unwrap();
+        read_until(&mut channel, &mut terminal, "count=1").await;
+        server.abort();
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn a_shell_plays_the_world_in_command_mode_using_input_command() {
+        use iroh_blobs::store::mem::MemStore;
+
+        let blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let service = WorldService::new(world, Some("admin".to_owned())).with_blob_store(blobs);
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let hash = crate::world_session::module_hash(&wasm);
+        service
+            .install_wasm(Some("admin"), wasm, 99, &hash)
+            .await
+            .unwrap();
+        let hub = WorldHub::single(service);
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-cmd".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(&invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start(hub).await;
+
+        let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
         let mut terminal = vt100::Parser::new(24, 80, 0);
         read_until(&mut channel, &mut terminal, "count=0").await;

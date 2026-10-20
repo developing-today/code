@@ -5,18 +5,18 @@
 - Base branch `phase-7`. Tracks run in parallel:
   - `p7-relay`: P7.1 relay kit for a server behind a Cloudflare Tunnel, and for VPS testing (updated for the S11 findings).
   - `p7-dht`: P7.3 DHT opt-in per world (decision 15).
-- Not started: P7.2 Cloudflare Workers pkarr option (design only; needs owner's go). P7.4 access control (decision 13: none now). P7.5 deployments and real-network tests (owner-blocked: accounts and networks).
+- P7.2 Cloudflare Workers pkarr option: design complete; implementation deferred pending explicit owner approval. See [design note](../2026-10-14T10-18-19Z_design_p7_2_cloudflare_workers.md). P7.4 access control (decision 13: none now). P7.5 deployments and real-network tests (owner-blocked: accounts and networks).
 - Phase 8 items each become their own phase document when they start (P8.1 to P8.6); P8.7 BeeKEM only if its conditions are met (they are not); P8.8 lints: do nothing now.
 
 ## Steps
 
-| Step | Track | Status                | Commits                      | Tests                                                   | Notes                                       |
-| ---- | ----- | --------------------- | ---------------------------- | ------------------------------------------------------- | ------------------------------------------- |
-| P7.1 | relay | done                  | 80feb48b, ff844396           | relay_ops: 21 (14 red before the mode)                  | tunnel and vps modes in relay.kit.toml      |
-| P7.2 | -     | blocked on owner's go |                              |                                                         | design only                                 |
-| P7.3 | dht   | done (server-wide)    | 1c91f76a, 5249c60a, 61f7e00c | dht_opt_in 3; dht unit 5; dht_testnet 2 (`dht` feature) | server-wide --dht on serve; publish enabled |
-| P7.4 | -     | none now              |                              |                                                         | decision 13                                 |
-| P7.5 | -     | owner-blocked         |                              |                                                         | accounts and networks                       |
+| Step | Track | Status                                   | Commits                      | Tests                                                   | Notes                                                                                                  |
+| ---- | ----- | ---------------------------------------- | ---------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| P7.1 | relay | done                                     | 80feb48b, ff844396           | relay_ops: 21 (14 red before the mode)                  | tunnel and vps modes in relay.kit.toml                                                                 |
+| P7.2 | -     | design complete; implementation deferred |                              | none (design-only)                                      | [design note](../2026-10-14T10-18-19Z_design_p7_2_cloudflare_workers.md); no deployment/account access |
+| P7.3 | dht   | done (server-wide)                       | 1c91f76a, 5249c60a, 61f7e00c | dht_opt_in 3; dht unit 5; dht_testnet 2 (`dht` feature) | server-wide --dht on serve; publish enabled                                                            |
+| P7.4 | -     | none now                                 |                              |                                                         | decision 13                                                                                            |
+| P7.5 | -     | owner-blocked                            |                              |                                                         | accounts and networks                                                                                  |
 
 ## 2026-10-12T21:40:00Z Note: P7.1 relay kit modes
 

@@ -17,7 +17,7 @@ func TestDiagnoseNamesTheArgumentAndTheMinimumThatWorks(t *testing.T) {
 	// The whole claim of the deterministic diagnostic: not "the arguments
 	// are wrong" but which one, and what to write instead.
 	e := newEnv(t, oneServer)
-	e.run("ls")
+	e.run("refresh")
 	out, err := e.try("diagnose", "await demo.echo()")
 	if err == nil {
 		t.Fatalf("a call missing a required argument should fail:\n%s", out)
@@ -32,7 +32,14 @@ func TestDiagnoseNamesTheArgumentAndTheMinimumThatWorks(t *testing.T) {
 
 func TestDiagnoseSuggestsTheToolYouMeant(t *testing.T) {
 	e := newEnv(t, oneServer)
-	e.run("ls")
+	// Force the schema read instead of `ls` (dezren39/nix#242): ls is
+	// answered from the schema cache alone and does not wait for the
+	// daemon's background warm-up, so a diagnose that followed it could
+	// run against an empty catalog and offer no suggestion. refresh reads
+	// every server's schemas synchronously, so the catalog is populated
+	// before the diagnose below runs, however the background warm is
+	// progressing.
+	e.run("refresh")
 	out, _ := e.try("diagnose", `await demo.eco({message:"x"})`)
 	if !strings.Contains(out, "echo") {
 		t.Fatalf("the closest name should be offered:\n%s", out)
@@ -41,7 +48,11 @@ func TestDiagnoseSuggestsTheToolYouMeant(t *testing.T) {
 
 func TestDiagnoseIsQuietWhenEverythingMatches(t *testing.T) {
 	e := newEnv(t, oneServer)
-	e.run("ls")
+	// refresh, not ls, for the dezren39/nix#242 reason given in
+	// TestDiagnoseSuggestsTheToolYouMeant: against an empty catalog this
+	// test would pass vacuously ("nothing to report" is also what an
+	// unread catalog says), so the schemas must be read first.
+	e.run("refresh")
 	out := e.run("diagnose", `await demo.echo({message:"x"})`)
 	if !strings.Contains(out, "Nothing to report") {
 		t.Fatalf("a correct script should pass:\n%s", out)
@@ -133,6 +144,26 @@ func TestARecipeThatIsMissingAValueSaysSoRatherThanRunning(t *testing.T) {
 	}
 	if !strings.Contains(out, "message") || !strings.Contains(out, "elc-") {
 		t.Fatalf("it should name what was missing and the question it raised:\n%s", out)
+	}
+}
+
+func TestRunOnARecipePointsToRecipesRun(t *testing.T) {
+	// #276: `mcpx run say hi` handed the recipe's @param holes to the
+	// runtime as written and died with "SyntaxError: Expression
+	// expected". run must refuse and name the filling command.
+	e := newEnv(t, oneServer)
+	writeRecipe(t, e, "say", sayRecipe)
+	e.run("ls")
+	out, err := e.try("run", "say", "hi")
+	if err == nil {
+		t.Fatalf("run on an unfilled recipe must not succeed:\n%s", out)
+	}
+	if strings.Contains(out, "SyntaxError") {
+		t.Fatalf("the raw syntax error is the bug being fixed:\n%s", out)
+	}
+	if !strings.Contains(out, "mcpx recipes run say") ||
+		!strings.Contains(out, "message=<value>") {
+		t.Fatalf("run should point at recipes run with the holes named:\n%s", out)
 	}
 }
 

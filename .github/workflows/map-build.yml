@@ -1,0 +1,69 @@
+name: map build
+
+# Build verification for the small pkgs/map Go module (#338).
+#
+# Nothing built pkgs/map in CI at all, so it rotted silently: its
+# charm -> keygen v0.4.2 -> caarlos0/sshmarshal chain stopped compiling
+# against golang.org/x/crypto v0.16.0 and nobody noticed. This workflow
+# builds and vets the module whenever it changes so that cannot recur.
+# (pkgs/graph has the same class of break under #166 and already has
+# the mod-tidy workflow watching it; it is deliberately not added here.)
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/map/**"
+      - ".github/workflows/map-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/map/**"
+      - ".github/workflows/map-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: go build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/map/go.mod
+          cache-dependency-path: pkgs/map/go.sum
+
+      - name: Verify go.mod and go.sum are tidy
+        working-directory: pkgs/map
+        # Every sibling module already has this guard (go-modules-build
+        # for #347, mcpx.yml for nix#436, mod-tidy.yml for graph); map and
+        # identity were the last two without one, and build/vet pass on
+        # an untidy module, so drift here would be silent (#349).
+        # Pattern copied from go-modules-build.yml: these modules pin
+        # Go 1.21/1.22, whose `go mod tidy` has no -diff flag (added in
+        # Go 1.24; mcpx.yml can use it only because mcpx pins Go 1.27),
+        # so run tidy and fail if it changed anything.
+        run: |
+          go mod tidy
+          if [[ -n "$(git status --short -- go.mod go.sum)" ]]; then
+            echo "go mod tidy changed go.mod or go.sum; commit the tidy changes."
+            git diff -- go.mod go.sum
+            exit 1
+          fi
+
+      - name: Build
+        working-directory: pkgs/map
+        run: go build ./...
+
+      - name: Vet
+        working-directory: pkgs/map
+        run: go vet ./...

@@ -233,8 +233,10 @@ are therefore:
   actor and sequences a `program_installed` event. The command prints the
   module's BLAKE3 hash.
 - The browser page `/world` can issue invites (separate admin bearer), upload a
-  `.wasm` module, join, chat, send input, and render host-produced view text.
-  Browser, CLI, and Iroh clients all drive the same `world_session` protocol.
+  `.wasm` module or select up to 8 `.roc` sources for admin-authenticated
+  compile-and-install (128 KiB per file, 256 KiB total), join, chat, send input,
+  and render host-produced view text. Browser, CLI, and Iroh clients all drive
+  the same `world_session` protocol.
 - The hosted world state and module pin are currently volatile: restarting
   `serve` resets the actor and releases its temp-tag pin. Durable module
   selection, event-log replay/state restoration, and fetching module bytes from
@@ -269,6 +271,20 @@ Browser TypeScript checking, all 343 browser unit tests, and the web bundle
 build pass. Full Rust tests pass: 655 library, 97 CLI integration, 5 remote
 write/QUIC, 19 doctests. Nix `id-lib` builds with 479 unit tests and its
 hermetic integration/doctest checks.
+
+## 2026-10-14 Verification: browser Roc source upload
+
+The `/world` host controls now accept multiple `.roc` source files and send the
+existing admin-authenticated `compile` frame over `/ws/world`; the UI validates
+the server's 8-file, 128 KiB/file and 256 KiB total limits, reports compile
+status and the installed BLAKE3 hash, and leaves world interaction available.
+The compiled-module upload remains available. The browser WS tests reject a
+wrong admin token and cover compile/install/run (counter input changes
+`count=0` to `count=1`). The authorized compile test was skipped here because
+`examples/roc-world/targets/wasm32/host.wasm` is not present; build it with
+`examples/roc-world/build-host.sh` to run that integration path. Targeted WS
+tests passed (the compile test reports this documented skip), as did browser
+TypeScript typechecking and all 343 browser tests.
 
 **Boundary reminder:** pure Roc with a deliberately effect-free platform is
 capability-safe by construction; Wasm is not required to deny ambient file or

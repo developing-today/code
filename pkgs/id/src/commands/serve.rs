@@ -317,6 +317,8 @@ pub struct ServeOptions {
     pub world_caps: Vec<String>,
     /// `deny` or `grant-on-use`.
     pub world_cap_policy: String,
+    /// Capabilities the server allows any world to use (`None`: the whole catalog).
+    pub world_allowed_caps: Option<Vec<String>>,
     /// Roc binary for on-the-fly compilation.
     pub roc_bin: Option<String>,
     /// Platform directory for on-the-fly compilation.
@@ -325,6 +327,8 @@ pub struct ServeOptions {
     pub world_ssh_port: Option<u16>,
     /// Accept native (ELF) module installs.
     pub world_native: bool,
+    /// Accept program changes only through server-side Roc compilation.
+    pub world_source_only: bool,
     /// Execution bounds for world programs.
     pub world_runtime: crate::cli::WorldRuntimeArgs,
     /// Nodes allowed to modify the store.
@@ -339,6 +343,7 @@ fn validate_world_options(
     world_module: Option<&PathBuf>,
     world_name: &str,
     world_cap_policy: &str,
+    world_source_only: bool,
 ) -> Result<()> {
     ensure!(
         !world || admin_token.is_some_and(|token| !token.is_empty()),
@@ -353,6 +358,14 @@ fn validate_world_options(
     ensure!(
         world_cap_policy == "deny" || world_cap_policy == "grant-on-use",
         "--world-cap-policy must be `deny` or `grant-on-use`"
+    );
+    ensure!(
+        !world_source_only || world_module.is_none(),
+        "--world-source-only cannot be combined with --world-module"
+    );
+    ensure!(
+        !world_source_only || world,
+        "--world-source-only requires --world"
     );
     #[cfg(not(feature = "world"))]
     let _ = world_name;
@@ -462,6 +475,19 @@ fn mail_sink(
     Ok(Some(sink))
 }
 
+/// The server's capability ceiling: the named capabilities, or the whole catalog
+/// when no list is given. Like a world ceiling, it names capabilities; `*` is refused.
+#[cfg(feature = "world")]
+fn allowed_caps(names: Option<&[String]>) -> Result<std::collections::BTreeSet<String>> {
+    match names {
+        None => Ok(crate::world_caps::catalog_names()),
+        Some(names) => {
+            crate::world_caps::validate_ceiling_names(names)?;
+            Ok(names.iter().cloned().collect())
+        }
+    }
+}
+
 #[cfg(feature = "world")]
 struct ServeWorlds {
     ephemeral: bool,
@@ -472,8 +498,10 @@ struct ServeWorlds {
     default_world: String,
     default_module: Option<PathBuf>,
     grant_on_use: bool,
+    server_caps: std::collections::BTreeSet<String>,
     compiler: Option<crate::world_compile::Compiler>,
     native: bool,
+    source_only: bool,
     runtime: crate::world_limits::RuntimeLimits,
     mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
 }
@@ -523,6 +551,7 @@ impl ServeWorlds {
         let limits = WorldLimits {
             checkpoint_every: self.checkpoint_every,
             grant_on_use: self.grant_on_use,
+            server_caps: self.server_caps.clone(),
             ..WorldLimits::default()
         };
         let runtime = self.runtime;
@@ -530,10 +559,12 @@ impl ServeWorlds {
             let admin_token = self.admin_token.clone();
             let blobs = self.blobs.clone();
             let mail = self.mail.clone();
+            let source_only = self.source_only;
             move |handle| {
                 let service = WorldService::new(handle, admin_token)
                     .with_blob_store(blobs)
-                    .with_runtime_limits(runtime);
+                    .with_runtime_limits(runtime)
+                    .with_source_only(source_only);
                 match &mail {
                     Some(sink) => service.with_mail(Arc::clone(sink)),
                     None => service,
@@ -694,9 +725,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_boot_window_secs,
         world_caps,
         world_cap_policy,
+        world_allowed_caps,
         roc_bin,
         roc_platform,
         world_native,
+        world_source_only,
         world_ssh_port,
         world_runtime,
         allow_node,
@@ -708,7 +741,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         world_module.as_ref(),
         &world_name,
         &world_cap_policy,
+        world_source_only,
     )?;
+    #[cfg(not(feature = "world"))]
+    let _ = &world_allowed_caps;
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
@@ -797,6 +833,12 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let world_hub = if world {
         use crate::world_hub::{HubLimits, WorldHub};
         let runtime = crate::world_limits::RuntimeLimits::from_args(&world_runtime)?;
+        let server_caps = allowed_caps(world_allowed_caps.as_deref())?;
+        let compiler = resolve_compiler(roc_bin, roc_platform)?;
+        ensure!(
+            !world_source_only || compiler.is_some(),
+            "--world-source-only requires a configured Roc compiler and platform (see --roc-bin and --roc-platform)"
+        );
         let opener = Arc::new(ServeWorlds {
             ephemeral,
             admin_token: world_admin_token.clone(),
@@ -806,8 +848,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             default_world: world_name.clone(),
             default_module: world_module.clone(),
             grant_on_use: world_cap_policy == "grant-on-use",
-            compiler: resolve_compiler(roc_bin, roc_platform)?,
+            server_caps: server_caps.clone(),
+            compiler,
             native: world_native,
+            source_only: world_source_only,
             runtime,
             mail: mail_sink(
                 world_mail_outbox,
@@ -828,6 +872,13 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         );
         let default_service = hub.open_default().await?;
         if !world_caps.is_empty() {
+            for cap in world_caps.iter().filter(|cap| *cap != "*") {
+                if !server_caps.contains(cap) {
+                    warn!(
+                        "world: --world-cap {cap} is outside --world-allowed-caps; the program will be refused it"
+                    );
+                }
+            }
             default_service
                 .world()
                 .update_caps(world_caps.clone(), Vec::new())
@@ -1306,21 +1357,53 @@ async fn run_gossip_loop(
 mod tests {
     use super::*;
 
+    #[cfg(feature = "world")]
+    #[test]
+    fn the_server_ceiling_is_the_named_list_or_the_whole_catalog() {
+        assert_eq!(
+            allowed_caps(None).unwrap(),
+            crate::world_caps::catalog_names()
+        );
+        let named = ["time.now".to_owned(), "chat.say".to_owned()];
+        assert_eq!(
+            allowed_caps(Some(&named))
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["chat.say".to_owned(), "time.now".to_owned()]
+        );
+        assert!(allowed_caps(Some(&["*".to_owned()])).is_err());
+        assert!(allowed_caps(Some(&["telepathy".to_owned()])).is_err());
+    }
+
     #[test]
     fn world_mode_requires_an_admin_token_but_not_web() {
-        assert!(validate_world_options(true, None, None, "lobby", "deny").is_err());
-        assert!(validate_world_options(true, Some(""), None, "lobby", "deny").is_err());
-        assert!(validate_world_options(true, Some("admin"), None, "lobby", "deny").is_ok());
-        assert!(validate_world_options(false, None, None, "lobby", "deny").is_ok());
+        assert!(validate_world_options(true, None, None, "lobby", "deny", false).is_err());
+        assert!(validate_world_options(true, Some(""), None, "lobby", "deny", false).is_err());
+        assert!(validate_world_options(true, Some("admin"), None, "lobby", "deny", false).is_ok());
+        assert!(validate_world_options(false, None, None, "lobby", "deny", false).is_ok());
         assert!(
             validate_world_options(
                 true,
                 Some("admin"),
                 Some(&PathBuf::from("world.wasm")),
                 "lobby",
-                "deny"
+                "deny",
+                false
             )
             .is_ok()
+        );
+        assert!(validate_world_options(true, Some("admin"), None, "lobby", "deny", true).is_ok());
+        assert!(
+            validate_world_options(
+                true,
+                Some("admin"),
+                Some(&PathBuf::from("world.wasm")),
+                "lobby",
+                "deny",
+                true
+            )
+            .is_err()
         );
         assert!(
             validate_world_options(
@@ -1328,7 +1411,8 @@ mod tests {
                 None,
                 Some(&PathBuf::from("world.wasm")),
                 "lobby",
-                "deny"
+                "deny",
+                false
             )
             .is_err()
         );
@@ -1363,19 +1447,26 @@ mod tests {
             "wörld",
         ] {
             assert!(
-                validate_world_options(true, Some("admin"), None, bad, "deny").is_err(),
+                validate_world_options(true, Some("admin"), None, bad, "deny", false).is_err(),
                 "{bad:?} must be refused"
             );
         }
-        assert!(validate_world_options(true, Some("admin"), None, "tt-2_x", "deny").is_ok());
-        assert!(validate_world_options(true, Some("admin"), None, &"a".repeat(64), "deny").is_ok());
+        assert!(validate_world_options(true, Some("admin"), None, "tt-2_x", "deny", false).is_ok());
         assert!(
-            validate_world_options(true, Some("admin"), None, &"a".repeat(65), "deny").is_err()
+            validate_world_options(true, Some("admin"), None, &"a".repeat(64), "deny", false)
+                .is_ok()
         );
-        assert!(validate_world_options(true, Some("admin"), None, "lobby", "deny").is_ok());
-        assert!(validate_world_options(true, Some("admin"), None, "lobby", "grant-on-use").is_ok());
         assert!(
-            validate_world_options(true, Some("admin"), None, "lobby", "sometimes").is_err(),
+            validate_world_options(true, Some("admin"), None, &"a".repeat(65), "deny", false)
+                .is_err()
+        );
+        assert!(validate_world_options(true, Some("admin"), None, "lobby", "deny", false).is_ok());
+        assert!(
+            validate_world_options(true, Some("admin"), None, "lobby", "grant-on-use", false)
+                .is_ok()
+        );
+        assert!(
+            validate_world_options(true, Some("admin"), None, "lobby", "sometimes", false).is_err(),
             "an unknown policy is refused"
         );
     }

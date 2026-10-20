@@ -186,13 +186,13 @@ Goal: invites and links that work, pull, fork recovery, and the CLI that exposes
 
 **Phase 7** (nothing here is needed for a first working system):
 
-| Step | What                                                                                                 | Blocked by                  | Parallel with | Tests                               |
-| ---- | ---------------------------------------------------------------------------------------------------- | --------------------------- | ------------- | ----------------------------------- |
-| P7.1 | Relay kit for a server behind a Cloudflare Tunnel, and for VPS testing. Updated for the S11 findings | none                        | P7.2          | the unit file test (P3.8)           |
-| P7.2 | Cloudflare Workers pkarr option: HTTP PUT and GET and DNS over HTTPS only (round 2). Design only     | owner's go                  | P7.1          | none yet                            |
-| P7.3 | DHT opt-in per world (decision 15)                                                                   | Phase 3                     | P7.1          | integration over a test DHT         |
-| P7.4 | Access control (decision 13): none now; revisit at implementation                                    | none                        | everything    | none now                            |
-| P7.5 | Deployments and real-network tests (owner-blocked)                                                   | owner accounts and networks | none          | the C2 matrix; N29 on real networks |
+| Step | What                                                                                                                          | Blocked by                                         | Parallel with | Tests                                                                                                                      |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| P7.1 | Relay kit for a server behind a Cloudflare Tunnel, and for VPS testing. Updated for the S11 findings                          | none                                               | P7.2          | the unit file test (P3.8)                                                                                                  |
+| P7.2 | Cloudflare Workers pkarr option: HTTP PUT and GET and DNS over HTTPS only (round 2). Design complete; implementation deferred | none (design); implementation needs owner approval | P7.1          | design note: [P7.2 Cloudflare Workers](../2026-10-14T10-18-19Z_design_p7_2_cloudflare_workers.md); no implementation tests |
+| P7.3 | DHT opt-in per world (decision 15)                                                                                            | Phase 3                                            | P7.1          | integration over a test DHT                                                                                                |
+| P7.4 | Access control (decision 13): none now; revisit at implementation                                                             | none                                               | everything    | none now                                                                                                                   |
+| P7.5 | Deployments and real-network tests (owner-blocked)                                                                            | owner accounts and networks                        | none          | the C2 matrix; N29 on real networks                                                                                        |
 
 **Phase 8** (each becomes a phase document when it starts):
 
