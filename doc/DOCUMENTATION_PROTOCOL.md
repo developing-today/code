@@ -57,11 +57,11 @@ After initial rollout is complete:
 
 - **Short updates**: Files can be brief notes, updates to specific parts, or complete re-summarization of current/proposed design
 
-## File Immutability
+## File Immutability vs. Maintained Records
 
-- **Do not modify files** after initial creation (except appending during active rollout)
-- **After some time**, stop appending—create new files instead
-- **Preserve historical record**: Files represent the state of understanding at that point in time
+- **Historical Records (`docs/<UTC>_<kind>_<name>/`)**: Files represent the state of understanding at that point in time. Do not modify files after initial creation (except appending during active rollout).
+- **Research Collections (`docs/<UTC>_research_<slug>/`)**: Staged multi-concept collections managed by the research workflow (`planning/workflow/`). While raw transcripts (`transcript.txt`) and directed notes (`notes/`) are strictly immutable, main references and review orders are maintained documents updated via pull requests as concepts advance through lifecycle stages.
+- **System Documentation**: High-level roadmaps, planning frameworks (`planning/`), and documentation architecture specifications are maintained living files. Refer to [`planning/DOCUMENTATION_ARCHITECTURE.md`](../planning/DOCUMENTATION_ARCHITECTURE.md) for placement and mutability rules across all repository documentation.
 
 ## Handling Superseded Features
 

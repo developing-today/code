@@ -32,3 +32,16 @@ When retrieving public web content with `curl`, `wget`, Python HTTP clients, or 
   - It is acceptable to push and merge code that has been validated with targeted tests without running every single test upfront.
   - Run long test suites or CI in the background while progressing on other work in parallel. If background jobs or CI fail, double back and address failures while continuing forward.
   - Document unresolved ambiguities, design concerns, or known gaps by creating GitHub issues instead of blocking progress.
+
+## Research and delivery workflow
+
+For complex research, design, planning and implementation pipelines:
+
+1. **Routing**: Use `/research-workflow` to discover current stage and dispatch work. Specifications live in [`planning/workflow/`](planning/workflow/README.md) and [`planning/DOCUMENTATION_ARCHITECTURE.md`](planning/DOCUMENTATION_ARCHITECTURE.md).
+2. **Parallel writers**:
+   - **Boot**: `source /home/user/.local/share/plaza-tools/git-env.sh`; create a dedicated worktree and branch from the declared baseline; push the empty branch immediately (`git push -u origin <branch>`); open PR after first commit.
+   - **One writer per file**: Own concept document, own outgoing notes, own receipts. Shared wide files (`main.md`, `design.md`, `AGENTS.md`, `doc/README.md`, catalogs) change only via PR.
+   - **Add-only records**: Write new files (`notes/`, `receipts/`, `decisions/`) or append to union-merged lines (`changes.md`). Never edit another agent's active file.
+   - **Guardrails**: No `git stash` (use WIP commits), no force push, no rebase, no `git add .`, no `gc`/`prune` from worker worktrees. Merge commits only.
+   - **Completion report**: Branch, PR URL, last pushed commit SHA, verified test commands/results, and unverified assumptions.
+   - **Orchestrator merge gate**: Orchestrators merge only when remote ref matches PR head matches reported SHA, worker is idle, and checks pass. Merged branches are dead; follow-ups use a new branch.
