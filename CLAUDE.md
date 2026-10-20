@@ -15,6 +15,7 @@ Note: `nixos_bootstrap_unattended-installer_offline_nixos-24.11.20241014...iso` 
 ## Commands
 
 ### Formatting / linting
+
 - `just fmt` (or `just treefmt`) — runs `treefmt` using the root `treefmt.toml`, which dispatches
   per-language formatters: `nixfmt` + `statix fix` for `*.nix`, `biome` for JS/TS/CSS/JSON,
   `prettier` for md/html/yaml/scss, `shfmt` for shell, `rustfmt`, `taplo` for TOML, `ruff` for
@@ -27,12 +28,14 @@ Note: `nixos_bootstrap_unattended-installer_offline_nixos-24.11.20241014...iso` 
   bindings used for documentation/future work).
 
 ### Flake input management (all via `just`, see `root.just`)
+
 - `just update-inputs-all` — `nix flake update` (all inputs).
 - `just update-input <name...>` — update specific flake inputs by name only.
 - `just update-nixpkgs` / `update-nixpkgs-master` / `update-nixpkgs-unstable` — update
   nixpkgs-derived inputs by branch, discovered from `flake.lock` via `nix/nixpkgs-inputs.nix`.
 
 ### Rebuilding an actual NixOS host
+
 `./rebuild`, `./rebuild-simple`, `./rebuild-offline` (symlinks into `lib/auth-rebuild-*.sh`) run
 `nixos-rebuild switch --flake .` with sudo, optionally updating every flake under `pkgs/*` first
 (`rebuild-full`) and committing a `<hostname> <generation>` marker commit afterward. **These only
@@ -41,6 +44,7 @@ and require root/hardware access; do not run them in a sandboxed dev container, 
 without being asked — they mutate the live system and create commits.
 
 ### `pkgs/id` (standalone Rust subproject)
+
 Has its own flake, justfile, CI, and `AGENTS.md`/`ARCHITECTURE.md`. Read `pkgs/id/AGENTS.md`
 before working there — it has its own rules (e.g. never delete `rust-toolchain.toml`, keep
 justfile recipes and `nix run .#<cmd>` apps in sync, add deps only via `nix-common.nix`). Use
@@ -73,8 +77,8 @@ outputs = inputs: lib.merge [
   - `users` → `nixos/users/<name>`
   - `disks` → `nixos/disks/<name>` (disko-based disk layout)
   - `wireless` → `nixos/networking/wireless/<name>`
-  So adding a machine capability is usually "add a directory under the matching `nixos/<category>/`
-  tree and reference its name from `nixos/hosts/default.nix`," not writing new plumbing.
+    So adding a machine capability is usually "add a directory under the matching `nixos/<category>/`
+    tree and reference its name from `nixos/hosts/default.nix`," not writing new plumbing.
 - `keys/` holds `ssh-host-*.pub` / `ssh-group-*.pub` / `ssh-user-*.pub` files, read via
   `lib.host-key` / `lib.group-key` / `lib.user-key` and wired into host/user configs (e.g. for
   sops-nix). Secrets themselves live under `sops/` and `secrets/` (see `.sops.yaml`).

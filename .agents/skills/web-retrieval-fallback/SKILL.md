@@ -26,7 +26,7 @@ Read both before retrying if you haven't already in this session — prior findi
    - `WhatsApp/2.23.20.0` (link-preview fetcher; slips through many news/paywall CDNs)
    - `Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot`
    - `Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ClaudeBot/1.0; +claudebot@anthropic.com`
-4. Check the doc's *Sites* section for the domain you are hitting — there may be a known working path, mirror, archive link, or rate-limit note.
+4. Check the doc's _Sites_ section for the domain you are hitting — there may be a known working path, mirror, archive link, or rate-limit note.
 5. If content still won't come via direct fetch: try mirrors (`web.archive.org`, GitHub mirrors/repos), alternate endpoints (`.json` APIs, `old.reddit.com/.json` style variants), or clone-and-search locally.
 
 ## GitHub: authenticate before rotating user agents
@@ -39,10 +39,10 @@ TOKEN="$(gh auth token)"
 curl -fsSL -H "Authorization: Bearer $TOKEN" https://api.github.com/...
 ```
 
-| | Unauthenticated | With `gh auth token` |
-|---|---|---|
-| `api.github.com` core | **60 / hour** | **5 000 / hour** |
-| Search API | 10 / min | 30 / min |
+|                       | Unauthenticated | With `gh auth token` |
+| --------------------- | --------------- | -------------------- |
+| `api.github.com` core | **60 / hour**   | **5 000 / hour**     |
+| Search API            | 10 / min        | 30 / min             |
 
 Measured, not quoted from docs — check yours with:
 
@@ -90,4 +90,4 @@ Include the update in your next commit. Record failures too ("UA X has known fai
 
 If a URL was genuinely useful and hard to acquire — very few copies online, or hosted somewhere unlikely to persist — submit it to `https://web.archive.org/save/<url>` (works unauthenticated). Worth archiving: datasheets/whitepaper/manual PDFs, technical docs on fragile personal or CMS-hosted pages, demo/example projects that exist only to illustrate how some code works, hard-to-find header files or source snippets not in any repo or package manager, one-off benchmark posts. Not worth archiving: widely-mirrored content (Wikipedia, MDN, popular repos) or anything already covered elsewhere — you can't and shouldn't archive every page you visit. Anonymous saves are rate-limited to roughly a few per minute; don't hammer it.
 
-Rare case: if you're confident the site is still up but blocked/rate-limited yourself, and you already know from another source that the URL is valuable (a citation, an API doc you need, task-relevant source code), you may submit it unseen and record in the doc's *Sites* section that it wasn't directly accessible but was submitted on `<date>`, so a future agent can check `web.archive.org` for the capture. Only do this when there's a concrete reason the page matters, not speculatively.
+Rare case: if you're confident the site is still up but blocked/rate-limited yourself, and you already know from another source that the URL is valuable (a citation, an API doc you need, task-relevant source code), you may submit it unseen and record in the doc's _Sites_ section that it wasn't directly accessible but was submitted on `<date>`, so a future agent can check `web.archive.org` for the capture. Only do this when there's a concrete reason the page matters, not speculatively.

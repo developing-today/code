@@ -1135,7 +1135,7 @@ in
       element-desktop
 
       # Security and authentication
-      _1password-gui
+      # _1password-gui: now programs._1password-gui in nixos/agent-auth (adds `op` + CLI integration)
       yubikey-agent
       keepassxc
 
