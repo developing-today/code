@@ -117,6 +117,9 @@ ses_*/*.json
 .iroh*
 .identity.db
 .identity.redb
+events.redb
+events.redb.tmp
+groups.jsonl
 test.*
 pkgs/roc/platforms/rust-basic-cli
 codedb.snapshot
