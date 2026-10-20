@@ -734,9 +734,10 @@ function createCursorDecorations(
         decorations.push(
           Decoration.widget(
             cursor.head,
-            () => viewState
-              ? createStandaloneCursor(cursor, connectionState, viewState, handleMouseEnter, handleMouseLeave)
-              : createCursorLine(cursor, false, connectionState),
+            () =>
+              viewState
+                ? createStandaloneCursor(cursor, connectionState, viewState, handleMouseEnter, handleMouseLeave)
+                : createCursorLine(cursor, false, connectionState),
             {
               side: 1,
               key: `cursor-${cursor.clientID}-${cursor.opacity}-${cursor.color}-${connectionState}`,
