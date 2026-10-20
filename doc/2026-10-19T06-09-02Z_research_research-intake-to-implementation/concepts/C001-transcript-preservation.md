@@ -73,7 +73,7 @@ Conduct deep factual research and architectural analysis for **Exact Transcript 
 ## Context Pointers
 
 - Package Reference: [main.md](../main.md#c001)
-- Concept Document: [concepts/C001-transcript-preservation.md](concepts/C001-transcript-preservation.md)
+- Concept Document: [C001-transcript-preservation.md](C001-transcript-preservation.md)
 - Source Transcript: [transcript.txt](../transcript.txt) (Segments: L1-L5, L7)
 
 ## Scope & Questions
