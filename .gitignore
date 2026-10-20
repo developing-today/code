@@ -115,6 +115,8 @@ ses_*/*.json
 .opencode/plugin/subtask2/logs/*.log
 .opencode/worktrees/
 .iroh*
+.identity.db
+.identity.redb
 test.*
 pkgs/roc/platforms/rust-basic-cli
 codedb.snapshot
