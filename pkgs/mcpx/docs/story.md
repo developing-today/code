@@ -18,9 +18,9 @@ their schemas is in the agent's context, which is the entire point, but the
 agent does not know that yet.
 
 What it does have is one instruction file, [`AGENTS.md`](../AGENTS.md),
-injected at session start. Abridged -- the full file is 109 lines and adds
-profiles, per-tool `types`, `catalog --budget` and the `globalThis` bindings,
-which this walk does not need and #264 is about -- it reads:
+injected at session start. Abridged -- the full file is 120 lines and adds
+profiles, the script contract and the secrets section, which this walk does
+not need -- it reads:
 
 ```markdown
 # mcpx
@@ -32,7 +32,10 @@ None of their tool schemas are in your context. You pull in only what you need.
 
 1. `mcpx ls` — which namespaces exist. Cheap; run it whenever.
 2. `mcpx search <words>` — find a tool by name or description.
-3. `mcpx types <namespace>` — load signatures for that namespace only.
+3. `mcpx types <namespace>` — load signatures for that namespace only, or
+   `mcpx types <namespace>.<tool>` for a single tool, which is far cheaper.
+   `mcpx catalog [--budget N] [--bias words]` fits every namespace into a
+   token budget when you are still deciding.
 4. `mcpx run <name>` or `mcpx exec '<code>'` — do the work.
 
 Do not run `mcpx types` for every namespace. Loading one costs a few hundred
@@ -51,7 +54,9 @@ Scripts are TypeScript on a real runtime (deno, else bun, else node). They get
 the full runtime: filesystem, network, subprocesses. Relative paths resolve
 against *your* working directory, not the script's.
 
-Import the generated client, which mcpx writes next to the script:
+`log`, `emit`, `tools` and every namespace are already on `globalThis`, so a
+script needs no imports at all. `log(msg)` is `log.info(msg)`. Importing works
+too and gives the same objects:
 
     import tools from "./mcpx-client.ts";
     const pages = await tools.chrome_devtools.list_pages({});
@@ -2887,7 +2892,7 @@ else in this document is detail underneath those four verbs.
 
 - [`AGENTS.md`](../AGENTS.md) — the instruction file abridged above. This is
   the text to inject into an agent's session; it is deliberately short, and
-  109 lines today. The quote above is not the whole of it (#264).
+  120 lines today. The quote above is not the whole of it (#264).
 - [`ASSESSMENT.md`](../ASSESSMENT.md) — why this exists, with the measurements
   against the predecessor it replaced.
 - [`OPENCODE-V2.md`](../OPENCODE-V2.md) — how this compares to opencode v2's

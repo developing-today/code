@@ -7,6 +7,7 @@ excludes = [
   "pkgs/dht/**",              # WIP package with syntax errors
   ".opencode/**",             # managed by opencode, may have permission issues
   "pkgs/mcpx/docs/parity.md", # generated; TestParityDocumentIsCurrent compares it byte-for-byte with the generator, so prettier's table padding can never be applied
+  "pkgs/mcpx/docs/story.md",  # quotes AGENTS.md verbatim; TestStoryDocumentIsCurrent compares the quoted lines byte-for-byte with AGENTS.md, whose *emphasis* prettier would rewrite to _emphasis_
 ]
 
 # [formatter.<name>]
