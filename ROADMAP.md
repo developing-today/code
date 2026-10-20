@@ -9,9 +9,9 @@ A row here records intent. It does not settle a product question and it is not a
 | Project                                        | Roadmap                                                 | Current focus                                                                                            |
 | ---------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `id`, the peer-to-peer CLI and worlds platform | [id](planning/roadmaps/id.md)                           | Phase 11 foundations: a CI signal that can be trusted, visible costs, one rule for what a client may see |
-| `mcpx`, the MCP gateway and Code Mode runner   | [mcpx](planning/roadmaps/mcpx.md)                       | The only copy of the code; downstream consumption, and daemon restarts that do not leak sessions         |
+| `mcpx`, the MCP gateway and Code Mode runner   | [mcpx](planning/roadmaps/mcpx.md)                       | The only copy of the code; how downstream flakes consume it, and darwin takeover tests                   |
 | The NixOS flake and infra manifests            | [nixos-and-infra](planning/roadmaps/nixos-and-infra.md) | Inputs kept current by a daily job. No open work items of its own                                        |
-| Repo-wide CI and automation                    | [repo-and-ci](planning/roadmaps/repo-and-ci.md)         | Jules workflow noise, timeout caps, stale PR triage                                                      |
+| Repo-wide CI and automation                    | [repo-and-ci](planning/roadmaps/repo-and-ci.md)         | One Jules workflow, the Go build cache, and stale PR triage                                              |
 
 ## Now, across the repo
 
