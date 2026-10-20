@@ -6,10 +6,8 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 
 | Title                                  | Status      | Intent                                                                                                                                                              | Links      |
 | -------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| Jules runs only when they can act      | proposed    | The Jules workflow subscribes to every workflow completion. 44 of the last 100 runs were skipped, and they share a concurrency group with the one run that matters. | #304       |
 | One Jules workflow                     | proposed    | Three Jules workflow files become one.                                                                                                                              | #287       |
 | Timeout caps on every job              | in-progress | A hung job stops at its cap, where today it runs to the 360 minute default.                                                                                         | #293       |
-| PR gate cannot drift from the flake    | proposed    | The `id` PR gate lists flake checks by hand, so a new check gets no PR coverage.                                                                                    | #300       |
 | Cache the Go build and reuse artifacts | proposed    | Build cache by `go.sum` hash.                                                                                                                                       | #288       |
 | `nix flake check` out of disk          | proposed    | It dies intermittently with "No space left on device" in `id-test` and `id-ci`.                                                                                     | #257       |
 | Triage stale PRs                       | proposed    | Overlapping Jules drafts, old Renovate security PRs and one PR with conflicts.                                                                                      | #310, #311 |
@@ -33,5 +31,7 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 | --------------------------------------------------- | ---------- | ------------------- |
 | Concurrency groups on CI workflows                  | 2026-10-18 | #289                |
 | Auto-assign concurrency keyed by issue or PR number | 2026-10-18 | #303                |
+| Jules runs only when they can act                   | 2026-10-18 | #304                |
+| PR gate cannot drift from the flake                 | 2026-10-18 | #318 (closes #300)  |
 | `mcpx` and `id` workflow speed-up                   | 2026-10-18 | #295                |
 | Package build check when dependencies change        | 2026-10-18 | `mcpx-nixbuild.yml` |
