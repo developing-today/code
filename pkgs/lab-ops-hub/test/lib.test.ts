@@ -144,6 +144,25 @@ test("validateCrawlUrl refuses trailing-dot spellings of blocked hosts (#466)", 
   assert.equal(validateCrawlUrl("http://example.com./").ok, true);
 });
 
+test("validateCrawlUrl refuses empty-label hosts (#511)", () => {
+  // A second trailing dot defeats the one-dot strip (#466): "localhost.."
+  // becomes "localhost." and misses the blocked-host checks. An interior
+  // or leading empty label is not a valid DNS name either.
+  const blocked = [
+    "http://localhost../",
+    "http://127.0.0.1../",
+    "http://foo.localhost../",
+    "http://example..com/",
+    "http://.example.com/",
+  ];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  // Controls: single root dot and ordinary names still pass.
+  assert.equal(validateCrawlUrl("http://example.com./").ok, true);
+  assert.equal(validateCrawlUrl("http://example.com/").ok, true);
+});
+
 function stubFetcher(routes: Record<string, { status: number; location?: string }>) {
   const seen: string[] = [];
   const fetchFn = async (url: string): Promise<Response> => {

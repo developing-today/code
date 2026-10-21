@@ -48,6 +48,15 @@ def validate_crawl_url(raw):
         host = host[:-1]
     if not host:
         raise ValueError("url has no host")
+    # An empty label (a second trailing dot, an interior "..", or a
+    # leading dot) is not a valid DNS name at all, and the one-dot strip
+    # above would let "localhost.." slip past the blocked-host checks as
+    # "localhost." — refuse it instead of certifying it as a public DNS
+    # name, matching the Worker's validator (#511). IPv6 literals
+    # contain ":" and are judged as addresses below, not by label
+    # structure.
+    if ":" not in host and any(label == "" for label in host.split(".")):
+        raise ValueError(f"refusing to crawl host with an empty label {host}")
     # A raw % in the host is a percent-encoded spelling (or an IPv6 zone
     # id): WHATWG URL parsing percent-decodes the host before judging it
     # — %6cocalhost is localhost — and rejects the rest outright, while
