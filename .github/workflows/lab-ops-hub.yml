@@ -1,0 +1,66 @@
+name: lab-ops-hub
+
+# Test verification for pkgs/lab-ops-hub (#470).
+#
+# The package's two crawl-validator suites — the TypeScript suite for the
+# Worker copy of validateCrawlUrl (test/lib.test.ts) and the Python suite
+# for the container copy (test/test_container_validate.py, added by #469)
+# — were run by nothing: `npm test` matched only the TypeScript files and
+# no workflow mentioned the package at all, so the checks that ran on the
+# crawl-fix PRs (#441, #460, #464, #466, #468) were treefmt / flake eval
+# only. The validators are the SSRF guard for a publicly reachable
+# crawler, implemented twice with a documented "same policy" contract;
+# this workflow runs the single documented command (`npm test`, which
+# runs both suites and fails if either fails) on every change to the
+# package so a divergence is caught before merge.
+#
+# Neither suite needs the package's dependencies installed: the
+# TypeScript tests import only src/lib.ts (pure helpers, no Worker
+# bindings) and the Python tests use the stdlib only, so there is
+# deliberately no `npm install` step.
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/lab-ops-hub/**"
+      - ".github/workflows/lab-ops-hub.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/lab-ops-hub/**"
+      - ".github/workflows/lab-ops-hub.yml"
+
+permissions:
+  contents: read
+
+# Push-to-main runs each get their own group (keyed by run_id), so a
+# later merge can never cancel — or displace a pending — verification
+# run for an earlier merge: every merged tree gets its own completed
+# run. Pull-request runs keep sharing a per-ref group, so a new push
+# to a PR still supersedes its stale run (#392).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Run both crawl-validator suites
+        working-directory: pkgs/lab-ops-hub
+        run: npm test
