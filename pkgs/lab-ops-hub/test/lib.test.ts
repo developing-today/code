@@ -42,12 +42,7 @@ test("validateCrawlUrl refuses loopback / private / link-local targets (#441)", 
 });
 
 test("validateCrawlUrl refuses trailing-dot spellings of blocked hosts (#466)", () => {
-  const blocked = [
-    "http://localhost./",
-    "http://foo.localhost./",
-    "http://printer.local./",
-    "http://nas.internal./",
-  ];
+  const blocked = ["http://localhost./", "http://foo.localhost./", "http://printer.local./", "http://nas.internal./"];
   for (const u of blocked) {
     assert.equal(validateCrawlUrl(u).ok, false, u);
   }
