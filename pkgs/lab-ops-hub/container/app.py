@@ -12,6 +12,7 @@ import glob
 import ipaddress
 import json
 import re
+import socket
 import ssl
 import urllib.request
 from html.parser import HTMLParser
@@ -44,10 +45,28 @@ def validate_crawl_url(raw):
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        return raw  # a public DNS name; literal-IP policy does not apply
+        ip = _inet_aton_ipv4(host)
+        if ip is None:
+            return raw  # a public DNS name; literal-IP policy does not apply
     if not ip.is_global:
         raise ValueError(f"refusing to crawl non-public address {host}")
     return raw
+
+
+def _inet_aton_ipv4(host):
+    # ipaddress only accepts canonical dotted-quad, but the resolver the
+    # fetcher uses (getaddrinfo, inet_aton semantics) also interprets the
+    # short (127.1), integer (2130706433), hex (0x7f.1) and octal
+    # (0177.0.0.1) spellings as IPv4 (#468). Judge those spellings by the
+    # address they resolve to instead of mistaking them for DNS names.
+    # Only hosts made solely of numeric labels reach inet_aton, so
+    # ordinary DNS names are never affected.
+    if not re.fullmatch(r"[0-9a-fA-FxX.]+", host) or not any(c.isdigit() for c in host):
+        return None
+    try:
+        return ipaddress.IPv4Address(socket.inet_aton(host))
+    except (OSError, ValueError):
+        return None
 
 
 class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
