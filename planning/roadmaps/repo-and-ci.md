@@ -41,3 +41,5 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 | mcpx workflow setup-deno/setup-bun SHA-pinned       | 2026-10-20 | #409 (closes #408)  |
 | Jules action pinned to commit SHA                   | 2026-10-20 | #424 (opencode#184) |
 | Push-to-main runs get their own concurrency group   | 2026-10-20 | #428 (closes #392)  |
+| Goreleaser workflow repaired (go-version-file, v2 schema) | 2026-10-21 | #452 (closes #344)  |
+| `pkgs/graph` builds again (keygen v0.5.1), in go-modules-build CI | 2026-10-21 | #446 (closes #166)  |
