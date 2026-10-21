@@ -372,9 +372,27 @@ const server = http.createServer((req, res) => {
 
         if (res.writableEnded) return;
 
-        // Prefer the terminal event's authoritative text if deltas missed any
-        if (terminalText !== null && terminalText.length >= fullContent.length) {
-          fullContent = terminalText;
+        // Reconcile the streamed deltas with the terminal event's
+        // authoritative final text (#484). In stream mode the deltas are
+        // already on the wire, so the only recoverable divergence is a
+        // missing tail: when the terminal text extends the streamed text,
+        // the suffix is emitted as one last content chunk before the
+        // finish chunk below, so streamed and non-streamed clients end up
+        // with identical content. Any other divergence (the terminal text
+        // is not an extension of what was streamed) cannot be retracted
+        // from a stream; it is logged explicitly instead of silently
+        // truncating, and the non-streamed response still uses the
+        // authoritative text when it is at least as long.
+        let unstreamedSuffix = '';
+        if (terminalText !== null) {
+          if (terminalText.startsWith(fullContent)) {
+            unstreamedSuffix = terminalText.slice(fullContent.length);
+          } else if (terminalText.length >= fullContent.length) {
+            console.warn('[muse-proxy] terminal text diverges from streamed deltas; streamed response cannot be corrected retroactively');
+          }
+          if (terminalText.length >= fullContent.length) {
+            fullContent = terminalText;
+          }
         }
 
         const failed = (code !== 0 && fullContent.length === 0) || (terminalState && terminalState !== 'completed' && fullContent.length === 0);
@@ -392,6 +410,20 @@ const server = http.createServer((req, res) => {
         }
 
         if (stream) {
+          if (unstreamedSuffix.length > 0) {
+            const tailChunk = {
+              id: chatId,
+              object: 'chat.completion.chunk',
+              created,
+              model: fullName,
+              choices: [{
+                index: 0,
+                delta: { content: unstreamedSuffix },
+                finish_reason: null
+              }]
+            };
+            res.write(`data: ${JSON.stringify(tailChunk)}\n\n`);
+          }
           const endChunk = {
             id: chatId,
             object: 'chat.completion.chunk',
