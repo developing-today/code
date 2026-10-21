@@ -51,13 +51,13 @@ Use existing labels only. Before publishing, give the draft body, and nothing el
 
 Prompts an orchestrator gives to subagents, in [prompts/](prompts/).
 
-| Prompt                                     | Launched by                | When                                                 |
-| ------------------------------------------ | -------------------------- | ---------------------------------------------------- |
-| `worker-brief.md`                          | any orchestrator           | dispatching one unit of work                         |
-| `orchestrator-brief.md`                    | router, a human            | starting an S6 or S8 orchestrator                    |
-| `merger.md`                                | S6, S8 orchestrators       | landing a finished worker PR                         |
-| [reviewer.md](prompts/reviewer.md)         | S6, S8 orchestrators       | a disagreement (with critic, investigator) or a PR   |
-| [critic.md](prompts/critic.md)             | S6 orchestrator            | a disagreement                                       |
-| [investigator.md](prompts/investigator.md) | S6 orchestrator            | a disagreement, or a decision the challenge reopened |
-| `challenge-pass.md`                        | S6 orchestrator            | before closing S6                                    |
-| `zero-context-reader.md`                   | anyone publishing an issue | before creating any issue or long brief              |
+| Prompt                                                   | Launched by                | When                                                 |
+| -------------------------------------------------------- | -------------------------- | ---------------------------------------------------- |
+| `worker-brief.md`                                        | any orchestrator           | dispatching one unit of work                         |
+| `orchestrator-brief.md`                                  | router, a human            | starting an S6 or S8 orchestrator                    |
+| `merger.md`                                              | S6, S8 orchestrators       | landing a finished worker PR                         |
+| [reviewer.md](prompts/reviewer.md)                       | S6, S8 orchestrators       | a disagreement (with critic, investigator) or a PR   |
+| [critic.md](prompts/critic.md)                           | S6 orchestrator            | a disagreement                                       |
+| [investigator.md](prompts/investigator.md)               | S6 orchestrator            | a disagreement, or a decision the challenge reopened |
+| [challenge-pass.md](prompts/challenge-pass.md)           | S6 orchestrator            | before closing S6                                    |
+| [zero-context-reader.md](prompts/zero-context-reader.md) | anyone publishing an issue | before creating any issue or long brief              |
