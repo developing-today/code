@@ -12,7 +12,7 @@ sized to stay inside the $5/mo plan's included amounts ($0 overage by design):
 | **Queues** (`labops-jobs`)               | async file indexing (SHA-256 + mark indexed in D1)                                                                                                                                                             |
 | **Durable Objects** (`LiveRoom`, SQLite) | live status board: WebSocket presence + broadcast, board persisted in DO SQLite                                                                                                                                |
 | **Containers** (`CrawlerContainer`)      | on-demand Python URL crawler; starts only when `/api/crawl` is called, `sleepAfter=2m` so idle minutes aren't burned. Worker-side fallback crawler with the same JSON contract if the container is unavailable |
-| **Workers AI**                           | one-click note summarisation (`@cf/meta/llama-3.1-8b-instruct`, free-neuron allowance)                                                                                                                         |
+| **Workers AI**                           | one-click note summarisation (`@cf/meta/llama-3.2-3b-instruct`, free-neuron allowance)                                                                                                                         |
 | **Cron Triggers**                        | daily 04:23 UTC: trim usage ledger (90d), refresh KV snapshot                                                                                                                                                  |
 | **Workers Assets**                       | the dashboard in `public/`                                                                                                                                                                                     |
 | **Observability**                        | Workers Logs enabled in `wrangler.jsonc`                                                                                                                                                                       |
@@ -96,7 +96,7 @@ wrangler containers registries credentials --push   # prints a JWT
 # 3. Push with crane, username = account id, password = that JWT
 #    (docker config auth entry for registry.cloudflare.com)
 nix run nixpkgs#crane -- push <image.tar> \
-  registry.cloudflare.com/<account-id>/lab-ops-hub-crawlercontainer:latest
+  registry.cloudflare.com/<account-id>/lab-ops-hub-crawlercontainer:v3
 # 4. wrangler.jsonc references the registry image (not ./Dockerfile),
 #    so `wrangler deploy` needs no Docker at all.
 ```
@@ -127,7 +127,7 @@ wrangler), plain `npm run deploy` with the Dockerfile form works too;
   image. DO instances are sticky: a DO reuses its existing instance
   across rollouts, which is why image bumps appeared to "not take".
   If starts recover, the current config (image `:v3`, instance name
-  `crawler-2`) should serve crawls with `source='container'` in D1 —
+  `crawler-4`) should serve crawls with `source='container'` in D1 —
   that row is the only accepted proof.
 - The Worker falls back to its in-Worker crawler on any container error
   and reports `container_error` in the response, so the API never
