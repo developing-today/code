@@ -14,7 +14,9 @@
     "db:init:local": "wrangler d1 execute labops-db --local --file=./schema.sql",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "npm run test:ts && npm run test:py",
+    "test:py": "python3 -m unittest discover -s test -p \"test_*.py\"",
+    "test:ts": "node --test \"test/**/*.test.ts\"",
     "types": "wrangler types"
   },
   "type": "module",
