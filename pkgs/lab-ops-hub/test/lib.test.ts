@@ -1,0 +1,67 @@
+// Unit tests for the pure helpers in src/lib.ts — run with plain Node
+// (type stripping): `npm test`. No Worker bindings are involved.
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { computeBudget, validateCrawlUrl } from "../src/lib.ts";
+
+test("validateCrawlUrl accepts public http(s) targets", () => {
+  assert.equal(validateCrawlUrl("https://example.com/page").ok, true);
+  assert.equal(validateCrawlUrl("http://developers.cloudflare.com/containers/").ok, true);
+  assert.equal(validateCrawlUrl("https://[2606:4700:4700::1111]/").ok, true);
+  assert.equal(validateCrawlUrl("https://8.8.8.8/").ok, true);
+});
+
+test("validateCrawlUrl refuses non-http schemes and junk", () => {
+  assert.equal(validateCrawlUrl("ftp://example.com/").ok, false);
+  assert.equal(validateCrawlUrl("file:///etc/passwd").ok, false);
+  assert.equal(validateCrawlUrl("not a url").ok, false);
+});
+
+test("validateCrawlUrl refuses loopback / private / link-local targets (#441)", () => {
+  const blocked = [
+    "http://127.0.0.1/",
+    "http://127.1/",
+    "http://2130706433/", // WHATWG-normalises to 127.0.0.1
+    "http://0x7f.1/", // hex form, also normalises to 127.0.0.1
+    "http://10.0.0.5/",
+    "http://172.16.0.9/",
+    "http://192.168.1.1/",
+    "http://169.254.169.254/latest/meta-data/", // cloud metadata
+    "http://100.64.0.1/", // CGNAT
+    "https://[::1]/",
+    "https://[::ffff:127.0.0.1]/", // IPv4-mapped loopback
+    "https://[fe80::1]/",
+    "https://[fd00::1]/",
+    "http://localhost:8787/",
+    "http://printer.local/",
+    "http://nas.internal/",
+  ];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+});
+
+test("computeBudget reports $0 while usage is inside the included amounts", () => {
+  const b = computeBudget({ worker_request: 120, d1_write: 40, queue_msg: 3 });
+  assert.equal(b.estimated_overage_usd, 0);
+  // d1 count = application writes + the ledger's own rows (120+40+3).
+  assert.equal(b.month_to_date_self_counted.d1_rows_written.used, 40 + 163);
+});
+
+test("computeBudget computes a non-zero overage past an included amount (#442)", () => {
+  // 20M worker requests: (20M - 10M) * $0.30/M = $3.00. The 20M ledger
+  // rows also count as D1 writes but stay under the 50M D1 allowance.
+  const b = computeBudget({ worker_request: 20_000_000 });
+  assert.equal(b.month_to_date_self_counted.worker_requests.estimated_overage_usd, 3);
+  assert.equal(b.month_to_date_self_counted.d1_rows_written.used, 20_000_000);
+  assert.equal(b.estimated_overage_usd, 3);
+});
+
+test("computeBudget counts ledger rows toward D1 writes (#442)", () => {
+  // 30M application writes + their 30M ledger rows = 60M D1 rows:
+  // (60M - 50M) * $1.00/M = $10.00.
+  const b = computeBudget({ d1_write: 30_000_000 });
+  assert.equal(b.month_to_date_self_counted.d1_rows_written.used, 60_000_000);
+  assert.equal(b.month_to_date_self_counted.d1_rows_written.estimated_overage_usd, 10);
+  assert.equal(b.estimated_overage_usd, 10);
+});

@@ -13,15 +13,23 @@ in
 pkgs.dockerTools.buildLayeredImage {
   name = "lab-ops-hub-crawlercontainer";
   tag = "latest";
-  contents = [ pkgs.python3 pkgs.cacert ];
+  contents = [
+    pkgs.python3
+    pkgs.cacert
+  ];
   extraCommands = ''
     mkdir -p app
     cp ${./container/app.py} app/app.py
   '';
   config = {
     WorkingDir = "/app";
-    Cmd = [ "python3" "app.py" ];
-    ExposedPorts = { "8080/tcp" = { }; };
+    Cmd = [
+      "python3"
+      "app.py"
+    ];
+    ExposedPorts = {
+      "8080/tcp" = { };
+    };
     # Nix python ships no CA bundle config; without this, outbound HTTPS
     # fails CERTIFICATE_VERIFY_FAILED inside the container.
     Env = [ "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
