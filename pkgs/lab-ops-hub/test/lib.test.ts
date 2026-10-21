@@ -88,6 +88,23 @@ test("fetchFollowingValidatedRedirects refuses redirects to non-public targets (
   }
 });
 
+test("fetchFollowingValidatedRedirects refuses a non-public start URL without fetching (#464)", async () => {
+  for (const start of [
+    "http://127.0.0.1/secret",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://2130706433/", // WHATWG-normalises to 127.0.0.1
+    "https://[::ffff:127.0.0.1]/", // IPv4-mapped loopback
+    "http://localhost:8787/",
+    "file:///etc/passwd",
+    "not a url",
+  ]) {
+    const { fetchFn, seen } = stubFetcher({});
+    await assert.rejects(fetchFollowingValidatedRedirects(start, fetchFn), /refusing to crawl/, start);
+    // The start URL itself is never fetched.
+    assert.deepEqual(seen, [], start);
+  }
+});
+
 test("fetchFollowingValidatedRedirects bounds the hop count (#460)", async () => {
   const { fetchFn } = stubFetcher({
     "https://example.com/loop": { status: 302, location: "https://example.com/loop" },
