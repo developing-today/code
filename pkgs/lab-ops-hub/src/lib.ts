@@ -104,7 +104,11 @@ function ipv6IsGlobal(host: string): boolean {
     if (g[1] >= 0x0020 && g[1] <= 0x003f) return true;
     if (
       g[1] === 0x0001 &&
-      g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0 && g[6] === 0 &&
+      g[2] === 0 &&
+      g[3] === 0 &&
+      g[4] === 0 &&
+      g[5] === 0 &&
+      g[6] === 0 &&
       (g[7] === 1 || g[7] === 2)
     ) {
       return true;
