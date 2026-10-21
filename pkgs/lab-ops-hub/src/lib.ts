@@ -90,6 +90,46 @@ export function validateCrawlUrl(raw: string): { ok: true; url: string } | { ok:
   return { ok: true, url: u.toString() };
 }
 
+// --- Redirect-following fetch with per-hop validation (#460) ----------------
+// fetch()'s default redirect mode ("follow") silently follows a 3xx from a
+// validated public URL to any target — including private / loopback /
+// link-local addresses validateCrawlUrl refuses as direct targets. The
+// container crawler validates every redirect target (container/app.py's
+// _ValidatingRedirectHandler); the Worker fallback must hold the same
+// policy. Follow redirects manually: resolve each Location against the
+// current URL, validate it, and only then fetch it. The fetcher is injected
+// (it must use redirect:"manual") so this is testable with plain Node.
+
+export type ManualFetcher = (url: string) => Promise<Response>;
+
+export async function fetchFollowingValidatedRedirects(
+  startUrl: string,
+  fetchFn: ManualFetcher,
+  maxRedirects = 5,
+): Promise<Response> {
+  let current = startUrl;
+  for (let hop = 0; ; hop++) {
+    const res = await fetchFn(current);
+    if (res.status < 300 || res.status >= 400) return res;
+    const location = res.headers.get("location");
+    if (!location) return res;
+    if (hop >= maxRedirects) {
+      throw new Error(`too many redirects (more than ${maxRedirects}) while crawling ${startUrl}`);
+    }
+    let next: string;
+    try {
+      next = new URL(location, current).toString();
+    } catch {
+      throw new Error(`redirect from ${current} has an invalid Location: ${location}`);
+    }
+    const target = validateCrawlUrl(next);
+    if (!target.ok) {
+      throw new Error(`refusing to follow redirect from ${current}: ${target.error}`);
+    }
+    current = target.url;
+  }
+}
+
 // --- Budget computation -------------------------------------------------------
 // estimated_overage_usd is computed from the counted usage, never a
 // literal: for each resource with an included amount and a rate,
