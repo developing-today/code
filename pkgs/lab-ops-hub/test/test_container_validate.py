@@ -85,6 +85,36 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertAccepted(url)
 
+    def test_agrees_with_worker_validator_on_special_ipv6_ranges(self):
+        # Verdicts must match the TypeScript validator's suite case for
+        # case (#474): ipaddress.is_global alone passes multicast,
+        # site-local, SRv6 and reserved IPv6 space, and the 2001::/23
+        # IANA special-purpose block is non-global except six entries.
+        for url in (
+            "https://[ff00::1]/",  # multicast
+            "https://[4000::1]/",  # reserved, outside 2000::/3
+            "https://[fec0::1]/",  # site-local (deprecated)
+            "https://[5f00::1]/",  # SRv6 SIDs
+            "https://[100:1::1]/",  # outside the 100::/64 discard prefix
+            "https://[2001::1]/",  # Teredo 2001::/32
+            "https://[2001:2::1]/",  # benchmarking 2001:2::/48
+            "https://[2001:10::1]/",  # ORCHID 2001:10::/28
+            "https://[2001:40::1]/",  # 2001::/23 special-purpose
+            "https://[2001:50::1]/",  # 2001::/23 special-purpose
+            "https://[2001:1::3]/",  # 2001:1::/48 global only at ::1/::2
+        ):
+            self.assertRefused(url)
+        for url in (
+            "https://[2001:1::1]/",  # PCP anycast
+            "https://[2001:1::2]/",  # PCP anycast
+            "https://[2001:3::1]/",  # AMT 2001:3::/32
+            "https://[2001:4:112::1]/",  # AS112 2001:4:112::/48
+            "https://[2001:20::1]/",  # ORCHIDv2 2001:20::/28
+            "https://[2001:30::1]/",  # ORCHIDv2 2001:30::/28
+            "https://[2001:4860:4860::8888]/",  # ordinary global unicast
+        ):
+            self.assertAccepted(url)
+
     def test_accepts_public_targets(self):
         for url in (
             "https://example.com/page",

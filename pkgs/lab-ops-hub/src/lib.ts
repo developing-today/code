@@ -94,6 +94,23 @@ function ipv6IsGlobal(host: string): boolean {
   if (g[0] >= 0xfc00 && g[0] <= 0xfdff) return false; // unique-local fc00::/7
   if (g[0] >= 0xff00) return false; // multicast ff00::/8
   if (g[0] === 0x2001 && g[1] === 0x0db8) return false; // documentation 2001:db8::/32
+  // The 2001::/23 IANA special-purpose block is non-global except six
+  // entries (#474, mirroring the Python validator's ipaddress verdicts):
+  // 2001:1::1 and 2001:1::2 (PCP anycast), 2001:3::/32 (AMT),
+  // 2001:4:112::/48 (AS112), 2001:20::/28 and 2001:30::/28 (ORCHIDv2).
+  if (g[0] === 0x2001 && (g[1] & 0xfe00) === 0) {
+    if (g[1] === 0x0003) return true;
+    if (g[1] === 0x0004 && g[2] === 0x0112) return true;
+    if (g[1] >= 0x0020 && g[1] <= 0x003f) return true;
+    if (
+      g[1] === 0x0001 &&
+      g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0 && g[6] === 0 &&
+      (g[7] === 1 || g[7] === 2)
+    ) {
+      return true;
+    }
+    return false;
+  }
   // Global unicast lives in 2000::/3 (first hextet 2xxx or 3xxx).
   return g[0] >= 0x2000 && g[0] <= 0x3fff;
 }

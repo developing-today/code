@@ -56,9 +56,21 @@ def validate_crawl_url(raw):
             raise ValueError(
                 f"refusing to crawl address {host} embedding non-public IPv4 {embedded}"
             )
+    elif isinstance(ip, ipaddress.IPv6Address) and ip not in _GLOBAL_UNICAST_V6:
+        # ipaddress.is_global is True for any IPv6 address outside its
+        # narrow private list — multicast (ff00::/8), site-local
+        # (fec0::/10), SRv6 SIDs (5f00::/16) and the reserved space
+        # outside global unicast all pass it (#474). Global unicast
+        # lives in 2000::/3; require that first, as the Worker's
+        # validateCrawlUrl does, then let is_global judge within it
+        # (it knows the 2001::/23 special-purpose block).
+        raise ValueError(f"refusing to crawl non-public address {host}")
     elif not ip.is_global:
         raise ValueError(f"refusing to crawl non-public address {host}")
     return raw
+
+
+_GLOBAL_UNICAST_V6 = ipaddress.IPv6Network("2000::/3")
 
 
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
