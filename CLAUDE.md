@@ -100,7 +100,11 @@ outputs = inputs: lib.merge [
   `doc/DOCUMENTATION_PROTOCOL.md` when a change is significant enough to warrant one: write the
   doc first with intent + plan, then append dated `## <datetime> <Type>:` sections as the work
   evolves. `just stage-docs` / `just stage-docs-dry` (wrapping `scripts/stage-docs.sh`) stage
-  new/modified files under `doc/` without ever staging deletions.
+  new/modified files under `doc/` without ever staging deletions. `doc/README.md` maps where every
+  kind of document lives.
+- `planning/` holds roadmaps, plans and the research-to-delivery workflow (`planning/workflow/`).
+  Its lifecycle skills are in `.agents/skills/` (start with `research-workflow`); the
+  parallel-writer git rules are in `AGENTS.md`.
 - `AGENTS.md` at the repo root defines a **web-retrieval fallback protocol**: on a 403/429/bot-block
   when fetching public web content, retry with alternate User-Agent strings in a defined order
   before giving up, record findings (successes and failures) in `ai-crawler-site-access-table.md`,
