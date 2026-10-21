@@ -52,10 +52,22 @@ def validate_crawl_url(raw):
     if embedded is not None:
         # Translation/mapped prefixes are judged by the IPv4 they embed,
         # not by ipaddress's wholesale verdict on the prefix (#472).
-        if not embedded.is_global:
+        # is_global alone passes multicast and the 192.88.99.0/24 6to4
+        # relay anycast range, so refuse those explicitly (#476).
+        if (
+            not embedded.is_global
+            or embedded.is_multicast
+            or embedded in _IPV4_6TO4_RELAY_ANYCAST
+        ):
             raise ValueError(
                 f"refusing to crawl address {host} embedding non-public IPv4 {embedded}"
             )
+    elif isinstance(ip, ipaddress.IPv4Address) and (
+        ip.is_multicast or ip in _IPV4_6TO4_RELAY_ANYCAST
+    ):
+        # ipaddress reports multicast (224.0.0.0/4) and 192.88.99.0/24 as
+        # is_global; neither is a public unicast crawl target (#476).
+        raise ValueError(f"refusing to crawl non-public address {host}")
     elif isinstance(ip, ipaddress.IPv6Address) and ip not in _GLOBAL_UNICAST_V6:
         # ipaddress.is_global is True for any IPv6 address outside its
         # narrow private list — multicast (ff00::/8), site-local
@@ -74,6 +86,8 @@ _GLOBAL_UNICAST_V6 = ipaddress.IPv6Network("2000::/3")
 
 
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+
+_IPV4_6TO4_RELAY_ANYCAST = ipaddress.IPv4Network("192.88.99.0/24")
 
 
 def _embedded_ipv4(ip):

@@ -27,16 +27,21 @@ function ipv4ToInt(host: string): number | null {
 function ipv4IsGlobal(n: number): boolean {
   const a = Math.floor(n / 2 ** 24);
   const b = Math.floor(n / 2 ** 16) % 256;
+  const c = Math.floor(n / 2 ** 8) % 256;
+  const d = n % 256;
   if (a === 0 || a === 10 || a === 127) return false; // "this" net, private, loopback
   if (a === 100 && b >= 64 && b <= 127) return false; // CGNAT 100.64.0.0/10
   if (a === 169 && b === 254) return false; // link-local (cloud metadata)
   if (a === 172 && b >= 16 && b <= 31) return false; // private 172.16.0.0/12
-  if (a === 192 && b === 0) return false; // 192.0.0.0/24 + TEST-NET-1 192.0.2.0/24
-  if (a === 192 && b === 88) return false; // 6to4 relay anycast (deprecated)
+  // The /24 special ranges are keyed on the third octet (#476): keying
+  // them on b alone widened each to a /16 and refused public neighbours.
+  if (a === 192 && b === 0 && c === 0) return d === 9 || d === 10; // 192.0.0.0/24, except PCP/DNS anycast .9/.10
+  if (a === 192 && b === 0 && c === 2) return false; // TEST-NET-1 192.0.2.0/24
+  if (a === 192 && b === 88 && c === 99) return false; // 6to4 relay anycast 192.88.99.0/24 (deprecated)
   if (a === 192 && b === 168) return false; // private
   if (a === 198 && (b === 18 || b === 19)) return false; // benchmarking
-  if (a === 198 && b === 51) return false; // TEST-NET-2
-  if (a === 203 && b === 0) return false; // TEST-NET-3 203.0.113.0/24
+  if (a === 198 && b === 51 && c === 100) return false; // TEST-NET-2 198.51.100.0/24
+  if (a === 203 && b === 0 && c === 113) return false; // TEST-NET-3 203.0.113.0/24
   if (a >= 224) return false; // multicast + reserved
   return true;
 }

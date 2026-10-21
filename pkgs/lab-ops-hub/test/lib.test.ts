@@ -63,6 +63,37 @@ test("validateCrawlUrl judges NAT64 / 6to4 literals by their embedded IPv4 (#472
   }
 });
 
+test("validateCrawlUrl agrees with the container validator on IPv4 ranges (#476)", () => {
+  // Multicast is not a public unicast target, and the /24 special ranges
+  // must not widen to /16s: their public neighbours stay crawlable.
+  const blocked = [
+    "http://224.0.0.1/", // multicast 224.0.0.0/4
+    "http://230.1.2.3/", // multicast
+    "http://239.255.255.255/", // multicast
+    "https://[::ffff:224.0.0.1]/", // IPv4-mapped multicast
+    "http://192.0.0.1/", // 192.0.0.0/24
+    "http://192.0.2.1/", // TEST-NET-1
+    "http://192.88.99.1/", // 6to4 relay anycast (deprecated)
+    "http://198.51.100.1/", // TEST-NET-2
+    "http://203.0.113.1/", // TEST-NET-3
+  ];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  const allowed = [
+    "http://192.0.0.9/", // PCP anycast exception in 192.0.0.0/24
+    "http://192.0.0.10/", // DNS anycast exception in 192.0.0.0/24
+    "http://192.0.1.1/", // public neighbour of 192.0.0.0/24 + 192.0.2.0/24
+    "http://192.88.0.1/", // public neighbour of 192.88.99.0/24
+    "http://198.51.0.1/", // public neighbour of TEST-NET-2
+    "http://203.0.0.1/", // public neighbour of TEST-NET-3
+    "http://8.8.8.8/", // ordinary public
+  ];
+  for (const u of allowed) {
+    assert.equal(validateCrawlUrl(u).ok, true, u);
+  }
+});
+
 test("validateCrawlUrl agrees with the container validator on special IPv6 ranges (#474)", () => {
   // Verdicts must match the Python validator's suite case for case:
   // multicast/reserved/site-local/SRv6 space is not global unicast, and
