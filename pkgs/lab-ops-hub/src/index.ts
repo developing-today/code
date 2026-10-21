@@ -1,6 +1,6 @@
 import { Container, getContainer } from "@cloudflare/containers";
 import { DurableObject } from "cloudflare:workers";
-import { computeBudget, validateCrawlUrl } from "./lib";
+import { computeBudget, fetchFollowingValidatedRedirects, validateCrawlUrl } from "./lib";
 
 // ---------------------------------------------------------------------------
 // Lab Ops Hub — one Worker exercising the whole Workers Paid surface at
@@ -158,7 +158,12 @@ async function crawlWithContainer(env: Env, url: string) {
 
 async function crawlFallback(url: string) {
   // Same contract, executed in the Worker when the container is unavailable.
-  const res = await fetch(url, { headers: { "user-agent": "LabOpsHub/0.1 (+personal crawler)" } });
+  // Redirects are followed manually with every target re-validated (#460):
+  // fetch's default "follow" mode would silently chase a 3xx from a public
+  // URL to a private/loopback/link-local target the initial check refused.
+  const res = await fetchFollowingValidatedRedirects(url, (u) =>
+    fetch(u, { redirect: "manual", headers: { "user-agent": "LabOpsHub/0.1 (+personal crawler)" } }),
+  );
   const html = await res.text();
   const title = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() ?? "";
   const links = (html.match(/<a\s/gi) ?? []).length;

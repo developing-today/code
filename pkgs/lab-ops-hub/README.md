@@ -48,7 +48,7 @@ wrangler secret put API_TOKEN   # one-time per deployment
 URLs. Both crawlers (Worker fallback and container, independently)
 refuse other schemes, localhost-style names, and private / loopback /
 link-local / otherwise non-global IP literals, including redirect
-targets in the container. Known residual: validation is on the literal
+targets in both crawlers. Known residual: validation is on the literal
 host — a public hostname that _resolves_ to a private address (DNS
 rebinding) is not re-checked.
 

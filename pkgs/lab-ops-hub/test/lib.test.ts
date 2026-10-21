@@ -2,7 +2,7 @@
 // (type stripping): `npm test`. No Worker bindings are involved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { computeBudget, validateCrawlUrl } from "../src/lib.ts";
+import { computeBudget, fetchFollowingValidatedRedirects, validateCrawlUrl } from "../src/lib.ts";
 
 test("validateCrawlUrl accepts public http(s) targets", () => {
   assert.equal(validateCrawlUrl("https://example.com/page").ok, true);
@@ -39,6 +39,60 @@ test("validateCrawlUrl refuses loopback / private / link-local targets (#441)", 
   for (const u of blocked) {
     assert.equal(validateCrawlUrl(u).ok, false, u);
   }
+});
+
+function stubFetcher(routes: Record<string, { status: number; location?: string }>) {
+  const seen: string[] = [];
+  const fetchFn = async (url: string): Promise<Response> => {
+    seen.push(url);
+    const r = routes[url];
+    if (!r) throw new Error(`unexpected fetch ${url}`);
+    return new Response(null, {
+      status: r.status,
+      headers: r.location ? { location: r.location } : {},
+    });
+  };
+  return { fetchFn, seen };
+}
+
+test("fetchFollowingValidatedRedirects follows public redirects, resolving relative Locations (#460)", async () => {
+  const { fetchFn, seen } = stubFetcher({
+    "https://example.com/start": { status: 302, location: "/next" },
+    "https://example.com/next": { status: 301, location: "https://example.org/final" },
+    "https://example.org/final": { status: 200 },
+  });
+  const res = await fetchFollowingValidatedRedirects("https://example.com/start", fetchFn);
+  assert.equal(res.status, 200);
+  assert.deepEqual(seen, ["https://example.com/start", "https://example.com/next", "https://example.org/final"]);
+});
+
+test("fetchFollowingValidatedRedirects refuses redirects to non-public targets (#460)", async () => {
+  for (const target of [
+    "http://127.0.0.1/admin",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://192.168.1.1/",
+    "https://[::1]/",
+    "http://localhost:8787/",
+    "file:///etc/passwd",
+  ]) {
+    const { fetchFn, seen } = stubFetcher({
+      "https://example.com/start": { status: 302, location: target },
+    });
+    await assert.rejects(
+      fetchFollowingValidatedRedirects("https://example.com/start", fetchFn),
+      /refusing to follow redirect/,
+      target,
+    );
+    // The refused target itself is never fetched.
+    assert.deepEqual(seen, ["https://example.com/start"], target);
+  }
+});
+
+test("fetchFollowingValidatedRedirects bounds the hop count (#460)", async () => {
+  const { fetchFn } = stubFetcher({
+    "https://example.com/loop": { status: 302, location: "https://example.com/loop" },
+  });
+  await assert.rejects(fetchFollowingValidatedRedirects("https://example.com/loop", fetchFn, 3), /too many redirects/);
 });
 
 test("computeBudget reports $0 while usage is inside the included amounts", () => {
