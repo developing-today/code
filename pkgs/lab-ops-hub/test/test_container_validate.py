@@ -85,6 +85,34 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertAccepted(url)
 
+    def test_agrees_with_worker_validator_on_ipv4_ranges(self):
+        # Verdicts must match the TypeScript validator's suite case for
+        # case (#476): ipaddress.is_global passes multicast and
+        # 192.88.99.0/24, and the /24 special ranges' public neighbours
+        # stay crawlable.
+        for url in (
+            "http://224.0.0.1/",  # multicast 224.0.0.0/4
+            "http://230.1.2.3/",  # multicast
+            "http://239.255.255.255/",  # multicast
+            "https://[::ffff:224.0.0.1]/",  # IPv4-mapped multicast
+            "http://192.0.0.1/",  # 192.0.0.0/24
+            "http://192.0.2.1/",  # TEST-NET-1
+            "http://192.88.99.1/",  # 6to4 relay anycast (deprecated)
+            "http://198.51.100.1/",  # TEST-NET-2
+            "http://203.0.113.1/",  # TEST-NET-3
+        ):
+            self.assertRefused(url)
+        for url in (
+            "http://192.0.0.9/",  # PCP anycast exception in 192.0.0.0/24
+            "http://192.0.0.10/",  # DNS anycast exception in 192.0.0.0/24
+            "http://192.0.1.1/",  # public neighbour of the 192.0 /24s
+            "http://192.88.0.1/",  # public neighbour of 192.88.99.0/24
+            "http://198.51.0.1/",  # public neighbour of TEST-NET-2
+            "http://203.0.0.1/",  # public neighbour of TEST-NET-3
+            "http://8.8.8.8/",  # ordinary public
+        ):
+            self.assertAccepted(url)
+
     def test_agrees_with_worker_validator_on_special_ipv6_ranges(self):
         # Verdicts must match the TypeScript validator's suite case for
         # case (#474): ipaddress.is_global alone passes multicast,
