@@ -161,6 +161,29 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertRefused(url)
 
+    def test_refuses_bare_0x_final_label(self):
+        # WHATWG's IPv4-number parser returns 0 for a bare 0x/0X prefix
+        # (the digit sequence after it is empty), so these hosts also
+        # end in a number: `0x` alone normalises to 0.0.0.0 and the
+        # Worker's validator refuses every spelling, while the #502
+        # pattern required at least one hex digit after the prefix
+        # (#504). Redirect targets inherit via the same function.
+        for url in (
+            "http://example.0x/",
+            "http://example.0X/",
+            "http://example.0x./",  # trailing root dot stripped first
+            "http://0x/",
+            "http://0X/",
+        ):
+            self.assertRefused(url)
+        # A trailing non-hex character makes the label not an IPv4
+        # number in WHATWG either, so these stay public DNS names.
+        for url in (
+            "http://example.0xg/",
+            "http://example.0x7fg/",
+        ):
+            self.assertAccepted(url)
+
     def test_refuses_malformed_or_out_of_range_ports(self):
         # urlparse reports these only lazily via .port; the validator
         # must refuse them up front like the Worker's URL parser (#502).

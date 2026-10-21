@@ -77,7 +77,13 @@ def validate_crawl_url(raw):
             # refuse it instead of reclassifying it as a public DNS
             # name, matching the Worker's validator (#502).
             last_label = host.rsplit(".", 1)[-1]
-            if re.fullmatch(r"0[xX][0-9a-fA-F]+|[0-9]+", last_label):
+            # The hex alternative allows zero digits: WHATWG's
+            # IPv4-number parser returns 0 for a bare 0x/0X prefix, so
+            # `example.0x` and the single-label `0x` (0.0.0.0) also end
+            # in a number — refuse them too (#504). A trailing non-hex
+            # character (0xg, 0x7fg) still fails the full match and
+            # stays a DNS name, as in WHATWG.
+            if re.fullmatch(r"0[xX][0-9a-fA-F]*|[0-9]+", last_label):
                 raise ValueError(
                     f"refusing to crawl host {host}: numeric final label "
                     "but not a valid IPv4 address"
