@@ -1,0 +1,4 @@
+description = "error handlers must take a reference to the error as input, not by value"
+
+[expectations]
+codegen = "fail"

@@ -49,18 +49,27 @@ impl ErrorHandler {
         };
         // TODO: verify that the error handler does NOT return a `Result`
         // TODO: verify that the error handler returns a type that implements `IntoResponse`
-        // TODO: return a more specific error if the error handler takes the error as an input
-        //  parameter by value instead of taking it by reference.
         let error_input_index = error_handler
             .inputs
             .iter()
             .position(|i| i == &error_type_ref)
-            .ok_or_else(
-                || ErrorHandlerValidationError::DoesNotTakeErrorReferenceAsInput {
-                    fallible_callable: fallible_callable.to_owned(),
-                    error_type: error_type_ref,
-                },
-            )?;
+            .ok_or_else(|| {
+                let inner_error_type = match &error_type_ref {
+                    ResolvedType::Reference(TypeReference { inner, .. }) => inner.as_ref(),
+                    _ => unreachable!(),
+                };
+                if error_handler.inputs.iter().any(|i| i == inner_error_type) {
+                    ErrorHandlerValidationError::TakesErrorByValue {
+                        fallible_callable: fallible_callable.to_owned(),
+                        error_type: inner_error_type.to_owned(),
+                    }
+                } else {
+                    ErrorHandlerValidationError::DoesNotTakeErrorReferenceAsInput {
+                        fallible_callable: fallible_callable.to_owned(),
+                        error_type: error_type_ref,
+                    }
+                }
+            })?;
         let error_ref_parameter = error_handler
             .inputs
             .get(error_input_index)
@@ -146,6 +155,10 @@ pub(crate) enum ErrorHandlerValidationError {
         fallible_callable: Callable,
         error_type: ResolvedType,
     },
+    TakesErrorByValue {
+        fallible_callable: Callable,
+        error_type: ResolvedType,
+    },
     UnderconstrainedGenericParameters {
         parameters: IndexSet<String>,
         error_ref_input_index: usize,
@@ -172,6 +185,21 @@ impl Display for ErrorHandlerValidationError {
                     to the operation's error type as input.\n\
                     This error handler is associated with `{}`, therefore I \
                     expect `{error_type:?}` to be one of its input parameters.",
+                    fallible_callable.path,
+                )
+            }
+            ErrorHandlerValidationError::TakesErrorByValue {
+                ref fallible_callable,
+                ref error_type,
+                ..
+            } => {
+                write!(
+                    f,
+                    "Error handlers associated with a fallible operation must take a reference \
+                    to the operation's error type as input, not by value.\n\
+                    This error handler is associated with `{}`, therefore I \
+                    expect `&{error_type:?}` to be one of its input parameters, but it takes \
+                    `{error_type:?}` by value instead.",
                     fallible_callable.path,
                 )
             }

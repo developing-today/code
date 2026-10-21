@@ -1450,7 +1450,8 @@ impl ComponentDb {
             // TODO: Add a sub-diagnostic showing the error handler signature, highlighting with
             // a label the input types. Perhaps add a signature showing the signature of
             // the associate fallible handler, highlighting the output type.
-            ErrorHandlerValidationError::DoesNotTakeErrorReferenceAsInput { .. } => {
+            ErrorHandlerValidationError::DoesNotTakeErrorReferenceAsInput { .. } |
+            ErrorHandlerValidationError::TakesErrorByValue { .. } => {
                 CompilerDiagnostic::builder(source, e)
                     .optional_label(label)
                     .build()
