@@ -81,14 +81,14 @@ class ItemsTests(unittest.TestCase):
         self.assertRegex(result.stderr, r"^error: [^\n]+\n$")
         return result.stderr
 
-    def init(self, root=None, single=False, outline=None):
+    def init(self, root=None, single=False, outline=None, slug="items"):
         root = root or self.root
         source = self.scratch / "input.txt"
         source.write_bytes(
             "First § idea: keep the source.\n\nSecond idea — own your files.\n\n"
             "Third idea: plan the order.\n".encode()
         )
-        args = ["init", "--input", source, "--slug", "items", "--timestamp", CREATED]
+        args = ["init", "--input", source, "--slug", slug, "--timestamp", CREATED]
         if single:
             args += ["--concept", "One concept"]
         else:
@@ -116,6 +116,12 @@ class ItemsTests(unittest.TestCase):
             "dependencies": [
                 {
                     "from": "C002",
+                    "to": "C001",
+                    "kind": "requires",
+                    "reason": "Needs source.",
+                },
+                {
+                    "from": "C003",
                     "to": "C001",
                     "kind": "requires",
                     "reason": "Needs source.",
@@ -216,7 +222,7 @@ class ItemsTests(unittest.TestCase):
             "--text", "Bad stage.", ok=False,
         )  # fmt: skip
         self.assertEqual(self.main(package), before)
-        fresh = self.init(outline=self.outline() | {"title": "Second package"})
+        fresh = self.init(slug="second")
         self.assertIn(
             "run render first", self.add(fresh, "C001", "Too early.", ok=False)
         )
@@ -461,7 +467,14 @@ class ItemsTests(unittest.TestCase):
             }
         ]
         data["tasks"] = [
-            {"id": "R1", "concept": "C002", "stage": "S1", "status": "running"}
+            {
+                "id": "R1",
+                "concept": "C002",
+                "stage": "S1",
+                "status": "running",
+                "owner": "alpha",
+                "paths": ["concepts/C002-ownership.md"],
+            }
         ]
         main.write_text(
             text.replace(state[1], json.dumps(data, indent=2)), encoding="utf-8"
@@ -513,7 +526,21 @@ class ItemsTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("prettier"), "prettier is not installed")
     def test_rendered_views_and_items_are_prettier_stable(self):
-        package = self.rendered()
+        # init's own state block is reflowed by prettier (core, not this module), so
+        # format once as the pre-commit hook would, then everything after must hold.
+        package = self.init()
+        subprocess.run(
+            [
+                "prettier",
+                "--write",
+                str(package / "main.md"),
+                str(package / "design.md"),
+            ],
+            cwd=self.root,
+            capture_output=True,
+            check=True,
+        )
+        self.cli("render", "--package", package)
         self.add(package, "C001", "Keep `code`, snake_case and a link [docs](main.md).")
         self.add(package, "C001.1", "A child.", stage="S2", at=LATEST)
         self.set_status(
@@ -527,7 +554,16 @@ class ItemsTests(unittest.TestCase):
             text=True,
             check=False,
         )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if result.returncode:
+            for path in files:
+                formatted = subprocess.run(
+                    ["prettier", "--stdin-filepath", str(path)],
+                    input=path.read_text(encoding="utf-8"),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout
+                self.assertEqual(path.read_text(encoding="utf-8"), formatted, path.name)
 
     # ------------------------------------------------------ parallel merge
 

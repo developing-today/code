@@ -148,6 +148,26 @@ def blank(line):
     return not line.strip()
 
 
+def insert_item(lines, position, line):
+    """Insert an item line inside a tight list: blank lines only where the list starts or ends."""
+    listed = lambda x: x.startswith(" ") or ITEM.match(x.rstrip("\r"))  # noqa: E731
+    before = (
+        [""]
+        if position > 0
+        and not blank(lines[position - 1])
+        and not listed(lines[position - 1])
+        else []
+    )
+    after = (
+        [""]
+        if position < len(lines)
+        and not blank(lines[position])
+        and not listed(lines[position])
+        else []
+    )
+    lines[position:position] = before + [line] + after
+
+
 def splice(lines, start, end, block):
     """Replace lines[start:end] with block, keeping one blank line on each side."""
     before = [""] if start > 0 and not blank(lines[start - 1]) else []
@@ -377,6 +397,13 @@ def single_line(value, name):
 
 def stamp_now(value):
     return core().timestamp(value)
+
+
+def vocabulary(args):
+    if args.stage not in STAGES:
+        fail(f"--stage must be one of S0..S8, not {args.stage}")
+    if args.status not in STATUSES:
+        fail(f"--status must be one of {', '.join(STATUSES)}, not {args.status}")
 
 
 def entry_text(status, stage, at, text):
@@ -834,6 +861,7 @@ def edit(package, apply):
 
 
 def item_add(args, root, config, package):
+    vocabulary(args)
     text = single_line(args.text, "--text")
     at = stamp_now(args.at)
 
@@ -867,7 +895,7 @@ def item_add(args, root, config, package):
         identifier = f"{parent}.{max(siblings, default=0) + 1}"
         depth = identifier[len(concept) :].count(".")
         line = f"{'  ' * (depth - 1)}- **{identifier}** {entry_text(args.status, args.stage, at, text)}"
-        splice(main.lines, position, position, [line])
+        insert_item(main.lines, position, line)
         return {
             "id": identifier,
             "parent": parent,
@@ -879,6 +907,7 @@ def item_add(args, root, config, package):
 
 
 def item_set_status(args, root, config, package):
+    vocabulary(args)
     if args.status == "created":
         fail(
             "An existing item cannot become created; use clarified, confirmed, superseded or retracted"
@@ -972,16 +1001,16 @@ def register(sub):
     add.add_argument(
         "--parent", required=True, help="concept id (C001) or item id (C001.2)"
     )
-    add.add_argument("--stage", required=True, choices=STAGES)
-    add.add_argument("--status", default="created", choices=STATUSES)
+    add.add_argument("--stage", required=True, help="S0..S8")
+    add.add_argument("--status", default="created", help=", ".join(STATUSES))
     add.add_argument("--text", required=True)
     add.add_argument("--at", help="UTC timestamp; defaults to now")
     status = command(
         actions, "set-status", item_set_status, "prepend a status to an item's trail"
     )
     status.add_argument("--id", required=True)
-    status.add_argument("--status", required=True, choices=STATUSES)
-    status.add_argument("--stage", required=True, choices=STAGES)
+    status.add_argument("--status", required=True, help=", ".join(STATUSES[1:]))
+    status.add_argument("--stage", required=True, help="S0..S8")
     status.add_argument("--note", required=True)
     status.add_argument(
         "--see", action="append", default=[], help="item or concept the note points to"
