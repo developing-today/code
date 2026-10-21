@@ -3,8 +3,9 @@ import http from 'node:http';
 import { spawn, execSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { parseProxyPort } from './proxy-port.mjs';
 
-const PORT = parseInt(process.env.CODEX_PROXY_PORT || '18744', 10);
+const PORT = parseProxyPort('CODEX_PROXY_PORT', 18744);
 const HOST = process.env.CODEX_PROXY_HOST || '127.0.0.1';
 
 // Synchronize freshly refreshed ChatGPT OAuth tokens from Codex to OpenCode SQLite DB

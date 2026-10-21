@@ -3,8 +3,9 @@ import http from 'node:http';
 import { spawn, execSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { parseProxyPort } from './proxy-port.mjs';
 
-const PORT = parseInt(process.env.ANTIGRAVITY_LS_PROXY_PORT || '18745', 10);
+const PORT = parseProxyPort('ANTIGRAVITY_LS_PROXY_PORT', 18745);
 const HOST = process.env.ANTIGRAVITY_LS_PROXY_HOST || '127.0.0.1';
 
 const DEFAULT_MANAGED_HTTP_PORT = 48999;
