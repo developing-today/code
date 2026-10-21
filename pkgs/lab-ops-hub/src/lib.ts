@@ -72,7 +72,11 @@ export function validateCrawlUrl(raw: string): { ok: true; url: string } | { ok:
   }
   // WHATWG URL normalises integer/hex IPv4 forms (e.g. 2130706433,
   // 0x7f.1) to dotted-quad, and keeps IPv6 literals bracketed.
-  const host = u.hostname.toLowerCase();
+  // A single trailing dot is the DNS root dot (the FQDN spelling of the
+  // same host: "localhost." is "localhost"); strip it before the checks
+  // so the dotted spelling cannot evade them (#466).
+  const rawHost = u.hostname.toLowerCase();
+  const host = rawHost.endsWith(".") ? rawHost.slice(0, -1) : rawHost;
   if (!host) return { ok: false, error: "url has no host" };
   if (host === "localhost" || BLOCKED_HOST_SUFFIXES.some((s) => host.endsWith(s))) {
     return { ok: false, error: `refusing to crawl local host ${host}` };
