@@ -173,6 +173,25 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertRefused(url)
 
+    def test_refuses_percent_encoded_hosts_and_zone_ids(self):
+        # WHATWG URL parsing percent-decodes the host before judging it
+        # (%6cocalhost is localhost) and rejects the other % spellings
+        # outright; urlparse passes them through verbatim and the old
+        # code mistook them for public DNS names, while ipaddress
+        # accepted the IPv6 zone id (#505).
+        for url in (
+            "http://%6cocalhost/",
+            "http://localhost%00/",
+            "http://127.0.0.1%09/",
+            "http://8.8.8.8%09/",
+            "http://8.8.8.8%zz/",
+            "http://example.com%09/",
+            "http://example.com%/",  # malformed: bare %
+            "http://example.com%2/",  # malformed: truncated escape
+            "https://[2001:4860:4860::8888%25eth0]/",  # IPv6 zone id
+        ):
+            self.assertRefused(url)
+
     def test_accepts_public_targets(self):
         for url in (
             "https://example.com/page",

@@ -48,6 +48,14 @@ def validate_crawl_url(raw):
         host = host[:-1]
     if not host:
         raise ValueError("url has no host")
+    # A raw % in the host is a percent-encoded spelling (or an IPv6 zone
+    # id): WHATWG URL parsing percent-decodes the host before judging it
+    # — %6cocalhost is localhost — and rejects the rest outright, while
+    # urlparse hands the spelling through verbatim and the checks below
+    # would mistake it for a public DNS name (or ipaddress would accept
+    # the zone id). Refuse every % host, fail-closed (#505).
+    if "%" in host:
+        raise ValueError(f"refusing to crawl percent-encoded host {host}")
     if host == "localhost" or host.endswith(_BLOCKED_SUFFIXES):
         raise ValueError(f"refusing to crawl local host {host}")
     try:
