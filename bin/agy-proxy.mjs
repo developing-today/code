@@ -3,8 +3,9 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { parseProxyPort } from './proxy-port.mjs';
 
-const PORT = parseInt(process.env.AGY_PROXY_PORT || '18743', 10);
+const PORT = parseProxyPort('AGY_PROXY_PORT', 18743);
 const HOST = process.env.AGY_PROXY_HOST || '127.0.0.1';
 
 const MODELS = [

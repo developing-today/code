@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import http from 'node:http';
 import https from 'node:https';
+import { parseProxyPort } from './proxy-port.mjs';
 
-const PORT = parseInt(process.env.DESIGN_CODE_PROXY_PORT || '18746', 10);
+const PORT = parseProxyPort('DESIGN_CODE_PROXY_PORT', 18746);
 const HOST = process.env.DESIGN_CODE_PROXY_HOST || '127.0.0.1';
 
-const ANTIGRAVITY_LS_PORT = parseInt(process.env.ANTIGRAVITY_LS_PROXY_PORT || '18745', 10);
-const CODEX_PROXY_PORT = parseInt(process.env.CODEX_PROXY_PORT || '18744', 10);
+const ANTIGRAVITY_LS_PORT = parseProxyPort('ANTIGRAVITY_LS_PROXY_PORT', 18745);
+const CODEX_PROXY_PORT = parseProxyPort('CODEX_PROXY_PORT', 18744);
 const AMR_UPSTREAM_URL = process.env.AMR_UPSTREAM_URL || 'https://amr-link.open-design.ai/v1';
 
 const DESIGN_SYSTEM_PROMPT = `You are an elite Code & Systems Design Architect.
