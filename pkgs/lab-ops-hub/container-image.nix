@@ -1,7 +1,7 @@
 # Daemon-less OCI image for the Lab Ops Hub crawler container.
 # nixpkgs is pinned to the same rev as dezren39/nix's flake.lock.
 # Build:  nix build -f container-image.nix  -> store path is a docker-archive tar
-# Push:   crane push <tar> registry.cloudflare.com/<account>/lab-ops-hub-crawlercontainer:latest
+# Push:   crane push <tar> registry.cloudflare.com/<account>/lab-ops-hub-crawlercontainer:v3
 # (or load it anywhere with docker/podman and `wrangler deploy` from there)
 let
   nixpkgs = fetchTarball {
@@ -12,7 +12,7 @@ let
 in
 pkgs.dockerTools.buildLayeredImage {
   name = "lab-ops-hub-crawlercontainer";
-  tag = "latest";
+  tag = "v3";
   contents = [
     pkgs.python3
     pkgs.cacert
