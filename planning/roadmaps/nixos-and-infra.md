@@ -38,6 +38,6 @@ These come from scratch notes in `TODO.md` and `doc/todo.md`. They are listed so
 
 ## Done
 
-| Title               | Date | Result |
-| ------------------- | ---- | ------ |
-| (none recorded yet) |      |        |
+| Title                                           | Date       | Result             |
+| ----------------------------------------------- | ---------- | ------------------ |
+| Open Design sops file scoped to both recipients | 2026-10-21 | #453 (closes #456) |
