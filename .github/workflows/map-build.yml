@@ -6,8 +6,8 @@ name: map build
 # charm -> keygen v0.4.2 -> caarlos0/sshmarshal chain stopped compiling
 # against golang.org/x/crypto v0.16.0 and nobody noticed. This workflow
 # builds and vets the module whenever it changes so that cannot recur.
-# (pkgs/graph has the same class of break under #166 and already has
-# the mod-tidy workflow watching it; it is deliberately not added here.)
+# (pkgs/graph had the same class of break under #166; it is covered by
+# go-modules-build.yml since that fix landed, so it is not added here.)
 
 on:
   pull_request:

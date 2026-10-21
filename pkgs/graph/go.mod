@@ -11,13 +11,12 @@ require (
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/caarlos0/env/v6 v6.10.1 // indirect
-	github.com/caarlos0/sshmarshal v0.1.0 // indirect
 	github.com/calmh/randomart v1.1.0 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/charmbracelet/bubbles v0.15.0 // indirect
 	github.com/charmbracelet/bubbletea v0.23.2 // indirect
-	github.com/charmbracelet/keygen v0.4.2 // indirect
+	github.com/charmbracelet/keygen v0.5.1 // indirect
 	github.com/charmbracelet/lipgloss v0.9.1 // indirect
 	github.com/containerd/console v1.0.3 // indirect
 	github.com/dgraph-io/badger/v3 v3.2103.2 // indirect
@@ -49,12 +48,12 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rivo/uniseg v0.4.4 // indirect
 	go.opencensus.io v0.22.5 // indirect
-	golang.org/x/crypto v0.16.0 // indirect
+	golang.org/x/crypto v0.26.0 // indirect
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
-	golang.org/x/net v0.19.0 // indirect
-	golang.org/x/sync v0.5.0 // indirect
-	golang.org/x/sys v0.15.0 // indirect
-	golang.org/x/term v0.15.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/net v0.21.0 // indirect
+	golang.org/x/sync v0.8.0 // indirect
+	golang.org/x/sys v0.23.0 // indirect
+	golang.org/x/term v0.23.0 // indirect
+	golang.org/x/text v0.17.0 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
 )
