@@ -7,7 +7,7 @@ import net from 'node:net';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { parseProxyPortValue } from './proxy-port.mjs';
+import { parseProxyPortValue, parseAddressPortValue } from './proxy-port.mjs';
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -50,6 +50,50 @@ test('invalid values throw an error naming the env var and the value', () => {
       `expected ${JSON.stringify(raw)} to be rejected`
     );
   }
+});
+
+test('host:port addresses are parsed strictly (#494)', () => {
+  assert.equal(parseAddressPortValue('ANTIGRAVITY_LS_ADDRESS', '127.0.0.1:18745'), 18745);
+  assert.equal(parseAddressPortValue('ANTIGRAVITY_LS_ADDRESS', 'localhost:1'), 1);
+  assert.equal(parseAddressPortValue('ANTIGRAVITY_LS_ADDRESS', '[::1]:65535'), 65535);
+  const invalid = [
+    '127.0.0.1:abc',
+    '127.0.0.1:',
+    '127.0.0.1:0',
+    '127.0.0.1:-5',
+    '127.0.0.1:99999',
+    '127.0.0.1:65536',
+    '127.0.0.1:18745abc',
+    '127.0.0.1:18745.9',
+    '127.0.0.1: 18745'
+  ];
+  for (const raw of invalid) {
+    assert.throws(
+      () => parseAddressPortValue('ANTIGRAVITY_LS_ADDRESS', raw),
+      (err) => {
+        assert.match(err.message, /ANTIGRAVITY_LS_ADDRESS/);
+        assert.ok(err.message.includes(`"${raw}"`), err.message);
+        assert.match(err.message, /integer 1-65535/);
+        return true;
+      },
+      `expected ${JSON.stringify(raw)} to be rejected`
+    );
+  }
+});
+
+test('antigravity-ls-proxy validates ANTIGRAVITY_LS_ADDRESS via the shared helper (#494)', () => {
+  const source = fs.readFileSync(path.join(binDir, 'antigravity-ls-proxy.mjs'), 'utf8');
+  assert.match(
+    source,
+    /parseAddressPortValue\('ANTIGRAVITY_LS_ADDRESS', process\.env\.ANTIGRAVITY_LS_ADDRESS\)/,
+    'antigravity-ls-proxy should validate ANTIGRAVITY_LS_ADDRESS with parseAddressPortValue'
+  );
+  assert.doesNotMatch(
+    source,
+    /parseInt\(parts/,
+    'antigravity-ls-proxy still parses ANTIGRAVITY_LS_ADDRESS with bare parseInt'
+  );
+  assert.match(source, /p >= 1 && p <= 65535/, 'candidate add() should bound ports to 1-65535');
 });
 
 const runClef = (value) =>
@@ -120,7 +164,7 @@ test('all seven parse sites in the five proxies use the shared helper', () => {
     const source = fs.readFileSync(path.join(binDir, file), 'utf8');
     assert.match(
       source,
-      /import \{ parseProxyPort \} from '\.\/proxy-port\.mjs';/,
+      /import \{[^}]*\bparseProxyPort\b[^}]*\} from '\.\/proxy-port\.mjs';/,
       `${file} should import the shared helper`
     );
     assert.doesNotMatch(

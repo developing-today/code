@@ -23,6 +23,21 @@ export const parseProxyPortValue = (name, raw, fallback) => {
   );
 };
 
+// Strict port parsing for a host:port address taken from an env var
+// (#494). The port is the segment after the last ':'; anything that is
+// not exactly an integer 1-65535 is an error naming the variable and
+// the full address, never a bare parseInt coercion.
+export const parseAddressPortValue = (name, raw) => {
+  const segment = typeof raw === 'string' ? raw.split(':').at(-1) : undefined;
+  if (segment !== undefined && /^[0-9]+$/.test(segment)) {
+    const port = Number(segment);
+    if (port >= 1 && port <= 65535) return port;
+  }
+  throw new Error(
+    `${name}="${raw}" is not a valid host:port address (expected a port integer 1-65535)`
+  );
+};
+
 export const parseProxyPort = (name, fallback) => {
   try {
     return parseProxyPortValue(name, process.env[name], fallback);
