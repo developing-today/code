@@ -31,7 +31,7 @@ Titles follow the table. The marker's `stage` is the stage that creates the issu
 
 | Template                                         | Title                                                                                                              | Created | Worked | Marker `kind`   |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------- | ------ | --------------- |
-| `issue-research.md`                              | `Research: <concept> (<package>·C001)`                                                                             | S1      | S2-S3  | `research`      |
+| [issue-research.md](issue-research.md)           | `Research: <concept> (<package>·C001)`                                                                             | S1      | S2-S3  | `research`      |
 | [issue-parent.md](issue-parent.md)               | `Handoff: Investigate and plan <concept> (<package>·C001)`                                                         | S4      | S5     | `handoff`       |
 | [issue-child.md](issue-child.md)                 | `Design: <facet> (<package>·C001.3)`                                                                               | S5      | S6     | `design`        |
 | [issue-orchestration.md](issue-orchestration.md) | `Handoff: Orchestrate <design or implementation> of <concept> (<package>·C001) as an orchestrator using subagents` | S5, S7  | S6, S8 | `orchestration` |
