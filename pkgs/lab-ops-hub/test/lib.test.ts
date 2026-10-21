@@ -41,6 +41,28 @@ test("validateCrawlUrl refuses loopback / private / link-local targets (#441)", 
   }
 });
 
+test("validateCrawlUrl judges NAT64 / 6to4 literals by their embedded IPv4 (#472)", () => {
+  const blocked = [
+    "https://[64:ff9b::7f00:1]/", // NAT64 embedding 127.0.0.1
+    "https://[64:ff9b::a9fe:a9fe]/", // NAT64 embedding 169.254.169.254 (cloud metadata)
+    "https://[64:ff9b::c0a8:101]/", // NAT64 embedding 192.168.1.1
+    "https://[2002:7f00:1::]/", // 6to4 embedding 127.0.0.1
+    "https://[2002:a9fe:a9fe::]/", // 6to4 embedding 169.254.169.254
+    "https://[::ffff:7f00:1]/", // IPv4-mapped loopback, hex-group spelling
+  ];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  const allowed = [
+    "https://[64:ff9b::808:808]/", // NAT64 embedding 8.8.8.8
+    "https://[2002:808:808::]/", // 6to4 embedding 8.8.8.8
+    "https://[::ffff:8.8.8.8]/", // IPv4-mapped public
+  ];
+  for (const u of allowed) {
+    assert.equal(validateCrawlUrl(u).ok, true, u);
+  }
+});
+
 test("validateCrawlUrl refuses trailing-dot spellings of blocked hosts (#466)", () => {
   const blocked = ["http://localhost./", "http://foo.localhost./", "http://printer.local./", "http://nas.internal./"];
   for (const u of blocked) {
