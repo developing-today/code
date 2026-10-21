@@ -41,6 +41,15 @@ test("validateCrawlUrl refuses loopback / private / link-local targets (#441)", 
   }
 });
 
+test("validateCrawlUrl refuses trailing-dot spellings of blocked hosts (#466)", () => {
+  const blocked = ["http://localhost./", "http://foo.localhost./", "http://printer.local./", "http://nas.internal./"];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  // A public name keeps its fully-qualified spelling.
+  assert.equal(validateCrawlUrl("http://example.com./").ok, true);
+});
+
 function stubFetcher(routes: Record<string, { status: number; location?: string }>) {
   const seen: string[] = [];
   const fetchFn = async (url: string): Promise<Response> => {
@@ -73,6 +82,7 @@ test("fetchFollowingValidatedRedirects refuses redirects to non-public targets (
     "http://192.168.1.1/",
     "https://[::1]/",
     "http://localhost:8787/",
+    "http://localhost./",
     "file:///etc/passwd",
   ]) {
     const { fetchFn, seen } = stubFetcher({

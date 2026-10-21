@@ -31,6 +31,12 @@ def validate_crawl_url(raw):
     if u.scheme not in ("http", "https"):
         raise ValueError("only http: and https: URLs may be crawled")
     host = (u.hostname or "").lower()
+    # A single trailing dot is the DNS root dot (the FQDN spelling of the
+    # same host: "localhost." is "localhost", "127.0.0.1." is 127.0.0.1);
+    # strip it before the checks so the dotted spelling cannot evade
+    # them, matching the Worker's validateCrawlUrl (#466).
+    if host.endswith("."):
+        host = host[:-1]
     if not host:
         raise ValueError("url has no host")
     if host == "localhost" or host.endswith(_BLOCKED_SUFFIXES):
