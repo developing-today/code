@@ -35,8 +35,8 @@ Titles follow the table. The marker's `stage` is the stage that creates the issu
 | [issue-parent.md](issue-parent.md)               | `Handoff: Investigate and plan <concept> (<package>·C001)`                                                         | S4      | S5     | `handoff`       |
 | [issue-child.md](issue-child.md)                 | `Design: <facet> (<package>·C001.3)`                                                                               | S5      | S6     | `design`        |
 | [issue-orchestration.md](issue-orchestration.md) | `Handoff: Orchestrate <design or implementation> of <concept> (<package>·C001) as an orchestrator using subagents` | S5, S7  | S6, S8 | `orchestration` |
-| `issue-plan.md`                                  | `Plan: <concept> (<package>·C001)`                                                                                 | S6      | S7     | `plan`          |
-| `issue-implement.md`                             | `Implement: <step> (<package>·C001·step <n>)`                                                                      | S7      | S8     | `implement`     |
+| [issue-plan.md](issue-plan.md)                   | `Plan: <concept> (<package>·C001)`                                                                                 | S6      | S7     | `plan`          |
+| [issue-implement.md](issue-implement.md)         | `Implement: <step> (<package>·C001·step <n>)`                                                                      | S7      | S8     | `implement`     |
 
 Every issue body ends with one marker line, for example `<!-- workflow:issue {"package":"<package>","concept":"C001","stage":"S1","kind":"research"} -->` (child issues add `"item"`, implement issues add `"step"`). Before creating an issue, look for its marker so a retry never makes a duplicate; this prints the URL of any issue that already carries it:
 
