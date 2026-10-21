@@ -161,8 +161,18 @@ async function crawlFallback(url: string) {
   // Redirects are followed manually with every target re-validated (#460):
   // fetch's default "follow" mode would silently chase a 3xx from a public
   // URL to a private/loopback/link-local target the initial check refused.
+  // Every hop gets the container crawler's 20s timeout (app.py's
+  // _OPENER.open(timeout=20)): without a signal, a validated public server
+  // that accepts the connection and then stalls — or slow-drips a body
+  // under the byte cap — hangs the crawl until platform limits kill it
+  // (#500). The signal stays attached to the response, so it also bounds
+  // the readResponseTextCapped body read below.
   const res = await fetchFollowingValidatedRedirects(url, (u) =>
-    fetch(u, { redirect: "manual", headers: { "user-agent": "LabOpsHub/0.1 (+personal crawler)" } }),
+    fetch(u, {
+      redirect: "manual",
+      headers: { "user-agent": "LabOpsHub/0.1 (+personal crawler)" },
+      signal: AbortSignal.timeout(20_000),
+    }),
   );
   // Cap the body read at the container's 2,000,000 bytes (#481): res.text()
   // would buffer a huge page whole in the Worker's memory.
