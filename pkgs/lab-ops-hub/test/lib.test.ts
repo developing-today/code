@@ -2,7 +2,13 @@
 // (type stripping): `npm test`. No Worker bindings are involved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { computeBudget, fetchFollowingValidatedRedirects, validateCrawlUrl } from "../src/lib.ts";
+import {
+  computeBudget,
+  fetchFollowingValidatedRedirects,
+  MAX_CRAWL_BODY_BYTES,
+  readResponseTextCapped,
+  validateCrawlUrl,
+} from "../src/lib.ts";
 
 test("validateCrawlUrl accepts public http(s) targets", () => {
   assert.equal(validateCrawlUrl("https://example.com/page").ok, true);
@@ -208,6 +214,41 @@ test("fetchFollowingValidatedRedirects bounds the hop count (#460)", async () =>
     "https://example.com/loop": { status: 302, location: "https://example.com/loop" },
   });
   await assert.rejects(fetchFollowingValidatedRedirects("https://example.com/loop", fetchFn, 3), /too many redirects/);
+});
+
+test("readResponseTextCapped returns a body under the cap whole (#481)", async () => {
+  const res = new Response("<title>hi</title> hello");
+  assert.equal(await readResponseTextCapped(res, 100), "<title>hi</title> hello");
+});
+
+test("readResponseTextCapped truncates at the cap and stops pulling the stream (#481)", async () => {
+  let pulled = 0;
+  let cancelled = false;
+  const chunk = new Uint8Array(100).fill(97); // "a" * 100
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulled += chunk.byteLength;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const text = await readResponseTextCapped(new Response(body), 250);
+  assert.equal(text, "a".repeat(250));
+  assert.equal(cancelled, true);
+  // The reader stopped at the cap instead of draining the endless stream.
+  assert.ok(pulled <= 300, `pulled ${pulled} bytes for a 250-byte cap`);
+});
+
+test("readResponseTextCapped decodes a character split at the cap as a replacement (#481)", async () => {
+  // "é" is 0xC3 0xA9 in UTF-8; a 2-byte cap keeps only the first byte.
+  const res = new Response(new TextEncoder().encode("aébc"));
+  assert.equal(await readResponseTextCapped(res, 2), "a�");
+});
+
+test("the crawl body cap matches the container's 2,000,000-byte read (#481)", () => {
+  assert.equal(MAX_CRAWL_BODY_BYTES, 2_000_000);
 });
 
 test("computeBudget reports $0 while usage is inside the included amounts", () => {

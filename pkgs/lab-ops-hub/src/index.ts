@@ -1,6 +1,6 @@
 import { Container, getContainer } from "@cloudflare/containers";
 import { DurableObject } from "cloudflare:workers";
-import { computeBudget, fetchFollowingValidatedRedirects, validateCrawlUrl } from "./lib";
+import { computeBudget, fetchFollowingValidatedRedirects, readResponseTextCapped, validateCrawlUrl } from "./lib";
 
 // ---------------------------------------------------------------------------
 // Lab Ops Hub — one Worker exercising the whole Workers Paid surface at
@@ -164,7 +164,9 @@ async function crawlFallback(url: string) {
   const res = await fetchFollowingValidatedRedirects(url, (u) =>
     fetch(u, { redirect: "manual", headers: { "user-agent": "LabOpsHub/0.1 (+personal crawler)" } }),
   );
-  const html = await res.text();
+  // Cap the body read at the container's 2,000,000 bytes (#481): res.text()
+  // would buffer a huge page whole in the Worker's memory.
+  const html = await readResponseTextCapped(res);
   const title = html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() ?? "";
   const links = (html.match(/<a\s/gi) ?? []).length;
   const text = html

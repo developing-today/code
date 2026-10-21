@@ -208,6 +208,39 @@ export async function fetchFollowingValidatedRedirects(
   }
 }
 
+// --- Crawl body reading -----------------------------------------------------
+// The container crawler caps its body read at 2,000,000 bytes
+// (container/app.py: res.read(2_000_000)) and truncates silently. The Worker
+// fallback must do the same (#481): an unbounded res.text() buffers the whole
+// body of a validated public URL — however large — in the Worker's memory
+// before the caller slices it down to a 500-char excerpt / 20k-char text.
+
+export const MAX_CRAWL_BODY_BYTES = 2_000_000;
+
+export async function readResponseTextCapped(res: Response, maxBytes = MAX_CRAWL_BODY_BYTES): Promise<string> {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  let text = "";
+  let read = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    read += value.byteLength;
+    if (read > maxBytes) {
+      // Keep only the bytes up to the cap (a multi-byte character split at
+      // the boundary decodes as a replacement character, matching the
+      // container's errors="replace"), then cancel so the rest of the body
+      // is never pulled into memory.
+      text += decoder.decode(value.subarray(0, value.byteLength - (read - maxBytes)), { stream: true });
+      await reader.cancel();
+      break;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 // --- Budget computation -------------------------------------------------------
 // estimated_overage_usd is computed from the counted usage, never a
 // literal: for each resource with an included amount and a rate,
