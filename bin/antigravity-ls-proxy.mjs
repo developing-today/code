@@ -3,8 +3,9 @@ import http from 'node:http';
 import { spawn, execSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { parseProxyPort, parseAddressPortValue } from './proxy-port.mjs';
 
-const PORT = parseInt(process.env.ANTIGRAVITY_LS_PROXY_PORT || '18745', 10);
+const PORT = parseProxyPort('ANTIGRAVITY_LS_PROXY_PORT', 18745);
 const HOST = process.env.ANTIGRAVITY_LS_PROXY_HOST || '127.0.0.1';
 
 const DEFAULT_MANAGED_HTTP_PORT = 48999;
@@ -196,8 +197,7 @@ class LanguageServerManager {
   // and keeps the one that answers.
   detectRunningInstances() {
     if (process.env.ANTIGRAVITY_LS_ADDRESS && process.env.ANTIGRAVITY_CSRF_TOKEN) {
-      const parts = process.env.ANTIGRAVITY_LS_ADDRESS.split(':');
-      const port = parseInt(parts[parts.length - 1], 10);
+      const port = parseAddressPortValue('ANTIGRAVITY_LS_ADDRESS', process.env.ANTIGRAVITY_LS_ADDRESS);
       return [{ port, token: process.env.ANTIGRAVITY_CSRF_TOKEN }];
     }
 
@@ -206,7 +206,7 @@ class LanguageServerManager {
     const add = (port, token) => {
       const p = parseInt(port, 10);
       const key = `${p}:${token}`;
-      if (p > 0 && !seen.has(key)) {
+      if (p >= 1 && p <= 65535 && !seen.has(key)) {
         seen.add(key);
         candidates.push({ port: p, token });
       }
