@@ -143,6 +143,36 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertAccepted(url)
 
+    def test_refuses_numeric_final_label_hosts_that_are_not_ipv4(self):
+        # WHATWG "ends in a number" (#502): a host whose final label is
+        # numeric is an IP literal in the URL grammar, never a DNS name.
+        # These spellings parse as neither ipaddress nor inet_aton IPv4,
+        # so they must be refused, not fall through to "public DNS name"
+        # — the Worker's WHATWG validator refuses every one.
+        for url in (
+            "http://256.1.1.1/",
+            "http://1.2.3.256/",
+            "http://1.2.3.4.5/",
+            "http://4294967296/",  # one past the largest integer IPv4
+            "http://0.0.0.0.0/",
+            "http://example.123/",
+            "http://example.0x7f/",
+            "http://foo.123.456/",
+        ):
+            self.assertRefused(url)
+
+    def test_refuses_malformed_or_out_of_range_ports(self):
+        # urlparse reports these only lazily via .port; the validator
+        # must refuse them up front like the Worker's URL parser (#502).
+        for url in (
+            "http://8.8.8.8:abc/",
+            "http://8.8.8.8:99999/",
+            "http://8.8.8.8:-1/",
+            "http://example.com:99999/",
+            "http://example.com:80abc/",
+        ):
+            self.assertRefused(url)
+
     def test_accepts_public_targets(self):
         for url in (
             "https://example.com/page",
@@ -150,6 +180,10 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://134744072/",  # 8.8.8.8 in integer spelling: public, allowed
             "https://[2606:4700:4700::1111]/",
             "http://example.com./",  # FQDN root-dot spelling of a public name
+            "http://dead.beef/",  # hex-looking labels, non-numeric final label
+            "http://a1.beef/",
+            "http://123.example.com/",  # numeric label, but not the final one
+            "http://example.com:8080/",  # an ordinary explicit port
         ):
             self.assertAccepted(url)
 

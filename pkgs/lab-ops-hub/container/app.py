@@ -31,6 +31,14 @@ def validate_crawl_url(raw):
     u = urlparse(raw)
     if u.scheme not in ("http", "https"):
         raise ValueError("only http: and https: URLs may be crawled")
+    # A port that is present must parse as an integer in range: urlparse
+    # only raises for it lazily (when .port is read, deep inside the
+    # fetcher), so read it here and refuse up front — the Worker's
+    # WHATWG URL parser rejects these spellings outright (#502).
+    try:
+        u.port
+    except ValueError:
+        raise ValueError("url has an invalid port") from None
     host = (u.hostname or "").lower()
     # A single trailing dot is the DNS root dot (the FQDN spelling of the
     # same host: "localhost." is "localhost", "127.0.0.1." is 127.0.0.1);
@@ -47,6 +55,19 @@ def validate_crawl_url(raw):
     except ValueError:
         ip = _inet_aton_ipv4(host)
         if ip is None:
+            # A host whose final label is numeric is an IP literal in
+            # the URL grammar (WHATWG "ends in a number"), not a DNS
+            # name: no numeric TLDs exist. If it reached here it is an
+            # IPv4 spelling nothing accepts (256.1.1.1, 1.2.3.4.5,
+            # 4294967296) or a name like example.123 / example.0x7f —
+            # refuse it instead of reclassifying it as a public DNS
+            # name, matching the Worker's validator (#502).
+            last_label = host.rsplit(".", 1)[-1]
+            if re.fullmatch(r"0[xX][0-9a-fA-F]+|[0-9]+", last_label):
+                raise ValueError(
+                    f"refusing to crawl host {host}: numeric final label "
+                    "but not a valid IPv4 address"
+                )
             return raw  # a public DNS name; literal-IP policy does not apply
     embedded = _embedded_ipv4(ip)
     if embedded is not None:
