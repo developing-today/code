@@ -31,12 +31,12 @@ Titles follow the table. The marker's `stage` is the stage that creates the issu
 
 | Template                                         | Title                                                                                                              | Created | Worked | Marker `kind`   |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------- | ------ | --------------- |
-| [issue-research.md](issue-research.md)           | `Research: <concept> (<package>·C001)`                                                                             | S1      | S2-S3  | `research`      |
+| `issue-research.md`                              | `Research: <concept> (<package>·C001)`                                                                             | S1      | S2-S3  | `research`      |
 | [issue-parent.md](issue-parent.md)               | `Handoff: Investigate and plan <concept> (<package>·C001)`                                                         | S4      | S5     | `handoff`       |
 | [issue-child.md](issue-child.md)                 | `Design: <facet> (<package>·C001.3)`                                                                               | S5      | S6     | `design`        |
 | [issue-orchestration.md](issue-orchestration.md) | `Handoff: Orchestrate <design or implementation> of <concept> (<package>·C001) as an orchestrator using subagents` | S5, S7  | S6, S8 | `orchestration` |
-| [issue-plan.md](issue-plan.md)                   | `Plan: <concept> (<package>·C001)`                                                                                 | S6      | S7     | `plan`          |
-| [issue-implement.md](issue-implement.md)         | `Implement: <step> (<package>·C001·step <n>)`                                                                      | S7      | S8     | `implement`     |
+| `issue-plan.md`                                  | `Plan: <concept> (<package>·C001)`                                                                                 | S6      | S7     | `plan`          |
+| `issue-implement.md`                             | `Implement: <step> (<package>·C001·step <n>)`                                                                      | S7      | S8     | `implement`     |
 
 Every issue body ends with one marker line, for example `<!-- workflow:issue {"package":"<package>","concept":"C001","stage":"S1","kind":"research"} -->` (child issues add `"item"`, implement issues add `"step"`). Before creating an issue, look for its marker so a retry never makes a duplicate; this prints the URL of any issue that already carries it:
 
@@ -45,19 +45,19 @@ gh issue list --repo <issue_repository> --state all --limit 1000 --json url,body
   jq -r --argjson want '<marker JSON>' '.[] | select([.body | scan("<!-- workflow:issue (\\{.*?\\}) -->")[0] | fromjson] | any(. == $want)) | .url'
 ```
 
-Use existing labels only. Before publishing, give the draft body, and nothing else, to the [zero-context reader](prompts/zero-context-reader.md) and fix every gap it finds.
+Use existing labels only. Before publishing, give the draft body, and nothing else, to the `zero-context reader` and fix every gap it finds.
 
 ## Prompts
 
 Prompts an orchestrator gives to subagents, in [prompts/](prompts/).
 
-| Prompt                                                   | Launched by                | When                                                 |
-| -------------------------------------------------------- | -------------------------- | ---------------------------------------------------- |
-| [worker-brief.md](prompts/worker-brief.md)               | any orchestrator           | dispatching one unit of work                         |
-| [orchestrator-brief.md](prompts/orchestrator-brief.md)   | router, a human            | starting an S6 or S8 orchestrator                    |
-| [merger.md](prompts/merger.md)                           | S6, S8 orchestrators       | landing a finished worker PR                         |
-| [reviewer.md](prompts/reviewer.md)                       | S6, S8 orchestrators       | a disagreement (with critic, investigator) or a PR   |
-| [critic.md](prompts/critic.md)                           | S6 orchestrator            | a disagreement                                       |
-| [investigator.md](prompts/investigator.md)               | S6 orchestrator            | a disagreement, or a decision the challenge reopened |
-| [challenge-pass.md](prompts/challenge-pass.md)           | S6 orchestrator            | before closing S6                                    |
-| [zero-context-reader.md](prompts/zero-context-reader.md) | anyone publishing an issue | before creating any issue or long brief              |
+| Prompt                                     | Launched by                | When                                                 |
+| ------------------------------------------ | -------------------------- | ---------------------------------------------------- |
+| `worker-brief.md`                          | any orchestrator           | dispatching one unit of work                         |
+| `orchestrator-brief.md`                    | router, a human            | starting an S6 or S8 orchestrator                    |
+| `merger.md`                                | S6, S8 orchestrators       | landing a finished worker PR                         |
+| [reviewer.md](prompts/reviewer.md)         | S6, S8 orchestrators       | a disagreement (with critic, investigator) or a PR   |
+| [critic.md](prompts/critic.md)             | S6 orchestrator            | a disagreement                                       |
+| [investigator.md](prompts/investigator.md) | S6 orchestrator            | a disagreement, or a decision the challenge reopened |
+| `challenge-pass.md`                        | S6 orchestrator            | before closing S6                                    |
+| `zero-context-reader.md`                   | anyone publishing an issue | before creating any issue or long brief              |
