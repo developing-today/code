@@ -48,9 +48,39 @@ def validate_crawl_url(raw):
         ip = _inet_aton_ipv4(host)
         if ip is None:
             return raw  # a public DNS name; literal-IP policy does not apply
-    if not ip.is_global:
+    embedded = _embedded_ipv4(ip)
+    if embedded is not None:
+        # Translation/mapped prefixes are judged by the IPv4 they embed,
+        # not by ipaddress's wholesale verdict on the prefix (#472).
+        if not embedded.is_global:
+            raise ValueError(
+                f"refusing to crawl address {host} embedding non-public IPv4 {embedded}"
+            )
+    elif not ip.is_global:
         raise ValueError(f"refusing to crawl non-public address {host}")
     return raw
+
+
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+
+
+def _embedded_ipv4(ip):
+    # Prefixes that embed an IPv4 address are judged by that address, the
+    # same policy as plain IPv4 (#472). ipaddress folds the IPv4-mapped
+    # case into is_global, but its verdicts on the translation prefixes
+    # are wholesale: the whole NAT64 well-known prefix 64:ff9b::/96 is
+    # "global" even when it embeds 127.0.0.1, and the whole 6to4 range
+    # 2002::/16 (IPv6Address.sixtofour) is "private" even when it embeds
+    # a public address.
+    if not isinstance(ip, ipaddress.IPv6Address):
+        return None
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if ip.sixtofour is not None:
+        return ip.sixtofour
+    if ip in _NAT64_WELL_KNOWN:
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return None
 
 
 def _inet_aton_ipv4(host):

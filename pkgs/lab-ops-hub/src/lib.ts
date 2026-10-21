@@ -41,21 +41,61 @@ function ipv4IsGlobal(n: number): boolean {
   return true;
 }
 
-function ipv6IsGlobal(host: string): boolean {
-  const h = host.toLowerCase();
-  // IPv4-mapped address: judge the embedded IPv4 address.
-  const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped) {
-    const v4 = ipv4ToInt(mapped[1]);
-    return v4 !== null && ipv4IsGlobal(v4);
+// Expand an IPv6 literal to its eight 16-bit groups, or null if it does
+// not parse. A trailing dotted-quad counts as the last two groups.
+function ipv6Groups(host: string): number[] | null {
+  let h = host;
+  const v4tail = h.match(/(\d+\.\d+\.\d+\.\d+)$/);
+  if (v4tail) {
+    const v4 = ipv4ToInt(v4tail[1]);
+    if (v4 === null) return null;
+    h = `${h.slice(0, -v4tail[1].length)}${Math.floor(v4 / 65536).toString(16)}:${v4 % 65536}`;
   }
-  if (h === "::" || h === "::1") return false; // unspecified, loopback
-  if (/^fe[89ab]/.test(h)) return false; // link-local fe80::/10
-  if (/^f[cd]/.test(h)) return false; // unique-local fc00::/7
-  if (/^ff/.test(h)) return false; // multicast
-  if (h.startsWith("2001:db8:")) return false; // documentation 2001:db8::/32
+  const halves = h.split("::");
+  if (halves.length > 2) return null;
+  const parseSide = (s: string): number[] | null => {
+    if (s === "") return [];
+    const groups: number[] = [];
+    for (const part of s.split(":")) {
+      if (!/^[0-9a-f]{1,4}$/.test(part)) return null;
+      groups.push(parseInt(part, 16));
+    }
+    return groups;
+  };
+  const left = parseSide(halves[0]);
+  if (left === null) return null;
+  if (halves.length === 1) return left.length === 8 ? left : null;
+  const right = parseSide(halves[1]);
+  if (right === null) return null;
+  const missing = 8 - left.length - right.length;
+  if (missing < 1) return null;
+  return [...left, ...new Array<number>(missing).fill(0), ...right];
+}
+
+function ipv6IsGlobal(host: string): boolean {
+  const g = ipv6Groups(host.toLowerCase());
+  if (g === null) return false;
+  // Prefixes that embed an IPv4 address are judged by that address, the
+  // same policy as plain IPv4: IPv4-mapped ::ffff:0/96, the NAT64
+  // well-known prefix 64:ff9b::/96, and 6to4 2002::/16 (#472). (WHATWG
+  // URL normalises the mapped form to hex groups, e.g. ::ffff:7f00:1,
+  // so this must work on groups, not the dotted spelling.)
+  const embedded = (hi: number, lo: number) => hi * 65536 + lo;
+  if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0xffff) {
+    return ipv4IsGlobal(embedded(g[6], g[7]));
+  }
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
+    return ipv4IsGlobal(embedded(g[6], g[7]));
+  }
+  if (g[0] === 0x2002) return ipv4IsGlobal(embedded(g[1], g[2]));
+  if (g.every((x) => x === 0)) return false; // unspecified ::
+  if (g[7] === 1 && g.slice(0, 7).every((x) => x === 0)) return false; // loopback ::1
+  if (g[0] >= 0xfe80 && g[0] <= 0xfebf) return false; // link-local fe80::/10
+  if (g[0] >= 0xfc00 && g[0] <= 0xfdff) return false; // unique-local fc00::/7
+  if (g[0] >= 0xff00) return false; // multicast ff00::/8
+  if (g[0] === 0x2001 && g[1] === 0x0db8) return false; // documentation 2001:db8::/32
   // Global unicast lives in 2000::/3 (first hextet 2xxx or 3xxx).
-  return /^[23]/.test(h);
+  return g[0] >= 0x2000 && g[0] <= 0x3fff;
 }
 
 const BLOCKED_HOST_SUFFIXES = [".localhost", ".local", ".internal", ".lan", ".home.arpa"];
