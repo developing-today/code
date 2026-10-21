@@ -377,12 +377,15 @@ Preserve the raw user prompt byte-for-byte in transcript.txt without normalizati
 <!-- workflow:view concept-C001 -->
 
 - **State:** `created` · stage S0 · priority `crucial` · horizon `now`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:** none
 - **Required by:** [C002](#c002), [C003](#c003)
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C001 -->
+
+- **C001.1** `created` · S0 · 2026-10-21T20:04:24Z — Raw source must remain completely unedited regardless of typos or noisy speech-to-text.
+- **C001.2** `created` · S0 · 2026-10-21T20:04:24Z — Tooling must refuse non-UTF-8 unless explicitly encoded, and prevent git hooks from altering trailing spaces.
 
 <a id="c002"></a>
 
@@ -395,13 +398,16 @@ Generate main.md as the primary collection anchor with per-concept sections, pre
 <!-- workflow:view concept-C002 -->
 
 - **State:** `created` · stage S0 · priority `crucial` · horizon `now`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C001](#c001): Main reference and design sequencing require a sealed transcript.
 - **Required by:** [C008](#c008), [C013](#c013), [C014](#c014)
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C002 -->
+
+- **C002.1** `created` · S0 · 2026-10-21T20:04:24Z — main.md acts as the central link target for all downstream artifacts.
+- **C002.2** `created` · S0 · 2026-10-21T20:04:24Z — design.md proposes an initial sequencing order for reviewing concepts, separating blockers from parallel paths.
 
 <a id="c003"></a>
 
@@ -414,13 +420,16 @@ Enforce strict single-writer file ownership where concepts own dedicated files a
 <!-- workflow:view concept-C003 -->
 
 - **State:** `created` · stage S0 · priority `crucial` · horizon `now`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C001](#c001): Single-writer concept stubs are scaffolded from the sealed transcript.
 - **Required by:** [C004](#c004), [C009](#c009)
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C003 -->
+
+- **C003.1** `created` · S0 · 2026-10-21T20:04:24Z — Concurrent edits to shared wide files cause merge conflicts that drop information.
+- **C003.2** `created` · S0 · 2026-10-21T20:04:24Z — Partitioning writers by file eliminates merge collisions during parallel research.
 
 <a id="c004"></a>
 
@@ -433,13 +442,16 @@ Map repository context, codebase architecture, and prior art to draft research a
 <!-- workflow:view concept-C004 -->
 
 - **State:** `created` · stage S0 · priority `recommended` · horizon `now`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C003](#c003): Preliminary research preparation operates on established concept stubs.
 - **Required by:** [C005](#c005)
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C004 -->
+
+- **C004.1** `created` · S0 · 2026-10-21T20:04:24Z — A lightweight exploration pass positions the research without flooding the context window.
+- **C004.2** `created` · S0 · 2026-10-21T20:04:24Z — Trigger issues provide zero-context handoff briefs for dedicated research workers.
 
 <a id="c005"></a>
 
@@ -452,13 +464,16 @@ Conduct deep factual research per concept, steelmanning alternatives and exchang
 <!-- workflow:view concept-C005 -->
 
 - **State:** `created` · stage S0 · priority `crucial` · horizon `next`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C004](#c004): Deep research requires contextual research angles and trigger issues.
 - **Required by:** [C006](#c006), [C011](#c011)
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C005 -->
+
+- **C005.1** `created` · S0 · 2026-10-21T20:04:24Z — Research workers operate in parallel on isolated concept documents.
+- **C005.2** `created` · S0 · 2026-10-21T20:04:24Z — Workers never edit files owned by other agents; they write immutable notes to notes/.
 
 <a id="c006"></a>
 
@@ -471,13 +486,16 @@ Process all directed notes sent to a concept, recording atomic resolution receip
 <!-- workflow:view concept-C006 -->
 
 - **State:** `created` · stage S0 · priority `crucial` · horizon `next`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C005](#c005): Notes reconciliation operates on directed notes generated during deep research.
 - **Required by:** [C007](#c007)
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C006 -->
+
+- **C006.1** `created` · S0 · 2026-10-21T20:04:25Z — Every note must be explicitly incorporated, acknowledged, declined, or superseded with rationale.
+- **C006.2** `created` · S0 · 2026-10-21T20:04:25Z — Reconciliation must scan remote branches to catch notes arriving from parallel workers.
 
 <a id="c007"></a>
 
@@ -490,12 +508,15 @@ Generate self-contained parent and child GitHub issues for concepts and facets, 
 <!-- workflow:view concept-C007 -->
 
 - **State:** `created` · stage S0 · priority `recommended` · horizon `next`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C006](#c006): Issue handoff requires that all cross-concept notes are fully reconciled.
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C007 -->
+
+- **C007.1** `created` · S0 · 2026-10-21T20:04:25Z — Parent issues define the overall goal; child issues isolate granular research facets.
+- **C007.2** `created` · S0 · 2026-10-21T20:04:25Z — Issues must be self-contained so a zero-context agent can execute them without conversation history.
 
 <a id="c008"></a>
 
@@ -508,12 +529,15 @@ Maintain granular hierarchical items (C001.1, C001.2.1) and prepend status trail
 <!-- workflow:view concept-C008 -->
 
 - **State:** `created` · stage S0 · priority `recommended` · horizon `now`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C002](#c002): Hierarchical item trails and status evolution belong inside main.md sections.
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C008 -->
+
+- **C008.1** `created` · S0 · 2026-10-21T20:04:25Z — Information is clarified or superseded rather than erased.
+- **C008.2** `created` · S0 · 2026-10-21T20:04:25Z — Status changes record timestamp, stage, and rationale with backlinks to refined items.
 
 <a id="c009"></a>
 
@@ -526,13 +550,16 @@ Execute parallel workers in isolated git worktrees, immediately pushing empty br
 <!-- workflow:view concept-C009 -->
 
 - **State:** `created` · stage S0 · priority `crucial` · horizon `now`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C003](#c003): Worktree boot protocol enforces isolated execution for single-writer concepts.
 - **Required by:** [C010](#c010)
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C009 -->
+
+- **C009.1** `created` · S0 · 2026-10-21T20:04:25Z — Pushing the branch immediately reserves the ref on origin.
+- **C009.2** `created` · S0 · 2026-10-21T20:04:25Z — Merge commits (--no-ff) preserve historical development context and eliminate rebase churn.
 
 <a id="c010"></a>
 
@@ -545,12 +572,15 @@ Enforce thin orchestrators that manage ready frontiers, verify worker commit SHA
 <!-- workflow:view concept-C010 -->
 
 - **State:** `created` · stage S0 · priority `crucial` · horizon `now`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C009](#c009): Thin orchestrator monitors PRs and branches created by the worktree boot protocol.
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C010 -->
+
+- **C010.1** `created` · S0 · 2026-10-21T20:04:25Z — Orchestrators must avoid implementation drift; their duties are coordination and merge gating.
+- **C010.2** `created` · S0 · 2026-10-21T20:04:25Z — Merges are executed only when remote SHA matches PR head matches worker reported SHA.
 
 <a id="c011"></a>
 
@@ -563,13 +593,16 @@ Arbitrate conflicting worker recommendations by dispatching reviewer and critic 
 <!-- workflow:view concept-C011 -->
 
 - **State:** `created` · stage S0 · priority `crucial` · horizon `next`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C005](#c005): Disagreement protocol arbitrates conflicting proposals arising from deep research.
 - **Required by:** [C012](#c012)
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C011 -->
+
+- **C011.1** `created` · S0 · 2026-10-21T20:04:25Z — The pipeline must not halt for human input on routine architectural choices.
+- **C011.2** `created` · S0 · 2026-10-21T20:04:25Z — Reviewers analyze merged data, adopt standard defaults as agent-preliminary, and log genuine trade-offs.
 
 <a id="c012"></a>
 
@@ -582,12 +615,15 @@ Translate consolidated designs into granular end-to-end implementation plans wit
 <!-- workflow:view concept-C012 -->
 
 - **State:** `created` · stage S0 · priority `recommended` · horizon `next`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C011](#c011): Feature planning translates reconciled design records into granular steps.
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C012 -->
+
+- **C012.1** `created` · S0 · 2026-10-21T20:04:25Z — Plans specify behavior and test contracts rather than full speculative code.
+- **C012.2** `created` · S0 · 2026-10-21T20:04:25Z — Parallel steps are marked [P] and mapped to non-overlapping worktree partitions.
 
 <a id="c013"></a>
 
@@ -600,12 +636,15 @@ Maintain Cairn as the generic prompt and workflow library, sync portable compone
 <!-- workflow:view concept-C013 -->
 
 - **State:** `created` · stage S0 · priority `crucial` · horizon `now`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C002](#c002): Cairn library synchronization and docs architecture structure repository references.
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C013 -->
+
+- **C013.1** `created` · S0 · 2026-10-21T20:04:26Z — Generic stage contracts and tools live in Cairn; target repositories keep local adapters in profiles.
+- **C013.2** `created` · S0 · 2026-10-21T20:04:26Z — Documentation is structured into root entry points, doc/ historical records, and planning/ plans.
 
 <a id="c014"></a>
 
@@ -618,12 +657,15 @@ Distinguish hard blockers (requires) from soft sequencing (recommended-after), c
 <!-- workflow:view concept-C014 -->
 
 - **State:** `created` · stage S0 · priority `crucial` · horizon `now`
-- **Items:** none yet
+- **Items:** 2 (2 `created`)
 - **Relations:**
   - `requires` [C002](#c002): Dependency topology governs scheduling across all concept documents.
 - **Issues and PRs:** none yet
 
 <!-- /workflow:view concept-C014 -->
+
+- **C014.1** `created` · S0 · 2026-10-21T20:04:26Z — Soft sequencing edges document rework risks without artificially blocking parallel workers.
+- **C014.2** `created` · S0 · 2026-10-21T20:04:26Z — Contingent paths carry explicit activation triggers and are deferred until needed.
 
 ## Issues and PRs
 
