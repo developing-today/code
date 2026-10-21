@@ -34,6 +34,23 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertRefused(url)
 
+    def test_refuses_empty_label_hosts(self):
+        # A second trailing dot defeats the one-dot strip (#466):
+        # "localhost.." becomes "localhost." and misses the blocked-host
+        # checks. An interior or leading empty label is not a valid DNS
+        # name either (#511).
+        for url in (
+            "http://localhost../",
+            "http://127.0.0.1../",
+            "http://foo.localhost../",
+            "http://example..com/",
+            "http://.example.com/",
+        ):
+            self.assertRefused(url)
+        # Controls: single root dot and ordinary names still pass.
+        self.assertAccepted("http://example.com./")
+        self.assertAccepted("http://example.com/")
+
     def test_refuses_dotted_quad_non_public(self):
         for url in (
             "http://127.0.0.1/",

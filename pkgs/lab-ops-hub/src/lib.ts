@@ -144,6 +144,15 @@ export function validateCrawlUrl(raw: string): { ok: true; url: string } | { ok:
   const rawHost = u.hostname.toLowerCase();
   const host = rawHost.endsWith(".") ? rawHost.slice(0, -1) : rawHost;
   if (!host) return { ok: false, error: "url has no host" };
+  // An empty label (a second trailing dot, an interior "..", or a
+  // leading dot) is not a valid DNS name at all, and the one-dot strip
+  // above would let "localhost.." slip past the blocked-host checks as
+  // "localhost." — refuse it instead of certifying it as a public DNS
+  // name, matching the container's validator (#511). Bracketed IPv6
+  // literals are judged by ipv6IsGlobal below, not by label structure.
+  if (!host.startsWith("[") && host.split(".").some((label) => label === "")) {
+    return { ok: false, error: `refusing to crawl host with an empty label ${host}` };
+  }
   if (host === "localhost" || BLOCKED_HOST_SUFFIXES.some((s) => host.endsWith(s))) {
     return { ok: false, error: `refusing to crawl local host ${host}` };
   }
