@@ -97,8 +97,12 @@ export function validateCrawlUrl(raw: string): { ok: true; url: string } | { ok:
 // container crawler validates every redirect target (container/app.py's
 // _ValidatingRedirectHandler); the Worker fallback must hold the same
 // policy. Follow redirects manually: resolve each Location against the
-// current URL, validate it, and only then fetch it. The fetcher is injected
-// (it must use redirect:"manual") so this is testable with plain Node.
+// current URL, validate it, and only then fetch it. The start URL is
+// validated the same way before the first fetch (#464): this helper is the
+// component that actually fetches on the Worker-fallback path, so it must
+// be safe by construction rather than rely on callers pre-validating. The
+// fetcher is injected (it must use redirect:"manual") so this is testable
+// with plain Node.
 
 export type ManualFetcher = (url: string) => Promise<Response>;
 
@@ -107,7 +111,11 @@ export async function fetchFollowingValidatedRedirects(
   fetchFn: ManualFetcher,
   maxRedirects = 5,
 ): Promise<Response> {
-  let current = startUrl;
+  const start = validateCrawlUrl(startUrl);
+  if (!start.ok) {
+    throw new Error(`refusing to crawl ${startUrl}: ${start.error}`);
+  }
+  let current = start.url;
   for (let hop = 0; ; hop++) {
     const res = await fetchFn(current);
     if (res.status < 300 || res.status >= 400) return res;
