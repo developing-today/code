@@ -299,5 +299,5 @@ const dispatchWithFallback = (body, clientRes) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[design-code-proxy] Listening on http://${HOST}:${PORT}`);
-  console.log(`[design-code-proxy] Backends: Antigravity LS (18745), Codex (18744), AMR Upstream (${AMR_UPSTREAM_URL})`);
+  console.log(`[design-code-proxy] Backends: Antigravity LS (${ANTIGRAVITY_LS_PORT}), Codex (${CODEX_PROXY_PORT}), AMR Upstream (${AMR_UPSTREAM_URL})`);
 });
