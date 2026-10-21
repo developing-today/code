@@ -56,6 +56,12 @@ def validate_crawl_url(raw):
     # the zone id). Refuse every % host, fail-closed (#505).
     if "%" in host:
         raise ValueError(f"refusing to crawl percent-encoded host {host}")
+    # A space or control character in the host is not a DNS name: WHATWG
+    # rejects it outright, urlparse hands it through verbatim, and
+    # http.client only raises for it deep inside the fetcher — the same
+    # lazy-failure shape #502 fixed for ports. Refuse up front (#507).
+    if any(ord(c) <= 0x20 for c in host):
+        raise ValueError(f"refusing to crawl host with whitespace {host!r}")
     if host == "localhost" or host.endswith(_BLOCKED_SUFFIXES):
         raise ValueError(f"refusing to crawl local host {host}")
     try:
@@ -75,6 +81,17 @@ def validate_crawl_url(raw):
                 raise ValueError(
                     f"refusing to crawl host {host}: numeric final label "
                     "but not a valid IPv4 address"
+                )
+            # A bracketed host occupied the IP-literal position
+            # ([v1.fe80::], [v7.a] and other IPvFuture forms) but is not
+            # a valid IPv6 literal — urlparse strips the brackets, so
+            # look at the netloc. Fail closed instead of reclassifying
+            # it as a public DNS name, matching the Worker's validator
+            # (#507).
+            if u.netloc.rsplit("@", 1)[-1].startswith("["):
+                raise ValueError(
+                    f"refusing to crawl host {host}: bracketed literal "
+                    "but not a valid IPv6 address"
                 )
             return raw  # a public DNS name; literal-IP policy does not apply
     embedded = _embedded_ipv4(ip)

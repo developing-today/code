@@ -192,6 +192,22 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertRefused(url)
 
+    def test_refuses_space_hosts_and_ipvfuture_literals(self):
+        # A space in the host is not a DNS name: WHATWG rejects it and
+        # http.client only raises for it deep inside the fetcher, so the
+        # validator refuses up front. A bracketed host that is not a
+        # valid IPv6 literal (IPvFuture forms) occupied the IP-literal
+        # position; a DNS name never contains a colon, so it must not be
+        # reclassified as a public DNS name either (#507).
+        for url in (
+            "http://exam ple.com/",
+            "http://exa mple.com/",
+            "http://[v1.fe80::]/",
+            "http://[v7.a]/",
+            "http://[vf.FF]/",
+        ):
+            self.assertRefused(url)
+
     def test_accepts_public_targets(self):
         for url in (
             "https://example.com/page",
