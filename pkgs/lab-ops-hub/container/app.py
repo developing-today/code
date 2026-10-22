@@ -14,6 +14,7 @@ import json
 import re
 import socket
 import ssl
+import unicodedata
 import urllib.request
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -40,6 +41,19 @@ def validate_crawl_url(raw):
     except ValueError:
         raise ValueError("url has an invalid port") from None
     host = (u.hostname or "").lower()
+    # Judge the host in the mapped form its resolver will see: IDNA
+    # processing (encodings.idna / getaddrinfo, like UTS-46 in the
+    # Worker's WHATWG parser) NFKC-maps fullwidth/compatibility
+    # characters and treats U+3002, U+FF0E and U+FF61 as label
+    # separators, so "ｌｏｃａｌｈｏｓｔ" resolves to localhost and
+    # "127。0。0。1" resolves to 127.0.0.1. Checking the raw spelling
+    # would certify those as public DNS names while the fetcher
+    # resolves the blocked target (#527). Map first, then run every
+    # check below on the mapped form; the original URL is still what
+    # gets fetched, and public controls map onto public names
+    # ("ｅｘａｍｐｌｅ.com" -> example.com, "münchen。de" -> münchen.de).
+    host = unicodedata.normalize("NFKC", host).lower()
+    host = host.translate({0x3002: ".", 0xFF0E: ".", 0xFF61: "."})
     # A single trailing dot is the DNS root dot (the FQDN spelling of the
     # same host: "localhost." is "localhost", "127.0.0.1." is 127.0.0.1);
     # strip it before the checks so the dotted spelling cannot evade
