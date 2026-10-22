@@ -218,6 +218,39 @@ test("validateCrawlUrl judges percent-encoded hosts in their decoded form (#529)
   }
 });
 
+test("validateCrawlUrl refuses percent-encoded hosts whose NFKC mapping is a delimiter (#567)", () => {
+  // Parity battery for the container fix: a percent-encoded
+  // compatibility character decodes to a codepoint whose NFKC
+  // mapping is a host delimiter (or expands to one). The Worker's
+  // WHATWG parser refuses every spelling outright; the container
+  // originally spliced the mapped delimiter into the returned URL
+  // and fetched an unjudged host (localhost / private addresses).
+  const blocked = [
+    "http://localhost%ef%bc%8fexample.com/", // U+FF0F -> /
+    "http://127.0.0.1%ef%bc%8fexample.com/", // U+FF0F -> /
+    "http://192.168.0.1%ef%bc%8fadmin/", // U+FF0F -> /
+    "http://exam%ef%bc%8fple.com/", // U+FF0F -> /
+    "http://exam%ef%bc%9aple.com/", // U+FF1A -> :
+    "http://exam%ef%bc%a0ple.com/", // U+FF20 -> @
+    "http://exam%ef%bc%83ple.com/", // U+FF03 -> #
+    "http://exam%ef%bc%9fple.com/", // U+FF1F -> ?
+    "http://exam%ef%bc%bcple.com/", // U+FF3C -> backslash
+    "http://exam%ef%bc%bbple.com/", // U+FF3B -> [
+    "http://exam%ef%bc%bdple.com/", // U+FF3D -> ]
+    "http://example%ef%bc%85com/", // U+FF05 -> %
+    "http://%e2%84%80.com/", // U+2100 expands to a/c
+    "http://%e2%84%85.com/", // U+2105 expands to c/o
+  ];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  // Control: U+FF5E maps to ~, not a delimiter — still accepted,
+  // and the returned URL re-parses to the judged host.
+  const tilde = validateCrawlUrl("http://exam%ef%bd%9eple.com/");
+  assert.equal(tilde.ok, true);
+  if (tilde.ok) assert.equal(tilde.url, "http://exam~ple.com/");
+});
+
 test("fetchFollowingValidatedRedirects follows a percent-encoded public redirect target (#529)", async () => {
   const { fetchFn, seen } = stubFetcher({
     "https://example.com/start": { status: 302, location: "http://%65xample.org/final" },

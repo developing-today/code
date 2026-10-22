@@ -110,6 +110,30 @@ def validate_crawl_url(raw):
     host = unicodedata.normalize("NFKC", host).lower()
     host = host.translate({0x3002: ".", 0xFF0E: ".", 0xFF61: "."})
     host = host.translate({cp: None for cp in _UTS46_IGNORED})
+    # NFKC mapping can itself CREATE a host delimiter the earlier
+    # checks never saw: _percent_decode_host refuses delimiters in
+    # the decoded form, but a percent-encoded compatibility character
+    # decodes to an innocent-looking codepoint whose NFKC mapping is
+    # a delimiter — U+FF0F -> /, U+FF1A -> :, U+FF20 -> @, U+FF03 ->
+    # #, U+FF1F -> ?, U+FF3C -> \, U+FF3B/U+FF3D -> [ ], U+FF05 -> %,
+    # and expansions like U+2100 -> "a/c" and U+2105 -> "c/o" (#567).
+    # Raw spellings cannot smuggle these past urlparse (its NFKC
+    # netloc guard raises), but the percent-encoded spelling is pure
+    # ASCII in the raw netloc, so that guard never fires — and the
+    # spliced returned URL would make the fetcher connect to a host
+    # that was never judged ("localhost%ef%bc%8fexample.com" came
+    # back as "localhost/example.com"). Re-check the structural
+    # characters on the fully mapped form: refuse any mapped
+    # delimiter, including a mapped % (the decode step guarantees no
+    # % survives, and mapping must not reintroduce one). A colon is
+    # only legitimate inside a bracketed IPv6 literal; an unbracketed
+    # mapped colon is a delimiter, not an address.
+    if any(c in "%#/?@[\\]" for c in host) or (
+        ":" in host and not u.netloc.rsplit("@", 1)[-1].startswith("[")
+    ):
+        raise ValueError(
+            f"refusing to crawl host with a forbidden character once mapped {host!r}"
+        )
     # A single trailing dot is the DNS root dot (the FQDN spelling of the
     # same host: "localhost." is "localhost", "127.0.0.1." is 127.0.0.1);
     # strip it before the checks so the dotted spelling cannot evade

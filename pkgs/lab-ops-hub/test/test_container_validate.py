@@ -310,6 +310,65 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertRefused(url)
 
+    def test_refuses_percent_encoded_nfkc_mapped_delimiters(self):
+        # The decode step (#529) refuses delimiters in the decoded
+        # form, but a percent-encoded compatibility character decodes
+        # to a codepoint whose NFKC mapping IS a delimiter, and the
+        # mapped form is what gets spliced into the returned URL:
+        # "localhost%ef%bc%8fexample.com" came back ALLOW as
+        # "http://localhost/example.com/" — the fetcher connected to
+        # localhost, a host that was never judged (#567). The Worker
+        # refuses every one of these outright.
+        for url in (
+            "http://localhost%ef%bc%8fexample.com/",  # U+FF0F -> /
+            "http://127.0.0.1%ef%bc%8fexample.com/",  # U+FF0F -> /
+            "http://192.168.0.1%ef%bc%8fadmin/",  # U+FF0F -> /
+            "http://exam%ef%bc%8fple.com/",  # U+FF0F -> /
+            "http://exam%ef%bc%9aple.com/",  # U+FF1A -> :
+            "http://exam%ef%bc%a0ple.com/",  # U+FF20 -> @
+            "http://exam%ef%bc%83ple.com/",  # U+FF03 -> #
+            "http://exam%ef%bc%9fple.com/",  # U+FF1F -> ?
+            "http://exam%ef%bc%bcple.com/",  # U+FF3C -> backslash
+            "http://exam%ef%bc%bbple.com/",  # U+FF3B -> [
+            "http://exam%ef%bc%bdple.com/",  # U+FF3D -> ]
+            "http://example%ef%bc%85com/",  # U+FF05 -> %
+            "http://%e2%84%80.com/",  # U+2100 expands to a/c
+            "http://%e2%84%85.com/",  # U+2105 expands to c/o
+        ):
+            self.assertRefused(url)
+
+    def test_accepted_percent_urls_reparse_to_the_judged_host(self):
+        # For every accepted percent-encoded URL, re-parsing the
+        # returned URL must yield exactly the host that was judged —
+        # no delimiter may be spliced in by decoding or mapping
+        # (#567 acceptance criterion).
+        from urllib.parse import urlparse
+
+        for url, expected_host in (
+            ("http://%65xample.com/", "example.com"),
+            ("http://example%2ecom/", "example.com"),
+            ("http://8%2e8%2e8%2e8/", "8.8.8.8"),
+            ("http://%65xample.com:8080/page", "example.com"),
+            # U+FF5E maps to ~, not a delimiter: the mapped form is
+            # judged and returned, and re-parses to itself.
+            ("http://exam%ef%bd%9eple.com/", "exam~ple.com"),
+        ):
+            returned = validate_crawl_url(url)
+            self.assertEqual(urlparse(returned).hostname, expected_host, url)
+
+    def test_redirect_handler_refuses_nfkc_mapped_delimiter_target(self):
+        # Redirect targets are validated raw (#529/#567): a Location
+        # whose percent-encoded host NFKC-maps into a private host
+        # plus delimiter must be refused, not followed.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        with self.assertRaises(ValueError):
+            handler.redirect_request(
+                req, None, 302, "Found", {}, "http://192.168.0.1%ef%bc%8fadmin/"
+            )
+
     def test_redirect_handler_follows_the_decoded_target(self):
         # Redirect targets are validated raw, with no Worker
         # normalisation in between (#529): the handler must fetch the
