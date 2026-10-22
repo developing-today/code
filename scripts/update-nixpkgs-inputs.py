@@ -317,10 +317,7 @@ def main():
     # summaries above printed normally: callers (&& chains, CI, cron) must
     # not proceed as if the inputs were updated.
     failed_total = sum(
-        1
-        for rd in all_ref_data
-        for r in rd["results"]
-        if r["status"] == "failed"
+        1 for rd in all_ref_data for r in rd["results"] if r["status"] == "failed"
     )
     if failed_total:
         sys.exit(1)
