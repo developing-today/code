@@ -63,15 +63,25 @@ def validate_crawl_url(raw):
     # the strip above already removed) — refuse it up front instead of
     # certifying it as a public DNS name and letting the resolver fail
     # on it deep inside the fetcher, matching the Worker's validator
-    # (#513). Character length is a lower bound on the IDNA-encoded
-    # length, so this can never refuse a name that encodes within the
-    # limits. IPv6 literals are judged as addresses, as above.
-    if ":" not in host and (
-        len(host) > 253 or any(len(label) > 63 for label in host.split("."))
-    ):
-        raise ValueError(
-            f"refusing to crawl host with an overlong label or name {host}"
-        )
+    # (#513). The limits apply to the IDNA-encoded (punycode) form —
+    # the Worker's u.hostname is already punycode — so judge each
+    # label's A-label length, not its character count: character
+    # length is only a lower bound, and an IDN label whose characters
+    # fit can still encode past the limit (#517). IPv6 literals are
+    # judged as addresses, as above.
+    if ":" not in host:
+        encoded_labels = [
+            label
+            if label.isascii()
+            else "xn--" + label.encode("punycode").decode("ascii")
+            for label in host.split(".")
+        ]
+        if len(".".join(encoded_labels)) > 253 or any(
+            len(label) > 63 for label in encoded_labels
+        ):
+            raise ValueError(
+                f"refusing to crawl host with an overlong label or name {host}"
+            )
     # A raw % in the host is a percent-encoded spelling (or an IPv6 zone
     # id): WHATWG URL parsing percent-decodes the host before judging it
     # — %6cocalhost is localhost — and rejects the rest outright, while

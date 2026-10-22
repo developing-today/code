@@ -67,6 +67,23 @@ class TestValidateCrawlUrl(unittest.TestCase):
         at_limit_name = ".".join(["a" * 63] * 3 + ["a" * 61])  # 253 chars
         self.assertAccepted("http://" + at_limit_name + "/")
 
+    def test_refuses_idn_names_overlong_once_encoded(self):
+        # The RFC 1035 limits apply to the IDNA-encoded form, which is
+        # what the Worker's u.hostname carries: a 42-char CJK label is
+        # 65 chars once punycode-encoded, and five 40-char CJK labels
+        # are a 204-char name that encodes to 309 — both over the
+        # limits even though their character counts fit (#517).
+        def cjk_label(n):
+            return "".join(chr(0x4E00 + i) for i in range(n))
+
+        self.assertRefused("http://" + cjk_label(42) + ".com/")
+        overlong_idn_name = ".".join([cjk_label(40)] * 5)
+        self.assertRefused("http://" + overlong_idn_name + "/")
+        # Control at the encoded limit stays allowed: a 40-char CJK
+        # label encodes to 61 chars, and an ordinary IDN host is fine.
+        self.assertAccepted("http://" + cjk_label(40) + ".com/")
+        self.assertAccepted("http://examéple.com/")
+
     def test_refuses_dotted_quad_non_public(self):
         for url in (
             "http://127.0.0.1/",
