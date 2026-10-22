@@ -66,7 +66,12 @@ class TestValidateCrawlUrl(unittest.TestCase):
         req = urllib.request.Request("http://example.com/")
         with self.assertRaises(ValueError):
             handler.redirect_request(
-                req, None, 302, "Found", {}, "http://127.0.0.1" + chr(92) + "@example.com/"
+                req,
+                None,
+                302,
+                "Found",
+                {},
+                "http://127.0.0.1" + chr(92) + "@example.com/",
             )
 
     def test_refuses_non_http_schemes_and_local_names(self):
