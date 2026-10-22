@@ -428,12 +428,20 @@ def _fetch_crawl(url):
     # surfacing it as a 502 (#572). Transport failures (URLError,
     # timeouts) are not HTTPError and keep propagating to the caller's
     # 502 path.
+    # Only 4xx/5xx HTTPError is a result, though: urllib's redirect
+    # handler also raises HTTPError carrying the 3xx code for redirect
+    # failures (loop / max_repeats, chain past max_redirections, and
+    # non-followed 3xx), and those are crawl failures — they must keep
+    # propagating so do_POST returns 502 and the Worker fallback runs,
+    # instead of being recorded as a successful 302 crawl (#576).
     req = urllib.request.Request(
         url, headers={"User-Agent": "LabOpsHub-Crawler/0.1 (container)"}
     )
     try:
         response = _OPENER.open(req, timeout=20)
     except urllib.error.HTTPError as e:
+        if not 400 <= e.code < 600:
+            raise
         response = e
     with response as res:
         status = getattr(res, "status", None) or res.getcode()
