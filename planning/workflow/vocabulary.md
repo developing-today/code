@@ -31,7 +31,7 @@ What we know about a statement: a concept or an item.
 - `superseded`: replaced by a newer item, concept or decision. The trail text names it.
 - `retracted`: withdrawn because it was wrong, misheard or is no longer wanted.
 
-`superseded` and `retracted` are terminal. The record keeps them, but they are excluded from default reading ([retention](../DOCUMENTATION_ARCHITECTURE.md#retention)).
+`superseded` and `retracted` are terminal. The record keeps them, but they are excluded from default reading ([immutability](../DOCUMENTATION_ARCHITECTURE.md#4-immutability-vs-maintained-documents)).
 
 ## Disposition (`disposition`)
 
