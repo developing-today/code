@@ -60,6 +60,21 @@ _IDNA_DISALLOWED = frozenset(
 
 
 def validate_crawl_url(raw):
+    # WHATWG URL parsing treats a backslash as a path delimiter for the
+    # special schemes (http/https): it ends the authority, so the host
+    # of "http://127.0.0.1\\@example.com/" is 127.0.0.1. urlparse instead
+    # hands the backslash through as a netloc character, reads the text
+    # after the "@" as the host, and would judge — and fetch — a host
+    # the WHATWG parser never named, in both directions
+    # ("example.com\\@127.0.0.1" is example.com to WHATWG but reads as
+    # the loopback address here) (#577). Normalize first and judge the
+    # normalized spelling: every check below, and the URL this function
+    # returns (and the fetcher therefore fetches), then names the same
+    # host the Worker's parser names. Only a raw backslash is
+    # structural — a percent-encoded %5C is data and is untouched, as
+    # are non-http(s) spellings (the scheme check below refuses them).
+    if "\\" in raw and re.match(r"(?i)https?:", raw):
+        raw = raw.replace("\\", "/")
     u = urlparse(raw)
     if u.scheme not in ("http", "https"):
         raise ValueError("only http: and https: URLs may be crawled")
