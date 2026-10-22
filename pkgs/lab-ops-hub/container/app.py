@@ -148,14 +148,19 @@ def validate_crawl_url(raw):
         # ipaddress reports multicast (224.0.0.0/4) and 192.88.99.0/24 as
         # is_global; neither is a public unicast crawl target (#476).
         raise ValueError(f"refusing to crawl non-public address {host}")
-    elif isinstance(ip, ipaddress.IPv6Address) and ip not in _GLOBAL_UNICAST_V6:
+    elif isinstance(ip, ipaddress.IPv6Address) and (
+        ip not in _GLOBAL_UNICAST_V6 or ip in _IPV6_DOCUMENTATION
+    ):
         # ipaddress.is_global is True for any IPv6 address outside its
         # narrow private list — multicast (ff00::/8), site-local
         # (fec0::/10), SRv6 SIDs (5f00::/16) and the reserved space
         # outside global unicast all pass it (#474). Global unicast
         # lives in 2000::/3; require that first, as the Worker's
         # validateCrawlUrl does, then let is_global judge within it
-        # (it knows the 2001::/23 special-purpose block).
+        # (it knows the 2001::/23 special-purpose block). The RFC 9637
+        # documentation range 3fff::/20 sits inside 2000::/3 and
+        # is_global's verdict on it depends on the interpreter's bundled
+        # special-purpose registry, so refuse it explicitly (#519).
         raise ValueError(f"refusing to crawl non-public address {host}")
     elif not ip.is_global:
         raise ValueError(f"refusing to crawl non-public address {host}")
@@ -163,6 +168,9 @@ def validate_crawl_url(raw):
 
 
 _GLOBAL_UNICAST_V6 = ipaddress.IPv6Network("2000::/3")
+
+
+_IPV6_DOCUMENTATION = ipaddress.IPv6Network("3fff::/20")
 
 
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")

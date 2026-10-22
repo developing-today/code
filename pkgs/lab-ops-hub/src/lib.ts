@@ -99,6 +99,7 @@ function ipv6IsGlobal(host: string): boolean {
   if (g[0] >= 0xfc00 && g[0] <= 0xfdff) return false; // unique-local fc00::/7
   if (g[0] >= 0xff00) return false; // multicast ff00::/8
   if (g[0] === 0x2001 && g[1] === 0x0db8) return false; // documentation 2001:db8::/32
+  if (g[0] === 0x3fff && (g[1] & 0xf000) === 0) return false; // documentation 3fff::/20 (RFC 9637) (#519)
   // The 2001::/23 IANA special-purpose block is non-global except six
   // entries (#474, mirroring the Python validator's ipaddress verdicts):
   // 2001:1::1 and 2001:1::2 (PCP anycast), 2001:3::/32 (AMT),
