@@ -566,6 +566,29 @@ class TestFetchCrawl(unittest.TestCase):
                 pass
 
             def do_GET(self):
+                if self.path == "/loop":
+                    self.send_response(302)
+                    self.send_header("Location", "/loop")
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path == "/choices":
+                    self.send_response(300)
+                    self.send_header("Location", "/ok")
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path.startswith("/hop"):
+                    n = int(self.path[4:])
+                    if n < 12:
+                        self.send_response(302)
+                        self.send_header("Location", f"/hop{n + 1}")
+                        self.send_header("content-length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
                 code = {"/gone": 404, "/oops": 500}.get(self.path, 200)
                 self.send_response(code)
                 self.send_header("content-type", "text/html")
@@ -596,6 +619,31 @@ class TestFetchCrawl(unittest.TestCase):
         status, raw = self.fetch("/ok")
         self.assertEqual(status, 200)
         self.assertIn(b"Missing Thing", raw)
+
+    def test_redirect_failures_raise_not_a_302_result(self):
+        # #576: urllib raises HTTPError carrying the 3xx code for
+        # redirect failures (loop, chain past max_redirections, and
+        # non-followed 3xx). Those are crawl failures, not results —
+        # they must propagate so do_POST returns 502 and the Worker
+        # fallback runs, instead of recording a successful 302 crawl.
+        # The plain opener stands in for the validating one here: the
+        # validating handler refuses 127.0.0.1 targets by design, which
+        # would mask the HTTPError handling under test; the redirect
+        # mechanics are urllib's either way.
+        import urllib.error
+        import urllib.request
+        from unittest import mock
+
+        plain = urllib.request.build_opener()
+        with mock.patch.object(app, "_OPENER", plain):
+            for path in ("/loop", "/hop0", "/choices"):
+                with self.assertRaises(urllib.error.HTTPError, msg=path) as ctx:
+                    self.fetch(path)
+                self.assertTrue(300 <= ctx.exception.code < 400, path)
+            # Control: a short chain under the limit still succeeds.
+            status, raw = self.fetch("/hop10")
+            self.assertEqual(status, 200)
+            self.assertIn(b"Missing Thing", raw)
 
     def test_transport_failure_still_raises(self):
         import urllib.error
