@@ -65,12 +65,16 @@ def validate_crawl_url(raw):
     # the zone id). Refuse every % host, fail-closed (#505).
     if "%" in host:
         raise ValueError(f"refusing to crawl percent-encoded host {host}")
-    # A space or control character in the host is not a DNS name: WHATWG
-    # rejects it outright, urlparse hands it through verbatim, and
-    # http.client only raises for it deep inside the fetcher — the same
-    # lazy-failure shape #502 fixed for ports. Refuse up front (#507).
-    if any(ord(c) <= 0x20 for c in host):
-        raise ValueError(f"refusing to crawl host with whitespace {host!r}")
+    # A space, control or WHATWG-forbidden character in the host is not
+    # a DNS name: WHATWG rejects it outright, urlparse hands it through
+    # verbatim, and http.client only raises for it deep inside the
+    # fetcher — the same lazy-failure shape #502 fixed for ports. Refuse
+    # up front: C0 controls and space (#507), plus DEL, the C1 controls
+    # and NBSP (0x7F-0xA0) and the forbidden host codepoints < > ^ |
+    # (#510). Non-ASCII above NBSP (a valid IDN host, e.g. é) is
+    # untouched.
+    if any(ord(c) <= 0x20 or 0x7F <= ord(c) <= 0xA0 or c in "<>^|" for c in host):
+        raise ValueError(f"refusing to crawl host with a forbidden character {host!r}")
     if host == "localhost" or host.endswith(_BLOCKED_SUFFIXES):
         raise ValueError(f"refusing to crawl local host {host}")
     try:
