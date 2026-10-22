@@ -15,6 +15,7 @@ import re
 import socket
 import ssl
 import unicodedata
+import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -408,6 +409,27 @@ _OPENER = urllib.request.build_opener(
 )
 
 
+def _fetch_crawl(url):
+    # Fetch a validated URL and return (status, body capped at 2 MB).
+    # urllib raises HTTPError for 4xx/5xx, but an HTTPError is also the
+    # response: an error-status page is still a crawl result (the
+    # Worker fallback extracts it and reports its real status_code),
+    # not a container failure — so read its body and status instead of
+    # surfacing it as a 502 (#572). Transport failures (URLError,
+    # timeouts) are not HTTPError and keep propagating to the caller's
+    # 502 path.
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "LabOpsHub-Crawler/0.1 (container)"}
+    )
+    try:
+        response = _OPENER.open(req, timeout=20)
+    except urllib.error.HTTPError as e:
+        response = e
+    with response as res:
+        status = getattr(res, "status", None) or res.getcode()
+        return status, res.read(2_000_000)
+
+
 class Extractor(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -466,13 +488,9 @@ class Handler(BaseHTTPRequestHandler):
                 url = validate_crawl_url(url)
             except ValueError as e:
                 return self._send(400, {"error": str(e)})
-            req = urllib.request.Request(
-                url, headers={"User-Agent": "LabOpsHub-Crawler/0.1 (container)"}
-            )
-            # TLS uses the pinned CA bundle via the opener's HTTPS handler.
-            with _OPENER.open(req, timeout=20) as res:
-                raw = res.read(2_000_000)
-                status = res.status
+            # TLS uses the pinned CA bundle via the opener's HTTPS
+            # handler; error-status pages come back as results (#572).
+            status, raw = _fetch_crawl(url)
             html = raw.decode("utf-8", errors="replace")
             ex = Extractor()
             ex.feed(html)
