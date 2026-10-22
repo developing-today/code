@@ -42,7 +42,7 @@ RESOLUTION = re.compile(
 NOTE = re.compile(r"<!-- workflow:note -->\s*(.*?)\s*<!-- /workflow:note -->", re.S)
 
 
-EXTENSIONS = ("research_workflow_items",)
+EXTENSIONS = ("research_workflow_items", "research_workflow_live")
 
 
 def extensions():
