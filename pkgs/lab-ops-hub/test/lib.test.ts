@@ -167,7 +167,9 @@ test("validateCrawlUrl strips tab/CR/LF before judging, like WHATWG (#611)", () 
   // before parsing — even inside the scheme spelling — and the
   // returned URL carries none. The container validator must reach
   // the same verdicts and return the same stripped spelling.
-  const T = "\t", N = "\n", R = "\r";
+  const T = "\t",
+    N = "\n",
+    R = "\r";
   const accepted: Array<[string, string]> = [
     [`http://exa${T}mple.com/`, "http://example.com/"],
     [`http://exa${N}mple.com/`, "http://example.com/"],
