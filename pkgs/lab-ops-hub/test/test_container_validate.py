@@ -308,6 +308,28 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertAccepted("http://exam_ple.com/")
         self.assertAccepted("http://examéple.com/")
 
+    def test_refuses_mapped_spellings_of_blocked_targets(self):
+        # #527: the resolver NFKC-maps these spellings onto blocked
+        # targets (verified with getaddrinfo), so judge the mapped form.
+        for url in (
+            "http://ｌｏｃａｌｈｏｓｔ/",  # fullwidth localhost -> ::1
+            "http://ｌocalhost/",  # first char fullwidth -> ::1
+            "http://127。0。0。1/",  # U+3002 label separators -> 127.0.0.1
+            "http://127｡0｡0｡1/",  # U+FF61 separators -> 127.0.0.1
+            "http://127．0．0．1/",  # U+FF0E separators -> 127.0.0.1
+            "http://１２７.０.０.１/",  # fullwidth digits -> 127.0.0.1
+            "http://10。0。0。5/",  # -> 10.0.0.5 (private)
+            "http://192。168。1。1/",  # -> 192.168.1.1 (private)
+            "http://example。ｌｏｃａｌｈｏｓｔ/",  # -> example.localhost
+            "http://foo。localhost/",  # -> foo.localhost
+            "http://foo．localhost/",  # -> foo.localhost
+            "http://localhost。/",  # -> localhost.
+        ):
+            self.assertRefused(url)
+        # Controls: mapped spellings of public names stay crawlable.
+        self.assertAccepted("http://ｅｘａｍｐｌｅ.com/")
+        self.assertAccepted("http://münchen。de/")
+
     def test_accepts_public_targets(self):
         for url in (
             "https://example.com/page",
