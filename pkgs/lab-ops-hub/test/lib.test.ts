@@ -150,6 +150,18 @@ test("validateCrawlUrl refuses trailing-dot spellings of blocked hosts (#466)", 
   assert.equal(validateCrawlUrl("http://example.com./").ok, true);
 });
 
+test("validateCrawlUrl refuses the bare home.arpa apex (#608)", () => {
+  // Every subdomain of home.arpa is refused via the ".home.arpa"
+  // suffix, but the apex itself is the RFC 8375 special-use name for
+  // the local home network — it needs the equality arm localhost has.
+  const blocked = ["http://home.arpa/", "http://home.arpa./", "http://HOME.ARPA/", "http://router.home.arpa/"];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  // Controls: an ordinary public name still passes.
+  assert.equal(validateCrawlUrl("http://example.com/").ok, true);
+});
+
 test("validateCrawlUrl refuses empty-label hosts (#511)", () => {
   // A second trailing dot defeats the one-dot strip (#466): "localhost.."
   // becomes "localhost." and misses the blocked-host checks. An interior

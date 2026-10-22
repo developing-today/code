@@ -128,6 +128,12 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://printer.local/",
             "http://nas.internal/",
             "http://localhost./",
+            # The bare home.arpa apex is itself the RFC 8375 local
+            # name — the dotted suffix alone misses it (#608).
+            "http://home.arpa/",
+            "http://home.arpa./",
+            "http://HOME.ARPA/",
+            "http://router.home.arpa/",
         ):
             self.assertRefused(url)
 
