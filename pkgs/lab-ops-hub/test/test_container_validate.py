@@ -51,6 +51,22 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertAccepted("http://example.com./")
         self.assertAccepted("http://example.com/")
 
+    def test_refuses_overlong_dns_names(self):
+        # RFC 1035 §2.3.4: no label over 63 octets, no name over 253
+        # characters of text. Neither can ever resolve; refuse up
+        # front instead of certifying them as public DNS names (#513).
+        overlong_name = ".".join(["a" * 63] * 4 + ["com"])  # 259 chars
+        for url in (
+            "http://" + "b" * 64 + ".com/",
+            "http://" + overlong_name + "/",
+        ):
+            self.assertRefused(url)
+        # Controls at the limit stay allowed: a 63-char label, and a
+        # 253-char name (63+63+63+61 + 3 dots).
+        self.assertAccepted("http://" + "b" * 63 + ".com/")
+        at_limit_name = ".".join(["a" * 63] * 3 + ["a" * 61])  # 253 chars
+        self.assertAccepted("http://" + at_limit_name + "/")
+
     def test_refuses_dotted_quad_non_public(self):
         for url in (
             "http://127.0.0.1/",
