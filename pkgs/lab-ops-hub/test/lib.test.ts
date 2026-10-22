@@ -189,6 +189,27 @@ test("validateCrawlUrl refuses IDNA-invalid hosts (#583)", () => {
   assert.equal(validateCrawlUrl("http://münchen.de/").ok, true);
 });
 
+test("validateCrawlUrl refuses hosts whose mapping introduces a separator (#593)", () => {
+  // U+FE12's compatibility mapping is U+3002, itself a UTS-46 label
+  // separator: WHATWG domain-to-ASCII refuses the host outright
+  // rather than judging it as two labels. The container validator
+  // pins the same verdicts (#593).
+  const blocked = [
+    "http://ex\ufe12ample.com/",
+    "http://a\ufe12b.com/",
+    "http://example\ufe12com/",
+    "http://ex%ef%b8%92ample.com/",
+  ];
+  // (The A-label spelling xn--example-t673b is refused under Bun but
+  // accepted by Node's URL parser, so it is pinned only in the
+  // container suite.)
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  // Control: a literal U+3002 separator spelling stays accepted.
+  assert.equal(validateCrawlUrl("http://münchen。de/").ok, true);
+});
+
 test("validateCrawlUrl refuses overlong DNS names (#513)", () => {
   // RFC 1035 §2.3.4: no label over 63 octets, no name over 253
   // characters of text. Neither can ever resolve; refuse up front.

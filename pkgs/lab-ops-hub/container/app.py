@@ -36,6 +36,21 @@ _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
 # "local\u00adhost" is localhost to the resolver and to the Worker,
 # and a label of 60 "a"s plus ten soft hyphens is a 60-character label,
 # not a 77-character punycode one (#526).
+# The characters UTS-46 treats as label separators: the ASCII full
+# stop plus the three ideographic / fullwidth forms that
+# validate_crawl_url translates to "." after mapping.
+_UTS46_SEPARATORS = ".\u3002\uff0e\uff61"
+
+
+def _maps_to_label_separator(c: str) -> bool:
+    # True when c's compatibility mapping introduces a label
+    # separator. The mapping must be tested against every separator
+    # the translate step applies, not just ".": U+FE12's NFKC mapping
+    # is U+3002 itself, so an ASCII-dot-only test let it slip through
+    # and be judged as two innocent labels (#593).
+    return any(s in unicodedata.normalize("NFKC", c) for s in _UTS46_SEPARATORS)
+
+
 _UTS46_IGNORED = frozenset(
     [0x00AD, 0x034F, 0x200B, 0xFEFF]
     + list(range(0x180B, 0x1810))
@@ -137,14 +152,13 @@ def validate_crawl_url(raw):
     # the Worker never sees (#526).
     # UTS-46 treats exactly three characters as label separators
     # (U+3002, U+FF0E, U+FF61, translated just below); any other
-    # character whose compatibility mapping introduces a "." —
+    # character whose compatibility mapping introduces a separator —
     # U+2024 (one dot leader) and the full-stop digits U+2488-U+249B
-    # — is IDNA-disallowed, but after NFKC mapping it would be judged
+    # map to ".", and U+FE12 maps to U+3002 itself (#593) — is
+    # IDNA-disallowed, but after NFKC mapping it would be judged
     # as two innocent labels, so refuse it before mapping (#583).
     if any(
-        ord(c) > 0x7F
-        and c not in "\u3002\uff0e\uff61"
-        and "." in unicodedata.normalize("NFKC", c)
+        ord(c) > 0x7F and c not in "\u3002\uff0e\uff61" and _maps_to_label_separator(c)
         for c in host
     ):
         raise ValueError(
@@ -444,7 +458,7 @@ def _judge_idna_label(label, host):
     # Worker's newer tables accept them (the same version skew PR
     # #584 accepted for A-labels), and U+0345, which UTS-46 maps to
     # a letter, reads as a leading mark here.
-    if any("." in unicodedata.normalize("NFKC", c) for c in label if ord(c) > 0x7F):
+    if any(_maps_to_label_separator(c) for c in label if ord(c) > 0x7F):
         # A decoded A-label is judged unmapped, so the mapped-dot
         # refusal in validate_crawl_url never sees this form.
         raise ValueError(
