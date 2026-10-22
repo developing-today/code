@@ -515,5 +515,70 @@ class TestValidateCrawlUrl(unittest.TestCase):
             self.assertAccepted(url)
 
 
+class TestFetchCrawl(unittest.TestCase):
+    # _fetch_crawl fetches an already-validated URL (validation is
+    # validate_crawl_url's job, pinned above), so these tests point it
+    # at a local server directly. Error-status pages are crawl results,
+    # not container failures (#572): urllib raises HTTPError for
+    # 4xx/5xx, and the Worker fallback extracts those pages and reports
+    # their real status_code — the container must do the same instead
+    # of turning them into a 502 that makes the Worker re-crawl and
+    # record the wrong source.
+
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        body = (
+            b"<html><head><title>Missing Thing</title></head>"
+            b"<body><a href='/x'>x</a> not here</body></html>"
+        )
+
+        class Target(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                code = {"/gone": 404, "/oops": 500}.get(self.path, 200)
+                self.send_response(code)
+                self.send_header("content-type", "text/html")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        cls.server = HTTPServer(("127.0.0.1", 0), Target)
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def fetch(self, path):
+        return app._fetch_crawl(f"http://127.0.0.1:{self.port}{path}")
+
+    def test_error_status_pages_are_results_not_502s(self):
+        for path, expected in (("/gone", 404), ("/oops", 500)):
+            status, raw = self.fetch(path)
+            self.assertEqual(status, expected, path)
+            self.assertIn(b"Missing Thing", raw, path)
+
+    def test_ok_page_unchanged(self):
+        status, raw = self.fetch("/ok")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Missing Thing", raw)
+
+    def test_transport_failure_still_raises(self):
+        import urllib.error
+
+        # Nothing listens on port 1: a transport failure must keep
+        # propagating so do_POST returns a genuine 502.
+        with self.assertRaises(urllib.error.URLError):
+            app._fetch_crawl("http://127.0.0.1:1/nope")
+
+
 if __name__ == "__main__":
     unittest.main()
