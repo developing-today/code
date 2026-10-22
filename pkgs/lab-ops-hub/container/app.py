@@ -477,8 +477,18 @@ def _judge_idna_label(label, host):
     # interpreter's unicodedata is 15.0.0, so a few dozen codepoints
     # assigned in later Unicode versions read as Cn here while the
     # Worker's newer tables accept them (the same version skew PR
-    # #584 accepted for A-labels), and U+0345, which UTS-46 maps to
-    # a letter, reads as a leading mark here.
+    # #584 accepted for A-labels).
+    # UTS-46 mapping is not NFKC: U+0345 (combining Greek
+    # ypogegrammeni) maps to U+03B9 (ι, bidi class L), but NFKC
+    # leaves it unchanged (the mapping lives in the special-casing
+    # data), so the mapped host validate_crawl_url hands over still
+    # carries it as a combining mark (bidi NSM), legal mid-label in
+    # any context. Judge the UTS-46-mapped form: inside an RTL
+    # label the mapped letter makes the label R + L + R, a bidi
+    # violation the Worker refuses, while at label start the mapped
+    # letter is an ordinary first character, closing the former
+    # leading-mark over-refusal (#596).
+    label = label.translate({0x0345: "ι"})
     if any(_maps_to_label_separator(c) for c in label if ord(c) > 0x7F):
         # A decoded A-label is judged unmapped, so the mapped-dot
         # refusal in validate_crawl_url never sees this form.
