@@ -22,7 +22,7 @@ Each log line is `root <UTC> <kind>: <text>`, appended to `$LIVE/root.md`. If a 
 
 ## Steps
 
-1. **Boot and claim.** Make a detached worktree on `origin/main` for reading and a bookkeeping branch `wf/<package-slug>/$CID-s6-books`, pushed empty. Take the concept lease (`rw lease acquire`), record the trunk SHA and the UTC time, and append `start` to `root.md`.
+1. **Boot and claim.** Make a detached worktree on `origin/main` for reading and a bookkeeping branch `research/<slug>/s6-<concept>-books` (the concept in lowercase), pushed empty. Take the concept lease (`rw lease acquire`), record the trunk SHA and the UTC time, and append `start` to `root.md`.
    Done when the lease is listed and `root.md` has a `start` line with the SHA.
 
 2. **Verify entry and read the graph.** The orchestration issue is open and lists the child issues, and `rw check --package "$PKG" --require-resolved` passes with no notes in flight. From the issue bodies and the concept's "Initial research stages" in `design.md`, read each child's blockers, parallel-safe list, owned files and design record path. Every record goes in one folder, `doc/<UTC>_design_<concept_slug>/`. If two children share a path or a path is missing, comment the fix on those issues before dispatching.
