@@ -196,6 +196,21 @@ def validate_crawl_url(raw):
             raise ValueError(
                 f"refusing to crawl host with an overlong label or name {host}"
             )
+    # An A-label (an "xn--" label) must be judged by the label it
+    # encodes, not by its ASCII spelling: the spelling is pure ASCII,
+    # so no check above or below ever sees the decoded characters —
+    # "xn--9hbcp.xn--8hb.xn--8hb.xn--9hb" is ١٢٧.٠.٠.١ (127.0.0.1 in
+    # Arabic-Indic digits, refused in raw form by the forbidden-
+    # character check below) yet sailed through as an ordinary public
+    # DNS name, while the Worker's WHATWG parser decodes the A-label
+    # and rejects it outright (#580). Decode each A-label and hold the
+    # decoded form to the same policy; an A-label that does not decode
+    # to exactly the label it claims to encode is not a valid IDNA
+    # label at all and is refused on the same grounds.
+    if ":" not in host:
+        for label in host.split("."):
+            if label.startswith("xn--"):
+                _judge_a_label(label, host)
     # (Percent-encoded hosts are no longer refused wholesale here:
     # they were decoded and judged in their decoded form above, and
     # _percent_decode_host guarantees no % survives into this host —
@@ -305,6 +320,72 @@ def validate_crawl_url(raw):
         raise ValueError(f"refusing to crawl non-public address {host}")
     # A percent-decoded host is fetched in its decoded form (#529).
     return _url_with_host(u, host) if percent_decoded else raw
+
+
+def _judge_a_label(label, host):
+    # Judge one A-label ("xn--...") by its punycode-decoded form
+    # (#580). The Worker's WHATWG domain-to-ASCII decodes the label
+    # and applies full UTS-46 validity to the result, so an A-label is
+    # refused here when: it does not decode at all, it decodes to an
+    # empty or all-ASCII label (a real A-label encodes a non-ASCII
+    # U-label — the all-ASCII spelling is the name itself, so
+    # "xn--localhost-" encodes "localhost", a name no A-label may
+    # certify), re-encoding the decoded label does not reproduce the
+    # spelling exactly (not the canonical encoding of anything), or
+    # the decoded label carries a character the forbidden-character
+    # policy in validate_crawl_url refuses in raw form (controls,
+    # space, the Arabic-Indic digits U+0660-U+0669, < > ^ |, and the
+    # _IDNA_DISALLOWED set).
+    body = label[4:]
+    try:
+        decoded = body.encode("ascii").decode("punycode")
+    except (UnicodeError, ValueError):
+        raise ValueError(
+            f"refusing to crawl host {host}: A-label {label} does not decode"
+        ) from None
+    if not decoded or decoded.isascii():
+        raise ValueError(
+            f"refusing to crawl host {host}: A-label {label} "
+            "decodes to an empty or ASCII label"
+        )
+    if decoded.encode("punycode").decode("ascii") != body:
+        raise ValueError(
+            f"refusing to crawl host {host}: A-label {label} "
+            "is not the canonical encoding of its decoded label"
+        )
+    if any(
+        ord(c) <= 0x20
+        or 0x7F <= ord(c) <= 0xA0
+        or 0x0660 <= ord(c) <= 0x0669
+        or c in "<>^|"
+        or ord(c) in _IDNA_DISALLOWED
+        for c in decoded
+    ):
+        raise ValueError(
+            f"refusing to crawl host {host}: A-label {label} "
+            f"decodes to a label with a forbidden character {decoded!r}"
+        )
+    # The decoded label must also be a label IDNA itself accepts:
+    # an unassigned codepoint (category Cn — UTS-46 marks it
+    # disallowed, but the raw punycode codec happily encodes it) or
+    # a format character (category Cf — IDNA disallows them all;
+    # the CONTEXTJ pair ZWNJ/ZWJ is already refused above) is not a
+    # valid label, and the stdlib IDNA codec's nameprep/bidi checks
+    # refuse labels that mix LTR and RTL characters in ways the
+    # bidi rule forbids. The Worker refuses every one of these in
+    # A-label form; the same classes in raw form are #583.
+    if any(unicodedata.category(c) in ("Cn", "Cf") for c in decoded):
+        raise ValueError(
+            f"refusing to crawl host {host}: A-label {label} "
+            f"decodes to a label with an unassigned or format character {decoded!r}"
+        )
+    try:
+        decoded.encode("idna")
+    except UnicodeError:
+        raise ValueError(
+            f"refusing to crawl host {host}: A-label {label} "
+            f"decodes to a label IDNA rejects {decoded!r}"
+        ) from None
 
 
 _GLOBAL_UNICAST_V6 = ipaddress.IPv6Network("2000::/3")
