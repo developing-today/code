@@ -117,6 +117,8 @@ test("validateCrawlUrl agrees with the container validator on special IPv6 range
     "https://[2001:40::1]/", // 2001::/23 special-purpose
     "https://[2001:50::1]/", // 2001::/23 special-purpose
     "https://[2001:1::3]/", // 2001:1::/48 is global only at ::1 and ::2
+    "https://[3fff::1]/", // documentation 3fff::/20 (RFC 9637) (#519)
+    "https://[3fff:0fff:ffff:ffff:ffff:ffff:ffff:ffff]/", // last address in 3fff::/20 (#519)
   ];
   for (const u of blocked) {
     assert.equal(validateCrawlUrl(u).ok, false, u);
@@ -129,6 +131,8 @@ test("validateCrawlUrl agrees with the container validator on special IPv6 range
     "https://[2001:20::1]/", // ORCHIDv2 2001:20::/28
     "https://[2001:30::1]/", // ORCHIDv2 2001:30::/28
     "https://[2001:4860:4860::8888]/", // ordinary global unicast
+    "https://[3fff:1000::1]/", // first address past 3fff::/20 (#519)
+    "https://[3ffe::1]/", // global unicast below 3fff::/20 (#519)
   ];
   for (const u of allowed) {
     assert.equal(validateCrawlUrl(u).ok, true, u);
