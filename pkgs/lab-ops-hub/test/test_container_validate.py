@@ -264,6 +264,29 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertRefused(url)
 
+    def test_refuses_del_c1_nbsp_and_forbidden_host_characters(self):
+        # The #507 check stopped at 0x20, one codepoint short of
+        # http.client's own set and short of the rest of the WHATWG
+        # forbidden-host set: DEL, the C1 controls, NBSP and < > ^ |
+        # still fell through as "a public DNS name", while the
+        # Worker's WHATWG validator refuses every one (#510).
+        for url in (
+            "http://exam\x7fple.com/",  # DEL
+            "http://exam\x80ple.com/",  # C1 control, low end
+            "http://exam\x85ple.com/",  # C1 control (NEL)
+            "http://exam\x9fple.com/",  # C1 control, high end
+            "http://exam\xa0ple.com/",  # NBSP
+            "http://exam<ple.com/",
+            "http://exam>ple.com/",
+            "http://exam^ple.com/",
+            "http://exam|ple.com/",
+        ):
+            self.assertRefused(url)
+        # Controls: characters above NBSP and ordinary DNS punctuation
+        # are not forbidden — valid IDN hosts stay crawlable.
+        self.assertAccepted("http://exam_ple.com/")
+        self.assertAccepted("http://examéple.com/")
+
     def test_accepts_public_targets(self):
         for url in (
             "https://example.com/page",
