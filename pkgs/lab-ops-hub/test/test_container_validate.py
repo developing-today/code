@@ -330,6 +330,60 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertAccepted("http://ｅｘａｍｐｌｅ.com/")
         self.assertAccepted("http://münchen。de/")
 
+    def test_refuses_idna_disallowed_unicode_hosts(self):
+        # UTS-46/IDNA disallows these codepoints in a host label, and
+        # the Worker's WHATWG parser rejects the URL outright, but they
+        # survive NFKC unchanged so no earlier check caught them and
+        # the old code certified the host as "a public DNS name" (#516).
+        disallowed = (
+            "\u1680",  # Ogham space mark
+            "\u2028",  # line separator
+            "\u2029",  # paragraph separator
+            "\u0600",  # Arabic number sign (format mark)
+            "\u061c",  # Arabic letter mark
+            "\u200e",  # left-to-right mark
+            "\u200f",  # right-to-left mark
+            "\u202a",  # left-to-right embedding
+            "\u202b",  # right-to-left embedding
+            "\u202c",  # pop directional formatting
+            "\u202d",  # left-to-right override
+            "\u202e",  # right-to-left override
+            "\u2066",  # left-to-right isolate
+            "\u2067",  # right-to-left isolate
+            "\u2068",  # first strong isolate
+            "\u2069",  # pop directional isolate
+            "\u200c",  # zero-width non-joiner (no joining context here)
+            "\u200d",  # zero-width joiner (no joining context here)
+            "\ufffd",  # replacement character
+        )
+        for ch in disallowed:
+            self.assertRefused("http://exam" + ch + "ple.com/")
+        # The Unicode space separators are disallowed too; NFKC maps
+        # them to an ordinary space, refused by the space arm.
+        for ch in ("\u2000", "\u200a", "\u202f", "\u205f", "\u3000"):
+            self.assertRefused("http://exam" + ch + "ple.com/")
+        # Controls: the UTS-46 "ignored" codepoints are deleted by
+        # IDNA processing, not disallowed — the Worker accepts these
+        # hosts (as example.com) and so must the container.
+        for ch in ("\u00ad", "\u180e", "\u200b", "\u2060", "\u2064", "\ufeff"):
+            self.assertAccepted("http://exam" + ch + "ple.com/")
+
+    def test_judges_length_and_blocked_names_on_the_mapped_form(self):
+        # UTS-46 mapping deletes the "ignored" codepoints before any
+        # judgement, so the length check must measure the mapped form
+        # and the blocked-host check must see through them (#526):
+        # 60 "a"s plus ten soft hyphens is a 60-character label to the
+        # Worker, but 77 characters of raw punycode to the old check.
+        self.assertAccepted("http://" + "a" * 60 + "\u00ad" * 10 + ".com/")
+        # NFKC expansion runs the other way: four U+FDFA ligatures
+        # expand to a long Arabic phrase whose A-label is overlong.
+        self.assertRefused("http://" + "\ufdfa" * 4 + ".com/")
+        # A blocked name spelled with an ignored codepoint inside it
+        # is still the blocked name in its mapped form.
+        self.assertRefused("http://local\u00adhost/")
+        self.assertRefused("http://local\u200bhost/")
+        self.assertRefused("http://local\ufeffhost/")
+
     def test_accepts_public_targets(self):
         for url in (
             "https://example.com/page",

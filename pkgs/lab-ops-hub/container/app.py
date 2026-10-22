@@ -27,6 +27,36 @@ from urllib.parse import urlparse
 # Redirect targets are held to the same policy.
 _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
 
+# UTS-46 "ignored" codepoints are mapped to the empty string by IDNA
+# processing, so the Worker's u.hostname simply does not contain them:
+# the soft hyphen, the Mongolian vowel separators / free variation
+# selectors, ZWSP, the invisible operators and the BOM/ZWNBSP. Judging
+# a spelling that still carries them misjudges everything downstream —
+# "local\u00adhost" is localhost to the resolver and to the Worker,
+# and a label of 60 "a"s plus ten soft hyphens is a 60-character label,
+# not a 77-character punycode one (#526).
+_UTS46_IGNORED = frozenset(
+    [0x00AD, 0x034F, 0x200B, 0xFEFF]
+    + list(range(0x180B, 0x1810))
+    + list(range(0x2060, 0x2065))
+    + list(range(0x206A, 0x2070))
+)
+
+# Codepoints UTS-46/IDNA marks disallowed that survive NFKC unchanged,
+# so neither the space/control arm of the forbidden-character check
+# nor any later check catches them, while the Worker's WHATWG parser
+# rejects the URL outright (#516): the Ogham space mark, the line /
+# paragraph separators, Arabic format marks, the bidi marks, embedding
+# / override / isolate controls, ZWNJ / ZWJ outside their joining
+# context, and the replacement character. (The Unicode space
+# separators U+2000-200A, U+202F, U+205F and U+3000 need no entry here:
+# NFKC maps them to an ordinary space, refused by the first arm.)
+_IDNA_DISALLOWED = frozenset(
+    [0x0600, 0x061C, 0x1680, 0x200C, 0x200D, 0x200E, 0x200F, 0x2028, 0x2029, 0xFFFD]
+    + list(range(0x202A, 0x202F))
+    + list(range(0x2066, 0x206A))
+)
+
 
 def validate_crawl_url(raw):
     u = urlparse(raw)
@@ -52,8 +82,13 @@ def validate_crawl_url(raw):
     # check below on the mapped form; the original URL is still what
     # gets fetched, and public controls map onto public names
     # ("ｅｘａｍｐｌｅ.com" -> example.com, "münchen。de" -> münchen.de).
+    # UTS-46 also deletes its "ignored" codepoints outright, so drop
+    # those too: with them still present, "local\u00adhost" misses the
+    # blocked-host check below and the length check measures a label
+    # the Worker never sees (#526).
     host = unicodedata.normalize("NFKC", host).lower()
     host = host.translate({0x3002: ".", 0xFF0E: ".", 0xFF61: "."})
+    host = host.translate({cp: None for cp in _UTS46_IGNORED})
     # A single trailing dot is the DNS root dot (the FQDN spelling of the
     # same host: "localhost." is "localhost", "127.0.0.1." is 127.0.0.1);
     # strip it before the checks so the dotted spelling cannot evade
@@ -77,7 +112,11 @@ def validate_crawl_url(raw):
     # the strip above already removed) — refuse it up front instead of
     # certifying it as a public DNS name and letting the resolver fail
     # on it deep inside the fetcher, matching the Worker's validator
-    # (#513). The limits apply to the IDNA-encoded (punycode) form —
+    # (#513). The host here is already the UTS-46-mapped form (NFKC
+    # applied and ignored codepoints deleted above), so a label that
+    # mapping expands (U+FDFA) or shrinks (soft hyphens) is measured
+    # the way the Worker measures it (#526). The limits apply to the
+    # IDNA-encoded (punycode) form —
     # the Worker's u.hostname is already punycode — so judge each
     # label's A-label length, not its character count: character
     # length is only a lower bound, and an IDN label whose characters
@@ -110,9 +149,16 @@ def validate_crawl_url(raw):
     # fetcher — the same lazy-failure shape #502 fixed for ports. Refuse
     # up front: C0 controls and space (#507), plus DEL, the C1 controls
     # and NBSP (0x7F-0xA0) and the forbidden host codepoints < > ^ |
-    # (#510). Non-ASCII above NBSP (a valid IDN host, e.g. é) is
-    # untouched.
-    if any(ord(c) <= 0x20 or 0x7F <= ord(c) <= 0xA0 or c in "<>^|" for c in host):
+    # (#510), plus the IDNA-disallowed codepoints that survive NFKC
+    # (#516). Non-ASCII above NBSP that is a valid IDN character (e.g.
+    # é) is untouched.
+    if any(
+        ord(c) <= 0x20
+        or 0x7F <= ord(c) <= 0xA0
+        or c in "<>^|"
+        or ord(c) in _IDNA_DISALLOWED
+        for c in host
+    ):
         raise ValueError(f"refusing to crawl host with a forbidden character {host!r}")
     if host == "localhost" or host.endswith(_BLOCKED_SUFFIXES):
         raise ValueError(f"refusing to crawl local host {host}")
