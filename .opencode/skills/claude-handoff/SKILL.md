@@ -5,7 +5,7 @@ argument-hint: "What will the next session be used for?"
 disable-model-invocation: true
 ---
 
-Write a handoff summary of the current conversation so a fresh agent can continue the work. Instead of saving it, launch a background agent seeded with the summary as its prompt: `claude --bg --name "<descriptive name>" "<handoff summary>"`. It starts in the current working directory and returns immediately; the user manages it with `claude agents`.
+Write a handoff summary of the current conversation so a fresh agent can continue the work. Save it to a new file in the temporary directory of the user's OS (`$TMPDIR`, else `/tmp`), written with your file-writing tool. If you must write it from the shell, use a quoted heredoc (`cat > "$file" <<'HANDOFF_EOF'`, with a delimiter that never appears in the summary), never `echo` or an unquoted heredoc. Then launch a background agent seeded with it as its prompt: `claude --bg --name "<descriptive name>" -- "$(cat <summary file>)"`, keeping the double quotes. The summary never appears in the command line itself, so the shell can't run backticks or expand `$` in it. It starts in the current working directory and returns immediately; the user manages it with `claude agents`.
 
 Always pass `-n`/`--name` with a descriptive name (e.g. `--name "Fix login bug"`); it sets the display name shown in the job list, session picker, and terminal title.
 

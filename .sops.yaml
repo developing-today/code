@@ -1,6 +1,16 @@
 keys:
   - &laptop-framework age125acas5y8hnwl5uhcp364xm8zlhtwsjqvxxpge8k04dzzr67acrq0ttc34
+  - &claude-sandbox age1nw32awc9ans8vv62h3zglz7sul8jt3vewlshz5vmyu9hexuddgys85h43p
 creation_rules:
+  # secrets/opendesign.sops.yaml is encrypted to BOTH recipients above: the
+  # sandbox recipient is the file's consumer (the sandbox OpenCode server).
+  # This path-scoped rule must come first — without it, `sops updatekeys`
+  # against this config silently drops the sandbox recipient (#456).
+  - path_regex: secrets/opendesign\.sops\.yaml$
+    key_groups:
+      - age:
+          - *laptop-framework
+          - *claude-sandbox
   - age: *laptop-framework
 # todo: common vs per-host vs per-user
 # separate keys for other hosts, don't share allow all hosts to decrypt certain secrets

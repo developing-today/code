@@ -462,7 +462,7 @@ in
     Service = {
       ExecStart = toString (
         pkgs.writeShellScript "clef-proxy-start" ''
-          exec ${pkgs.nodejs}/bin/node ${../../bin/clef-proxy.mjs}
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs
         ''
       );
       Restart = "always";
@@ -486,7 +486,7 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "agy-proxy-start" ''
           export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/agy-proxy.mjs}
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/agy-proxy.mjs
         ''
       );
       Restart = "no";
@@ -507,7 +507,7 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "codex-proxy-start" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/codex-proxy.mjs}
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs
         ''
       );
       Restart = "always";
@@ -530,7 +530,7 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "antigravity-ls-proxy-start" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/antigravity-ls-proxy.mjs}
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/antigravity-ls-proxy.mjs
         ''
       );
       Restart = "always";
@@ -562,7 +562,7 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "design-code-proxy-start" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/design-code-proxy.mjs}
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/design-code-proxy.mjs
         ''
       );
       Restart = "always";
@@ -1242,23 +1242,23 @@ in
       [
         libnotify
         (pkgs.writeShellScriptBin "clef-proxy" ''
-          exec ${pkgs.nodejs}/bin/node ${../../bin/clef-proxy.mjs} "$@"
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs "$@"
         '')
         (pkgs.writeShellScriptBin "agy-proxy" ''
           export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/agy-proxy.mjs} "$@"
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/agy-proxy.mjs "$@"
         '')
         (pkgs.writeShellScriptBin "codex-proxy" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/codex-proxy.mjs} "$@"
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs "$@"
         '')
         (pkgs.writeShellScriptBin "antigravity-ls-proxy" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/antigravity-ls-proxy.mjs} "$@"
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/antigravity-ls-proxy.mjs "$@"
         '')
         (pkgs.writeShellScriptBin "design-code-proxy" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/design-code-proxy.mjs} "$@"
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/design-code-proxy.mjs "$@"
         '')
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
@@ -1909,6 +1909,11 @@ in
         # nixpkgs 4.94.0 vs npm 4.147.0 -- 53 minor versions behind, the
         # largest gap in this config. See pkgs/wrangler.
         (pkgs.callPackage ../../pkgs/wrangler { })
+        # cf is Wrangler's successor (open beta 2026-09-28, not in
+        # nixpkgs). Standing direction 2026-10-20: prefer cf for
+        # Cloudflare work; wrangler stays for existing projects until
+        # migrated (`cf migrate`). See pkgs/cf.
+        (pkgs.callPackage ../../pkgs/cf { })
         wtf
         wttrbar
         xclip

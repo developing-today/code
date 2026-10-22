@@ -1,0 +1,45 @@
+{
+  // Lab Ops Hub — see README.md. IDs are filled in after resource creation.
+  "name": "lab-ops-hub",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
+
+  "d1_databases": [
+    { "binding": "DB", "database_name": "labops-db", "database_id": "3115e67f-150e-4ee8-8b11-216127901ae8" }
+  ],
+
+  "r2_buckets": [
+    { "binding": "FILES", "bucket_name": "labops-files" }
+  ],
+
+  "kv_namespaces": [
+    { "binding": "CACHE", "id": "ac69d54d9e3f455d99a940b3fced4b76" }
+  ],
+
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "labops-jobs" }],
+    "consumers": [{ "queue": "labops-jobs", "max_batch_size": 10, "max_retries": 3 }]
+  },
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "LIVE", "class_name": "LiveRoom" },
+      { "name": "CRAWLER", "class_name": "CrawlerContainer" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["LiveRoom", "CrawlerContainer"] }
+  ],
+
+  "containers": [
+    { "class_name": "CrawlerContainer", "image": "registry.cloudflare.com/234b866b99ce2b142d7963d8d139cbfa/lab-ops-hub-crawlercontainer:v3", "max_instances": 2, "instance_type": "lite" }
+  ],
+
+  "ai": { "binding": "AI" },
+
+  "triggers": { "crons": ["23 4 * * *"] }
+}
