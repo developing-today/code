@@ -884,6 +884,33 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertAccepted(url)
 
+    def test_percent_encodes_non_ascii_outside_the_host(self):
+        # WHATWG percent-encodes non-ASCII characters in the userinfo,
+        # path, query and fragment as UTF-8; urlparse hands them through
+        # verbatim, and http.client then raises UnicodeEncodeError on
+        # the returned URL before any request is sent — a target both
+        # validators accepted 502s in the container (#615). The returned
+        # URL carries the encoded form; the host keeps its spelling
+        # (judged in mapped form, fetched via IDNA) and existing %XX
+        # sequences are not double-encoded.
+        cases = {
+            "http://example.com/café": "http://example.com/caf%C3%A9",
+            "http://example.com/日本語": (
+                "http://example.com/%E6%97%A5%E6%9C%AC%E8%AA%9E"
+            ),
+            "http://example.com/?q=café": "http://example.com/?q=caf%C3%A9",
+            "http://example.com/?q=\U0001f600": ("http://example.com/?q=%F0%9F%98%80"),
+            "http://example.com/x#café": "http://example.com/x#caf%C3%A9",
+            "http://user:café@example.com/": ("http://user:caf%C3%A9@example.com/"),
+            "http://café@example.com/": "http://caf%C3%A9@example.com/",
+            "http://münchen.de/café": "http://münchen.de/caf%C3%A9",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Already-encoded spellings pass through byte-identical.
+        self.assertAccepted("http://example.com/caf%C3%A9")
+        self.assertAccepted("http://example.com/?q=caf%C3%A9")
+
 
 class TestFetchCrawl(unittest.TestCase):
     # _fetch_crawl fetches an already-validated URL (validation is
@@ -988,6 +1015,18 @@ class TestFetchCrawl(unittest.TestCase):
             status, raw = self.fetch("/hop10")
             self.assertEqual(status, 200)
             self.assertIn(b"Missing Thing", raw)
+
+    def test_fetches_percent_encoded_non_ascii_targets(self):
+        # #615: the form validate_crawl_url returns for a non-ASCII
+        # path/query is fetchable end to end (the raw spelling raises
+        # UnicodeEncodeError inside http.client before any request).
+        url = app._url_with_encoded_non_ascii(
+            f"http://127.0.0.1:{self.port}/café?q=café"
+        )
+        self.assertEqual(url, f"http://127.0.0.1:{self.port}/caf%C3%A9?q=caf%C3%A9")
+        status, raw = app._fetch_crawl(url)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Missing Thing", raw)
 
     def test_transport_failure_still_raises(self):
         import urllib.error
