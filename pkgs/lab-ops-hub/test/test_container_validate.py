@@ -74,6 +74,52 @@ class TestValidateCrawlUrl(unittest.TestCase):
                 "http://127.0.0.1" + chr(92) + "@example.com/",
             )
 
+    def test_slash_run_authority_spellings_name_the_whatwg_host(self):
+        # WHATWG consumes the whole delimiter run after the scheme
+        # colon (0, 1, 3+ slashes, and backslash runs after the #577
+        # replacement); urlparse only sees a netloc behind exactly
+        # "//", so those spellings were refused as hostless even for
+        # public targets (#586). Every run length now validates — and
+        # is fetched — as the exactly-two spelling.
+        B = chr(92)
+        for raw in (
+            "http:example.com/x",
+            "http:/example.com/x",
+            "http:///example.com/x",
+            "http:////example.com/x",
+            "http:" + B + "example.com/x",
+            "http:" + B * 3 + "example.com/x",
+            "http://" + B + "example.com/x",
+            "https:example.com/x",
+            "https:///example.com/x",
+        ):
+            scheme = raw.split(":", 1)[0]
+            self.assertEqual(validate_crawl_url(raw), f"{scheme}://example.com/x", raw)
+        # Blocked hosts in slash-run spellings are refused by the
+        # ordinary checks (non-public / local), not as hostless URLs.
+        for url in (
+            "http:///127.0.0.1/x",
+            "http:localhost/x",
+            "https:" + B * 3 + "192.168.0.1/x",
+            "http:/10.0.0.5/x",
+        ):
+            with self.assertRaises(ValueError, msg=url) as cm:
+                validate_crawl_url(url)
+            self.assertNotIn("no host", str(cm.exception), url)
+
+    def test_redirect_handler_refuses_slash_run_loopback_target(self):
+        # Redirect targets are validated by this validator alone: a
+        # slash-run Location naming loopback must be refused, not
+        # passed through as hostless-or-public (#586).
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        with self.assertRaises(ValueError):
+            handler.redirect_request(
+                req, None, 302, "Found", {}, "http:///127.0.0.1/admin"
+            )
+
     def test_refuses_non_http_schemes_and_local_names(self):
         for url in (
             "ftp://example.com/",

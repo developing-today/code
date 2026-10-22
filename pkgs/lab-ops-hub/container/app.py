@@ -75,6 +75,18 @@ def validate_crawl_url(raw):
     # are non-http(s) spellings (the scheme check below refuses them).
     if "\\" in raw and re.match(r"(?i)https?:", raw):
         raw = raw.replace("\\", "/")
+    # WHATWG consumes the whole delimiter run after a special scheme's
+    # colon — 0, 1, 3 or more slashes name the same host as exactly 2 —
+    # while urlparse only sees a netloc behind exactly "//", so the
+    # other run lengths parse as hostless and were refused as "url has
+    # no host" even for public targets the Worker accepts and
+    # normalizes (#586). Collapse the run to exactly "//" before
+    # parsing and judge (and return) the normalized spelling, as with
+    # the backslash normalization above. Blocked hosts in these
+    # spellings are then refused by the ordinary checks below, for the
+    # right reason.
+    if re.match(r"(?i)https?:", raw):
+        raw = re.sub(r"(?i)^(https?:)/*", r"\g<1>//", raw)
     u = urlparse(raw)
     if u.scheme not in ("http", "https"):
         raise ValueError("only http: and https: URLs may be crawled")
