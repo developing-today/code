@@ -69,7 +69,9 @@ def validate_crawl_url(raw):
     if ":" not in host and (
         len(host) > 253 or any(len(label) > 63 for label in host.split("."))
     ):
-        raise ValueError(f"refusing to crawl host with an overlong label or name {host}")
+        raise ValueError(
+            f"refusing to crawl host with an overlong label or name {host}"
+        )
     # A raw % in the host is a percent-encoded spelling (or an IPv6 zone
     # id): WHATWG URL parsing percent-decodes the host before judging it
     # — %6cocalhost is localhost — and rejects the rest outright, while
