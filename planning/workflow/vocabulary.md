@@ -19,7 +19,7 @@ Relation kinds and priority tiers are listed here so the full set is in one plac
 | S8    | implement | `implementation-orchestrate`                      |
 | any   | router    | `research-workflow` (dispatches; owns no stage)   |
 
-A concept's `stage` is the stage it is in now: the work of that stage is not finished. It moves to the next stage when the exit criteria in [stages.md](stages.md) are met. Records written by the router use `router` where a stage is expected.
+A concept's `stage` is the latest stage that has started on it. The worker of that stage sets it in its first commit; the stage is finished when its exit criteria in [stages.md](stages.md) are met.
 
 ## Statement status (`status`)
 
@@ -50,7 +50,7 @@ Roadmap rows in `planning/roadmaps/` use their own status list. They map as foll
 
 ## Run status
 
-Where the work for one concept at one stage stands. `status --live` computes it; nobody writes it by hand. The first rule that matches wins.
+Where the work for one concept at one stage stands. `claimed`, `running`, `validated`, `blocked` and `abandoned` are recorded by the orchestrator or router ([records.md](records.md#tool-status) says where today); `claimed` and `running` move to the live directory once leases exist. `pushed`, `pr-open` and `merged` are never recorded: `status --live` derives them. When several apply, the first match in this list wins.
 
 1. `abandoned`: the concept history records that this stage's work was stopped on purpose, with a reason. The branch stays.
 2. `validated`: the PR merged and the stage's exit criteria were checked afterwards, recorded in history.
@@ -62,7 +62,7 @@ Where the work for one concept at one stage stands. `status --live` computes it;
 8. `blocked`: a `requires` target has not finished, or the history records a blocking reason.
 9. `not-started`: none of the above.
 
-`pushed`, `pr-open` and `merged` come only from git and GitHub, never from a worker's report. The live directory is described in [collaboration.md](collaboration.md#live-coordination).
+A worker's own report never sets a run status. The live directory is described in [collaboration.md](collaboration.md#live-coordination).
 
 ## Note receipt disposition
 
@@ -94,16 +94,15 @@ Meanings and promotion rules: [decisions.md](decisions.md#source-and-status).
 
 ## Identifiers
 
-Tools allocate identifiers. Agents never choose one.
+Identifiers come from the tool, never from an agent's guess. `init`, `item add` and `note` allocate them. For a concept or decision added later, take the next free number from `ids` while holding the package's `ids` lease ([collaboration.md](collaboration.md#live-coordination)).
 
 - Package: the folder name `<UTC>_research_<slug>`, for example `2026-10-19T06-09-02Z_research_research-intake-to-implementation`. `<UTC>` is `YYYY-MM-DDTHH-MM-SSZ`; `<slug>` is lowercase kebab case.
 - Segment: `T001`, `T002`, ... in transcript order. A range is `T007-T009`.
-- Concept: `C001`, `C002`, ... Allocated by `init`, and later by `ids` when a concept is added.
+- Concept: `C001`, `C002`, ... Allocated by `init`.
 - Item: `C001.2`, `C001.2.1`, ... Allocated by `item add`, never renumbered. Items in the global bucket are `G.1`, `G.1.2`, ...
 - Global bucket: `G`. Holds the process directives and constraints the user gave about how to work.
 - Note: the file stem `C001__to__C002__<uuid>`, where `<uuid>` is 32 lowercase hex digits. Allocated by `note`.
-- Scan record: the file stem `C002__scan__<UTC>`. Written by reconcile.
-- Decision: `D001`, `D002`, ... Allocated by `ids`, never reused.
+- Decision: `D001`, `D002`, ... Never reused, even after a reversal.
 - Branch: `wf/<slug>-c002-s2` for concept C002 at stage S2 of package `<slug>`, and `wf/<slug>-c002.3-s6` for a facet. A follow-up after a merge adds `-2`, `-3`.
 - Agent name: lowercase kebab case, unique within a run. Used in leases, logs and receipts.
 - Timestamp: UTC to the second, `2026-10-21T10:00:00Z`. In file and folder names, colons become hyphens: `2026-10-21T10-00-00Z`.

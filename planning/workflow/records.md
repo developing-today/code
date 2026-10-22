@@ -1,6 +1,6 @@
 # Workflow records
 
-The files a research package holds, who writes each one, and their exact formats. Values come from [vocabulary.md](vocabulary.md). Who may write what, and how, is ruled by [collaboration.md](collaboration.md). This page describes the target format. Where the tool on `main` writes something else, the difference is listed under [Tool status](#tool-status).
+The files a research package holds, who writes each one, and their exact formats. Values come from [vocabulary.md](vocabulary.md). Who may write what, and how, is ruled by [collaboration.md](collaboration.md). This page describes the target format. Where the tool on `main` writes something else, the difference is listed under [Tool status](#tool-status). The [templates](templates/README.md) show each file filled in.
 
 ## Package layout
 
@@ -17,21 +17,20 @@ doc/<UTC>_research_<slug>/
   concepts/C001-<slug>.md     one per concept
   notes/C001__to__C002__<uuid>.md
   receipts/<note-id>.md
-  receipts/C002__scan__<UTC>.md
   decisions/D001-<slug>.md
 ```
 
-| Path                   | Writer                                                      | Changes how                                          |
-| ---------------------- | ----------------------------------------------------------- | ---------------------------------------------------- |
-| `transcript.txt`       | intake, once                                                | never                                                |
-| `package.json`         | intake, once                                                | never                                                |
-| `main.md`, `design.md` | anyone, through a PR                                        | authored parts by PR; views by `render`              |
-| `changes.md`           | anyone                                                      | one appended line, `merge=union`                     |
-| `human-review.md`      | `render`                                                    | regenerated, never edited                            |
-| `concepts/C001-*.md`   | the concept's current stage owner                           | edited by its owner only                             |
-| `notes/*.md`           | the sender, once                                            | never; a reply is a new note                         |
-| `receipts/*.md`        | the receiver, or the reconciler on its behalf, once         | never                                                |
-| `decisions/D001-*.md`  | the S6 orchestrator files it; the holder of its lease edits | status changes only, under the `decision-D001` lease |
+| Path                   | Writer                                              | Changes how                                  |
+| ---------------------- | --------------------------------------------------- | -------------------------------------------- |
+| `transcript.txt`       | intake, once                                        | never                                        |
+| `package.json`         | intake, once                                        | never                                        |
+| `main.md`, `design.md` | anyone, through a PR                                | authored parts by PR; views only by `render` |
+| `changes.md`           | anyone                                              | one appended line, `merge=union`             |
+| `human-review.md`      | `render`                                            | regenerated, never edited                    |
+| `concepts/C001-*.md`   | the concept's current stage owner                   | edited by its owner only                     |
+| `notes/*.md`           | the sender, once                                    | never; a reply is a new note                 |
+| `receipts/*.md`        | the receiver, or the reconciler on its behalf, once | never                                        |
+| `decisions/D001-*.md`  | an S6 worker, once; later the holder of its lease   | status changes and dated lines only          |
 
 `notes/`, `receipts/` and `decisions/` are created when the first file needs them. A single concept gets the same layout with one concept file. There is no special case.
 
@@ -85,9 +84,8 @@ Titles and slugs reject control characters and newlines.
   "history": [
     {
       "at": "2026-10-19T06:09:02Z",
-      "disposition": "proposed",
       "note": "Created at intake.",
-      "ref": "",
+      "ref": "transcript.txt",
       "stage": "S0",
       "status": "created"
     }
@@ -101,7 +99,7 @@ Titles and slugs reject control characters and newlines.
   "relations": [],
   "segments": ["T001-T004", "T010"],
   "slug": "exact-transcript-storage",
-  "stage": "S1",
+  "stage": "S0",
   "status": "created",
   "targets": ["scripts/research_workflow.py"],
   "title": "Exact transcript storage",
@@ -111,12 +109,13 @@ Titles and slugs reject control characters and newlines.
 ````
 
 - The block is JSON with 2-space indentation, sorted keys and a final newline. Its fence info string is `workflow-state`, which prettier leaves alone. Never wrap state in an HTML comment.
-- `issues` and `prs` entries are `{"number", "stage", "state", "url"}`. `state` is the last recorded GitHub state (`open`, `closed`, `merged`); `status --live` reads the real one.
-- `relations` entries are `{"kind", "reason", "to"}`, plus `rework_if_early` for `recommended-after`, `trigger` for `optional-if`, and an optional `stage` for `requires` ([DEPENDENCIES.md](../DEPENDENCIES.md#relation-kinds)). `to` is a concept or item ID in this package, or a repo path or issue URL outside it.
-- `history` is append-only. Each entry records the state after a change: `at`, `stage`, `status`, `disposition`, `note` (why), `ref` (commit, PR, issue or path), and `trigger` when the disposition becomes `deferred`. An entry that sets `deferred` or `rejected` must have a non-empty `note`.
+- `stage` is the latest stage that has started on the concept. The worker of a stage sets it in its first commit and appends a history entry.
+- `issues` and `prs` entries are `{"number", "url", "stage", "state"}`, plus optional `title`, `item` (the item the issue or PR is for) and `reason` (why it was implemented, declined or changed). `state` is the last recorded GitHub state (`open`, `closed`, `merged`); `status --live` reads the real one.
+- `relations` entries are `{"kind", "to", "reason"}`, plus `rework_if_early` for `recommended-after`, `trigger` for `optional-if`, and an optional `stage` for `requires` ([DEPENDENCIES.md](../DEPENDENCIES.md#relation-kinds)). `to` is a concept or item ID in this package, or a repo path or issue URL outside it.
+- `history` is append-only, newest last. Each entry has `at`, `stage`, `status`, `note` (why) and `ref` (commit, PR, issue or path), plus `disposition` when the disposition changes and `trigger` when it becomes `deferred`. An entry that sets `deferred` or `rejected` must have a non-empty `note`.
 - Only the concept's current owner writes the file. The owner may keep supporting material in a sibling folder `concepts/C001-<slug>/`, under the same rule.
 
-The rest of the file is authored Markdown. The sections each stage must fill are listed in [stages.md](stages.md); the [concept template](templates/concept.md) lays them out.
+The rest of the file is authored Markdown. The sections each stage must fill are listed in [stages.md](stages.md).
 
 ## Excerpts
 
@@ -140,29 +139,33 @@ The exact text from the start of T007 to the end of T009.
 `main.md`, `design.md` and `human-review.md` contain generated sections. Each sits between two markers, with a blank line inside each:
 
 ```markdown
-<!-- workflow:view run-table -->
+<!-- workflow:view run-status -->
 
-- **C001** S2 · `running` · [#412](https://github.com/developing-today/code/pull/412)
+- **C001** [Exact transcript storage](main.md#c001): S0 `validated` · S1 `running` · S2–S8 `not-started`
 
-<!-- /workflow:view run-table -->
+<!-- /workflow:view run-status -->
 ```
 
-- `render` rewrites everything between the markers. Never edit a view by hand. If two PRs conflict inside a view, take either side and run `render` again.
+- `render --package <dir>` rewrites everything between the markers, and inserts a missing view under its heading. Never edit a view by hand. If two PRs conflict inside a view, take either side and run `render` again.
+- Once a package has views, `check` fails when one is stale, missing, or has a name `render` does not know.
 - Generated Markdown uses only headings, `-` bullets, `**bold**`, backticks, links and blank lines. No tables, no `*emphasis*`. Output must pass `prettier --check` unchanged.
 
-View names:
+Views `render` writes:
 
-- `main.md`: `files` (every package file and every repo file the concepts create or edit), `global` (segments in `G`), `concept-C001` (one per concept: stage, status, disposition, run status, priority, horizon, goal, enables, relations, issues and PRs with their state), `issues-and-prs` (every issue and PR in the package, each naming the concept or item it belongs to).
-- `design.md`: `review-order` (first-pass order to review the concepts), `waves` (output of `ready`), `run-table` (run status per concept and stage), `research-stages` (from S5 on: every issue per concept, with a short description, priority order and wave).
-- `human-review.md`: `human-review` (see [decisions.md](decisions.md#human-review)).
+- `main.md`, `concept-C001`: one per concept, in its section. State (status, stage, disposition, priority, horizon), goal, item counts by status, relations in and out, and its issues and PRs with stage and state.
+- `main.md`, `issues-and-prs`: every issue and PR in the package, grouped under the concept it belongs to, naming the item when there is one.
+- `design.md`, `waves`: the output of `ready` (done, running, wave 1, wave 2, ...), with each `recommended-after` cost shown under the wave that pays it.
+- `design.md`, `run-status`: the run status of each concept at each stage.
+
+Views planned but not rendered yet (do not add their markers until `render` writes them, because `check` rejects unknown names): `files` and `global` in `main.md`, `review-order` and `research-stages` in `design.md`, and `human-review` in `human-review.md`.
 
 ## Main reference
 
-`main.md` holds, in order: the title and an introduction; the `files` view; links to the transcript, `design.md` and `changes.md`; the section "Reading of garbled input"; the `global` view; one section per concept; the `issues-and-prs` view.
+`main.md` holds, in order: the title and an introduction; the list of package files and of every repo file the concepts create or edit; links to the transcript, `design.md` and `changes.md`; the section "Reading of garbled input"; the segments in `G`; one section per concept; the section "Issues and PRs" with its view.
 
 "Reading of garbled input" lists each suspicious token with its segment, the reading adopted and why, labelled as inference. Example: `- § (T145): read as "features". Inference: the sentence lists things to implement.` The transcript stays exact; readings live only here and in concept summaries.
 
-Each concept section is a heading `## C001: <title>`, the `concept-C001` view, authored preliminary thoughts, and the items list.
+Each concept section is a heading `## C001: <title>` (with an `<a id="c001"></a>` anchor line before it), the `concept-C001` view, authored preliminary thoughts, and the items list.
 
 ## Items and status trails
 
@@ -177,23 +180,27 @@ Grammar of one line:
 
 ```text
 line  = indent "- **" id "** " entry *( " ← " entry )
-entry = "`" status "` · " stage " · " timestamp " — " text
+entry = "`" status "` · " stage " · " timestamp [ " — " text ]
 ```
 
-- The newest entry is first. The oldest entry keeps the original text, which is never deleted or edited.
-- `status` is a statement status, `stage` is `S0` to `S8`, and `text` must not contain `←`. A `superseded` or `clarified` entry names the item that replaces or refines it.
-- `item add --package <dir> --parent C001.2 --text <text>` allocates the next ID and places the line directly below its parent's subtree. `item set-status --package <dir> --item C001.2 --status clarified --text <text>` prepends an entry. Both append a line to `changes.md`.
-- `check` validates the grammar, that each parent exists, that IDs are unique, the vocabulary, and the timestamps.
+- The newest entry is first, and timestamps never increase from left to right. The newest entry must have text. The oldest entry keeps the original text, which is never deleted or edited.
+- `status` is a statement status and `stage` is `S0` to `S8`.
+- `item add --package <dir> --parent <C001 or C001.2> --stage S2 --text <text>` allocates the next free ID under the parent and inserts the line: a first top-level item goes directly below the concept view, any other item goes after its last sibling's subtree. `--status` (default `created`) and `--at` are optional.
+- `item set-status --package <dir> --id C001.2 --status clarified --stage S2 --note <text> [--see C001.2.1]` prepends an entry whose text is the note followed by `see <ids>`. `superseded` requires `--see`. An item never goes back to `created`.
+- Both commands refresh the concept's view and append a line to `changes.md`.
+- `check` validates the grammar, that each parent exists, that IDs are unique, the vocabulary and the timestamp order.
 
 ## Change log
 
 `changes.md` starts with `# Changes`, a blank line, a link to `main.md` and a blank line. After that, each line is one change:
 
 ```text
-- 2026-10-21T10:00:00Z | S3 | C002 | Incorporated note C001__to__C002__4f1c… into Research.
+- 2026-10-21T10:00:00Z | S2 | clarified | C001.2 created → clarified: More nuanced than first thought; see C001.2.1.
 ```
 
-The fields are timestamp, stage (or `router`), subject (a concept, item or decision ID, `G`, or `package`) and a short text. `.gitattributes` sets `merge=union` for it, so two branches that each add a line merge cleanly. Lines are never edited or deleted, because a union merge would keep both versions. Their order follows merges, not time; sort by timestamp to read them in order. GitHub's merge button may not apply the union driver, which is one reason to merge the base locally first ([collaboration.md](collaboration.md#the-rules)).
+The fields are timestamp, stage, the status the change set (a statement status, disposition or run status) and the text, which starts with the IDs it concerns. A line written by hand ends with `, by <writer> (<path, PR or commit>)`. `item add` and `item set-status` write their own lines; add one by hand only for a change no command records.
+
+`.gitattributes` sets `merge=union` for `changes.md`, so two branches that each add a line merge cleanly. Lines are never edited or deleted, because a union merge would keep both versions. Their order follows merges, not time; sort by timestamp to read them in order. GitHub's merge button may not apply the union driver, which is one reason to merge the base locally first ([collaboration.md](collaboration.md#the-rules)).
 
 ## Notes
 
@@ -204,7 +211,6 @@ A note asks another concept's owner for a change or tells them something. It is 
 
 ```workflow-note
 {
-  "about": ["C002.3"],
   "at": "2026-10-21T10:00:00Z",
   "body_sha256": "…",
   "from": "C001",
@@ -217,7 +223,6 @@ The body: what to change and why, with links.
 ````
 
 - The body is everything after the blank line that follows the closing fence. `body_sha256` is the hash of its UTF-8 bytes. `note` formats the body with prettier (when present) before hashing, so the pre-commit formatter cannot break the hash.
-- `about` is optional and lists the receiver's items the note concerns.
 - A note is immutable. A reply is a new note in the other direction. `note` validates only what it writes, so a problem elsewhere in the package cannot block a sender.
 - Merge note-only PRs quickly: they add one new file and cannot conflict.
 
@@ -231,10 +236,14 @@ A receipt records how the receiver handled one note. It is `receipts/<note-id>.m
 ```workflow-receipt
 {
   "at": "2026-10-21T11:00:00Z",
-  "by": "c002-research",
+  "by": "c002-reconcile",
   "disposition": "incorporated",
   "note": "notes/C001__to__C002__4f1c….md",
   "reason": "Added the transport comparison the note asked for.",
+  "scanned": [
+    { "ref": "origin/main", "sha": "cf6c4f90…" },
+    { "ref": "origin/wf/research-pipeline-c001-s2", "sha": "9a1b…" }
+  ],
   "target": "concepts/C002-transport.md#research"
 }
 ```
@@ -242,52 +251,27 @@ A receipt records how the receiver handled one note. It is `receipts/<note-id>.m
 
 - `by` is the receiver's agent name, or the reconciler's name followed by `for C002` when it acts on the receiver's behalf.
 - `target` is a link inside the package to where the note's content went, or where the answer is.
+- `scanned` lists every ref and SHA that `check --remote-notes` looked at before the receipt was written. A concept that received no notes records the same scan in the `note` of its S3 history entry, with the trunk SHA as `ref`. A note dated after the scan is provably late and reopens S3 for its receiver.
 - The file is created with `O_EXCL`, so two writers cannot both resolve one note. `resolve-note` accepts only `notes/*.md` files with a valid note block.
-
-A scan record proves which refs reconcile looked at. It is `receipts/C002__scan__<UTC>.md`, written by the receiver at the end of S3:
-
-````markdown
-# Note scan for C002
-
-```workflow-scan
-{
-  "at": "2026-10-21T11:05:00Z",
-  "by": "c002-reconcile",
-  "concept": "C002",
-  "pending": [],
-  "refs": {
-    "origin/main": "4063f248…",
-    "origin/wf/research-pipeline-c001-s2": "9a1b…"
-  }
-}
-```
-````
-
-`check --remote-notes` produces the `refs` and `pending` lists: it scans every `origin/*` ref for notes addressed to the concept that are not on the current branch. A note that arrives after the scan is provably late and reopens S3 for its receiver.
 
 ## Decisions
 
-`decisions/D001-<slug>.md` holds one decision. The machine block comes directly after the title:
+`decisions/D001-<slug>.md` holds one decision. Its header is a field list directly after the title, so `git grep` and a simple parser both read it:
 
-````markdown
+```markdown
 # D001: Where live leases are stored
 
-```workflow-decision
-{
-  "affects": ["C009", "C010.2"],
-  "challenge": {"at": "", "by": "", "result": ""},
-  "evidence": ["T051"],
-  "id": "D001",
-  "reversal_cost": "low: move the directory and update the profile key",
-  "reversed_by": "",
-  "source": "agent-preliminary",
-  "status": "preliminary",
-  "supersedes": []
-}
+- Status: preliminary
+- Source: agent-preliminary
+- Date: 2026-10-21T12:00:00Z
+- Affects: C009, C010.2
+- Reversal cost: low — move the directory and update the profile key
+- Decided by: s6-reviewer-2 (https://github.com/developing-today/code/pull/530)
 ```
-````
 
-The prose sections are Question, Options (each steelmanned), Choice, Rationale, Reversal (what changes if a human picks another option), and History (one line per status change). Field meanings, who may set which value, and the review flow are in [decisions.md](decisions.md).
+- `Source: stated` and `Source: human-confirmed` carry their evidence in parentheses: segment IDs (`stated (T051)`) or the URL of the human's message.
+- The sections are Question, Options (each with a steelman and the case against), Choice, Rationale and Human review. Status changes, the challenge pass and reversals each add a dated line under Choice; nothing is deleted.
+- Field meanings, who may set which value, and the review flow are in [decisions.md](decisions.md).
 
 ## Issues
 
@@ -301,24 +285,26 @@ The body ends with a marker line:
 
 - Before creating an issue, search the repository for its marker so a retry never makes a duplicate.
 - Use existing labels only.
-- The body is self-contained: goal; links to the package, the concept's section in `main.md`, the concept file and its transcript segments; current state with evidence; owned outputs; acceptance evidence; prerequisites (blocked-by); parallel-safe-with; what to do first; and a done contract (outcome, how it is verified, boundaries, and when to stop and report blocked). The [issue templates](templates/) lay these out.
+- The body is self-contained: goal; links to the package, the concept's section in `main.md`, the concept file and its transcript segments; current state with evidence; owned outputs; acceptance evidence; prerequisites (blocked-by); parallel-safe-with; what to do first; and a done contract (outcome, how it is verified, boundaries, and when to stop and report blocked). The [issue templates](templates/README.md) lay these out.
 - Record each issue in the concept's `issues` list with the stage that created it.
 
 ## Tool status
 
-What `scripts/research_workflow.py` on `main` at `4063f248` (2026-10-20) does differently from this page. Wave 2 (the `tool-items` and `tool-live` work packages) is building most of the missing commands; check `--help` before relying on one.
+What `scripts/research_workflow.py` and `scripts/research_workflow_items.py` on `main` at `cf6c4f90` (2026-10-21) do differently from this page. Work package `tool-live` is building the live commands; check `--help` before relying on one.
 
-- State: all state is one package-level JSON block in `main.md`, wrapped in `<!-- workflow:state -->` comments, with `concepts`, `tasks` and `events` arrays. Prettier de-indents it (see the existing package's `main.md`). There is no `package.json` and no per-concept `workflow-state` block.
-- Excerpts: line-based. The outline uses `source_lines`, the marker is `<!-- workflow:excerpt C001 1 5 -->` with a `text` fence, and line numbers come from Python `splitlines()` (which also splits at U+2028 and form feeds). There are no `T` segments and no `--preview-segments`.
-- Coverage: by non-blank line, not by segment. There is no `G` bucket and no `hint` type; every concept needs source lines.
+- State: all state is one package-level JSON block in `main.md`, wrapped in `<!-- workflow:state -->` comments, with `concepts`, `dependencies`, `issues`, `prs`, `tasks` and `events` arrays. Prettier de-indents it (see the existing package's `main.md`). There is no `package.json` and no per-concept `workflow-state` block; relations are `dependencies` entries `{from, to, kind, reason}`.
+- Run status: recorded as `tasks` entries `{concept, stage, status}` in that block; `check` rejects `pushed`, `pr-open` and `merged` there. `render` shows S0 as `validated`.
+- Excerpts: line-based. The outline uses `source_lines`, the marker is `<!-- workflow:excerpt C001 1 5 -->` with a `text` fence, and line numbers come from Python `splitlines()` (which also splits at U+2028 and form feeds). There are no `T` segments and no `--preview-segments`; `ids` lists segments only when a `package.json` exists.
+- Coverage: by non-blank line, not by segment. There is no `G` bucket, no `G.1` items and no `hint` type; every concept needs source lines.
 - Single concept: the concept is written into `main.md` with an inline change log, instead of a concept file and `changes.md`.
 - Notes: the marker is `<!-- workflow:note -->`, the body is hashed without a formatter pass, and `note` runs a full package check first.
-- Receipts: `resolve-note` appends a `## Note disposition` section to the receiver's concept file (a second writer) and guards with an `O_EXCL` lock file `notes/.<id>.resolved`. `deferred` is not accepted. There are no scan records.
-- Vocabulary: `status`, `priority`, `criticality` and `horizon` are free text. Completion uses a synonym set (`done`, `completed`, `researched`, ...). The relation kinds `supersedes`, `contradicts` and `part-of` are rejected.
-- Scheduling: `ready` and `status` read the working tree, not `origin/<trunk>`. There are no waves, `shares-files-with` is ignored, and there are no leases or live join.
-- Commands missing: `render`, `item add`, `item set-status`, `ids`, `lease acquire|release|list`, `verify-transcript`, `status --live`, `check --changed-since`, `check --remote-notes`, `check --run-validation`, `check --profile-only`, and the `init` flags `--preview-segments`, `--source`, `--encoding` and `--visibility`.
-- Encoding: non-UTF-8 input is always refused; there is no `--encoding`.
+- Receipts: `resolve-note` appends a `## Note disposition` section to the receiver's concept file (a second writer) and guards with an `O_EXCL` lock file `notes/.<id>.resolved`. `deferred` is not accepted and nothing records `scanned`.
+- Vocabulary: item statuses and stages are validated. Concept `status`, `priority`, `criticality` and `horizon` are free text, and completion uses a synonym set (`done`, `completed`, `researched`, ...). The relation kinds `supersedes`, `contradicts` and `part-of` are rejected.
+- Scheduling: `ready` and `status` read the working tree, not `origin/<trunk>`. The `waves` view honours `requires` and `shares-files-with`; there are no leases and no live join.
+- IDs: `ids` lists concept, item, segment, note and decision IDs but does not allocate decision IDs.
+- Commands missing: `lease acquire|release|list`, `verify-transcript`, `status --live`, `check --changed-since`, `check --remote-notes`, `check --run-validation`, `check --profile-only`, and the `init` flags `--preview-segments`, `--source`, `--encoding` and `--visibility`.
+- Encoding: non-UTF-8 input is always refused.
 - Discovery: besides the name pattern, any folder whose `main.md` has a state block counts as a package.
-- Change log lines are `- <UTC> | intake | prepared | <text>` (stage name and package status, no subject).
-- Decisions, `human-review.md`, generated views and issue markers have no tool support. Skills create issues and search markers with `gh`.
+- `init` writes its change-log line as `- <UTC> | intake | prepared | <text>`, with a stage name instead of `S0`.
+- Decisions and `human-review.md` have no tool support. Skills create issues and search markers with `gh`.
 - CI runs `check` over the whole tree on every PR, not only the changed packages.
