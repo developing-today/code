@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   computeBudget,
+  CRAWL_FETCH_TIMEOUT_MS,
+  crawlFetcher,
   fetchFollowingValidatedRedirects,
   MAX_CRAWL_BODY_BYTES,
   readResponseTextCapped,
@@ -256,6 +258,54 @@ test("fetchFollowingValidatedRedirects bounds the hop count (#460)", async () =>
     "https://example.com/loop": { status: 302, location: "https://example.com/loop" },
   });
   await assert.rejects(fetchFollowingValidatedRedirects("https://example.com/loop", fetchFn, 3), /too many redirects/);
+});
+
+test("crawlFetcher attaches a fresh AbortSignal, manual redirect and the crawler UA to every hop (#524)", async () => {
+  const seen: RequestInit[] = [];
+  const fetchFn = crawlFetcher(60_000, async (_u, init) => {
+    seen.push(init);
+    return new Response("ok");
+  });
+  await fetchFn("https://example.com/a");
+  await fetchFn("https://example.com/b");
+  assert.equal(seen.length, 2);
+  for (const init of seen) {
+    assert.ok(init.signal instanceof AbortSignal, "every hop must carry the timeout signal (#500)");
+    assert.equal(init.signal.aborted, false);
+    assert.equal(init.redirect, "manual");
+    assert.equal((init.headers as Record<string, string>)["user-agent"], "LabOpsHub/0.1 (+personal crawler)");
+  }
+  // A fresh signal per hop: a shared one would abort later hops once the
+  // first hop's deadline passes.
+  assert.notEqual(seen[0].signal, seen[1].signal);
+  assert.equal(CRAWL_FETCH_TIMEOUT_MS, 20_000);
+});
+
+test("crawlFetcher rejects a fetch that stalls before responding when the timeout fires (#524)", async () => {
+  const fetchFn = crawlFetcher(30, (_u, init) =>
+    // A server that accepts the connection and never answers: only the
+    // abort signal can end this fetch.
+    new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    }),
+  );
+  await assert.rejects(fetchFn("https://example.com/stall"), /abort|timeout/i);
+});
+
+test("crawlFetcher's signal bounds a slow-drip body read through readResponseTextCapped (#524)", async () => {
+  const fetchFn = crawlFetcher(30, async (_u, init) => {
+    // One chunk, then the body stalls: the stream errors when the hop's
+    // signal fires, exactly how a real fetch ties the body to the signal.
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("<title>partial"));
+        init.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), { once: true });
+      },
+    });
+    return new Response(body);
+  });
+  const res = await fetchFn("https://example.com/drip");
+  await assert.rejects(readResponseTextCapped(res), /abort|timeout/i);
 });
 
 test("readResponseTextCapped returns a body under the cap whole (#481)", async () => {

@@ -230,6 +230,33 @@ export async function fetchFollowingValidatedRedirects(
   }
 }
 
+// --- Timed crawl fetcher (#500, testable since #524) -------------------------
+// Every hop of the Worker-fallback crawl gets the container crawler's 20s
+// timeout (container/app.py's _OPENER.open(timeout=20)): without a signal, a
+// validated public server that accepts the connection and then stalls — or
+// slow-drips a body under the byte cap — hangs the crawl until platform
+// limits kill it. The signal stays attached to the response, so it also
+// bounds the readResponseTextCapped body read. This factory lives here (not
+// inline in the Worker entry) so the timeout is pinned by unit tests: before
+// #524 the fetcher was an anonymous inline arrow in src/index.ts, which no
+// test can import, and the #500 fix had no regression coverage.
+
+export const CRAWL_FETCH_TIMEOUT_MS = 20_000;
+
+export type FetchImpl = (url: string, init: RequestInit) => Promise<Response>;
+
+export function crawlFetcher(
+  timeoutMs: number = CRAWL_FETCH_TIMEOUT_MS,
+  fetchImpl: FetchImpl = fetch,
+): ManualFetcher {
+  return (u) =>
+    fetchImpl(u, {
+      redirect: "manual",
+      headers: { "user-agent": "LabOpsHub/0.1 (+personal crawler)" },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+}
+
 // --- Crawl body reading -----------------------------------------------------
 // The container crawler caps its body read at 2,000,000 bytes
 // (container/app.py: res.read(2_000_000)) and truncates silently. The Worker
