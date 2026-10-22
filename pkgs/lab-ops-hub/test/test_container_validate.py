@@ -561,6 +561,44 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertAccepted("http://๑๒๗.๐.๐.๑/")  # Thai digits
         self.assertAccepted("http://1۲۳.com/")  # ASCII + Extended Arabic-Indic
 
+    def test_refuses_a_label_spellings_of_arabic_indic_digit_hosts(self):
+        # PR #575 refused Arabic-Indic digit hosts in raw form (#574),
+        # but the A-label (punycode) spelling of the same hosts is
+        # pure ASCII, carries no U+0660-U+0669 codepoint, and was
+        # never decoded before judging — so it sailed through as an
+        # ordinary public DNS name while the Worker's WHATWG parser
+        # decodes the A-label and rejects it outright (#580). Judge
+        # the decoded label with the same policy.
+        for url in (
+            "http://xn--9hbcp.xn--8hb.xn--8hb.xn--9hb/",  # ١٢٧.٠.٠.١ = 127.0.0.1
+            "http://xn--9hbcp.xn--8hb.xn--8hb.xn--9hb./",  # trailing root dot
+            "http://xn--a-bqc.com/",  # a١.com (single digit, mixed label)
+            "http://xn--example-h3jjk.com/",  # example١٢٣.com
+            "http://xn--mnchen-3ya761i.com/",  # münchen١.com
+        ):
+            self.assertRefused(url)
+        # An A-label that does not decode to the non-ASCII label it
+        # claims to encode is not a valid IDNA label at all, and the
+        # Worker refuses those spellings too.
+        for url in (
+            "http://xn--999.com/",  # incomplete punycode
+            "http://xn--a.com/",  # decodes to U+0080, a C1 control
+            "http://xn--localhost-.com/",  # decodes to ASCII "localhost"
+            "http://xn--.com/",  # decodes to the empty label
+        ):
+            self.assertRefused(url)
+        # Controls: A-label spellings of accepted hosts stay accepted
+        # — the Devanagari-digit A-label (the raw spelling is an
+        # accepted control in the #574 test above), ordinary IDN
+        # A-labels, and a single-character CJK A-label.
+        for url in (
+            "http://xn--e4bcp.xn--d4b.xn--d4b.xn--e4b/",  # १२७.०.०.१ Devanagari
+            "http://xn--mnchen-3ya.de/",  # münchen.de
+            "http://xn--bcher-kva.de/",  # bücher.de
+            "http://xn--fsq.com/",  # 例.com
+        ):
+            self.assertAccepted(url)
+
     def test_judges_length_and_blocked_names_on_the_mapped_form(self):
         # UTS-46 mapping deletes the "ignored" codepoints before any
         # judgement, so the length check must measure the mapped form
