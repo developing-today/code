@@ -683,10 +683,22 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # innocent labels:
         self.assertRefused("http://ex\u2024ample.com/")
         self.assertRefused("http://ex\u2488ample.com/")
+        # U+FE12's compatibility mapping is U+3002 — a separator
+        # itself, not an ASCII dot — so the dot-only test missed it
+        # and it was silently judged as two labels (#593); the
+        # percent-encoded spelling even came back rewritten to the
+        # two-label host.
+        self.assertRefused("http://ex\ufe12ample.com/")
+        self.assertRefused("http://a\ufe12b.com/")
+        self.assertRefused("http://example\ufe12com/")
+        self.assertRefused("http://ex%ef%b8%92ample.com/")
         # The same validity judgement applies to an A-label's decoded
         # form: this spelling decodes to a label beginning with a
         # combining mark, which PR #584's checks let through.
         self.assertRefused("http://xn--abc-dma09x.com/")
+        # The A-label spelling of "ex\ufe12ample": the decoded label
+        # carries U+FE12, whose mapping is the U+3002 separator (#593).
+        self.assertRefused("http://xn--example-t673b.com/")
         # Controls: pure RTL labels (with or without a trailing
         # European digit), the Arabic separator inside a pure Arabic
         # label, ordinary IDN, and a mid-label combining mark all stay
