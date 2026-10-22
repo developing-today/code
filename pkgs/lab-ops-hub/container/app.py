@@ -135,6 +135,21 @@ def validate_crawl_url(raw):
     # those too: with them still present, "local\u00adhost" misses the
     # blocked-host check below and the length check measures a label
     # the Worker never sees (#526).
+    # UTS-46 treats exactly three characters as label separators
+    # (U+3002, U+FF0E, U+FF61, translated just below); any other
+    # character whose compatibility mapping introduces a "." —
+    # U+2024 (one dot leader) and the full-stop digits U+2488-U+249B
+    # — is IDNA-disallowed, but after NFKC mapping it would be judged
+    # as two innocent labels, so refuse it before mapping (#583).
+    if any(
+        ord(c) > 0x7F
+        and c not in "\u3002\uff0e\uff61"
+        and "." in unicodedata.normalize("NFKC", c)
+        for c in host
+    ):
+        raise ValueError(
+            f"refusing to crawl host with a character that maps to a label separator {host!r}"
+        )
     host = unicodedata.normalize("NFKC", host).lower()
     host = host.translate({0x3002: ".", 0xFF0E: ".", 0xFF61: "."})
     host = host.translate({cp: None for cp in _UTS46_IGNORED})
@@ -223,6 +238,19 @@ def validate_crawl_url(raw):
         for label in host.split("."):
             if label.startswith("xn--"):
                 _judge_a_label(label, host)
+    # A raw (non-A-label) label must be a valid IDNA label, not merely
+    # a string that punycode-encodes: the mapped host above was never
+    # IDNA-validated, so labels carrying unassigned codepoints, format
+    # characters, a leading combining mark, or a bidi-rule violation
+    # (an LTR label mixing in RTL characters, an RTL label that does
+    # not start with one) were certified as public DNS names while
+    # the Worker's WHATWG domain-to-ASCII refuses the URL outright
+    # (#583). Judge every non-ASCII label with the same helper the
+    # A-label path applies to its decoded form.
+    if ":" not in host:
+        for label in host.split("."):
+            if not label.isascii():
+                _judge_idna_label(label, host)
     # (Percent-encoded hosts are no longer refused wholesale here:
     # they were decoded and judged in their decoded form above, and
     # _percent_decode_host guarantees no % survives into this host —
@@ -377,27 +405,109 @@ def _judge_a_label(label, host):
             f"refusing to crawl host {host}: A-label {label} "
             f"decodes to a label with a forbidden character {decoded!r}"
         )
-    # The decoded label must also be a label IDNA itself accepts:
-    # an unassigned codepoint (category Cn — UTS-46 marks it
-    # disallowed, but the raw punycode codec happily encodes it) or
-    # a format character (category Cf — IDNA disallows them all;
-    # the CONTEXTJ pair ZWNJ/ZWJ is already refused above) is not a
-    # valid label, and the stdlib IDNA codec's nameprep/bidi checks
-    # refuse labels that mix LTR and RTL characters in ways the
-    # bidi rule forbids. The Worker refuses every one of these in
-    # A-label form; the same classes in raw form are #583.
-    if any(unicodedata.category(c) in ("Cn", "Cf") for c in decoded):
+    # The decoded label must also be a valid IDNA label in its own
+    # right — the same judgement the raw-form path applies (#583).
+    _judge_idna_label(decoded, host)
+
+
+def _judge_idna_label(label, host):
+    # Judge one non-ASCII label (a raw mapped label, or an A-label's
+    # decoded form) for IDNA/UTS-46 validity (#583). The Worker's
+    # WHATWG domain-to-ASCII applies full validity, so a label is
+    # refused here when:
+    # - it carries an unassigned codepoint (category Cn — UTS-46
+    #   marks it disallowed, but the raw punycode codec happily
+    #   encodes it) or a format character (category Cf — IDNA
+    #   disallows them all; the CONTEXTJ pair ZWNJ/ZWJ is refused by
+    #   the forbidden-character checks before this helper runs);
+    # - it begins with a combining mark (UTS-46 requires a label to
+    #   start with a non-mark);
+    # - it violates the bidi rule (RFC 5893): a label may not mix
+    #   strong LTR (bidi class L) with strong RTL (R / AL) characters,
+    #   and an RTL label must start with an R / AL character. The
+    #   stdlib IDNA codec's own bidi check misses post-Unicode-3.2
+    #   RTL letters (e.g. U+0620, U+06EE, U+05EF pass
+    #   "ex\u0620ample".encode("idna")), so the directionality check
+    #   is spelled out here, and the codec call below is kept for its
+    #   remaining nameprep/bidi coverage (it does catch the classic
+    #   Hebrew-in-Latin mixing, e.g. "ex\u05d0ample");
+    # - it carries an Arabic decimal / thousands separator
+    #   (U+066B / U+066C, IDNA-disallowed) in a label with strong LTR
+    #   characters — outside an Arabic-script context the Worker
+    #   refuses them, while a pure Arabic label carrying one stays
+    #   accepted, matching the Worker;
+    # - the stdlib IDNA codec rejects it.
+    # Known residuals, measured on the #583 differential battery
+    # (13,045 hosts vs the Worker's validator under Bun): this
+    # interpreter's unicodedata is 15.0.0, so a few dozen codepoints
+    # assigned in later Unicode versions read as Cn here while the
+    # Worker's newer tables accept them (the same version skew PR
+    # #584 accepted for A-labels), and U+0345, which UTS-46 maps to
+    # a letter, reads as a leading mark here.
+    if any("." in unicodedata.normalize("NFKC", c) for c in label if ord(c) > 0x7F):
+        # A decoded A-label is judged unmapped, so the mapped-dot
+        # refusal in validate_crawl_url never sees this form.
         raise ValueError(
-            f"refusing to crawl host {host}: A-label {label} "
-            f"decodes to a label with an unassigned or format character {decoded!r}"
+            f"refusing to crawl host {host}: label {label!r} "
+            "contains a character that maps to a label separator"
+        )
+    if any(unicodedata.category(c) in ("Cn", "Cf") for c in label):
+        raise ValueError(
+            f"refusing to crawl host {host}: label {label!r} "
+            "contains an unassigned or format character"
+        )
+    if unicodedata.category(label[0]).startswith("M"):
+        raise ValueError(
+            f"refusing to crawl host {host}: label {label!r} "
+            "begins with a combining mark"
+        )
+    bidis = [unicodedata.bidirectional(c) for c in label]
+    has_ltr = "L" in bidis
+    has_rtl = any(b in ("R", "AL") for b in bidis)
+    if has_ltr and has_rtl:
+        raise ValueError(
+            f"refusing to crawl host {host}: label {label!r} "
+            "mixes left-to-right and right-to-left characters"
+        )
+    if has_rtl and bidis[0] not in ("R", "AL"):
+        raise ValueError(
+            f"refusing to crawl host {host}: label {label!r} "
+            "is a right-to-left label that does not start with one"
+        )
+    if has_ltr and any(ord(c) in (0x066B, 0x066C) for c in label):
+        raise ValueError(
+            f"refusing to crawl host {host}: label {label!r} "
+            "contains an Arabic separator outside an Arabic label"
         )
     try:
-        decoded.encode("idna")
-    except UnicodeError:
-        raise ValueError(
-            f"refusing to crawl host {host}: A-label {label} "
-            f"decodes to a label IDNA rejects {decoded!r}"
-        ) from None
+        label.encode("idna")
+    except UnicodeError as e:
+        # The codec's non-bidi verdicts are a useful backstop (its
+        # stringprep tables prohibit e.g. the ideographic description
+        # characters U+2FF0-U+2FFB, which every other check here
+        # passes). Its bidi verdicts are IDNA-2003's, stricter than
+        # RFC 5893: it refuses an RTL label ending in a European
+        # digit ("label1" spelled with a Hebrew label), which the
+        # Worker accepts — so a bidi-only failure is re-judged by the
+        # RFC 5893 trailing rule (the last non-NSM character of an
+        # RTL label is R / AL / AN / EN; of an LTR label, L / EN) on
+        # top of the start/mixing rules already applied above.
+        if "BIDI" not in str(e):
+            raise ValueError(
+                f"refusing to crawl host {host}: label {label!r} "
+                "is not a valid IDNA label"
+            ) from None
+        trailing = list(bidis)
+        while trailing and trailing[-1] == "NSM":
+            trailing.pop()
+        last = trailing[-1] if trailing else ""
+        if (has_rtl and last not in ("R", "AL", "AN", "EN")) or (
+            not has_rtl and has_ltr and last not in ("L", "EN")
+        ):
+            raise ValueError(
+                f"refusing to crawl host {host}: label {label!r} "
+                "ends with a character its directionality forbids"
+            ) from None
 
 
 _GLOBAL_UNICAST_V6 = ipaddress.IPv6Network("2000::/3")
