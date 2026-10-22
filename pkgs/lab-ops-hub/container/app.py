@@ -192,11 +192,21 @@ def validate_crawl_url(raw):
     # up front: C0 controls and space (#507), plus DEL, the C1 controls
     # and NBSP (0x7F-0xA0) and the forbidden host codepoints < > ^ |
     # (#510), plus the IDNA-disallowed codepoints that survive NFKC
-    # (#516). Non-ASCII above NBSP that is a valid IDN character (e.g.
+    # (#516), plus the Arabic-Indic digits (U+0660-U+0669): WHATWG's
+    # domain-to-ASCII rejects any host containing one, even a single
+    # digit in a mixed label, while urlparse passes the spelling
+    # through and this validator would otherwise certify it as a public
+    # DNS name — including ١٢٧.٠.٠.١, the Arabic-Indic spelling of
+    # 127.0.0.1, which the ASCII-only numeric checks cannot read as an
+    # address (#574). The other decimal-digit families (Devanagari,
+    # Extended Arabic-Indic U+06F0-U+06F9, Bengali, Thai, ...) are
+    # accepted by WHATWG as ordinary IDN characters and stay accepted
+    # here. Non-ASCII above NBSP that is a valid IDN character (e.g.
     # é) is untouched.
     if any(
         ord(c) <= 0x20
         or 0x7F <= ord(c) <= 0xA0
+        or 0x0660 <= ord(c) <= 0x0669
         or c in "<>^|"
         or ord(c) in _IDNA_DISALLOWED
         for c in host

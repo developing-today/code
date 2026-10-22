@@ -484,6 +484,32 @@ class TestValidateCrawlUrl(unittest.TestCase):
         for ch in ("\u00ad", "\u180e", "\u200b", "\u2060", "\u2064", "\ufeff"):
             self.assertAccepted("http://exam" + ch + "ple.com/")
 
+    def test_refuses_arabic_indic_digit_hosts(self):
+        # WHATWG's domain-to-ASCII rejects any host containing an
+        # Arabic-Indic digit (U+0660-U+0669) — even one digit in a
+        # mixed label — while urlparse passes the spelling through and
+        # the ASCII-only numeric checks cannot read it as an address,
+        # so the old code certified the hosts below as public DNS
+        # names and fetched their punycode forms (#574).
+        self.assertRefused("http://١٢٧.٠.٠.١/")  # 127.0.0.1, Arabic-Indic digits
+        self.assertRefused("http://١٢٣.com/")
+        self.assertRefused("http://example١٢٣.com/")
+        self.assertRefused("http://a١.com/")
+        self.assertRefused("http://١a.com/")
+        self.assertRefused("http://1٢٣.com/")
+        self.assertRefused("http://münchen١.com/")
+        # The percent-encoded spelling decodes to the same host and
+        # is judged on the decoded form, so it is refused too.
+        self.assertRefused("http://%d9%a1%d9%a2%d9%a3.com/")  # ١٢٣.com
+        # Controls: the other decimal-digit families are ordinary IDN
+        # characters to WHATWG (accepted as punycode DNS names), and
+        # the container accepts them too.
+        self.assertAccepted("http://१२७.०.०.१/")  # Devanagari digits
+        self.assertAccepted("http://۱۲۷.۰.۰.۱/")  # Extended Arabic-Indic (U+06F0s)
+        self.assertAccepted("http://১২৭.০.০.১/")  # Bengali digits
+        self.assertAccepted("http://๑๒๗.๐.๐.๑/")  # Thai digits
+        self.assertAccepted("http://1۲۳.com/")  # ASCII + Extended Arabic-Indic
+
     def test_judges_length_and_blocked_names_on_the_mapped_form(self):
         # UTS-46 mapping deletes the "ignored" codepoints before any
         # judgement, so the length check must measure the mapped form
