@@ -149,6 +149,38 @@ class TestValidateCrawlUrl(unittest.TestCase):
             with self.assertRaises(ValueError, msg=url):
                 validate_crawl_url(url)
 
+    def test_tab_split_slash_run_authority_spellings(self):
+        # WHATWG strips tab/LF/CR before parsing, so a control
+        # character inside the delimiter run after the scheme colon
+        # does not split the run: the #586 slash-run collapse must
+        # judge the stripped spelling, not the raw one (#589). The
+        # behaviour arrived with the #611 strip (app.py removes
+        # tab/CR/LF before the collapse); this test pins the
+        # slash-run spellings #589 names so a reordering of those
+        # two steps cannot silently reopen the divergence.
+        T, N, R = chr(9), chr(10), chr(13)
+        for raw, expected in (
+            (f"http:{T}/example.com/x", "http://example.com/x"),
+            (f"http:{N}//example.com/x", "http://example.com/x"),
+            (f"http:{R}//example.com/x", "http://example.com/x"),
+            (f"http:/{T}/example.com/x", "http://example.com/x"),
+            (f"http:/{N}/example.com/x", "http://example.com/x"),
+            (f"http:/{R}{N}/example.com/x", "http://example.com/x"),
+            (f"https:{T}/example.com/", "https://example.com/"),
+        ):
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Blocked targets in tab-split slash-run spellings are
+        # refused for the right reason (non-public / local), not
+        # as hostless URLs.
+        for url in (
+            f"https:/{T}/127.0.0.1/",
+            f"http:{T}//127.0.0.1/x",
+            f"http:{T}//localhost/x",
+        ):
+            with self.assertRaises(ValueError, msg=url) as cm:
+                validate_crawl_url(url)
+            self.assertNotIn("no host", str(cm.exception), url)
+
     def test_refuses_non_http_schemes_and_local_names(self):
         for url in (
             "ftp://example.com/",
