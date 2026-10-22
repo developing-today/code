@@ -57,6 +57,19 @@ def validate_crawl_url(raw):
     # structure.
     if ":" not in host and any(label == "" for label in host.split(".")):
         raise ValueError(f"refusing to crawl host with an empty label {host}")
+    # A label over 63 octets, or a name over 253 characters, can never
+    # be a DNS name at all (RFC 1035 §2.3.4: 63-octet labels, 255-octet
+    # wire names = 253 characters of text without the root dot, which
+    # the strip above already removed) — refuse it up front instead of
+    # certifying it as a public DNS name and letting the resolver fail
+    # on it deep inside the fetcher, matching the Worker's validator
+    # (#513). Character length is a lower bound on the IDNA-encoded
+    # length, so this can never refuse a name that encodes within the
+    # limits. IPv6 literals are judged as addresses, as above.
+    if ":" not in host and (
+        len(host) > 253 or any(len(label) > 63 for label in host.split("."))
+    ):
+        raise ValueError(f"refusing to crawl host with an overlong label or name {host}")
     # A raw % in the host is a percent-encoded spelling (or an IPv6 zone
     # id): WHATWG URL parsing percent-decodes the host before judging it
     # — %6cocalhost is localhost — and rejects the rest outright, while

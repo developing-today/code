@@ -153,6 +153,18 @@ export function validateCrawlUrl(raw: string): { ok: true; url: string } | { ok:
   if (!host.startsWith("[") && host.split(".").some((label) => label === "")) {
     return { ok: false, error: `refusing to crawl host with an empty label ${host}` };
   }
+  // A label over 63 octets, or a name over 253 characters, can never
+  // be a DNS name at all (RFC 1035 §2.3.4: 63-octet labels, 255-octet
+  // wire names = 253 characters of text without the root dot, which
+  // the strip above already removed) — refuse it up front instead of
+  // certifying it as a public DNS name and letting the resolver fail
+  // on it, matching the container's validator (#513). u.hostname is
+  // already the punycode (IDNA-encoded) form, so these lengths are
+  // the wire lengths exactly. Bracketed IPv6 literals are exempt, as
+  // with the empty-label check above.
+  if (!host.startsWith("[") && (host.length > 253 || host.split(".").some((label) => label.length > 63))) {
+    return { ok: false, error: `refusing to crawl host with an overlong label or name ${host}` };
+  }
   if (host === "localhost" || BLOCKED_HOST_SUFFIXES.some((s) => host.endsWith(s))) {
     return { ok: false, error: `refusing to crawl local host ${host}` };
   }

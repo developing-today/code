@@ -163,6 +163,25 @@ test("validateCrawlUrl refuses empty-label hosts (#511)", () => {
   assert.equal(validateCrawlUrl("http://example.com/").ok, true);
 });
 
+test("validateCrawlUrl refuses overlong DNS names (#513)", () => {
+  // RFC 1035 §2.3.4: no label over 63 octets, no name over 253
+  // characters of text. Neither can ever resolve; refuse up front.
+  const blocked = [
+    `http://${"b".repeat(64)}.com/`,
+    `http://${["a".repeat(63), "a".repeat(63), "a".repeat(63), "a".repeat(63), "com"].join(".")}/`,
+  ];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  // Controls at the limit stay allowed: a 63-char label, and a
+  // 253-char name (63+63+63+61 + 3 dots).
+  assert.equal(validateCrawlUrl(`http://${"b".repeat(63)}.com/`).ok, true);
+  assert.equal(
+    validateCrawlUrl(`http://${["a".repeat(63), "a".repeat(63), "a".repeat(63), "a".repeat(61)].join(".")}/`).ok,
+    true,
+  );
+});
+
 function stubFetcher(routes: Record<string, { status: number; location?: string }>) {
   const seen: string[] = [];
   const fetchFn = async (url: string): Promise<Response> => {
