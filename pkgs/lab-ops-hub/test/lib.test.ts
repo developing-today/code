@@ -188,6 +188,47 @@ test("validateCrawlUrl refuses overlong DNS names (#513)", () => {
   );
 });
 
+test("validateCrawlUrl judges percent-encoded hosts in their decoded form (#529)", () => {
+  // WHATWG percent-decodes the host before judging it; the container
+  // validator must reach the same verdicts on the decoded form.
+  const accepted: Array<[string, string]> = [
+    ["http://%65xample.com/", "http://example.com/"],
+    ["http://example%2ecom/", "http://example.com/"],
+    ["http://8%2e8%2e8%2e8/", "http://8.8.8.8/"],
+    ["http://%38%2e8.8.8/", "http://8.8.8.8/"],
+  ];
+  for (const [u, normalized] of accepted) {
+    const r = validateCrawlUrl(u);
+    assert.equal(r.ok, true, u);
+    if (r.ok) assert.equal(r.url, normalized, u);
+  }
+  const blocked = [
+    "http://%6cocalhost/", // decodes to localhost
+    "http://127%2e0%2e0%2e1/", // decodes to 127.0.0.1
+    "http://foo%2elocalhost/", // decodes to foo.localhost
+    "http://127.0.0.1%09/", // decodes to a forbidden tab
+    "http://8.8.8.8%zz/", // invalid percent escape
+    "http://example.com%/", // trailing bare %
+    "https://[fe80::1%25eth0]/", // IPv6 zone id
+    "http://exam%2fple.com/", // decodes to a host delimiter
+    "http://example%252ecom/", // double-encoded spelling
+  ];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+});
+
+test("fetchFollowingValidatedRedirects follows a percent-encoded public redirect target (#529)", async () => {
+  const { fetchFn, seen } = stubFetcher({
+    "https://example.com/start": { status: 302, location: "http://%65xample.org/final" },
+    "http://example.org/final": { status: 200 },
+  });
+  const res = await fetchFollowingValidatedRedirects("https://example.com/start", fetchFn);
+  assert.equal(res.status, 200);
+  // The redirect target is fetched in its decoded (normalised) form.
+  assert.deepEqual(seen, ["https://example.com/start", "http://example.org/final"]);
+});
+
 function stubFetcher(routes: Record<string, { status: number; location?: string }>) {
   const seen: string[] = [];
   const fetchFn = async (url: string): Promise<Response> => {

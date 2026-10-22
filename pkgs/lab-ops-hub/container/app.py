@@ -71,6 +71,27 @@ def validate_crawl_url(raw):
     except ValueError:
         raise ValueError("url has an invalid port") from None
     host = (u.hostname or "").lower()
+    # WHATWG URL parsing percent-decodes the host before judging it —
+    # %65xample.com is example.com, %6cocalhost is localhost — while
+    # urlparse hands the spelling through verbatim (#505, #529). Decode
+    # first and judge the decoded form with every check below, the way
+    # the Worker does, instead of refusing the whole class: spellings
+    # that decode to blocked targets stay refused by the ordinary
+    # checks, and the invalid spellings WHATWG rejects outright
+    # (malformed % sequences, undecodable bytes, a decoded % or a
+    # decoded host delimiter) are refused inside _percent_decode_host.
+    # A % in a bracketed host is an IPv6 zone id ([fe80::1%25eth0]),
+    # which WHATWG also rejects outright — never decode those. When a
+    # host was decoded, the URL this function returns (and therefore
+    # the URL the crawler fetches) carries the decoded host: urllib
+    # does not percent-decode hosts, so returning the raw spelling
+    # would fetch a name that was never judged.
+    percent_decoded = False
+    if "%" in host:
+        if u.netloc.rsplit("@", 1)[-1].startswith("["):
+            raise ValueError(f"refusing to crawl host with an IPv6 zone id {host}")
+        host = _percent_decode_host(host)
+        percent_decoded = True
     # Judge the host in the mapped form its resolver will see: IDNA
     # processing (encodings.idna / getaddrinfo, like UTS-46 in the
     # Worker's WHATWG parser) NFKC-maps fullwidth/compatibility
@@ -135,14 +156,10 @@ def validate_crawl_url(raw):
             raise ValueError(
                 f"refusing to crawl host with an overlong label or name {host}"
             )
-    # A raw % in the host is a percent-encoded spelling (or an IPv6 zone
-    # id): WHATWG URL parsing percent-decodes the host before judging it
-    # — %6cocalhost is localhost — and rejects the rest outright, while
-    # urlparse hands the spelling through verbatim and the checks below
-    # would mistake it for a public DNS name (or ipaddress would accept
-    # the zone id). Refuse every % host, fail-closed (#505).
-    if "%" in host:
-        raise ValueError(f"refusing to crawl percent-encoded host {host}")
+    # (Percent-encoded hosts are no longer refused wholesale here:
+    # they were decoded and judged in their decoded form above, and
+    # _percent_decode_host guarantees no % survives into this host —
+    # #529 supersedes #505's blanket refusal.)
     # A space, control or WHATWG-forbidden character in the host is not
     # a DNS name: WHATWG rejects it outright, urlparse hands it through
     # verbatim, and http.client only raises for it deep inside the
@@ -197,7 +214,9 @@ def validate_crawl_url(raw):
                     f"refusing to crawl host {host}: bracketed literal "
                     "but not a valid IPv6 address"
                 )
-            return raw  # a public DNS name; literal-IP policy does not apply
+            # A public DNS name; literal-IP policy does not apply.
+            # A percent-decoded host is fetched in its decoded form.
+            return _url_with_host(u, host) if percent_decoded else raw
     embedded = _embedded_ipv4(ip)
     if embedded is not None:
         # Translation/mapped prefixes are judged by the IPv4 they embed,
@@ -234,7 +253,8 @@ def validate_crawl_url(raw):
         raise ValueError(f"refusing to crawl non-public address {host}")
     elif not ip.is_global:
         raise ValueError(f"refusing to crawl non-public address {host}")
-    return raw
+    # A percent-decoded host is fetched in its decoded form (#529).
+    return _url_with_host(u, host) if percent_decoded else raw
 
 
 _GLOBAL_UNICAST_V6 = ipaddress.IPv6Network("2000::/3")
@@ -246,6 +266,65 @@ _IPV6_DOCUMENTATION = ipaddress.IPv6Network("3fff::/20")
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
 
 _IPV4_6TO4_RELAY_ANYCAST = ipaddress.IPv4Network("192.88.99.0/24")
+
+
+def _percent_decode_host(host):
+    # Percent-decode a host the way WHATWG URL parsing does before it
+    # judges the host (#529): every % must be a complete %XX hex escape,
+    # the decoded bytes must be valid UTF-8, and the decoded host must
+    # not still contain a % (a %25 double-encoded spelling, which
+    # WHATWG's domain processing rejects) or any of the host delimiters
+    # a raw spelling can never carry into u.hostname because urlparse
+    # splits on them (# / : ? @ [ \ ]) — after decoding they would
+    # change what the fetcher connects to. (Controls, space and the
+    # < > ^ | forbidden set need no arm here: validate_crawl_url's
+    # forbidden-character check refuses them on the decoded form.)
+    raw_bytes = bytearray()
+    i = 0
+    while i < len(host):
+        c = host[i]
+        if c == "%":
+            esc = host[i + 1 : i + 3]
+            if len(esc) != 2 or any(ch not in "0123456789abcdefABCDEF" for ch in esc):
+                raise ValueError(
+                    f"refusing to crawl host with an invalid percent escape {host}"
+                )
+            raw_bytes.append(int(esc, 16))
+            i += 3
+        else:
+            raw_bytes.extend(c.encode("utf-8"))
+            i += 1
+    try:
+        decoded = bytes(raw_bytes).decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError(
+            f"refusing to crawl host that is not valid UTF-8 once decoded {host}"
+        ) from None
+    if "%" in decoded or any(c in "#/:?@[\\]" for c in decoded):
+        raise ValueError(
+            f"refusing to crawl host with a forbidden character once decoded {host}"
+        )
+    return decoded
+
+
+def _url_with_host(u, new_host):
+    # Rebuild a parsed URL with new_host in place of the netloc's host,
+    # preserving userinfo, port, path, query and fragment. Used for
+    # percent-decoded hosts (#529): the fetcher must connect to the
+    # decoded host that was judged, not the raw spelling.
+    netloc = u.netloc
+    if "@" in netloc:
+        userinfo, _, hostport = netloc.rpartition("@")
+        prefix = userinfo + "@"
+    else:
+        prefix, hostport = "", netloc
+    if hostport.startswith("["):
+        _, _, suffix = hostport.partition("]")
+        return u._replace(netloc=f"{prefix}[{new_host}]{suffix}").geturl()
+    if ":" in hostport:
+        _, _, port = hostport.partition(":")
+        return u._replace(netloc=f"{prefix}{new_host}:{port}").geturl()
+    return u._replace(netloc=prefix + new_host).geturl()
 
 
 def _embedded_ipv4(ip):
@@ -285,7 +364,11 @@ def _inet_aton_ipv4(host):
 
 class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validate_crawl_url(newurl)
+        # Follow the validated form, not the raw Location: a redirect
+        # target is validated raw (no Worker normalisation in between),
+        # and a percent-encoded target must be fetched as the decoded
+        # host that was judged (#529).
+        newurl = validate_crawl_url(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -353,7 +436,10 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("content-length", "0"))
             url = json.loads(self.rfile.read(length))["url"]
             try:
-                validate_crawl_url(url)
+                # Fetch the validated form: identical to the request
+                # except for a percent-encoded host, which is fetched
+                # decoded, as judged (#529).
+                url = validate_crawl_url(url)
             except ValueError as e:
                 return self._send(400, {"error": str(e)})
             req = urllib.request.Request(
