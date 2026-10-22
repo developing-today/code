@@ -645,6 +645,58 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertAccepted(url)
 
+    def test_refuses_idna_invalid_hosts(self):
+        # A label can punycode-encode without being a valid IDNA
+        # label at all: the mapped host was never IDNA-validated, so
+        # whole classes the Worker's WHATWG domain-to-ASCII refuses
+        # outright were certified here as public DNS names (#583).
+        # Unassigned codepoints (category Cn in this interpreter's
+        # Unicode tables):
+        self.assertRefused("http://\u0378ample.com/")
+        self.assertRefused("http://ex\u0380ample.com/")
+        self.assertRefused("http://ex\u05ebample.com/")
+        # A format character (category Cf) that is neither in the
+        # UTS-46 ignored set nor the #516 denylist:
+        self.assertRefused("http://a\u0601b.com/")
+        # Bidi-rule violations: an LTR label mixing in RTL characters
+        # (the stdlib codec catches the Hebrew case; the post-3.2
+        # Arabic letters and the NKo digit need the explicit
+        # directionality check), and an RTL label that does not start
+        # with an RTL character.
+        self.assertRefused("http://ex\u05d0ample.com/")
+        self.assertRefused("http://local\u05d0host/")
+        self.assertRefused("http://ex\u0620ample.com/")
+        self.assertRefused("http://ex\u06eeample.com/")
+        self.assertRefused("http://a\u07c0.com/")
+        self.assertRefused("http://1\u05d0.com/")
+        self.assertRefused("http://-\u05d0.com/")
+        # A label beginning with a combining mark:
+        self.assertRefused("http://\u0301abc.com/")
+        self.assertRefused("http://\u0301abc\u00e9.com/")
+        # The Arabic decimal separator is IDNA-disallowed in a label
+        # with strong LTR characters:
+        self.assertRefused("http://ex\u066bample.com/")
+        self.assertRefused("http://ex\u066cample.com/")
+        # Characters whose compatibility mapping introduces a label
+        # separator are disallowed (only U+3002/U+FF0E/U+FF61 are
+        # UTS-46 separators); after NFKC they would be judged as two
+        # innocent labels:
+        self.assertRefused("http://ex\u2024ample.com/")
+        self.assertRefused("http://ex\u2488ample.com/")
+        # The same validity judgement applies to an A-label's decoded
+        # form: this spelling decodes to a label beginning with a
+        # combining mark, which PR #584's checks let through.
+        self.assertRefused("http://xn--abc-dma09x.com/")
+        # Controls: pure RTL labels (with or without a trailing
+        # European digit), the Arabic separator inside a pure Arabic
+        # label, ordinary IDN, and a mid-label combining mark all stay
+        # accepted, matching the Worker.
+        self.assertAccepted("http://\u05d0\u05d0.com/")
+        self.assertAccepted("http://\u05d01.com/")
+        self.assertAccepted("http://\u0627\u066b\u0627.com/")
+        self.assertAccepted("http://m\u00fcnchen.de/")
+        self.assertAccepted("http://ex\u0301ample.com/")
+
     def test_judges_length_and_blocked_names_on_the_mapped_form(self):
         # UTS-46 mapping deletes the "ignored" codepoints before any
         # judgement, so the length check must measure the mapped form

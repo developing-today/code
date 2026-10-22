@@ -169,6 +169,26 @@ test("validateCrawlUrl refuses empty-label hosts (#511)", () => {
   assert.equal(validateCrawlUrl("http://example.com/").ok, true);
 });
 
+test("validateCrawlUrl refuses IDNA-invalid hosts (#583)", () => {
+  // WHATWG domain-to-ASCII refuses labels that are not valid IDNA
+  // labels at all — unassigned codepoints, labels mixing LTR and RTL
+  // characters, labels beginning with a combining mark. The container
+  // validator now pins the same verdicts (#583).
+  const blocked = [
+    "http://\u0378ample.com/",
+    "http://ex\u05d0ample.com/",
+    "http://local\u05d0host/",
+    "http://\u0301abc.com/",
+    "http://ex\u066bample.com/",
+  ];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  // Controls: pure RTL labels and ordinary IDN stay accepted.
+  assert.equal(validateCrawlUrl("http://\u05d0\u05d0.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://münchen.de/").ok, true);
+});
+
 test("validateCrawlUrl refuses overlong DNS names (#513)", () => {
   // RFC 1035 §2.3.4: no label over 63 octets, no name over 253
   // characters of text. Neither can ever resolve; refuse up front.
