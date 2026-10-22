@@ -1,58 +1,48 @@
-# Scheduling, Ordering & Frontier Dispatch
+# Ordering
 
-This document details how dependency graphs are evaluated into execution waves and how the ready frontier is computed for autonomous workers.
+How relations between concepts and steps become waves of parallel work, and how a plan writes them down. Who may dispatch, and how many at once, is collaboration rule 8 ([collaboration.md](collaboration.md#the-rules)).
 
-## 1. Graph Semantics
+## Edges
 
-The workflow graph model uses typed edges from `planning/DEPENDENCIES.md` to establish execution order:
+Relation kinds and priority tiers are defined in [DEPENDENCIES.md](../DEPENDENCIES.md#1-dependency-relations). Scheduling uses them like this:
 
-- **`requires` (Hard Blocker)**: Defines the topological sort order. A concept or step with unsatisfied `requires` edges cannot be dispatched under any circumstances.
-- **`recommended-after` (Soft Sequencing)**: Recommends that source follow target to minimize rework. If workers are idle and target is still in progress, source may proceed, provided its task brief explicitly states the assumptions it is making.
-- **`shares-files-with` (Mutual Exclusion)**: Two tasks that modify the same files are assigned to different waves or locked under a shared mutex so they never run concurrently in separate worktrees.
+- `requires`: a hard blocker. The source is not ready until the target has merged, or reached the `stage` the relation names. Cycles are rejected.
+- `recommended-after`: a soft edge. The source goes one wave after the target, but may start early when writers are idle. Its `rework_if_early` text says what may need redoing, and the worker's brief states the assumption it runs on.
+- `shares-files-with`: never in the same wave.
+- `conflicts-with`: settled by the decision protocol ([decisions.md](decisions.md#disagreement)) before either side is planned.
+- `optional-if`: scheduled only once its `trigger` holds.
+- The other kinds do not change the order.
 
-## 2. Wave Scheduling
+## Waves
 
-Orchestrators group work into waves:
+`ready` turns the edges into waves:
 
-```text
-Wave 0: Shared Contracts & Foundations
-  ├── C001: Data model & type definitions
-  └── C002: Core schema migration
-        │
-Wave 1: Parallel Feature Implementations [P]
-  ├── C003: Ingest pipeline worker
-  ├── C004: HTTP presentation presenter
-  └── C005: Event stream subscriber
-        │
-Wave 2: Integration & Verification
-  └── C006: End-to-end integration test & validation
-```
+1. Drop units that are finished at their stage, and units that are claimed or running ([run status](vocabulary.md#run-status)).
+2. Wave 1 is every remaining unit whose `requires` targets have merged on `origin/<trunk>`. Later waves follow `requires` in topological order.
+3. Two units in one wave that share files are split; the later one moves to the next wave. A `recommended-after` source moves one wave past its target. The `waves` view shows each such cost under the wave that pays it ([records.md](records.md#generated-views)).
+4. The router dispatches wave 1 up to the cap, taking each unit's lease first and skipping any unit whose lease is held.
 
-- **Wave 0 (Foundations)**: Shared types, schema, and API contracts must be merged first.
-- **Wave 1 (Parallel Builders)**: Independent features run simultaneously across parallel worktrees. Each step is marked `[P]` in implementation plans.
-- **Wave 2 (Integration)**: Final verification and cross-cutting documentation.
+Shared names, types and interfaces are pinned before wave 1 starts, in the plan or by a first step that every parallel step requires, so parallel workers build against one contract. Read-only reviewers are not scheduled; they run whenever needed. Today `ready` reads the working tree and knows no leases ([Tool status](records.md#tool-status)).
 
-## 3. Ready Frontier Calculation
+## Plans
 
-At any given point during execution, the orchestrator computes the **Ready Frontier** using `scripts/research_workflow.py ready`:
-
-1. **Exclude Completed Concepts**: Concepts with status in `COMPLETE` (`done`, `completed`, `merged`, `validated`) are removed.
-2. **Exclude Active Concepts**: Concepts with status in `ACTIVE` (`running`, `active`, `in-progress`) are removed to prevent duplicate dispatch.
-3. **Filter by Prerequisites**: A concept is ready if and only if all of its `requires` dependencies have reached `COMPLETE` status.
-4. **Partition by Concurrency Fences**: If two ready concepts share a `shares-files-with` edge, only one is scheduled in the immediate wave; the other waits for the next wave.
-5. **Lease Guard**: Before dispatching, the orchestrator acquires a live lease in `agent-work/<pkg>-<stage>/locks/concept-<id>.lock`. If a lease already exists on disk, dispatch is skipped.
-
-## 4. Implementation Plan Output Format
-
-When generating an implementation plan in Stage 7 (`feature-plan`), steps are formatted with explicit parallel markers:
+A plan ([template](../templates/plan.md)) groups its steps by wave. Each step is one PR and one `Implement:` issue, and carries these fields:
 
 ```markdown
-### Phase 1: Core Surface Presenters
+### Wave 2
 
-- [ ] **1.1.1** [P] Define presenter traits in `src/presenter.rs`. (Done when: `cargo test --lib presenter` passes).
-- [ ] **1.1.2** [P] Implement terminal ANSI screen renderer in `src/terminal.rs`. (Requires: 1.1.1; Done when: unit tests pass).
-- [ ] **1.1.3** [P] Implement web canvas presenter in `web/src/screen.ts`. (Requires: 1.1.1; Done when: vitest passes).
-- [ ] **1.1.4** Integration presenter parity check. (Requires: 1.1.2, 1.1.3; Done when: parity suite passes).
+3. **[P] Web canvas presenter.** Implement the presenter in `web/src/screen.ts`.
+   - Tier: recommended. Goal: the web view shows what the terminal shows. Enables: 5, C006.
+   - Requires: 1. After: 2, rework if early: the shared escape table may change.
+   - Files: `web/src/screen.ts`. Cites: D002, C004.3.
+   - Done when: `vitest run screen` passes.
 ```
 
-`[P]` explicitly tells the implementation orchestrator which tasks can be fanned out across parallel worktrees simultaneously.
+- `Requires:` hard blockers, by step number. The step's issue has exactly these as blocked-by, and a step is never in the same wave as one it requires.
+- `After:` soft edges, each with what may need redoing if the step starts before its target finishes.
+- `[P]`: the step may run in parallel with the other `[P]` steps in its wave; they share no files and none requires another. A step without `[P]` runs alone in its wave, such as an integration or migration step.
+- `Tier:` `crucial`, `recommended` or `contingent`. Crucial steps are dispatched first in a wave. A contingent step names the trigger that schedules it and does not start before the trigger holds.
+- `Goal:` what is true after the step that is not true before. `Enables:` the later steps and concepts it unlocks, so a reviewer can see why it exists and what stalls if it slips.
+- `Files:` every path the step writes. Two steps in one wave never share one.
+- `Cites:` the decisions and items the step implements ([decisions.md](decisions.md#coverage)).
+- `Done when:` a check that a test or CI job runs.
