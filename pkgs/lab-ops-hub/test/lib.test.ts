@@ -215,6 +215,30 @@ test("validateCrawlUrl refuses Arabic numbers outside RTL labels (#595)", () => 
   assert.equal(validateCrawlUrl("http://\u{10d00}\u{10d30}.com/").ok, true);
 });
 
+test("validateCrawlUrl judges Arabic-Indic digits by their bidi context (#605)", () => {
+  // U+0660-U+0669 are bidi class AN, like the astral digits in the
+  // #595 test: valid inside a genuine RTL label, refused outside
+  // one. The container validator's blanket range refused the RTL
+  // spellings too; it now pins the same contextual verdicts (#605).
+  const blocked = [
+    "http://\u0661.com/",
+    "http://\u0661\u0662\u0667.\u0660.\u0660.\u0661/",
+    "http://ex\u0661ample.com/",
+    "http://\u05d0\u06611.com/",
+    "http://\u0661\u0627.com/",
+  ];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  // Controls: the digits inside RTL labels, raw and A-label form.
+  assert.equal(validateCrawlUrl("http://\u0627\u0661.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://\u0645\u0631\u062d\u0628\u0627\u0661.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://\u05d0\u0661.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://xn--mgb0j.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://xn--mgbbop3hzh.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://xn--4db40a.com/").ok, true);
+});
+
 test("validateCrawlUrl refuses hosts whose mapping introduces a separator (#593)", () => {
   // U+FE12's compatibility mapping is U+3002, itself a UTS-46 label
   // separator: WHATWG domain-to-ASCII refuses the host outright

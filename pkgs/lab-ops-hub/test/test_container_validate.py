@@ -582,12 +582,16 @@ class TestValidateCrawlUrl(unittest.TestCase):
             self.assertAccepted("http://exam" + ch + "ple.com/")
 
     def test_refuses_arabic_indic_digit_hosts(self):
-        # WHATWG's domain-to-ASCII rejects any host containing an
-        # Arabic-Indic digit (U+0660-U+0669) — even one digit in a
-        # mixed label — while urlparse passes the spelling through and
-        # the ASCII-only numeric checks cannot read it as an address,
-        # so the old code certified the hosts below as public DNS
-        # names and fetched their punycode forms (#574).
+        # WHATWG's domain-to-ASCII rejects an Arabic-Indic digit
+        # (U+0660-U+0669) outside a right-to-left label — even one
+        # digit in a mixed LTR label — while urlparse passes the
+        # spelling through and the ASCII-only numeric checks cannot
+        # read it as an address, so the old code certified the hosts
+        # below as public DNS names and fetched their punycode forms
+        # (#574). Every spelling below is outside an RTL label, so
+        # _judge_idna_label's AN rule refuses them all; the RTL
+        # spellings the Worker accepts are pinned in the #605 test
+        # below.
         self.assertRefused("http://١٢٧.٠.٠.١/")  # 127.0.0.1, Arabic-Indic digits
         self.assertRefused("http://١٢٣.com/")
         self.assertRefused("http://example١٢٣.com/")
@@ -644,6 +648,30 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://xn--fsq.com/",  # 例.com
         ):
             self.assertAccepted(url)
+
+    def test_accepts_arabic_indic_digits_inside_rtl_labels(self):
+        # The Arabic-Indic digits are bidi class AN: inside a genuine
+        # RTL label they are valid, and the Worker's WHATWG parser
+        # accepts them — but #574's blanket forbidden-character range
+        # refused every host containing one, in raw and A-label form
+        # alike, overriding _judge_idna_label's contextual AN rule
+        # (#595) in the one context where the digit is valid (#605).
+        # The Extended Arabic-Indic control (U+06F1) was already
+        # accepted in the same shape.
+        self.assertAccepted("http://\u0627\u0661.com/")  # Arabic + ١
+        self.assertAccepted("http://\u0645\u0631\u062d\u0628\u0627\u0661.com/")
+        self.assertAccepted("http://\u05d0\u0661.com/")  # Hebrew + ١
+        self.assertAccepted("http://\u0627\u0661\u0627.com/")  # AN mid-label
+        self.assertAccepted("http://\u0627\u0660.com/")
+        # Their A-label spellings are accepted too.
+        self.assertAccepted("http://xn--mgb0j.com/")  # ا١.com
+        self.assertAccepted("http://xn--mgbbop3hzh.com/")  # مرحبا١.com
+        self.assertAccepted("http://xn--4db40a.com/")  # א١.com
+        # Guards: the AN context rules still refuse an AN+EN mix
+        # inside an RTL label and an RTL label that does not start
+        # with an R/AL character (both also refused by the Worker).
+        self.assertRefused("http://\u05d0\u06611.com/")
+        self.assertRefused("http://\u0661\u0627.com/")
 
     def test_refuses_idna_invalid_hosts(self):
         # A label can punycode-encode without being a valid IDNA
