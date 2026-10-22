@@ -162,6 +162,31 @@ test("validateCrawlUrl refuses the bare home.arpa apex (#608)", () => {
   assert.equal(validateCrawlUrl("http://example.com/").ok, true);
 });
 
+test("validateCrawlUrl strips tab/CR/LF before judging, like WHATWG (#611)", () => {
+  // The URL parser removes every ASCII tab, LF and CR from the input
+  // before parsing — even inside the scheme spelling — and the
+  // returned URL carries none. The container validator must reach
+  // the same verdicts and return the same stripped spelling.
+  const T = "\t", N = "\n", R = "\r";
+  const accepted: Array<[string, string]> = [
+    [`http://exa${T}mple.com/`, "http://example.com/"],
+    [`http://exa${N}mple.com/`, "http://example.com/"],
+    [`http://exa${R}mple.com/`, "http://example.com/"],
+    [`http://example.com${T}.evil.com/`, "http://example.com.evil.com/"],
+    [`http://example.com${R}${N}.evil.com/`, "http://example.com.evil.com/"],
+    [`http://example.com/pa${T}th`, "http://example.com/path"],
+    [`ht${T}tp://example.com/`, "http://example.com/"],
+  ];
+  for (const [u, normalized] of accepted) {
+    const r = validateCrawlUrl(u);
+    assert.equal(r.ok, true, u);
+    if (r.ok) assert.equal(r.url, normalized, u);
+  }
+  for (const u of [`http://127${T}.0.0.1/`, `http://192.168${N}.0.1/`, `http://local${R}host/`]) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+});
+
 test("validateCrawlUrl refuses empty-label hosts (#511)", () => {
   // A second trailing dot defeats the one-dot strip (#466): "localhost.."
   // becomes "localhost." and misses the blocked-host checks. An interior

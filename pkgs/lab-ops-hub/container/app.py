@@ -75,6 +75,18 @@ _IDNA_DISALLOWED = frozenset(
 
 
 def validate_crawl_url(raw):
+    # WHATWG URL parsing removes every ASCII tab, LF and CR from the
+    # input before doing anything else — even inside the scheme
+    # spelling — so "http://exa\tmple.com/" names example.com and the
+    # URL it produces carries no control characters. urlparse hands
+    # them through verbatim: the host checks below judged a spelling
+    # containing them (and happened to see through them for private
+    # addresses) while the returned URL — and therefore the fetcher —
+    # kept them, so the fetched host was never the judged host (#611).
+    # Strip them first, unconditionally (the removal precedes scheme
+    # parsing in WHATWG), and judge and return the stripped spelling,
+    # as with the normalizations below.
+    raw = re.sub(r"[\t\r\n]", "", raw)
     # WHATWG URL parsing treats a backslash as a path delimiter for the
     # special schemes (http/https): it ends the authority, so the host
     # of "http://127.0.0.1\\@example.com/" is 127.0.0.1. urlparse instead

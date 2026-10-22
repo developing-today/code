@@ -120,6 +120,35 @@ class TestValidateCrawlUrl(unittest.TestCase):
                 req, None, 302, "Found", {}, "http:///127.0.0.1/admin"
             )
 
+    def test_tab_cr_lf_are_stripped_before_judging_like_whatwg(self):
+        # WHATWG removes every ASCII tab, LF and CR from the input
+        # before parsing — even inside the scheme spelling — and the
+        # URL it produces carries none. urlparse handed them through
+        # verbatim, so accepted URLs were returned (and fetched) with
+        # control characters in the host: the fetched host was never
+        # the judged host (#611). The stripped spelling is now judged
+        # and returned, matching the Worker.
+        T, N, R = chr(9), chr(10), chr(13)
+        for raw, expected in (
+            (f"http://exa{T}mple.com/", "http://example.com/"),
+            (f"http://exa{N}mple.com/", "http://example.com/"),
+            (f"http://exa{R}mple.com/", "http://example.com/"),
+            (f"http://example.com{T}.evil.com/", "http://example.com.evil.com/"),
+            (f"http://example.com{R}{N}.evil.com/", "http://example.com.evil.com/"),
+            (f"http://example.com/pa{T}th", "http://example.com/path"),
+            (f"ht{T}tp://example.com/", "http://example.com/"),
+        ):
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Blocked hosts split by tab/CR/LF are refused by the ordinary
+        # checks on the stripped spelling, for the right reason.
+        for url in (
+            f"http://127{T}.0.0.1/",
+            f"http://192.168{N}.0.1/",
+            f"http://local{R}host/",
+        ):
+            with self.assertRaises(ValueError, msg=url):
+                validate_crawl_url(url)
+
     def test_refuses_non_http_schemes_and_local_names(self):
         for url in (
             "ftp://example.com/",
