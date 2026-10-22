@@ -189,6 +189,32 @@ test("validateCrawlUrl refuses IDNA-invalid hosts (#583)", () => {
   assert.equal(validateCrawlUrl("http://münchen.de/").ok, true);
 });
 
+test("validateCrawlUrl refuses Arabic numbers outside RTL labels (#595)", () => {
+  // A character of bidi class AN (Arabic number) is only valid
+  // inside an RTL label, and never alongside EN (European number):
+  // the astral AN codepoints (Hanifi Rohingya digits U+10D30-U+10D39,
+  // Rumi digits U+10E60-U+10E7E) were certified by the container
+  // validator in Latin labels. It now pins the same verdicts (#595).
+  const blocked = [
+    "http://ex\u{10d30}ample.com/",
+    "http://ex\u{10e60}ample.com/",
+    "http://\u{10d30}.com/",
+    "http://1\u{10d30}.com/",
+    "http://\u05d0\u{10d30}1.com/",
+    "http://\u066b.com/",
+  ];
+  // (The A-label spelling xn--example-eh36b is refused under Bun but
+  // accepted by Node's URL parser, so it is pinned only in the
+  // container suite.)
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  // Controls: an AN digit inside a genuine RTL label stays accepted.
+  assert.equal(validateCrawlUrl("http://\u05d0\u{10d30}\u05d0.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://\u0627\u{10d30}\u0627.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://\u{10d00}\u{10d30}.com/").ok, true);
+});
+
 test("validateCrawlUrl refuses hosts whose mapping introduces a separator (#593)", () => {
   // U+FE12's compatibility mapping is U+3002, itself a UTS-46 label
   // separator: WHATWG domain-to-ASCII refuses the host outright

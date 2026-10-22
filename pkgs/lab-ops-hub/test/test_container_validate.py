@@ -677,6 +677,26 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # with strong LTR characters:
         self.assertRefused("http://ex\u066bample.com/")
         self.assertRefused("http://ex\u066cample.com/")
+        # A character of bidi class AN (Arabic number) is only valid
+        # inside an RTL label: the astral AN codepoints — Hanifi
+        # Rohingya and Rumi digits — passed every other arm of this
+        # check in Latin, neutral and digit-led labels (#595), and
+        # AN may not mix with EN (European number) even in an RTL
+        # label. The U+066B case below is the BMP instance of the
+        # AN+EN rule (U+066B is itself class AN).
+        self.assertRefused("http://ex\U00010d30ample.com/")
+        self.assertRefused("http://ex\U00010e60ample.com/")
+        self.assertRefused("http://\U00010d30abc.com/")
+        self.assertRefused("http://abc\U00010d30.com/")
+        self.assertRefused("http://m\u00fcnchen\U00010d30.de/")
+        self.assertRefused("http://\U00010d30.com/")
+        self.assertRefused("http://1\U00010d30.com/")
+        self.assertRefused("http://-\U00010d30.com/")
+        self.assertRefused("http://\u05d0\U00010d301.com/")
+        self.assertRefused("http://\u05d01\U00010d30.com/")
+        self.assertRefused("http://\u0627\u066b1.com/")
+        # An AN character alone is not an RTL label either:
+        self.assertRefused("http://\u066b.com/")
         # Characters whose compatibility mapping introduces a label
         # separator are disallowed (only U+3002/U+FF0E/U+FF61 are
         # UTS-46 separators); after NFKC they would be judged as two
@@ -699,6 +719,9 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # The A-label spelling of "ex\ufe12ample": the decoded label
         # carries U+FE12, whose mapping is the U+3002 separator (#593).
         self.assertRefused("http://xn--example-t673b.com/")
+        # The A-label spelling of "ex\U00010d30ample": the decoded
+        # label carries an astral AN digit in a Latin label (#595).
+        self.assertRefused("http://xn--example-eh36b.com/")
         # Controls: pure RTL labels (with or without a trailing
         # European digit), the Arabic separator inside a pure Arabic
         # label, ordinary IDN, and a mid-label combining mark all stay
@@ -706,6 +729,13 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertAccepted("http://\u05d0\u05d0.com/")
         self.assertAccepted("http://\u05d01.com/")
         self.assertAccepted("http://\u0627\u066b\u0627.com/")
+        # An AN digit inside a genuine RTL label (Hebrew, Arabic, or
+        # its own Hanifi Rohingya script) stays accepted (#595):
+        self.assertAccepted("http://\u05d0\U00010d30\u05d0.com/")
+        self.assertAccepted("http://\u0627\U00010d30\u0627.com/")
+        self.assertAccepted("http://\U00010d00\U00010d30.com/")
+        self.assertAccepted("http://\u05d0\U00010d30.com/")
+        self.assertAccepted("http://xn--4dba5833r.com/")
         self.assertAccepted("http://m\u00fcnchen.de/")
         self.assertAccepted("http://ex\u0301ample.com/")
 
