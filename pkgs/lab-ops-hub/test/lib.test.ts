@@ -239,6 +239,25 @@ test("validateCrawlUrl judges Arabic-Indic digits by their bidi context (#605)",
   assert.equal(validateCrawlUrl("http://xn--4db40a.com/").ok, true);
 });
 
+test("validateCrawlUrl judges U+0345 by its UTS-46 mapping (#596)", () => {
+  // UTS-46 maps U+0345 (combining Greek ypogegrammeni) to U+03B9
+  // (ι, bidi class L): inside an RTL label the mapped form mixes
+  // L with R and is refused. The container validator judged the
+  // unmapped mark (bidi NSM) and certified these hosts; it now
+  // pins the same verdicts (#596).
+  assert.equal(validateCrawlUrl("http://\u05d0\u0345\u05d0.com/").ok, false);
+  assert.equal(validateCrawlUrl("http://\u05d0\u0345.com/").ok, false);
+  // (The A-label spelling xn--jua51kba is refused under Bun but
+  // accepted by Node's URL parser, so it is pinned only in the
+  // container suite.)
+  // Controls: LTR/Greek contexts and the label-start spelling
+  // (U+0345 maps to a letter, so the label starts with one) stay
+  // accepted.
+  assert.equal(validateCrawlUrl("http://ex\u0345ample.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://\u03b1\u0345.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://\u0345abc.com/").ok, true);
+});
+
 test("validateCrawlUrl refuses hosts whose mapping introduces a separator (#593)", () => {
   // U+FE12's compatibility mapping is U+3002, itself a UTS-46 label
   // separator: WHATWG domain-to-ASCII refuses the host outright

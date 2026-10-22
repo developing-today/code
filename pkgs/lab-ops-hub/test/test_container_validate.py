@@ -673,6 +673,26 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused("http://\u05d0\u06611.com/")
         self.assertRefused("http://\u0661\u0627.com/")
 
+    def test_judges_u0345_by_its_uts46_mapping(self):
+        # UTS-46 maps U+0345 (combining Greek ypogegrammeni) to
+        # U+03B9 (ι, bidi class L), but NFKC leaves it unchanged, so
+        # the container judged it as a combining mark (bidi NSM) —
+        # legal mid-label anywhere — while the Worker judges the
+        # mapped letter: inside an RTL label the mapped form is
+        # R + L + R, a bidi violation (#596).
+        self.assertRefused("http://\u05d0\u0345\u05d0.com/")
+        self.assertRefused("http://\u05d0\u0345.com/")
+        # The A-label spelling of the first host is refused too.
+        self.assertRefused("http://xn--jua51kba.com/")
+        # Controls: in LTR/Greek contexts the mapped letter is an
+        # ordinary character and the hosts stay accepted.
+        self.assertAccepted("http://ex\u0345ample.com/")
+        self.assertAccepted("http://\u03b1\u0345.com/")
+        # Pin: at label start the mapping closes the former
+        # leading-mark over-refusal — U+0345 maps to a letter, so
+        # the label starts with one, matching the Worker (#596).
+        self.assertAccepted("http://\u0345abc.com/")
+
     def test_refuses_idna_invalid_hosts(self):
         # A label can punycode-encode without being a valid IDNA
         # label at all: the mapped host was never IDNA-validated, so
