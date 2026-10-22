@@ -38,7 +38,7 @@ One agent per concept runs `parent`, and one per parent issue runs `fanout` then
 
 ## Steps
 
-1. **Boot and claim.** Boot per collaboration.md on your own branch (the brief's name, else `wf/<package-slug>/C001-s4` or `-s5`), push it empty, take the concept lease with `lease acquire`, and append `start` to your live log.
+1. **Boot and claim.** Boot per collaboration.md on your own branch (the brief's name, else `research/<slug>/s4-c001` or `research/<slug>/s5-c001`), push it empty, take the concept lease with `lease acquire`, and append `start` to your live log.
    Done when the branch is pushed and `lease list` shows your lease.
 2. **Verify the entry state.** Record the trunk SHA and UTC time. For `parent`: the S3 PR is merged, and on `origin/main` both `check --package <pkg> --require-resolved` and `check --package <pkg> --remote-notes` show nothing pending. For `fanout`: the parent issue is open and its preconditions still hold. Read `status --live --package <pkg>` for the concept's issues and PRs. If a condition fails, stop as blocked with the reason.
    Done when every condition is checked against the recorded SHA, with the command output kept for the "Current state" section.

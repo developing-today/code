@@ -1,79 +1,47 @@
-# Decision Protocol & Human Review
+# Decisions
 
-This document defines how technical disagreements, trade-offs, and architecture decisions are evaluated, recorded, and escalated during research and design.
+How a choice is recorded, who may confirm it, how disagreements are settled without stopping work, and what a human is asked. The record format is in [records.md](records.md#decisions) and the [decision template](templates/decision.md).
 
-## 1. Decision Records (`decisions/D001-<slug>.md`)
+## Source and status
 
-Every architectural choice, technology selection, or contested trade-off is recorded as an explicit decision document:
+Source says where a decision came from:
 
-```markdown
-# D001: Structured Storage Engine Selection
+- `stated`: the transcript says it. Cite the segments: `stated (T051)`.
+- `inferred`: it follows from what is stated or from the repository's existing rules. The rationale names what it follows from.
+- `agent-preliminary`: an agent chose it so work could continue.
+- `human-confirmed`: a human approved it. Cite the URL of their message.
 
-- Status: preliminary | confirmed | reversed
-- Source: stated | inferred | agent-preliminary | human-confirmed
-- Date: 2026-10-19T06:09:02Z
-- Affects: C001, C004
-- Reversal cost: High (requires database migration)
+Status says whether it is settled:
 
-## Question
+- `preliminary`: in force and open to change. `inferred` and `agent-preliminary` decisions start here.
+- `confirmed`: settled. `stated` and `human-confirmed` decisions are confirmed.
+- `reversed`: no longer in force. A dated line under Choice says what replaced it.
 
-What storage backend should index world state events?
+Only a human confirms an `agent-preliminary` decision. No agent, reviewer or later stage sets `human-confirmed`, however strong the evidence; an agent may record a human's confirmation or reversal by citing their message. Agents may change a preliminary choice (after the challenge pass, for example) by adding a dated line under Choice.
 
-## Options Considered
+## Coverage
 
-### Option A: SQLite via Rusqlite
+- Every decision has a stable ID, `D001`, `D002`, ..., taken from `ids` under the package's `ids` lease ([collaboration.md](collaboration.md#live-coordination)). An ID is never reused, even after a reversal.
+- Every downstream artifact cites by ID the decisions it depends on: design sections, plan steps, issues and PR descriptions. The decision's `Affects` field lists the concepts and items it touches.
+- A plan cites every `stated` or `human-confirmed` decision in at least one step ([S7](stages.md#s7-plan)).
+- When a decision is reversed, `git grep -l D007` lists exactly what must be reworked. Rework is one issue per affected artifact, citing the reversal; nothing else is touched.
 
-- Steelman: Zero-dependency, embedded, robust file locking, mature ecosystem.
-- Downsides: Concurrency limits on multi-writer setups.
+## Disagreement
 
-### Option B: PostgreSQL / Neon
+Two workers with conflicting results, or a `conflicts-with` pair in scope at S6, go through these steps. No one waits for a human.
 
-- Steelman: Full network concurrency, branching support, scalable analytics.
-- Downsides: External network dependency, operational overhead.
+1. The orchestrator does not decide. It gives the merged material from both sides to three fresh, read-only subagents in parallel, using the prompts in [templates/prompts/](templates/prompts/): the [reviewer](templates/prompts/reviewer.md) checks the facts, the [critic](templates/prompts/critic.md) attacks each side's reasoning, and the [investigator](templates/prompts/investigator.md) looks for options nobody considered.
+2. They decide everything the evidence settles, taking the option best practice would choose when in doubt, and list as toss-ups only choices that are genuinely balanced and costly to reverse.
+3. The orchestrator files each decision as a record with `Source: agent-preliminary` and `Status: preliminary`. Work continues on the preliminary choice at once; toss-ups go to [human review](#human-review).
+4. Challenge pass: before S6 closes, one fresh subagent with the [challenge-pass prompt](templates/prompts/challenge-pass.md) asks of every decision whether its options were too narrow. Each decision it flags is reopened with the investigator prompt, and the outcome is a dated line under Choice.
 
-## Choice & Rationale
+## Human review
 
-Option A (SQLite). The platform requires self-contained offline execution; network DB introduces unnecessary latency for local nodes.
+`human-review.md` ([template](templates/human-review.md)) is regenerated from the decision records whenever one changes.
 
-## Consequential Human Review Items
-
-None; standard embedded default.
-```
-
-## 2. Source Attribution & Promotion Rules
-
-- **`stated`**: Explicitly commanded by the user in the transcript.
-- **`inferred`**: Deduced logically from stated requirements or existing codebase patterns.
-- **`agent-preliminary`**: Decided autonomously by a subagent or reviewer to avoid stalling progress.
-- **`human-confirmed`**: Explicitly approved by the human maintainer.
-
-**Promotion Invariant**: Downstream automated agents may never promote an `agent-preliminary` decision to `human-confirmed`. Only explicit human interaction updates this field.
-
-## 3. Disagreement Protocol
-
-When two concept researchers or subagents arrive at conflicting recommendations or mutually exclusive designs:
-
-1. **Do Not Stall**: The orchestrator does not halt work waiting for user arbitration.
-2. **Launch Reviewer & Critic Subagents**: The orchestrator dispatches read-only reviewer and critic subagents (using `planning/workflow/templates/prompts/reviewer.md` and `critic.md`), providing the full merged context from both workers.
-3. **Analyze and Decide**: The critic identifies obvious decisions where one option clearly aligns with repository invariants. The orchestrator adopts the most standard, reversible option as `agent-preliminary`.
-4. **Log Consequential Items**: If the decision represents an irreversible architectural fork with meaningful trade-offs, it is recorded in `human-review.md`. Work proceeds on the preliminary assumption.
-
-## 4. The Challenge Pass
-
-Before concluding Stage 6 (Design), the orchestrator launches a fresh-context investigator subagent to inspect all decisions. The investigator specifically checks:
-
-- Were the options framed too narrowly?
-- Was an obvious third alternative missed?
-- Were the downsides of the chosen option understated?
-
-If a decision is found to have been artificially constrained, it is reopened with an investigator subagent before final plan handoff.
-
-## 5. Traceable Reversal
-
-Because every decision record lists the concepts and files it affects (`Affects: C001, C004`), if a human maintainer reverses a decision (e.g. changing D001 from SQLite to PostgreSQL):
-
-```sh
-git grep -l "D001"
-```
-
-immediately identifies the exact set of documents, plans, and code files that require rework, avoiding uncoordinated drift.
+- Minimal: list only preliminary decisions whose options are genuinely balanced and whose wrong choice would be costly to reverse. Obvious decisions are made and recorded, not listed. "None" is a valid list.
+- Batched: one list for the package, never questions one at a time.
+- Ranked by effect, most consequential first.
+- Defaults: each item names the choice already in effect, the alternatives and the cost of reversing.
+- Never re-ask what the transcript states or a `stated` or `human-confirmed` decision already answers.
+- Nothing waits on the answers. A reversal starts rework scoped as in [Coverage](#coverage).

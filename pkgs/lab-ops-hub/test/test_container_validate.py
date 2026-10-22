@@ -23,6 +23,57 @@ class TestValidateCrawlUrl(unittest.TestCase):
     def assertAccepted(self, url):
         self.assertEqual(validate_crawl_url(url), url)
 
+    def test_backslash_ends_the_authority_like_whatwg(self):
+        # A raw backslash is a path delimiter to WHATWG for http/https,
+        # so it ends the authority: the host of
+        # "http://127.0.0.1\\@example.com/" is 127.0.0.1, not the
+        # example.com urlparse reads after the "@". Judge the host
+        # WHATWG names, in both directions (#577).
+        B = chr(92)
+        for url in (
+            "http://127.0.0.1" + B + "@example.com/",
+            "http://localhost" + B + "@example.com/",
+            "http://192.168.0.1" + B + "@example.com/",
+        ):
+            self.assertRefused(url)
+        # The mirror spelling names example.com to WHATWG; the
+        # validated (and fetched) form is the normalized spelling,
+        # whose urlparse host is the judged host.
+        self.assertEqual(
+            validate_crawl_url("http://example.com" + B + "@127.0.0.1/"),
+            "http://example.com/@127.0.0.1/",
+        )
+        # Backslash slash-runs after the scheme name example.com too.
+        self.assertEqual(
+            validate_crawl_url("http:" + B + B + "example.com/"),
+            "http://example.com/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http:/" + B + "example.com/"),
+            "http://example.com/",
+        )
+        # A percent-encoded %5C is data, not a delimiter: the spelling
+        # is judged and returned exactly as before.
+        self.assertAccepted("http://example.com/%5c@127.0.0.1/")
+
+    def test_redirect_handler_refuses_backslash_loopback_target(self):
+        # Redirect targets are validated by this validator alone
+        # (#577): a Location spelling whose WHATWG host is loopback
+        # must be refused, not followed as its post-"@" tail.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        with self.assertRaises(ValueError):
+            handler.redirect_request(
+                req,
+                None,
+                302,
+                "Found",
+                {},
+                "http://127.0.0.1" + chr(92) + "@example.com/",
+            )
+
     def test_refuses_non_http_schemes_and_local_names(self):
         for url in (
             "ftp://example.com/",
@@ -255,7 +306,10 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # (%6cocalhost is localhost) and rejects the other % spellings
         # outright; urlparse passes them through verbatim and the old
         # code mistook them for public DNS names, while ipaddress
-        # accepted the IPv6 zone id (#505).
+        # accepted the IPv6 zone id (#505). Every case here still
+        # refuses under decode-and-judge (#529): the first four decode
+        # to blocked or forbidden-character hosts, the rest are invalid
+        # escapes or a zone id.
         for url in (
             "http://%6cocalhost/",
             "http://localhost%00/",
@@ -268,6 +322,119 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "https://[2001:4860:4860::8888%25eth0]/",  # IPv6 zone id
         ):
             self.assertRefused(url)
+
+    def test_accepts_percent_encoded_spellings_of_public_hosts(self):
+        # #505's blanket refusal also refused spellings that decode to
+        # public hosts, which the Worker validator accepts — the two
+        # validators diverged, including on redirect targets, which
+        # are validated raw (#529). The decoded form is judged, and
+        # the validated URL carries the decoded host so the fetcher
+        # connects to the host that was judged (urllib does not
+        # percent-decode hosts).
+        for url, expected in (
+            ("http://%65xample.com/", "http://example.com/"),
+            ("http://example%2ecom/", "http://example.com/"),
+            ("http://8%2e8%2e8%2e8/", "http://8.8.8.8/"),
+            ("http://%38%2e8.8.8/", "http://8.8.8.8/"),
+            # Port, path and userinfo survive the host substitution.
+            ("http://%65xample.com:8080/page", "http://example.com:8080/page"),
+            (
+                "http://user@%65xample.com/page",
+                "http://user@example.com/page",
+            ),
+        ):
+            self.assertEqual(validate_crawl_url(url), expected, url)
+
+    def test_refuses_percent_decoded_blocked_and_invalid_hosts(self):
+        # Decode-and-judge (#529): spellings that decode to blocked
+        # targets refuse via the ordinary checks, and spellings WHATWG
+        # rejects outright (decoded delimiters, a double-encoded %,
+        # undecodable bytes) refuse at the decode step.
+        for url in (
+            "http://127%2e0%2e0%2e1/",  # -> 127.0.0.1
+            "http://foo%2elocalhost/",  # -> foo.localhost
+            "http://exam%2fple.com/",  # -> exam/ple.com (delimiter)
+            "http://exam%3aple.com/",  # -> exam:ple.com (delimiter)
+            "http://example%252ecom/",  # -> example%2ecom (still has %)
+            "http://%ff.com/",  # decoded bytes are not valid UTF-8
+            "http://%c3%28.com/",  # truncated UTF-8 sequence
+        ):
+            self.assertRefused(url)
+
+    def test_refuses_percent_encoded_nfkc_mapped_delimiters(self):
+        # The decode step (#529) refuses delimiters in the decoded
+        # form, but a percent-encoded compatibility character decodes
+        # to a codepoint whose NFKC mapping IS a delimiter, and the
+        # mapped form is what gets spliced into the returned URL:
+        # "localhost%ef%bc%8fexample.com" came back ALLOW as
+        # "http://localhost/example.com/" — the fetcher connected to
+        # localhost, a host that was never judged (#567). The Worker
+        # refuses every one of these outright.
+        for url in (
+            "http://localhost%ef%bc%8fexample.com/",  # U+FF0F -> /
+            "http://127.0.0.1%ef%bc%8fexample.com/",  # U+FF0F -> /
+            "http://192.168.0.1%ef%bc%8fadmin/",  # U+FF0F -> /
+            "http://exam%ef%bc%8fple.com/",  # U+FF0F -> /
+            "http://exam%ef%bc%9aple.com/",  # U+FF1A -> :
+            "http://exam%ef%bc%a0ple.com/",  # U+FF20 -> @
+            "http://exam%ef%bc%83ple.com/",  # U+FF03 -> #
+            "http://exam%ef%bc%9fple.com/",  # U+FF1F -> ?
+            "http://exam%ef%bc%bcple.com/",  # U+FF3C -> backslash
+            "http://exam%ef%bc%bbple.com/",  # U+FF3B -> [
+            "http://exam%ef%bc%bdple.com/",  # U+FF3D -> ]
+            "http://example%ef%bc%85com/",  # U+FF05 -> %
+            "http://%e2%84%80.com/",  # U+2100 expands to a/c
+            "http://%e2%84%85.com/",  # U+2105 expands to c/o
+        ):
+            self.assertRefused(url)
+
+    def test_accepted_percent_urls_reparse_to_the_judged_host(self):
+        # For every accepted percent-encoded URL, re-parsing the
+        # returned URL must yield exactly the host that was judged —
+        # no delimiter may be spliced in by decoding or mapping
+        # (#567 acceptance criterion).
+        from urllib.parse import urlparse
+
+        for url, expected_host in (
+            ("http://%65xample.com/", "example.com"),
+            ("http://example%2ecom/", "example.com"),
+            ("http://8%2e8%2e8%2e8/", "8.8.8.8"),
+            ("http://%65xample.com:8080/page", "example.com"),
+            # U+FF5E maps to ~, not a delimiter: the mapped form is
+            # judged and returned, and re-parses to itself.
+            ("http://exam%ef%bd%9eple.com/", "exam~ple.com"),
+        ):
+            returned = validate_crawl_url(url)
+            self.assertEqual(urlparse(returned).hostname, expected_host, url)
+
+    def test_redirect_handler_refuses_nfkc_mapped_delimiter_target(self):
+        # Redirect targets are validated raw (#529/#567): a Location
+        # whose percent-encoded host NFKC-maps into a private host
+        # plus delimiter must be refused, not followed.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        with self.assertRaises(ValueError):
+            handler.redirect_request(
+                req, None, 302, "Found", {}, "http://192.168.0.1%ef%bc%8fadmin/"
+            )
+
+    def test_redirect_handler_follows_the_decoded_target(self):
+        # Redirect targets are validated raw, with no Worker
+        # normalisation in between (#529): the handler must fetch the
+        # decoded form of a percent-encoded public target, and refuse
+        # one that decodes to a blocked target.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://%65xample.org/final"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/final")
+        with self.assertRaises(ValueError):
+            handler.redirect_request(req, None, 302, "Found", {}, "http://%6cocalhost/")
 
     def test_refuses_space_hosts_and_ipvfuture_literals(self):
         # A space in the host is not a DNS name: WHATWG rejects it and
@@ -368,6 +535,32 @@ class TestValidateCrawlUrl(unittest.TestCase):
         for ch in ("\u00ad", "\u180e", "\u200b", "\u2060", "\u2064", "\ufeff"):
             self.assertAccepted("http://exam" + ch + "ple.com/")
 
+    def test_refuses_arabic_indic_digit_hosts(self):
+        # WHATWG's domain-to-ASCII rejects any host containing an
+        # Arabic-Indic digit (U+0660-U+0669) — even one digit in a
+        # mixed label — while urlparse passes the spelling through and
+        # the ASCII-only numeric checks cannot read it as an address,
+        # so the old code certified the hosts below as public DNS
+        # names and fetched their punycode forms (#574).
+        self.assertRefused("http://١٢٧.٠.٠.١/")  # 127.0.0.1, Arabic-Indic digits
+        self.assertRefused("http://١٢٣.com/")
+        self.assertRefused("http://example١٢٣.com/")
+        self.assertRefused("http://a١.com/")
+        self.assertRefused("http://١a.com/")
+        self.assertRefused("http://1٢٣.com/")
+        self.assertRefused("http://münchen١.com/")
+        # The percent-encoded spelling decodes to the same host and
+        # is judged on the decoded form, so it is refused too.
+        self.assertRefused("http://%d9%a1%d9%a2%d9%a3.com/")  # ١٢٣.com
+        # Controls: the other decimal-digit families are ordinary IDN
+        # characters to WHATWG (accepted as punycode DNS names), and
+        # the container accepts them too.
+        self.assertAccepted("http://१२७.०.०.१/")  # Devanagari digits
+        self.assertAccepted("http://۱۲۷.۰.۰.۱/")  # Extended Arabic-Indic (U+06F0s)
+        self.assertAccepted("http://১২৭.০.০.১/")  # Bengali digits
+        self.assertAccepted("http://๑๒๗.๐.๐.๑/")  # Thai digits
+        self.assertAccepted("http://1۲۳.com/")  # ASCII + Extended Arabic-Indic
+
     def test_judges_length_and_blocked_names_on_the_mapped_form(self):
         # UTS-46 mapping deletes the "ignored" codepoints before any
         # judgement, so the length check must measure the mapped form
@@ -397,6 +590,119 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://example.com:8080/",  # an ordinary explicit port
         ):
             self.assertAccepted(url)
+
+
+class TestFetchCrawl(unittest.TestCase):
+    # _fetch_crawl fetches an already-validated URL (validation is
+    # validate_crawl_url's job, pinned above), so these tests point it
+    # at a local server directly. Error-status pages are crawl results,
+    # not container failures (#572): urllib raises HTTPError for
+    # 4xx/5xx, and the Worker fallback extracts those pages and reports
+    # their real status_code — the container must do the same instead
+    # of turning them into a 502 that makes the Worker re-crawl and
+    # record the wrong source.
+
+    @classmethod
+    def setUpClass(cls):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        body = (
+            b"<html><head><title>Missing Thing</title></head>"
+            b"<body><a href='/x'>x</a> not here</body></html>"
+        )
+
+        class Target(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                if self.path == "/loop":
+                    self.send_response(302)
+                    self.send_header("Location", "/loop")
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path == "/choices":
+                    self.send_response(300)
+                    self.send_header("Location", "/ok")
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path.startswith("/hop"):
+                    n = int(self.path[4:])
+                    if n < 12:
+                        self.send_response(302)
+                        self.send_header("Location", f"/hop{n + 1}")
+                        self.send_header("content-length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+                code = {"/gone": 404, "/oops": 500}.get(self.path, 200)
+                self.send_response(code)
+                self.send_header("content-type", "text/html")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        cls.server = HTTPServer(("127.0.0.1", 0), Target)
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def fetch(self, path):
+        return app._fetch_crawl(f"http://127.0.0.1:{self.port}{path}")
+
+    def test_error_status_pages_are_results_not_502s(self):
+        for path, expected in (("/gone", 404), ("/oops", 500)):
+            status, raw = self.fetch(path)
+            self.assertEqual(status, expected, path)
+            self.assertIn(b"Missing Thing", raw, path)
+
+    def test_ok_page_unchanged(self):
+        status, raw = self.fetch("/ok")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Missing Thing", raw)
+
+    def test_redirect_failures_raise_not_a_302_result(self):
+        # #576: urllib raises HTTPError carrying the 3xx code for
+        # redirect failures (loop, chain past max_redirections, and
+        # non-followed 3xx). Those are crawl failures, not results —
+        # they must propagate so do_POST returns 502 and the Worker
+        # fallback runs, instead of recording a successful 302 crawl.
+        # The plain opener stands in for the validating one here: the
+        # validating handler refuses 127.0.0.1 targets by design, which
+        # would mask the HTTPError handling under test; the redirect
+        # mechanics are urllib's either way.
+        import urllib.error
+        import urllib.request
+        from unittest import mock
+
+        plain = urllib.request.build_opener()
+        with mock.patch.object(app, "_OPENER", plain):
+            for path in ("/loop", "/hop0", "/choices"):
+                with self.assertRaises(urllib.error.HTTPError, msg=path) as ctx:
+                    self.fetch(path)
+                self.assertTrue(300 <= ctx.exception.code < 400, path)
+            # Control: a short chain under the limit still succeeds.
+            status, raw = self.fetch("/hop10")
+            self.assertEqual(status, 200)
+            self.assertIn(b"Missing Thing", raw)
+
+    def test_transport_failure_still_raises(self):
+        import urllib.error
+
+        # Nothing listens on port 1: a transport failure must keep
+        # propagating so do_POST returns a genuine 502.
+        with self.assertRaises(urllib.error.URLError):
+            app._fetch_crawl("http://127.0.0.1:1/nope")
 
 
 if __name__ == "__main__":
