@@ -5,6 +5,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import shutil
@@ -39,6 +40,21 @@ RESOLUTION = re.compile(
     r"<!-- workflow:resolution -->\s*(.*?)\s*<!-- /workflow:resolution -->", re.S
 )
 NOTE = re.compile(r"<!-- workflow:note -->\s*(.*?)\s*<!-- /workflow:note -->", re.S)
+
+
+EXTENSIONS = ("research_workflow_items",)
+
+
+def extensions():
+    """Load sibling command modules by path; `python3 -I` keeps scripts/ off sys.path."""
+    sys.modules.setdefault("research_workflow", sys.modules[__name__])
+    for name in EXTENSIONS:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).with_name(name + ".py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        yield module
 
 
 def fail(message):
@@ -1042,6 +1058,9 @@ def main(argv=None):
             )
             command.add_argument("--target", required=True)
             command.add_argument("--reason", required=True)
+    plugins = list(extensions())
+    for plugin in plugins:
+        plugin.register(sub)
     args = parser.parse_args(argv)
     try:
         root = Path(args.repo_root or ".").resolve()
@@ -1055,6 +1074,8 @@ def main(argv=None):
             fail("Package must be inside configured requests_root")
         if args.command == "init":
             result = scaffold(args, root, config)
+        elif hasattr(args, "handler"):
+            result = args.handler(args, root, config, package)
         elif args.command in ("note", "resolve-note"):
             result = notes(args, package, root)
         elif args.command in ("status", "ready"):
@@ -1086,6 +1107,9 @@ def main(argv=None):
             }
             for path in args.path:
                 links(contained(root, path), root)
+            for plugin in plugins:
+                for checked in packages:
+                    getattr(plugin, "check", lambda *_: None)(checked, root)
             result["ok"] = True
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
