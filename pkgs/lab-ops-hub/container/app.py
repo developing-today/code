@@ -450,6 +450,16 @@ def _judge_idna_label(label, host):
     #   characters — outside an Arabic-script context the Worker
     #   refuses them, while a pure Arabic label carrying one stays
     #   accepted, matching the Worker;
+    # - it carries a character of bidi class AN (Arabic number)
+    #   outside a right-to-left label, or mixes AN with EN (European
+    #   number) in one label (#595): AN is only valid inside an RTL
+    #   label, and never alongside EN. Every BMP AN codepoint is
+    #   caught by another arm (the Cf check, the U+0660-U+0669
+    #   forbidden range, the U+066B / U+066C case above, which this
+    #   rule subsumes), but the 41 astral AN codepoints — the Hanifi
+    #   Rohingya digits U+10D30-U+10D39 and the Rumi digits
+    #   U+10E60-U+10E7E — passed every other check, and an AN+EN
+    #   mix inside an RTL label passed too;
     # - the stdlib IDNA codec rejects it.
     # Known residuals, measured on the #583 differential battery
     # (13,045 hosts vs the Worker's validator under Bun): this
@@ -492,6 +502,16 @@ def _judge_idna_label(label, host):
         raise ValueError(
             f"refusing to crawl host {host}: label {label!r} "
             "contains an Arabic separator outside an Arabic label"
+        )
+    if "AN" in bidis and (has_ltr or not has_rtl):
+        raise ValueError(
+            f"refusing to crawl host {host}: label {label!r} "
+            "contains an Arabic number outside a right-to-left label"
+        )
+    if "AN" in bidis and "EN" in bidis:
+        raise ValueError(
+            f"refusing to crawl host {host}: label {label!r} "
+            "mixes Arabic and European numbers"
         )
     try:
         label.encode("idna")
