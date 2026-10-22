@@ -357,7 +357,9 @@ def validate_crawl_url(raw):
                 )
             # A public DNS name; literal-IP policy does not apply.
             # A percent-decoded host is fetched in its decoded form.
-            return _url_with_host(u, host) if percent_decoded else raw
+            return _url_with_encoded_non_ascii(
+                _url_with_host(u, host) if percent_decoded else raw
+            )
     embedded = _embedded_ipv4(ip)
     if embedded is not None:
         # Translation/mapped prefixes are judged by the IPv4 they embed,
@@ -395,7 +397,9 @@ def validate_crawl_url(raw):
     elif not ip.is_global:
         raise ValueError(f"refusing to crawl non-public address {host}")
     # A percent-decoded host is fetched in its decoded form (#529).
-    return _url_with_host(u, host) if percent_decoded else raw
+    return _url_with_encoded_non_ascii(
+        _url_with_host(u, host) if percent_decoded else raw
+    )
 
 
 def _judge_a_label(label, host):
@@ -645,6 +649,42 @@ def _url_with_host(u, new_host):
         _, _, port = hostport.partition(":")
         return u._replace(netloc=f"{prefix}{new_host}:{port}").geturl()
     return u._replace(netloc=prefix + new_host).geturl()
+
+
+def _encode_non_ascii(text):
+    # UTF-8 percent-encode every non-ASCII character, the way WHATWG's
+    # URL serializer encodes the userinfo, path, query and fragment
+    # components. ASCII characters — including existing %XX sequences —
+    # pass through byte-identical, so nothing is double-encoded.
+    return "".join(
+        "".join(f"%{byte:02X}" for byte in char.encode("utf-8"))
+        if ord(char) > 0x7F
+        else char
+        for char in text
+    )
+
+
+def _url_with_encoded_non_ascii(url):
+    # The URL validate_crawl_url returns is the URL the fetcher fetches,
+    # and http.client encodes the request line as ASCII: a raw non-ASCII
+    # character in the path, query or userinfo raises UnicodeEncodeError
+    # before any request is sent, so a target both validators accepted
+    # 502s in the container while the Worker fetches its WHATWG-encoded
+    # form (#615). Encode those components on the returned URL. The host
+    # is deliberately untouched: it is judged in mapped form above and
+    # fetched via IDNA, as with the existing IDN spellings.
+    u = urlparse(url)
+    netloc = u.netloc
+    if "@" in netloc:
+        userinfo, _, hostport = netloc.rpartition("@")
+        netloc = f"{_encode_non_ascii(userinfo)}@{hostport}"
+    return u._replace(
+        netloc=netloc,
+        path=_encode_non_ascii(u.path),
+        params=_encode_non_ascii(u.params),
+        query=_encode_non_ascii(u.query),
+        fragment=_encode_non_ascii(u.fragment),
+    ).geturl()
 
 
 def _embedded_ipv4(ip):

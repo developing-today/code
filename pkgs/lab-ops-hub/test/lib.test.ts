@@ -19,6 +19,21 @@ test("validateCrawlUrl accepts public http(s) targets", () => {
   assert.equal(validateCrawlUrl("https://8.8.8.8/").ok, true);
 });
 
+test("validateCrawlUrl percent-encodes non-ASCII outside the host (#615)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG UTF-8 percent-encoding in userinfo/path/query.
+  const cases: Array<[string, string]> = [
+    ["http://example.com/café", "http://example.com/caf%C3%A9"],
+    ["http://example.com/?q=café", "http://example.com/?q=caf%C3%A9"],
+    ["http://user:café@example.com/", "http://user:caf%C3%A9@example.com/"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+});
+
 test("validateCrawlUrl refuses non-http schemes and junk", () => {
   assert.equal(validateCrawlUrl("ftp://example.com/").ok, false);
   assert.equal(validateCrawlUrl("file:///etc/passwd").ok, false);
