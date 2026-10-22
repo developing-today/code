@@ -23,6 +23,57 @@ class TestValidateCrawlUrl(unittest.TestCase):
     def assertAccepted(self, url):
         self.assertEqual(validate_crawl_url(url), url)
 
+    def test_backslash_ends_the_authority_like_whatwg(self):
+        # A raw backslash is a path delimiter to WHATWG for http/https,
+        # so it ends the authority: the host of
+        # "http://127.0.0.1\\@example.com/" is 127.0.0.1, not the
+        # example.com urlparse reads after the "@". Judge the host
+        # WHATWG names, in both directions (#577).
+        B = chr(92)
+        for url in (
+            "http://127.0.0.1" + B + "@example.com/",
+            "http://localhost" + B + "@example.com/",
+            "http://192.168.0.1" + B + "@example.com/",
+        ):
+            self.assertRefused(url)
+        # The mirror spelling names example.com to WHATWG; the
+        # validated (and fetched) form is the normalized spelling,
+        # whose urlparse host is the judged host.
+        self.assertEqual(
+            validate_crawl_url("http://example.com" + B + "@127.0.0.1/"),
+            "http://example.com/@127.0.0.1/",
+        )
+        # Backslash slash-runs after the scheme name example.com too.
+        self.assertEqual(
+            validate_crawl_url("http:" + B + B + "example.com/"),
+            "http://example.com/",
+        )
+        self.assertEqual(
+            validate_crawl_url("http:/" + B + "example.com/"),
+            "http://example.com/",
+        )
+        # A percent-encoded %5C is data, not a delimiter: the spelling
+        # is judged and returned exactly as before.
+        self.assertAccepted("http://example.com/%5c@127.0.0.1/")
+
+    def test_redirect_handler_refuses_backslash_loopback_target(self):
+        # Redirect targets are validated by this validator alone
+        # (#577): a Location spelling whose WHATWG host is loopback
+        # must be refused, not followed as its post-"@" tail.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        with self.assertRaises(ValueError):
+            handler.redirect_request(
+                req,
+                None,
+                302,
+                "Found",
+                {},
+                "http://127.0.0.1" + chr(92) + "@example.com/",
+            )
+
     def test_refuses_non_http_schemes_and_local_names(self):
         for url in (
             "ftp://example.com/",
