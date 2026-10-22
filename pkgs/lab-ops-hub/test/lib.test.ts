@@ -282,12 +282,14 @@ test("crawlFetcher attaches a fresh AbortSignal, manual redirect and the crawler
 });
 
 test("crawlFetcher rejects a fetch that stalls before responding when the timeout fires (#524)", async () => {
-  const fetchFn = crawlFetcher(30, (_u, init) =>
-    // A server that accepts the connection and never answers: only the
-    // abort signal can end this fetch.
-    new Promise<Response>((_resolve, reject) => {
-      init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-    }),
+  const fetchFn = crawlFetcher(
+    30,
+    (_u, init) =>
+      // A server that accepts the connection and never answers: only the
+      // abort signal can end this fetch.
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      }),
   );
   await assert.rejects(fetchFn("https://example.com/stall"), /abort|timeout/i);
 });

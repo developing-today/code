@@ -1,6 +1,12 @@
 import { Container, getContainer } from "@cloudflare/containers";
 import { DurableObject } from "cloudflare:workers";
-import { computeBudget, crawlFetcher, fetchFollowingValidatedRedirects, readResponseTextCapped, validateCrawlUrl } from "./lib";
+import {
+  computeBudget,
+  crawlFetcher,
+  fetchFollowingValidatedRedirects,
+  readResponseTextCapped,
+  validateCrawlUrl,
+} from "./lib";
 
 // ---------------------------------------------------------------------------
 // Lab Ops Hub — one Worker exercising the whole Workers Paid surface at

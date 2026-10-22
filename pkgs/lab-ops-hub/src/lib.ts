@@ -245,10 +245,7 @@ export const CRAWL_FETCH_TIMEOUT_MS = 20_000;
 
 export type FetchImpl = (url: string, init: RequestInit) => Promise<Response>;
 
-export function crawlFetcher(
-  timeoutMs: number = CRAWL_FETCH_TIMEOUT_MS,
-  fetchImpl: FetchImpl = fetch,
-): ManualFetcher {
+export function crawlFetcher(timeoutMs: number = CRAWL_FETCH_TIMEOUT_MS, fetchImpl: FetchImpl = fetch): ManualFetcher {
   return (u) =>
     fetchImpl(u, {
       redirect: "manual",
