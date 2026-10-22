@@ -299,7 +299,14 @@ def validate_crawl_url(raw):
         for c in host
     ):
         raise ValueError(f"refusing to crawl host with a forbidden character {host!r}")
-    if host == "localhost" or host.endswith(_BLOCKED_SUFFIXES):
+    # "home.arpa" needs the same equality arm as "localhost": the
+    # suffixes carry a leading dot, so the bare apex escapes them, but
+    # home.arpa is itself the RFC 8375 special-use name for the local
+    # home network — its subdomains are not the only local spellings
+    # (#608). (The other suffixes' bare labels — "local", "internal",
+    # "lan" — are ordinary single-label hostnames, not designated
+    # local names, and stay accepted.)
+    if host in ("localhost", "home.arpa") or host.endswith(_BLOCKED_SUFFIXES):
         raise ValueError(f"refusing to crawl local host {host}")
     try:
         ip = ipaddress.ip_address(host)
