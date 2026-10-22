@@ -82,11 +82,11 @@ Meanings and promotion rules: [decisions.md](decisions.md#source-and-status).
 
 ## Relation kinds
 
-`requires`, `recommended-after`, `shares-files-with`, `conflicts-with`, `enables`, `optional-if`, `supersedes`, `contradicts`, `part-of`. Defined in [DEPENDENCIES.md](../DEPENDENCIES.md#relation-kinds).
+`requires`, `recommended-after`, `shares-files-with`, `conflicts-with`, `enables`, `optional-if`, `supersedes`, `contradicts`, `part-of`. Defined in [DEPENDENCIES.md](../DEPENDENCIES.md#1-dependency-relations).
 
 ## Priority
 
-`crucial`, `recommended`, `contingent`, `unspecified`. Defined in [DEPENDENCIES.md](../DEPENDENCIES.md#priority-tiers).
+`crucial`, `recommended`, `contingent`, `unspecified`. Defined in [DEPENDENCIES.md](../DEPENDENCIES.md#2-priority-tiers).
 
 ## Horizon
 
