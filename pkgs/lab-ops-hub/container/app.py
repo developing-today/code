@@ -241,8 +241,8 @@ def validate_crawl_url(raw):
     # encodes, not by its ASCII spelling: the spelling is pure ASCII,
     # so no check above or below ever sees the decoded characters —
     # "xn--9hbcp.xn--8hb.xn--8hb.xn--9hb" is ١٢٧.٠.٠.١ (127.0.0.1 in
-    # Arabic-Indic digits, refused in raw form by the forbidden-
-    # character check below) yet sailed through as an ordinary public
+    # Arabic-Indic digits, refused in raw form by _judge_idna_label's
+    # AN rule below) yet sailed through as an ordinary public
     # DNS name, while the Worker's WHATWG parser decodes the A-label
     # and rejects it outright (#580). Decode each A-label and hold the
     # decoded form to the same policy; an A-label that does not decode
@@ -276,21 +276,24 @@ def validate_crawl_url(raw):
     # up front: C0 controls and space (#507), plus DEL, the C1 controls
     # and NBSP (0x7F-0xA0) and the forbidden host codepoints < > ^ |
     # (#510), plus the IDNA-disallowed codepoints that survive NFKC
-    # (#516), plus the Arabic-Indic digits (U+0660-U+0669): WHATWG's
-    # domain-to-ASCII rejects any host containing one, even a single
-    # digit in a mixed label, while urlparse passes the spelling
-    # through and this validator would otherwise certify it as a public
-    # DNS name — including ١٢٧.٠.٠.١, the Arabic-Indic spelling of
-    # 127.0.0.1, which the ASCII-only numeric checks cannot read as an
-    # address (#574). The other decimal-digit families (Devanagari,
-    # Extended Arabic-Indic U+06F0-U+06F9, Bengali, Thai, ...) are
-    # accepted by WHATWG as ordinary IDN characters and stay accepted
-    # here. Non-ASCII above NBSP that is a valid IDN character (e.g.
-    # é) is untouched.
+    # (#516). The Arabic-Indic digits (U+0660-U+0669) are NOT refused
+    # here: they are bidi class AN, and WHATWG's domain-to-ASCII
+    # refuses them only outside a right-to-left label — the blanket
+    # range #574 added here refused them inside one too (ا١.com,
+    # مرحبا١.com), while the Worker accepts that context (#605).
+    # _judge_idna_label's AN rule, which runs on every non-ASCII
+    # label above, makes the contextual judgement: it refuses the
+    # digits in an LTR label, in a label with no R/AL character —
+    # including ١٢٧.٠.٠.١, the Arabic-Indic spelling of 127.0.0.1
+    # (#574) — and mixed with a European digit, and accepts them
+    # inside a genuine RTL label, matching the Worker. The other
+    # decimal-digit families (Devanagari, Extended Arabic-Indic
+    # U+06F0-U+06F9, Bengali, Thai, ...) are accepted by WHATWG as
+    # ordinary IDN characters and stay accepted here. Non-ASCII
+    # above NBSP that is a valid IDN character (e.g. é) is untouched.
     if any(
         ord(c) <= 0x20
         or 0x7F <= ord(c) <= 0xA0
-        or 0x0660 <= ord(c) <= 0x0669
         or c in "<>^|"
         or ord(c) in _IDNA_DISALLOWED
         for c in host
@@ -388,8 +391,10 @@ def _judge_a_label(label, host):
     # spelling exactly (not the canonical encoding of anything), or
     # the decoded label carries a character the forbidden-character
     # policy in validate_crawl_url refuses in raw form (controls,
-    # space, the Arabic-Indic digits U+0660-U+0669, < > ^ |, and the
-    # _IDNA_DISALLOWED set).
+    # space, < > ^ |, and the _IDNA_DISALLOWED set). The Arabic-Indic
+    # digits U+0660-U+0669 are not in that set (#605): the
+    # _judge_idna_label call at the end of this function judges them
+    # by their bidi AN context, exactly as in raw form.
     body = label[4:]
     try:
         decoded = body.encode("ascii").decode("punycode")
@@ -410,7 +415,6 @@ def _judge_a_label(label, host):
     if any(
         ord(c) <= 0x20
         or 0x7F <= ord(c) <= 0xA0
-        or 0x0660 <= ord(c) <= 0x0669
         or c in "<>^|"
         or ord(c) in _IDNA_DISALLOWED
         for c in decoded
@@ -453,13 +457,13 @@ def _judge_idna_label(label, host):
     # - it carries a character of bidi class AN (Arabic number)
     #   outside a right-to-left label, or mixes AN with EN (European
     #   number) in one label (#595): AN is only valid inside an RTL
-    #   label, and never alongside EN. Every BMP AN codepoint is
-    #   caught by another arm (the Cf check, the U+0660-U+0669
-    #   forbidden range, the U+066B / U+066C case above, which this
-    #   rule subsumes), but the 41 astral AN codepoints — the Hanifi
-    #   Rohingya digits U+10D30-U+10D39 and the Rumi digits
-    #   U+10E60-U+10E7E — passed every other check, and an AN+EN
-    #   mix inside an RTL label passed too;
+    #   label, and never alongside EN. The BMP AN codepoints are the
+    #   Arabic-Indic digits U+0660-U+0669 themselves (judged by this
+    #   rule since #605 removed #574's blanket range — the U+066B /
+    #   U+066C case above is subsumed by it too), but the 41 astral
+    #   AN codepoints — the Hanifi Rohingya digits U+10D30-U+10D39
+    #   and the Rumi digits U+10E60-U+10E7E — passed every other
+    #   check, and an AN+EN mix inside an RTL label passed too;
     # - the stdlib IDNA codec rejects it.
     # Known residuals, measured on the #583 differential battery
     # (13,045 hosts vs the Worker's validator under Bun): this
