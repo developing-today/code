@@ -436,6 +436,7 @@ class ResearchWorkflowTests(unittest.TestCase):
         note = created.pop()
         raw_note = note.read_bytes()
         receiver = package / self.state(package)["concepts"][1]["path"]
+        raw_receiver = receiver.read_bytes()
         self.check(package, False, "--require-resolved")
         self.cli(
             "resolve-note",
@@ -453,9 +454,12 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.assertEqual(
             note.read_bytes(), raw_note, "Resolving cannot rewrite the sender's note."
         )
-        self.assertIn(
-            "<!-- workflow:resolution -->", receiver.read_text(encoding="utf-8")
+        self.assertEqual(
+            receiver.read_bytes(),
+            raw_receiver,
+            "The receipt is its own file; the concept keeps one writer.",
         )
+        self.assertTrue((package / "receipts" / note.name).is_file())
         self.check(package, True, "--require-resolved")
 
     def test_completed_concept_cannot_still_be_an_unfilled_generated_stub(self):

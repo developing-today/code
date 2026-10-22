@@ -10,7 +10,9 @@ or in the profile's `agent_work_dir` when that is not writable (collaboration
 rule 5). RESEARCH_WORKFLOW_NOW (YYYY-MM-DDTHH:MM:SSZ) pins the clock for tests.
 """
 
+import hashlib
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -18,6 +20,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
@@ -25,6 +28,11 @@ GUARD_STALE = 60  # seconds before an ownerless lock is stale
 CLAIMED = {"claimed", "running"}
 # A lease on C003, concept-C003 or a facet such as C003.2 marks C003 as taken.
 CONCEPT_LEASE = re.compile(r"(?:concept-)?(C\d{3,}(?:\.\d+)*)")
+DISPOSITIONS = ("incorporated", "acknowledged", "declined", "deferred", "superseded")
+RECEIPT_KEYS = {"at", "by", "disposition", "note", "reason", "scanned", "target"}
+RECEIPT_BLOCK = re.compile(r"^(`{3,})workflow-receipt\n(.*?)\n\1$", re.M | re.S)
+# Everything str.splitlines() breaks at, so a value always stays on one line.
+LINE_BREAK = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
 
 
 def core():
@@ -42,6 +50,17 @@ def core():
 
 def fail(message):
     raise ValueError(message)
+
+
+def single_line(value, name):
+    if not isinstance(value, str) or not value.strip() or LINE_BREAK.search(value):
+        fail(f"{name} must be one nonblank line")
+    return value
+
+
+def plain(value):
+    """Escape free text so prettier leaves the Markdown line byte-for-byte alone."""
+    return re.sub(r"([\\`*_\[\]<>~])", r"\\\1", value)
 
 
 # -------------------------------------------------------------------- clock
@@ -292,8 +311,199 @@ def ready_command(args, root, config, package):
     return result
 
 
+# ----------------------------------------------------------------- receipts
+
+
+def note_path(package, value):
+    """Resolve --note to a file directly in `<package>/notes/`; refuse anything else.
+
+    `notes/<id>.md` is read from the package; any other path from the working
+    directory, so `<package>/notes/<id>.md` works too.
+    """
+    given = Path(value)
+    if not given.is_absolute() and given.parts[:1] == ("notes",):
+        path = Path(os.path.normpath(package / given))
+    else:
+        path = Path(os.path.abspath(given))
+    folder = package / "notes"
+    if (
+        folder.is_symlink()
+        or path.parent.resolve() != folder
+        or path.suffix != ".md"
+        or path.name.startswith(".")
+    ):
+        fail(f"--note must name a notes/<note-id>.md file of the package: {value}")
+    if path.is_symlink() or not path.is_file():
+        fail(f"Note is not a regular file: {value}")
+    return path
+
+
+def read_note(path, ids):
+    """The note's header, once its marker, id, participants and body hash hold."""
+    c = core()
+    content = path.read_bytes().decode("utf-8")
+    found = c.NOTE.search(content)
+    if not found or c.NOTE.search(content, found.end()):
+        fail(f"{path}: expected exactly one note marker")
+    note = json.loads(found[1])
+    body = content[found.end() :]
+    if not body.startswith("\n\n") or hashlib.sha256(
+        body[2:].encode()
+    ).hexdigest() != note.get("body_sha256"):
+        fail(f"{path}: note body hash mismatch")
+    if note.get("id") != path.stem:
+        fail(f"{path}: note id does not match its file name")
+    if note.get("from") not in ids or note.get("to") not in ids:
+        fail(f"{path}: note sender and receiver must be concepts of the package")
+    if note["from"] == note["to"]:
+        fail(f"{path}: a note goes to another concept")
+    return note
+
+
+def check_target(package, root, target):
+    """A target is a link to a file inside the package, with a valid anchor."""
+    single_line(target, "Receipt target")
+    parsed = urlsplit(target)
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or not parsed.path
+        or re.search(r"[\s()<>]", target)
+    ):
+        fail(
+            "Receipt target must be a relative link to a file in the package, without "
+            f"spaces, parentheses or angle brackets: {target}"
+        )
+    c = core()
+    if not c.contained(package, unquote(parsed.path)).is_file():
+        fail(f"Receipt target is not a file in the package: {target}")
+    c.check_link(package / "main.md", root, target)
+
+
+def check_receipt(package, root, entry):
+    if not isinstance(entry, dict) or set(entry) != RECEIPT_KEYS:
+        fail(f"A receipt has exactly the keys {', '.join(sorted(RECEIPT_KEYS))}")
+    parse_stamp(entry["at"])
+    single_line(entry["by"], "Receipt by")
+    if entry["disposition"] not in DISPOSITIONS:
+        fail(f"Receipt disposition must be one of {', '.join(DISPOSITIONS)}")
+    if not isinstance(entry["note"], str) or not re.fullmatch(
+        r"notes/[^/.][^/]*\.md", entry["note"]
+    ):
+        fail(f"Receipt note must be notes/<note-id>.md: {entry['note']}")
+    single_line(entry["reason"], "Receipt reason")
+    if not isinstance(entry["scanned"], list) or not all(
+        isinstance(x, dict)
+        and set(x) == {"ref", "sha"}
+        and single_line(x["ref"], "Scanned ref")
+        and re.fullmatch(r"[0-9a-f]{7,64}", str(x["sha"]))
+        for x in entry["scanned"]
+    ):
+        fail("Receipt scanned must list {ref, sha} entries")
+    check_target(package, root, entry["target"])
+
+
+def receipt_text(note, entry):
+    payload = json.dumps(entry, ensure_ascii=False, indent=2, sort_keys=True)
+    fence = "`" * max(
+        3, max((len(x) + 1 for x in re.findall(r"`+", payload)), default=0)
+    )
+    return (
+        f"# Receipt for {note['id']}\n\n"
+        f"{fence}workflow-receipt\n{payload}\n{fence}\n\n"
+        f"- Note: [{note['from']} to {note['to']}](../{entry['note']})\n"
+        f"- Disposition: `{entry['disposition']}` — {plain(entry['reason'])}\n"
+        f"- Landed in: [{plain(entry['target'])}](../{entry['target']})\n"
+    )
+
+
+def receipts(package, root):
+    """Every receipt in the package by note path, each checked whole.
+
+    Registered with research_workflow.DISPOSITION_READERS, so `check` counts a
+    note with a receipt as resolved.
+    """
+    folder = package / "receipts"
+    if folder.is_symlink():
+        fail(f"{folder}: receipts/ must be a directory, not a symlink")
+    found = {}
+    for path in sorted(folder.glob("*.md")):
+        if path.is_symlink() or not path.is_file():
+            fail(f"{path}: a receipt must be a regular file")
+        blocks = RECEIPT_BLOCK.findall(path.read_bytes().decode("utf-8"))
+        if len(blocks) != 1:
+            fail(f"{path}: expected exactly one workflow-receipt block")
+        entry = json.loads(blocks[0][1])
+        check_receipt(package, root, entry)
+        if entry["note"] != f"notes/{path.stem}.md":
+            fail(f"{path}: receipt names another note: {entry['note']}")
+        found[entry["note"]] = entry
+    return found
+
+
+def resolve_command(args, root, config, package):
+    """Write receipts/<note-id>.md once; everything is validated before the write."""
+    c = core()
+    state = c.read_state(package)
+    path = note_path(package, args.note)
+    note = read_note(path, {x["id"] for x in state["concepts"]})
+    key = f"notes/{path.name}"
+    entry = {
+        "at": stamp(now()),
+        "by": note["to"] if args.by is None else args.by,
+        "disposition": args.disposition,
+        "note": key,
+        "reason": args.reason,
+        "scanned": [],
+        "target": args.target,
+    }
+    check_receipt(package, root, entry)
+    receipt = package / "receipts" / path.name
+    if receipt.exists() or receipt.is_symlink():
+        fail(f"{key} already has a receipt: receipts/{path.name}")
+    for concept in state["concepts"]:
+        text = c.contained(package, concept["path"]).read_text(encoding="utf-8")
+        for block in c.RESOLUTION.findall(c.unfenced(text)):
+            if json.loads(block).get("note") == key:
+                fail(f"{key} already has a disposition in {concept['path']}")
+    content = receipt_text(note, entry).encode("utf-8")
+    if receipt.parent.is_symlink():
+        fail(f"{receipt.parent}: receipts/ must be a directory, not a symlink")
+    receipt.parent.mkdir(exist_ok=True)
+    try:
+        # O_EXCL: of two writers resolving one note, exactly one creates the file.
+        fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        fail(f"{key} already has a receipt: receipts/{path.name}")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+    except BaseException:
+        receipt.unlink(missing_ok=True)
+        raise
+    return {"receipt": f"receipts/{path.name}", **entry}
+
+
 # ----------------------------------------------------------------- register
 
 
 def register(sub):
     sub.choices["ready"].set_defaults(handler=ready_command)
+    core().DISPOSITION_READERS["receipts"] = receipts
+    resolve = sub.add_parser(
+        "resolve-note", help="record how the receiver handled a note, once"
+    )
+    resolve.add_argument("--repo-root")
+    resolve.add_argument("--package", required=True)
+    resolve.add_argument("--note", required=True, help="notes/<note-id>.md")
+    resolve.add_argument("--disposition", choices=DISPOSITIONS, required=True)
+    resolve.add_argument(
+        "--target",
+        required=True,
+        help="where it landed: <file>#<anchor> in the package",
+    )
+    resolve.add_argument("--reason", required=True)
+    resolve.add_argument(
+        "--by", help="who resolved it; defaults to the receiving concept"
+    )
+    resolve.set_defaults(handler=resolve_command)
