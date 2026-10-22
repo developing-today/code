@@ -255,7 +255,10 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # (%6cocalhost is localhost) and rejects the other % spellings
         # outright; urlparse passes them through verbatim and the old
         # code mistook them for public DNS names, while ipaddress
-        # accepted the IPv6 zone id (#505).
+        # accepted the IPv6 zone id (#505). Every case here still
+        # refuses under decode-and-judge (#529): the first four decode
+        # to blocked or forbidden-character hosts, the rest are invalid
+        # escapes or a zone id.
         for url in (
             "http://%6cocalhost/",
             "http://localhost%00/",
@@ -268,6 +271,60 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "https://[2001:4860:4860::8888%25eth0]/",  # IPv6 zone id
         ):
             self.assertRefused(url)
+
+    def test_accepts_percent_encoded_spellings_of_public_hosts(self):
+        # #505's blanket refusal also refused spellings that decode to
+        # public hosts, which the Worker validator accepts — the two
+        # validators diverged, including on redirect targets, which
+        # are validated raw (#529). The decoded form is judged, and
+        # the validated URL carries the decoded host so the fetcher
+        # connects to the host that was judged (urllib does not
+        # percent-decode hosts).
+        for url, expected in (
+            ("http://%65xample.com/", "http://example.com/"),
+            ("http://example%2ecom/", "http://example.com/"),
+            ("http://8%2e8%2e8%2e8/", "http://8.8.8.8/"),
+            ("http://%38%2e8.8.8/", "http://8.8.8.8/"),
+            # Port, path and userinfo survive the host substitution.
+            ("http://%65xample.com:8080/page", "http://example.com:8080/page"),
+            (
+                "http://user@%65xample.com/page",
+                "http://user@example.com/page",
+            ),
+        ):
+            self.assertEqual(validate_crawl_url(url), expected, url)
+
+    def test_refuses_percent_decoded_blocked_and_invalid_hosts(self):
+        # Decode-and-judge (#529): spellings that decode to blocked
+        # targets refuse via the ordinary checks, and spellings WHATWG
+        # rejects outright (decoded delimiters, a double-encoded %,
+        # undecodable bytes) refuse at the decode step.
+        for url in (
+            "http://127%2e0%2e0%2e1/",  # -> 127.0.0.1
+            "http://foo%2elocalhost/",  # -> foo.localhost
+            "http://exam%2fple.com/",  # -> exam/ple.com (delimiter)
+            "http://exam%3aple.com/",  # -> exam:ple.com (delimiter)
+            "http://example%252ecom/",  # -> example%2ecom (still has %)
+            "http://%ff.com/",  # decoded bytes are not valid UTF-8
+            "http://%c3%28.com/",  # truncated UTF-8 sequence
+        ):
+            self.assertRefused(url)
+
+    def test_redirect_handler_follows_the_decoded_target(self):
+        # Redirect targets are validated raw, with no Worker
+        # normalisation in between (#529): the handler must fetch the
+        # decoded form of a percent-encoded public target, and refuse
+        # one that decodes to a blocked target.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://%65xample.org/final"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/final")
+        with self.assertRaises(ValueError):
+            handler.redirect_request(req, None, 302, "Found", {}, "http://%6cocalhost/")
 
     def test_refuses_space_hosts_and_ipvfuture_literals(self):
         # A space in the host is not a DNS name: WHATWG rejects it and
