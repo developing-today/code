@@ -13,9 +13,9 @@
   ...
 }:
 {
-  "@chenglou/pretext@0.0.3" = fetchurl {
-    url = "https://registry.npmjs.org/@chenglou/pretext/-/pretext-0.0.3.tgz";
-    hash = "sha512-RQmqMqUAPRCyv4R3LlRi/ao6KbNWYclqLA+V1HS7sWgyUUbjn3JmmlfXZSY/BjM4rbmIaMSyIVisYocYGYftiQ==";
+  "@chenglou/pretext@0.0.9" = fetchurl {
+    url = "https://registry.npmjs.org/@chenglou/pretext/-/pretext-0.0.9.tgz";
+    hash = "sha512-vInlpC//3vjRfWTs78k2BBIq/0bUdpjIp8TIn9fXe0NvnChhTQZfjioVzERQQbkQvCVpPpw7PDOrTWMHpq27VA==";
   };
   "@emnapi/core@1.11.3" = fetchurl {
     url = "https://registry.npmjs.org/@emnapi/core/-/core-1.11.3.tgz";
