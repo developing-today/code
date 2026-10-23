@@ -8,6 +8,7 @@ JSON in the same shape the Worker's fallback produces. Runs only on demand
 burns container minutes only while crawling.
 """
 
+import base64
 import glob
 import ipaddress
 import json
@@ -19,7 +20,7 @@ import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 # Crawl-target policy (#441): the Worker validates before dispatching,
 # and this service re-validates independently (defence in depth — it is
@@ -396,8 +397,11 @@ def validate_crawl_url(raw):
                 )
             # A public DNS name; literal-IP policy does not apply.
             # A percent-decoded host is fetched in its decoded form.
+            # The returned form is WHATWG-normalized (#633).
             return _url_with_encoded_components(
-                _url_with_host(u, host) if percent_decoded else raw
+                _normalize_validated_url(
+                    _url_with_host(u, host) if percent_decoded else raw
+                )
             )
     embedded = _embedded_ipv4(ip)
     if embedded is not None:
@@ -435,9 +439,21 @@ def validate_crawl_url(raw):
         raise ValueError(f"refusing to crawl non-public address {host}")
     elif not ip.is_global:
         raise ValueError(f"refusing to crawl non-public address {host}")
-    # A percent-decoded host is fetched in its decoded form (#529).
+    # Return the judged address in its canonical form (#637): an IP
+    # literal names the same address in many spellings — inet_aton
+    # IPv4 forms (1.2.3, 134744072, 0x8.0x8.0x8.0x8, 010.0.0.010) and
+    # expanded or uppercase IPv6 forms — and the Worker's serializer
+    # returns the canonical one (dotted quad; compressed lowercase
+    # IPv6), so the URL recorded and fetched here names the judged
+    # address in that same single form instead of the caller's
+    # spelling. (A percent-decoded host is likewise fetched in its
+    # decoded form, #529.) _url_with_host re-adds the brackets for
+    # an IPv6 literal.
+    canonical = (
+        _canonical_ipv6(ip) if isinstance(ip, ipaddress.IPv6Address) else str(ip)
+    )
     return _url_with_encoded_components(
-        _url_with_host(u, host) if percent_decoded else raw
+        _normalize_validated_url(_url_with_host(u, canonical))
     )
 
 
@@ -670,6 +686,36 @@ def _percent_decode_host(host):
     return decoded
 
 
+def _canonical_ipv6(ip):
+    # WHATWG's IPv6 serializer: eight lowercase hex pieces, the longest
+    # run of two or more zero pieces compressed to "::". str() of an
+    # IPv6Address is not a stable spelling of that form — newer CPython
+    # renders an IPv4-mapped address's tail as a dotted quad
+    # (::ffff:8.8.8.8) where the Worker returns hextets
+    # (::ffff:808:808) — and exploded carries the same dotted tail on
+    # those versions — so derive the hextets from the address integer,
+    # which no rendering change can reach (#637).
+    value = int(ip)
+    pieces = [format((value >> (16 * (7 - i))) & 0xFFFF, "x") for i in range(8)]
+    best_start, best_len = -1, 0
+    i = 0
+    while i < 8:
+        if pieces[i] == "0":
+            j = i
+            while j < 8 and pieces[j] == "0":
+                j += 1
+            if j - i > best_len:
+                best_start, best_len = i, j - i
+            i = j
+        else:
+            i += 1
+    if best_len < 2:
+        return ":".join(pieces)
+    head = ":".join(pieces[:best_start])
+    tail = ":".join(pieces[best_start + best_len :])
+    return f"{head}::{tail}"
+
+
 def _url_with_host(u, new_host):
     # Rebuild a parsed URL with new_host in place of the netloc's host,
     # preserving userinfo, port, path, query and fragment. Used for
@@ -688,6 +734,96 @@ def _url_with_host(u, new_host):
         _, _, port = hostport.partition(":")
         return u._replace(netloc=f"{prefix}{new_host}:{port}").geturl()
     return u._replace(netloc=prefix + new_host).geturl()
+
+
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+# WHATWG dot segments (#633): a path segment is a single-dot segment
+# when it is "." or "%2e", and a double-dot segment when it is "..",
+# ".%2e", "%2e." or "%2e%2e" — the percent spellings in any case. A
+# longer spelling ("%2e%2e%2e", "%252e%252e") is ordinary data, not a
+# dot segment: only the exact segment matches count, so a literal
+# "%252e" segment (an encoded "%2e") is never double-decoded into one.
+_SINGLE_DOT_SEGMENTS = (".", "%2e")
+_DOUBLE_DOT_SEGMENTS = ("..", ".%2e", "%2e.", "%2e%2e")
+
+
+def _resolve_dot_segments(path):
+    # Resolve a path's dot segments the way WHATWG URL parsing does
+    # (#633): a single-dot segment is dropped, a double-dot segment
+    # drops the previous segment with it, and neither may climb above
+    # the root — "/a/b/../../../c" is "/c", not an error. A trailing
+    # dot segment becomes an empty final segment ("/a/." is "/a/",
+    # "/a/.." is "/", "//%2e" is "//"). Empty segments are ordinary
+    # segments: "//" survives, and a double-dot segment after one
+    # pops that empty segment ("/a//../b" is "/a/b"), matching the
+    # Worker's serializer.
+    parts = path.split("/")
+    out = []
+    for i, seg in enumerate(parts):
+        low = seg.lower()
+        if low in _DOUBLE_DOT_SEGMENTS:
+            if out and not (len(out) == 1 and out[0] == ""):
+                out.pop()
+            if i == len(parts) - 1:
+                out.append("")
+            continue
+        if low in _SINGLE_DOT_SEGMENTS:
+            if i == len(parts) - 1:
+                out.append("")
+            continue
+        out.append(seg)
+    return "/".join(out)
+
+
+def _normalize_validated_url(url):
+    # Return a validated URL in the WHATWG-normalized form the Worker
+    # returns (#633), so both crawlers record — and fetch — the same
+    # URL for the same target: dot segments in the path resolved,
+    # the host lowercased, and the port canonicalized (the scheme's
+    # default port dropped, leading zeros on any other port stripped,
+    # an empty port's colon dropped). Only ASCII case folds in the
+    # host: the IDN spelling itself is deliberately kept, as before
+    # (judged in mapped form, fetched via IDNA — #615); urlparse has
+    # already lowercased the scheme. The path's ";params" tail is
+    # rejoined before resolving: urlparse splits it off the last
+    # segment, but WHATWG treats ";..." as part of that segment, so
+    # a trailing "..;foo" is data, not a double-dot segment.
+    u = urlparse(url)
+    netloc = u.netloc
+    if "@" in netloc:
+        userinfo, _, hostport = netloc.rpartition("@")
+        prefix = userinfo + "@"
+    else:
+        prefix, hostport = "", netloc
+    if hostport.startswith("["):
+        end = hostport.find("]")
+        host_norm = "[" + hostport[1:end].translate(_ASCII_LOWER) + "]"
+        rest = hostport[end + 1 :]
+        port_span = rest[1:] if rest.startswith(":") else None
+    elif ":" in hostport:
+        host_span, _, port_span = hostport.partition(":")
+        host_norm = host_span.translate(_ASCII_LOWER)
+    else:
+        host_norm = hostport.translate(_ASCII_LOWER)
+        port_span = None
+    port_norm = ""
+    if port_span:
+        if port_span.isdigit():
+            port = int(port_span)
+            is_default = (u.scheme == "http" and port == 80) or (
+                u.scheme == "https" and port == 443
+            )
+            if not is_default:
+                port_norm = f":{port}"
+        else:
+            port_norm = f":{port_span}"
+    full_path = u.path + (f";{u.params}" if u.params else "")
+    return u._replace(
+        netloc=f"{prefix}{host_norm}{port_norm}",
+        path=_resolve_dot_segments(full_path),
+        params="",
+    ).geturl()
 
 
 # WHATWG's per-component percent-encode sets for the ASCII punctuation
@@ -802,6 +938,55 @@ def _inet_aton_ipv4(host):
         return None
 
 
+def _split_userinfo(url):
+    # Split a validated URL into the URL the fetcher may hand to
+    # urllib and the Authorization header WHATWG fetch derives from
+    # its userinfo (#622). urllib never strips userinfo itself:
+    # Request.host keeps "user@host" / "user:pass@host" whole,
+    # http.client is built with it as the hostname and getaddrinfo
+    # fails on it — so every userinfo target both validators accept
+    # 502'd in the container before any request was sent, while the
+    # Worker fallback fetched it. Strip the userinfo here and send
+    # the credentials the way WHATWG fetch does: an Authorization:
+    # Basic header built from the percent-decoded username/password
+    # (UTF-8). A URL only "includes credentials" when the username
+    # or the password is non-empty, so a bare "@" (or ":@") carries
+    # none and sends no header — which also resolves the returned-form
+    # spellings the Worker serialises away ("user:@" fetches exactly
+    # as "user@", "@" exactly as no userinfo at all).
+    u = urlparse(url)
+    if "@" not in u.netloc:
+        return url, None
+    userinfo, _, hostport = u.netloc.rpartition("@")
+    username, _, password = userinfo.partition(":")
+    username = unquote(username)
+    password = unquote(password)
+    stripped = u._replace(netloc=hostport).geturl()
+    if not username and not password:
+        return stripped, None
+    token = base64.b64encode(f"{username}:{password}".encode("utf-8"))
+    return stripped, f"Basic {token.decode('ascii')}"
+
+
+def _apply_userinfo_auth(req):
+    # Point a Request at its userinfo-stripped URL and (re)derive its
+    # Authorization header from that URL's own userinfo (#622).
+    # Redirect handling needs the re-derivation, not just the strip:
+    # urllib's redirect_request copies the previous request's headers
+    # onto the follow-up, so without this a credentialed start URL's
+    # Authorization would leak to a redirect target that carries no
+    # credentials of its own, and a credentialed target would be
+    # fetched with the previous hop's credentials (or none).
+    stripped, auth = _split_userinfo(req.full_url)
+    if stripped != req.full_url:
+        req.full_url = stripped
+    if req.has_header("Authorization"):
+        req.remove_header("Authorization")
+    if auth is not None:
+        req.add_header("Authorization", auth)
+    return req
+
+
 class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # Follow the validated form, not the raw Location: a redirect
@@ -809,7 +994,12 @@ class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
         # and a percent-encoded target must be fetched as the decoded
         # host that was judged (#529).
         newurl = validate_crawl_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        followed = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if followed is not None:
+            # A redirect target carrying userinfo fetches the same way
+            # as a start URL with userinfo (#622).
+            _apply_userinfo_auth(followed)
+        return followed
 
 
 _OPENER = None  # built after CTX below (the HTTPS handler carries it)
@@ -842,6 +1032,10 @@ def _fetch_crawl(url):
     req = urllib.request.Request(
         url, headers={"User-Agent": "LabOpsHub-Crawler/0.1 (container)"}
     )
+    # Strip any userinfo and send its credentials as Authorization:
+    # Basic instead — urllib would try to resolve "user@host" as the
+    # hostname and fail before any request is sent (#622).
+    _apply_userinfo_auth(req)
     try:
         response = _OPENER.open(req, timeout=20)
     except urllib.error.HTTPError as e:
