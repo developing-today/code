@@ -335,6 +335,11 @@ const server = http.createServer((req, res) => {
       let completionTokens = 0;
       let stderrTail = '';
       let spawnError = null;
+      // In-band failure state: `codex exec --json` can report a fatal
+      // turn failure as a turn.failed event on a run that still exits 0
+      // (#680). null = no turn.failed seen; otherwise its error message
+      // ('' when the event carried none).
+      let turnFailedMessage = null;
 
       const processJsonLine = (line) => {
         const trimmed = line.trim();
@@ -362,6 +367,15 @@ const server = http.createServer((req, res) => {
               };
               res.write(`data: ${JSON.stringify(chunk)}\n\n`);
             }
+          }
+
+          // Turn failed in-band: a fatal error during the turn. The
+          // exit code cannot be trusted to reflect it (#680).
+          if (event.type === 'turn.failed') {
+            const msg = typeof event.error === 'string'
+              ? event.error
+              : (event.error && typeof event.error.message === 'string' ? event.error.message : '');
+            turnFailedMessage = msg;
           }
 
           // Turn completed with usage metrics
@@ -403,20 +417,21 @@ const server = http.createServer((req, res) => {
 
         if (res.writableEnded) return;
 
-        // Failure is judged by the child's exit: a non-zero code or a
-        // killing signal means the run failed, however much content was
-        // already produced (#676). Partial content must not mask a
-        // failure — it used to be reported as a successful 'stop'
-        // carrying the truncated text (or an empty 200 when nothing was
-        // produced at all).
-        if (code !== 0) {
+        // Failure is judged by the run's authoritative signals: a
+        // turn.failed event (#680), or failing that the child's exit —
+        // a non-zero code or a killing signal means the run failed,
+        // however much content was already produced (#676). Partial
+        // content must not mask a failure — it used to be reported as
+        // a successful 'stop' carrying the truncated text (or an
+        // empty 200 when nothing was produced at all).
+        if (code !== 0 || turnFailedMessage !== null) {
           const stderrLine = stderrTail.trim().split('\n').pop();
           const fallback = spawnError
             ? spawnError.message
             : signal
               ? `codex exec terminated by signal ${signal}`
               : `codex exec exited with code ${code}`;
-          const detail = (stderrLine || fallback).trim();
+          const detail = (turnFailedMessage || stderrLine || fallback).trim();
           const errorBody = { error: { message: `Codex execution failed: ${detail}` } };
           if (stream) {
             // The 200 + text/event-stream headers are already on the

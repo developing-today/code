@@ -1,4 +1,4 @@
-// Tests for codex-proxy's failure detection (#676).
+// Tests for codex-proxy's failure detection (#676, #680).
 // Run: node --test bin/codex-proxy.test.mjs
 //
 // The proxy spawns one `codex exec` child per request, with the prompt
@@ -29,6 +29,13 @@ case "$prompt" in
     printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"partial answer"}}'
     echo "stub codex: run failed midway" >&2
     exit 3 ;;
+  *INBANDPARTIAL*)
+    printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"partial answer"}}'
+    printf '%s\\n' '{"type":"turn.failed","error":{"message":"stub codex: run failed midway"}}'
+    exit 0 ;;
+  *INBANDFAIL*)
+    printf '%s\\n' '{"type":"turn.failed","error":{"message":"stub codex: model overloaded"}}'
+    exit 0 ;;
   *SIGKILLME*)
     kill -9 $$ ;;
   *)
@@ -135,6 +142,18 @@ test('partial output then failure: masked success becomes an error in both modes
   const { port, stop } = await startProxy();
   t.after(stop);
   await assertFailure(port, 'FAILPARTIAL', /Codex execution failed: stub codex: run failed midway/);
+});
+
+test('turn.failed with exit 0 and no output: 500 non-stream, SSE error + [DONE] stream (#680)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  await assertFailure(port, 'INBANDFAIL', /Codex execution failed: stub codex: model overloaded/);
+});
+
+test('partial output then turn.failed with exit 0: masked success becomes an error in both modes (#680)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  await assertFailure(port, 'INBANDPARTIAL', /Codex execution failed: stub codex: run failed midway/);
 });
 
 test('empty-stderr fallback names the killing signal, not code null (#676)', async (t) => {
