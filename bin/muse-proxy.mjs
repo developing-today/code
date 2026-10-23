@@ -406,7 +406,9 @@ const server = http.createServer((req, res) => {
           const stderrLine = stderrTail.trim().split('\n').pop();
           const fallback = terminalState && terminalState !== 'completed'
             ? `muse run terminated with state '${terminalState}'`
-            : `muse exec exited with code ${code}`;
+            : signal
+              ? `muse exec terminated by signal ${signal}`
+              : `muse exec exited with code ${code}`;
           const detail = (stderrLine || fallback).trim();
           const errorBody = { error: { message: `Muse execution failed: ${detail}` } };
           if (stream) {
