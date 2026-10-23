@@ -1,0 +1,39 @@
+PASS keys: public key from the same 32-byte seed, 256 seeds: mismatches=0
+PASS keys: 64-byte keypair (seed||pk), 256 seeds: mismatches=0
+PASS RFC 8032 TEST 1 (0 byte msg): pk2=true pk3=true sig2=true sig3=true v2 verify/strict=true/true v3 verify/strict=true/true
+PASS RFC 8032 TEST 2 (1 byte msg): pk2=true pk3=true sig2=true sig3=true v2 verify/strict=true/true v3 verify/strict=true/true
+PASS RFC 8032 TEST 3 (2 byte msg): pk2=true pk3=true sig2=true sig3=true v2 verify/strict=true/true v3 verify/strict=true/true
+PASS RFC 8032 TEST 1024 (1023 byte msg): pk2=true pk3=true sig2=true sig3=true v2 verify/strict=true/true v3 verify/strict=true/true
+PASS RFC 8032 TEST SHA(abc) (64 byte msg): pk2=true pk3=true sig2=true sig3=true v2 verify/strict=true/true v3 verify/strict=true/true
+PASS sign: same seed+message gives identical 64 bytes in 2.2.0 and 3.0.0: cases=960 differing=0
+PASS cross-verify: 2.2.0 signatures accepted by 3.0.0 (verify and verify_strict): cases=960 rejected by verify=0 by verify_strict=0
+PASS cross-verify: 3.0.0 signatures accepted by 2.2.0 (verify and verify_strict): cases=960 rejected by verify=0 by verify_strict=0
+PASS tampered message, R, S or key: all rejected: cases=96 accepted [v2 verify, v2 strict, v3 verify, v3 strict]=[0, 0, 0, 0]
+PASS non-canonical S: control (canonical S) accepted by all four paths: v2=(true, true) v3=(true, true)
+PASS non-canonical S+L: rejected by v2 verify and verify_strict and v3 verify and verify_strict: v2=(false, false) v3=(false, false) top byte of S+L=0x12 (old top-3-bits check would pass)
+PASS S with bit 255 set: rejected by all four paths: v2=(false, false) v3=(false, false)
+INFO small-order key EIGHT_TORSION[0]: decodes v2=true v3=true is_weak v2=true v3=true | of 8 torsion R with S=0 accepted: v2 verify=1 v2 strict=0 v3 verify=1 v3 strict=0 | key=0100000000000000000000000000000000000000000000000000000000000000
+INFO small-order key EIGHT_TORSION[1]: decodes v2=true v3=true is_weak v2=true v3=true | of 8 torsion R with S=0 accepted: v2 verify=3 v2 strict=0 v3 verify=3 v3 strict=0 | key=c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a
+INFO small-order key EIGHT_TORSION[2]: decodes v2=true v3=true is_weak v2=true v3=true | of 8 torsion R with S=0 accepted: v2 verify=1 v2 strict=0 v3 verify=1 v3 strict=0 | key=0000000000000000000000000000000000000000000000000000000000000080
+INFO small-order key EIGHT_TORSION[3]: decodes v2=true v3=true is_weak v2=true v3=true | of 8 torsion R with S=0 accepted: v2 verify=0 v2 strict=0 v3 verify=0 v3 strict=0 | key=26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05
+INFO small-order key EIGHT_TORSION[4]: decodes v2=true v3=true is_weak v2=true v3=true | of 8 torsion R with S=0 accepted: v2 verify=2 v2 strict=0 v3 verify=2 v3 strict=0 | key=ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
+INFO small-order key EIGHT_TORSION[5]: decodes v2=true v3=true is_weak v2=true v3=true | of 8 torsion R with S=0 accepted: v2 verify=0 v2 strict=0 v3 verify=0 v3 strict=0 | key=26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85
+INFO small-order key EIGHT_TORSION[6]: decodes v2=true v3=true is_weak v2=true v3=true | of 8 torsion R with S=0 accepted: v2 verify=2 v2 strict=0 v3 verify=2 v3 strict=0 | key=0000000000000000000000000000000000000000000000000000000000000000
+INFO small-order key EIGHT_TORSION[7]: decodes v2=true v3=true is_weak v2=true v3=true | of 8 torsion R with S=0 accepted: v2 verify=1 v2 strict=0 v3 verify=1 v3 strict=0 | key=c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa
+INFO small-order key identity, non-canonical (y=p+1): decodes v2=true v3=true is_weak v2=true v3=true | of 8 torsion R with S=0 accepted: v2 verify=1 v2 strict=0 v3 verify=1 v3 strict=0 | key=eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
+INFO small-order key order-4 point, non-canonical (y=p): decodes v2=true v3=true is_weak v2=true v3=true | of 8 torsion R with S=0 accepted: v2 verify=1 v2 strict=0 v3 verify=1 v3 strict=0 | key=edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
+PASS small-order keys: verify_strict accepts no torsion-R forgery (2.2.0 and 3.0.0): see the per-key lines above
+PASS small-order keys: 2.2.0 and 3.0.0 give identical decode, is_weak and verify counts: per-key counts above
+PASS identity key: plain verify accepts a torsion-R forgery (2.2.0), as predicted: accepted=1
+PASS identity key: forgery R=[s]B, S=s accepted by verify, rejected by verify_strict (both versions): trials=8 accepted [v2 verify, v2 strict, v3 verify, v3 strict]=[8, 0, 8, 0]
+PASS control: non-small-order key with R=identity, S=0 rejected by all four paths: v2=false/false v3=false/false
+INFO pkcs8 DER of seed 0: 2.2.0 == 3.0.0: true; hex=3051020101300506032b65700422042000e0efadd9a564bd99df5139b29d4172462faa72037d6c0e90dad0ed1298041b81210007c1c9e0833b8ab6f978b69a73e99878c4543d15e4d2ee5c47bad9cd05ddca80
+PASS expanded key: SHA-512(seed) through hazmat gives the same signatures and keys as seed signing: seeds=32 mismatches=0
+PASS keypair (seed||pk): 2.2.0 bytes load in 3.0.0, and a tampered public half is refused by both: seeds=32 failures=0
+PASS PKCS#8 DER of the seed: byte-identical in 2.2.0 and 3.0.0, and 3.0.0 reads 2.2.0's: seeds=32 failures=0
+PASS decode: VerifyingKey::from_bytes accepts the same 32-byte strings in 2.2.0 and 3.0.0: encodings=5806 decodes v2=2900 v3=2900 disagreements=0
+PASS decode: is_weak agrees for every decodable key: disagreements=0 small-order among decodable=14
+INFO error: off-curve public key (both versions return Err): v2 Display="signature error: Cannot decompress Edwards point" Debug="signature::Error { source: Some(Cannot decompress Edwards point) }" | v3 Display="signature error" Debug="signature::Error { source: Some(Cannot decompress Edwards point) }" | bytes=0200000000000000000000000000000000000000000000000000000000000000
+INFO error: 63-byte signature slice (both versions return Err): v2 Display="signature error" | v3 Display="signature error"
+PASS generate(): keys from OsRng (2.2.0, rand_core 0.6) and SysRng via UnwrapErr (3.0.0, rand_core 0.10) cross-verify: v3 verifies v2-generated key: (true, true); v2 verifies v3-generated key: (true, true)
+SUMMARY pass=25 fail=0

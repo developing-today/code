@@ -1,0 +1,98 @@
+# CI for pkgs/id — P2P file sharing CLI
+#
+# Runs on push to main and PRs that touch pkgs/id/ files.
+# Uses nix flake check to run all sandboxed CI checks:
+#   - Rust: fmt, clippy, cargo-check, unit tests, integration tests, doc
+#   - Web: biome fmt, biome lint, bun unit tests, TypeScript typecheck
+#   - Build: debug + release (web variant with embedded assets)
+#   - NixOS VM: serve integration tests, E2E browser tests (require KVM)
+#
+# All checks run in the nix sandbox — no ambient tool installation needed.
+# See pkgs/id/flake.nix checks section for the full list.
+#
+# Shape (2026-10, #292): this gate used to run the FULL flake check on every
+# PR and averaged ~116 minutes — most of it the Playwright browser E2E and
+# NixOS VM checks. Those now live in id-e2e-nightly.yml (nightly + manual).
+# This workflow builds the fast checks explicitly: unit + integration tests,
+# lint, format and type checks. The nix store is cached between runs
+# (magic-nix-cache) so unchanged derivations are not rebuilt from cold.
+
+name: id
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/id/**"
+      - ".github/workflows/id-check.yml"
+      - ".github/scripts/id-pr-checks.txt"
+      - ".github/scripts/check-id-pr-checks.sh"
+  pull_request:
+    paths:
+      - "pkgs/id/**"
+      - ".github/workflows/id-check.yml"
+      - ".github/scripts/id-pr-checks.txt"
+      - ".github/scripts/check-id-pr-checks.sh"
+
+permissions:
+  contents: read
+
+# Push-to-main runs each get their own group (keyed by run_id), so a
+# later merge can never cancel — or displace a pending — verification
+# run for an earlier merge: every merged tree gets its own completed
+# run. Pull-request runs keep sharing a per-ref group, so a new push
+# to a PR still supersedes its stale run (#392). A conditional
+# cancel-in-progress (the mcpx-conformance pattern) would still let a
+# third rapid merge displace the second merge's pending run, so push
+# runs are keyed by run_id here, matching dezren39/nix PR #495.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      # Cache the nix store on GitHub's cache so PRs do not rebuild
+      # unchanged derivations from a cold store every run (#288).
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+
+      # Enable KVM for NixOS VM integration tests
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The PR list is enumerated, so guard it against the flake (#300):
+      # a new flake check that is neither listed nor excluded fails here
+      # by name instead of silently getting no PR coverage.
+      - name: Guard PR check list against flake drift
+        run: .github/scripts/check-id-pr-checks.sh
+
+      - name: Run PR checks
+        run: |
+          # Fast PR set: unit + integration tests, lint, format, typecheck,
+          # doc and the crash gate, listed in id-pr-checks.txt. The heavy
+          # remainder — test-e2e (Playwright), nixos-serve, nixos-e2e,
+          # nixos-integration and nixos-playwright-e2e — runs nightly in
+          # id-e2e-nightly.yml, which also runs the full `nix flake check`
+          # as a safety net. The aggregate `default` check is intentionally
+          # not listed: it re-runs this same set inside a single
+          # derivation. check-id-pr-checks.sh holds the exclusion list and
+          # keeps this list in sync with pkgs/id/flake.nix.
+          mapfile -t checks < <(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' .github/scripts/id-pr-checks.txt)
+          args=()
+          for c in "${checks[@]}"; do
+            args+=("./pkgs/id#checks.x86_64-linux.$c")
+          done
+          nix build -L --keep-going --no-link "${args[@]}"

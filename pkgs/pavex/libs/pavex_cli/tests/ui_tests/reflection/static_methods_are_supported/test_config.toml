@@ -1,0 +1,4 @@
+description = "pavex supports static methods as handlers"
+
+[expectations]
+codegen = "pass"

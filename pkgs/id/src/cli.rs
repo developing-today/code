@@ -1,0 +1,4126 @@
+//! Command-line interface argument parsing for the `id` CLI tool.
+//!
+//! This module defines the CLI structure using [clap](https://docs.rs/clap),
+//! providing a declarative interface for parsing command-line arguments
+//! into structured data.
+//!
+//! # CLI Structure
+//!
+//! ```text
+//! id [COMMAND]
+//!
+//! Commands:
+//!   serve      Start server (accepts put/get from peers)
+//!   repl       Interactive REPL (alias: shell)
+//!   put        Store files (aliases: in, add, store, import)
+//!   put-hash   Store content by hash only
+//!   get        Retrieve files by name or hash
+//!   get-hash   Retrieve by hash (shortcut)
+//!   cat        Output files to stdout (aliases: output, out)
+//!   find       Find files and output content
+//!   search     Search files and list matches
+//!   show       Find and output file content (alias: view)
+//!   peek       Preview files with head/tail display
+//!   list       List all stored files
+//!   id         Print node ID
+//!   peers      Discover and list known peers
+//!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
+//! ```
+//!
+//! # Search Filtering Flags
+//!
+//! The `find`, `search`, `show`, and `peek` commands support filtering:
+//!
+//! - `--first N`: Return only the first N matches (default 1 if no number)
+//! - `--last N`: Return only the last N matches (default 1 if no number)
+//! - `--count`: Print count of matches instead of the matches
+//! - `--exclude PATTERN`: Exclude matches containing pattern (repeatable)
+//!
+//! # Usage Examples
+//!
+//! ```bash
+//! # Start a persistent server
+//! id serve
+//!
+//! # Store a file with a custom name
+//! id put myfile.txt:config.json
+//!
+//! # Get from a remote node
+//! id get abc123...def456 config.json
+//!
+//! # Interactive REPL connected to remote
+//! id repl abc123...def456
+//!
+//! # Show content of first match for "config"
+//! id show config
+//!
+//! # Preview file with head/tail
+//! id peek readme
+//!
+//! # Search with filters
+//! id search --first 5 --exclude .bak config
+//! ```
+//!
+//! # Remote Operations
+//!
+//! Many commands support remote operations by specifying a 64-character
+//! hex node ID as the first positional argument:
+//!
+//! ```bash
+//! # Local put
+//! id put file.txt
+//!
+//! # Remote put (NODE_ID is 64 hex chars)
+//! id put abc123...def456 file.txt
+//! ```
+//!
+//! # Input/Output Flexibility
+//!
+//! Commands support various input and output modes:
+//!
+//! - **Stdin input**: `--content` for direct content, `--stdin` for paths
+//! - **Stdout output**: `-` as output path, `--stdout` flag, or `cat` command
+//! - **Renaming**: Use `source:dest` syntax for any path argument
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+use clap::{Args, Parser, Subcommand, ValueEnum};
+
+use crate::groups::Role;
+use crate::groups::policy::Delegation;
+
+/// The main CLI structure for the `id` peer-to-peer file sharing tool.
+///
+/// When invoked without a subcommand, the CLI defaults to REPL mode.
+///
+/// # Example
+///
+/// ```rust
+/// use id::cli::Cli;
+/// use clap::Parser;
+///
+/// // Parse command line arguments
+/// let cli = Cli::parse_from(["id", "serve", "--ephemeral"]);
+/// ```
+#[derive(Parser, Debug)]
+#[command(
+    name = "id",
+    version,
+    about = "An iroh-based peer-to-peer file sharing CLI",
+    long_about = None
+)]
+pub struct Cli {
+    /// Enable debug logging (equivalent to --log-level debug).
+    ///
+    /// Takes precedence over --log-level and environment variables.
+    #[arg(long, global = true)]
+    pub debug: bool,
+
+    /// Set log level (trace, debug, info, warn, error).
+    ///
+    /// Overrides environment variables but not --debug.
+    #[arg(long, global = true, value_name = "LEVEL")]
+    pub log_level: Option<String>,
+
+    /// Base directory for all data files (.iroh-store, .iroh-key, .iroh-serve.lock).
+    ///
+    /// Allows running multiple independent instances on the same machine.
+    /// Each instance should use a separate data directory.
+    /// The directory is created if it does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Run two servers with separate data
+    /// id --data-dir ./node1 serve --port 3001
+    /// id --data-dir ./node2 serve --port 3002
+    ///
+    /// # Client commands use the same flag to target a specific instance
+    /// id --data-dir ./node1 list
+    /// id --data-dir ./node2 repl
+    /// ```
+    #[arg(
+        long,
+        short = 'd',
+        global = true,
+        value_name = "DIR",
+        conflicts_with = "new"
+    )]
+    pub data_dir: Option<PathBuf>,
+
+    /// Create a new instance directory under .iroh/<name>/.
+    ///
+    /// Shorthand for `--data-dir .iroh/<name>/` that auto-creates
+    /// a named (or randomly-named) subdirectory under `.iroh/` in
+    /// the current working directory.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Named instance
+    /// id --new my-dev serve --port 0
+    ///
+    /// # Random name (auto-generated)
+    /// id --new serve
+    ///
+    /// # Client commands targeting the same instance
+    /// id --new my-dev list
+    /// ```
+    #[arg(long, global = true, num_args = 0..=1, default_missing_value = "", value_name = "NAME", conflicts_with = "data_dir")]
+    pub new: Option<String>,
+
+    /// The group log that `group`, `delegate` and `revoke` read and append to.
+    ///
+    /// Defaults to `groups.jsonl` in the data directory. A relative path is relative to the data
+    /// directory, so a log shared by several nodes is best given as an absolute path.
+    #[arg(long, global = true, value_name = "FILE")]
+    pub groups_log: Option<PathBuf>,
+
+    /// The event store that `doc` and `claim` read and append to.
+    ///
+    /// Defaults to `events` in the data directory. A relative path is relative to the data
+    /// directory, so a store shared by several nodes is best given as an absolute path.
+    #[arg(long, global = true, value_name = "DIR")]
+    pub event_store: Option<PathBuf>,
+
+    /// The subcommand to execute.
+    ///
+    /// If `None`, the REPL is started.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// Available CLI commands.
+///
+/// Each variant represents a distinct operation mode for the `id` tool.
+/// Commands are organized by their primary function: storage, retrieval,
+/// search, or system operations.
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Start a server that accepts put/get requests from peers.
+    ///
+    /// The server runs indefinitely, hosting stored blobs and accepting
+    /// new content from remote nodes. Automatically discovers other
+    /// servers via gossip-based peer discovery using the `BitTorrent` DHT.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Persistent storage (default)
+    /// id serve
+    ///
+    /// # In-memory storage (lost on exit)
+    /// id serve --ephemeral
+    ///
+    /// # Direct connections only (no relay)
+    /// id serve --no-relay
+    ///
+    /// # Start with web interface
+    /// id serve --web
+    ///
+    /// # Start with web interface on custom port
+    /// id serve --web --port 8080
+    ///
+    /// # Bootstrap from known peer
+    /// id serve --bootstrap abc123...def456
+    ///
+    /// # Private discovery network
+    /// id serve --topic my-private-net --topic-secret my-secret
+    ///
+    /// # Disable gossip entirely
+    /// id serve --no-gossip
+    ///
+    /// # Skip built-in bootstrap nodes
+    /// id serve --no-default-bootstrap
+    ///
+    /// # Skip built-in topic/secret (use hardcoded constants)
+    /// id serve --no-default-topic
+    ///
+    /// # Use only defaults.conf values (ignore hardcoded fallbacks)
+    /// id serve --replace-defaults
+    /// ```
+    Serve {
+        /// Use in-memory storage instead of persistent disk storage.
+        ///
+        /// Content is lost when the server stops. Useful for testing
+        /// or temporary file sharing sessions.
+        #[arg(long)]
+        ephemeral: bool,
+        /// Disable relay servers and use direct connections only.
+        ///
+        /// May prevent connections through NATs or firewalls.
+        #[arg(long)]
+        no_relay: bool,
+        /// Disable gossip-based peer discovery entirely.
+        ///
+        /// The server still accepts connections but does not join
+        /// any gossip topic, does not announce itself, and does not
+        /// discover peers. Useful for isolated servers.
+        #[arg(long)]
+        no_gossip: bool,
+        /// Start web interface.
+        ///
+        /// Enables an HTTP server with a browser-based UI for
+        /// file browsing and collaborative editing.
+        /// Requires the `web` feature to be enabled at build time.
+        #[arg(long)]
+        web: bool,
+        /// Port for the web interface.
+        ///
+        /// Use port 0 to let the OS assign a random available port.
+        #[arg(long, default_value = "3000")]
+        port: u16,
+        /// Comma-separated node IDs for manual peer bootstrapping.
+        ///
+        /// Supplementary to automatic DHT discovery. Useful when DHT
+        /// traffic is blocked or for development/testing.
+        #[arg(long, value_delimiter = ',')]
+        bootstrap: Vec<String>,
+        /// Gossip topic name for peer discovery.
+        ///
+        /// All servers on the same topic can discover each other.
+        /// Default: "id-peer-discovery-v1" (public network).
+        /// Use a custom topic for private networks.
+        #[arg(long)]
+        topic: Option<String>,
+        /// Shared secret for topic access control.
+        ///
+        /// Used to encrypt DHT bootstrap records. Only nodes with
+        /// the same secret can discover each other via DHT.
+        /// Default: "id-public-discovery-v1" (public network).
+        #[arg(long)]
+        topic_secret: Option<String>,
+        /// Skip default bootstrap node IDs from `defaults.conf`.
+        ///
+        /// Only CLI-provided `--bootstrap` nodes are used.
+        #[arg(long)]
+        no_default_bootstrap: bool,
+        /// Skip default topic and secret from `defaults.conf`.
+        ///
+        /// Falls back to the hardcoded constant values. CLI-provided
+        /// `--topic` and `--topic-secret` still take precedence.
+        #[arg(long)]
+        no_default_topic: bool,
+        /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
+        ///
+        /// Useful when you want to fully control defaults via the
+        /// embedded configuration file at build time.
+        #[arg(long)]
+        replace_defaults: bool,
+        /// Disable mDNS local peer discovery.
+        ///
+        /// By default, the server uses mDNS to discover peers on the
+        /// local network, and so announces its node ID and addresses to
+        /// every host there. This flag disables that, which is useful in
+        /// environments where multicast traffic is blocked or unwanted.
+        #[arg(long)]
+        no_mdns: bool,
+        /// Enable mainline DHT address lookup and publishing.
+        ///
+        /// By default, the server does not use the mainline BitTorrent DHT
+        /// for address discovery. This flag enables DHT lookup and publishing
+        /// for the server's endpoint.
+        #[arg(long)]
+        dht: bool,
+        /// Port for the Iroh QUIC endpoint (peer-to-peer protocol).
+        ///
+        /// By default, the OS assigns a random available port (0).
+        /// Set a specific port to allow firewall rules or when running
+        /// multiple servers that need predictable port assignments.
+        #[arg(long, default_value = "0")]
+        iroh_port: u16,
+        /// Address the web interface binds to.
+        ///
+        /// Defaults to loopback, so the UI is reachable only from this
+        /// machine. Use `0.0.0.0` to expose it on the network, and set
+        /// `--web-token` when you do.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: std::net::IpAddr,
+        /// Require this token to use the web interface.
+        ///
+        /// Open `http://host:port/?token=<TOKEN>` once; the browser keeps a
+        /// cookie. Scripts may send `Authorization: Bearer <TOKEN>`.
+        #[arg(long, env = "ID_WEB_TOKEN")]
+        web_token: Option<String>,
+        /// Mark the web session cookies (`id_token` and the directory explorer's) `Secure`.
+        ///
+        /// Set this only when HTTPS is terminated in front of the server.
+        /// Browsers drop `Secure` cookies over plain HTTP, except on localhost.
+        #[arg(long, env = "ID_WEB_COOKIE_SECURE")]
+        web_cookie_secure: bool,
+        /// Host a multiplayer world over Iroh (and `/ws/world` with `--web`).
+        #[arg(long, requires = "world_admin_token")]
+        world: bool,
+        /// Admin secret required to mint world guest capabilities.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN")]
+        world_admin_token: Option<String>,
+        /// Start with this precompiled Wasm world module (Roc platform ABI).
+        #[arg(long, requires = "world")]
+        world_module: Option<PathBuf>,
+        /// Write confirmation mail into this directory, one private file per message.
+        #[arg(
+            long,
+            requires = "world",
+            conflicts_with_all = ["world_mail_command", "world_mail_smtp"]
+        )]
+        world_mail_outbox: Option<PathBuf>,
+        /// Run this program for each confirmation mail, with `ID_MAIL_TO`, `ID_MAIL_SUBJECT` and `ID_MAIL_BODY` set.
+        #[arg(
+            long,
+            requires = "world",
+            conflicts_with_all = ["world_mail_outbox", "world_mail_smtp"]
+        )]
+        world_mail_command: Option<PathBuf>,
+        /// Relay confirmation mail through this SMTP server, which must be on loopback and forward with TLS.
+        #[arg(
+            long,
+            requires_all = ["world", "world_mail_from"],
+            conflicts_with_all = ["world_mail_outbox", "world_mail_command"]
+        )]
+        world_mail_smtp: Option<SocketAddr>,
+        /// Sender address for mail sent with `--world-mail-smtp`.
+        #[arg(long, requires = "world_mail_smtp")]
+        world_mail_from: Option<String>,
+        /// Name of the world this server offers (one world per process).
+        ///
+        /// The world's files live in `.id-worlds/<NAME>/`. Names may contain
+        /// `a-z`, `0-9`, `-` and `_`.
+        #[arg(long, default_value = "lobby", requires = "world")]
+        world_name: String,
+        /// Trim the world's journal behind a program snapshot every N events.
+        ///
+        /// A journal otherwise grows (and restarts slow down) without bound.
+        /// Programs that export `plaza_snapshot`/`plaza_restore` are trimmed;
+        /// others keep their full history. `0` never trims.
+        #[arg(long, default_value_t = 1000, requires = "world")]
+        world_checkpoint_every: u64,
+        /// Most worlds open at once; idle durable worlds close to make room.
+        #[arg(long, default_value_t = 256, requires = "world")]
+        world_max_open: usize,
+        /// Most world sessions at once, across every world.
+        #[arg(long, default_value_t = 1024, requires = "world")]
+        world_max_sessions: usize,
+        /// Close durable worlds that no session used for this many seconds
+        /// (they reopen from their journal on demand). `0` keeps them open.
+        #[arg(long, default_value_t = 600, requires = "world")]
+        world_idle_secs: u64,
+        /// Refuse signed world and directory requests for this many seconds
+        /// after startup, so a request captured before a restart cannot be
+        /// replayed into a server with empty replay memory. `0` disables.
+        #[arg(long, default_value_t = 600, requires = "world")]
+        world_boot_window_secs: u64,
+        /// Serve the world over SSH on this port, bound to `--bind`.
+        ///
+        /// Connect with `ssh -p <PORT> <WORLD>@<host>`; the password is the
+        /// guest capability from an invite.
+        #[arg(long, requires = "world")]
+        world_ssh_port: Option<u16>,
+        /// Accept native (ELF) module installs. Unlike Wasm, the guarantee
+        /// is the OS sandbox (Landlock, seccomp, rlimits), not an
+        /// import-free format, so this tier is opt-in.
+        #[arg(long, requires = "world")]
+        world_native: bool,
+        /// Accept new world programs only as Roc source compiled by this server.
+        /// Disables raw Wasm/native module uploads and `--world-module`.
+        #[arg(
+            long,
+            env = "ID_WORLD_SOURCE_ONLY",
+            requires = "world",
+            conflicts_with = "world_module"
+        )]
+        world_source_only: bool,
+        /// Execution bounds for world programs.
+        #[command(flatten)]
+        world_runtime: WorldRuntimeArgs,
+        /// Capability the default world's program may use (repeatable; `*`
+        /// grants the whole catalog).
+        #[arg(long = "world-cap", value_name = "NAME", requires = "world")]
+        world_caps: Vec<String>,
+        /// What an unlisted capability costs the program: `deny` (default) or
+        /// `grant-on-use`, which grants a known capability the first time the
+        /// program uses it.
+        #[arg(long, default_value = "deny", requires = "world")]
+        world_cap_policy: String,
+        /// Capabilities the server allows any world to use, comma-separated
+        /// (default: the whole catalog). A world may grant less, never more.
+        /// `*` is refused here.
+        #[arg(long, value_name = "NAMES", value_delimiter = ',', requires = "world")]
+        world_allowed_caps: Option<Vec<String>>,
+        /// The Roc binary used to compile sources sent to `id world compile`
+        /// (default: $`ID_ROC_BIN` or `roc` from PATH).
+        #[arg(long, env = "ID_ROC_BIN")]
+        roc_bin: Option<String>,
+        /// The world platform directory used for on-the-fly compilation
+        /// (default: $`ID_ROC_PLATFORM` or ./examples/roc-world).
+        #[arg(long, env = "ID_ROC_PLATFORM")]
+        roc_platform: Option<PathBuf>,
+        /// Allow this node to modify the store (repeatable, comma-separated).
+        ///
+        /// Reading names, hashes and tags is public. Writing (put, delete,
+        /// rename, copy, tag changes, blob pushes) requires the node's ID to be
+        /// listed here or in `.iroh-allowed` (one ID per line). This machine's
+        /// own server and client keys are always allowed.
+        #[arg(long = "allow-node", value_delimiter = ',')]
+        allow_node: Vec<String>,
+        /// Let every peer modify the store (insecure).
+        ///
+        /// For demos and trusted networks only.
+        #[arg(long)]
+        open_writes: bool,
+    },
+    /// Start an interactive REPL for issuing commands.
+    ///
+    /// The REPL provides a shell-like interface for executing multiple
+    /// commands without restarting the tool.
+    ///
+    /// # Session Modes
+    ///
+    /// - **Local mode**: `id repl` - commands operate on local store
+    /// - **Remote mode**: `id repl NODE_ID` - commands target remote node
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Local REPL
+    /// id repl
+    ///
+    /// # Remote REPL (all commands target this node)
+    /// id repl abc123...def456
+    /// ```
+    #[command(alias = "shell")]
+    Repl {
+        /// Remote node ID for session-level remote targeting.
+        ///
+        /// When set, all commands in the REPL session target this
+        /// remote node instead of the local store.
+        #[arg(required = false)]
+        node: Option<String>,
+    },
+    /// Store one or more files in the local or remote blob store.
+    ///
+    /// Files can be renamed during storage using the `path:name` syntax.
+    ///
+    /// # Remote Operations
+    ///
+    /// If the first argument is a 64-character hex node ID, remaining
+    /// files are stored on that remote node.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Store a single file
+    /// id put file.txt
+    ///
+    /// # Store multiple files
+    /// id put file1.txt file2.txt
+    ///
+    /// # Rename during storage
+    /// id put myfile.txt:config.json
+    ///
+    /// # Store on remote node
+    /// id put NODE_ID file.txt
+    ///
+    /// # Store from stdin
+    /// echo "content" | id put --content myname.txt
+    /// ```
+    #[command(aliases = ["in", "add", "store", "import"])]
+    Put {
+        /// File paths to store.
+        ///
+        /// Use `path:name` syntax to rename files during storage.
+        /// If the first argument is a 64-char hex node ID, files
+        /// are sent to that remote node.
+        #[arg(required = false)]
+        files: Vec<String>,
+        /// Read content from stdin instead of file paths.
+        ///
+        /// Requires exactly one name argument for the stored content.
+        #[arg(long, visible_alias = "data", conflicts_with = "stdin")]
+        content: bool,
+        /// Read additional file paths from stdin.
+        ///
+        /// Paths are split on newline, tab, or comma.
+        #[arg(long, conflicts_with = "content")]
+        stdin: bool,
+        /// Store by hash only without creating a named tag.
+        ///
+        /// The content is stored but no human-readable name is assigned.
+        /// Useful when you only need the content hash.
+        #[arg(long)]
+        hash_only: bool,
+        /// Disable relay servers for remote operations.
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Store content by hash only, without a named tag.
+    ///
+    /// Similar to `put --hash-only` but only accepts a single source.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Store file by hash
+    /// id put-hash file.txt
+    ///
+    /// # Store stdin by hash
+    /// echo "content" | id put-hash -
+    /// ```
+    #[command(name = "put-hash")]
+    PutHash {
+        /// File path to store, or "-" for stdin.
+        source: String,
+    },
+    /// Retrieve one or more files by name or hash.
+    ///
+    /// Files can be written to different output paths using `source:output`.
+    ///
+    /// # Source Resolution
+    ///
+    /// 1. Try as exact tag name
+    /// 2. Try as hash (if 64 hex characters)
+    /// 3. Use `--hash` to force hash interpretation
+    /// 4. Use `--name-only` to skip hash interpretation
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Get by name (writes to same name)
+    /// id get config.json
+    ///
+    /// # Get with custom output
+    /// id get config.json:local.json
+    ///
+    /// # Get to stdout
+    /// id get config.json:-
+    ///
+    /// # Get from remote
+    /// id get NODE_ID config.json
+    /// ```
+    Get {
+        /// Names or hashes to retrieve.
+        ///
+        /// Use `source:output` to specify output path (`-` for stdout).
+        /// If first arg is a 64-char hex node ID, files are fetched
+        /// from that remote node.
+        #[arg(required = false)]
+        sources: Vec<String>,
+        /// Read additional sources from stdin.
+        ///
+        /// Sources are split on newline, tab, or comma.
+        #[arg(long)]
+        stdin: bool,
+        /// Treat all sources as hashes.
+        ///
+        /// Fails if a source doesn't match a known hash.
+        #[arg(long, conflicts_with = "name_only")]
+        hash: bool,
+        /// Treat all sources as names only.
+        ///
+        /// Skips hash interpretation even for 64-char hex strings.
+        #[arg(long, conflicts_with = "hash")]
+        name_only: bool,
+        /// Output all files to stdout (concatenated).
+        ///
+        /// Overrides per-item output specifications.
+        #[arg(long)]
+        stdout: bool,
+        /// Disable relay servers for remote operations.
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Retrieve a file by hash with explicit output path.
+    ///
+    /// Shortcut for `get --hash HASH:OUTPUT`.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Get hash to file
+    /// id get-hash abc123... output.txt
+    ///
+    /// # Get hash to stdout
+    /// id get-hash abc123... -
+    /// ```
+    #[command(name = "get-hash")]
+    GetHash {
+        /// The blob hash (64 hex characters).
+        hash: String,
+        /// Output path, or "-" for stdout.
+        output: String,
+    },
+    /// Output files to stdout (like `get` but defaults to stdout).
+    ///
+    /// Convenient for piping content to other commands.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Output to stdout
+    /// id cat config.json
+    ///
+    /// # Pipe to another command
+    /// id cat config.json | jq .
+    /// ```
+    #[command(aliases = ["output", "out"])]
+    Cat {
+        /// Names or hashes to output.
+        ///
+        /// If first arg is a 64-char hex node ID, content is fetched
+        /// from that remote node.
+        #[arg(required = false)]
+        sources: Vec<String>,
+        /// Read additional sources from stdin.
+        #[arg(long)]
+        stdin: bool,
+        /// Treat all sources as hashes.
+        #[arg(long, conflicts_with = "name_only")]
+        hash: bool,
+        /// Treat all sources as names only.
+        #[arg(long, conflicts_with = "hash")]
+        name_only: bool,
+        /// Disable relay servers for remote operations.
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Find a file by pattern and output its content (cat over find).
+    ///
+    /// Searches for files matching the query and outputs content to stdout.
+    /// By default outputs the first (best) match. Use `--all` for all matches.
+    ///
+    /// Supports all find/search flags: `--first`, `--last`, `--exclude`, etc.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Show first match for "config"
+    /// id show config
+    ///
+    /// # Show all matches
+    /// id show --all config
+    ///
+    /// # Show first 3 matches
+    /// id show --first 3 config
+    ///
+    /// # Exclude backup files
+    /// id show --exclude .bak config
+    ///
+    /// # Write to file instead of stdout
+    /// id show -o output.txt config
+    /// ```
+    #[command(alias = "view")]
+    Show {
+        /// Search queries (case-insensitive).
+        #[arg(required = true)]
+        queries: Vec<String>,
+        /// Prefer name matches over hash matches in results.
+        #[arg(long)]
+        name: bool,
+        /// Output all matches instead of just the first.
+        #[arg(long)]
+        all: bool,
+        /// Output file (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<String>,
+        /// Return only the first N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        first: Option<usize>,
+        /// Return only the last N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        last: Option<usize>,
+        /// Exclude matches where name or hash contains this pattern (repeatable).
+        #[arg(long, action = clap::ArgAction::Append)]
+        exclude: Vec<String>,
+        /// Remote node ID to search.
+        #[arg(long)]
+        node: Option<String>,
+        /// Disable relay servers.
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Preview file content with configurable head/tail lines.
+    ///
+    /// Shows a preview of matching files with head and tail lines.
+    /// By default shows 5 head + 5 tail lines (or full content if ≤10 lines).
+    ///
+    /// # Display Modes
+    ///
+    /// - Default: shows header banner + head lines + ... + tail lines
+    /// - `--quiet`: no header, just content
+    /// - `--lines`: custom number of head/tail lines
+    /// - `--head-only` / `--tail-only`: show only head or tail
+    /// - `--chars` / `--words`: count by characters or words instead of lines
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Preview readme (default 5 head + 5 tail)
+    /// id peek readme
+    ///
+    /// # Preview with 10 head/tail lines
+    /// id peek --lines 10 readme
+    ///
+    /// # Show only first 20 lines
+    /// id peek --head-only --lines 20 readme
+    ///
+    /// # Preview multiple files
+    /// id peek readme config.json package.json
+    ///
+    /// # Preview first 100 characters
+    /// id peek --chars --lines 100 readme
+    ///
+    /// # Quiet mode (no header)
+    /// id peek --quiet readme
+    /// ```
+    Peek {
+        /// Search queries (case-insensitive).
+        #[arg(required = true)]
+        queries: Vec<String>,
+        /// Prefer name matches over hash matches in results.
+        #[arg(long)]
+        name: bool,
+        /// Number of lines to show from head and tail (default: 5).
+        #[arg(short = 'n', long, default_value = "5")]
+        lines: usize,
+        /// Show only head lines (no tail).
+        #[arg(long, conflicts_with = "tail_only")]
+        head_only: bool,
+        /// Show only tail lines (no head).
+        #[arg(long, conflicts_with = "head_only")]
+        tail_only: bool,
+        /// Count by characters instead of lines.
+        #[arg(long, conflicts_with = "words")]
+        chars: bool,
+        /// Count by words instead of lines.
+        #[arg(long, conflicts_with = "chars")]
+        words: bool,
+        /// Quiet mode: no header banner, just content.
+        #[arg(short = 'q', long)]
+        quiet: bool,
+        /// Output file (default: stdout).
+        #[arg(short = 'o', long)]
+        output: Option<String>,
+        /// Peek all matches instead of just the first per query.
+        #[arg(long)]
+        all: bool,
+        /// Return only the first N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        first: Option<usize>,
+        /// Return only the last N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        last: Option<usize>,
+        /// Exclude matches where name or hash contains this pattern (repeatable).
+        #[arg(long, action = clap::ArgAction::Append)]
+        exclude: Vec<String>,
+        /// Remote node ID to search.
+        #[arg(long)]
+        node: Option<String>,
+        /// Disable relay servers.
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Find files by name/hash query and optionally output content.
+    ///
+    /// Searches return the best match (or all matches with `--all`).
+    /// Match quality: exact > prefix > contains.
+    ///
+    /// # Output Modes
+    ///
+    /// - Default: write best match to file with its name
+    /// - `--stdout`: write best match to stdout
+    /// - `--all`: write all matches (to stdout or `--dir`)
+    ///
+    /// # Result Limiting
+    ///
+    /// - `--first`: Return only the first N matches (default 1 if no number)
+    /// - `--last`: Return only the last N matches (default 1 if no number)
+    /// - `--count`: Print count of matches instead of the matches themselves
+    ///
+    /// # Filtering
+    ///
+    /// - `--exclude`: Exclude matches containing the pattern (repeatable)
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Find and save best match
+    /// id find config
+    ///
+    /// # Find and output to stdout
+    /// id find --stdout config
+    ///
+    /// # Find all matches and save to directory
+    /// id find --all --dir ./output config
+    ///
+    /// # Get first 3 matches
+    /// id find --first 3 config
+    ///
+    /// # Get last match
+    /// id find --last config
+    ///
+    /// # Count matches
+    /// id find --count config
+    ///
+    /// # Exclude backup files
+    /// id find --exclude .bak --exclude .tmp config
+    /// ```
+    Find {
+        /// Search queries (case-insensitive).
+        ///
+        /// Multiple queries find the best match for each.
+        #[arg(required = true)]
+        queries: Vec<String>,
+        /// Prefer name matches over hash matches in results.
+        #[arg(long)]
+        name: bool,
+        /// Output to stdout instead of writing to files.
+        #[arg(long)]
+        stdout: bool,
+        /// Output all matches instead of just the best match.
+        #[arg(long, visible_aliases = ["out", "export", "save", "full"])]
+        all: bool,
+        /// Output directory for `--all` (each file saved by name).
+        #[arg(long)]
+        dir: Option<String>,
+        /// Output format: tag (default), group, or union.
+        ///
+        /// - `tag`: each match with its query
+        /// - `group`: matches grouped by query
+        /// - `union`: deduplicated by hash
+        #[arg(long, default_value = "tag")]
+        format: String,
+        /// Return only the first N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        first: Option<usize>,
+        /// Return only the last N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        last: Option<usize>,
+        /// Print count of matches instead of the matches themselves.
+        #[arg(long)]
+        count: bool,
+        /// Exclude matches where name or hash contains this pattern (repeatable).
+        #[arg(long, action = clap::ArgAction::Append)]
+        exclude: Vec<String>,
+        /// Remote node ID to search.
+        #[arg(long)]
+        node: Option<String>,
+        /// Disable relay servers.
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Search files and list all matches (without outputting content).
+    ///
+    /// Like `find` but only lists matches, doesn't retrieve content.
+    ///
+    /// # Result Limiting
+    ///
+    /// - `--first`: Return only the first N matches (default 1 if no number)
+    /// - `--last`: Return only the last N matches (default 1 if no number)
+    /// - `--count`: Print count of matches instead of the matches themselves
+    ///
+    /// # Filtering
+    ///
+    /// - `--exclude`: Exclude matches containing the pattern (repeatable)
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Search for matches
+    /// id search config
+    ///
+    /// # Search with grouped output
+    /// id search --format group config test
+    ///
+    /// # Get first 5 matches
+    /// id search --first 5 config
+    ///
+    /// # Count matches
+    /// id search --count config
+    ///
+    /// # Exclude backup files
+    /// id search --exclude .bak config
+    /// ```
+    Search {
+        /// Search queries (case-insensitive).
+        #[arg(required = true)]
+        queries: Vec<String>,
+        /// Prefer name matches over hash matches.
+        #[arg(long)]
+        name: bool,
+        /// Include all matches in output.
+        #[arg(long, visible_aliases = ["out", "export", "save", "full"])]
+        all: bool,
+        /// Output directory for `--all`.
+        #[arg(long)]
+        dir: Option<String>,
+        /// Output format: tag, group, or union.
+        #[arg(long, default_value = "tag")]
+        format: String,
+        /// Return only the first N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        first: Option<usize>,
+        /// Return only the last N matches (default 1 if no number given).
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        last: Option<usize>,
+        /// Print count of matches instead of the matches themselves.
+        #[arg(long)]
+        count: bool,
+        /// Exclude matches where name or hash contains this pattern (repeatable).
+        #[arg(long, action = clap::ArgAction::Append)]
+        exclude: Vec<String>,
+        /// Remote node ID to search.
+        #[arg(long)]
+        node: Option<String>,
+        /// Disable relay servers.
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// List all stored files (tags) in local or remote store.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # List local store
+    /// id list
+    ///
+    /// # List remote store
+    /// id list NODE_ID
+    /// ```
+    List {
+        /// Remote node ID to list (omit for local).
+        #[arg(required = false)]
+        node: Option<String>,
+        /// Disable relay servers for remote operations.
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Manage metadata tags on files.
+    ///
+    /// Tags are key/value pairs attached to files for organization,
+    /// filtering, and search. Backed by iroh-docs CRDT documents
+    /// for conflict-free replication.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # Set a tag
+    /// id tag set README.md priority high
+    ///
+    /// # Set a key-only tag (no value)
+    /// id tag set README.md pinned
+    ///
+    /// # Delete a tag
+    /// id tag del README.md priority high
+    ///
+    /// # List all tags
+    /// id tag list
+    ///
+    /// # List tags for a specific file
+    /// id tag list README.md
+    ///
+    /// # Search tags by key
+    /// id tag search priority
+    ///
+    /// # Search tags by key and value
+    /// id tag search priority high
+    /// ```
+    #[command(subcommand, aliases = ["label", "link"])]
+    Tag(TagCommand),
+    /// Mint invites for, and join, multiplayer worlds hosted over Iroh.
+    ///
+    /// The host runs `id serve --world --world-admin-token <T>`. Whoever holds
+    /// the admin token mints a guest capability with `id world invite`; a guest
+    /// presents it with `id world join`. Reaching a node proves only which node
+    /// you are, never what you may do: the capability is the authority.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id world invite NODE_ID --admin-token T --name ann
+    /// ID_WORLD_CAPABILITY=... id world join NODE_ID
+    /// ```
+    #[command(subcommand)]
+    World(Box<WorldCommand>),
+    /// Groups: create, show the policy, add, remove, set roles, list, and join (P6.7a).
+    ///
+    /// Each action records one event in the group log and prints one line, or one JSON object with
+    /// `--json`. A refused action exits non-zero, and its event stays in the log.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id group create --max 8
+    /// id group add GROUP ACCOUNT --role write
+    /// id group list --json
+    /// ```
+    Group {
+        /// Print JSON instead of a line (one array for `list`).
+        #[arg(long, global = true)]
+        json: bool,
+        /// The group action to run.
+        #[command(subcommand)]
+        command: GroupCommand,
+    },
+    /// Grant a delegate a scope in a group, with the group's delegation mode (P6.7b).
+    Delegate(DelegateArgs),
+    /// Revoke a delegation by its grant's event ID, as `delegate` printed it (P6.7b).
+    Revoke(RevokeArgs),
+    /// Documents: publish a file, and list a document's events, frontier and history (P6.7c).
+    ///
+    /// Each action signs one event into the event store and prints one line, or one JSON object
+    /// with `--json`. The store stands in for sync: nodes that share it see each other's events.
+    /// Lists print one line per row, or one JSON array with `--json`.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id doc publish notes.md --media-type text/markdown --tag topic=plans
+    /// id doc history DOCUMENT
+    /// id doc frontier --json
+    /// ```
+    Doc {
+        /// Print JSON instead of lines.
+        #[arg(long, global = true)]
+        json: bool,
+        /// The document action to run.
+        #[command(subcommand)]
+        command: DocCommand,
+    },
+    /// Tag claims on any subject: set, clear, list, and search (P6.7c).
+    ///
+    /// A claim is a signed `tag.set` event, and `clear` removes the live claims it names. These are
+    /// the event-backed tags. The file tags of `id tag` are a separate store.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id claim set DOCUMENT topic plans
+    /// id claim clear DOCUMENT topic
+    /// id claim search topic plans --json
+    /// ```
+    Claim {
+        /// Print JSON instead of lines (one array for `list` and `search`).
+        #[arg(long, global = true)]
+        json: bool,
+        /// The claim action to run.
+        #[command(subcommand)]
+        command: ClaimCommand,
+    },
+    /// Migrate existing files to have name/file auto-tags.
+    ///
+    /// Scans all blob tags in the store and adds `name` and `file`
+    /// metadata tags for any subject that doesn't already have them.
+    /// Existing tags are never overwritten.
+    ///
+    /// # Example
+    ///
+    /// ```bash
+    /// id migrate-tags
+    /// # Output: migrated 42 files
+    /// ```
+    #[command(alias = "migrate")]
+    MigrateTags,
+    /// Print the local node's public ID.
+    ///
+    /// The node ID is derived from the keypair and is needed for
+    /// remote nodes to connect.
+    ///
+    /// # Example
+    ///
+    /// ```bash
+    /// id id
+    /// # Output: abc123...def456
+    ///
+    /// # The identity this machine uses as a *client*. A server owner adds it
+    /// # with `id serve --allow-node <ID>` so this machine may write to it.
+    /// id id --client
+    /// ```
+    Id {
+        /// Print the client identity (used when connecting to other nodes)
+        /// instead of the server identity.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Discover and list known peers.
+    ///
+    /// Discovers other `id` servers via gossip-based networking, RPC
+    /// queries to a running serve instance, or both (default). Supports
+    /// depth-based recursive crawling to find peers-of-peers.
+    ///
+    /// # Discovery Modes
+    ///
+    /// - **Default**: Try RPC (query local serve), then gossip as fallback
+    /// - **RPC only** (`--rpc`): Only query via `ListPeers` RPC
+    /// - **Gossip only** (`--gossip`): Only use gossip topic discovery
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// # List peers from local serve
+    /// id peers
+    ///
+    /// # List peers from a remote node
+    /// id peers abc123...def456
+    ///
+    /// # Deep crawl up to 3 levels
+    /// id peers --depth 3
+    ///
+    /// # Direct gossip discovery (no serve needed)
+    /// id peers --gossip
+    ///
+    /// # Gossip with custom topic
+    /// id peers --gossip --topic my-net --topic-secret my-secret
+    ///
+    /// # Skip built-in bootstrap nodes
+    /// id peers --gossip --no-default-bootstrap
+    /// ```
+    Peers {
+        /// Use gossip-only discovery (join topic, collect announcements).
+        ///
+        /// Bypasses RPC entirely. Useful when no local serve is running.
+        #[arg(long)]
+        gossip: bool,
+        /// Use RPC-only discovery (query server's `ListPeers`).
+        ///
+        /// Fails if no local serve is running (unless a node ID is given).
+        #[arg(long)]
+        rpc: bool,
+        /// Recursive depth for peer-of-peer crawling.
+        ///
+        /// 0 = no crawl, 1 = query direct peers (default),
+        /// N = recursively query up to N levels deep.
+        #[arg(long, default_value = "1")]
+        depth: i32,
+        /// Maximum total peers to discover.
+        ///
+        /// Hard cap to prevent unbounded crawling.
+        #[arg(long, default_value = "1000")]
+        max_peers: usize,
+        /// Per-crawl timeout in seconds.
+        #[arg(long, default_value = "30")]
+        timeout: u64,
+        /// Comma-separated node IDs for gossip bootstrapping.
+        ///
+        /// Supplementary to DHT auto-discovery. These nodes are
+        /// contacted first when joining the gossip topic.
+        #[arg(long, value_delimiter = ',')]
+        bootstrap: Vec<String>,
+        /// Gossip topic name for peer discovery.
+        ///
+        /// Default: "id-peer-discovery-v1" (public network).
+        /// Use a custom topic for private networks.
+        #[arg(long)]
+        topic: Option<String>,
+        /// Shared secret for topic access control.
+        ///
+        /// Used to encrypt DHT bootstrap records.
+        #[arg(long)]
+        topic_secret: Option<String>,
+        /// Skip default bootstrap node IDs from `defaults.conf`.
+        ///
+        /// Only CLI-provided `--bootstrap` nodes are used.
+        #[arg(long)]
+        no_default_bootstrap: bool,
+        /// Skip default topic and secret from `defaults.conf`.
+        ///
+        /// Falls back to the hardcoded constant values.
+        #[arg(long)]
+        no_default_topic: bool,
+        /// Use only `defaults.conf` values, ignoring hardcoded fallbacks.
+        #[arg(long)]
+        replace_defaults: bool,
+        /// Disable relay servers and use direct connections only.
+        #[arg(long)]
+        no_relay: bool,
+        /// Disable mDNS local peer discovery.
+        ///
+        /// By default, peers uses mDNS to discover peers on the
+        /// local network. This flag disables that.
+        #[arg(long)]
+        no_mdns: bool,
+        /// Remote node ID to query (64-char hex).
+        ///
+        /// When set, queries this specific node instead of the
+        /// local serve instance.
+        #[arg(required = false)]
+        node: Option<String>,
+    },
+}
+
+/// Execution bounds for world programs. Each is validated when the server
+/// starts; see `world_limits::RuntimeLimits`.
+#[derive(Args, Debug, Clone)]
+pub struct WorldRuntimeArgs {
+    /// Wasm fuel (instruction budget) for one world call.
+    #[arg(
+        long,
+        default_value_t = 10_000_000,
+        requires = "world",
+        value_name = "UNITS"
+    )]
+    pub world_fuel: u64,
+    /// Linear memory for a Wasm world program, in MiB (1..=2048).
+    #[arg(long, default_value_t = 16, requires = "world", value_name = "MIB")]
+    pub world_memory_mib: u64,
+    /// Largest Wasm payload (input or output), in KiB (1..=1024).
+    #[arg(long, default_value_t = 1024, requires = "world", value_name = "KIB")]
+    pub world_message_kib: u64,
+    /// Address-space cap for a native worker, in MiB (16..=65536).
+    #[arg(long, default_value_t = 256, requires = "world", value_name = "MIB")]
+    pub world_native_memory_mib: u64,
+    /// CPU seconds a native worker may use in total.
+    #[arg(long, default_value_t = 10, requires = "world", value_name = "SECS")]
+    pub world_native_cpu_secs: u64,
+    /// Wall-clock budget for one native worker call, in milliseconds.
+    #[arg(long, default_value_t = 10_000, requires = "world", value_name = "MS")]
+    pub world_native_deadline_ms: u64,
+}
+
+/// Subcommands for `id group`. Accounts and groups are 64 hex characters.
+#[derive(Subcommand, Debug)]
+pub enum GroupCommand {
+    /// Create a group. A normal group makes its creator Admin. A friendship names its other side
+    /// with `--with`, has no Admin unless `--admins-on-create`, and is active once the other side
+    /// accepts.
+    Create {
+        /// The kind of group to create.
+        #[arg(long, value_enum, default_value = "normal")]
+        template: GroupTemplate,
+        /// The other side of a friendship (required for `--template friendship`).
+        #[arg(long, value_name = "ACCOUNT")]
+        with: Option<String>,
+        /// The most members the group may have, counting the creator (normal groups).
+        #[arg(long, value_name = "N")]
+        max: Option<usize>,
+        /// Make both friends Admin (friendships).
+        #[arg(long)]
+        admins_on_create: bool,
+    },
+    /// Show a group's policy record.
+    Policy {
+        /// The group.
+        group: String,
+    },
+    /// Add a member with a role. The author must be a manager of the group.
+    Add {
+        /// The group.
+        group: String,
+        /// The account to add.
+        member: String,
+        /// The member's role.
+        #[arg(long, value_enum, default_value = "read")]
+        role: Role,
+    },
+    /// Remove a member. Removing yourself is leaving.
+    Remove {
+        /// The group.
+        group: String,
+        /// The account to remove.
+        member: String,
+        /// Under the `transfer` mode, the account that takes over the member's grants.
+        #[arg(long, value_name = "ACCOUNT")]
+        successor: Option<String>,
+    },
+    /// Set a member's role. Only an Admin may.
+    #[command(name = "role")]
+    SetRole {
+        /// The group.
+        group: String,
+        /// The member whose role changes.
+        member: String,
+        /// Its new role.
+        #[arg(value_enum)]
+        role: Role,
+    },
+    /// List the groups in the log, one line each.
+    List,
+    /// Join a group with an invitation: a pasted ticket, or an `id:join?` link. Not wired yet.
+    Join {
+        /// The pasted ticket or link.
+        invite: String,
+    },
+}
+
+/// The kinds of group `id group create` makes.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupTemplate {
+    /// A group whose creator is Admin. Members are added by a manager, and a cap may be set.
+    Normal,
+    /// Two members who ask and accept each other.
+    Friendship,
+}
+
+/// The arguments of `id delegate`.
+#[derive(Args, Debug)]
+pub struct DelegateArgs {
+    /// The group.
+    pub group: String,
+    /// The account that is granted the scope.
+    pub grantee: String,
+    /// The scope to grant.
+    #[arg(long, value_enum, default_value = "read")]
+    pub scope: Role,
+    /// Let the grantee pass the scope on to others.
+    #[arg(long)]
+    pub redelegate: bool,
+    /// The group's delegation mode, set first if it differs: `keep_prior`, `cascade` or `transfer`.
+    #[arg(long, value_enum)]
+    pub mode: Option<Delegation>,
+    /// Print JSON instead of a line.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// The arguments of `id revoke`.
+#[derive(Args, Debug)]
+pub struct RevokeArgs {
+    /// The group.
+    pub group: String,
+    /// The grant's event ID, as `id delegate` printed it.
+    pub grant: String,
+    /// Print JSON instead of a line.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Subcommands for `id world`.
+#[derive(Subcommand, Debug)]
+pub enum WorldCommand {
+    /// Mint a guest capability on a world host (needs the host's admin token).
+    Invite {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Display name for the new participant.
+        #[arg(long)]
+        name: String,
+        /// Role preset: spectator sees the world but not the chat, observer
+        /// also reads chat, player also inputs, guest also chats, delegator
+        /// may also mint narrower capabilities. Defaults to guest.
+        #[arg(long, value_parser = ["spectator", "observer", "player", "guest", "delegator"])]
+        role: Option<String>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+        /// How long the invite works, such as `12h` or `3d`.
+        ///
+        /// Defaults to 7 days; the maximum is 30 days.
+        #[arg(long, value_name = "DURATION", value_parser = crate::helpers::parse_duration_secs)]
+        expires_in: Option<u64>,
+        /// How many committed actions the invite may take (at least 1).
+        ///
+        /// Unlimited when omitted.
+        #[arg(long, value_name = "N")]
+        uses: Option<u32>,
+    },
+    /// Upload and activate a compiled `.wasm` world program on a host.
+    Install {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Wasm module built for the `id` Roc world ABI.
+        module: PathBuf,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Deterministic seed supplied to the guest initializer.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Print the world's structured records (a JSON object).
+    Records {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Only keys starting with this prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Replicate the world's records over Iroh with an iroh-docs replica.
+    Mirror {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Keep printing whenever the records change.
+        #[arg(short, long)]
+        follow: bool,
+        /// Store the replica on disk so it survives between runs.
+        #[arg(long, value_name = "PATH")]
+        dir: Option<PathBuf>,
+        /// Give up after this many seconds without a completed sync.
+        #[arg(long, default_value_t = 30)]
+        timeout_secs: u64,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Download the module backing the world's current state, verified
+    /// by hash. Prints the module hash; writes the bytes to `--output`.
+    Download {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Where to write the verified module bytes.
+        #[arg(long)]
+        output: PathBuf,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Join a world and chat. Stdin lines are chat; `/input <hex>` sends
+    /// opaque input. Server frames print as JSON lines.
+    Join {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Replay events after this sequence instead of a full snapshot.
+        #[arg(long)]
+        after: Option<u64>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Compile Roc sources on the host and install the result.
+    ///
+    /// The host rewrites the app's `pf: platform "..."` path to its staged
+    /// copy of the world platform, so any relative path works.
+    Compile {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// The app's main.roc.
+        main_file: PathBuf,
+        /// Additional source files (repeatable; paths become file names).
+        #[arg(short = 'f', long = "file")]
+        files: Vec<PathBuf>,
+        /// Seed for the compiled program's initializer (default: random).
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Build a native worker (x64musl) instead of Wasm; the host must run
+        /// with `--world-native` and a platform with native targets.
+        #[arg(long)]
+        native: bool,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Show (and, with `--grant`/`--revoke`/`--ceiling`, change) a world's capabilities.
+    ///
+    /// Without `--grant`/`--revoke`/`--ceiling` this needs only a guest capability and
+    /// prints what the world has granted, what its program wants, and what it
+    /// has used. With them it needs the admin token.
+    Caps {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: Option<String>,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: Option<String>,
+        /// Capability to grant (repeatable; `*` grants the whole catalog).
+        #[arg(long)]
+        grant: Vec<String>,
+        /// Capability to revoke (repeatable).
+        #[arg(long)]
+        revoke: Vec<String>,
+        /// Capability ceiling to set (comma-separated or repeatable; only known capabilities, no `*`).
+        #[arg(long, value_delimiter = ',')]
+        ceiling: Option<Vec<String>>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// View or configure a world's requested execution profile bounds.
+    ///
+    /// When any limit option (`--fuel`, `--wasm-memory`, etc.) is specified,
+    /// `--admin-token` is required to persist the new profile. When no limits
+    /// are specified, prints the current persisted profile (requires either
+    /// `--admin-token` or a guest `--capability`).
+    Profile {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: Option<String>,
+        /// Guest capability from `id world invite` (sufficient to inspect the profile).
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: Option<String>,
+        /// Requested Wasm fuel limit per transaction/event.
+        #[arg(long, visible_alias = "fuel")]
+        wasm_fuel: Option<u64>,
+        /// Requested Wasm linear memory in bytes.
+        #[arg(long, visible_alias = "wasm-memory")]
+        wasm_memory_bytes: Option<u64>,
+        /// Requested Wasm message payload limit in bytes.
+        #[arg(long, visible_alias = "wasm-message")]
+        wasm_message_bytes: Option<u64>,
+        /// Requested native address-space cap in bytes.
+        #[arg(long, visible_alias = "native-memory")]
+        native_memory_bytes: Option<u64>,
+        /// Requested native CPU cap in seconds.
+        #[arg(long, visible_alias = "native-cpu")]
+        native_cpu_seconds: Option<u64>,
+        /// Requested native call deadline in milliseconds.
+        #[arg(long, visible_alias = "native-deadline")]
+        native_call_deadline_ms: Option<u64>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Scaffold a new Roc world app directory.
+    ///
+    /// Writes `main.roc`, `build.sh`, and `README.md`. The platform path in the
+    /// scaffold points at `../roc-world/platform.roc`, so create the directory
+    /// next to a checkout of the `examples/roc-world` platform.
+    New {
+        /// Directory to create; it must be absent or empty.
+        dir: PathBuf,
+        /// App name used in the README and the Wasm output.
+        #[arg(long, default_value = "world")]
+        name: String,
+    },
+    /// Measure a compiled `.wasm` world program's fuel use, offline.
+    ///
+    /// Compiles the module with the default limits, runs `view`, then
+    /// `layout` (with `--width`/`--height`), `records`, `wants`, and
+    /// `snapshot`, then each `--input` as participant 1 followed by a `view`.
+    /// Prints one JSON object with, per call kind, the calls made, total and
+    /// worst fuel, and the worst call as a percent of the fuel limit. Exits
+    /// nonzero only if the module fails to compile or a call traps.
+    #[cfg(feature = "sandbox")]
+    Measure {
+        /// Wasm module built for the `id` Roc world ABI.
+        #[arg(long)]
+        module: PathBuf,
+        /// Deterministic seed supplied to the guest initializer.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Event to apply as participant 1, hex-encoded (repeatable, in order).
+        #[arg(long = "input", value_name = "HEX")]
+        inputs: Vec<String>,
+        /// Viewport width for the `layout` call (needs `--height`).
+        #[arg(long, requires = "height")]
+        width: Option<u16>,
+        /// Viewport height for the `layout` call (needs `--width`).
+        #[arg(long, requires = "width")]
+        height: Option<u16>,
+    },
+    /// Tail a world's recent events (bounded by retention and a deadline).
+    Logs {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Stop after this many seconds.
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Print a world's module, capability, and profile state as one JSON object.
+    Stats {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Write a world's retained history and records to a replayable fixture
+    /// (JSON Lines). Needs only a join capability, never admin rights.
+    Record {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Guest capability from `id world invite`.
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Write the fixture here instead of standard output.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Replay a recorded fixture offline through a module and compare records.
+    /// Prints a verdict line first; exits nonzero when the records differ.
+    #[cfg(feature = "sandbox")]
+    Replay {
+        /// The Wasm module the fixture was recorded under.
+        #[arg(long, value_name = "FILE")]
+        module: PathBuf,
+        /// Fixture written by `id world record`.
+        #[arg(long, value_name = "FILE")]
+        fixture: PathBuf,
+        /// Seed the module was installed with. The admin supplied it at install
+        /// time; the fixture does not carry it.
+        #[arg(long)]
+        seed: u64,
+        /// Replay a window that does not start at sequence 1. Its records are
+        /// not compared.
+        #[arg(long)]
+        allow_partial: bool,
+    },
+    /// List the worlds a host serves (needs the host's admin token).
+    List {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Print one JSON object instead of tab-separated lines.
+        #[arg(long)]
+        json: bool,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Set whether a world's directory may be read from other unisolated
+    /// worlds (needs the host's admin token). Worlds are isolated by default;
+    /// writes never cross worlds.
+    Isolation {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// `isolated` (no cross-world reads) or `unisolated` (readable from
+        /// other unisolated worlds).
+        #[arg(value_parser = ["isolated", "unisolated"])]
+        mode: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// World on the host to change (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Let other unisolated worlds write into a world (needs the host's admin token).
+    CrossWorldWrite {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// `on` (other unisolated worlds may write here) or `off`.
+        #[arg(value_parser = ["on", "off"])]
+        mode: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// World on the host to change (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Force cross-world writes on for an unisolated world, overriding its own
+    /// setting (needs the host's admin token). Moderators cannot undo a force.
+    ForceCrossWorldWrite {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// World on the host to change (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Set a world's file scope (needs the host's admin token).
+    FileScope {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// `confined` (the world's own sandbox root) or `unrestricted` (any path).
+        #[arg(value_parser = ["confined", "unrestricted"])]
+        scope: String,
+        /// Admin file write override for an isolated world: `on` or `off`.
+        #[arg(long = "write-override", value_parser = ["on", "off"])]
+        write_override: Option<String>,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// World on the host to change (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Create a world on a host (needs the host's admin token).
+    Create {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Name of the new world: `a-z`, `0-9`, `-` and `_`.
+        name: String,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+}
+
+/// Subcommands for `id doc`. A document is a `document.put` event over the content's hash.
+#[derive(Subcommand, Debug)]
+pub enum DocCommand {
+    /// Publish a file as a document, and set a tag for each `--tag`.
+    ///
+    /// Prints `publish document=<ID>`, the document's event ID. The file's bytes are hashed, and
+    /// the event names their hash and size. The bytes are not stored in the event.
+    Publish {
+        /// The file to publish.
+        file: PathBuf,
+        /// The media type of the file, for example `text/markdown`.
+        #[arg(long, value_name = "TYPE")]
+        media_type: String,
+        /// A tag to set on the document, as `name` or `name=value`. Repeat for more.
+        #[arg(long = "tag", value_name = "NAME[=VALUE]")]
+        tags: Vec<String>,
+    },
+    /// List the tags and removal on a document, in causal order.
+    Events {
+        /// The document's event ID, as `publish` printed it.
+        document: String,
+    },
+    /// List the head of each author's chain: the latest event each author has recorded.
+    Frontier,
+    /// List a document's events in causal order, its `document.put` first.
+    History {
+        /// The document's event ID, as `publish` printed it.
+        document: String,
+    },
+}
+
+/// Subcommands for `id claim`. A claim is the event that sets a tag on a subject.
+#[derive(Subcommand, Debug)]
+pub enum ClaimCommand {
+    /// Set a tag on a subject, which is any event ID, such as a document's.
+    Set {
+        /// The subject's event ID.
+        subject: String,
+        /// The tag name.
+        name: String,
+        /// The tag value. Without one, the tag is bare.
+        value: Option<String>,
+    },
+    /// Clear the live claims with this name on a subject, whoever set them.
+    Clear {
+        /// The subject's event ID.
+        subject: String,
+        /// The tag name.
+        name: String,
+    },
+    /// List the live claims with this name, and value if given, on any subject.
+    Search {
+        /// The tag name.
+        name: String,
+        /// The tag value to match as a whole. Without one, any value and a bare tag match.
+        value: Option<String>,
+    },
+    /// List the live claims on a subject.
+    List {
+        /// The subject's event ID.
+        subject: String,
+    },
+}
+
+/// Subcommands for `id tag`.
+///
+/// Manage metadata tags (key/value pairs) attached to files.
+/// Tags are stored in iroh-docs CRDT documents and support
+/// conflict-free replication across peers.
+#[derive(Subcommand, Debug)]
+pub enum TagCommand {
+    /// Set a metadata tag on a file.
+    ///
+    /// Creates or adds a key/value pair on the specified file.
+    /// Multiple values can exist per key.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id tag set README.md priority high
+    /// id tag set README.md pinned
+    /// ```
+    #[command(alias = "add")]
+    Set {
+        /// The file to tag.
+        file: String,
+        /// The tag key.
+        key: String,
+        /// Optional tag value (UTF-8 text).
+        #[arg(conflicts_with_all = ["value_hex", "value_file"])]
+        value: Option<String>,
+        /// Tag value as hex-encoded raw bytes (binary-safe).
+        #[arg(long, value_name = "HEX", conflicts_with = "value_file")]
+        value_hex: Option<String>,
+        /// Read the raw tag value from a file (`-` for stdin).
+        #[arg(long, value_name = "PATH")]
+        value_file: Option<PathBuf>,
+    },
+    /// Delete a metadata tag from a file.
+    ///
+    /// With a value, removes exactly that `(key, value)` tag. Without one,
+    /// removes **every** tag with that key (all values, and a value-less
+    /// key-only tag).
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id tag del README.md priority high   # only priority=high
+    /// id tag del README.md priority        # priority=* and bare "priority"
+    /// ```
+    #[command(aliases = ["rm", "remove", "rem", "delete", "unset"])]
+    Del {
+        /// The file to untag.
+        file: String,
+        /// The tag key to remove.
+        key: String,
+        /// Specific value to remove (UTF-8 text). Omit to remove all values.
+        #[arg(conflicts_with = "value_hex")]
+        value: Option<String>,
+        /// Specific value to remove, as hex-encoded raw bytes.
+        #[arg(long, value_name = "HEX")]
+        value_hex: Option<String>,
+    },
+    /// List metadata tags.
+    ///
+    /// Lists all tags, or tags for a specific file.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id tag list
+    /// id tag list README.md
+    /// ```
+    #[command(alias = "ls")]
+    List {
+        /// File to list tags for (omit for all).
+        file: Option<String>,
+        /// Show non-UTF-8 values as hex (`0x...`) instead of `<binary N bytes>`.
+        #[arg(long)]
+        hex: bool,
+        /// Show non-UTF-8 values as lossy text instead of `<binary N bytes>`.
+        #[arg(long)]
+        binary: bool,
+        /// Don't truncate long values (default: truncate at 256 bytes).
+        #[arg(long)]
+        no_truncate: bool,
+    },
+    /// Search metadata tags using structured query syntax.
+    ///
+    /// Query syntax:
+    /// - `key:` — filter by key name
+    /// - `:value` — filter by value
+    /// - `key:value` — filter by exact key-value pair
+    /// - `"literal"` — search all fields for literal text
+    /// - `bare` — case-insensitive search across subject/key/value
+    ///
+    /// Quoted strings can be used in key:value position:
+    /// `"key:":":value"` matches key `key:` with value `:value`.
+    ///
+    /// Multiple terms are `ANDed` together.
+    ///
+    /// # Examples
+    ///
+    /// ```bash
+    /// id tag search name:
+    /// id tag search name:myfile.txt
+    /// id tag search :high
+    /// id tag search priority
+    /// ```
+    #[command(alias = "find")]
+    Search {
+        /// Search query terms.
+        #[arg(num_args = 1.., required = true)]
+        query: Vec<String>,
+        /// Show non-UTF-8 values as hex (`0x...`) instead of `<binary N bytes>`.
+        #[arg(long)]
+        hex: bool,
+        /// Show non-UTF-8 values as lossy text instead of `<binary N bytes>`.
+        #[arg(long)]
+        binary: bool,
+        /// Don't truncate long values (default: truncate at 256 bytes).
+        #[arg(long)]
+        no_truncate: bool,
+    },
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn test_cli_parse_no_args() {
+        let cli = Cli::parse_from(["id"]);
+        assert!(cli.command.is_none());
+        assert!(!cli.debug);
+        assert!(cli.log_level.is_none());
+    }
+
+    #[test]
+    fn test_cli_parse_debug_flag() {
+        let cli = Cli::parse_from(["id", "--debug"]);
+        assert!(cli.debug);
+        assert!(cli.log_level.is_none());
+    }
+
+    #[test]
+    fn test_cli_parse_log_level_flag() {
+        let cli = Cli::parse_from(["id", "--log-level", "trace"]);
+        assert!(!cli.debug);
+        assert_eq!(cli.log_level, Some("trace".to_owned()));
+    }
+
+    #[test]
+    fn test_cli_parse_debug_with_subcommand() {
+        let cli = Cli::parse_from(["id", "--debug", "serve"]);
+        assert!(cli.debug);
+        assert!(matches!(cli.command, Some(Command::Serve { .. })));
+    }
+
+    #[test]
+    fn test_cli_parse_log_level_with_subcommand() {
+        let cli = Cli::parse_from(["id", "--log-level", "warn", "repl"]);
+        assert_eq!(cli.log_level, Some("warn".to_owned()));
+        assert!(matches!(cli.command, Some(Command::Repl { .. })));
+    }
+
+    #[test]
+    fn test_cli_parse_debug_after_subcommand() {
+        // Global flags should work after subcommand too
+        let cli = Cli::parse_from(["id", "serve", "--debug"]);
+        assert!(cli.debug);
+        assert!(matches!(cli.command, Some(Command::Serve { .. })));
+    }
+
+    #[test]
+    fn test_cli_parse_serve() {
+        let cli = Cli::parse_from(["id", "serve"]);
+        match cli.command {
+            Some(Command::Serve {
+                ephemeral,
+                no_relay,
+                no_gossip,
+                web,
+                port,
+                bootstrap,
+                topic,
+                topic_secret,
+                no_default_bootstrap,
+                no_default_topic,
+                replace_defaults,
+                no_mdns,
+                iroh_port,
+                bind,
+                web_token,
+                world,
+                world_admin_token,
+                world_module,
+                world_name,
+                world_ssh_port,
+                world_checkpoint_every,
+                world_max_open,
+                world_max_sessions,
+                world_idle_secs,
+                world_boot_window_secs,
+                world_caps,
+                world_cap_policy,
+                roc_bin,
+                roc_platform,
+                world_native,
+                allow_node,
+                open_writes,
+                ..
+            }) => {
+                assert!(!ephemeral);
+                assert!(!no_relay);
+                assert!(!no_gossip);
+                assert!(!web);
+                assert_eq!(port, 3000);
+                assert!(bootstrap.is_empty());
+                assert!(topic.is_none());
+                assert!(topic_secret.is_none());
+                assert!(!no_default_bootstrap);
+                assert!(!no_default_topic);
+                assert!(!replace_defaults);
+                assert!(!no_mdns);
+                assert_eq!(iroh_port, 0);
+                // Security defaults: loopback only, no token, nobody extra may write.
+                assert_eq!(bind, "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+                assert!(web_token.is_none());
+                assert!(!world);
+                assert!(world_admin_token.is_none());
+                assert!(world_module.is_none());
+                assert_eq!(world_name, "lobby");
+                assert!(world_ssh_port.is_none());
+                assert_eq!(world_checkpoint_every, 1000);
+                assert_eq!(world_max_open, 256);
+                assert_eq!(world_max_sessions, 1024);
+                assert_eq!(world_idle_secs, 600);
+                assert_eq!(world_boot_window_secs, 600);
+                assert!(world_caps.is_empty());
+                assert_eq!(world_cap_policy, "deny");
+                assert!(roc_bin.is_none());
+                assert!(roc_platform.is_none());
+                assert!(!world_native);
+                assert!(allow_node.is_empty());
+                assert!(!open_writes);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_with_flags() {
+        let cli = Cli::parse_from(["id", "serve", "--ephemeral", "--no-relay"]);
+        match cli.command {
+            Some(Command::Serve {
+                ephemeral,
+                no_relay,
+                no_gossip,
+                web,
+                port,
+                bootstrap,
+                topic,
+                topic_secret,
+                no_default_bootstrap,
+                no_default_topic,
+                replace_defaults,
+                no_mdns,
+                iroh_port,
+                ..
+            }) => {
+                assert!(ephemeral);
+                assert!(no_relay);
+                assert!(!no_gossip);
+                assert!(!web);
+                assert_eq!(port, 3000);
+                assert!(bootstrap.is_empty());
+                assert!(topic.is_none());
+                assert!(topic_secret.is_none());
+                assert!(!no_default_bootstrap);
+                assert!(!no_default_topic);
+                assert!(!replace_defaults);
+                assert!(!no_mdns);
+                assert_eq!(iroh_port, 0);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_with_bootstrap() {
+        let cli = Cli::parse_from(["id", "serve", "--bootstrap", "abc123,def456"]);
+        match cli.command {
+            Some(Command::Serve { bootstrap, .. }) => {
+                assert_eq!(bootstrap, vec!["abc123", "def456"]);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_with_iroh_port() {
+        let cli = Cli::parse_from(["id", "serve", "--iroh-port", "7777"]);
+        match cli.command {
+            Some(Command::Serve { iroh_port, .. }) => {
+                assert_eq!(iroh_port, 7777);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_with_topic() {
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--topic",
+            "my-private-net",
+            "--topic-secret",
+            "my-secret",
+        ]);
+        match cli.command {
+            Some(Command::Serve {
+                topic,
+                topic_secret,
+                ..
+            }) => {
+                assert_eq!(topic, Some("my-private-net".to_owned()));
+                assert_eq!(topic_secret, Some("my-secret".to_owned()));
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_put_single_file() {
+        let cli = Cli::parse_from(["id", "put", "file.txt"]);
+        match cli.command {
+            Some(Command::Put {
+                files,
+                content,
+                stdin,
+                hash_only,
+                no_relay,
+            }) => {
+                assert_eq!(files, vec!["file.txt"]);
+                assert!(!content);
+                assert!(!stdin);
+                assert!(!hash_only);
+                assert!(!no_relay);
+            }
+            _ => panic!("Expected Put command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_put_multiple_files() {
+        let cli = Cli::parse_from(["id", "put", "file1.txt", "file2.txt", "file3.txt"]);
+        match cli.command {
+            Some(Command::Put { files, .. }) => {
+                assert_eq!(files, vec!["file1.txt", "file2.txt", "file3.txt"]);
+            }
+            _ => panic!("Expected Put command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_put_with_rename() {
+        let cli = Cli::parse_from(["id", "put", "local.txt:remote.txt"]);
+        match cli.command {
+            Some(Command::Put { files, .. }) => {
+                assert_eq!(files, vec!["local.txt:remote.txt"]);
+            }
+            _ => panic!("Expected Put command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_put_content_flag() {
+        let cli = Cli::parse_from(["id", "put", "--content", "name"]);
+        match cli.command {
+            Some(Command::Put { content, stdin, .. }) => {
+                assert!(content);
+                assert!(!stdin);
+            }
+            _ => panic!("Expected Put command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_put_aliases() {
+        // Test all aliases work
+        for alias in ["put", "in", "add", "store", "import"] {
+            let cli = Cli::parse_from(["id", alias, "file.txt"]);
+            assert!(matches!(cli.command, Some(Command::Put { .. })));
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_get_single() {
+        let cli = Cli::parse_from(["id", "get", "file.txt"]);
+        match cli.command {
+            Some(Command::Get {
+                sources,
+                hash,
+                name_only,
+                stdout,
+                ..
+            }) => {
+                assert_eq!(sources, vec!["file.txt"]);
+                assert!(!hash);
+                assert!(!name_only);
+                assert!(!stdout);
+            }
+            _ => panic!("Expected Get command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_get_with_output() {
+        let cli = Cli::parse_from(["id", "get", "file.txt:output.txt"]);
+        match cli.command {
+            Some(Command::Get { sources, .. }) => {
+                assert_eq!(sources, vec!["file.txt:output.txt"]);
+            }
+            _ => panic!("Expected Get command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_get_hash_flag() {
+        let cli = Cli::parse_from(["id", "get", "--hash", "abc123"]);
+        match cli.command {
+            Some(Command::Get {
+                hash, name_only, ..
+            }) => {
+                assert!(hash);
+                assert!(!name_only);
+            }
+            _ => panic!("Expected Get command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_get_stdout_flag() {
+        let cli = Cli::parse_from(["id", "get", "--stdout", "file.txt"]);
+        match cli.command {
+            Some(Command::Get { stdout, .. }) => {
+                assert!(stdout);
+            }
+            _ => panic!("Expected Get command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_cat() {
+        let cli = Cli::parse_from(["id", "cat", "file.txt"]);
+        match cli.command {
+            Some(Command::Cat { sources, .. }) => {
+                assert_eq!(sources, vec!["file.txt"]);
+            }
+            _ => panic!("Expected Cat command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_cat_aliases() {
+        for alias in ["cat", "output", "out"] {
+            let cli = Cli::parse_from(["id", alias, "file.txt"]);
+            assert!(matches!(cli.command, Some(Command::Cat { .. })));
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find() {
+        let cli = Cli::parse_from(["id", "find", "query"]);
+        match cli.command {
+            Some(Command::Find {
+                queries,
+                name,
+                stdout,
+                all,
+                format,
+                ..
+            }) => {
+                assert_eq!(queries, vec!["query"]);
+                assert!(!name);
+                assert!(!stdout);
+                assert!(!all);
+                assert_eq!(format, "tag");
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_multiple_queries() {
+        let cli = Cli::parse_from(["id", "find", "query1", "query2"]);
+        match cli.command {
+            Some(Command::Find { queries, .. }) => {
+                assert_eq!(queries, vec!["query1", "query2"]);
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_format() {
+        let cli = Cli::parse_from(["id", "find", "--format", "group", "query"]);
+        match cli.command {
+            Some(Command::Find { format, .. }) => {
+                assert_eq!(format, "group");
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search() {
+        let cli = Cli::parse_from(["id", "search", "query"]);
+        match cli.command {
+            Some(Command::Search { queries, .. }) => {
+                assert_eq!(queries, vec!["query"]);
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_list() {
+        let cli = Cli::parse_from(["id", "list"]);
+        match cli.command {
+            Some(Command::List { node, no_relay }) => {
+                assert!(node.is_none());
+                assert!(!no_relay);
+            }
+            _ => panic!("Expected List command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_list_remote() {
+        let node_id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let cli = Cli::parse_from(["id", "list", node_id]);
+        match cli.command {
+            Some(Command::List { node, .. }) => {
+                assert_eq!(node, Some(node_id.to_owned()));
+            }
+            _ => panic!("Expected List command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_repl() {
+        let cli = Cli::parse_from(["id", "repl"]);
+        match cli.command {
+            Some(Command::Repl { node }) => {
+                assert!(node.is_none());
+            }
+            _ => panic!("Expected Repl command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_repl_alias() {
+        let cli = Cli::parse_from(["id", "shell"]);
+        assert!(matches!(cli.command, Some(Command::Repl { .. })));
+    }
+
+    #[test]
+    fn test_cli_parse_id() {
+        let cli = Cli::parse_from(["id", "id"]);
+        assert!(matches!(cli.command, Some(Command::Id { client: false })));
+    }
+
+    #[test]
+    fn test_cli_parse_peers_default() {
+        let cli = Cli::parse_from(["id", "peers"]);
+        match cli.command {
+            Some(Command::Peers {
+                gossip,
+                rpc,
+                depth,
+                max_peers,
+                timeout,
+                bootstrap,
+                topic,
+                topic_secret,
+                no_default_bootstrap,
+                no_default_topic,
+                replace_defaults,
+                no_relay,
+                no_mdns,
+                node,
+            }) => {
+                assert!(!gossip);
+                assert!(!rpc);
+                assert_eq!(depth, 1);
+                assert_eq!(max_peers, 1000);
+                assert_eq!(timeout, 30);
+                assert!(bootstrap.is_empty());
+                assert!(topic.is_none());
+                assert!(topic_secret.is_none());
+                assert!(!no_default_bootstrap);
+                assert!(!no_default_topic);
+                assert!(!replace_defaults);
+                assert!(!no_relay);
+                assert!(!no_mdns);
+                assert!(node.is_none());
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_gossip_mode() {
+        let cli = Cli::parse_from([
+            "id",
+            "peers",
+            "--gossip",
+            "--topic",
+            "my-net",
+            "--topic-secret",
+            "s3cret",
+        ]);
+        match cli.command {
+            Some(Command::Peers {
+                gossip,
+                rpc,
+                topic,
+                topic_secret,
+                ..
+            }) => {
+                assert!(gossip);
+                assert!(!rpc);
+                assert_eq!(topic, Some("my-net".to_owned()));
+                assert_eq!(topic_secret, Some("s3cret".to_owned()));
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_rpc_with_depth() {
+        let cli = Cli::parse_from(["id", "peers", "--rpc", "--depth", "3", "--max-peers", "50"]);
+        match cli.command {
+            Some(Command::Peers {
+                rpc,
+                gossip,
+                depth,
+                max_peers,
+                ..
+            }) => {
+                assert!(rpc);
+                assert!(!gossip);
+                assert_eq!(depth, 3);
+                assert_eq!(max_peers, 50);
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_with_node() {
+        let node_id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let cli = Cli::parse_from(["id", "peers", node_id]);
+        match cli.command {
+            Some(Command::Peers { node, .. }) => {
+                assert_eq!(node, Some(node_id.to_owned()));
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_with_bootstrap() {
+        let cli = Cli::parse_from(["id", "peers", "--gossip", "--bootstrap", "abc123,def456"]);
+        match cli.command {
+            Some(Command::Peers { bootstrap, .. }) => {
+                assert_eq!(bootstrap, vec!["abc123", "def456"]);
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_get_hash() {
+        let cli = Cli::parse_from(["id", "get-hash", "abc123", "output.txt"]);
+        match cli.command {
+            Some(Command::GetHash { hash, output }) => {
+                assert_eq!(hash, "abc123");
+                assert_eq!(output, "output.txt");
+            }
+            _ => panic!("Expected GetHash command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_put_hash() {
+        let cli = Cli::parse_from(["id", "put-hash", "file.txt"]);
+        match cli.command {
+            Some(Command::PutHash { source }) => {
+                assert_eq!(source, "file.txt");
+            }
+            _ => panic!("Expected PutHash command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_verify() {
+        // Verify CLI structure is valid
+        Cli::command().debug_assert();
+    }
+
+    // Tests for Show command
+    #[test]
+    fn test_cli_parse_show() {
+        let cli = Cli::parse_from(["id", "show", "query"]);
+        match cli.command {
+            Some(Command::Show {
+                queries,
+                name,
+                all,
+                output,
+                first,
+                last,
+                exclude,
+                ..
+            }) => {
+                assert_eq!(queries, vec!["query"]);
+                assert!(!name);
+                assert!(!all);
+                assert!(output.is_none());
+                assert!(first.is_none());
+                assert!(last.is_none());
+                assert!(exclude.is_empty());
+            }
+            _ => panic!("Expected Show command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_show_alias_view() {
+        let cli = Cli::parse_from(["id", "view", "query"]);
+        assert!(matches!(cli.command, Some(Command::Show { .. })));
+    }
+
+    #[test]
+    fn test_cli_parse_show_with_all() {
+        let cli = Cli::parse_from(["id", "show", "--all", "query"]);
+        match cli.command {
+            Some(Command::Show { all, .. }) => {
+                assert!(all);
+            }
+            _ => panic!("Expected Show command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_show_with_output() {
+        let cli = Cli::parse_from(["id", "show", "-o", "output.txt", "query"]);
+        match cli.command {
+            Some(Command::Show { output, .. }) => {
+                assert_eq!(output, Some("output.txt".to_owned()));
+            }
+            _ => panic!("Expected Show command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_show_with_filters() {
+        let cli = Cli::parse_from([
+            "id",
+            "show",
+            "--first",
+            "3",
+            "--exclude",
+            ".bak",
+            "--exclude",
+            ".tmp",
+            "query",
+        ]);
+        match cli.command {
+            Some(Command::Show { first, exclude, .. }) => {
+                assert_eq!(first, Some(3));
+                assert_eq!(exclude, vec![".bak", ".tmp"]);
+            }
+            _ => panic!("Expected Show command"),
+        }
+    }
+
+    // Tests for Peek command
+    #[test]
+    fn test_cli_parse_peek() {
+        let cli = Cli::parse_from(["id", "peek", "query"]);
+        match cli.command {
+            Some(Command::Peek {
+                queries,
+                lines,
+                head_only,
+                tail_only,
+                chars,
+                words,
+                quiet,
+                ..
+            }) => {
+                assert_eq!(queries, vec!["query"]);
+                assert_eq!(lines, 5); // default
+                assert!(!head_only);
+                assert!(!tail_only);
+                assert!(!chars);
+                assert!(!words);
+                assert!(!quiet);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_with_lines() {
+        let cli = Cli::parse_from(["id", "peek", "-n", "10", "query"]);
+        match cli.command {
+            Some(Command::Peek { lines, .. }) => {
+                assert_eq!(lines, 10);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_head_only() {
+        let cli = Cli::parse_from(["id", "peek", "--head-only", "query"]);
+        match cli.command {
+            Some(Command::Peek {
+                head_only,
+                tail_only,
+                ..
+            }) => {
+                assert!(head_only);
+                assert!(!tail_only);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_tail_only() {
+        let cli = Cli::parse_from(["id", "peek", "--tail-only", "query"]);
+        match cli.command {
+            Some(Command::Peek {
+                head_only,
+                tail_only,
+                ..
+            }) => {
+                assert!(!head_only);
+                assert!(tail_only);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_chars() {
+        let cli = Cli::parse_from(["id", "peek", "--chars", "-n", "100", "query"]);
+        match cli.command {
+            Some(Command::Peek {
+                chars,
+                words,
+                lines,
+                ..
+            }) => {
+                assert!(chars);
+                assert!(!words);
+                assert_eq!(lines, 100);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_words() {
+        let cli = Cli::parse_from(["id", "peek", "--words", "-n", "50", "query"]);
+        match cli.command {
+            Some(Command::Peek {
+                chars,
+                words,
+                lines,
+                ..
+            }) => {
+                assert!(!chars);
+                assert!(words);
+                assert_eq!(lines, 50);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_quiet() {
+        let cli = Cli::parse_from(["id", "peek", "-q", "query"]);
+        match cli.command {
+            Some(Command::Peek { quiet, .. }) => {
+                assert!(quiet);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_with_output() {
+        let cli = Cli::parse_from(["id", "peek", "-o", "output.txt", "query"]);
+        match cli.command {
+            Some(Command::Peek { output, .. }) => {
+                assert_eq!(output, Some("output.txt".to_owned()));
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_all() {
+        let cli = Cli::parse_from(["id", "peek", "--all", "query"]);
+        match cli.command {
+            Some(Command::Peek { all, .. }) => {
+                assert!(all);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peek_with_filters() {
+        let cli = Cli::parse_from(["id", "peek", "--first", "2", "--exclude", ".bak", "query"]);
+        match cli.command {
+            Some(Command::Peek { first, exclude, .. }) => {
+                assert_eq!(first, Some(2));
+                assert_eq!(exclude, vec![".bak"]);
+            }
+            _ => panic!("Expected Peek command"),
+        }
+    }
+
+    // Tests for find/search with new flags
+    #[test]
+    fn test_cli_parse_find_with_first() {
+        let cli = Cli::parse_from(["id", "find", "--first", "3", "query"]);
+        match cli.command {
+            Some(Command::Find { first, .. }) => {
+                assert_eq!(first, Some(3));
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_first_default() {
+        // When --first is at the end, it uses the default value
+        let cli = Cli::parse_from(["id", "find", "query", "--first"]);
+        match cli.command {
+            Some(Command::Find { first, .. }) => {
+                assert_eq!(first, Some(1)); // default missing value
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_last() {
+        let cli = Cli::parse_from(["id", "find", "--last", "5", "query"]);
+        match cli.command {
+            Some(Command::Find { last, .. }) => {
+                assert_eq!(last, Some(5));
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_last_default() {
+        // When --last is at the end, it uses the default value
+        let cli = Cli::parse_from(["id", "find", "query", "--last"]);
+        match cli.command {
+            Some(Command::Find { last, .. }) => {
+                assert_eq!(last, Some(1)); // default missing value
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_count() {
+        let cli = Cli::parse_from(["id", "find", "--count", "query"]);
+        match cli.command {
+            Some(Command::Find { count, .. }) => {
+                assert!(count);
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_with_exclude() {
+        let cli = Cli::parse_from([
+            "id",
+            "find",
+            "--exclude",
+            ".bak",
+            "--exclude",
+            ".tmp",
+            "query",
+        ]);
+        match cli.command {
+            Some(Command::Find { exclude, .. }) => {
+                assert_eq!(exclude, vec![".bak", ".tmp"]);
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search_with_first() {
+        let cli = Cli::parse_from(["id", "search", "--first", "3", "query"]);
+        match cli.command {
+            Some(Command::Search { first, .. }) => {
+                assert_eq!(first, Some(3));
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search_with_last() {
+        let cli = Cli::parse_from(["id", "search", "--last", "5", "query"]);
+        match cli.command {
+            Some(Command::Search { last, .. }) => {
+                assert_eq!(last, Some(5));
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search_with_count() {
+        let cli = Cli::parse_from(["id", "search", "--count", "query"]);
+        match cli.command {
+            Some(Command::Search { count, .. }) => {
+                assert!(count);
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_search_with_exclude() {
+        let cli = Cli::parse_from([
+            "id",
+            "search",
+            "--exclude",
+            ".bak",
+            "--exclude",
+            ".tmp",
+            "query",
+        ]);
+        match cli.command {
+            Some(Command::Search { exclude, .. }) => {
+                assert_eq!(exclude, vec![".bak", ".tmp"]);
+            }
+            _ => panic!("Expected Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_find_combined_options() {
+        let cli = Cli::parse_from([
+            "id",
+            "find",
+            "--first",
+            "10",
+            "--exclude",
+            ".bak",
+            "--count",
+            "query",
+        ]);
+        match cli.command {
+            Some(Command::Find {
+                first,
+                count,
+                exclude,
+                ..
+            }) => {
+                assert_eq!(first, Some(10));
+                assert!(count);
+                assert_eq!(exclude, vec![".bak"]);
+            }
+            _ => panic!("Expected Find command"),
+        }
+    }
+
+    // Tests for new discovery flags
+    #[test]
+    fn test_cli_parse_serve_no_gossip() {
+        let cli = Cli::parse_from(["id", "serve", "--no-gossip"]);
+        match cli.command {
+            Some(Command::Serve { no_gossip, .. }) => {
+                assert!(no_gossip);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_no_default_bootstrap() {
+        let cli = Cli::parse_from(["id", "serve", "--no-default-bootstrap"]);
+        match cli.command {
+            Some(Command::Serve {
+                no_default_bootstrap,
+                ..
+            }) => {
+                assert!(no_default_bootstrap);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_no_default_topic() {
+        let cli = Cli::parse_from(["id", "serve", "--no-default-topic"]);
+        match cli.command {
+            Some(Command::Serve {
+                no_default_topic, ..
+            }) => {
+                assert!(no_default_topic);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_replace_defaults() {
+        let cli = Cli::parse_from(["id", "serve", "--replace-defaults"]);
+        match cli.command {
+            Some(Command::Serve {
+                replace_defaults, ..
+            }) => {
+                assert!(replace_defaults);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_all_new_flags() {
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--no-gossip",
+            "--no-default-bootstrap",
+            "--no-default-topic",
+            "--replace-defaults",
+            "--no-mdns",
+        ]);
+        match cli.command {
+            Some(Command::Serve {
+                no_gossip,
+                no_default_bootstrap,
+                no_default_topic,
+                replace_defaults,
+                no_mdns,
+                ..
+            }) => {
+                assert!(no_gossip);
+                assert!(no_default_bootstrap);
+                assert!(no_default_topic);
+                assert!(replace_defaults);
+                assert!(no_mdns);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_no_default_bootstrap() {
+        let cli = Cli::parse_from(["id", "peers", "--gossip", "--no-default-bootstrap"]);
+        match cli.command {
+            Some(Command::Peers {
+                no_default_bootstrap,
+                ..
+            }) => {
+                assert!(no_default_bootstrap);
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_no_default_topic() {
+        let cli = Cli::parse_from(["id", "peers", "--gossip", "--no-default-topic"]);
+        match cli.command {
+            Some(Command::Peers {
+                no_default_topic, ..
+            }) => {
+                assert!(no_default_topic);
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_replace_defaults() {
+        let cli = Cli::parse_from(["id", "peers", "--gossip", "--replace-defaults"]);
+        match cli.command {
+            Some(Command::Peers {
+                replace_defaults, ..
+            }) => {
+                assert!(replace_defaults);
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_no_mdns() {
+        let cli = Cli::parse_from(["id", "serve", "--no-mdns"]);
+        match cli.command {
+            Some(Command::Serve { no_mdns, .. }) => {
+                assert!(no_mdns);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_serve_dht() {
+        let cli = Cli::parse_from(["id", "serve", "--dht"]);
+        match cli.command {
+            Some(Command::Serve { dht, .. }) => {
+                assert!(dht);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_peers_no_mdns() {
+        let cli = Cli::parse_from(["id", "peers", "--no-mdns"]);
+        match cli.command {
+            Some(Command::Peers { no_mdns, .. }) => {
+                assert!(no_mdns);
+            }
+            _ => panic!("Expected Peers command"),
+        }
+    }
+
+    // ========================================================================
+    // Tag command and alias tests
+    // ========================================================================
+
+    #[test]
+    fn test_cli_parse_tag_set() {
+        let cli = Cli::parse_from(["id", "tag", "set", "README.md", "priority", "high"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
+                assert_eq!(file, "README.md");
+                assert_eq!(key, "priority");
+                assert_eq!(value, Some("high".to_owned()));
+            }
+            _ => panic!("Expected Tag Set command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_set_without_value() {
+        let cli = Cli::parse_from(["id", "tag", "set", "README.md", "pinned"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
+                assert_eq!(file, "README.md");
+                assert_eq!(key, "pinned");
+                assert!(value.is_none());
+            }
+            _ => panic!("Expected Tag Set command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_set_alias_add() {
+        let cli = Cli::parse_from(["id", "tag", "add", "file.txt", "label", "rust"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
+                assert_eq!(file, "file.txt");
+                assert_eq!(key, "label");
+                assert_eq!(value, Some("rust".to_owned()));
+            }
+            _ => panic!("Expected Tag Set (via add alias)"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_del() {
+        let cli = Cli::parse_from(["id", "tag", "del", "file.txt", "label", "rust"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Del {
+                file, key, value, ..
+            })) => {
+                assert_eq!(file, "file.txt");
+                assert_eq!(key, "label");
+                assert_eq!(value, Some("rust".to_owned()));
+            }
+            _ => panic!("Expected Tag Del command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_del_without_value() {
+        let cli = Cli::parse_from(["id", "tag", "del", "file.txt", "pinned"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Del {
+                file, key, value, ..
+            })) => {
+                assert_eq!(file, "file.txt");
+                assert_eq!(key, "pinned");
+                assert!(value.is_none());
+            }
+            _ => panic!("Expected Tag Del command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_del_aliases() {
+        for alias in ["del", "rm", "remove", "rem", "delete", "unset"] {
+            let cli = Cli::parse_from(["id", "tag", alias, "file.txt", "key"]);
+            assert!(
+                matches!(cli.command, Some(Command::Tag(TagCommand::Del { .. }))),
+                "alias '{alias}' should parse as Tag Del"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_list() {
+        let cli = Cli::parse_from(["id", "tag", "list"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::List { file, .. })) => {
+                assert!(file.is_none());
+            }
+            _ => panic!("Expected Tag List command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_list_with_file() {
+        let cli = Cli::parse_from(["id", "tag", "list", "README.md"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::List { file, .. })) => {
+                assert_eq!(file, Some("README.md".to_owned()));
+            }
+            _ => panic!("Expected Tag List command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_list_alias_ls() {
+        let cli = Cli::parse_from(["id", "tag", "ls"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Tag(TagCommand::List { .. }))
+        ));
+    }
+
+    #[test]
+    fn test_cli_parse_tag_search() {
+        let cli = Cli::parse_from(["id", "tag", "search", "priority"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Search { query, .. })) => {
+                assert_eq!(query, vec!["priority"]);
+            }
+            _ => panic!("Expected Tag Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_search_with_value() {
+        let cli = Cli::parse_from(["id", "tag", "search", "priority:high"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Search { query, .. })) => {
+                assert_eq!(query, vec!["priority:high"]);
+            }
+            _ => panic!("Expected Tag Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_search_multi_terms() {
+        let cli = Cli::parse_from(["id", "tag", "search", "name:", ":high"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Search { query, .. })) => {
+                assert_eq!(query, vec!["name:", ":high"]);
+            }
+            _ => panic!("Expected Tag Search command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_tag_search_alias_find() {
+        let cli = Cli::parse_from(["id", "tag", "find", "label"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Tag(TagCommand::Search { .. }))
+        ));
+    }
+
+    #[test]
+    fn test_cli_parse_label_alias() {
+        // "label" should work as alias for "tag"
+        let cli = Cli::parse_from(["id", "label", "set", "file.txt", "key", "val"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
+                assert_eq!(file, "file.txt");
+                assert_eq!(key, "key");
+                assert_eq!(value, Some("val".to_owned()));
+            }
+            _ => panic!("Expected Tag Set via 'label' alias"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_link_alias() {
+        // "link" should work as alias for "tag"
+        let cli = Cli::parse_from(["id", "link", "set", "file.txt", "key", "val"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set {
+                file, key, value, ..
+            })) => {
+                assert_eq!(file, "file.txt");
+                assert_eq!(key, "key");
+                assert_eq!(value, Some("val".to_owned()));
+            }
+            _ => panic!("Expected Tag Set via 'link' alias"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_label_del() {
+        let cli = Cli::parse_from(["id", "label", "del", "file.txt", "key"]);
+        assert!(
+            matches!(cli.command, Some(Command::Tag(TagCommand::Del { .. }))),
+            "label del should parse as Tag Del"
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_link_list() {
+        let cli = Cli::parse_from(["id", "link", "list"]);
+        assert!(
+            matches!(cli.command, Some(Command::Tag(TagCommand::List { .. }))),
+            "link list should parse as Tag List"
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_label_search() {
+        let cli = Cli::parse_from(["id", "label", "search", "priority"]);
+        assert!(
+            matches!(cli.command, Some(Command::Tag(TagCommand::Search { .. }))),
+            "label search should parse as Tag Search"
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_world_mail_flags() {
+        let smtp = [
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "x",
+            "--world-mail-smtp",
+            "127.0.0.1:25",
+            "--world-mail-from",
+            "id@example.test",
+        ];
+        let cli = match Cli::try_parse_from(smtp) {
+            Ok(cli) => cli,
+            Err(error) => panic!("smtp mail with a sender should parse: {error}"),
+        };
+        match cli.command {
+            Some(Command::Serve {
+                world_mail_smtp,
+                world_mail_from,
+                ..
+            }) => {
+                assert_eq!(world_mail_smtp, Some("127.0.0.1:25".parse().unwrap()));
+                assert_eq!(world_mail_from.as_deref(), Some("id@example.test"));
+            }
+            _ => panic!("Expected Serve command"),
+        }
+        let refused = |args: &[&str]| {
+            let mut full = vec!["id", "serve", "--world", "--world-admin-token", "x"];
+            full.extend_from_slice(args);
+            Cli::try_parse_from(full).is_err()
+        };
+        assert!(
+            refused(&["--world-mail-smtp", "127.0.0.1:25"]),
+            "needs a sender"
+        );
+        assert!(
+            refused(&["--world-mail-from", "id@example.test"]),
+            "needs a relay"
+        );
+        assert!(refused(&[
+            "--world-mail-smtp",
+            "127.0.0.1:25",
+            "--world-mail-from",
+            "id@example.test",
+            "--world-mail-outbox",
+            "/tmp/mail",
+        ]));
+        assert!(refused(&[
+            "--world-mail-smtp",
+            "127.0.0.1:25",
+            "--world-mail-from",
+            "id@example.test",
+            "--world-mail-command",
+            "/bin/true",
+        ]));
+        assert!(refused(&[
+            "--world-mail-outbox",
+            "/tmp/mail",
+            "--world-mail-command",
+            "/bin/true"
+        ]));
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "serve",
+                "--world-mail-smtp",
+                "127.0.0.1:25",
+                "--world-mail-from",
+                "x@y.z"
+            ])
+            .is_err(),
+            "mail needs --world"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "serve",
+                "--world",
+                "--world-mail-smtp",
+                "not-an-address",
+                "--world-mail-from",
+                "x@y.z"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_serve_security_flags() {
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--bind",
+            "0.0.0.0",
+            "--web-token",
+            "t0k",
+            "--web",
+            "--world",
+            "--world-admin-token",
+            "admin",
+            "--allow-node",
+            "aa,bb",
+            "--allow-node",
+            "cc",
+            "--open-writes",
+        ]);
+        match cli.command {
+            Some(Command::Serve {
+                bind,
+                web_token,
+                web,
+                world,
+                world_admin_token,
+                allow_node,
+                open_writes,
+                ..
+            }) => {
+                assert!(bind.is_unspecified());
+                assert_eq!(web_token.as_deref(), Some("t0k"));
+                assert!(web);
+                assert!(world);
+                assert_eq!(world_admin_token.as_deref(), Some("admin"));
+                assert_eq!(allow_node, vec!["aa", "bb", "cc"]);
+                assert!(open_writes);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+        // Over Iroh the lobby needs no web server.
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--world", "--world-admin-token", "x"]).is_ok()
+        );
+        // `--world` is refused before serve starts when its prerequisites are
+        // missing (clap requirement plus the serve-time validation).
+        assert!(Cli::try_parse_from(["id", "serve", "--world"]).is_err());
+        assert!(
+            Cli::try_parse_from(["id", "serve", "--web", "--world"]).is_err(),
+            "an empty admin secret must not be accepted"
+        );
+    }
+
+    #[test]
+    fn source_only_mode_is_opt_in_and_requires_world_mode() {
+        let parsed = Cli::try_parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "admin",
+            "--world-source-only",
+        ])
+        .unwrap();
+        match parsed.command {
+            Some(Command::Serve {
+                world_source_only, ..
+            }) => assert!(world_source_only),
+            _ => panic!("Expected Serve command"),
+        }
+        assert!(Cli::try_parse_from(["id", "serve", "--world-source-only"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "serve",
+                "--world",
+                "--world-admin-token",
+                "admin",
+                "--world-source-only",
+                "--world-module",
+                "trusted.wasm",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_web_cookie_secure() {
+        match Cli::parse_from(["id", "serve", "--web", "--web-cookie-secure"]).command {
+            Some(Command::Serve {
+                web_cookie_secure, ..
+            }) => assert!(web_cookie_secure),
+            _ => panic!("Expected Serve command"),
+        }
+        match Cli::parse_from(["id", "serve", "--web"]).command {
+            Some(Command::Serve {
+                web_cookie_secure, ..
+            }) => assert!(!web_cookie_secure),
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_world_boot_window() {
+        let cli = Cli::parse_from([
+            "id",
+            "serve",
+            "--world",
+            "--world-admin-token",
+            "x",
+            "--world-boot-window-secs",
+            "0",
+        ]);
+        match cli.command {
+            Some(Command::Serve {
+                world_boot_window_secs,
+                ..
+            }) => assert_eq!(world_boot_window_secs, 0),
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_id_client() {
+        let cli = Cli::parse_from(["id", "id", "--client"]);
+        assert!(matches!(cli.command, Some(Command::Id { client: true })));
+    }
+
+    #[test]
+    fn test_cli_parse_tag_set_binary_inputs() {
+        let cli = Cli::parse_from(["id", "tag", "set", "f", "k", "--value-hex", "deadbeef"]);
+        match cli.command {
+            Some(Command::Tag(TagCommand::Set {
+                value,
+                value_hex,
+                value_file,
+                ..
+            })) => {
+                assert!(value.is_none());
+                assert_eq!(value_hex.as_deref(), Some("deadbeef"));
+                assert!(value_file.is_none());
+            }
+            _ => panic!("Expected Tag Set command"),
+        }
+        let cli = Cli::parse_from(["id", "tag", "set", "f", "k", "--value-file", "-"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Tag(TagCommand::Set {
+                value_file: Some(_),
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn test_cli_tag_set_value_inputs_conflict() {
+        assert!(
+            Cli::try_parse_from(["id", "tag", "set", "f", "k", "v", "--value-hex", "00"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "tag",
+                "set",
+                "f",
+                "k",
+                "--value-hex",
+                "00",
+                "--value-file",
+                "x"
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["id", "tag", "del", "f", "k", "v", "--value-hex", "00"]).is_err()
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_world_sharing_commands() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "cross-world-write",
+            &node,
+            "on",
+            "--admin-token",
+            "t",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::CrossWorldWrite { mode, .. } => {
+                    assert_eq!(mode, "on");
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "force-cross-world-write",
+            &node,
+            "--admin-token",
+            "t",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::ForceCrossWorldWrite { .. })
+        ));
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "file-scope",
+            &node,
+            "unrestricted",
+            "--write-override",
+            "on",
+            "--admin-token",
+            "t",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::FileScope {
+                    scope,
+                    write_override,
+                    ..
+                } => {
+                    assert_eq!(scope, "unrestricted");
+                    assert_eq!(write_override.as_deref(), Some("on"));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "cross-world-write",
+                &node,
+                "maybe",
+                "--admin-token",
+                "t",
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "file-scope",
+                &node,
+                "everywhere",
+                "--admin-token",
+                "t",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_world_commands() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "invite",
+            &node,
+            "--admin-token",
+            "t",
+            "--name",
+            "ann",
+            "--addr",
+            "127.0.0.1:9",
+            "--no-relay",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Invite {
+                    admin_token,
+                    name,
+                    addrs,
+                    no_relay,
+                    ..
+                } => {
+                    assert_eq!(admin_token, "t");
+                    assert_eq!(name, "ann");
+                    assert_eq!(addrs.len(), 1);
+                    assert!(no_relay);
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "invite",
+            &node,
+            "--admin-token",
+            "t",
+            "--name",
+            "ann",
+            "--expires-in",
+            "3d",
+            "--uses",
+            "2",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Invite {
+                    expires_in, uses, ..
+                } => {
+                    assert_eq!(expires_in, Some(259_200));
+                    assert_eq!(uses, Some(2));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "invite",
+                &node,
+                "--admin-token",
+                "t",
+                "--name",
+                "ann",
+                "--expires-in",
+                "soon",
+            ])
+            .is_err()
+        );
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "join",
+            &node,
+            "--capability",
+            "c",
+            "--after",
+            "7",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Join { after: Some(7), .. })
+        ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_roles_and_list_json() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "invite",
+            &node,
+            "--admin-token",
+            "t",
+            "--name",
+            "ann",
+            "--role",
+            "spectator",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Invite { role, .. } => {
+                    assert_eq!(role, Some("spectator".to_owned()));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "invite",
+                &node,
+                "--admin-token",
+                "t",
+                "--name",
+                "ann",
+                "--role",
+                "builder",
+            ])
+            .is_err(),
+            "an unknown role must be refused by the parser"
+        );
+        let cli = Cli::parse_from(["id", "world", "list", &node, "--admin-token", "t", "--json"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::List { json: true, .. })
+        ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_new_and_stats() {
+        let cli = Cli::parse_from(["id", "world", "new", "apps/ping", "--name", "ping"]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::New { dir, name } => {
+                    assert_eq!(name, "ping");
+                    assert!(dir.ends_with("apps/ping"));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        #[cfg(feature = "sandbox")]
+        {
+            let cli = Cli::parse_from([
+                "id", "world", "measure", "--module", "a.wasm", "--input", "ff", "--input", "00",
+                "--width", "40", "--height", "20",
+            ]);
+            match cli.command {
+                Some(Command::World(cmd)) => match *cmd {
+                    WorldCommand::Measure {
+                        inputs,
+                        width,
+                        height,
+                        seed,
+                        ..
+                    } => {
+                        assert_eq!(inputs, ["ff", "00"]);
+                        assert_eq!((width, height, seed), (Some(40), Some(20), 1));
+                    }
+                    other => panic!("unexpected: {other:?}"),
+                },
+                other => panic!("unexpected: {other:?}"),
+            }
+            // A width alone has no viewport to lay out.
+            assert!(
+                Cli::try_parse_from(["id", "world", "measure", "--module", "a", "--width", "9"])
+                    .is_err()
+            );
+        }
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from(["id", "world", "stats", &node, "--capability", "c"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Stats { .. })
+        ));
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "logs",
+            &node,
+            "--capability",
+            "c",
+            "--seconds",
+            "9",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::World(cmd)) if matches!(*cmd, WorldCommand::Logs { seconds: 9, .. })
+        ));
+    }
+
+    #[test]
+    fn test_cli_parse_world_record() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "record",
+            &node,
+            "--capability",
+            "c",
+            "--out",
+            "run.jsonl",
+            "--no-relay",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Record { out, no_relay, .. } => {
+                    assert_eq!(out, Some(PathBuf::from("run.jsonl")));
+                    assert!(no_relay);
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn test_cli_parse_world_replay() {
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "replay",
+            "--module",
+            "game.wasm",
+            "--fixture",
+            "run.jsonl",
+            "--seed",
+            "7",
+            "--allow-partial",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Replay {
+                    module,
+                    fixture,
+                    seed,
+                    allow_partial,
+                } => {
+                    assert_eq!(module, PathBuf::from("game.wasm"));
+                    assert_eq!(fixture, PathBuf::from("run.jsonl"));
+                    assert_eq!(seed, 7);
+                    assert!(allow_partial);
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "replay",
+                "--module",
+                "game.wasm",
+                "--fixture",
+                "run.jsonl",
+            ])
+            .is_err(),
+            "a replay needs the seed the module was installed with"
+        );
+    }
+
+    #[test]
+    fn test_cli_parse_world_caps_ceiling() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "caps",
+            &node,
+            "--admin-token",
+            "adm",
+            "--ceiling",
+            "time.now,chat.say",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Caps {
+                    admin_token,
+                    ceiling,
+                    ..
+                } => {
+                    assert_eq!(admin_token, Some("adm".to_owned()));
+                    assert_eq!(
+                        ceiling,
+                        Some(vec!["time.now".to_owned(), "chat.say".to_owned()])
+                    );
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_world_profile() {
+        let node = "a".repeat(64);
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "profile",
+            &node,
+            "--admin-token",
+            "adm",
+            "--wasm-fuel",
+            "500000",
+            "--wasm-memory",
+            "16777216",
+            "--native-cpu",
+            "10",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Profile {
+                    admin_token,
+                    wasm_fuel,
+                    wasm_memory_bytes,
+                    native_cpu_seconds,
+                    capability,
+                    ..
+                } => {
+                    assert_eq!(admin_token, Some("adm".to_owned()));
+                    assert_eq!(wasm_fuel, Some(500000));
+                    assert_eq!(wasm_memory_bytes, Some(16777216));
+                    assert_eq!(native_cpu_seconds, Some(10));
+                    assert!(capability.is_none());
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        let cli = Cli::parse_from(["id", "world", "profile", &node, "--capability", "cap123"]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Profile {
+                    admin_token,
+                    capability,
+                    wasm_fuel,
+                    ..
+                } => {
+                    assert_eq!(admin_token, None);
+                    assert_eq!(capability, Some("cap123".to_owned()));
+                    assert!(wasm_fuel.is_none());
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+}

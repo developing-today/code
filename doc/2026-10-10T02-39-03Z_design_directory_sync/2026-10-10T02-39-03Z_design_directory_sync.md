@@ -1,0 +1,532 @@
+# Directory sync: sessions, friend envelopes, and replication
+
+Related: [accounts, groups, contacts and delegation](../2026-10-09T12-00-00Z_feature_directory_accounts_groups/2026-10-09T12-00-00Z_feature_directory_accounts_groups.md)
+(Phase 12 limitations), and
+[attenuated capabilities](../2026-10-09T09-59-07Z_design_attenuated_capabilities/2026-10-09T09-59-07Z_design_attenuated_capabilities.md).
+
+Status: design only. Nothing here is implemented. Findings were read from the
+code and not run. Replay cases should get a failing test before any fix.
+
+## Intent
+
+Phase 12 lists three gaps that block a multi-server directory:
+
+1. Sessions, pending sign-in codes and replay nonces are in memory only. A
+   restart signs everyone out and drops pending codes.
+2. Friend envelopes are verified by `receive_request` and `receive_accept`, but
+   nothing delivers them. They are copied by hand.
+3. Two servers can each accept friendships, change membership and delete
+   groups. Nothing merges their changes.
+
+This document sets out options for each, recommends one, and lists what the
+user must decide. It does not choose for the user where the answer depends on
+how the servers are meant to be used.
+
+## Current state (from the code)
+
+- **Directory journal.** Each world has `directory.jsonl` next to its
+  `journal.jsonl` (`src/world_store.rs:325`). `Directory::open` replays it
+  (`src/directory.rs:395-424`). `replay` fails on the first refused line.
+  There is no compaction. `Directory::append` fsyncs one line per change
+  (`directory.rs:431`).
+- **The apply path.** Every change is a `DirectoryEntry`. `apply`
+  (`directory.rs:1124`) clones the directory, runs `change`, runs
+  `ensure_admins`, appends to the journal, and only then commits. Replay runs
+  the same `change` code.
+- **Sessions and codes.** Both live in `DirectoryAuth`
+  (`src/directory_auth.rs`), held by the world core (`src/world.rs`, field
+  `auth`). Sessions last `SESSION_TTL_MS` (12 hours) and are keyed by the
+  SHA-256 of the token. Codes are six digits, valid 15 minutes, five attempts,
+  and one resend a minute.
+- **Replay guard.** `ReplayGuard` is held by `WorldHub` (`src/world_hub.rs:172`,
+  field `replays`), so it is per process and covers every world. It remembers
+  `key:nonce` for `SIGNED_WINDOW_MS` (5 minutes) and holds at most 4096 entries.
+- **Envelopes.** `Envelope` (`directory.rs:285`) has `kind`, `from`, `to`, `at`
+  and a signature over `{kind, from, to, at}`. `verify` (`directory.rs:325`)
+  checks the signature only. It does not check `at` against a clock, has no
+  nonce, no audience, and no expiry. `receive_request` (`directory.rs:1018`)
+  and `receive_accept` (`directory.rs:1042`) have no callers outside tests.
+- **Friend removal** is journaled on the server that does it
+  (`remove_friend`, `directory.rs:1065`). No envelope tells the other server,
+  so the two sides already diverge after a removal.
+- **Explorer.** The grammar (`directory_view.rs`, `parse_line`) has
+  `request_friend` and `accept_friend`, but no `receive`. No contact card code
+  exists, though Decision 8 of Phase 12 describes one.
+- **Group IDs** are sequential. `change` requires
+  `*id == self.next_group` for `GroupCreated` (`directory.rs`, the
+  `GroupCreated` arm, around line 1217).
+- **Uniqueness** is checked at apply time. A key may belong to one account
+  (`AccountKeyAdded`, around line 1164), and an email may belong to one account
+  (`AccountEmailConfirmed`, around line 1188).
+
+---
+
+## 1. Session persistence
+
+### The problem
+
+Sessions and codes are volatile. A restart forces a sign-in again and loses
+pending codes. The loss is small for sessions. The replay guard is the real
+concern, because it is also volatile. A signed request captured before a
+restart is accepted again after it, until its 5-minute window closes.
+
+### What must not be persisted
+
+- **Codes.** A code digest is SHA-256 over `id-code-v1`, the address and the
+  six-digit code. The address is known to anyone who reads the file, so the
+  whole code space is about one million hashes. A persisted digest would let
+  anyone with the file recover a pending code. Codes stay volatile in every
+  option.
+- **Admin sessions.** `Principal::Admin` is a session opened by the configured
+  admin token. Admin sessions stay volatile in every option.
+- **Secrets.** Per the Phase 2 rule (test
+  `the_journal_never_holds_a_credential_secret`), the file may hold only account
+  IDs, token digests and expiry times. Digests of 256-bit random tokens are not
+  usable as bearer tokens, because the lookup hashes the presented token.
+
+### Options
+
+1. **Journal hashed account sessions in `directory.jsonl`.** Add
+   `SessionOpened { account, digest, expires_at }` and `SessionClosed { digest }`
+   as `DirectoryEntry` variants.
+   - Fits the current pattern: one file, fsync, replay on open.
+   - Expiry: entries whose `expires_at` has passed are skipped on replay. The
+     file is never compacted, so every sign-in adds a line forever. The
+     directory journal has no compaction today.
+   - It mixes bearer state into the state that section 3 would replicate. A
+     replicated log would then copy session digests to other servers.
+
+2. **Separate local store, `sessions.jsonl`, in the world folder.** Append
+   `SessionOpened` and `SessionClosed` lines, with the same fsync as the journal.
+   At load, drop expired records and rewrite the file if many have expired.
+   - Keeps the directory journal free of session churn, so the replication
+     input stays small.
+   - Adds a second file to keep consistent with the first. A crash between a
+     session open and its response means the browser holds a session the
+     server lost. The cost is a sign-in.
+   - Covers account sessions only. Admin sessions and codes stay volatile.
+
+3. **Keep volatile, and add a boot quiet period for signed requests.** Nothing
+   is persisted. Signed requests are refused for `2 × SIGNED_WINDOW_MS` (10
+   minutes) after the process starts.
+   - Restart cost: users sign in again, and pending codes are resent after 60
+     seconds.
+   - Why 2 × window: a request captured before the restart has `at` at most
+     the restart time plus the client's clock skew, which is bounded by the
+     5-minute window. It is accepted only while `now - at <= SIGNED_WINDOW_MS`.
+     After 2 × window, every pre-restart request is outside that bound, so the
+     empty guard cannot accept it. A quiet period of exactly one window is not
+     enough, because a client whose clock runs 4 minutes fast can still replay
+     a request.
+   - Cost: 10 minutes of refused signed requests after each restart. Session
+     and credential requests are bearer and not affected.
+
+Rejected: persisting every accepted nonce. It writes on every signed request
+and only protects a 5-minute window.
+
+### Expiry and replay
+
+- Session expiry is already checked at use (`principal`) and on each open
+  (`open_session` drops expired records). Option 2 keeps the same checks at load.
+- Session tokens are bearer and are not nonce-protected in any option. A
+  stolen session is valid until it expires, as designed.
+- The signed-request guard is the only replay defence. Option 3 closes its
+  restart gap without new persistence.
+
+### Recommendation
+
+**Option 3.** Keep sessions and codes volatile, and add the boot quiet period
+so that a restart cannot reopen the replay window. The downside is a sign-in
+after each restart, which is cheap for a personal server. If sessions must
+survive deploys, add option 2 later as a separate store. Do not use option 1,
+because it would put bearer state into the log that section 3 replicates.
+
+---
+
+## 2. Cross-server friend-envelope transport
+
+### The problem
+
+`receive_request` and `receive_accept` already check an envelope's signature
+against the sender's account key, so a server does not need to trust the
+sender's server. Nothing carries the envelope, and the receiving code is
+exercised only by tests.
+
+### Replay and failure findings
+
+Read from `directory.rs`, not run:
+
+- **Stale accept re-applies after a new request (serious).**
+  `FriendAccepted` (`change`) requires only a pending request from `from` to
+  `to`. It does not say which request. Sequence: Ann asks Bo, Bo accepts and
+  the accept envelope A1 is captured. Bo removes Ann. Ann asks again, so a new
+  request is pending on Ann's server. Replaying A1 to Ann's server now creates
+  a friendship Bo did not accept again. Anyone who sees the envelope in transit
+  (manual copying, a plain HTTP push, a log) can do this.
+- **Stale request re-creates a pending request (minor).** `FriendRequested`
+  refuses only when the pair is already friends or a request is pending. After
+  a removal, an old request is accepted again and goes back to pending. The
+  recipient must decide again, so this is a nuisance, not a takeover.
+- **No expiry.** `verify` ignores `at`, so envelopes never expire.
+- **No audience.** An envelope does not name the server it is for. An account
+  key can exist on two servers (keyed sign-up), so one envelope is valid on
+  both.
+- **No delivery state.** The sender journals `FriendRequested` when it asks,
+  and nothing records whether the envelope arrived. The view cannot say "not
+  yet delivered".
+
+### Trust
+
+The account key is the only authority an envelope carries. What a receiving
+server can know is "account X asked or accepted", not "server Y delivered it".
+So there is no set of server keys to accept or reject for correctness. A server
+allow-list would be an abuse control only.
+
+Required checks on receipt, in every option:
+
+1. The signature verifies against `from` (existing).
+2. `to` is a local account (existing).
+3. The envelope names this server as its audience (new).
+4. `at` is within an expiry, for example 30 days (new).
+5. The envelope ID has not been applied before. The set is durable and kept in
+   the directory journal (new).
+6. An acceptance names the request it accepts, and that request is pending
+   (new, and it closes the stale-accept case).
+
+Checks 3 to 6 need a changed envelope body. Nothing is deployed across servers
+yet, so the change costs only the existing tests.
+
+### Options
+
+1. **Push over HTTP to the recipient's server.** The sender's server POSTs the
+   envelope JSON to a new endpoint on the recipient, from a durable outbox.
+   - The recipient address comes from a contact card, which is not built.
+   - TLS authenticates the host. It is not needed for correctness, because the
+     signature does that.
+   - Failure: retry with backoff while the envelope sits in the outbox. Stop on
+     a 2xx, or on a permanent refusal (bad signature, wrong audience, unknown
+     account), which is not retried and is shown to the sender.
+   - Receipt is idempotent. An envelope already applied returns success.
+
+2. **Pull by URL.** The sender publishes each envelope at an unguessable URL,
+   and the recipient fetches it.
+   - The recipient needs a notification or a poll, and the sender must stay
+     online until the fetch.
+   - The URL is effectively a bearer secret, and the envelope reveals the
+     friendship to anyone who learns it.
+
+3. **Manual, through the explorer.** Add a `receive` action to the grammar
+   (`parse_line` and `action_from_fields`), and let an operator paste the
+   envelope into the other server's explorer over SSH or HTTP.
+   - No new network surface, and the receiving path is the one that will be
+     used in option 1.
+   - Needs a person for every delivery.
+
+4. **Keep copying by hand, with no change.** Works for a few friends. It keeps
+   the stale-accept replay open until the checks above land.
+
+### Removal
+
+A removal is one-sided today, so the two servers diverge. The options are to
+send a removal envelope (a new kind), to leave it one-sided, or to make removal
+a request and not a state change. This needs a decision (see the list at the
+end). It does not block the transport.
+
+### Recommendation
+
+**Option 1, push over HTTPS from a durable outbox**, with the six checks above.
+Ship option 3 first, because it exposes `receive_request` and `receive_accept`
+through the explorer and tests the receiving path before any network push
+exists. The outbox records each envelope until it is delivered, so a restart
+does not lose it, and the view can show "not yet delivered". Option 2 is a
+weaker substitute for option 1, and option 4 leaves the replay open.
+
+---
+
+## 3. Directory replication between servers
+
+### The problem
+
+Each server applies its own changes through `apply`. Two servers that accept
+writes will produce journals that refuse each other's entries, and some of the
+refusals break invariants. Concretely, the current code gives:
+
+- **Group IDs.** Each server creates `GroupCreated { id: next_group }`. Two
+  servers each create group 1, and the second is refused as out of sequence.
+- **Keys and emails.** Two servers can each attach the same key or confirm the
+  same email to different accounts. One must lose.
+- **Admins.** Two admin removals, each valid alone, can together leave a group
+  with no admin. `ensure_admins` runs on each apply, not on a merge.
+- **Nesting.** Two nested-group inserts, each valid alone, can make a cycle
+  (`reaches`).
+- **Membership and rename.** Two `MemberSet` or `GroupUpdated` entries
+  conflict by order alone.
+- **Friend removal.** Already divergent, as noted in section 2.
+
+A correct merge has to decide, deterministically, which change wins and which is
+refused, and every server has to reach the same answer.
+
+### Options
+
+1. **Single authority per directory.** One server is the writer for a given
+   directory. Others hold read-only copies or forward writes over the section 2
+   transport.
+   - The apply path is unchanged and there is no merge rule. Group IDs stay
+     sequential.
+   - Cost: writes need the authority online, and the authority is a single point
+     of failure. A second server can accept friendships only by forwarding them.
+
+2. **Signed append-only log with a deterministic order.** Each change becomes a
+   record: the `DirectoryEntry`, the actor's Ed25519 signature, the author
+   server's ID, a Lamport clock, and the IDs of the heads it saw. Merged order is
+   `(lamport, author, entry hash)`. Each server rebuilds state by running the
+   sorted log through `apply`.
+   - Account actions are signed at the time they happen, with the key derived
+     from the presented credential (Decision 3 keeps no key). Server actions are
+     signed with the server's key, which needs a stable server identity.
+   - Entries the author accepted but a replica refuses (the second admin
+     removal, a duplicate email) are kept in the log and skipped the same way on
+     every replica. The author sees the refusal when it syncs.
+   - Group IDs must come from the entry, not from a counter. Legacy journals keep
+     their sequential IDs.
+   - Sync needs a protocol to exchange heads and missing entries. That protocol
+     is not designed here.
+
+3. **CRDT-style state merge.** Friends as an OR-set, memberships and names as
+   last-writer-wins registers, deletes as tombstones.
+   - Converges without an order, and never refuses.
+   - It cannot enforce the invariants: the admin rule, key and email uniqueness,
+     sequential or cycle-free nesting, or level rules. Enforcing them needs
+     coordination, which a CRDT avoids. The rules are the point of Decisions 5
+     to 7, so this option would replace the model.
+
+### Recommendation
+
+**Option 2, the signed log with a deterministic order.** It keeps both servers
+writable, which is what the Phase 12 gap describes. It reuses `apply` and
+`replay`, so the invariants are enforced by one code path. The merge is a sort
+followed by a replay, which the journal already does.
+
+Costs to accept: a merge replays the whole log (fine at this scale, and no
+compaction exists today anyway); acknowledged writes can be refused on merge,
+so the explorer must say so; the Lamport clock must persist with the journal;
+the journal format changes (serde defaults keep old lines readable); and a sync
+protocol is needed, which depends on the section 2 transport.
+
+Option 1 is smaller and is the right choice if the servers do not need to write
+the same directory. Choose it if decision 1 below is "no".
+
+Privacy and identity: the log carries public keys, digests and emails.
+`AccountSignedUp` already journals a digest, so replication would let a
+credential issued on one server authenticate on another. That is probably
+desirable, but it is a decision, not a side effect. Session tokens and codes must
+stay out of the log in every option (section 1).
+
+---
+
+## Recommendations, one line each
+
+- **Section 1, sessions:** keep sessions and codes volatile, and refuse signed requests for 10 minutes after boot. Persist only if sessions must survive deploys, and then in a separate store.
+- **Section 2, envelope transport:** push over HTTPS from a durable outbox, with audience, expiry, a durable envelope-ID set, and acceptance that names its request. Ship the manual `receive` action first.
+- **Section 3, replication:** a signed append-only log merged by `(lamport, author, hash)` and replayed through `apply`; single-authority only if concurrent writes are not needed.
+
+## Decisions the user must make, most important first
+
+1. **Must the same directory be writable on two servers?** If not, section 3 is out of scope or reduces to single authority, and section 2 is enough.
+2. **Are accounts portable across servers, or local to one?** This decides whether keys and digests replicate, and whether a credential from one server works on another.
+3. **Which servers may deliver friend envelopes?** Any server with per-account limits, or an allow-list of peer servers.
+4. **Where does a recipient's server address come from?** A contact card (not built yet), or typed in by the user.
+5. **Do emails replicate, or only the verified flag?** Replicating emails spreads personal data to every peer.
+6. **What happens on friend removal across servers?** Send a removal envelope, leave it one-sided (as today), or treat it as a request.
+7. **Do sessions survive restarts?** Recommended: no, with the boot quiet period. Yes requires a separate store.
+8. **If section 3 is option 2, are group IDs changed to entry-derived IDs?** This is a journal format change, and existing sequential IDs stay valid.
+
+## Open questions
+
+- Does each server have a stable identity (for example its Iroh node ID) across restarts? Audience binding and server-signed entries depend on it.
+- Should an envelope expire after 30 days, or after a shorter window?
+- Should a pending request be capped per sender, to limit spam once delivery is open?
+- Where should the outbox live: the directory journal, or a separate `outbox.jsonl`?
+
+## Verification plan (for the implementation that follows)
+
+- A test that a stale accept after a new request is refused (section 2). It should fail on the current code before the fix.
+- A test that a request replayed after removal is refused or deduplicated.
+- A test that an envelope naming another server is refused.
+- A test that a pre-restart signed request is refused for 10 minutes after boot.
+- A test that the journal, and any new log, never holds a code digest or a session token.
+- For section 3: two servers that create conflicting changes converge to the same state after exchanging logs, and every refusal matches on both.
+
+## References
+
+- Phase 12 limitations: [accounts, groups, contacts and delegation](../2026-10-09T12-00-00Z_feature_directory_accounts_groups/2026-10-09T12-00-00Z_feature_directory_accounts_groups.md)
+- Attenuated capabilities: [design](../2026-10-09T09-59-07Z_design_attenuated_capabilities/2026-10-09T09-59-07Z_design_attenuated_capabilities.md)
+- Code: `pkgs/id/src/directory.rs`, `pkgs/id/src/directory_auth.rs`, `pkgs/id/src/directory_view.rs`, `pkgs/id/src/world.rs`, `pkgs/id/src/world_hub.rs`, `pkgs/id/src/world_store.rs`
+
+## Implementation: replication log
+
+2026-10-10. Section 3 option 2, the pure core only. Code: `pkgs/id/src/directory_log.rs`.
+
+Built:
+
+- `LogRecord` wraps one `DirectoryEntry` with `author` (Ed25519 key, hex), `lamport`, `hash` (SHA-256 over the signed body) and `signature`. `verify` checks the hash, then the signature against `author`.
+- `Log` holds only verified records, keyed by `(lamport, author, hash)`. `insert` and `append` (lamport one past the head) are the only ways in.
+- `merge(local, remote)` is set union. Tests cover commutativity, associativity, idempotence, and split replicas reaching the full log.
+- `apply(directory, log)` runs `Directory::apply` (now `pub(crate)`) in merged order. Refusals are collected, not fatal, so every replica refuses the same records.
+- `to_jsonl` and `load(text)`. `load` skips bad lines and reports them as `Truncated` (final line, no newline), `Malformed`, or `Unverified`. It never panics.
+- `Directory` derives `PartialEq, Eq` for convergence tests.
+
+Tests: 10 in `directory_log::tests`, hand-rolled xorshift, no new dependencies. Full `cargo test --lib --features world`: 653 pass, 3 fail (`world_compile`, missing `examples/roc-world/targets/wasm32/host.wasm`; nothing else). Clippy (`--all-targets`, default features) clean for touched files. `--all-features` needs `web/dist` and does not build here.
+
+Deferred:
+
+- Network sync and the head/missing-entry exchange protocol (depends on section 2 envelopes).
+- File I/O around the log. `apply` must get a journal-less directory; wiring a `log.jsonl` and choosing where it lives (open question: outbox vs journal).
+- A persisted Lamport clock. `append` derives it from the loaded log head, so a log that loses its tail can reuse counters.
+- Stable server identity for server-signed entries (open question above).
+- Entry-derived group IDs (decision 8). `GroupCreated` still requires the sequential ID, so two servers creating groups still refuse each other's group 1.
+- Privacy decisions 2 and 5 are not enforced. `AccountSignedUp` digests and `AccountEmailConfirmed` addresses enter the log as-is, so they replicate once sync exists. Sessions and codes never enter an entry.
+
+---
+
+## Implementation: session boot window and cookie flags
+
+Date: 2026-10-09. Covers section 1 (option 3) and the `id_token` cookie. Sessions and codes stay volatile; nothing new is persisted.
+
+Built:
+
+- **Boot window.** `ReplayGuard::after_boot` refuses signed requests until boot plus the window, with a rate-limited refusal that gives the seconds left. The check runs in `accept`, after the signature verifies. `WorldHub` sets the guard from `HubLimits::signed_boot_window`, measured from hub construction.
+- **Cookie.** `id_token` carries `Secure` when `--web-cookie-secure` is on, the same switch as the explorer cookies. `secure_attribute` moved to `web/security.rs` and is shared by both. `web_router` sets `WebSecurity::cookie_secure` from its one flag parameter.
+- **Codes.** Pending codes and sessions live only in `DirectoryAuth` memory and are never journaled. The one disk path is `--world-mail-outbox`; see deferrals.
+
+Flags and defaults:
+
+| Flag                                           | Default                                 | Notes                                 |
+| ---------------------------------------------- | --------------------------------------- | ------------------------------------- |
+| `--world-boot-window-secs`                     | `600` (2 × the 5-minute signing window) | Needs `--world`. `0` disables.        |
+| `--web-cookie-secure` / `ID_WEB_COOKIE_SECURE` | off                                     | Now also sets `Secure` on `id_token`. |
+
+Deferred:
+
+- **Codes on disk via the outbox.** `--world-mail-outbox` writes each confirmation mail, including its six-digit code, to a 0600 file. Changing this removes or redacts a delivery channel, so it needs a decision.
+- **Persisted sessions (option 2).** Not built. Sessions still end on restart.
+- **Library default.** `HubLimits::default()` has a zero window, so test hubs sign immediately. The CLI default is 600.
+
+---
+
+## Implementation: envelope transport
+
+Date: 2026-10-10. Branch `feat/id-envelope-transport`.
+
+Built:
+
+- Stale accept fixed. An acceptance names its request, the pending entry stores that request's ID, and `change` requires an exact match. Regression `a_stale_acceptance_cannot_befriend_after_a_new_request` failed before the fix.
+- `receive` checks, in order: signature, audience (world ID), seen-set (replay returns `Duplicate`), skew (5 min future), expiry (30 days), local account, request shape. New journal fields default when absent, so old journals replay.
+- Explorer `receive` action in the shared grammar, with a form shown to all viewers.
+- `envelope_outbox`: append-only JSONL queue, synced per record, torn tail dropped on open. Backoff 1 min doubling to 6 h, 12 attempts then given up. 429 and 5xx retry, other non-2xx refuse. Redirects not followed, 30 s timeout. Only `https`, or `http` to a loopback host. Posts `action=receive&envelope=…` to `/explore/act`.
+
+Deferred:
+
+- Nothing enqueues an envelope and no loop calls `flush`. Blocked on decision 4 (recipient address source).
+- Outbox status is not shown in the view ("not yet delivered").
+- Removal envelopes (decision 6), per-sender pending cap, section 3.
+
+Flags: none added. Nothing is sent by default, and nothing can be sent until a producer exists. Explorer `receive` is reachable only with the existing `--web` flag, which is off by default.
+
+Dependencies: `reqwest` 0.13 (`rustls-no-provider`, `form`) and `rustls` 0.23, both optional under `world`. No new crate versions. `http_client` installs the aws-lc-rs provider as the process default if none is set.
+
+Tests: directory and outbox suites pass. `--features world`: 658 pass, 3 fail (`world_compile`, missing `host.wasm`). `--features "world web"`: 852 pass, the same 3 fail. Clippy `-D warnings` on this toolchain reports 116 lib errors in untouched code, none in changed files.
+
+---
+
+## Implementation: envelope delivery
+
+Date: 2026-10-10. Branch `feat/id-envelope-delivery`, from `origin/main` d1eb988a. This section supersedes the "Deferred" and "Posts to `/explore/act`" notes in the envelope transport section above: the outbox now posts JSON to `/envelope`, the producer exists, and the outbox status is shown.
+
+Decisions applied:
+
+- **D3, no peer allow-list.** A per-sender limit only: one sender may hold at most 20 pending friend requests on a server (`MAX_PENDING_FRIEND_REQUESTS`). `Directory::receive` enforces it for friend requests and refuses the 21st with 403.
+- **D4, address by server and world.** The sender types `friend request ACCOUNT at URL for WORLD` (and likewise `friend accept`). `URL` is the other server's base URL, and envelopes go to `URL/envelope`. `WORLD` is the audience the envelope is signed for. There is no contact card.
+- **D6, removal stays one-sided.** `friend remove` changes only the local directory. No envelope is sent, so the other server keeps its entry.
+
+Built:
+
+- **Producer.** `RequestFriend` and `AcceptFriend` take an optional `remote` (server and audience). A remote action signs the envelope with the caller's credential and returns it as an `Outbound`. `WorldService::directory` queues it in the outbox with its URL. Local actions are unchanged. A remote action with no credential is refused as unauthenticated.
+- **Push endpoint.** `POST /envelope` on the explorer router, with no session. A body over 64 KiB returns 413. Applied returns 200 `{"status":"applied"}`, and a duplicate returns 200 `{"status":"duplicate"}`. A refusal returns its 4xx: bad signature 401, wrong audience 403, expired or future-dated 403, unknown account 404, pending cap 403, stale acceptance 409. Malformed JSON returns 400. Any other failure, such as a journal write or a busy world, returns 503. These mappings agree with `classify`: 429 and 5xx retry, and other non-2xx refuse.
+- **Outbox.** `outbox.jsonl` sits in each durable world's data directory, next to `directory.jsonl`, and is opened in `open_world`. The directory view shows the viewer's own envelopes: `not yet delivered`, `delivered`, `refused: REASON`, or `gave up: REASON`. The explorer lists them under "Sent to other servers".
+- **Flush.** `WorldHub::spawn_outbox_flush` runs every 30 s over the open worlds, using `http_client()` and the current time. `serve` starts it when a world is served with a data directory, which excludes `--ephemeral`. It is aborted and awaited before `shutdown_all`.
+- **Explorer forms.** The request and accept forms take `server`, `audience`, and `credential`. The credential is read only for remote actions and is not stored.
+
+Flags and defaults:
+
+- The endpoint and explorer exist only when the web bridge is enabled (`--web`, off by default).
+- The flush needs no flag. It runs for every served durable world.
+- Outbox URLs must be `https`, or `http` to a loopback host. Redirects are not followed, and each request has a 30 s timeout.
+- Retries back off from 1 minute, doubling to 6 hours. An envelope is given up after 12 attempts.
+- Pending cap 20. Body limit 64 KiB.
+
+Known limits, flagged:
+
+- **`--web-token` applies to `/envelope`.** The token check covers every web route. A peer whose server requires a token gets 401, which is a permanent refusal, so its envelope is marked refused. Needs a decision: exempt `/envelope`, or let peers present a token.
+- **Crash window.** The action is applied to the directory journal before its envelope is queued. If the outbox write then fails, the action returns an error although it took effect, and nothing is sent. The recipient never learns of the request.
+- **Idle eviction.** The evictor closes an idle world, and a closed world's outbox is not flushed. Its pending envelopes wait until the world next opens. Fix by keeping worlds with pending entries open, or by flushing outboxes from disk.
+- **The 503 path is tested by its mapping, not end to end.** `envelope_status` is tested directly. No test forces a journal write to fail.
+- **Credential in the browser.** A remote action from the explorer takes the account credential in a form field, as sign-in already does. A signing session would be safer than a pasted secret.
+
+Remaining work:
+
+- **Section 3, network sync.** Not started. This path moves friend envelopes only, and nothing replicates directory state between servers.
+- **Removal envelopes.** None. D6 keeps removal one-sided, so a removed friend keeps the other side's entry.
+- **Server identity.** Envelopes are signed by account keys and addressed by world ID. Nothing authenticates the server that delivers them, so the sender trusts the URL it typed. A per-server key, pinned when the server is first contacted, is still open.
+
+Tests:
+
+- Directory: the cap (20 accepted, the 21st refused as Forbidden). A stale acceptance is refused as Conflict.
+- Directory view: a remote request is queued with `…/envelope` and the audience, and it applies on a second directory. Without a credential it is refused as Unauthenticated. The outbox status goes from `not yet delivered` to `refused: …`. The grammar accepts the remote form.
+- Explorer: `/envelope` returns 200 applied, then 200 duplicate. It returns 403 for a wrong audience, 401 for a bad signature, 404 for an unknown account, and 413 for a body over 64 KiB. The status mapping separates transient failures from refusals.
+- Outbox: the delivery body is JSON, and a flush to a `TcpListener` stub keeps what it should.
+
+Verification:
+
+- `cargo test --lib --features world`: 683 pass. The 3 failures are the `world_compile` tests, which need the missing `examples/roc-world/targets/wasm32/host.wasm`.
+- `cargo test --lib --features "world web"`, with `web/dist` copied read-only from the main checkout and deleted afterwards: 881 pass. The same 3 fail.
+- `cargo fmt --check`: clean. No dependencies were added.
+- `cargo clippy --all-targets --features "world web" -- -D warnings`, run with the rustup 1.97.0 toolchain because the system cargo mismatches. It reports 160 lint errors across the crate, all in code this change did not touch, such as a renamed lint and wildcard `map_err`. None is on a changed line.
+
+## Implementation: envelope follow-ups
+
+Decisions:
+
+- **Crash window.** The remote request or accept is signed and checked in the actor (`prepare_*`), without applying. The envelope is queued under the outbox lock, then the change is applied through a new actor command. The lock is held across the apply, so a flush cannot send early. A refused apply withdraws the queued envelope (new `Record::Withdrawn`). A failed withdraw leaves a stray queued envelope, logged as an error. A torn outbox line from a partial write is still possible (pre-existing).
+- **Web token.** Only `POST /envelope` is exempt, matched by method and path in `guard`. Peer servers post signed envelopes without a session. Every other route still needs the token. The exemption is path-specific and stays so until the iroh transport replaces this route.
+- **Flush on open.** Added in `open_world`: a world that opens with undelivered entries flushes once in the background. The 30 s loop is unchanged. A flush and the loop may both send one envelope. The recipient is idempotent and refuses the second as a duplicate, so the second record is only a warning.
+- **Remote credential (item 4).** Local explorer actions take no credential field. Only remote friend forms and sign-in do. So this is not an existing pattern for local actions. Nothing changed. Still open: a signing session in place of a pasted secret.
+
+Deferred: envelope transport moves to iroh (user direction); HTTP `/envelope` is not improved further.
+
+Tests:
+
+- Crash window: a failing outbox write leaves no applied request and returns an error. A refused repeat request queues no second envelope.
+- Withdraw: a withdrawn envelope stays gone across replay.
+- Web token: with a token set, `POST /envelope` is accepted without it. `GET /explore` without it returns 401.
+- Idle eviction: an envelope queued for a closed world is delivered after reopen (TcpListener stub).
+
+Verification:
+
+- `cargo test --lib --features world`: 700 pass. The 3 failures are `world_compile`, which needs the missing `host.wasm`.
+- `cargo test --lib --features "world web"` with `web/dist` copied read-only and removed afterwards: 899 pass, the same 3 fail.
+- `cargo fmt --check`: clean. Clippy (rustup 1.97.0): no warnings on changed lines. No dependencies added.
+
+## Implementation: envelope delivery over iroh
+
+Envelopes travel on the `/id-envelope/1` ALPN of the iroh endpoint, not `POST /envelope`. The HTTP route, its web-token exemption, and the reqwest/rustls outbox client are removed.
+
+- `envelope_net.rs`: `deliver` opens one bidirectional stream per envelope, writes one length-prefixed JSON frame (u32 big-endian, at most 1 MiB), and reads one `Reply`: `applied`, `duplicate`, `refused` (permanent), or `retry` (transient, including a busy hub).
+- `EnvelopeProtocol` answers streams on the endpoint's router and applies each envelope through `Directory::receive`, so signature, audience, expiry, and the seen-set checks are unchanged.
+- `envelope_outbox.rs`: outbox targets are iroh node IDs (`outbox.jsonl` field `url` is now `target`; no compatibility shim). A target that does not parse is refused.
+- The on-open outbox flush is removed. The 30-second periodic flush covers it.
+- Friend requests that name a node use `node` in place of `server`.
+
+Tests: 19 envelope tests cover apply-once, permanent refusals, retry on an unreachable recipient, and per-outcome flush accounting. Default features: `cargo test --lib` passes except the 3 `world_compile` tests that need `host.wasm`.
+
+Deferred: causal references on friend-request envelopes, needed for strong-remove concurrency rules.

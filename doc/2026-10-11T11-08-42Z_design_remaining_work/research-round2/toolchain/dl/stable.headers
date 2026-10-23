@@ -1,0 +1,20 @@
+HTTP/2 200 
+x-amz-request-id: 23TT9SN0AKQWS2K9
+x-amz-id-2: oYpC9CTv8hMmMhiYDqCnpZQ6Z/+0uggv7z+eQcDV6lFmuuGvvk5uRHJl7hPSzJgKcmQBpQi8eWu7fJMrP/AnTCDQE8A9k5Qd
+server: AmazonS3
+last-modified: Thu, 01 Oct 2026 12:38:04 GMT
+etag: "18dc3a99a3d0787cc0b07ae732d4ae5d"
+x-amz-version-id: GSIA.PouOGEWnLaH.AOP5fY9xUfu56TF
+content-type: binary/octet-stream
+x-amz-server-side-encryption: AES256
+x-amz-storage-class: INTELLIGENT_TIERING
+accept-ranges: bytes
+date: Sun, 11 Oct 2026 16:06:14 GMT
+via: 1.1 varnish
+age: 53507
+x-served-by: cache-chi-klot8100091-CHI
+x-cache: HIT
+x-cache-hits: 8
+x-timer: S1791734775.784902,VS0,VE0
+content-length: 943486
+
