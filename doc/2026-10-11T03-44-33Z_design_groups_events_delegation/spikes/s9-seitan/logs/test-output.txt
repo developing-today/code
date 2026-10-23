@@ -1,0 +1,76 @@
+   Compiling seitan-v2 v0.0.0 (/home/user/work/spikes-next/s9-seitan/seitan-v2)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.46s
+     Running unittests src/lib.rs (/home/user/work/spikes/target/debug/deps/seitan_v2-55fec2352b7a4ac2)
+
+running 3 tests
+test derive::tests::invite_id_hex_round_trips_and_rejects_other_forms ... ok
+test derive::tests::stage_payloads_are_the_keybase_maps_byte_for_byte ... ok
+test derive::tests::v1_vector_checks_the_steps_v1_and_v2_share ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/accept.rs (/home/user/work/spikes/target/debug/deps/accept-c80a9a7ff48ac7c7)
+
+running 9 tests
+test accept_message_is_the_keybase_map_in_declaration_order ... ok
+test parse_accepts_the_well_formed_message_and_rejects_the_rest ... ok
+test a_forged_message_signed_with_another_key_fails ... ok
+test the_signature_covers_the_exact_bytes_sent ... ok
+test signed_integer_families_decode_to_the_same_fields ... ok
+test a_proof_from_another_token_fails_under_this_key ... ok
+test a_signed_proof_verifies_under_the_invite_public_key ... ok
+test fields_survive_the_round_trip ... ok
+test flipping_any_message_bit_breaks_the_signature ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests/admit.rs (/home/user/work/spikes/target/debug/deps/admit-a626413571d8b54c)
+
+running 15 tests
+test a_rejected_attempt_does_not_use_up_the_invite ... ok
+test a_forged_message_with_the_public_invite_id_fails_the_signature ... ok
+test a_flipped_signature_bit_is_rejected ... ok
+test a_revoked_invite_admits_no_one ... ok
+test an_accept_for_a_different_token_names_no_known_invite ... ok
+test a_valid_accept_admits_once_and_the_invite_is_then_used_up ... ok
+test garbage_is_malformed ... ok
+test an_accept_from_before_the_invite_existed_is_stale ... ok
+test an_accept_from_the_future_beyond_the_skew_window_is_rejected ... ok
+test an_accept_signed_after_expiry_is_expired_even_if_processed_in_time ... ok
+test changing_any_signed_field_breaks_the_signature ... ok
+test an_accept_for_an_earlier_invite_with_the_same_token_is_stale ... ok
+test an_expired_invite_rejects_at_processing_time ... ok
+test multi_use_invites_still_block_the_same_joiner_twice ... ok
+test a_ctime_is_admitted_exactly_inside_the_window ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+
+     Running tests/token.rs (/home/user/work/spikes/target/debug/deps/token-d423223c2c92d9fb)
+
+running 7 tests
+test parse_lowercases_and_ignores_surrounding_space ... ok
+test parse_rejects_each_malformed_shape_with_a_reason ... ok
+test debug_output_does_not_show_the_token_or_the_stretched_key ... ok
+test generated_tokens_have_the_v2_shape ... ok
+test generated_tokens_cover_the_whole_alphabet ... ok
+test generated_tokens_do_not_repeat ... ok
+test any_case_gives_the_same_token_and_the_same_invite_id ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+
+     Running tests/vectors.rs (/home/user/work/spikes/target/debug/deps/vectors-89257f7a482bdfdf)
+
+running 4 tests
+test a_wrong_team_key_does_not_open_the_vector_pkey ... ok
+test ed25519_public_key_is_the_one_boxed_in_the_vector_pkey ... ok
+test invite_id_matches_the_vector ... ok
+test stretch_matches_the_vector_sikey ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests seitan_v2
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

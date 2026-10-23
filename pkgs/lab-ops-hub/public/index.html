@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lab Ops Hub — Cloudflare demo</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 2rem auto;
+        max-width: 880px;
+        padding: 0 1rem;
+        background: #0b0e14;
+        color: #e6e6e6;
+      }
+      h1 {
+        font-size: 1.5rem;
+      }
+      h2 {
+        margin-top: 2rem;
+        font-size: 1.1rem;
+        color: #f6821f;
+      }
+      code,
+      pre {
+        background: #161b26;
+        padding: 0.15rem 0.35rem;
+        border-radius: 4px;
+      }
+      pre {
+        padding: 0.75rem;
+        overflow: auto;
+      }
+      button {
+        background: #f6821f;
+        border: 0;
+        padding: 0.45rem 0.9rem;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      input {
+        padding: 0.45rem;
+        border-radius: 6px;
+        border: 1px solid #333;
+        background: #161b26;
+        color: #eee;
+        width: 60%;
+      }
+      .card {
+        border: 1px solid #232936;
+        border-radius: 10px;
+        padding: 1rem;
+        margin: 0.75rem 0;
+      }
+      .muted {
+        color: #9aa4b2;
+        font-size: 0.9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🛠️ Lab Ops Hub</h1>
+    <p class="muted">
+      One Worker exercising Workers + D1 + R2 + KV + Queues + Durable Objects +
+      Containers + Workers AI + Cron — inside the $5 Workers Paid included
+      amounts. See <code>/api/budget</code>.
+    </p>
+
+    <div class="card">
+      <h2>Health</h2>
+      <button onclick="go('/api/health', 'health')">Check bindings</button>
+      <button onclick="go('/api/budget', 'health')">Budget</button>
+      <pre id="health">…</pre>
+    </div>
+
+    <div class="card">
+      <h2>Machines (D1, cached in KV)</h2>
+      <button onclick="go('/api/machines', 'machines')">List</button>
+      <pre id="machines">…</pre>
+    </div>
+
+    <div class="card">
+      <h2>Crawl a URL (Container, Worker fallback)</h2>
+      <input id="url" value="https://developers.cloudflare.com/containers/" />
+      <button onclick="crawl()">Crawl</button>
+      <pre id="crawl">Container starts on demand and sleeps after 2m idle.</pre>
+    </div>
+
+    <div class="card">
+      <h2>Live board (Durable Object + WebSocket)</h2>
+      <button onclick="connectLive()">Connect</button>
+      <input id="boardmsg" placeholder="status message" />
+      <button onclick="sendBoard()">Broadcast</button>
+      <pre id="live">not connected</pre>
+    </div>
+
+    <script>
+      // Every /api/* route except /api/health requires the API_TOKEN Worker
+      // secret as a Bearer token. The dashboard asks once and keeps it in
+      // sessionStorage only (gone when the tab closes).
+      function apiToken() {
+        let t = sessionStorage.getItem("labops-token");
+        if (!t) {
+          t = prompt("API token (the API_TOKEN Worker secret)");
+          if (t) sessionStorage.setItem("labops-token", t);
+        }
+        return t || "";
+      }
+      function authHeaders(extra) {
+        return Object.assign({}, extra || {}, {
+          Authorization: "Bearer " + apiToken(),
+        });
+      }
+      async function go(path, id) {
+        const opts = path === "/api/health" ? {} : { headers: authHeaders() };
+        const r = await fetch(path, opts);
+        document.getElementById(id).textContent = JSON.stringify(
+          await r.json(),
+          null,
+          2,
+        );
+      }
+      async function crawl() {
+        const u = document.getElementById("url").value;
+        const el = document.getElementById("crawl");
+        el.textContent = "crawling… (first container start is slow)";
+        const r = await fetch("/api/crawl", {
+          method: "POST",
+          headers: authHeaders({ "content-type": "application/json" }),
+          body: JSON.stringify({ url: u }),
+        });
+        el.textContent = JSON.stringify(await r.json(), null, 2);
+      }
+      let ws;
+      function connectLive() {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        ws = new WebSocket(
+          proto +
+            "//" +
+            location.host +
+            "/api/live?token=" +
+            encodeURIComponent(apiToken()),
+        );
+        ws.onmessage = (e) => {
+          document.getElementById("live").textContent = e.data;
+        };
+        ws.onopen = () =>
+          (document.getElementById("live").textContent = "connected");
+      }
+      async function sendBoard() {
+        const v = document.getElementById("boardmsg").value;
+        await fetch("/api/live", {
+          method: "POST",
+          headers: authHeaders(),
+          body: v,
+        });
+      }
+    </script>
+  </body>
+</html>

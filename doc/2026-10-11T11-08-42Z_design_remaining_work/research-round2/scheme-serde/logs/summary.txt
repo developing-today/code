@@ -1,0 +1,147 @@
+# summary of logs/run-all.txt (final run, 3 seeds)
+## build: stock, seed 1 | fit welcome = a + b*secrets over 11 samples: b = 146.53 B/secret, a = 597.8 B, max residual = 40.2 B
+## build: stock, seed 1 | fit re-add = a + b*secrets: b = 76.90 B/secret, a = 414.3 B
+## build: stock, seed 1 | update DM to Bob over all samples: min 377 B, max 383 B
+## build: both, seed 1 | fit welcome = a + b*secrets over 11 samples: b = 40.00 B/secret, a = 450.5 B, max residual = 1.5 B
+## build: both, seed 1 | fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+## build: both, seed 1 | update DM to Bob over all samples: min 342 B, max 344 B
+## build: inner, seed 1 | fit welcome = a + b*secrets over 11 samples: b = 76.24 B/secret, a = 596.2 B, max residual = 55.6 B
+## build: inner, seed 1 | fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+## build: inner, seed 1 | update DM to Bob over all samples: min 342 B, max 344 B
+## build: outer, seed 1 | fit welcome = a + b*secrets over 11 samples: b = 76.90 B/secret, a = 447.4 B, max residual = 23.0 B
+## build: outer, seed 1 | fit re-add = a + b*secrets: b = 76.90 B/secret, a = 414.3 B
+## build: outer, seed 1 | update DM to Bob over all samples: min 377 B, max 383 B
+## build: stock, seed 2 | fit welcome = a + b*secrets over 11 samples: b = 146.46 B/secret, a = 603.3 B, max residual = 68.4 B
+## build: stock, seed 2 | fit re-add = a + b*secrets: b = 76.87 B/secret, a = 425.5 B
+## build: stock, seed 2 | update DM to Bob over all samples: min 375 B, max 383 B
+## build: both, seed 2 | fit welcome = a + b*secrets over 11 samples: b = 40.00 B/secret, a = 450.5 B, max residual = 1.5 B
+## build: both, seed 2 | fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+## build: both, seed 2 | update DM to Bob over all samples: min 342 B, max 344 B
+## build: inner, seed 2 | fit welcome = a + b*secrets over 11 samples: b = 76.26 B/secret, a = 601.2 B, max residual = 25.7 B
+## build: inner, seed 2 | fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+## build: inner, seed 2 | update DM to Bob over all samples: min 342 B, max 344 B
+## build: outer, seed 2 | fit welcome = a + b*secrets over 11 samples: b = 76.87 B/secret, a = 457.4 B, max residual = 19.4 B
+## build: outer, seed 2 | fit re-add = a + b*secrets: b = 76.87 B/secret, a = 425.5 B
+## build: outer, seed 2 | update DM to Bob over all samples: min 375 B, max 383 B
+## build: stock, seed 3 | fit welcome = a + b*secrets over 11 samples: b = 146.49 B/secret, a = 600.0 B, max residual = 39.4 B
+## build: stock, seed 3 | fit re-add = a + b*secrets: b = 76.87 B/secret, a = 417.3 B
+## build: stock, seed 3 | update DM to Bob over all samples: min 378 B, max 383 B
+## build: both, seed 3 | fit welcome = a + b*secrets over 11 samples: b = 40.00 B/secret, a = 450.5 B, max residual = 1.5 B
+## build: both, seed 3 | fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+## build: both, seed 3 | update DM to Bob over all samples: min 342 B, max 344 B
+## build: inner, seed 3 | fit welcome = a + b*secrets over 11 samples: b = 76.26 B/secret, a = 597.7 B, max residual = 55.7 B
+## build: inner, seed 3 | fit re-add = a + b*secrets: b = 40.01 B/secret, a = 380.0 B
+## build: inner, seed 3 | update DM to Bob over all samples: min 342 B, max 344 B
+## build: outer, seed 3 | fit welcome = a + b*secrets over 11 samples: b = 76.86 B/secret, a = 450.1 B, max residual = 25.6 B
+## build: outer, seed 3 | fit re-add = a + b*secrets: b = 76.87 B/secret, a = 417.3 B
+## build: outer, seed 3 | update DM to Bob over all samples: min 378 B, max 383 B
+
+14:| 0 | 1 | 737 | 379 | 490 |
+18:| 10 | 11 | 2208 | 377 | 1260 |
+24:| 1000 | 1001 | 147277 | 383 | 77407 |
+32:| 0 | 1 | 489 | 342 | 418 |
+36:| 10 | 11 | 891 | 342 | 820 |
+42:| 1000 | 1001 | 40493 | 344 | 40424 |
+50:| 0 | 1 | 677 | 342 | 418 |
+54:| 10 | 11 | 1450 | 342 | 820 |
+60:| 1000 | 1001 | 76953 | 344 | 40424 |
+68:| 0 | 1 | 522 | 379 | 490 |
+72:| 10 | 11 | 1295 | 377 | 1260 |
+78:| 1000 | 1001 | 77441 | 383 | 77407 |
+114:| 0 | 1 | 744 | 379 | 498 |
+118:| 10 | 11 | 2220 | 381 | 1271 |
+124:| 1000 | 1001 | 147261 | 382 | 77369 |
+132:| 0 | 1 | 489 | 342 | 418 |
+136:| 10 | 11 | 891 | 342 | 820 |
+142:| 1000 | 1001 | 40493 | 344 | 40424 |
+150:| 0 | 1 | 677 | 342 | 418 |
+154:| 10 | 11 | 1452 | 342 | 820 |
+160:| 1000 | 1001 | 76939 | 344 | 40424 |
+168:| 0 | 1 | 528 | 379 | 498 |
+172:| 10 | 11 | 1302 | 381 | 1271 |
+178:| 1000 | 1001 | 77402 | 382 | 77369 |
+214:| 0 | 1 | 735 | 379 | 493 |
+218:| 10 | 11 | 2215 | 378 | 1260 |
+224:| 1000 | 1001 | 147252 | 379 | 77381 |
+232:| 0 | 1 | 489 | 342 | 418 |
+236:| 10 | 11 | 891 | 342 | 820 |
+242:| 1000 | 1001 | 40493 | 344 | 40424 |
+250:| 0 | 1 | 671 | 342 | 418 |
+254:| 10 | 11 | 1437 | 342 | 820 |
+260:| 1000 | 1001 | 76965 | 344 | 40424 |
+268:| 0 | 1 | 524 | 379 | 493 |
+272:| 10 | 11 | 1294 | 378 | 1260 |
+278:| 1000 | 1001 | 77411 | 379 | 77381 |
+
+84:stock K=1 welcome read by both: Err("incompatible CBOR type Array")
+85:both K=1 welcome read by stock: Err("expected array, got Bytes")
+86:stock K=1 welcome read by inner: Ok(())
+87:stock K=1 welcome read by outer: Err("incompatible CBOR type Array")
+88:inner K=1 welcome read by stock: Ok(())
+89:outer K=1 welcome read by stock: Err("expected array, got Bytes")
+90:stock re-add welcome read by both: Ok(())
+91:both re-add welcome read by stock: Ok(())
+92:stock K=1000 bytes are canonical (decode then encode is identity): true
+93:stock K=1 welcome: stock build re-encodes it byte-exact: false
+94:stock K=1 welcome: Value decode then encode is identity: true
+95:outer K=1 welcome (outer layout, not transcoded): outer build re-encodes it byte-exact: false
+96:both K=1 welcome: both build re-encodes it byte-exact: false
+98:K=1: stock 879 B -> wire 601 B
+99:K=1: from_wire(to_wire(x)) == x: true
+100:K=1: stock reads the round trip: Ok(())
+101:K=1: outer build reads the wire form: Ok(())
+102:K=1: outer build re-encodes the wire form byte-exact: false
+103:K=1000: stock 147277 B -> wire 77441 B
+104:K=1000: from_wire(to_wire(x)) == x: true
+105:K=1000: stock reads the round trip: Ok(())
+106:K=1000: outer build reads the wire form: Ok(())
+107:K=1000: outer build re-encodes the wire form byte-exact: false
+109:both K=1000 welcome 40493 B: version tag overhead: array +5 B, map +12 B
+184:stock K=1 welcome read by both: Err("incompatible CBOR type Array")
+185:both K=1 welcome read by stock: Err("expected array, got Bytes")
+186:stock K=1 welcome read by inner: Ok(())
+187:stock K=1 welcome read by outer: Err("incompatible CBOR type Array")
+188:inner K=1 welcome read by stock: Ok(())
+189:outer K=1 welcome read by stock: Err("expected array, got Bytes")
+190:stock re-add welcome read by both: Ok(())
+191:both re-add welcome read by stock: Ok(())
+192:stock K=1000 bytes are canonical (decode then encode is identity): true
+193:stock K=1 welcome: stock build re-encodes it byte-exact: true
+194:stock K=1 welcome: Value decode then encode is identity: true
+195:outer K=1 welcome (outer layout, not transcoded): outer build re-encodes it byte-exact: false
+196:both K=1 welcome: both build re-encodes it byte-exact: false
+198:K=1: stock 893 B -> wire 605 B
+199:K=1: from_wire(to_wire(x)) == x: true
+200:K=1: stock reads the round trip: Ok(())
+201:K=1: outer build reads the wire form: Ok(())
+202:K=1: outer build re-encodes the wire form byte-exact: false
+203:K=1000: stock 147261 B -> wire 77402 B
+204:K=1000: from_wire(to_wire(x)) == x: true
+205:K=1000: stock reads the round trip: Ok(())
+206:K=1000: outer build reads the wire form: Ok(())
+207:K=1000: outer build re-encodes the wire form byte-exact: false
+209:both K=1000 welcome 40493 B: version tag overhead: array +5 B, map +12 B
+284:stock K=1 welcome read by both: Err("incompatible CBOR type Array")
+285:both K=1 welcome read by stock: Err("expected array, got Bytes")
+286:stock K=1 welcome read by inner: Ok(())
+287:stock K=1 welcome read by outer: Err("incompatible CBOR type Array")
+288:inner K=1 welcome read by stock: Ok(())
+289:outer K=1 welcome read by stock: Err("expected array, got Bytes")
+290:stock re-add welcome read by both: Ok(())
+291:both re-add welcome read by stock: Ok(())
+292:stock K=1000 bytes are canonical (decode then encode is identity): true
+293:stock K=1 welcome: stock build re-encodes it byte-exact: true
+294:stock K=1 welcome: Value decode then encode is identity: true
+295:outer K=1 welcome (outer layout, not transcoded): outer build re-encodes it byte-exact: false
+296:both K=1 welcome: both build re-encodes it byte-exact: false
+298:K=1: stock 888 B -> wire 598 B
+299:K=1: from_wire(to_wire(x)) == x: true
+300:K=1: stock reads the round trip: Ok(())
+301:K=1: outer build reads the wire form: Ok(())
+302:K=1: outer build re-encodes the wire form byte-exact: true
+303:K=1000: stock 147252 B -> wire 77411 B
+304:K=1000: from_wire(to_wire(x)) == x: true
+305:K=1000: stock reads the round trip: Ok(())
+306:K=1000: outer build reads the wire form: Ok(())
+307:K=1000: outer build re-encodes the wire form byte-exact: false
+309:both K=1000 welcome 40493 B: version tag overhead: array +5 B, map +12 B

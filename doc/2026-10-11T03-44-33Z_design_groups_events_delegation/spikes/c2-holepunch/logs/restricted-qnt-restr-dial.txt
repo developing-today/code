@@ -1,0 +1,31 @@
+profile home_qad=true n0=true standin=None
+   3013 ms online home_relays=["http://10.0.0.1:3340/"]
+ticket relays=["http://10.0.0.1:3340/"] direct=0
+2026-10-11T12:40:44.586220Z DEBUG iroh::_events::path::open: remote=ac2edc1f32 conn_id=95732513315024 path_id=0 network_path=Relay(http://10.0.0.1:3340/, ac2edc1f32)
+2026-10-11T12:40:44.586343Z DEBUG iroh::_events::path::set_status: remote=ac2edc1f32 conn_id=95732513315024 path_id=0 network_path=Relay(http://10.0.0.1:3340/, ac2edc1f32) status=Backup prev_status=Available
+2026-10-11T12:40:44.586425Z DEBUG iroh::_events::qnt::init: remote=ac2edc1f32 local_candidates={10.0.0.3:4444, 192.168.2.2:4444} remote_candidates={}
+2026-10-11T12:40:44.586473Z DEBUG iroh::_events::path::selected: remote=ac2edc1f32 network_path=Relay(http://10.0.0.1:3340/, ac2edc1f32) prev_network_path=None
+2026-10-11T12:40:44.586492Z DEBUG iroh::_events::path::set_status: remote=ac2edc1f32 conn_id=95732513315024 path_id=0 network_path=Relay(http://10.0.0.1:3340/, ac2edc1f32) status=Available prev_status=Backup
+     18 ms handshake done, selected=relay http://10.0.0.1:3340/
+2026-10-11T12:40:44.599425Z DEBUG iroh::_events::qnt::init: remote=ac2edc1f32 local_candidates={10.0.0.3:4444, 192.168.2.2:4444} remote_candidates={10.0.0.2:4444, 192.168.1.2:4444}
+     32 ms first reply (27 bytes), selected=relay http://10.0.0.1:3340/
+2026-10-11T12:40:44.602193Z DEBUG iroh::_events::path::open: remote=ac2edc1f32 conn_id=95732513315024 path_id=1 network_path=Ip(192.168.2.2->10.0.0.2:4444)
+     34 ms dial path opened: direct 10.0.0.2:4444
+2026-10-11T12:40:44.602320Z DEBUG iroh::_events::path::selected: remote=ac2edc1f32 network_path=Ip(192.168.2.2->10.0.0.2:4444) prev_network_path=Relay(http://10.0.0.1:3340/, ac2edc1f32)
+2026-10-11T12:40:44.602341Z DEBUG iroh::_events::path::set_status: remote=ac2edc1f32 conn_id=95732513315024 path_id=0 network_path=Relay(http://10.0.0.1:3340/, ac2edc1f32) status=Backup prev_status=Available
+2026-10-11T12:40:44.602353Z DEBUG iroh::_events::path::set_status: remote=ac2edc1f32 conn_id=95732513315024 path_id=1 network_path=Ip(192.168.2.2->10.0.0.2:4444) status=Available prev_status=Backup
+     34 ms dial path selected: direct 10.0.0.2:4444
+2026-10-11T12:40:49.600170Z DEBUG iroh::_events::qnt::init: remote=ac2edc1f32 local_candidates={10.0.0.3:4444, 192.168.2.2:4444} remote_candidates={10.0.0.2:4444, 192.168.1.2:4444}
+--- summary (dial)
+connected_ms=18 handshake_path=relay http://10.0.0.1:3340/
+first_data_ms=32 first_data_path=relay http://10.0.0.1:3340/
+first_direct_selected_ms=34 (direct 10.0.0.2:4444)
+selections=[(34, "direct 10.0.0.2:4444")]
+window_s=12 echoes_ok=48 echoes_failed=0 echoes_on_direct=47 echoes_on_relay=1
+rtt_ms_median_relay=Some(1.4)
+rtt_ms_median_direct=Some(1.3)
+selected_at_end=direct 10.0.0.2:4444
+holepunch_attempts=3
+own_ip_candidates=["10.0.0.3:4444", "192.168.2.2:4444"]
+  12151 ms dial path closed: relay http://10.0.0.1:3340/
+  12151 ms dial path closed: direct 10.0.0.2:4444

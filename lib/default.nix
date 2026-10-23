@@ -1,0 +1,1021 @@
+/*
+  {
+    config,
+    inputs,
+    host,
+    hostName,
+    system,
+    stateVersion,
+    lib,
+    modulesPath,
+    pkgs,
+    ...
+  }:
+*/
+inputs:
+let
+  lib = merge [
+    inputs.nixpkgs.lib
+    inputs.home-manager.lib
+  ];
+
+  root =
+    if builtins.hasAttr "outPath" inputs.self then
+      inputs.self.outPath # Flake-based setup
+    else
+      toString ./.; # Traditional Nix setup, resolve to project root
+
+  pick = attrNames: attrSet: lib.filterAttrs (name: value: lib.elem name attrNames) attrSet;
+
+  merge =
+    array:
+    let
+      flattenDeep = x: if builtins.isList x then builtins.concatMap flattenDeep x else [ x ];
+      # mergeWithConcat = a: b:
+      #   let
+      #     merge = path: l: r:
+      #       if builtins.isList l && builtins.isList r
+      #       then l ++ r
+      #       else if builtins.isAttrs l && builtins.isAttrs r
+      #       then inputs.nixpkgs.lib.attrsets.recursiveUpdateWith (merge (path + ".")) l r
+      #       else r;
+      #   in merge "" a b;
+
+    in
+    builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate { } (flattenDeep array);
+
+  matrix =
+    spec: f:
+    map (combo: f (lib.genAttrs (builtins.attrNames spec) (name: combo.${name}))) (
+      lib.cartesianProduct (lib.genAttrs (builtins.attrNames spec) (name: spec.${name}))
+    );
+
+  mkEnv =
+    name: value:
+    lib.writeText "${name}.env" (
+      lib.concatStringsSep "\n" (lib.mapAttrsToList (n: v: "${n}=${v}") value)
+    );
+
+  mergeAttrs =
+    f: attrs:
+    lib.foldlAttrs (
+      acc: name: value:
+      (merge [
+        acc
+        (f name value)
+      ])
+    ) { } attrs;
+
+  from-root = path: "${root}/${path}";
+
+  public-key = protocol: alias: builtins.readFile (from-root "keys/${protocol}-${alias}.pub");
+  group-key = alias: public-key "ssh-group" alias;
+  host-key = alias: public-key "ssh-host" alias;
+  user-key = alias: public-key "ssh-user" alias;
+
+  nixos-user-configuration =
+    options: name:
+    merge [
+      rec {
+        inherit name;
+        enable = true;
+        uid = 1000;
+        groups = [ "wheel" ];
+        keys = [ (lib.user-key name) ];
+        email = "nixos-user-${name}@developing-today.com";
+        aliases = [
+          "hi@developing-today.com"
+          "abuse@developing-today.com"
+          "dmca@developing-today.com"
+          "drewrypope@gmail.com"
+        ];
+        # a nixos user optionally contains a home manager user?
+      }
+      options
+    ];
+
+  nixos-host-configuration-base =
+    options: name:
+    merge [
+      rec {
+        inherit name;
+        type = name; # should type allow a list of types?
+        # tags?
+        system = "x86_64-linux";
+        init = from-root "nixos/init";
+        stateVersion = "26.11";
+        group-key = lib.group-key name;
+        # groups =
+        # or maybe secretGroups =
+        email = "nixos-host-${name}@developing-today.com";
+        sshKey = lib.host-key name; # allow multiple ssh keys
+        users = [ ];
+        user-modules = [ ];
+        user-imports = [ ];
+        modules = [ ];
+        imports = [ ];
+        hardware = [ "" ];
+        hardware-modules = [ ];
+        hardware-imports = [ ];
+        networking = "dhcp";
+        wireless = [ ];
+        wireless-modules = [ ];
+        wireless-imports = [ ];
+        wireless-secrets-template = config: "";
+        # TODO: wire networking in and allow other networking options,
+        #       allow choosing wireless ? nixos only allows one wireless interface ?
+        #       check out topology and todo-apu2.nix
+        #       allow bridging interfaces
+        #       allow nat/packet forwarding
+        #       allow firewall things
+        #       allow disable ipv6
+        #       allow dhcpd and static ip addresses
+        profiles = [ ];
+        profile-modules = [ ];
+        profile-imports = [ ];
+        darwin-profiles = [ ];
+        darwin-profile-modules = [ ];
+        darwin-profile-imports = [ ];
+        darwin-modules = [ ];
+        darwin-imports = [ ];
+        disks = [ ];
+        disk-modules = [ ];
+        disk-imports = [ ];
+        bootstrap = false; # TODO: make this work or delete?
+        vm = false;
+        # users # TODO: make this work host has users which have home-manager-users
+      }
+      options
+    ];
+  nixos-host-configuration =
+    options: name:
+    let
+      host = nixos-host-configuration-base options name;
+    in
+    merge [
+      host
+      {
+        wireless-secrets-template =
+          config: "${host.wireless-secrets-template config}\n${make-wireless-template host config}";
+      }
+    ];
+
+  default-home-manager-user-configuration = name: {
+    # TODO: make this work? integrate into users?
+    system = "x86_64-linux";
+    stateVersion = "26.11";
+    home = {
+      ide = rec {
+        inherit name;
+        enable = true;
+        email = "home-manager-user-${name}@developing-today.com";
+      };
+      shell.enable = true;
+      user = {
+        inherit name;
+        enable = true;
+      };
+    };
+  };
+  home-manager-user-configuration =
+    name: options:
+    merge [
+      (default-home-manager-user-configuration name)
+      options
+    ];
+
+  ensure-list = x: if builtins.isList x then x else [ x ];
+
+  make-paths = strings: basePath: map (str: basePath + "/${str}") (ensure-list strings);
+
+  make-hardware-paths =
+    {
+      basePath ? from-root "nixos/hardware-configuration",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-hardware = make-hardware-paths { };
+
+  make-user-paths =
+    {
+      basePath ? from-root "nixos/users",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-users = make-user-paths { };
+
+  make-profile-paths =
+    {
+      basePath ? from-root "nixos",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-profiles = make-profile-paths { };
+
+  make-disk-paths =
+    {
+      basePath ? from-root "nixos/disks",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-disks = make-disk-paths { };
+
+  make-wireless-paths =
+    {
+      basePath ? from-root "nixos/networking/wireless",
+    }:
+    strings: make-paths (ensure-list strings) basePath;
+  make-wireless = make-wireless-paths { };
+
+  make-wireless-template =
+    host: config:
+    builtins.concatStringsSep "\n" (
+      map (i: config.sops.placeholder."wireless_${i}") (ensure-list host.wireless)
+    );
+
+  # TODO: make-sd-card-installer-configurations
+  # TODO: make-unattended-sd-card-installer-configurations
+  # TODO: make-sd-card-image-configurations
+  # https://github.com/NixOS/nixpkgs/tree/master/nixos/modules/installer/sd-card
+  # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/sd-card/sd-image.nix
+  # https://myme.no/posts/2022-12-01-nixos-on-raspberrypi.html
+  # https://github.com/lucernae/nixos-pi
+  # nix build .#nixosConfigurations.rpi.config.system.build.sdImage to build the sd card image, and
+  # nix build .#nixosConfigurations.rpi.config.system.build.toplevel to build (only) the system
+
+  # TODO: make-netboot-installer-configurations
+  # TODO: make-unattended-netboot-installer-configurations
+  # TODO: make-netboot-image-configurations
+  # https://github.com/NixOS/nixpkgs/tree/master/nixos/modules/installer/netboot
+
+  # TODO: make-vm/cloud-installer-configurations?
+
+  make-unattended-installer-configurations = # TODO: make-bootstrap-versions
+    configurations:
+    lib.mapAttrs' (
+      name: config:
+      lib.nameValuePair "unattended-installer_offline_${name}" (
+        inputs.unattended-installer.lib.diskoInstallerWrapper config {
+          # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
+          config = {
+            # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
+            isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
+            unattendedInstaller = {
+              successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
+              preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
+              postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
+              preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
+              postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
+            };
+          };
+        }
+      )
+    ) configurations;
+
+  make-vm-configurations =
+    hosts:
+    lib.mapAttrs' (
+      hostName: host-generator:
+      let
+        vmName = "vm_" + hostName;
+      in
+      lib.nameValuePair vmName (
+        make-nixos-from-config (
+          make-host-config vmName (
+            name:
+            merge [
+              (host-generator name)
+              { vm = true; }
+            ]
+          )
+        )
+      )
+    ) hosts;
+
+  make-host-config =
+    hostName: host-generator:
+    let
+      host = host-generator hostName;
+    in
+    {
+      inherit inputs;
+      inherit host hostName; # move hostName into host?
+      inherit (host) system stateVersion; # move into host?
+      lib = _self;
+    };
+
+  # nixpkgs source with repo-local patches applied (see patches/nixpkgs/).
+  # applyPatches needs a concrete system for its stdenv; use the host's.
+  patched-nixpkgs-src =
+    config:
+    config.inputs.nixpkgs.legacyPackages.${config.system}.applyPatches {
+      name = "nixpkgs-patched";
+      src = config.inputs.nixpkgs;
+      patches = [ (from-root "patches/nixpkgs/neededforboot-nixos-unstable.patch") ];
+    };
+
+  make-nixos-from-config =
+    config:
+    let
+      src = patched-nixpkgs-src config;
+      # replicate nixpkgs flake's nixosSystem wrapper, but against the PATCHED
+      # source so nixos module files come from the patched tree
+      patched-lib = import (src + "/lib");
+    in
+    import (src + "/nixos/lib/eval-config.nix") {
+      lib = patched-lib;
+      system = null;
+      specialArgs = {
+        inherit (config)
+          inputs
+          host
+          hostName
+          system
+          stateVersion
+          lib
+          ;
+      };
+      modules = ensure-list config.host.init ++ [
+        # keep pkgs.path / <nixpkgs> pointing at the patched tree
+        (_: {
+          config.nixpkgs.flake.source = src.outPath;
+        })
+      ];
+    };
+
+  make-nixos-configurations = lib.mapAttrs (
+    hostName: host-generator: make-nixos-from-config (make-host-config hostName host-generator)
+  );
+
+  make-vim =
+    let
+      enablePkgs =
+        args:
+        builtins.mapAttrs (
+          n: v:
+          merge [
+            v
+            { enable = true; }
+          ]
+        ) args;
+      enablePlugins =
+        attrSet:
+        if attrSet ? plugins then
+          merge [
+            attrSet
+            { plugins = enablePkgs attrSet.plugins; }
+          ]
+        else
+          attrSet;
+      enableLspServers =
+        attrSet:
+        if attrSet ? lsp && attrSet.lsp ? servers then
+          merge [
+            attrSet
+            {
+              lsp = merge [
+                attrSet.lsp
+                { servers = enablePkgs attrSet.lsp.servers; }
+              ];
+            }
+          ]
+        else
+          attrSet;
+      enableColorschemes =
+        attrSet:
+        if attrSet ? colorschemes then
+          merge [
+            attrSet
+            { colorschemes = enablePkgs attrSet.colorschemes; }
+          ]
+        else
+          attrSet;
+      enableModules = attrSet: enableColorschemes (enableLspServers (enablePlugins attrSet));
+    in
+    inputs.flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        # TODO: check upstream neovim-nightly-overlay for a fixed tree-sitter cargoHash, then drop this local rebuild
+        # neovim-nightly-overlay pins a stale cargoHash for its bundled tree-sitter; rebuild with the current one
+        nightlySrc = inputs.neovim-nightly-overlay.outPath;
+        stock = import inputs.nixpkgs { inherit system; };
+        nightlyDeps = import (nightlySrc + "/flake/packages/neovim-dependencies.nix") {
+          inherit (inputs) neovim-src;
+          inherit (stock) lib;
+          pkgs = stock;
+        };
+        nightlyTreeSitter =
+          (import (nightlySrc + "/flake/packages/tree-sitter.nix") {
+            inherit (stock) lib;
+            pkgs = stock;
+            neovim-dependencies = nightlyDeps;
+          }).overrideAttrs
+            (oa: {
+              cargoHash = "sha256-GbW/qFq8X0UNi9LIepTIAKSAqCXM/gdy6XV6s5YO8r0=";
+              cargoDeps = stock.rustPlatform.fetchCargoVendor {
+                name = "${oa.pname}-cargo-deps";
+                src = nightlyDeps.treesitter;
+                hash = "sha256-GbW/qFq8X0UNi9LIepTIAKSAqCXM/gdy6XV6s5YO8r0=";
+              };
+            });
+        nightlyNeovim = import (nightlySrc + "/flake/packages/neovim.nix") {
+          inherit (inputs) neovim-src;
+          inherit (stock) lib;
+          pkgs = stock;
+          neovim-dependencies = nightlyDeps;
+          tree-sitter = nightlyTreeSitter;
+        };
+        pkgs = import inputs.nixpkgs {
+          ## TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
+          # pkgs = import inputs.nixpkgs-unstable { # breaks xrdb?? x11 move pr
+          inherit system;
+          config = {
+            allowBroken = true;
+            allowUnfree = true;
+            allowUnfreePredicate = _: true;
+            permittedInsecurePackages = [
+              "olm-3.2.16"
+              "electron"
+              "qtwebkit-5.212.0-alpha4"
+            ];
+          };
+          overlays = [
+            inputs.neovim-nightly-overlay.overlays.default
+            (_: _: { neovim-unwrapped = nightlyNeovim; })
+          ];
+        };
+        module = import (from-root "pkgs/vim/config") { inherit enableModules pkgs; };
+        neovim = inputs.nixvim.legacyPackages.${system}.makeNixvimWithModule {
+          inherit pkgs;
+          inherit module;
+        };
+        nixosModules = inputs.nixvim.nixosModules.nixvim;
+        homeManagerModules = inputs.nixvim.homeManagerModules.nixvim;
+      in
+      {
+        packages = {
+          default = neovim;
+        };
+        inherit nixosModules; # unsure how to overlay nightly here.
+        inherit homeManagerModules; # unsure how to overlay nightly here.
+        vimOverlay = final: prev: { inherit neovim; };
+        inherit enableModules;
+        inherit enableColorschemes;
+        inherit enableLspServers;
+        inherit enablePkgs;
+        inherit enablePlugins;
+      }
+    );
+
+  make-clan = # hosts:
+    let
+      # Usage see: https://docs.clan.lol
+      clan = inputs.clan-core.lib.clan {
+        inherit (inputs) self;
+        meta.name = "developing-today";
+        # Prerequisite: boot into the installer.
+        # See: https://docs.clan.lol/getting-started/installer
+        # local> mkdir -p ./machines/machine1
+        # local> Edit ./machines/<machine>/configuration.nix to your liking.
+        machines = {
+          # The name will be used as hostname by default.
+          user = { };
+          # sara = { };
+        };
+      };
+    in
+    {
+      inherit (clan.config) nixosConfigurations clanInternals;
+      clan = clan.config;
+      devShells =
+        inputs.nixpkgs-unstable.lib.genAttrs
+          [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ]
+          (
+            system:
+            let
+              # The flake's canonical nixpkgs (nixpkgs-unstable) -- the same
+              # tree the system, shell.nix and the id sub-flake use, so
+              # `nix develop` and `nix-shell` resolve identical versions.
+              pkgs = import inputs.nixpkgs-unstable {
+                inherit system;
+                overlays = [ (import inputs.id-rust-overlay) ];
+                # The dev shell includes the Android SDK (nix-common.nix):
+                # androidenv is unfree and its derivations are gated on license
+                # acceptance. Both are required for `nix develop` to evaluate.
+                config = {
+                  allowUnfree = true;
+                  android_sdk.accept_license = true;
+                };
+              };
+              # Import shared configuration (same as shell.nix)
+              nixCommon = import ../nix-common.nix { inherit pkgs; };
+            in
+            {
+              default = pkgs.mkShell {
+                inherit (nixCommon)
+                  NIX_CONFIG
+                  TREEFMT_TREE_ROOT_CMD
+                  buildInputs
+                  nativeBuildInputs
+                  shellHook
+                  ;
+                # OpenSSL configuration for native builds
+                inherit (nixCommon.opensslEnv)
+                  OPENSSL_DIR
+                  OPENSSL_LIB_DIR
+                  OPENSSL_INCLUDE_DIR
+                  PKG_CONFIG_PATH
+                  ;
+                # Shared packages + clan-cli (only available via flake input)
+                packages = nixCommon.packages ++ [
+                  inputs.clan-core.packages.${system}.clan-cli
+                ];
+              };
+            }
+          );
+    };
+
+  make-root-apps = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = inputs.nixpkgs-unstable.legacyPackages.${system};
+
+      # Common metadata for all root apps
+      commonMeta = {
+        homepage = "https://github.com/developing-today/code";
+        license = with pkgs.lib.licenses; [
+          mit
+          asl20
+        ];
+      };
+
+      # Helper to create a runnable app with metadata
+      mkApp = drv: description: {
+        type = "app";
+        program = "${drv}/bin/${drv.name}";
+        meta = commonMeta // {
+          inherit description;
+        };
+      };
+
+      # ─── Dynamic app generation from justfile ──────────────────────────
+      #
+      # Apps are generated from just-recipes.json (produced by `just just-recipes`).
+      # To add a new nix app: add a recipe to root.just, run `just lockfiles`,
+      # and the app appears automatically as `nix run .#<recipe-name>`.
+      #
+      justRecipes = builtins.fromJSON (builtins.readFile ../just-recipes.json);
+
+      # Build a nix app from a just recipe
+      mkRecipeApp =
+        name: recipe:
+        let
+          description = if recipe.doc != null then recipe.doc else "Run 'just ${name}'";
+        in
+        mkApp (pkgs.writeShellScriptBin name ''
+          exec ${pkgs.just}/bin/just ${name} "$@"
+        '') description;
+
+      # Filter: exclude private recipes and 'default' (handled separately)
+      publicRecipes = pkgs.lib.filterAttrs (
+        name: recipe: !(recipe.private or false) && name != "default"
+      ) justRecipes.recipes;
+
+      mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
+    in
+    {
+      packages = {
+        inherit mcpx idMailDeploy;
+      };
+      apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
+        id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
+        mcpx = {
+          type = "app";
+          program = "${mcpx}/bin/mcpx";
+          meta = commonMeta // {
+            description = "mcpx MCP gateway and Code Mode execution runner";
+          };
+        };
+      };
+    }
+  );
+
+  make-id =
+    let
+      idFlake = import ../pkgs/id/flake.nix;
+      idInputNames = builtins.attrNames idFlake.inputs;
+      idInputs = builtins.listToAttrs (
+        map (name: {
+          inherit name;
+          value = inputs.${"id-${name}"};
+        }) idInputNames
+      );
+      idOutputs =
+        let
+          result = idFlake.outputs (
+            idInputs
+            // {
+              self = result // {
+                outPath = "${inputs.self}/pkgs/id";
+              };
+            }
+          );
+        in
+        result;
+      prefixAttr =
+        attr: excludes:
+        if builtins.hasAttr attr idOutputs then
+          {
+            ${attr} = builtins.mapAttrs (
+              system: items:
+              builtins.listToAttrs (
+                builtins.concatMap (
+                  name:
+                  if builtins.elem name excludes then
+                    [ ]
+                  else
+                    [
+                      {
+                        name = "id-${name}";
+                        value = items.${name};
+                      }
+                    ]
+                ) (builtins.attrNames items)
+              )
+            ) idOutputs.${attr};
+          }
+        else
+          { };
+    in
+    merge [
+      (prefixAttr "apps" [
+        "default"
+        "just"
+      ])
+      (prefixAttr "checks" [ "default" ])
+      { inherit (idOutputs) packages; }
+      # 'id' app: runs the id binary
+      {
+        apps = builtins.mapAttrs (system: _: {
+          id = idOutputs.apps.${system}.default;
+        }) idOutputs.apps;
+      }
+      # Root formatter: format root + pkgs/id
+      (inputs.flake-utils.lib.eachDefaultSystem (
+        system:
+        let
+          pkgs = import inputs.nixpkgs-unstable {
+            inherit system;
+            overlays = [ (import inputs.id-rust-overlay) ];
+          };
+          nixCommon = import ../nix-common.nix { inherit pkgs; };
+          inherit (nixCommon) fmtBins;
+          formatCheck = pkgs.writeShellScriptBin "format-check" ''
+            export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
+            if [ "$#" -eq 0 ]; then
+              echo "usage: nix run .#format-check -- <changed-file>..." >&2
+              exit 2
+            fi
+            exec treefmt \
+              --config-file "$PWD/treefmt.toml" \
+              --tree-root "$PWD" \
+              --fail-on-change \
+              "$@"
+          '';
+        in
+        {
+          apps.format-check = {
+            type = "app";
+            program = "${formatCheck}/bin/format-check";
+          };
+
+          formatter = pkgs.writeShellScriptBin "formatter" ''
+            export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
+            # fix = strip-whitespace + lockfiles + fmt (treefmt with --config-file/--tree-root)
+            just fix "$@"
+            # Format id sub-project
+            if [ -d pkgs/id ]; then
+              (cd pkgs/id && ${idOutputs.formatter.${system}}/bin/formatter)
+            fi
+          '';
+          checks = {
+            # Validate all formatters at once via treefmt --ci
+            treefmt-check = pkgs.stdenv.mkDerivation {
+              name = "treefmt-check";
+              src = inputs.self;
+              nativeBuildInputs = fmtBins;
+              buildPhase = ''
+                treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1 || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "treefmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            # Per-formatter checks (read-only validation)
+            nixfmt-check = pkgs.stdenv.mkDerivation {
+              name = "nixfmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.nixfmt ];
+              buildPhase = ''
+                find . -name '*.nix' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path './pkgs/dht/*' \
+                  | xargs nixfmt --check
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "nixfmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            biome-check = pkgs.stdenv.mkDerivation {
+              name = "biome-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.biome ];
+              buildPhase = ''
+                biome format --check --config-path . \
+                  --files-ignore-unknown=true \
+                  $(find . \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \
+                    -o -name '*.css' -o -name '*.json' -o -name '*.graphql' \) \
+                    -not -path './pkgs/id/*' \
+                    -not -path './.opencode/*' \
+                    -not -path './pkgs/dht/*' \
+                    -not -path '*/node_modules/*' \
+                    -not -path '*/target/*') \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "biome-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            rustfmt-check = pkgs.stdenv.mkDerivation {
+              name = "rustfmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.rustfmt ];
+              buildPhase = ''
+                find . -name '*.rs' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './pkgs/dht/*' \
+                  -not -path '*/target/*' \
+                  -exec rustfmt --check --edition 2024 {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "rustfmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            statix-check = pkgs.stdenv.mkDerivation {
+              name = "statix-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.statix ];
+              buildPhase = ''
+                find . -name '*.nix' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path './pkgs/dht/*' \
+                  -print0 | while IFS= read -r -d "" f; do
+                    statix check -- "$f" || true
+                  done
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "statix-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            prettier-check = pkgs.stdenv.mkDerivation {
+              name = "prettier-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.prettier ]; # nodepackages remoed 2026-04-03
+              buildPhase = ''
+                find . \( -name '*.html' -o -name '*.md' -o -name '*.mdx' \
+                  -o -name '*.scss' -o -name '*.yaml' \) \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec prettier --check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "prettier-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            shfmt-check = pkgs.stdenv.mkDerivation {
+              name = "shfmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.shfmt ];
+              buildPhase = ''
+                find . -name '*.sh' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec shfmt -d -i 2 -s {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "shfmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            taplo-check = pkgs.stdenv.mkDerivation {
+              name = "taplo-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.taplo ];
+              buildPhase = ''
+                find . -name '*.toml' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -not -path '*/target/*' \
+                  -exec taplo check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "taplo-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            shellcheck-check = pkgs.stdenv.mkDerivation {
+              name = "shellcheck-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.shellcheck ];
+              buildPhase = ''
+                find . -name '*.sh' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec shellcheck {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "shellcheck-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            ruff-check = pkgs.stdenv.mkDerivation {
+              name = "ruff-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.ruff ];
+              buildPhase = ''
+                find . -name '*.py' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec ruff format --check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "ruff-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            rufo-check = pkgs.stdenv.mkDerivation {
+              name = "rufo-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.rufo ];
+              buildPhase = ''
+                find . -name '*.rb' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec rufo --check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "rufo-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            elm-format-check = pkgs.stdenv.mkDerivation {
+              name = "elm-format-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.elmPackages.elm-format ];
+              buildPhase = ''
+                find . -name '*.elm' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec elm-format --validate {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "elm-format-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            gofmt-check = pkgs.stdenv.mkDerivation {
+              name = "gofmt-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.go ];
+              buildPhase = ''
+                found=$(find . -name '*.go' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -exec gofmt -l {} +) || true
+                if [ -n "$found" ]; then
+                  echo "Files not formatted by gofmt:"
+                  echo "$found"
+                fi
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "gofmt-check passed at $(date)" > $out/result.txt
+              '';
+            };
+
+            ormolu-check = pkgs.stdenv.mkDerivation {
+              name = "ormolu-check";
+              src = inputs.self;
+              nativeBuildInputs = [ pkgs.haskellPackages.ormolu ];
+              buildPhase = ''
+                find . -name '*.hs' \
+                  -not -path './pkgs/id/*' \
+                  -not -path './.opencode/*' \
+                  -not -path '*/node_modules/*' \
+                  -not -path './examples/haskell/*' \
+                  -exec ormolu --mode check {} + \
+                  || true
+              '';
+              installPhase = ''
+                mkdir -p $out
+                echo "ormolu-check passed at $(date)" > $out/result.txt
+              '';
+            };
+          };
+        }
+      ))
+    ];
+
+  make-mcpx-overlay = {
+    overlays = {
+      default = final: prev: {
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+      };
+      mcpx = final: prev: {
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+      };
+    };
+  };
+
+  _self = merge [
+    lib
+    {
+      inherit
+        lib
+        root
+        merge
+        matrix
+        from-root
+        public-key
+        group-key
+        host-key
+        user-key
+        pick
+        mkEnv
+        mergeAttrs
+        nixos-user-configuration
+        nixos-host-configuration-base
+        nixos-host-configuration
+        default-home-manager-user-configuration
+        home-manager-user-configuration
+        ensure-list
+        make-paths
+        make-hardware-paths
+        make-hardware
+        make-user-paths
+        make-users
+        make-profile-paths
+        make-profiles
+        make-disk-paths
+        make-disks
+        make-wireless-paths
+        make-wireless
+        make-wireless-template
+        make-vm-configurations
+        make-unattended-installer-configurations
+        make-nixos-from-config
+        make-host-config
+        make-nixos-configurations
+        make-vim
+        make-clan
+        make-root-apps
+        make-id
+        make-mcpx-overlay
+        ;
+    }
+  ];
+in
+_self

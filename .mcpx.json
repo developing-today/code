@@ -1,0 +1,74 @@
+{
+  "$schema": "https://raw.githubusercontent.com/dezren39/mcpx/main/schema/mcpx.schema.json",
+  "mcpServers": {
+    "codedb": {
+      "command": "/home/user/bin/codedb",
+      "args": ["mcp"],
+      "env": {
+        "CODEDB_NO_TELEMETRY": "1"
+      }
+    },
+    "fff": {
+      "command": "/home/user/.local/bin/fff-mcp",
+      "args": []
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--executable-path=/run/current-system/sw/bin/chromium",
+        "--headless",
+        "--isolated",
+        "--viewport=800x600",
+        "--no-usage-statistics",
+        "--no-performance-crux",
+        "--no-category-emulation"
+      ],
+      "mcpx": {
+        "sharing": "exclusive",
+        "scope": "session"
+      }
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.context7.com/mcp"]
+    },
+    "jules": {
+      "command": "npx",
+      "args": ["-y", "@google/jules-mcp"]
+    },
+    "antigravity-jules-orchestration": {
+      "command": "npx",
+      "args": ["-y", "@iflow-mcp/scarmonit-antigravity-jules-orchestration"]
+    },
+    "antigravity": {
+      "command": "npx",
+      "args": ["-y", "@ask-llm/antigravity-mcp"]
+    },
+    "desktop-commander": {
+      "command": "npx",
+      "args": ["-y", "@wonderwhy-er/desktop-commander"]
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+    },
+    "mcp-server-neon": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://mcp.neon.tech/sse"]
+    },
+    "cloudrun": {
+      "command": "npx",
+      "args": ["-y", "@google-cloud/cloud-run-mcp"]
+    },
+    "gopls-mcp-server": {
+      "command": "go",
+      "args": ["run", "golang.org/x/tools/gopls@latest", "mcp"]
+    }
+  },
+  "repair": {
+    "provider": "opencode",
+    "model": "claude-code/claude-haiku-5-5"
+  }
+}

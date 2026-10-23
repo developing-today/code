@@ -1,0 +1,6 @@
+| case | compare_logs(local, remote) for the chain | entries sent |
+|---|---|---|
+| gap at seq 20 on the remote (has 0..19 and 21..49): heights 49 and 49 | None | 0 |
+| same heights, different event at seq 25 (fork): heights 49 and 49 | None | 0 |
+| remote lags: heights 49 and 30 | Some((Some(30), Some(49))) | 1 |
+| remote has no entries for this chain: heights 49 and none | Some((None, Some(49))) | 1 |

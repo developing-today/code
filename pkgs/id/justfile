@@ -1,0 +1,799 @@
+# Justfile for the id project.
+#
+# Just is a command runner (like make but simpler).
+# Install: cargo install just
+# Usage: just <recipe>
+#
+# Run `just` with no arguments to see available recipes.
+#
+# NOTE: Commands marked [bun] need Bun installed (use `nix develop`).
+# NOTE: Every just command should have a corresponding `nix run .#<cmd>` in flake.nix.
+#
+# Naming conventions:
+#   - Simple command names (build, serve, check) default to web variant
+#   - Use -lib suffix for library-only variant (no web/bun required)
+#   - Use -force suffix to bypass freshness checks
+
+mod? root '../../root.just'
+
+# Default recipe — kill existing server and serve with web UI [bun]
+default: kill-serve
+# WARNING: default recipe cannot be an alias
+
+# Show available recipes
+list:
+  @just --list
+
+# =============================================================================
+# Quality Checks
+# =============================================================================
+
+# Run all checks (with auto-fix first) [bun]
+[group('check')]
+check: fix ci
+    @echo "✓ All checks passed!"
+alias check-all := check
+
+# CI-safe checks (read-only, no modifications) [bun]
+[group('check')]
+ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint web-lint test-sandbox test-web-unit test-web-typecheck doc build release
+    @echo "✓ CI checks passed!"
+
+# Auto-fix formatting and lint issues
+[group('check')]
+fix *args: strip-whitespace lockfiles (fmt args) lint-fix
+    @echo "✓ Fixed what could be fixed"
+
+# =============================================================================
+# Formatting
+# =============================================================================
+
+# Run treefmt (cached, finds nearest treefmt.toml from pwd)
+[group('format')]
+treefmt *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$(pwd)"
+    while [ "$dir" != "/" ] && [ ! -f "$dir/treefmt.toml" ]; do dir="$(dirname "$dir")"; done
+    if [ ! -f "$dir/treefmt.toml" ]; then echo "error: no treefmt.toml found" >&2; exit 1; fi
+    unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE
+    # Translate --check to --fail-on-change (treefmt v2 renamed the flag)
+    translated_args=()
+    for arg in {{args}}; do
+      case "$arg" in
+        --check) translated_args+=(--fail-on-change) ;;
+        *) translated_args+=("$arg") ;;
+      esac
+    done
+    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" "${translated_args[@]}"
+
+# Run treefmt without cache (finds nearest treefmt.toml from pwd)
+[group('format')]
+treefmt-no-cache *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$(pwd)"
+    while [ "$dir" != "/" ] && [ ! -f "$dir/treefmt.toml" ]; do dir="$(dirname "$dir")"; done
+    if [ ! -f "$dir/treefmt.toml" ]; then echo "error: no treefmt.toml found" >&2; exit 1; fi
+    unset TREEFMT_TREE_ROOT TREEFMT_TREE_ROOT_CMD TREEFMT_TREE_ROOT_FILE
+    # Translate --check to --fail-on-change (treefmt v2 renamed the flag)
+    translated_args=()
+    for arg in {{args}}; do
+      case "$arg" in
+        --check) translated_args+=(--fail-on-change) ;;
+        *) translated_args+=("$arg") ;;
+      esac
+    done
+    exec treefmt --config-file "$dir/treefmt.toml" --tree-root "$dir" --no-cache "${translated_args[@]}"
+alias treefmt-uncached := treefmt-no-cache
+
+# Strip trailing whitespace from all tracked text files
+[group('format')]
+strip-whitespace:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git grep -rl '[[:space:]]$' -- \
+      ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \
+      ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \
+      ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \
+      ':!*.mp4' ':!*.mkv' ':!*.avi' ':!*.mov' ':!*.wmv' ':!*.flv' ':!*.webm' \
+      ':!*.mp3' ':!*.wav' ':!*.flac' ':!*.aac' ':!*.ogg' ':!*.wma' ':!*.m4a' ':!*.opus' \
+      ':!*.zip' ':!*.tar' ':!*.gz' ':!*.bz2' ':!*.xz' ':!*.zst' ':!*.7z' ':!*.rar' \
+      ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \
+      2>/dev/null | while IFS= read -r f; do
+      case "$f" in
+        */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;
+        */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;
+        */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;
+        */third_party/*|*/third-party/*|*/external/*|*/deps/*|*/Pods/*|*/.bundle/*) continue ;;
+        */bower_components/*|*/.pnp/*|*/.eggs/*|*.egg-info/*|*/site-packages/*) continue ;;
+        */.gradle/*|*/.mvn/*|*/Packages/*) continue ;;
+      esac
+      case "$(file -b --mime-encoding "$f")" in binary) continue ;; esac
+      sed -i 's/[[:space:]]*$//' "$f"
+    done || true
+
+# Format all code (via treefmt)
+[group('format')]
+fmt *args: (treefmt args)
+
+# Check all formatting (no changes)
+[group('format')]
+fmt-check: cargo-fmt-check web-fmt-check
+
+# Format Rust code
+[group('format')]
+cargo-fmt:
+    cargo fmt
+
+# Check Rust formatting (no changes)
+[group('format')]
+cargo-fmt-check:
+    cargo fmt -- --check
+
+# [biome] Format web code (TypeScript + CSS)
+[group('format')]
+web-fmt:
+    biome format --write web/src/ web/scripts/  e2e/
+
+# [biome] Check web formatting (no changes)
+[group('format')]
+web-fmt-check:
+    biome format web/src/ web/scripts/  e2e/
+
+# =============================================================================
+# Linting
+# =============================================================================
+
+# Run all linters (Rust + web)
+[group('lint')]
+lint: clippy-lint web-lint
+
+# Run all linters with auto-fix
+[group('lint')]
+lint-fix: clippy-lint-fix web-lint-fix
+
+# Run cargo check (type checking, all targets and features)
+[group('lint')]
+cargo-check:
+    cargo check --all-targets --all-features
+
+# Run clippy linting
+[group('lint')]
+clippy-lint:
+    cargo clippy --all-targets --all-features
+
+# Run clippy with auto-fix
+[group('lint')]
+clippy-lint-fix:
+    cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged
+
+# [biome] Lint web code (TypeScript + CSS)
+[group('lint')]
+web-lint:
+    biome lint web/src/ web/scripts/  e2e/
+
+# [biome] Lint web code with auto-fix
+[group('lint')]
+web-lint-fix:
+    biome lint --write web/src/ web/scripts/  e2e/
+
+# =============================================================================
+# Lockfiles
+# =============================================================================
+
+# Regenerate all lockfiles (bun2nix + just-recipes.json)
+[group('deps')]
+lockfiles: bun2nix bun2nix-e2e just-recipes
+
+# Regenerate web/bun.nix from web/bun.lock for offline nix builds
+[group('deps')]
+bun2nix:
+    bun2nix --lock-file web/bun.lock --output-file web/bun.nix
+
+# Regenerate e2e/bun.nix from e2e/bun.lock for offline nix builds
+[group('deps')]
+bun2nix-e2e:
+    bun2nix --lock-file e2e/bun.lock --output-file e2e/bun.nix
+
+# Regenerate just-recipes.json from justfile for dynamic nix app generation
+[group('deps')]
+just-recipes:
+    just --dump --dump-format json > just-recipes.json
+    biome format --write --config-path . just-recipes.json
+
+# =============================================================================
+# Testing
+# =============================================================================
+
+# Run all Rust tests
+[group('test')]
+test-rust:
+    cargo test --all-features
+alias test-cargo := test-rust
+
+# Run all fast tests (Rust + TypeScript unit + typecheck)
+[group('test')]
+test: test-rust test-web-unit test-web-typecheck
+    @echo "✓ All fast tests passed (Rust + TypeScript)!"
+
+# Run all Rust tests (sandbox-safe: excludes tests requiring network)
+[group('test')]
+test-sandbox:
+    cargo test --all-features -- --skip serve_tests
+
+# Full Rust run: the complete suite, then the regression replay and the tuple property tests at a higher case count
+[group('test')]
+test-full:
+    cargo test --all-features --no-fail-fast
+    cargo test --all-features --test regression_replay
+    PROPTEST_CASES="${PROPTEST_CASES:-4096}" ID_TUPLE_FUZZ_CASES="${ID_TUPLE_FUZZ_CASES:-20000}" cargo test --all-features --test tuple_properties
+    @echo "✓ Full Rust test run passed"
+
+# Crash-safety gate for redb and the identity store: every storage call under every survival policy, and the lying-sync control, in release
+[group('test')]
+crash-gate:
+    cargo test --release --features web --test crash -- --skip write_corpus --include-ignored
+    @echo "✓ Crash gate passed"
+
+# Run unit tests only (fast)
+[group('test')]
+test-unit:
+    cargo test --all-features --lib
+alias test-lib := test-unit
+
+# Run integration tests only
+[group('test')]
+test-integration:
+    cargo test --all-features --test cli_integration
+alias test-int := test-integration
+
+# Run integration tests (sandbox-safe: excludes serve_tests requiring network)
+[group('test')]
+test-int-sandbox:
+    cargo test --all-features --test cli_integration -- --skip serve_tests
+
+# Run tests with output shown
+[group('test')]
+test-verbose:
+    cargo test --all-features -- --nocapture
+
+# Run a specific test by name
+[group('test')]
+test-one NAME:
+    cargo test --all-features {{NAME}}
+
+# [bun] Run web tests (Rust + TypeScript unit tests + type checking)
+[group('test')]
+test-web: test-rust test-web-unit test-web-typecheck
+    @echo "✓ All web tests passed!"
+alias web-typecheck := test-web
+
+# [bun] Run web tests (sandbox-safe: excludes serve_tests requiring network)
+[group('test')]
+test-web-sandbox: test-sandbox test-web-unit test-web-typecheck
+    @echo "✓ All web tests passed (sandbox)!"
+
+# [bun] Run TypeScript unit tests only
+[group('test')]
+test-web-unit:
+    cd web && bun run test
+
+# [bun] Run TypeScript type checking only
+[group('test')]
+test-web-typecheck:
+    cd web && bun run typecheck
+
+# Run nix flake check (27 sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)
+[group('test')]
+test-nix:
+    nix flake check
+    @echo "✓ nix flake check passed (27 checks — runs everything)"
+alias check-nix := test-nix
+alias nix-check := test-nix
+
+# =============================================================================
+# E2E Tests (Playwright - requires built web variant + network)
+# =============================================================================
+
+# [bun] Run Playwright E2E tests (both chromium and firefox)
+[group('e2e')]
+test-e2e: build
+    cd e2e && bun install --frozen-lockfile && bunx playwright test
+
+# [bun] Run Playwright E2E tests (chromium only)
+[group('e2e')]
+test-e2e-chromium: build
+    cd e2e && bun install --frozen-lockfile && bunx playwright test --project=chromium
+
+# [bun] Run Playwright E2E tests (firefox only)
+[group('e2e')]
+test-e2e-firefox: build
+    cd e2e && bun install --frozen-lockfile && bunx playwright test --project=firefox
+
+# [bun] Show Playwright test report
+[group('e2e')]
+test-e2e-report:
+    cd e2e && bunx playwright show-report
+
+# =============================================================================
+# Documentation & Coverage
+# =============================================================================
+
+# Build Rust documentation
+[group('docs')]
+doc:
+    cargo doc --no-deps --document-private-items
+
+# Build and open Rust documentation in browser
+[group('docs')]
+doc-open:
+    cargo doc --no-deps --document-private-items --open
+
+# Generate code coverage report
+[group('docs')]
+coverage:
+    cargo llvm-cov --html
+
+# Generate and open coverage report in browser
+[group('docs')]
+coverage-open:
+    cargo llvm-cov --html --open
+
+# Generate coverage summary to stdout
+[group('docs')]
+coverage-summary:
+    cargo llvm-cov
+
+# =============================================================================
+# Build Commands
+# =============================================================================
+
+# Build with web UI (default) [bun]
+[group('build')]
+build:
+    ./scripts/build.sh web debug
+alias build-web := build
+
+# Build library only (no web/bun required)
+[group('build')]
+build-lib:
+    ./scripts/build.sh lib debug
+
+# Build release with web UI [bun]
+[group('build')]
+release:
+    ./scripts/build.sh web release
+alias build-release := release
+alias build-web-release := release
+
+# Build release binary without web UI
+[group('build')]
+release-lib:
+    ./scripts/build.sh lib release
+alias build-lib-release := release-lib
+
+# Force rebuild debug binary with web UI [bun]
+[group('build')]
+build-web-force: web build-web-cargo mark-variant-web
+alias build-force := build-web-force
+
+# Force rebuild debug binary without web UI
+[group('build')]
+build-lib-force: build-lib-cargo mark-variant-lib
+
+# Force rebuild release binary with web UI [bun]
+[group('build')]
+release-web-force: web release-web-cargo mark-variant-release-web
+alias release-force := release-web-force
+
+# Force rebuild release binary without web UI
+[group('build')]
+release-lib-force: release-lib-cargo mark-variant-release-lib
+
+# Run cargo build with web feature (debug)
+[group('build')]
+build-web-cargo:
+    cargo build --features web
+alias build-cargo := build-web-cargo
+
+# Run cargo build without web feature (debug)
+[group('build')]
+build-lib-cargo:
+    cargo build
+
+# Run cargo build with web feature (release)
+[group('build')]
+release-web-cargo:
+    cargo build --release --features web
+
+# Run cargo build without web feature (release)
+[group('build')]
+release-lib-cargo:
+    cargo build --release
+
+# Internal: variant tracking
+[private]
+mark-variant-web:
+    @mkdir -p target && echo "web" > target/.build-variant
+
+[private]
+mark-variant-lib:
+    @mkdir -p target && echo "lib" > target/.build-variant
+
+[private]
+mark-variant-release-web:
+    @mkdir -p target && echo "web" > target/.build-variant-release
+
+[private]
+mark-variant-release-lib:
+    @mkdir -p target && echo "lib" > target/.build-variant-release
+
+# Clean all build artifacts
+[group('build')]
+clean:
+    cargo clean
+
+# =============================================================================
+# Web Assets [bun]
+# =============================================================================
+
+# [bun] Build web frontend assets
+[group('web')]
+web: web-assets
+alias web-build := web
+
+# [bun] Build web frontend assets (via build script)
+[group('web')]
+web-assets:
+    ./scripts/build.sh assets
+alias assets := web-assets
+
+# [bun] Force rebuild web assets (bypass freshness checks)
+[group('web')]
+web-assets-force:
+    cd web && bun install && bun run build
+alias web-force := web-assets-force
+
+# [bun] Watch and rebuild web assets on changes
+[group('web')]
+web-assets-dev:
+    cd web && bun install && bun run dev
+alias web-dev := web-assets-dev
+
+# =============================================================================
+# Run Commands
+# =============================================================================
+
+# Run CLI with arguments (lib variant)
+[group('run')]
+run *ARGS:
+    cargo run -- {{ARGS}}
+
+# Serve with web UI (default) [bun]
+[group('run')]
+serve *ARGS: web (serve-web ARGS)
+
+# Serve with web UI (skip asset build, requires pre-built assets)
+[group('run')]
+serve-web *ARGS:
+    cargo run --features web -- serve --web {{ARGS}}
+
+# Serve without web UI
+[group('run')]
+serve-lib *ARGS:
+    cargo run -- serve {{ARGS}}
+
+# Serve a new instance with web UI and auto-assigned port (creates .iroh/<name>/) [bun]
+[group('run')]
+serve-new NAME="" *ARGS: web (serve-new-web NAME ARGS)
+
+# Serve a new instance with web UI (skip asset build, requires pre-built assets)
+[group('run')]
+serve-new-web NAME="" *ARGS:
+    cargo run --features web -- {{ if NAME != "" { "--new=" + NAME } else { "--new=" } }} serve --web --port 0 {{ARGS}}
+
+# Serve a new instance without web UI and auto-assigned port
+[group('run')]
+serve-new-lib NAME="" *ARGS:
+    cargo run -- {{ if NAME != "" { "--new=" + NAME } else { "--new=" } }} serve --port 0 {{ARGS}}
+
+# Build then serve with web UI [bun]
+[group('run')]
+build-serve *ARGS: build (serve ARGS)
+
+# Kill any running 'id serve' processes
+[group('run')]
+kill:
+    -pkill -xf ".*/id serve.*"
+
+# Sleep for specified seconds (default 0.6)
+[group('run')]
+sleep SECONDS="0.6":
+    sleep {{SECONDS}}
+
+# Kill and restart serve with web UI [bun] [alias: default]
+[group('run')]
+kill-serve *ARGS: kill sleep (serve ARGS)
+# WARNING: default recipe cannot be an alias
+
+# Run the REPL
+[group('run')]
+repl:
+    cargo run -- repl
+
+# =============================================================================
+# Watch Commands
+# =============================================================================
+
+# Watch and run tests on changes
+[group('watch')]
+watch-test:
+    cargo watch -x test
+
+# Watch and run clippy on changes
+[group('watch')]
+watch-lint:
+    cargo watch -x clippy
+
+# Watch and rebuild on changes
+[group('watch')]
+watch:
+    cargo watch -x build
+alias watch-build := watch
+
+# =============================================================================
+# Dependency Management
+# =============================================================================
+
+# Check for outdated dependencies
+[group('deps')]
+outdated:
+    cargo outdated
+
+# Audit dependencies for security vulnerabilities
+[group('deps')]
+audit:
+    cargo audit
+
+# Find unused dependencies
+[group('deps')]
+machete:
+    cargo machete
+
+# Update Cargo.lock
+[group('deps')]
+update:
+    cargo update
+
+# Show dependency tree
+[group('deps')]
+tree:
+    cargo tree
+
+# =============================================================================
+# Utilities
+# =============================================================================
+
+# Count lines of code
+[group('util')]
+loc:
+    tokei
+
+# Recursively chown all files (including hidden) to current user:group (requires sudo)
+[group('util')]
+chown:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    id
+    user="$(id -u)"
+    group="$(id -g)"
+    sudo chown -R "$user:$group" .
+
+# =============================================================================
+# Flake Input Management
+# =============================================================================
+
+# Update a list of flake inputs by name (lock-only, no build)
+[group('flake')]
+update-input +inputs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for input in {{inputs}}; do
+        echo "--- Updating $input ---"
+        nix flake update "$input"
+    done
+alias update-inputs := update-input
+
+# Update all flake inputs (lock-only, no build)
+[group('flake')]
+update-inputs-all:
+    nix flake update
+alias update-all-inputs := update-inputs-all
+
+# Helpers to parse flake.lock via nix for NixOS/nixpkgs inputs
+[private]
+_nixpkgs-inputs ref="":
+    #!/usr/bin/env bash
+    if [ -z "{{ref}}" ]; then
+        nix eval --raw --impure --expr 'import ./nix/nixpkgs-inputs.nix {}'
+    else
+        nix eval --raw --impure --expr "import ./nix/nixpkgs-inputs.nix { ref = \"{{ref}}\"; }"
+    fi
+
+# Update all direct NixOS/nixpkgs inputs (any branch)
+[group('flake')]
+update-nixpkgs-all:
+    ./scripts/update-nixpkgs-inputs.sh
+
+# Update NixOS/nixpkgs inputs on master (or no explicit branch)
+[group('flake')]
+update-nixpkgs-master:
+    ./scripts/update-nixpkgs-inputs.sh master
+
+# Update NixOS/nixpkgs inputs on nixos-unstable branch
+[group('flake')]
+update-nixpkgs-unstable:
+    ./scripts/update-nixpkgs-inputs.sh nixos-unstable
+
+# Update all NixOS/nixpkgs inputs by branch category (master then unstable, combined summary)
+[group('flake')]
+update-nixpkgs:
+    ./scripts/update-nixpkgs-inputs.sh master nixos-unstable
+
+# Update all NixOS/nixpkgs inputs by name only (no URL discovery, just pass names through)
+[group('flake')]
+update-nixpkgs-all-only:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    inputs=$(just _nixpkgs-inputs)
+    if [ -z "$inputs" ]; then
+        echo "No NixOS/nixpkgs inputs found in flake.lock"
+        exit 0
+    fi
+    just update-input $inputs
+
+# Update NixOS/nixpkgs master inputs by name only
+[group('flake')]
+update-nixpkgs-master-only:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    inputs=$(just _nixpkgs-inputs master)
+    if [ -z "$inputs" ]; then
+        echo "No NixOS/nixpkgs master inputs found in flake.lock"
+        exit 0
+    fi
+    just update-input $inputs
+
+# Update NixOS/nixpkgs nixos-unstable inputs by name only
+[group('flake')]
+update-nixpkgs-unstable-only:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    inputs=$(just _nixpkgs-inputs nixos-unstable)
+    if [ -z "$inputs" ]; then
+        echo "No NixOS/nixpkgs nixos-unstable inputs found in flake.lock"
+        exit 0
+    fi
+    just update-input $inputs
+
+# =============================================================================
+# Nix Checks (individual flake checks — prefer test-nix for full suite)
+# =============================================================================
+
+# Run a single nix flake check by name (e.g. just check-one test-unit)
+[group('nix')]
+check-one NAME:
+    nix build -L .#checks.x86_64-linux.{{NAME}}
+
+# Build nix package — web variant (nix build)
+[group('nix')]
+build-nix:
+    nix build
+
+# Build nix package — lib variant, no web (nix build .#id-lib)
+[group('nix')]
+build-nix-lib:
+    nix build .#id-lib
+
+# --- NixOS VM tests (require KVM, Linux only) ---
+
+# Run NixOS VM serve integration test
+[group('nix')]
+test-nixos-serve:
+    nix build -L .#checks.x86_64-linux.nixos-serve
+
+# Run NixOS VM E2E browser test (Chromium --dump-dom)
+[group('nix')]
+test-nixos-e2e:
+    nix build -L .#checks.x86_64-linux.nixos-e2e
+
+# Run NixOS 4-VM Playwright E2E test (both browsers, ~3 min)
+[group('nix')]
+test-nixos-playwright-e2e:
+    nix build -L .#checks.x86_64-linux.nixos-playwright-e2e
+
+# Run NixOS VM integration tests (serve_tests + full test binary)
+[group('nix')]
+test-nixos-integration:
+    nix build -L .#checks.x86_64-linux.nixos-integration
+
+# Run all NixOS VM tests (requires KVM, Linux only)
+[group('nix')]
+test-nixos: test-nixos-serve test-nixos-e2e test-nixos-playwright-e2e test-nixos-integration
+
+# --- Sandbox format checks (individual) ---
+
+# Run Playwright E2E in nix sandbox (Firefox only — Chromium crashes in sandbox)
+[group('nix')]
+check-test-e2e:
+    nix build -L .#checks.x86_64-linux.test-e2e
+
+# Run nix-fmt-check in sandbox (nixfmt --check on all .nix files)
+[group('nix')]
+check-nix-fmt:
+    nix build -L .#checks.x86_64-linux.nix-fmt-check
+
+# Run treefmt in sandbox (all formatters via treefmt.toml)
+[group('nix')]
+check-treefmt:
+    nix build -L .#checks.x86_64-linux.treefmt-check
+
+# Run biome check in sandbox (JS/TS/CSS linting)
+[group('nix')]
+check-biome:
+    nix build -L .#checks.x86_64-linux.biome-check
+
+# Run rustfmt check in sandbox (Rust formatting)
+[group('nix')]
+check-rustfmt:
+    nix build -L .#checks.x86_64-linux.rustfmt-check
+
+# Run statix check in sandbox (Nix linting)
+[group('nix')]
+check-statix:
+    nix build -L .#checks.x86_64-linux.statix-check
+
+# Run shfmt check in sandbox (shell script formatting)
+[group('nix')]
+check-shfmt:
+    nix build -L .#checks.x86_64-linux.shfmt-check
+
+# Run shellcheck in sandbox (shell script linting)
+[group('nix')]
+check-shellcheck:
+    nix build -L .#checks.x86_64-linux.shellcheck-check
+
+# Run taplo check in sandbox (TOML formatting)
+[group('nix')]
+check-taplo:
+    nix build -L .#checks.x86_64-linux.taplo-check
+
+# Run prettier check in sandbox (Markdown/YAML/JSON formatting)
+[group('nix')]
+check-prettier:
+    nix build -L .#checks.x86_64-linux.prettier-check
+
+# =============================================================================
+# Combined Commands
+# =============================================================================
+
+# Check and serve with web UI [bun]
+[group('workflow')]
+check-serve *ARGS: check (serve ARGS)
+
+# Build and check [bun]
+[group('workflow')]
+build-check: build check
+
+# Build, check, and serve with web UI [bun]
+[group('workflow')]
+build-check-serve *ARGS: build check (serve ARGS)
+
+# Build, check, and serve without web UI
+[group('workflow')]
+build-check-serve-lib: build-lib ci serve-lib
+
+# Build and serve without web UI
+[group('workflow')]
+build-serve-lib: build-lib serve-lib

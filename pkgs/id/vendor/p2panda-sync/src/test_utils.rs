@@ -1,0 +1,225 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Test utilities.
+use std::collections::BTreeMap;
+
+use futures_channel::mpsc;
+use futures_util::{FutureExt, SinkExt, Stream, StreamExt};
+use p2panda_core::logs::Logs;
+use p2panda_core::{Body, Hash, Header, Operation, SeqNum, SigningKey, Topic, VerifyingKey};
+use p2panda_store::logs::LogStore;
+use p2panda_store::operations::OperationStore;
+use p2panda_store::topics::TopicStore;
+use p2panda_store::{SqliteStore, Transaction, tx_unwrap};
+use rand::RngExt;
+use rand::rngs::StdRng;
+use tokio::join;
+use tokio::sync::broadcast;
+
+use crate::ToSync;
+use crate::manager::TopicSyncManager;
+use crate::protocols::{
+    LogSync, LogSyncError, LogSyncEvent, LogSyncMessage, TopicLogSync, TopicLogSyncError,
+    TopicLogSyncEvent, TopicLogSyncMessage,
+};
+use crate::traits::Protocol;
+
+pub type TestLogId = usize;
+pub type TestExtensions = TestLogId;
+
+// Types used in log sync protocol tests.
+pub type TestLogSyncMessage = LogSyncMessage<TestLogId>;
+pub type TestLogSyncEvent = LogSyncEvent<TestExtensions>;
+pub type TestLogSync = LogSync<TestLogId, TestExtensions, SqliteStore, TestLogSyncEvent>;
+pub type TestLogSyncError = LogSyncError;
+
+// Types used in topic log sync protocol tests.
+pub type TestTopicSyncMessage = TopicLogSyncMessage<TestLogId>;
+pub type TestTopicSyncEvent = TopicLogSyncEvent<TestExtensions>;
+pub type TestTopicSync = TopicLogSync<Topic, SqliteStore, TestLogId, TestExtensions>;
+pub type TestTopicSyncError = TopicLogSyncError;
+pub type TestTopicSyncManager = TopicSyncManager<Topic, SqliteStore, TestLogId, TestExtensions>;
+
+/// Peer abstraction used in tests.
+///
+/// Contains a private key, store and topic map, produces sessions for either log or topic sync
+/// protocols.
+pub struct Peer {
+    pub store: SqliteStore,
+    pub signing_key: SigningKey,
+}
+
+impl Peer {
+    pub async fn new(peer_id: u64) -> Self {
+        let store = SqliteStore::temporary().await;
+        let mut rng = <StdRng as rand::SeedableRng>::seed_from_u64(peer_id);
+        let signing_key = SigningKey::from_bytes(&rng.random());
+        Self { store, signing_key }
+    }
+
+    /// The public key of this peer.
+    pub fn id(&self) -> VerifyingKey {
+        self.signing_key.verifying_key()
+    }
+
+    /// Return a topic sync protocol.
+    pub fn topic_sync_protocol(
+        &mut self,
+        topic: Topic,
+        live_mode: bool,
+    ) -> (
+        TestTopicSync,
+        broadcast::Receiver<TestTopicSyncEvent>,
+        mpsc::Sender<ToSync<Operation<TestExtensions>>>,
+    ) {
+        let (event_tx, event_rx) = broadcast::channel(512);
+        let (live_tx, live_rx) = mpsc::channel(512);
+        let live_rx = if live_mode { Some(live_rx) } else { None };
+        let session = TopicLogSync::new(topic, self.store.clone(), live_rx, event_tx);
+        (session, event_rx, live_tx)
+    }
+
+    /// Return a log sync protocol.
+    pub fn log_sync_protocol(
+        &mut self,
+        logs: &Logs<VerifyingKey, TestLogId>,
+    ) -> (TestLogSync, broadcast::Receiver<TestLogSyncEvent>) {
+        let (event_tx, event_rx) = broadcast::channel(512);
+        let session = LogSync::new(self.store.clone(), logs.clone(), event_tx);
+        (session, event_rx)
+    }
+
+    /// Create and insert an operation to the store.
+    pub async fn create_operation(
+        &mut self,
+        body: &Body,
+        log_id: TestLogId,
+    ) -> (Header<TestExtensions>, Vec<u8>) {
+        let (header, header_bytes) = self.create_operation_no_insert(body, log_id).await;
+
+        let id = header.hash();
+        let operation = Operation {
+            hash: header.hash(),
+            header: header.clone(),
+            body: Some(body.to_owned()),
+        };
+
+        tx_unwrap!(&self.store, {
+            self.store
+                .insert_operation(&id, &operation, &log_id)
+                .await
+                .unwrap();
+        });
+
+        (header, header_bytes)
+    }
+
+    /// Create an operation but don't insert it in the store.
+    pub async fn create_operation_no_insert(
+        &mut self,
+        body: &Body,
+        log_id: TestLogId,
+    ) -> (Header<TestExtensions>, Vec<u8>) {
+        let (seq_num, backlink) = self
+            .store
+            .get_latest_entry(&self.signing_key.verifying_key(), &log_id)
+            .await
+            .unwrap()
+            .map(|operation| (operation.header.seq_num + 1, Some(operation.hash)))
+            .unwrap_or((0, None));
+
+        let (header, header_bytes) =
+            create_operation(&self.signing_key, body, seq_num, backlink, log_id);
+
+        (header, header_bytes)
+    }
+
+    pub async fn associate(
+        &mut self,
+        topic: &Topic,
+        logs: &BTreeMap<VerifyingKey, Vec<TestLogId>>,
+    ) {
+        let permit = self.store.begin().await.unwrap();
+        for (author, logs) in logs {
+            for log_id in logs {
+                self.store.associate(topic, author, log_id).await.unwrap();
+            }
+        }
+        self.store.commit(permit).await.unwrap();
+    }
+}
+
+/// Run a pair of topic sync sessions.
+pub async fn run_protocol<P>(
+    session_local: P,
+    session_remote: P,
+) -> Result<(P::Output, P::Output), P::Error>
+where
+    P: Protocol + Send + 'static,
+{
+    let (mut local_message_tx, local_message_rx) = mpsc::channel(512);
+    let (mut remote_message_tx, remote_message_rx) = mpsc::channel(512);
+    let mut local_message_rx = local_message_rx.map(Ok::<_, ()>);
+    let mut remote_message_rx = remote_message_rx.map(Ok::<_, ()>);
+
+    let (local_result, remote_result) = join!(
+        session_local.run(&mut local_message_tx, &mut remote_message_rx),
+        session_remote.run(&mut remote_message_tx, &mut local_message_rx)
+    );
+
+    let local_output = local_result?;
+    let remote_output = remote_result?;
+    Ok((local_output, remote_output))
+}
+
+/// Consume a vector of messages in a single topic sync session.
+pub async fn run_protocol_uni<P>(
+    protocol: P,
+    messages: &[P::Message],
+) -> Result<(P::Output, mpsc::Receiver<P::Message>), P::Error>
+where
+    P: Protocol,
+    P::Message: Clone,
+{
+    let (mut local_message_tx, remote_message_rx) = mpsc::channel(512);
+    let (mut remote_message_tx, local_message_rx) = mpsc::channel(512);
+    let mut local_message_rx = local_message_rx.map(Ok::<_, ()>);
+
+    for message in messages {
+        remote_message_tx.send(message.to_owned()).await.unwrap();
+    }
+
+    let result = protocol
+        .run(&mut local_message_tx, &mut local_message_rx)
+        .await?;
+
+    Ok((result, remote_message_rx))
+}
+
+pub fn drain_stream<S>(mut stream: S) -> Vec<S::Item>
+where
+    S: Stream + Unpin,
+{
+    let mut items = Vec::new();
+    while let Some(Some(item)) = stream.next().now_or_never() {
+        items.push(item);
+    }
+    items
+}
+
+/// Create a single operation.
+pub fn create_operation(
+    signing_key: &SigningKey,
+    body: &Body,
+    seq_num: SeqNum,
+    backlink: Option<Hash>,
+    log_id: TestLogId,
+) -> (Header<TestExtensions>, Vec<u8>) {
+    let header = Header::builder()
+        .body(body)
+        .seq_num(seq_num)
+        .backlink(backlink)
+        .build(signing_key, log_id);
+    let header_bytes = header.encode();
+    (header, header_bytes)
+}

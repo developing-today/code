@@ -1,0 +1,4 @@
+2026-10-11T12:44:24.036684Z  INFO iroh_metrics::service: Starting metrics server on 127.0.0.1:9090
+2026-10-11T12:44:24.037773Z  INFO iroh_relay::server::http_server: [HTTP/WS] relay: serving on 10.0.0.1:3340
+2026-10-11T12:44:24.037878Z  INFO iroh_relay::quic::server: QUIC server listening on bind_addr=10.0.0.1:7842
+2026-10-11T12:45:02.368104Z  WARN relay-http-serve:conn{peer=10.0.0.3:57925}:handler:client-connection-actor{remote_endpoint=f8f9fb7c62 connection_id=1}: iroh_relay::server::client: actor errored Stream terminated, exiting

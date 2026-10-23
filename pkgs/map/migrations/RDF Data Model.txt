@@ -1,0 +1,113 @@
+https://www.w3.org/TR/1999/REC-rdf-syntax-19990222/
+
+RDF Data Model
+
+There is a set called Resources.
+There is a set called Literals.
+There is a subset of Resources called Properties.
+There is a set called Statements, each element of which is a triple of the form
+{pred, sub, obj}
+
+Where pred is a property (member of Properties), sub is a resource (member of Resources), and obj is either a resource or a literal (member of Literals).
+
+We can view a set of statements (members of Statements) as a directed labeled graph: each resource and literal is a vertex; a triple {p, s, o} is an arc from s to o, labeled by p. This is illustrated in figure 11.
+
+the corresponding triple (member of Statements) would be
+
+{creator, [http://www.w3.org/Home/Lassila], "Ora Lassila"}
+The notation [I] denotes the resource identified by the URI I and quotation marks denote a literal.
+
+Using the triples, we can explain how statements are reified (as introduced in Section 4). Given a statement
+
+{creator, [http://www.w3.org/Home/Lassila], "Ora Lassila"}
+we can express the reification of this as a new resource X as follows:
+
+{type, [X], [RDF:Statement]}
+{predicate, [X], [creator]}
+{subject, [X], [http://www.w3.org/Home/Lassila]}
+{object, [X], "Ora Lassila"}
+From the standpoint of an RDF processor, facts (that is, statements) are triples that are members of Statements. Therefore, the original statement remains a fact despite it being reified since the triple representing the original statement remains in Statements. We have merely added four more triples.
+
+The property named "type" is defined to provide primitive typing. The formal definition of type is:
+
+There is an element of Properties known as RDF:type.
+Members of Statements of the form {RDF:type, sub, obj} must satisfy the following: sub and obj are members of Resources. [RDFSchema] places additional restrictions on the use of type.
+Furthermore, the formal specification of reification is:
+
+There is an element of Properties known as RDF:type.
+Members of Statements of the form {RDF:type, sub, obj} must satisfy the following: sub and obj are members of Resources. [RDFSchema] places additional restrictions on the use of type.
+Furthermore, the formal specification of reification is:
+
+There is an element of Resources, not contained in Properties, known as RDF:Statement.
+There are three elements in Properties known as RDF:predicate, RDF:subject and RDF:object.
+Reification of a triple {pred, sub, obj} of Statements is an element r of Resources representing the reified triple and the elements s1, s2, s3, and s4 of Statements such that
+s1: {RDF:predicate, r, pred}
+s2: {RDF:subject, r, subj}
+s3: {RDF:object, r, obj}
+s4: {RDF:type, r, [RDF:Statement]}
+The resource r in the definition above is called the reified statement. When a resource represents a reified statement; that is, it has an RDF:type property with a value of RDF:Statement, then that resource must have exactly one RDF:subject property, one RDF:object property, and one RDF:predicate property.
+
+As described in Section 3, it is frequently necessary to represent a collection of resources or literals; for example to state that a property has an ordered sequence of values. RDF defines three kinds of collections: ordered lists, called Sequences, unordered lists, called Bags, and lists that represent alternatives for the (single) value of a property, called Alternatives.
+
+Formally, these three collection types are defined by:
+
+There are three elements of Resources, not contained in Properties, known as RDF:Seq, RDF:Bag, and RDF:Alt.
+There is a subset of Properties corresponding to the ordinals (1, 2, 3, ...) called Ord. We refer to elements of Ord as RDF:_1, RDF:_2, RDF:_3, ...
+
+To represent a collection c, create a triple {RDF:type, c, t} where t is one of the three collection types RDF:Seq, RDF:Bag, or RDF:Alt. The remaining triples {RDF:_1, c, r1}, ..., {RDF:_n, c, rn}, ... point to each of the members rn of the collection. For a single collection resource there may be at most one triple whose predicate is any given element of Ord and the elements of Ord must be used in sequence starting with RDF:_1. For resources that are instances of the RDF:Alt collection type, there must be exactly one triple whose predicate is RDF:_1 and that is the default value for the Alternatives resource (that is, there must always be at least one alternative).
+
+===
+
+RDF Grammar
+
+  [6.1] RDF            ::= ['<rdf:RDF>'] obj* ['</rdf:RDF>']
+  [6.2] obj            ::= description | container
+  [6.3] description    ::= '<rdf:Description' idAboutAttr? bagIdAttr? propAttr* '/>'
+                         | '<rdf:Description' idAboutAttr? bagIdAttr? propAttr* '>'
+                                propertyElt* '</rdf:Description>'
+                         | typedNode
+  [6.4] container      ::= sequence | bag | alternative
+  [6.5] idAboutAttr    ::= idAttr | aboutAttr | aboutEachAttr
+  [6.6] idAttr         ::= ' ID="' IDsymbol '"'
+  [6.7] aboutAttr      ::= ' about="' URI-reference '"'
+  [6.8] aboutEachAttr  ::= ' aboutEach="' URI-reference '"'
+                         | ' aboutEachPrefix="' string '"'
+  [6.9] bagIdAttr      ::= ' bagID="' IDsymbol '"'
+ [6.10] propAttr       ::= typeAttr
+                         | propName '="' string '"' (with embedded quotes escaped)
+ [6.11] typeAttr       ::= ' type="' URI-reference '"'
+ [6.12] propertyElt    ::= '<' propName idAttr? '>' value '</' propName '>'
+                         | '<' propName idAttr? parseLiteral '>'
+                               literal '</' propName '>'
+                         | '<' propName idAttr? parseResource '>'
+                               propertyElt* '</' propName '>'
+                         | '<' propName idRefAttr? bagIdAttr? propAttr* '/>'
+ [6.13] typedNode      ::= '<' typeName idAboutAttr? bagIdAttr? propAttr* '/>'
+                         | '<' typeName idAboutAttr? bagIdAttr? propAttr* '>'
+                               propertyElt* '</' typeName '>'
+ [6.14] propName       ::= Qname
+ [6.15] typeName       ::= Qname
+ [6.16] idRefAttr      ::= idAttr | resourceAttr
+ [6.17] value          ::= obj | string
+ [6.18] resourceAttr   ::= ' resource="' URI-reference '"'
+ [6.19] Qname          ::= [ NSprefix ':' ] name
+ [6.20] URI-reference  ::= string, interpreted per [URI]
+ [6.21] IDsymbol       ::= (any legal XML name symbol)
+ [6.22] name           ::= (any legal XML name symbol)
+ [6.23] NSprefix       ::= (any legal XML namespace prefix)
+ [6.24] string         ::= (any XML text, with "<", ">", and "&" escaped)
+ [6.25] sequence       ::= '<rdf:Seq' idAttr? '>' member* '</rdf:Seq>'
+                         | '<rdf:Seq' idAttr? memberAttr* '/>'
+ [6.26] bag            ::= '<rdf:Bag' idAttr? '>' member* '</rdf:Bag>'
+                         | '<rdf:Bag' idAttr? memberAttr* '/>'
+ [6.27] alternative    ::= '<rdf:Alt' idAttr? '>' member+ '</rdf:Alt>'
+                         | '<rdf:Alt' idAttr? memberAttr? '/>'
+ [6.28] member         ::= referencedItem | inlineItem
+ [6.29] referencedItem ::= '<rdf:li' resourceAttr '/>'
+ [6.30] inlineItem     ::= '<rdf:li' '>' value </rdf:li>'
+                         | '<rdf:li' parseLiteral '>' literal </rdf:li>'
+                         | '<rdf:li' parseResource '>' propertyElt* </rdf:li>'
+ [6.31] memberAttr     ::= ' rdf:_n="' string '"' (where n is an integer)
+ [6.32] parseLiteral   ::= ' parseType="Literal"'
+ [6.33] parseResource  ::= ' parseType="Resource"'
+ [6.34] literal        ::= (any well-formed XML)

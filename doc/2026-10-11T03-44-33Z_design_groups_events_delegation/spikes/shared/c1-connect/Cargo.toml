@@ -1,0 +1,32 @@
+[package]
+name = "c1-connect"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Connectivity composition for the id design: an iroh endpoint built from a declarative
+# profile (src/connect.rs). Test harness: src/bin/c1.rs.
+#
+# Added beyond the workspace list (see RESULTS.md, "Setup"):
+#   iroh-mainline-address-lookup 0.6.0: mainline DHT lookup and publisher. Depends on iroh ^1.0
+#                                       and n0-mainline ^0.7.
+#   n0-mainline 0.7:                    the testnet. Same crate that the DHT lookup uses.
+#   iroh-mdns-address-lookup 0.6.0:     mDNS lookup. Built, not run (see RESULTS.md).
+#   iroh-dns 1.3.0:                     pkarr record type, to read back a stored DHT record.
+#   n0-future 0.3:                      StreamExt, to drain AddressLookupServices::resolve.
+#   tracing-subscriber 0.3:             prints iroh's logs to stderr (env-filter). Already in the lock
+#                                       at 0.3.23. Added for t8, to see what the client logs.
+
+[dependencies]
+iroh = { workspace = true }
+iroh-relay = { workspace = true, features = ["server"] }
+iroh-tickets = { workspace = true }
+iroh-dns = "1.3.0"
+iroh-mainline-address-lookup = "0.6.0"
+iroh-mdns-address-lookup = "0.6.0"
+n0-mainline = "0.7"
+n0-future = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { workspace = true }
+anyhow = { workspace = true }

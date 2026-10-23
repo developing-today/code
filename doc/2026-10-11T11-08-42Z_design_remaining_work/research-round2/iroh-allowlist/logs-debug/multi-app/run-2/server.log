@@ -1,0 +1,14 @@
+2026-10-11T17:26:38.944492Z  INFO harness: bound role="server" event="ready" mode=App id=8a88e3dd74 port=59042 direct=["10.200.0.1:59042", "10.200.0.2:59042", "127.0.0.1:59042"]
+2026-10-11T17:26:39.179420Z  INFO harness: first Initial packet; no EndpointId is known yet role="server" event="incoming" remote=Ip(127.0.0.1:57209) alpns=["n30/allowlist/0"]
+2026-10-11T17:26:39.181788Z DEBUG noq_proto::connection: multipath negotiated initial_max_path_id=7
+2026-10-11T17:26:39.181849Z DEBUG noq_proto::connection: n0's nat traversal negotiated max_remote_addresses=32 max_local_addresses=32
+2026-10-11T17:26:39.309439Z DEBUG noq_proto::connection::paths: remote changed path status status=Available seq=2
+2026-10-11T17:26:39.312804Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: actor started
+2026-10-11T17:26:39.313199Z TRACE RemoteStateActor{remote=ed4928c628}:handle_message{msg=AddConnection(138009244681248) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: updated local QNT addresses direct_addrs={10.200.0.1:59042, 10.200.0.2:59042, 127.0.0.1:59042}
+2026-10-11T17:26:39.313348Z TRACE RemoteStateActor{remote=ed4928c628}:handle_message{msg=AddConnection(138009244681248) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: not holepunching: no client connection
+2026-10-11T17:26:39.313574Z  INFO harness: hook runs role="server" event="after_handshake" peer=ed4928c628 allowed=false enforce=false
+2026-10-11T17:26:39.313769Z  INFO harness: Connection handed to the application role="server" event="application_has_connection" peer=ed4928c628 allowed=false remote_info=["Ip(127.0.0.1:57209)/Active"]
+2026-10-11T17:26:39.318461Z  INFO harness: stream from peer role="server" event="stream_opened" peer=ed4928c628 first_bytes=hello remote_info=["Ip(127.0.0.1:57209)/Active"]
+2026-10-11T17:26:39.318637Z  INFO harness: refusing after the stream opened role="server" event="app_refusal" peer=ed4928c628 remote_info=["Ip(127.0.0.1:57209)/Active"]
+2026-10-11T17:26:39.318739Z  INFO harness: closed role="server" event="connection_closed" why=closed
+2026-10-11T17:26:39.318969Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: last connection closed - clearing selected_path

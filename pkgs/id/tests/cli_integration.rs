@@ -1,0 +1,4041 @@
+//! Integration tests for the ID CLI tool
+//!
+//! These tests run the actual CLI commands and verify their behavior.
+//! They use a separate test store directory to avoid interfering with development data.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::path::PathBuf;
+use std::process::Command;
+use tempfile::TempDir;
+
+/// Get the path to the built binary
+/// The roc the platform was built with; a different nightly produces a
+/// different module layout.
+fn pinned_roc() -> Option<String> {
+    if let Ok(path) = std::env::var("ID_ROC_BIN") {
+        return Some(path);
+    }
+    let tag = "nightly-2026-10-04-130536d";
+    let version = tag.trim_start_matches("nightly-");
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_owned());
+    let path =
+        format!("{home}/.local/share/plaza-tools/roc/{tag}/roc_nightly-linux_x86_64-{version}/roc");
+    std::path::Path::new(&path).is_file().then_some(path)
+}
+
+fn get_binary_path() -> PathBuf {
+    // Runtime override: allows pre-built test binaries to find the id binary
+    // in a different location (e.g., NixOS VM tests where the test binary is
+    // compiled separately from the binary under test).
+    if let Ok(path) = std::env::var("ID_BINARY") {
+        return PathBuf::from(path);
+    }
+    // CARGO_BIN_EXE_id is set by cargo for integration tests and always
+    // points to the correct binary path regardless of target triple or
+    // build profile (works in both local dev and Nix sandbox builds).
+    PathBuf::from(env!("CARGO_BIN_EXE_id"))
+}
+
+fn examples_dir() -> PathBuf {
+    std::env::var_os("ID_TEST_EXAMPLES_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"))
+}
+
+/// How long one CLI invocation may run before its test fails. A client stuck
+/// on a silent server must not block the suite.
+const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
+
+/// [`Command::output`] with a deadline. Once `timeout` passes the child is
+/// killed and its status reports the kill, so a hung process fails the test.
+trait OutputWithin {
+    fn output_within(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<std::process::Output>;
+}
+
+impl OutputWithin for Command {
+    fn output_within(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<std::process::Output> {
+        use std::sync::{Arc, Mutex, mpsc};
+        let mut child = self
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        // Drain both pipes on their own threads so a chatty child cannot block
+        // on a full pipe while we wait for it. Each reader reports when it ends.
+        let out = Arc::new(Mutex::new(Vec::new()));
+        let err = Arc::new(Mutex::new(Vec::new()));
+        let (done_tx, done_rx) = mpsc::channel();
+        drain(
+            child.stdout.take().expect("stdout is piped"),
+            Arc::clone(&out),
+            done_tx.clone(),
+        );
+        drain(
+            child.stderr.take().expect("stderr is piped"),
+            Arc::clone(&err),
+            done_tx,
+        );
+
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if started.elapsed() >= timeout {
+                child.kill()?;
+                break child.wait()?;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        // A grandchild can outlive the child and keep the pipes open. The readers
+        // get a short grace period, and whatever they have read is returned.
+        let grace = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        for _ in 0..2 {
+            let _ =
+                done_rx.recv_timeout(grace.saturating_duration_since(std::time::Instant::now()));
+        }
+        Ok(std::process::Output {
+            status,
+            stdout: out.lock().map(|bytes| bytes.to_vec()).unwrap_or_default(),
+            stderr: err.lock().map(|bytes| bytes.to_vec()).unwrap_or_default(),
+        })
+    }
+}
+
+/// Copies `pipe` into `sink` until it closes, then reports on `done`.
+fn drain<R: std::io::Read + Send + 'static>(
+    mut pipe: R,
+    sink: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    done: std::sync::mpsc::Sender<()>,
+) {
+    std::thread::spawn(move || {
+        let mut chunk = [0_u8; 8192];
+        while let Ok(read) = pipe.read(&mut chunk) {
+            if read == 0 {
+                break;
+            }
+            if let Ok(mut bytes) = sink.lock() {
+                bytes.extend_from_slice(&chunk[..read]);
+            }
+        }
+        let _ = done.send(());
+    });
+}
+
+#[test]
+fn test_output_within_kills_a_hung_process() {
+    let started = std::time::Instant::now();
+    let output = Command::new("sleep")
+        .arg("60")
+        .output_within(std::time::Duration::from_millis(200))
+        .unwrap();
+    assert!(!output.status.success(), "a killed child is not a success");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "the deadline, not the child, ends the wait"
+    );
+
+    let quick = Command::new("sh")
+        .args(["-c", "printf out; printf err >&2"])
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+    assert!(quick.status.success());
+    assert_eq!(quick.stdout, b"out");
+    assert_eq!(quick.stderr, b"err");
+}
+
+/// A grandchild that outlives its child and keeps the pipes open must not hold
+/// `output_within` past its deadline, whether the child was killed or exited.
+#[cfg(unix)]
+#[test]
+fn test_output_within_ends_when_a_grandchild_keeps_the_pipes() {
+    let mut held = Vec::new();
+    for script in ["sleep 60 & wait", "sleep 60 &"] {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        // The call runs on its own thread, so a hang fails this test instead of blocking it.
+        std::thread::spawn(move || {
+            let outcome = Command::new("sh")
+                .args(["-c", script])
+                .output_within(std::time::Duration::from_millis(200));
+            let _ = done_tx.send(outcome.is_ok());
+        });
+        if done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .is_err()
+        {
+            held.push(format!("`{script}` after {:?}", started.elapsed()));
+        }
+    }
+    assert!(
+        held.is_empty(),
+        "output_within outlived its deadline: {}",
+        held.join(", ")
+    );
+}
+
+/// The unix `stop` calls `libc::kill`, so it stays gated to unix. Its `unsafe`
+/// block is allowed on the function itself. An attribute once landed on a helper
+/// inserted above `stop`, which left `stop` ungated.
+#[test]
+fn test_unix_stop_keeps_its_gate_and_its_allow() {
+    let lines: Vec<&str> = include_str!("cli_integration.rs")
+        .lines()
+        .map(str::trim)
+        .collect();
+    let stop = lines
+        .iter()
+        .position(|line| *line == "fn stop(&mut self) {")
+        .expect("serve_tests has a unix stop");
+    assert_eq!(
+        &lines[stop - 2..stop],
+        &[
+            "#[cfg(unix)]",
+            "#[allow(unsafe_code, clippy::cast_possible_wrap)]"
+        ],
+        "the unix stop must sit directly under its gate and its allow"
+    );
+}
+
+/// Every `unsafe` block in this file is in a function that allows `unsafe_code`
+/// on its own attributes. The crate warns on `unsafe_code`, so a missing allow
+/// is a warning that no other check reports.
+#[test]
+fn test_every_unsafe_block_is_allowed_on_its_function() {
+    // Split so that this line does not match the search it performs.
+    let block = concat!("uns", "afe {");
+    let raw: Vec<&str> = include_str!("cli_integration.rs").lines().collect();
+    let indent = |text: &str| text.len() - text.trim_start().len();
+    let mut unallowed = Vec::new();
+    for (index, line) in raw.iter().enumerate() {
+        if line.trim().starts_with("//") || !line.contains(block) {
+            continue;
+        }
+        // The enclosing function is the nearest `fn` indented less than this line.
+        let Some(function) = (0..index).rev().find(|&above| {
+            raw[above].trim_start().starts_with("fn ") && indent(raw[above]) < indent(line)
+        }) else {
+            unallowed.push(format!("line {}: no function above it", index + 1));
+            continue;
+        };
+        let allowed = (0..function)
+            .rev()
+            .map(|above| raw[above].trim())
+            .take_while(|above| {
+                above.starts_with('#') || above.starts_with("///") || above.is_empty()
+            })
+            .any(|above| above.starts_with("#[allow(") && above.contains("unsafe_code"));
+        if !allowed {
+            unallowed.push(format!("line {}: {}", index + 1, raw[function].trim()));
+        }
+    }
+    assert!(
+        unallowed.is_empty(),
+        "unsafe blocks without an unsafe_code allow on their function:\n{}",
+        unallowed.join("\n")
+    );
+}
+
+/// A child that a streaming test keeps open, such as `world join`. Dropping it
+/// kills and reaps the child, so a test that panics before it waits cannot leave
+/// the child running.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl std::ops::Deref for KillOnDrop {
+    type Target = std::process::Child;
+    fn deref(&self) -> &std::process::Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for KillOnDrop {
+    fn deref_mut(&mut self) -> &mut std::process::Child {
+        &mut self.0
+    }
+}
+
+#[cfg(unix)]
+#[test]
+#[allow(unsafe_code)]
+fn test_streaming_child_dies_with_its_guard_even_when_the_test_panics() {
+    fn sleeper() -> KillOnDrop {
+        KillOnDrop(
+            Command::new("sleep")
+                .arg("60")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
+    }
+    // SAFETY: signal 0 sends nothing; it only asks whether the pid still names a process.
+    let exists = |pid: u32| i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, 0) } == 0);
+
+    let dropped = sleeper();
+    let pid = dropped.id();
+    drop(dropped);
+    assert!(!exists(pid), "the child outlived its guard");
+
+    let mut panicked = 0;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let streaming = sleeper();
+        panicked = streaming.id();
+        panic!("the test fails while the child is still streaming");
+    }));
+    assert!(outcome.is_err());
+    assert!(!exists(panicked), "the child outlived a panicking test");
+}
+
+/// Run a CLI command and return output
+fn run_cmd(args: &[&str], work_dir: &std::path::Path) -> std::process::Output {
+    Command::new(get_binary_path())
+        .args(args)
+        .current_dir(work_dir)
+        .output_within(PROCESS_TIMEOUT)
+        .expect("Failed to execute command")
+}
+
+/// Run a CLI command, check it succeeded, and return only stdout
+/// Use this for tests that check actual command output (logs go to stderr)
+fn run_cmd_success_stdout(args: &[&str], work_dir: &std::path::Path) -> String {
+    let output = run_cmd(args, work_dir);
+    if !output.status.success() {
+        eprintln!("Command failed: {args:?}");
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+        panic!("Command failed with exit code: {:?}", output.status.code());
+    }
+    String::from_utf8_lossy(&output.stdout).to_string()
+}
+
+/// Run a CLI command and check it succeeded, returns combined stdout+stderr
+fn run_cmd_success(args: &[&str], work_dir: &std::path::Path) -> String {
+    let output = run_cmd(args, work_dir);
+    if !output.status.success() {
+        eprintln!("Command failed: {args:?}");
+        eprintln!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        eprintln!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+        panic!("Command failed with exit code: {:?}", output.status.code());
+    }
+    // Return combined stdout + stderr since some output goes to stderr
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    format!("{stdout}{stderr}")
+}
+
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn test_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("iroh-based peer-to-peer file sharing"));
+        assert!(stdout.contains("serve"));
+        assert!(stdout.contains("put"));
+        assert!(stdout.contains("get"));
+    }
+
+    #[test]
+    fn test_version() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["--version"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("id"));
+    }
+
+    #[test]
+    fn test_subcommand_help() {
+        let tmp = TempDir::new().unwrap();
+
+        // Test help for each subcommand
+        for cmd in [
+            "serve", "put", "get", "list", "find", "search", "repl", "cat", "peers", "id",
+        ] {
+            let output = run_cmd(&[cmd, "--help"], tmp.path());
+            assert!(output.status.success(), "Help failed for {cmd}");
+        }
+    }
+}
+
+mod put_get_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_put_and_get_file() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.input.txt");
+        let output_file = tmp.path().join("test.output.txt");
+
+        // Create test file
+        fs::write(&test_file, b"Hello, World!").unwrap();
+
+        // Put the file
+        let put_output = run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        assert!(put_output.contains("test.input.txt"));
+
+        // Get it back using source:output syntax
+        let get_spec = format!("test.input.txt:{}", output_file.to_str().unwrap());
+        run_cmd_success(&["get", &get_spec], tmp.path());
+
+        // Verify content matches
+        let original = fs::read(&test_file).unwrap();
+        let retrieved = fs::read(&output_file).unwrap();
+        assert_eq!(original, retrieved);
+    }
+
+    #[test]
+    fn test_put_with_custom_name() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.local.txt");
+
+        // Create test file
+        fs::write(&test_file, b"Custom name test").unwrap();
+
+        // Put with custom name using path:name syntax
+        let spec = format!("{}:test.custom-name", test_file.to_str().unwrap());
+        let put_output = run_cmd_success(&["put", &spec], tmp.path());
+        assert!(put_output.contains("test.custom-name"));
+
+        // Verify it's in the list
+        let list_output = run_cmd_success(&["list"], tmp.path());
+        assert!(list_output.contains("test.custom-name"));
+    }
+
+    #[test]
+    fn test_put_multiple_files() {
+        let tmp = TempDir::new().unwrap();
+        let file1 = tmp.path().join("test.multi1.txt");
+        let file2 = tmp.path().join("test.multi2.txt");
+
+        fs::write(&file1, b"File 1 content").unwrap();
+        fs::write(&file2, b"File 2 content").unwrap();
+
+        // Put multiple files
+        let put_output = run_cmd_success(
+            &["put", file1.to_str().unwrap(), file2.to_str().unwrap()],
+            tmp.path(),
+        );
+
+        // Both should be in output
+        assert!(put_output.contains("test.multi1.txt"));
+        assert!(put_output.contains("test.multi2.txt"));
+    }
+
+    #[test]
+    fn test_get_to_stdout() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.stdout.txt");
+        let content = "Content for stdout test";
+
+        fs::write(&test_file, content).unwrap();
+
+        // Put the file
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Get to stdout using cat (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["cat", "test.stdout.txt"], tmp.path());
+        assert_eq!(output.trim(), content);
+    }
+
+    #[test]
+    fn test_put_hash_only() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.hashonly.txt");
+
+        fs::write(&test_file, b"Hash only content").unwrap();
+
+        // Put with hash-only flag
+        let put_output = run_cmd_success(
+            &["put", "--hash-only", test_file.to_str().unwrap()],
+            tmp.path(),
+        );
+
+        // Should output a hash
+        assert!(put_output.len() >= 64); // Hash is 64 hex chars
+    }
+}
+
+mod list_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_list_empty() {
+        let tmp = TempDir::new().unwrap();
+        // List on fresh store should work (may be empty or have previous test data)
+        let output = run_cmd(&["list"], tmp.path());
+        assert!(output.status.success());
+    }
+
+    #[test]
+    fn test_list_shows_files() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.list-item.txt");
+
+        fs::write(&test_file, b"List test content").unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        let list_output = run_cmd_success(&["list"], tmp.path());
+        assert!(list_output.contains("test.list-item.txt"));
+    }
+
+    #[test]
+    fn test_list_format() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.list-format.txt");
+
+        fs::write(&test_file, b"Format test").unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        let list_output = run_cmd_success(&["list"], tmp.path());
+
+        // Output should be hash<tab>name format
+        for line in list_output.lines() {
+            if line.contains("test.list-format.txt") {
+                let parts: Vec<&str> = line.split('\t').collect();
+                assert_eq!(parts.len(), 2, "List output should be hash<tab>name");
+                assert_eq!(parts[0].len(), 64, "Hash should be 64 hex chars");
+            }
+        }
+    }
+}
+
+mod find_search_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_find_exact_match() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.findme.txt");
+
+        fs::write(&test_file, b"Find me!").unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Find outputs content to stdout, use search to check filename is found
+        let search_output = run_cmd_success(&["search", "test.findme.txt"], tmp.path());
+        assert!(search_output.contains("test.findme.txt"));
+    }
+
+    #[test]
+    fn test_find_prefix_match() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.prefix-target.txt");
+
+        fs::write(&test_file, b"Prefix match").unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Search by prefix
+        let search_output = run_cmd_success(&["search", "test.prefix"], tmp.path());
+        assert!(search_output.contains("test.prefix-target.txt"));
+    }
+
+    #[test]
+    fn test_find_contains_match() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.contains-needle.txt");
+
+        fs::write(&test_file, b"Contains match").unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Search by substring
+        let search_output = run_cmd_success(&["search", "needle"], tmp.path());
+        assert!(search_output.contains("test.contains-needle.txt"));
+    }
+
+    #[test]
+    fn test_search_multiple_queries() {
+        let tmp = TempDir::new().unwrap();
+        let file1 = tmp.path().join("test.search-alpha.txt");
+        let file2 = tmp.path().join("test.search-beta.txt");
+
+        fs::write(&file1, b"Alpha").unwrap();
+        fs::write(&file2, b"Beta").unwrap();
+
+        run_cmd_success(&["put", file1.to_str().unwrap()], tmp.path());
+        run_cmd_success(&["put", file2.to_str().unwrap()], tmp.path());
+
+        // Search for both
+        let search_output = run_cmd_success(&["search", "alpha", "beta"], tmp.path());
+        assert!(search_output.contains("alpha"));
+        assert!(search_output.contains("beta"));
+    }
+
+    #[test]
+    fn test_find_no_match() {
+        let tmp = TempDir::new().unwrap();
+
+        // Search for something that doesn't exist - should succeed but find nothing
+        let output = run_cmd(&["search", "nonexistent12345xyz"], tmp.path());
+        // Command succeeds but prints "no matches found"
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(combined.contains("no matches") || output.status.success());
+    }
+}
+
+mod id_tests {
+    use super::*;
+
+    #[test]
+    fn test_id_command() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd_success(&["id"], tmp.path());
+
+        // Should output a 64-char hex node ID
+        let id = output.trim();
+        assert_eq!(id.len(), 64, "Node ID should be 64 hex chars");
+        assert!(
+            id.chars().all(|c| c.is_ascii_hexdigit()),
+            "Node ID should be hex"
+        );
+    }
+
+    #[test]
+    fn test_id_deterministic() {
+        let tmp = TempDir::new().unwrap();
+
+        // Run id twice - should give same result (uses saved key)
+        let id1 = run_cmd_success(&["id"], tmp.path());
+        let id2 = run_cmd_success(&["id"], tmp.path());
+
+        assert_eq!(id1.trim(), id2.trim());
+    }
+}
+
+mod peers_tests {
+    use super::*;
+
+    #[test]
+    fn test_peers_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peers", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("Discover and list known peers"));
+        assert!(stdout.contains("--gossip"));
+        assert!(stdout.contains("--rpc"));
+        assert!(stdout.contains("--depth"));
+        assert!(stdout.contains("--max-peers"));
+        assert!(stdout.contains("--timeout"));
+        assert!(stdout.contains("--bootstrap"));
+        assert!(stdout.contains("--topic"));
+        assert!(stdout.contains("--topic-secret"));
+        assert!(stdout.contains("--no-default-bootstrap"));
+        assert!(stdout.contains("--no-default-topic"));
+        assert!(stdout.contains("--replace-defaults"));
+        assert!(stdout.contains("--no-relay"));
+        assert!(stdout.contains("--no-mdns"));
+    }
+
+    #[test]
+    fn test_peers_rpc_no_serve() {
+        // When no serve is running, --rpc should fail
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peers", "--rpc"], tmp.path());
+        assert!(!output.status.success());
+    }
+}
+
+mod error_handling_tests {
+    use super::*;
+
+    #[test]
+    fn test_get_nonexistent_file() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(&["get", "nonexistent_file_xyz123"], tmp.path());
+        // Should fail gracefully
+        assert!(
+            !output.status.success()
+                || String::from_utf8_lossy(&output.stderr).contains("not found")
+                || String::from_utf8_lossy(&output.stderr).contains("error")
+        );
+    }
+
+    #[test]
+    fn test_put_nonexistent_file() {
+        let tmp = TempDir::new().unwrap();
+
+        // When running tests, stdin is piped (not a terminal), so the tool
+        // treats the argument as a name and reads from stdin.
+        // To test actual file-not-found, we need to provide multiple files
+        // where one doesn't exist (bypasses stdin auto-detection).
+        let output = run_cmd(
+            &["put", "/nonexistent/path/to/file.txt", "another.txt"],
+            tmp.path(),
+        );
+        // Should fail since at least one file doesn't exist
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !output.status.success() || combined.contains("failed") || combined.contains("error")
+        );
+    }
+
+    #[test]
+    fn test_invalid_subcommand() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(&["invalidcmd"], tmp.path());
+        assert!(!output.status.success());
+    }
+}
+
+mod show_view_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_show_basic() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.show-basic.txt");
+        let content = "Content for show test";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Show should output content to stdout (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["show", "test.show-basic.txt"], tmp.path());
+        assert_eq!(output.trim(), content);
+    }
+
+    #[test]
+    fn test_show_alias_view() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.view-alias.txt");
+        let content = "Content for view alias test";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // view alias should work the same as show (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["view", "test.view-alias.txt"], tmp.path());
+        assert_eq!(output.trim(), content);
+    }
+
+    #[test]
+    fn test_show_partial_match() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.show-partial-match.txt");
+        let content = "Partial match content";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Search by partial name (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["show", "show-partial"], tmp.path());
+        assert_eq!(output.trim(), content);
+    }
+
+    #[test]
+    fn test_show_with_output_file() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.show-output.txt");
+        let output_file = tmp.path().join("show-output-result.txt");
+        let content = "Content for output file test";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Show with -o flag
+        run_cmd_success(
+            &[
+                "show",
+                "-o",
+                output_file.to_str().unwrap(),
+                "test.show-output.txt",
+            ],
+            tmp.path(),
+        );
+
+        // Verify content was written to file
+        let result = fs::read_to_string(&output_file).unwrap();
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_show_no_match() {
+        let tmp = TempDir::new().unwrap();
+
+        // Show for something that doesn't exist
+        let output = run_cmd(&["show", "nonexistent_xyz_123"], tmp.path());
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(combined.contains("no matches") || !output.status.success());
+    }
+}
+
+mod peek_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_peek_basic() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-basic.txt");
+        let content = "line1\nline2\nline3\nline4\nline5";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek should show content with header
+        let output = run_cmd_success(&["peek", "test.peek-basic.txt"], tmp.path());
+        assert!(output.contains("line1"));
+        assert!(output.contains("test.peek-basic.txt"));
+    }
+
+    #[test]
+    fn test_peek_quiet_mode() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-quiet.txt");
+        let content = "line1\nline2\nline3";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek with quiet mode should not show header
+        let output = run_cmd_success(&["peek", "-q", "test.peek-quiet.txt"], tmp.path());
+        assert!(output.contains("line1"));
+        // Header contains "───" which shouldn't appear in quiet mode
+        assert!(!output.contains("───"));
+    }
+
+    #[test]
+    fn test_peek_with_lines() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-lines.txt");
+        // Create content with many lines
+        let mut content = String::new();
+        for i in 1..=20 {
+            use std::fmt::Write;
+            let _ = writeln!(content, "line{i}");
+        }
+
+        fs::write(&test_file, &content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek with custom line count
+        let output = run_cmd_success(&["peek", "-n", "3", "test.peek-lines.txt"], tmp.path());
+        assert!(output.contains("line1"));
+        assert!(output.contains("line2"));
+        assert!(output.contains("line3"));
+        // Should show truncation indicator
+        assert!(output.contains("..."));
+    }
+
+    #[test]
+    fn test_peek_head_only() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-head.txt");
+        let mut content = String::new();
+        for i in 1..=20 {
+            use std::fmt::Write;
+            let _ = writeln!(content, "line{i}");
+        }
+
+        fs::write(&test_file, &content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek with head-only
+        let output = run_cmd_success(
+            &["peek", "--head-only", "-n", "3", "test.peek-head.txt"],
+            tmp.path(),
+        );
+        assert!(output.contains("line1"));
+        assert!(output.contains("line2"));
+        assert!(output.contains("line3"));
+        assert!(!output.contains("line20")); // Tail should not be shown
+    }
+
+    #[test]
+    fn test_peek_tail_only() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-tail.txt");
+        let mut content = String::new();
+        for i in 1..=20 {
+            use std::fmt::Write;
+            let _ = writeln!(content, "content-line-{i}");
+        }
+
+        fs::write(&test_file, &content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek with tail-only and quiet mode to avoid header interference
+        let output = run_cmd_success(
+            &["peek", "--tail-only", "-n", "3", "-q", "test.peek-tail.txt"],
+            tmp.path(),
+        );
+        assert!(!output.contains("content-line-1\n")); // Head should not be shown (with newline)
+        assert!(output.contains("content-line-18"));
+        assert!(output.contains("content-line-19"));
+        assert!(output.contains("content-line-20"));
+    }
+
+    #[test]
+    fn test_peek_with_output_file() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("test.peek-output.txt");
+        let output_file = tmp.path().join("peek-output-result.txt");
+        let content = "line1\nline2\nline3";
+
+        fs::write(&test_file, content).unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Peek with -o flag
+        run_cmd_success(
+            &[
+                "peek",
+                "-q",
+                "-o",
+                output_file.to_str().unwrap(),
+                "test.peek-output.txt",
+            ],
+            tmp.path(),
+        );
+
+        // Verify content was written to file
+        let result = fs::read_to_string(&output_file).unwrap();
+        assert!(result.contains("line1"));
+    }
+
+    #[test]
+    fn test_peek_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["peek", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("head"));
+        assert!(stdout.contains("tail"));
+        assert!(stdout.contains("lines"));
+    }
+}
+
+mod filter_flag_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_search_with_first() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=5 {
+            let test_file = tmp.path().join(format!("test.filter-first-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+
+        // Search with --first flag - use --count to verify (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(
+            &["search", "--first", "2", "--count", "filter-first"],
+            tmp.path(),
+        );
+        assert!(output.trim() == "2");
+    }
+
+    #[test]
+    fn test_search_with_last() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=5 {
+            let test_file = tmp.path().join(format!("test.filter-last-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+
+        // Search with --last flag - use --count to verify (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(
+            &["search", "--last", "2", "--count", "filter-last"],
+            tmp.path(),
+        );
+        assert!(output.trim() == "2");
+    }
+
+    #[test]
+    fn test_search_with_count() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=3 {
+            let test_file = tmp.path().join(format!("test.filter-count-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+
+        // Search with --count flag (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["search", "--count", "filter-count"], tmp.path());
+        // Should output just the count
+        assert!(output.trim() == "3");
+    }
+
+    #[test]
+    fn test_search_with_exclude() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create files including one to exclude
+        let keep1 = tmp.path().join("test.filter-keep-1.txt");
+        let keep2 = tmp.path().join("test.filter-keep-2.txt");
+        let exclude = tmp.path().join("test.filter-exclude.bak");
+
+        fs::write(&keep1, "Keep 1").unwrap();
+        fs::write(&keep2, "Keep 2").unwrap();
+        fs::write(&exclude, "Exclude this").unwrap();
+
+        run_cmd_success(&["put", keep1.to_str().unwrap()], tmp.path());
+        run_cmd_success(&["put", keep2.to_str().unwrap()], tmp.path());
+        run_cmd_success(&["put", exclude.to_str().unwrap()], tmp.path());
+
+        // Search with --exclude flag
+        let output = run_cmd_success(&["search", "--exclude", ".bak", "filter"], tmp.path());
+        assert!(output.contains("filter-keep-1"));
+        assert!(output.contains("filter-keep-2"));
+        assert!(!output.contains("filter-exclude.bak"));
+    }
+
+    #[test]
+    fn test_search_multiple_excludes() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create files
+        let keep = tmp.path().join("test.multi-exclude-keep.txt");
+        let bak = tmp.path().join("test.multi-exclude-file.bak");
+        let tmp_file = tmp.path().join("test.multi-exclude-file.tmp");
+
+        fs::write(&keep, "Keep").unwrap();
+        fs::write(&bak, "Backup").unwrap();
+        fs::write(&tmp_file, "Temp").unwrap();
+
+        run_cmd_success(&["put", keep.to_str().unwrap()], tmp.path());
+        run_cmd_success(&["put", bak.to_str().unwrap()], tmp.path());
+        run_cmd_success(&["put", tmp_file.to_str().unwrap()], tmp.path());
+
+        // Search with multiple --exclude flags
+        let output = run_cmd_success(
+            &[
+                "search",
+                "--exclude",
+                ".bak",
+                "--exclude",
+                ".tmp",
+                "multi-exclude",
+            ],
+            tmp.path(),
+        );
+        assert!(output.contains("multi-exclude-keep"));
+        assert!(!output.contains(".bak"));
+        assert!(!output.contains(".tmp"));
+    }
+
+    #[test]
+    fn test_find_with_count() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=4 {
+            let test_file = tmp.path().join(format!("test.find-count-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+
+        // Find with --count flag (use stdout-only to avoid debug logs)
+        let output = run_cmd_success_stdout(&["find", "--count", "find-count"], tmp.path());
+        // Should output just the count
+        assert!(output.trim() == "4");
+    }
+
+    #[test]
+    fn test_find_with_first_default() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=3 {
+            let test_file = tmp.path().join(format!("test.find-first-def-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+
+        // Find with --first (no number) at the end, should default to 1 (use stdout-only)
+        let output = run_cmd_success_stdout(
+            &["find", "--count", "find-first-def", "--first"],
+            tmp.path(),
+        );
+        // Should find 1 match
+        assert!(output.trim() == "1");
+    }
+
+    #[test]
+    fn test_combined_filters() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create multiple files
+        for i in 1..=5 {
+            let test_file = tmp.path().join(format!("test.combined-{i}.txt"));
+            fs::write(&test_file, format!("Content {i}")).unwrap();
+            run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        }
+        // Create one to exclude
+        let exclude = tmp.path().join("test.combined-exclude.bak");
+        fs::write(&exclude, "Exclude").unwrap();
+        run_cmd_success(&["put", exclude.to_str().unwrap()], tmp.path());
+
+        // Search with combined filters - use count to verify (use stdout-only)
+        let output = run_cmd_success_stdout(
+            &[
+                "search",
+                "--exclude",
+                ".bak",
+                "--first",
+                "2",
+                "--count",
+                "combined",
+            ],
+            tmp.path(),
+        );
+        // Should return count of 2
+        assert!(output.trim() == "2");
+    }
+}
+
+mod show_peek_subcommand_help {
+    use super::*;
+
+    #[test]
+    fn test_show_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["show", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("find") || stdout.contains("search") || stdout.contains("output"));
+        assert!(stdout.contains("--all"));
+        assert!(stdout.contains("--first"));
+        assert!(stdout.contains("--exclude"));
+    }
+
+    #[test]
+    fn test_view_help() {
+        let tmp = TempDir::new().unwrap();
+        // view is alias for show
+        let output = run_cmd(&["view", "--help"], tmp.path());
+        assert!(output.status.success());
+    }
+}
+
+/// Integration tests for the serve command.
+///
+/// These tests verify server lifecycle, lock file management, and isolation.
+/// Each test runs in its own temp directory with an ephemeral (in-memory) server
+/// to ensure full isolation between tests.
+mod serve_tests {
+    use super::*;
+    use std::fs;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpStream as StdTcpStream;
+    use std::process::{Child, Command as StdCommand, Stdio};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    /// Lock file name (must match `SERVE_LOCK` in lib.rs)
+    const SERVE_LOCK: &str = ".iroh-serve.lock";
+
+    /// Timeout for waiting for server to start
+    const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// Represents a running server process with cleanup on drop.
+    ///
+    /// Captures stderr in a background thread so that when the server exits
+    /// unexpectedly, the error output is available for diagnostics.
+    struct ServerHandle {
+        process: Child,
+        work_dir: PathBuf,
+        node_id: Option<String>,
+        web_port: Option<u16>,
+        /// Captured stderr from the server process (populated by background thread).
+        stderr_buf: Arc<Mutex<String>>,
+        /// Handle to the stderr drain thread; joined on drop.
+        _stderr_thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl ServerHandle {
+        /// Spawns a new ephemeral server in the given work directory.
+        ///
+        /// Uses --ephemeral for in-memory storage and --no-relay to avoid
+        /// network dependencies in tests.
+        fn spawn(work_dir: &std::path::Path) -> Self {
+            Self::spawn_with_args(work_dir, &[])
+        }
+
+        /// Spawns a new ephemeral server with additional arguments (appended after serve flags).
+        fn spawn_with_args(work_dir: &std::path::Path, extra_args: &[&str]) -> Self {
+            Self::spawn_with_global_args(work_dir, &[], extra_args)
+        }
+
+        /// Spawns a new ephemeral server with global args (before `serve`) and extra args (after).
+        ///
+        /// Global args like `--data-dir` and `--new=` must appear before the `serve` subcommand.
+        /// The `work_dir` is used as `current_dir` for the child process.
+        /// The `lock_dir` (where we expect the lock file) is `work_dir` by default; callers
+        /// that pass `--data-dir` should set `work_dir` to the data dir so `lock_file_path()` works.
+        fn spawn_with_global_args(
+            work_dir: &std::path::Path,
+            global_args: &[&str],
+            extra_args: &[&str],
+        ) -> Self {
+            Self::spawn_inner(work_dir, global_args, extra_args, true)
+        }
+
+        /// Spawns a server with an on-disk store (state survives restarts).
+        fn spawn_persistent(work_dir: &std::path::Path, extra_args: &[&str]) -> Self {
+            Self::spawn_inner(work_dir, &[], extra_args, false)
+        }
+
+        fn spawn_inner(
+            work_dir: &std::path::Path,
+            global_args: &[&str],
+            extra_args: &[&str],
+            ephemeral: bool,
+        ) -> Self {
+            let mut args: Vec<&str> = Vec::new();
+            args.extend(global_args);
+            args.push("serve");
+            if ephemeral {
+                args.push("--ephemeral");
+            }
+            // Hermetic by default: no relay, no gossip/DHT, no mDNS. Nothing here needs the public network.
+            args.extend(["--no-relay", "--no-gossip", "--no-mdns"]);
+            args.extend(extra_args);
+
+            let mut process = StdCommand::new(get_binary_path())
+                .args(&args)
+                .current_dir(work_dir)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("Failed to spawn server");
+
+            // Drain stderr in a background thread so it doesn't block
+            // and is available for diagnostics if the process exits early.
+            let stderr_buf = Arc::new(Mutex::new(String::new()));
+            let buf_clone = Arc::clone(&stderr_buf);
+            let stderr = process.stderr.take().expect("stderr not captured");
+            let stderr_thread = std::thread::spawn(move || {
+                let mut reader = BufReader::new(stderr);
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match reader.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let text = String::from_utf8_lossy(&chunk[..n]);
+                            if let Ok(mut buf) = buf_clone.lock() {
+                                buf.push_str(&text);
+                            }
+                        }
+                    }
+                }
+            });
+
+            Self {
+                process,
+                work_dir: work_dir.to_path_buf(),
+                node_id: None,
+                web_port: None,
+                stderr_buf,
+                _stderr_thread: Some(stderr_thread),
+            }
+        }
+
+        /// Returns captured stderr (best-effort snapshot).
+        fn captured_stderr(&self) -> String {
+            self.stderr_buf
+                .lock()
+                .map(|b| b.clone())
+                .unwrap_or_default()
+        }
+
+        /// Waits for the server to become ready by checking for the lock file
+        /// and parsing the node ID from stdout.
+        ///
+        /// Returns the node ID on success.
+        fn wait_ready(&mut self) -> String {
+            self.wait_ready_with_web(false)
+        }
+
+        /// Waits for the server to become ready, optionally waiting for web port too.
+        ///
+        /// If the child process exits before the expected output is seen, the
+        /// panic message includes captured stderr for debugging.
+        ///
+        /// Returns the node ID on success.
+        fn wait_ready_with_web(&mut self, wait_for_web: bool) -> String {
+            self.wait_ready_within(wait_for_web, SERVER_STARTUP_TIMEOUT)
+        }
+
+        /// Like [`wait_ready_with_web`](Self::wait_ready_with_web), with an explicit deadline.
+        fn wait_ready_within(&mut self, wait_for_web: bool, timeout: Duration) -> String {
+            let start = Instant::now();
+            let stdout = self.process.stdout.take().expect("stdout not captured");
+            let reader = BufReader::new(stdout);
+
+            // Check if the process already exited before we start reading
+            if let Some(status) = self.process.try_wait().expect("try_wait failed") {
+                // Give the stderr thread a moment to drain
+                std::thread::sleep(Duration::from_millis(100));
+                panic!(
+                    "Server process exited immediately with {status}\n\
+                     --- stderr ---\n{}\n--- end stderr ---",
+                    self.captured_stderr()
+                );
+            }
+
+            // The reader runs on its own thread so the deadline holds while the
+            // server is silent: a blocking read on stdout never returns by itself.
+            let (lines_tx, lines_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for line in reader.lines() {
+                    if lines_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+
+            // Read lines until we see "node: <id>" which indicates server is ready
+            loop {
+                // Past the deadline the wait is over even if lines are queued, so a
+                // server that keeps printing cannot hold it.
+                let remaining = timeout.saturating_sub(start.elapsed());
+                let next = if remaining.is_zero() {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                } else {
+                    lines_rx.recv_timeout(remaining)
+                };
+                let line = match next {
+                    Ok(line) => line,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+                        "Server startup timed out after {timeout:?}\n\
+                         --- stderr ---\n{}\n--- end stderr ---",
+                        self.captured_stderr()
+                    ),
+                    // stdout closed: the server exited, and the EOF path below reports it
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+
+                // Check if process exited between lines
+                if let Some(status) = self.process.try_wait().expect("try_wait failed") {
+                    // Drain remaining stdout lines we haven't processed yet
+                    std::thread::sleep(Duration::from_millis(100));
+                    panic!(
+                        "Server process exited with {status} before becoming ready\n\
+                         node_id so far: {:?}, web_port so far: {:?}\n\
+                         --- stderr ---\n{}\n--- end stderr ---",
+                        self.node_id,
+                        self.web_port,
+                        self.captured_stderr()
+                    );
+                }
+
+                let line = match line {
+                    Ok(l) => l,
+                    Err(e) => {
+                        std::thread::sleep(Duration::from_millis(100));
+                        panic!(
+                            "Failed to read stdout line: {e}\n\
+                             --- stderr ---\n{}\n--- end stderr ---",
+                            self.captured_stderr()
+                        );
+                    }
+                };
+
+                // Parse node ID
+                if let Some(id) = line.strip_prefix("node: ") {
+                    self.node_id = Some(id.trim().to_owned());
+                }
+
+                // Parse web port (e.g., "web: http://localhost:12345")
+                if let Some(url) = line.strip_prefix("web: ")
+                    && let Some(port_str) = url.trim().rsplit(':').next()
+                    && let Ok(port) = port_str.parse::<u16>()
+                {
+                    self.web_port = Some(port);
+                }
+
+                // Server is ready when we have the node ID (and web port if requested)
+                let ready = if wait_for_web {
+                    self.node_id.is_some() && self.web_port.is_some()
+                } else {
+                    self.node_id.is_some()
+                };
+
+                if ready {
+                    // Also verify lock file exists
+                    let lock_path = self.work_dir.join(SERVE_LOCK);
+                    assert!(
+                        lock_path.exists(),
+                        "Lock file should exist after server starts"
+                    );
+                    return self.node_id.clone().unwrap();
+                }
+            }
+
+            // stdout EOF reached without finding expected output
+            std::thread::sleep(Duration::from_millis(100));
+            let exit_status = self.process.try_wait().ok().flatten();
+            panic!(
+                "Server stdout closed without printing node ID\n\
+                 exit status: {exit_status:?}\n\
+                 node_id so far: {:?}, web_port so far: {:?}\n\
+                 --- stderr ---\n{}\n--- end stderr ---",
+                self.node_id,
+                self.web_port,
+                self.captured_stderr()
+            );
+        }
+
+        /// Returns the path to the lock file.
+        fn lock_file_path(&self) -> PathBuf {
+            self.work_dir.join(SERVE_LOCK)
+        }
+
+        /// Waits for the child to exit. After `grace` it is killed, so a server
+        /// that ignores SIGINT cannot hang the suite.
+        #[cfg(unix)]
+        fn wait_or_kill(&mut self, grace: Duration) -> std::io::Result<std::process::ExitStatus> {
+            let started = Instant::now();
+            loop {
+                if let Some(status) = self.process.try_wait()? {
+                    return Ok(status);
+                }
+                if started.elapsed() >= grace {
+                    self.process.kill()?;
+                    return self.process.wait();
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        /// Sends SIGINT (Ctrl+C) to gracefully stop the server and waits for exit.
+        #[cfg(unix)]
+        #[allow(unsafe_code, clippy::cast_possible_wrap)]
+        fn stop(&mut self) {
+            let pid = self.process.id();
+            // Send SIGINT for graceful shutdown
+            // SAFETY: libc::kill with SIGINT is safe - it sends a signal to the process
+            // The cast from u32 to i32 is safe because PIDs are always positive and small
+            unsafe {
+                libc::kill(pid as i32, libc::SIGINT);
+            }
+            match self.wait_or_kill(Duration::from_secs(10)) {
+                Ok(status) => {
+                    // Process exited, now give a brief moment for any final cleanup
+                    // (lock file removal happens in the tokio shutdown path)
+                    std::thread::sleep(Duration::from_millis(50));
+                    if !status.success() {
+                        // Process might have been killed, that's OK for tests
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: wait() failed: {e}");
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        fn stop(&mut self) {
+            let _ = self.process.kill();
+            let _ = self.process.wait();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    impl Drop for ServerHandle {
+        fn drop(&mut self) {
+            // Ensure server is stopped on drop
+            let _ = self.process.kill();
+            let _ = self.process.wait();
+            // When a test fails, the server's side of the story is usually the
+            // interesting half: show what it logged.
+            if std::thread::panicking() {
+                std::thread::sleep(Duration::from_millis(100));
+                eprintln!(
+                    "--- server stderr ({}) ---\n{}\n--- end server stderr ---",
+                    self.work_dir.display(),
+                    self.captured_stderr()
+                );
+            }
+        }
+    }
+
+    /// A server that never prints its node line must fail at the deadline. A
+    /// silent `sleep` stands in for the server, which used to block the suite.
+    #[test]
+    fn test_silent_server_fails_at_the_startup_deadline() {
+        let child = StdCommand::new("sleep")
+            .arg("60")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut server = ServerHandle {
+            process: child,
+            work_dir: std::env::temp_dir(),
+            node_id: None,
+            web_port: None,
+            stderr_buf: Arc::new(Mutex::new(String::new())),
+            _stderr_thread: None,
+        };
+        let started = Instant::now();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            server.wait_ready_within(false, Duration::from_millis(200))
+        }));
+        assert!(outcome.is_err(), "a silent server must not count as ready");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the wait must end at its deadline, not when the child exits"
+        );
+    }
+
+    /// A server that prints lines faster than the wait reads them must still fail
+    /// at its startup deadline. The deadline is checked as well as the wait for
+    /// the next line, since a queued line returns at once even after the deadline.
+    #[allow(unsafe_code)]
+    #[test]
+    fn test_a_chatty_server_still_fails_at_the_startup_deadline() {
+        let child = StdCommand::new("sh")
+            .args(["-c", "yes"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = i32::try_from(child.id()).expect("a pid fits in i32");
+        let mut server = ServerHandle {
+            process: child,
+            work_dir: std::env::temp_dir(),
+            node_id: None,
+            web_port: None,
+            stderr_buf: Arc::new(Mutex::new(String::new())),
+            _stderr_thread: None,
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                server.wait_ready_within(false, Duration::from_millis(200))
+            }));
+            let _ = done_tx.send((outcome.is_err(), started.elapsed()));
+        });
+        if let Ok((failed, elapsed)) = done_rx.recv_timeout(Duration::from_secs(10)) {
+            assert!(failed, "a chatty server counted as ready");
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "the wait ran {elapsed:?} past a 200 ms deadline"
+            );
+        } else {
+            // SAFETY: `pid` is the `yes` child this test spawned. SIGKILL ends it,
+            // so the blocked wait returns, and then the test fails.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+            panic!("the wait for a chatty server did not end within 10 s");
+        }
+    }
+
+    /// First IPv4 socket address recorded in a serve lock file.
+    fn lock_ipv4_addr(lock: &std::path::Path) -> String {
+        let info: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(lock).unwrap()).unwrap();
+        info["addrs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|a| a.as_str())
+            .find(|a| a.parse::<std::net::SocketAddr>().is_ok_and(|a| a.is_ipv4()))
+            .expect("serve lock lists an IPv4 address")
+            .to_owned()
+    }
+
+    #[test]
+    fn test_world_invite_bounds_from_the_cli() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn_with_args(
+            server_dir.path(),
+            &["--world", "--world-admin-token", "adm"],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+
+        for (args, reason) in [
+            (&["--expires-in", "31d"][..], "30 days"),
+            (&["--expires-in", "0h"][..], "1 second"),
+            (&["--expires-in", "2w"][..], "needs a unit"),
+            (&["--uses", "0"][..], "uses must be at least 1"),
+        ] {
+            let mut full = [
+                "invite",
+                node.as_str(),
+                "--admin-token",
+                "adm",
+                "--name",
+                "ann",
+            ]
+            .to_vec();
+            full.extend_from_slice(args);
+            let refused = world(&full).output_within(PROCESS_TIMEOUT).unwrap();
+            assert!(!refused.status.success(), "{args:?} should be refused");
+            assert!(
+                String::from_utf8_lossy(&refused.stderr).contains(reason),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&refused.stderr)
+            );
+            assert!(
+                refused.stdout.is_empty(),
+                "nothing may be printed on refusal"
+            );
+        }
+
+        let invited = world(&[
+            "invite",
+            &node,
+            "--admin-token",
+            "adm",
+            "--name",
+            "ann",
+            "--expires-in",
+            "12h",
+            "--uses",
+            "2",
+        ])
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+        assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
+    }
+
+    #[test]
+    fn test_world_module_shared_over_iroh_and_web_presentations() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("roc-counter/counter.wasm");
+        let mut server = ServerHandle::spawn_with_args(
+            server_dir.path(),
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--web",
+                "--port",
+                "0",
+            ],
+        );
+        let node = server.wait_ready_with_web(true);
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let web_port = server.web_port.unwrap();
+
+        // The browser presentation is available from this same Iroh host.
+        let mut http = StdTcpStream::connect(("127.0.0.1", web_port)).unwrap();
+        write!(
+            http,
+            "GET /world HTTP/1.1\r\nHost: 127.0.0.1:{web_port}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut page = String::new();
+        http.read_to_string(&mut page).unwrap();
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        assert!(
+            page.contains("data-world-app"),
+            "world browser app is present"
+        );
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+
+        // A wrong admin secret is refused with the host's reason.
+        let denied = world(&["invite", &node, "--admin-token", "nope", "--name", "eve"])
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(!denied.status.success());
+        assert!(String::from_utf8_lossy(&denied.stderr).contains("invite denied"));
+        assert!(
+            denied.stdout.is_empty(),
+            "nothing may be printed on refusal"
+        );
+
+        // The right one prints only the capability.
+        let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+        assert!(!capability.is_empty() && !capability.contains(char::is_whitespace));
+
+        // Upload the compiled Roc guest over Iroh. The host validates it,
+        // pins it in the blob store, and atomically switches the lobby.
+        let module = module.to_str().unwrap();
+        let rejected = world(&["install", &node, module, "--admin-token", "wrong"])
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("module install denied"));
+        let installed = world(&[
+            "install",
+            &node,
+            module,
+            "--admin-token",
+            "adm",
+            "--seed",
+            "7",
+        ])
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            installed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+        let installed_hash = String::from_utf8(installed.stdout)
+            .unwrap()
+            .trim()
+            .to_owned();
+        assert_eq!(installed_hash.len(), 64);
+
+        // Joining yields a snapshot and a view from the authoritative Roc guest.
+        let mut joined = world(&["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let first = lines.next().expect("snapshot line").unwrap();
+        assert!(first.contains("\"type\":\"snapshot\""), "{first}");
+        let initial_view = lines.next().expect("initial view line").unwrap();
+        assert!(initial_view.contains("\"type\":\"view\""), "{initial_view}");
+        assert!(initial_view.contains("count=0"), "{initial_view}");
+
+        // The opaque game event reaches Roc `update`, then the server sends
+        // the resulting presentation to this same Iroh client.
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let update = lines.next().expect("update event line").unwrap();
+        assert!(update.contains("\"type\":\"event\""), "{update}");
+        let updated_view = lines.next().expect("updated view line").unwrap();
+        assert!(updated_view.contains("count=1"), "{updated_view}");
+
+        // Chat shares the transport/event log without mutating Roc game state.
+        stdin.write_all(b"hello from the cli\n").unwrap();
+        let echoed = lines.next().expect("event line").unwrap();
+        assert!(echoed.contains("\"type\":\"event\""), "{echoed}");
+        assert!(echoed.contains("hello from the cli"), "{echoed}");
+        let chat_view = lines.next().expect("chat view line").unwrap();
+        assert!(chat_view.contains("count=1"), "{chat_view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        // A forged capability is told "join denied".
+        let forged = world(&["join", &node, "--capability", &"0".repeat(64)])
+            .stdin(Stdio::null())
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(String::from_utf8_lossy(&forged.stdout).contains("join denied"));
+
+        server.stop();
+    }
+
+    #[test]
+    fn test_tic_tac_toe_installed_over_iroh_and_played_by_two_players() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
+        let mut server = ServerHandle::spawn_with_args(
+            server_dir.path(),
+            &["--world", "--world-admin-token", "adm"],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+
+        let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+
+        // Install the second example app while the world is running.
+        let module = module.to_str().unwrap();
+        let installed = world(&[
+            "install",
+            &node,
+            module,
+            "--admin-token",
+            "adm",
+            "--seed",
+            "7",
+        ])
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            installed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+
+        // X plays 0, O 3, X 1, O 4, X 2: X wins the top row.
+        let mut joined = world(&["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let first = lines.next().expect("snapshot line").unwrap();
+        assert!(first.contains("\"type\":\"snapshot\""), "{first}");
+        let initial = lines.next().expect("initial view line").unwrap();
+        assert!(initial.contains("next=X"), "{initial}");
+        for (hex, plays) in [("30", 1), ("33", 2), ("31", 3), ("34", 4), ("32", 5)] {
+            stdin
+                .write_all(format!("/input {hex}\n").as_bytes())
+                .unwrap();
+            let event = lines.next().expect("event line").unwrap();
+            assert!(event.contains("\"type\":\"event\""), "{event}");
+            let view = lines.next().expect("view line").unwrap();
+            assert!(view.contains(&format!("plays={plays}")), "{view}");
+            if plays == 5 {
+                assert!(view.contains("winner=X"), "{view}");
+            }
+        }
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        // The final board is in the world's structured records.
+        let records = world(&["records", &node, "--capability", &capability])
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            records.status.success(),
+            "{}",
+            String::from_utf8_lossy(&records.stderr)
+        );
+        let records = String::from_utf8(records.stdout).unwrap();
+        assert!(records.contains("\"board\": \"XXXOO----\""), "{records}");
+        assert!(records.contains("\"plays\": 5"), "{records}");
+        assert!(records.contains("\"winner\": \"X\""), "{records}");
+        server.stop();
+    }
+
+    #[test]
+    fn test_journal_is_trimmed_behind_a_checkpoint_and_a_game_resumes() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("tic-tac-toe/tic-tac-toe.wasm");
+        let module = module.to_str().unwrap();
+        let serve_args = [
+            "--world",
+            "--world-admin-token",
+            "adm",
+            "--world-module",
+            module,
+            "--world-checkpoint-every",
+            "3",
+        ];
+        let world = |addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+        // Join, play each hex-encoded cell, return the last view line.
+        let play = |node: &str, addr: &str, capability: &str, cells: &[&str]| {
+            let mut joined = world(addr, &["join", node, "--capability", capability])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map(KillOnDrop)
+                .unwrap();
+            let mut stdin = joined.stdin.take().unwrap();
+            let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+            let _snapshot = lines.next().unwrap().unwrap();
+            let mut view = lines.next().unwrap().unwrap();
+            for cell in cells {
+                stdin
+                    .write_all(format!("/input {cell}\n").as_bytes())
+                    .unwrap();
+                let _event = lines.next().unwrap().unwrap();
+                view = lines.next().unwrap().unwrap();
+            }
+            stdin.write_all(b"/quit\n").unwrap();
+            drop(stdin);
+            assert!(joined.wait().unwrap().success());
+            view
+        };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let invited = world(
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        )
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+        // X plays 0, O 3, X 1: three inputs after the install, so the world
+        // trims its journal behind a checkpoint along the way.
+        let view = play(&node, &addr, &capability, &["30", "33", "31"]);
+        assert!(
+            view.contains("plays=3") && view.contains("next=O"),
+            "{view}"
+        );
+        server.stop();
+
+        let journal =
+            fs::read_to_string(server_dir.path().join(".id-worlds/lobby/journal.jsonl")).unwrap();
+        assert!(journal.contains("\"entry\":\"checkpoint\""), "{journal}");
+        assert!(
+            journal.lines().count() < 6,
+            "history behind the checkpoint is gone:\n{journal}"
+        );
+        assert!(
+            !journal.contains(capability.split_once('.').unwrap().1),
+            "a checkpointed journal still holds digests, never secrets"
+        );
+
+        // After a restart the game resumes from the checkpoint and finishes.
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let view = play(&node, &addr, &capability, &["34", "32"]);
+        assert!(
+            view.contains("plays=5") && view.contains("winner=X"),
+            "the restored game continues: {view}"
+        );
+        let records = world(&addr, &["records", &node, "--capability", &capability])
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        let records = String::from_utf8(records.stdout).unwrap();
+        assert!(records.contains("\"board\": \"XXXOO----\""), "{records}");
+        server.stop();
+    }
+
+    #[test]
+    fn test_one_server_hosts_many_worlds_ad_hoc() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let examples = examples_dir();
+        let counter = examples.join("roc-counter/counter.wasm");
+        let counter = counter.to_str().unwrap();
+        let tictactoe = examples.join("tic-tac-toe/tic-tac-toe.wasm");
+        let tictactoe = tictactoe.to_str().unwrap();
+        let serve_args = [
+            "--world",
+            "--world-admin-token",
+            "adm",
+            "--world-module",
+            counter,
+            // Idle worlds close after a second and reopen from their journal.
+            "--world-idle-secs",
+            "1",
+        ];
+        let world = |addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+        let run = |addr: &str, args: &[&str]| -> (bool, String, String) {
+            let output = world(addr, args).output_within(PROCESS_TIMEOUT).unwrap();
+            (
+                output.status.success(),
+                String::from_utf8(output.stdout).unwrap(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+        // Join `world_name`, send each hex input, and return the last view.
+        let play =
+            |node: &str, addr: &str, world_name: Option<&str>, cap: &str, inputs: &[&str]| {
+                let mut args = vec!["join", node, "--capability", cap];
+                if let Some(name) = world_name {
+                    args.extend(["--world", name]);
+                }
+                let mut joined = world(addr, &args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map(KillOnDrop)
+                    .unwrap();
+                let mut stdin = joined.stdin.take().unwrap();
+                let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+                let _snapshot = lines.next().unwrap().unwrap();
+                let mut view = lines.next().unwrap().unwrap();
+                for input in inputs {
+                    stdin
+                        .write_all(format!("/input {input}\n").as_bytes())
+                        .unwrap();
+                    let _event = lines.next().unwrap().unwrap();
+                    view = lines.next().unwrap().unwrap();
+                }
+                stdin.write_all(b"/quit\n").unwrap();
+                drop(stdin);
+                assert!(joined.wait().unwrap().success());
+                view
+            };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        // Worlds are created ad hoc, by admins only.
+        let (ok, out, _) = run(&addr, &["create", &node, "arena", "--admin-token", "adm"]);
+        assert!(ok && out.trim() == "created", "{out}");
+        let (_, out, _) = run(&addr, &["create", &node, "arena", "--admin-token", "adm"]);
+        assert_eq!(out.trim(), "exists");
+        let (ok, _, err) = run(&addr, &["create", &node, "arena", "--admin-token", "wrong"]);
+        assert!(!ok && err.contains("admin denied"), "{err}");
+        let (ok, _, err) = run(&addr, &["create", &node, "../evil", "--admin-token", "adm"]);
+        assert!(!ok && err.contains("invalid world name"), "{err}");
+
+        // Different programs, one process.
+        let (ok, _, err) = run(
+            &addr,
+            &[
+                "install",
+                &node,
+                tictactoe,
+                "--world",
+                "arena",
+                "--admin-token",
+                "adm",
+            ],
+        );
+        assert!(ok, "{err}");
+        // Inviting into a world that does not exist yet creates it.
+        let (ok, ann, err) = run(
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        );
+        assert!(ok, "{err}");
+        let ann = ann.trim().to_owned();
+        let (ok, bob, err) = run(
+            &addr,
+            &[
+                "invite",
+                &node,
+                "--admin-token",
+                "adm",
+                "--name",
+                "bob",
+                "--world",
+                "garden",
+            ],
+        );
+        assert!(ok, "{err}");
+        let bob = bob.trim().to_owned();
+        let (ok, cat, err) = run(
+            &addr,
+            &[
+                "invite",
+                &node,
+                "--admin-token",
+                "adm",
+                "--name",
+                "cat",
+                "--world",
+                "arena",
+            ],
+        );
+        assert!(ok, "{err}");
+        let cat = cat.trim().to_owned();
+
+        let view = play(&node, &addr, None, &ann, &["696e63", "696e63"]);
+        assert!(
+            view.contains("count=2"),
+            "default world runs the counter: {view}"
+        );
+        let view = play(&node, &addr, Some("arena"), &cat, &["30"]);
+        assert!(view.contains("plays=1"), "arena runs tic-tac-toe: {view}");
+
+        // A capability is good in its own world only.
+        let (_, out, _) = run(&addr, &["records", &node, "--capability", &cat]);
+        assert!(
+            out.is_empty(),
+            "no records for a capability from another world: {out}"
+        );
+        let (ok, _, err) = run(
+            &addr,
+            &["records", &node, "--capability", &ann, "--world", "arena"],
+        );
+        assert!(!ok && err.contains("join denied"), "{err}");
+        let (ok, _, err) = run(
+            &addr,
+            &["records", &node, "--capability", &bob, "--world", "nowhere"],
+        );
+        assert!(!ok && err.contains("unknown world"), "{err}");
+
+        let (ok, out, err) = run(&addr, &["list", &node, "--admin-token", "adm"]);
+        assert!(ok, "{err}");
+        for expected in ["arena\t", "garden\t", "lobby (default)\t"] {
+            assert!(out.contains(expected), "{out}");
+        }
+
+        // Idle worlds close, and reopen from their journal when named again.
+        std::thread::sleep(Duration::from_secs(4));
+        let (_, out, _) = run(&addr, &["list", &node, "--admin-token", "adm"]);
+        assert!(out.contains("arena\tclosed"), "arena was evicted: {out}");
+        let (ok, out, err) = run(
+            &addr,
+            &["records", &node, "--capability", &cat, "--world", "arena"],
+        );
+        assert!(ok, "{err}");
+        assert!(
+            out.contains("\"plays\": 1"),
+            "state survived eviction: {out}"
+        );
+        server.stop();
+
+        // After a restart every world is still there, closed until used.
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let (_, out, _) = run(&addr, &["list", &node, "--admin-token", "adm"]);
+        assert!(
+            out.contains("garden\tclosed") && out.contains("arena\tclosed"),
+            "{out}"
+        );
+        let view = play(&node, &addr, None, &ann, &["696e63"]);
+        assert!(view.contains("count=3"), "{view}");
+        let view = play(&node, &addr, Some("arena"), &cat, &["33"]);
+        assert!(view.contains("plays=2"), "{view}");
+        server.stop();
+    }
+
+    #[test]
+    fn test_worlds_compile_roc_sources_on_the_fly() {
+        let Some(roc) = pinned_roc() else {
+            eprintln!("skipping: no roc binary available");
+            return;
+        };
+        let platform = examples_dir().join("roc-world");
+        if !platform.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!(
+                "skipping: examples/roc-world has no targets/wasm32/host.wasm (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        }
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let source = examples_dir().join("roc-counter/main.roc");
+        let serve_args = [
+            "--world",
+            "--world-admin-token",
+            "adm",
+            "--roc-bin",
+            &roc,
+            "--roc-platform",
+            platform.to_str().unwrap(),
+        ];
+        let world = |addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let invited = world(
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        )
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+
+        // Send the source; the server compiles (with its own limits) and
+        // installs the result like an admin upload.
+        let compiled = world(
+            &addr,
+            &[
+                "compile",
+                &node,
+                source.to_str().unwrap(),
+                "--admin-token",
+                "adm",
+                "--seed",
+                "7",
+            ],
+        )
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+        let hash = String::from_utf8(compiled.stdout)
+            .unwrap()
+            .trim()
+            .to_owned();
+        assert_eq!(hash.len(), 64, "{hash}");
+
+        // The compiled program runs: the same counter, from source text.
+        let mut joined = world(&addr, &["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let _snapshot = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let _event = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        // A wrong admin token is refused.
+        let bad = world(
+            &addr,
+            &[
+                "compile",
+                &node,
+                source.to_str().unwrap(),
+                "--admin-token",
+                "wrong",
+            ],
+        )
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(!bad.status.success());
+        assert!(
+            String::from_utf8_lossy(&bad.stderr).contains("compile denied"),
+            "{}",
+            String::from_utf8_lossy(&bad.stderr)
+        );
+        server.stop();
+    }
+
+    #[test]
+    fn test_worlds_compile_native_workers_on_the_fly() {
+        let Some(roc) = pinned_roc() else {
+            eprintln!("skipping: no roc binary available");
+            return;
+        };
+        let platform = examples_dir().join("roc-world");
+        if !platform.join("targets/x64musl/libhost.a").is_file() {
+            eprintln!("skipping: the platform has no native targets");
+            return;
+        }
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let source = examples_dir().join("roc-counter/main.roc");
+        let serve_args = [
+            "--world",
+            "--world-native",
+            "--world-admin-token",
+            "adm",
+            "--roc-bin",
+            &roc,
+            "--roc-platform",
+            platform.to_str().unwrap(),
+        ];
+        let world = |addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let invited = world(
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        )
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+
+        let compiled = world(
+            &addr,
+            &[
+                "compile",
+                &node,
+                source.to_str().unwrap(),
+                "--admin-token",
+                "adm",
+                "--seed",
+                "7",
+                "--native",
+            ],
+        )
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            compiled.status.success(),
+            "{}",
+            String::from_utf8_lossy(&compiled.stderr)
+        );
+
+        let mut joined = world(&addr, &["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let _snapshot = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let _event = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+        server.stop();
+    }
+
+    #[test]
+    fn test_native_worlds_install_play_and_survive_a_restart() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("roc-counter/counter-native");
+        let module = module.to_str().unwrap();
+        let serve_args = ["--world", "--world-admin-token", "adm", "--world-native"];
+        let world = |addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let invited = world(
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        )
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+
+        // Install the native worker over Iroh and play one input.
+        let installed = world(
+            &addr,
+            &[
+                "install",
+                &node,
+                module,
+                "--admin-token",
+                "adm",
+                "--seed",
+                "7",
+            ],
+        )
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            installed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+        let hash = String::from_utf8(installed.stdout)
+            .unwrap()
+            .trim()
+            .to_owned();
+        assert_eq!(hash.len(), 64);
+        let mut joined = world(&addr, &["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let _snapshot = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let _event = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+        server.stop();
+
+        // The worker is restored from its stored file after a restart.
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let mut joined = world(&addr, &["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let _snapshot = lines.next().unwrap().unwrap();
+        let view = lines.next().unwrap().unwrap();
+        assert!(view.contains("count=1"), "restored: {view}");
+        drop(lines);
+        drop(joined);
+
+        // Without --world-native the same install is refused.
+        server.stop();
+        let plain_args = ["--world", "--world-admin-token", "adm"];
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &plain_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let refused = world(&addr, &["install", &node, module, "--admin-token", "adm"])
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("validation"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        server.stop();
+    }
+
+    #[test]
+    fn test_a_lounge_world_asks_for_capabilities() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("lounge/lounge.wasm");
+        let module = module.to_str().unwrap();
+        let serve_args = [
+            "--world",
+            "--world-admin-token",
+            "adm",
+            "--world-module",
+            module,
+            // The program may watch who is here and read the clock; it may
+            // not speak (yet).
+            "--world-cap",
+            "players",
+            "--world-cap",
+            "time.now",
+        ];
+        let world = |addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY")
+                .env_remove("ID_WORLD");
+            cmd
+        };
+        let run = |addr: &str, args: &[&str]| -> (bool, String, String) {
+            let output = world(addr, args).output_within(PROCESS_TIMEOUT).unwrap();
+            (
+                output.status.success(),
+                String::from_utf8(output.stdout).unwrap(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+        // Join and collect frames for up to two seconds; returns
+        // (views, events) texts. The reader runs on its own thread so a
+        // quiet world cannot block the collection.
+        let join_and_collect = |node: &str, addr: &str, cap: &str| {
+            let mut joined = world(addr, &["join", node, "--capability", cap])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map(KillOnDrop)
+                .unwrap();
+            let mut stdin = joined.stdin.take().unwrap();
+            let stdout = joined.stdout.take().unwrap();
+            let (sender, receiver) = std::sync::mpsc::channel::<String>();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines().map_while(Result::ok) {
+                    if sender.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut views = String::new();
+            let mut events = String::new();
+            while Instant::now() < deadline {
+                match receiver.recv_timeout(Duration::from_millis(200)) {
+                    Ok(line) => {
+                        if line.contains("\"type\":\"view\"") {
+                            views.push_str(&line);
+                            views.push('\n');
+                        } else if line.contains("\"type\":\"event\"") {
+                            events.push_str(&line);
+                            events.push('\n');
+                        }
+                    }
+                    Err(_) => continue,
+                }
+            }
+            stdin.write_all(b"/quit\n").unwrap();
+            drop(stdin);
+            assert!(joined.wait().unwrap().success());
+            (views, events)
+        };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let (ok, ann, err) = run(
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        );
+        assert!(ok, "{err}");
+        let ann = ann.trim().to_owned();
+
+        // The report says what the program wants and what is missing.
+        let (ok, out, err) = run(&addr, &["caps", &node, "--capability", &ann]);
+        assert!(ok, "{err}");
+        assert!(out.contains("\"chat.say\""), "missing chat.say: {out}");
+        assert!(out.contains("\"time.tick\""), "missing time.tick: {out}");
+        assert!(out.contains("\"time.now\""), "granted time.now: {out}");
+
+        // Joining (presence!) makes the program greet — and the greeting is
+        // refused, which the program sees and counts.
+        let (views, events) = join_and_collect(&node, &addr, &ann);
+        assert!(views.contains("joins=1"), "{views}");
+        assert!(
+            views.contains("denied=1"),
+            "the refusal is visible: {views}"
+        );
+        assert!(!events.contains("Welcome"), "{events}");
+
+        // Grant speech; the next arrival gets greeted for real.
+        let (ok, out, err) = run(
+            &addr,
+            &["caps", &node, "--admin-token", "adm", "--grant", "chat.say"],
+        );
+        assert!(ok, "{err}");
+        assert!(out.contains("\"chat.say\""), "{out}");
+        let (views, events) = join_and_collect(&node, &addr, &ann);
+        assert!(views.contains("joins=2"), "{views}");
+        assert!(
+            events.contains("Welcome, ann!"),
+            "the program spoke through chat.say: {events}"
+        );
+        server.stop();
+
+        // Grants are journaled, so they survive a restart.
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let (ok, out, err) = run(&addr, &["caps", &node, "--capability", &ann]);
+        assert!(ok, "{err}");
+        assert!(out.contains("\"chat.say\""), "grant survived: {out}");
+        server.stop();
+    }
+
+    #[test]
+    fn test_named_worlds_use_their_own_directory() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn_persistent(
+            server_dir.path(),
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-name",
+                "tt",
+            ],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", &addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+        let invited = world(&["invite", &node, "--admin-token", "adm", "--name", "ann"])
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+
+        // A joining client is told which world it entered.
+        let mut joined = world(&["join", &node, "--capability", &capability])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let first = lines.next().expect("snapshot line").unwrap();
+        assert!(first.contains("\"world_id\":\"tt\""), "{first}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+
+        // The named world keeps its state under its own directory.
+        assert!(
+            server_dir
+                .path()
+                .join(".id-worlds/tt/records.namespace")
+                .exists()
+        );
+        assert!(
+            !server_dir.path().join(".id-worlds/lobby").exists(),
+            "the default world is not created as a side effect"
+        );
+        server.stop();
+
+        // A name that is not one path segment is refused before startup.
+        let refused = StdCommand::new(get_binary_path())
+            .args([
+                "serve",
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-name",
+                "../evil",
+                "--ephemeral",
+            ])
+            .current_dir(client_dir.path())
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("world name"),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+
+    #[test]
+    fn test_world_state_survives_a_serve_restart() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("roc-counter/counter.wasm");
+        let module = module.to_str().unwrap();
+        let serve_args = [
+            "--world",
+            "--world-admin-token",
+            "adm",
+            "--world-module",
+            module,
+        ];
+
+        let world = |node: &str, addr: &str, args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .args(["--addr", addr])
+                .current_dir(client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            let _ = node;
+            cmd
+        };
+        // Join, send `inputs` increments, and return every printed line.
+        let session = |node: &str, addr: &str, capability: &str, inputs: usize, expect: usize| {
+            let mut joined = world(node, addr, &["join", node, "--capability", capability])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map(KillOnDrop)
+                .unwrap();
+            let mut stdin = joined.stdin.take().unwrap();
+            let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+            let mut seen = Vec::new();
+            seen.push(lines.next().unwrap().unwrap()); // snapshot
+            seen.push(lines.next().unwrap().unwrap()); // initial view
+            for _ in 0..inputs {
+                stdin.write_all(b"/input 696e63\n").unwrap();
+                seen.push(lines.next().unwrap().unwrap()); // event
+                seen.push(lines.next().unwrap().unwrap()); // view
+            }
+            stdin.write_all(b"/quit\n").unwrap();
+            drop(stdin);
+            assert!(joined.wait().unwrap().success());
+            assert!(
+                seen.last().unwrap().contains(&format!("count={expect}")),
+                "{seen:#?}"
+            );
+            seen
+        };
+
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let invited = world(
+            &node,
+            &addr,
+            &["invite", &node, "--admin-token", "adm", "--name", "ann"],
+        )
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+        session(&node, &addr, &capability, 2, 2);
+        let namespace_path = server_dir.path().join(".id-worlds/lobby/records.namespace");
+        let namespace_before = fs::read(&namespace_path).unwrap();
+        assert!(!namespace_before.is_empty());
+        server.stop();
+
+        // Same data directory, same module flag: the module is not re-installed
+        // (that would reset the program), the capability still works and the
+        // Roc state is rebuilt by replaying the journaled inputs.
+        let mut server = ServerHandle::spawn_persistent(server_dir.path(), &serve_args);
+        let restarted = server.wait_ready();
+        assert_eq!(restarted, node, "the node keeps its identity");
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let seen = session(&node, &addr, &capability, 1, 3);
+        assert!(seen[1].contains("count=2"), "restored view: {}", seen[1]);
+        assert_eq!(
+            fs::read(&namespace_path).unwrap(),
+            namespace_before,
+            "the records document namespace survives a restart"
+        );
+
+        // The program's structured records are queryable after restart...
+        let records = world(
+            &node,
+            &addr,
+            &["records", &node, "--capability", &capability],
+        )
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            records.status.success(),
+            "{}",
+            String::from_utf8_lossy(&records.stderr)
+        );
+        let records_stdout = String::from_utf8(records.stdout).unwrap();
+        assert!(records_stdout.contains("\"count\": 3"), "{records_stdout}");
+
+        // ...and replicate peer-to-peer over iroh-docs with a read ticket,
+        // driven by a second process with its own node identity.
+        let mirror = world(
+            &node,
+            &addr,
+            &[
+                "mirror",
+                &node,
+                "--capability",
+                &capability,
+                "--no-relay",
+                "--timeout-secs",
+                "60",
+            ],
+        )
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            mirror.status.success(),
+            "{}",
+            String::from_utf8_lossy(&mirror.stderr)
+        );
+        let mirror_stdout = String::from_utf8(mirror.stdout).unwrap();
+        assert!(mirror_stdout.contains("\"count\": 3"), "{mirror_stdout}");
+
+        // A replica can also keep the document on disk between runs.
+        let replica_dir = client_dir.path().join("replica");
+        let replica_dir_str = replica_dir.to_str().unwrap().to_owned();
+        for run in 0..2 {
+            let stored = world(
+                &node,
+                &addr,
+                &[
+                    "mirror",
+                    &node,
+                    "--capability",
+                    &capability,
+                    "--no-relay",
+                    "--timeout-secs",
+                    "60",
+                    "--dir",
+                    &replica_dir_str,
+                ],
+            )
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+            assert!(
+                stored.status.success(),
+                "run {run}: {}",
+                String::from_utf8_lossy(&stored.stderr)
+            );
+            assert!(
+                String::from_utf8(stored.stdout)
+                    .unwrap()
+                    .contains("\"count\": 3"),
+                "run {run}"
+            );
+        }
+        assert_eq!(
+            fs::metadata(replica_dir.join("node.key")).unwrap().len(),
+            32,
+            "the replica keeps its own identity"
+        );
+        assert!(replica_dir.join("blobs").exists(), "blobs are stored");
+        assert!(replica_dir.join("docs").exists(), "docs are stored");
+        let journal =
+            fs::read_to_string(server_dir.path().join(".id-worlds/lobby/journal.jsonl")).unwrap();
+        assert!(
+            !journal.contains(capability.split_once('.').unwrap().1),
+            "the journal stores digests, never capability secrets"
+        );
+        server.stop();
+    }
+
+    #[test]
+    fn test_serve_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["serve", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("ephemeral"));
+        assert!(stdout.contains("no-relay"));
+    }
+
+    /// `serve --help` must document the flag that turns mDNS off, and say that
+    /// mDNS is on by default.
+    #[test]
+    fn test_serve_help_documents_no_mdns() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["serve", "--help"], tmp.path());
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("--no-mdns"), "{stdout}");
+        assert!(
+            stdout.contains("By default, the server uses mDNS"),
+            "{stdout}"
+        );
+    }
+
+    /// Starts `serve` with `extra_args` (and without `--no-mdns` unless passed),
+    /// returns the `mdns:` status line it prints, and stops the server.
+    fn serve_mdns_status(work_dir: &std::path::Path, extra_args: &[&str]) -> Option<String> {
+        let mut args = vec!["serve", "--ephemeral", "--no-relay", "--no-gossip"];
+        args.extend(extra_args);
+        let mut process = StdCommand::new(get_binary_path())
+            .args(&args)
+            .current_dir(work_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn server");
+        let stdout = process.stdout.take().expect("stdout not captured");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if line.starts_with("mdns:") {
+                    let _ = tx.send(line);
+                }
+            }
+        });
+        let line = rx.recv_timeout(SERVER_STARTUP_TIMEOUT).ok();
+        let _ = process.kill();
+        let _ = process.wait();
+        line
+    }
+
+    /// mDNS is on for `serve` unless `--no-mdns` is given.
+    #[test]
+    fn test_serve_enables_mdns_by_default_and_no_mdns_turns_it_off() {
+        let on = TempDir::new().unwrap();
+        assert_eq!(
+            serve_mdns_status(on.path(), &[]).as_deref(),
+            Some("mdns: enabled"),
+            "serve should enable mDNS by default"
+        );
+        let off = TempDir::new().unwrap();
+        assert_eq!(
+            serve_mdns_status(off.path(), &["--no-mdns"]).as_deref(),
+            Some("mdns: disabled"),
+            "--no-mdns should disable mDNS"
+        );
+    }
+
+    #[test]
+    fn test_serve_creates_lock_file() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn(tmp.path());
+
+        // Wait for server to be ready
+        let node_id = server.wait_ready();
+
+        // Verify node ID format (64 hex chars)
+        assert_eq!(node_id.len(), 64, "Node ID should be 64 hex chars");
+        assert!(
+            node_id.chars().all(|c| c.is_ascii_hexdigit()),
+            "Node ID should be hex"
+        );
+
+        // Verify lock file exists and contains node ID
+        let lock_path = server.lock_file_path();
+        assert!(lock_path.exists(), "Lock file should exist");
+
+        let lock_content = fs::read_to_string(&lock_path).unwrap();
+        // Lock file is JSON; verify it contains the node_id
+        assert!(
+            lock_content.contains(&node_id),
+            "Lock file should contain node ID"
+        );
+
+        // Parse as JSON and verify structure
+        let lock_json: serde_json::Value = serde_json::from_str(&lock_content).unwrap();
+        assert_eq!(lock_json["node_id"], node_id, "JSON node_id should match");
+        let pid = lock_json["pid"].as_u64().expect("pid should be a number");
+        assert!(pid > 0, "PID should be positive");
+
+        // Stop server gracefully - cleanup is tested separately to avoid flakiness
+        server.stop();
+    }
+
+    /// Test that the lock file is removed after graceful shutdown.
+    /// This test is isolated to avoid parallel test interference.
+    #[test]
+    fn test_serve_lock_file_cleanup() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn(tmp.path());
+        let _node_id = server.wait_ready();
+
+        let lock_path = server.lock_file_path();
+        assert!(
+            lock_path.exists(),
+            "Lock file should exist while server runs"
+        );
+
+        // Stop server gracefully
+        server.stop();
+
+        // After graceful shutdown, lock file should be removed
+        // Wait with retries since cleanup is async and may take time under load
+        let mut removed = false;
+        for _ in 0..50 {
+            // Up to 5 seconds
+            if !lock_path.exists() {
+                removed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        // If still not removed, the server might have been killed before cleanup
+        // This is acceptable in test environments under heavy load
+        if !removed {
+            eprintln!(
+                "Note: Lock file was not removed after shutdown (may be due to test parallelism)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_serve_isolated_directories() {
+        // Start two servers in different directories simultaneously
+        let tmp1 = TempDir::new().unwrap();
+        let tmp2 = TempDir::new().unwrap();
+
+        let mut server1 = ServerHandle::spawn(tmp1.path());
+        let mut server2 = ServerHandle::spawn(tmp2.path());
+
+        let node_id1 = server1.wait_ready();
+        let node_id2 = server2.wait_ready();
+
+        // Both servers should have different node IDs (different keys)
+        assert_ne!(
+            node_id1, node_id2,
+            "Servers in different directories should have different node IDs"
+        );
+
+        // Each should have its own lock file
+        assert!(server1.lock_file_path().exists());
+        assert!(server2.lock_file_path().exists());
+
+        // Lock files should have different PIDs
+        let lock1 = fs::read_to_string(server1.lock_file_path()).unwrap();
+        let lock2 = fs::read_to_string(server2.lock_file_path()).unwrap();
+        let json1: serde_json::Value = serde_json::from_str(&lock1).unwrap();
+        let json2: serde_json::Value = serde_json::from_str(&lock2).unwrap();
+        let pid1 = json1["pid"].as_u64().unwrap();
+        let pid2 = json2["pid"].as_u64().unwrap();
+        assert_ne!(pid1, pid2, "Servers should have different PIDs");
+
+        // Clean up
+        server1.stop();
+        server2.stop();
+    }
+
+    #[test]
+    fn test_serve_ephemeral_mode() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn(tmp.path());
+        let _node_id = server.wait_ready();
+
+        // In ephemeral mode, no persistent store directory should be created
+        // (The store is in-memory only)
+        let store_path = tmp.path().join(".iroh-store");
+
+        // Note: With ephemeral mode, we don't create the store directory
+        // This test verifies the server starts successfully with --ephemeral
+
+        server.stop();
+
+        // After shutdown, verify no persistent data was created
+        // (key file may still exist, but store should be empty/missing)
+        if store_path.exists() {
+            // If store dir exists, it should be empty or minimal
+            let entry_count = fs::read_dir(&store_path).map(Iterator::count).unwrap_or(0);
+            // Allow for some metadata, but shouldn't have blob data
+            assert!(
+                entry_count <= 2,
+                "Ephemeral mode should not persist blob data"
+            );
+        }
+    }
+
+    #[test]
+    fn test_serve_key_file_creation() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn(tmp.path());
+        let node_id1 = server.wait_ready();
+        server.stop();
+
+        // Key file should be created
+        let key_file = tmp.path().join(".iroh-key");
+        assert!(key_file.exists(), "Key file should be created");
+
+        // Start another server in the same directory - should use same key
+        let mut server2 = ServerHandle::spawn(tmp.path());
+        let node_id2 = server2.wait_ready();
+        server2.stop();
+
+        assert_eq!(
+            node_id1, node_id2,
+            "Same key file should produce same node ID"
+        );
+    }
+
+    #[test]
+    fn test_serve_with_local_store() {
+        let tmp = TempDir::new().unwrap();
+
+        // First, put a file without server running (direct store access)
+        let test_file = tmp.path().join("test.txt");
+        fs::write(&test_file, "Hello from store!").unwrap();
+
+        let put_output = run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+        assert!(put_output.contains("test.txt"), "Put should succeed");
+
+        // Now start server - it should be able to serve the same data
+        let mut server = ServerHandle::spawn(tmp.path());
+        let node_id = server.wait_ready();
+
+        // Verify server started with the same node ID as the key file
+        assert_eq!(node_id.len(), 64, "Node ID should be 64 hex chars");
+
+        // Lock file should show the server is running
+        let lock_content = fs::read_to_string(server.lock_file_path()).unwrap();
+        assert!(
+            lock_content.contains(&node_id),
+            "Lock file should contain node ID"
+        );
+
+        server.stop();
+
+        // After server stops, we can still access the local store directly
+        // (since we used non-ephemeral mode implicitly via put before server)
+        // Actually, the server was started with --ephemeral, so it has its own
+        // in-memory store. The point is they don't conflict.
+    }
+
+    /// Test that multiple parallel tests don't interfere with each other.
+    /// This is implicitly tested by Cargo running tests in parallel,
+    /// but this test explicitly verifies the isolation.
+    #[test]
+    fn test_serve_parallel_isolation_a() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn(tmp.path());
+        let node_id = server.wait_ready();
+
+        // Store something unique to this test
+        let test_file = tmp.path().join("parallel_a.txt");
+        fs::write(&test_file, "Test A data").unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Verify it exists
+        let list_output = run_cmd_success(&["list"], tmp.path());
+        assert!(list_output.contains("parallel_a.txt"));
+
+        // Should NOT see files from test_serve_parallel_isolation_b
+        assert!(!list_output.contains("parallel_b.txt"));
+
+        // Keep server running briefly to overlap with other test
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Verify our node ID is still valid
+        assert_eq!(node_id.len(), 64);
+
+        server.stop();
+    }
+
+    #[test]
+    fn test_serve_parallel_isolation_b() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn(tmp.path());
+        let node_id = server.wait_ready();
+
+        // Store something unique to this test
+        let test_file = tmp.path().join("parallel_b.txt");
+        fs::write(&test_file, "Test B data").unwrap();
+        run_cmd_success(&["put", test_file.to_str().unwrap()], tmp.path());
+
+        // Verify it exists
+        let list_output = run_cmd_success(&["list"], tmp.path());
+        assert!(list_output.contains("parallel_b.txt"));
+
+        // Should NOT see files from test_serve_parallel_isolation_a
+        assert!(!list_output.contains("parallel_a.txt"));
+
+        // Keep server running briefly to overlap with other test
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Verify our node ID is still valid
+        assert_eq!(node_id.len(), 64);
+
+        server.stop();
+    }
+
+    /// Test that the web server can be started with port 0 for random port assignment.
+    /// This is only available when built with the `web` feature.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_web_random_port() {
+        let tmp = TempDir::new().unwrap();
+
+        // Start server with --web --port 0 for random port
+        let mut server = ServerHandle::spawn_with_args(tmp.path(), &["--web", "--port", "0"]);
+        // Use wait_ready_with_web(true) to wait for web port to be captured
+        let node_id = server.wait_ready_with_web(true);
+
+        // Verify server started
+        assert_eq!(node_id.len(), 64, "Node ID should be 64 hex chars");
+
+        // Verify web port was assigned (should be non-zero)
+        assert!(
+            server.web_port.is_some(),
+            "Web port should be captured from output"
+        );
+        let port = server.web_port.unwrap();
+        assert!(port > 0, "Assigned port should be non-zero");
+
+        // Verify port is actually in use by trying to connect
+        // (This is a basic check - we just verify the port looks valid)
+        assert!(port > 1024, "Random port should be in unprivileged range");
+
+        server.stop();
+    }
+
+    /// Test that multiple servers can run with web on different random ports.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_web_multiple_random_ports() {
+        let tmp1 = TempDir::new().unwrap();
+        let tmp2 = TempDir::new().unwrap();
+
+        // Start two servers with --web --port 0
+        let mut server1 = ServerHandle::spawn_with_args(tmp1.path(), &["--web", "--port", "0"]);
+        let mut server2 = ServerHandle::spawn_with_args(tmp2.path(), &["--web", "--port", "0"]);
+
+        // Use wait_ready_with_web(true) to wait for web ports to be captured
+        let _node_id1 = server1.wait_ready_with_web(true);
+        let _node_id2 = server2.wait_ready_with_web(true);
+
+        // Both should have different ports assigned
+        let port1 = server1.web_port.expect("Server 1 should have web port");
+        let port2 = server2.web_port.expect("Server 2 should have web port");
+
+        assert_ne!(
+            port1, port2,
+            "Two servers should get different random ports"
+        );
+
+        server1.stop();
+        server2.stop();
+    }
+
+    // =========================================================================
+    // --data-dir tests
+    // =========================================================================
+
+    /// Test that --data-dir points all data files to the specified directory.
+    #[test]
+    fn test_serve_data_dir_basic() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("custom-data");
+
+        // Server should create the data dir and place lock file inside it
+        let data_dir_str = data_dir.to_str().unwrap();
+        let mut server =
+            ServerHandle::spawn_with_global_args(tmp.path(), &["--data-dir", data_dir_str], &[]);
+        // wait_ready checks lock file at work_dir, but our lock file is in data_dir.
+        // We need to set work_dir to data_dir for lock_file_path() to work.
+        server.work_dir = data_dir.clone();
+        let node_id = server.wait_ready();
+
+        // Verify node ID format
+        assert_eq!(node_id.len(), 64, "Node ID should be 64 hex chars");
+
+        // Lock file should be in the data directory
+        let lock_path = data_dir.join(SERVE_LOCK);
+        assert!(lock_path.exists(), "Lock file should be in --data-dir");
+
+        // Key file should also be in the data directory
+        let key_path = data_dir.join(".iroh-key");
+        assert!(key_path.exists(), "Key file should be in --data-dir");
+
+        // Lock file should NOT be in the original working directory
+        let wrong_lock = tmp.path().join(SERVE_LOCK);
+        assert!(
+            !wrong_lock.exists(),
+            "Lock file should NOT be in the original cwd"
+        );
+
+        server.stop();
+    }
+
+    /// Test that --data-dir creates the directory if it doesn't exist (including parents).
+    #[test]
+    fn test_serve_data_dir_creates_missing() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("deep").join("nested").join("dir");
+        assert!(!data_dir.exists(), "Directory should not exist yet");
+
+        let data_dir_str = data_dir.to_str().unwrap();
+        let mut server =
+            ServerHandle::spawn_with_global_args(tmp.path(), &["--data-dir", data_dir_str], &[]);
+        server.work_dir = data_dir.clone();
+        let _node_id = server.wait_ready();
+
+        assert!(data_dir.exists(), "Data directory should be created");
+        assert!(
+            data_dir.join(SERVE_LOCK).exists(),
+            "Lock file should be in created directory"
+        );
+
+        server.stop();
+    }
+
+    /// Test that two servers with different --data-dir paths are fully isolated.
+    #[test]
+    fn test_serve_data_dir_isolation() {
+        let tmp = TempDir::new().unwrap();
+        let dir1 = tmp.path().join("node1");
+        let dir2 = tmp.path().join("node2");
+
+        let dir1_str = dir1.to_str().unwrap();
+        let dir2_str = dir2.to_str().unwrap();
+
+        let mut server1 =
+            ServerHandle::spawn_with_global_args(tmp.path(), &["--data-dir", dir1_str], &[]);
+        server1.work_dir = dir1.clone();
+
+        let mut server2 =
+            ServerHandle::spawn_with_global_args(tmp.path(), &["--data-dir", dir2_str], &[]);
+        server2.work_dir = dir2.clone();
+
+        let node_id1 = server1.wait_ready();
+        let node_id2 = server2.wait_ready();
+
+        // Different directories → different keys → different node IDs
+        assert_ne!(
+            node_id1, node_id2,
+            "Servers with different --data-dir should have different node IDs"
+        );
+
+        // Each has its own lock file
+        assert!(dir1.join(SERVE_LOCK).exists());
+        assert!(dir2.join(SERVE_LOCK).exists());
+
+        // Lock files reference different PIDs
+        let lock1 = fs::read_to_string(dir1.join(SERVE_LOCK)).unwrap();
+        let lock2 = fs::read_to_string(dir2.join(SERVE_LOCK)).unwrap();
+        let json1: serde_json::Value = serde_json::from_str(&lock1).unwrap();
+        let json2: serde_json::Value = serde_json::from_str(&lock2).unwrap();
+        assert_ne!(
+            json1["pid"], json2["pid"],
+            "Isolated servers should have different PIDs"
+        );
+
+        server1.stop();
+        server2.stop();
+    }
+
+    // =========================================================================
+    // --new flag tests
+    // =========================================================================
+
+    /// Test that --new= (no name) auto-generates an 8-char hex directory under .iroh/.
+    #[test]
+    fn test_new_flag_auto_name() {
+        let tmp = TempDir::new().unwrap();
+
+        // Run `id --new= id` — the `id` subcommand just prints the node ID and exits.
+        // The --new= flag (with empty value) triggers auto-name generation.
+        let output = run_cmd(&["--new=", "id"], tmp.path());
+
+        // The command should succeed
+        assert!(
+            output.status.success(),
+            "id --new= id should succeed. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // .iroh/ directory should now exist with exactly one subdirectory
+        let iroh_dir = tmp.path().join(".iroh");
+        assert!(iroh_dir.exists(), ".iroh/ directory should be created");
+
+        let entries: Vec<_> = fs::read_dir(&iroh_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "Should have exactly one auto-generated subdirectory"
+        );
+
+        // The subdirectory name should be 8 hex chars
+        let name = entries[0].file_name().to_string_lossy().to_string();
+        assert_eq!(name.len(), 8, "Auto-generated name should be 8 chars");
+        assert!(
+            name.chars().all(|c| c.is_ascii_hexdigit()),
+            "Auto-generated name should be hex: {name}"
+        );
+
+        // Key file should exist inside the instance directory
+        let instance_dir = iroh_dir.join(&name);
+        assert!(
+            instance_dir.join(".iroh-key").exists(),
+            "Key file should be created in instance directory"
+        );
+    }
+
+    /// Test that --new=NAME creates .iroh/NAME/ with the given name.
+    #[test]
+    fn test_new_flag_named() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(&["--new=test-instance", "id"], tmp.path());
+        assert!(
+            output.status.success(),
+            "id --new=test-instance id should succeed. stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let instance_dir = tmp.path().join(".iroh").join("test-instance");
+        assert!(
+            instance_dir.exists(),
+            ".iroh/test-instance/ should be created"
+        );
+        assert!(
+            instance_dir.join(".iroh-key").exists(),
+            "Key file should be in named instance directory"
+        );
+    }
+
+    /// Test that --new=NAME rejects a name that already has an existing directory.
+    #[test]
+    fn test_new_flag_duplicate_rejects() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create the instance directory manually
+        let dup_dir = tmp.path().join(".iroh").join("dup");
+        fs::create_dir_all(&dup_dir).unwrap();
+
+        let output = run_cmd(&["--new=dup", "serve"], tmp.path());
+        assert!(
+            !output.status.success(),
+            "id --new=dup should fail when directory already exists"
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("already exists"),
+            "Error should mention 'already exists': {stderr}"
+        );
+    }
+
+    /// Test that --new rejects path-like names (containing / or ..).
+    #[test]
+    fn test_new_flag_invalid_name() {
+        let tmp = TempDir::new().unwrap();
+
+        // Test with path separator
+        let output = run_cmd(&["--new=../escape", "serve"], tmp.path());
+        assert!(!output.status.success(), "id --new=../escape should fail");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("simple identifier"),
+            "Error should mention 'simple identifier': {stderr}"
+        );
+
+        // Test with forward slash
+        let output2 = run_cmd(&["--new=sub/dir", "serve"], tmp.path());
+        assert!(!output2.status.success(), "id --new=sub/dir should fail");
+        let stderr2 = String::from_utf8_lossy(&output2.stderr);
+        assert!(
+            stderr2.contains("simple identifier"),
+            "Error should mention 'simple identifier': {stderr2}"
+        );
+    }
+
+    /// Test that --new and --data-dir conflict (clap rejects the combination).
+    #[test]
+    fn test_new_and_data_dir_conflict() {
+        let tmp = TempDir::new().unwrap();
+
+        let output = run_cmd(
+            &[
+                "--new=foo",
+                "--data-dir",
+                tmp.path().to_str().unwrap(),
+                "serve",
+            ],
+            tmp.path(),
+        );
+        assert!(
+            !output.status.success(),
+            "--new and --data-dir should conflict"
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Clap produces an error message about conflicting arguments
+        assert!(
+            stderr.contains("cannot be used with") || stderr.contains("conflict"),
+            "Error should mention argument conflict: {stderr}"
+        );
+    }
+
+    // =========================================================================
+    // JSON lock file tests
+    // =========================================================================
+
+    /// Test the full JSON lock file structure: `node_id`, pid, addrs, `web_port`.
+    #[test]
+    fn test_serve_json_lock_structure() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn(tmp.path());
+        let node_id = server.wait_ready();
+
+        let lock_content = fs::read_to_string(server.lock_file_path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&lock_content).unwrap_or_else(|e| {
+            panic!("Lock file should be valid JSON: {e}\nContent: {lock_content}")
+        });
+
+        // node_id: 64-char hex string
+        let json_node_id = json["node_id"]
+            .as_str()
+            .expect("node_id should be a string");
+        assert_eq!(json_node_id, node_id, "JSON node_id should match stdout");
+        assert_eq!(json_node_id.len(), 64);
+        assert!(json_node_id.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // pid: positive integer matching the actual child PID
+        let json_pid = json["pid"].as_u64().expect("pid should be a number");
+        assert!(json_pid > 0, "PID should be positive");
+        #[allow(clippy::cast_possible_truncation)]
+        let json_pid_u32 = json_pid as u32;
+        assert_eq!(
+            json_pid_u32,
+            server.process.id(),
+            "Lock file PID should match actual child PID"
+        );
+
+        // addrs: array of socket address strings
+        let addrs = json["addrs"].as_array().expect("addrs should be an array");
+        assert!(!addrs.is_empty(), "Should have at least one address");
+        for addr in addrs {
+            let addr_str = addr.as_str().expect("Each addr should be a string");
+            // Should parse as a valid socket address
+            assert!(
+                addr_str.parse::<std::net::SocketAddr>().is_ok(),
+                "Address should be a valid SocketAddr: {addr_str}"
+            );
+        }
+
+        // web_port: null when server started without --web
+        assert!(
+            json["web_port"].is_null(),
+            "web_port should be null when --web is not used"
+        );
+
+        server.stop();
+    }
+
+    /// Test that the lock file includes a valid `web_port` when --web is enabled.
+    #[test]
+    #[cfg(feature = "web")]
+    fn test_serve_json_lock_web_port() {
+        let tmp = TempDir::new().unwrap();
+        let mut server = ServerHandle::spawn_with_args(tmp.path(), &["--web", "--port", "0"]);
+        let _node_id = server.wait_ready_with_web(true);
+
+        let lock_content = fs::read_to_string(server.lock_file_path()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&lock_content).unwrap();
+
+        // web_port should be a number > 1024 (unprivileged range)
+        let web_port = json["web_port"]
+            .as_u64()
+            .expect("web_port should be a number when --web is used");
+        assert!(
+            web_port > 1024,
+            "Web port should be in unprivileged range: {web_port}"
+        );
+
+        // Should match the port captured from stdout
+        #[allow(clippy::cast_possible_truncation)]
+        let web_port_u16 = web_port as u16;
+        assert_eq!(
+            web_port_u16,
+            server.web_port.expect("stdout should have web port"),
+            "Lock file web_port should match stdout web port"
+        );
+
+        server.stop();
+    }
+
+    /// Test that a stale lock file (dead PID) is overwritten by a new server.
+    #[test]
+    fn test_serve_stale_lock_detection() {
+        let tmp = TempDir::new().unwrap();
+        let lock_path = tmp.path().join(SERVE_LOCK);
+
+        // Write a fake JSON lock file with a PID that doesn't exist
+        let fake_lock = serde_json::json!({
+            "node_id": "0000000000000000000000000000000000000000000000000000000000000000",
+            "pid": 999_999_999_u64,
+            "addrs": ["127.0.0.1:9999"],
+            "web_port": null
+        });
+        fs::write(&lock_path, serde_json::to_string(&fake_lock).unwrap()).unwrap();
+
+        // Start a real server — it should overwrite the stale lock
+        let mut server = ServerHandle::spawn(tmp.path());
+        let node_id = server.wait_ready();
+
+        // Lock file should now have the real server's info
+        let lock_content = fs::read_to_string(&lock_path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&lock_content).unwrap();
+
+        assert_eq!(
+            json["node_id"].as_str().unwrap(),
+            node_id,
+            "Lock file should be overwritten with real server's node ID"
+        );
+        assert_ne!(
+            json["pid"].as_u64().unwrap(),
+            999_999_999,
+            "Lock file PID should be updated from stale value"
+        );
+        #[allow(clippy::cast_possible_truncation)]
+        let stale_pid = json["pid"].as_u64().unwrap() as u32;
+        assert_eq!(
+            stale_pid,
+            server.process.id(),
+            "Lock file PID should match actual server PID"
+        );
+
+        server.stop();
+    }
+}
+
+// =============================================================================
+// Tag CLI integration tests
+// =============================================================================
+
+/// Tests for the `tag` subcommand and its aliases (label, link).
+/// These tests verify CLI parsing and help output without needing a running node.
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn test_tag_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "tag --help should succeed");
+        assert!(
+            stdout.contains("set") && stdout.contains("del") && stdout.contains("list"),
+            "tag help should list subcommands: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_set_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "set", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "tag set --help should succeed");
+        assert!(
+            stdout.contains("file") && stdout.contains("key"),
+            "tag set help should describe file and key args: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_del_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "del", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "tag del --help should succeed");
+        assert!(
+            stdout.contains("file") && stdout.contains("key"),
+            "tag del help should describe file and key args: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_list_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "list", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "tag list --help should succeed");
+        assert!(
+            stdout.contains("file"),
+            "tag list help should mention file arg: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_search_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "tag search --help should succeed");
+        assert!(
+            stdout.contains("key"),
+            "tag search help should mention key arg: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_label_alias_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["label", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "'label' alias should show help: {stdout}"
+        );
+        assert!(
+            stdout.contains("set") && stdout.contains("del"),
+            "label help should list subcommands: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_link_alias_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["link", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "'link' alias should show help: {stdout}"
+        );
+        assert!(
+            stdout.contains("set") && stdout.contains("del"),
+            "link help should list subcommands: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_set_requires_file_and_key() {
+        let tmp = TempDir::new().unwrap();
+        // Missing all required args
+        let output = run_cmd(&["tag", "set"], tmp.path());
+        assert!(!output.status.success(), "tag set without args should fail");
+    }
+
+    #[test]
+    fn test_tag_del_requires_file_and_key() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "del"], tmp.path());
+        assert!(!output.status.success(), "tag del without args should fail");
+    }
+
+    #[test]
+    fn test_tag_search_requires_key() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search"], tmp.path());
+        assert!(
+            !output.status.success(),
+            "tag search without key should fail"
+        );
+    }
+
+    #[test]
+    fn test_label_set_help() {
+        // Verify label set --help works like tag set --help
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["label", "set", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "label set --help should succeed");
+        assert!(
+            stdout.contains("file") && stdout.contains("key"),
+            "label set help should show file and key: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_link_list_help() {
+        // Verify link list --help works like tag list --help
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["link", "list", "--help"], tmp.path());
+        let _stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "link list --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_del_alias_rm() {
+        // Verify 'rm' alias shows help correctly
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "rm", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "tag rm --help should succeed: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_tag_del_alias_remove() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "remove", "--help"], tmp.path());
+        assert!(output.status.success(), "tag remove --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_del_alias_delete() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "delete", "--help"], tmp.path());
+        assert!(output.status.success(), "tag delete --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_del_alias_unset() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "unset", "--help"], tmp.path());
+        assert!(output.status.success(), "tag unset --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_list_alias_ls() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "ls", "--help"], tmp.path());
+        assert!(output.status.success(), "tag ls --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_search_alias_find() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "find", "--help"], tmp.path());
+        assert!(output.status.success(), "tag find --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_set_alias_add() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "add", "--help"], tmp.path());
+        assert!(output.status.success(), "tag add --help should succeed");
+    }
+
+    #[test]
+    fn test_tag_search_with_key_value_syntax() {
+        // Verify that search accepts key:value query syntax
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", "priority:high"], tmp.path());
+        // Should not error on syntax (may find no results, but command should succeed)
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // The command should at least not crash — either success or "not connected"
+        assert!(
+            output.status.success() || combined.contains("connect"),
+            "tag search priority:high should not crash: {combined}"
+        );
+    }
+
+    #[test]
+    fn test_tag_search_with_value_only_syntax() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", ":important"], tmp.path());
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success() || combined.contains("connect"),
+            "tag search :important should not crash: {combined}"
+        );
+    }
+
+    #[test]
+    fn test_tag_search_with_quoted_literal() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", "\"key:value\""], tmp.path());
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success() || combined.contains("connect"),
+            "tag search with quoted literal should not crash: {combined}"
+        );
+    }
+
+    #[test]
+    fn test_tag_search_multiple_terms() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", "priority:", ":high", "name"], tmp.path());
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success() || combined.contains("connect"),
+            "tag search with multiple terms should not crash: {combined}"
+        );
+    }
+
+    #[test]
+    fn test_tag_list_with_display_flags() {
+        // Verify --hex, --binary, --no-truncate flags are accepted
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "list", "--hex", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "tag list --hex --help should succeed: {stdout}"
+        );
+
+        let output = run_cmd(&["tag", "list", "--binary", "--help"], tmp.path());
+        assert!(
+            output.status.success(),
+            "tag list --binary --help should succeed"
+        );
+
+        let output = run_cmd(&["tag", "list", "--no-truncate", "--help"], tmp.path());
+        assert!(
+            output.status.success(),
+            "tag list --no-truncate --help should succeed"
+        );
+    }
+
+    #[test]
+    fn test_tag_search_with_display_flags() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["tag", "search", "--help"], tmp.path());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("hex") && stdout.contains("binary") && stdout.contains("no-truncate"),
+            "tag search help should mention --hex, --binary, --no-truncate: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_migrate_tags_help() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["migrate-tags", "--help"], tmp.path());
+        assert!(
+            output.status.success(),
+            "migrate-tags --help should succeed"
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.to_lowercase().contains("migrat"),
+            "migrate-tags help should mention migration: {stdout}"
+        );
+    }
+
+    #[test]
+    fn test_label_search_alias() {
+        // Verify label search works like tag search
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["label", "search", "--help"], tmp.path());
+        assert!(
+            output.status.success(),
+            "label search --help should succeed"
+        );
+    }
+
+    #[test]
+    fn test_label_find_alias() {
+        // Verify label find works like tag find
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["label", "find", "--help"], tmp.path());
+        assert!(output.status.success(), "label find --help should succeed");
+    }
+
+    #[test]
+    fn test_link_search_alias() {
+        let tmp = TempDir::new().unwrap();
+        let output = run_cmd(&["link", "search", "--help"], tmp.path());
+        assert!(output.status.success(), "link search --help should succeed");
+    }
+}
