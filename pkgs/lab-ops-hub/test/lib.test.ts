@@ -80,6 +80,30 @@ test("validateCrawlUrl returns dot segments, host case and ports normalized (#63
   }
 });
 
+test("validateCrawlUrl returns empty components normalized (#639)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: "/" supplied for an empty path, the empty port's colon and
+  // the empty userinfo's "@" dropped, and empty "?" / "#" markers kept
+  // (the query/fragment is present but empty).
+  const cases: Array<[string, string]> = [
+    ["http://example.com", "http://example.com/"],
+    ["https://example.com", "https://example.com/"],
+    ["http://example.com:8080", "http://example.com:8080/"],
+    ["http://example.com:/path", "http://example.com/path"],
+    ["http://@example.com/", "http://example.com/"],
+    ["http://example.com/path?", "http://example.com/path?"],
+    ["http://example.com/path#", "http://example.com/path#"],
+    ["http://example.com?", "http://example.com/?"],
+    ["http://example.com/path?#", "http://example.com/path?#"],
+    ["http://user@example.com", "http://user@example.com/"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+});
+
 test("validateCrawlUrl refuses non-http schemes and junk", () => {
   assert.equal(validateCrawlUrl("ftp://example.com/").ok, false);
   assert.equal(validateCrawlUrl("file:///etc/passwd").ok, false);
