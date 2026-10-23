@@ -446,7 +446,10 @@ def validate_crawl_url(raw):
     # spelling. (A percent-decoded host is likewise fetched in its
     # decoded form, #529.) _url_with_host re-adds the brackets for
     # an IPv6 literal.
-    return _url_with_encoded_components(_url_with_host(u, str(ip)))
+    canonical = (
+        _canonical_ipv6(ip) if isinstance(ip, ipaddress.IPv6Address) else str(ip)
+    )
+    return _url_with_encoded_components(_url_with_host(u, canonical))
 
 
 def _judge_a_label(label, host):
@@ -676,6 +679,34 @@ def _percent_decode_host(host):
             f"refusing to crawl host with a forbidden character once decoded {host}"
         )
     return decoded
+
+
+def _canonical_ipv6(ip):
+    # WHATWG's IPv6 serializer: eight lowercase hex pieces, the longest
+    # run of two or more zero pieces compressed to "::". str() of an
+    # IPv6Address is not a stable spelling of that form — newer CPython
+    # renders an IPv4-mapped address's tail as a dotted quad
+    # (::ffff:8.8.8.8) where the Worker returns hextets
+    # (::ffff:808:808) — so render from exploded, which is always
+    # hextets (#637).
+    pieces = [p.lstrip("0") or "0" for p in ip.exploded.split(":")]
+    best_start, best_len = -1, 0
+    i = 0
+    while i < 8:
+        if pieces[i] == "0":
+            j = i
+            while j < 8 and pieces[j] == "0":
+                j += 1
+            if j - i > best_len:
+                best_start, best_len = i, j - i
+            i = j
+        else:
+            i += 1
+    if best_len < 2:
+        return ":".join(pieces)
+    head = ":".join(pieces[:best_start])
+    tail = ":".join(pieces[best_start + best_len :])
+    return f"{head}::{tail}"
 
 
 def _url_with_host(u, new_host):
