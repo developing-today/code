@@ -10,6 +10,7 @@ rec {
   lyrics = pkgs.python3Packages.callPackage ./lyrics { };
   compiz = pkgs.callPackage ./compiz { };
   hyprbars = pkgs.callPackage ./hyprbars { };
+  mcpx = pkgs.callPackage ./mcpx/package.nix { };
 
   # Personal scripts
   pass-wofi = pkgs.callPackage ./pass-wofi { };

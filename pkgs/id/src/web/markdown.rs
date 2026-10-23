@@ -31,8 +31,8 @@
 //! - `strikethrough`: Strikethrough text (GFM `~~text~~`)
 
 use comrak::nodes::{AstNode, ListType, NodeValue};
-use comrak::{format_commonmark, parse_document, Arena, Options};
-use serde_json::{json, Value};
+use comrak::{Arena, Options, format_commonmark, parse_document};
+use serde_json::{Value, json};
 
 /// Error type for markdown conversion.
 #[derive(Debug)]
@@ -545,7 +545,7 @@ fn collect_text<'a>(node: &'a AstNode<'a>, text: &mut String) {
     }
 }
 
-/// Parse an HTML `<img>` tag and extract attributes into a ProseMirror image node.
+/// Parse an HTML `<img>` tag and extract attributes into a `ProseMirror` image node.
 ///
 /// Returns `Some(json)` if the input looks like `<img src="..." ... />`, otherwise `None`.
 fn parse_img_tag(html: &str) -> Option<Value> {
@@ -571,15 +571,15 @@ fn parse_img_tag(html: &str) -> Option<Value> {
     if let Some(title) = attr_value(trimmed, "title") {
         attrs["title"] = json!(title);
     }
-    if let Some(w) = attr_value(trimmed, "width") {
-        if let Ok(n) = w.parse::<u64>() {
-            attrs["width"] = json!(n);
-        }
+    if let Some(w) = attr_value(trimmed, "width")
+        && let Ok(n) = w.parse::<u64>()
+    {
+        attrs["width"] = json!(n);
     }
-    if let Some(h) = attr_value(trimmed, "height") {
-        if let Ok(n) = h.parse::<u64>() {
-            attrs["height"] = json!(n);
-        }
+    if let Some(h) = attr_value(trimmed, "height")
+        && let Ok(n) = h.parse::<u64>()
+    {
+        attrs["height"] = json!(n);
     }
 
     Some(json!({
@@ -688,7 +688,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "task_list_item" => {
             let checked = json["attrs"]["checked"].as_bool().unwrap_or(false);
             NodeValue::TaskItem(comrak::nodes::NodeTaskItem {
-                symbol: if checked { Some('x') } else { None },
+                symbol: checked.then_some('x'),
                 symbol_sourcepos: comrak::nodes::Sourcepos {
                     start: comrak::nodes::LineColumn { line: 0, column: 0 },
                     end: comrak::nodes::LineColumn { line: 0, column: 0 },
@@ -702,9 +702,8 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             let num_columns = rows
                 .and_then(|r| r.first())
                 .and_then(|row| row["content"].as_array())
-                .map(|cells| cells.len())
-                .unwrap_or(0);
-            let num_rows = rows.map(|r| r.len()).unwrap_or(0);
+                .map_or(0, Vec::len);
+            let num_rows = rows.map_or(0, Vec::len);
             NodeValue::Table(Box::new(comrak::nodes::NodeTable {
                 alignments: vec![comrak::nodes::TableAlignment::None; num_columns],
                 num_columns,
@@ -1147,10 +1146,12 @@ mod tests {
 
         assert_eq!(content.len(), 1);
         assert_eq!(content[0]["type"], "code_block");
-        assert!(content[0]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("function test()"));
+        assert!(
+            content[0]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("function test()")
+        );
     }
 
     #[test]

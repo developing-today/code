@@ -85,7 +85,11 @@ export class ImageNodeView implements NodeView {
 
     // Document click to dismiss popover
     this.boundDocClick = (e: MouseEvent) => {
-      if (this.popover && !this.popover.contains(e.target as HTMLElement) && !this.dom.contains(e.target as HTMLElement)) {
+      if (
+        this.popover &&
+        !this.popover.contains(e.target as HTMLElement) &&
+        !this.dom.contains(e.target as HTMLElement)
+      ) {
         this.hidePopover();
       }
     };

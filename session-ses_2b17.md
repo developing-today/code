@@ -394,296 +394,296 @@ Request failed with status code: 404
 **Output:**
 ```
 Lenovo RackSwitch G8124E Product Guide (withdrawn product) &gt; Lenovo Press
-	
-	
-	
-	
-	
-	
-	
-    
-    
-	
-    
-    
-    
-    
-    
-    
-    
-    
 
 
 
 
 
-    
-        
-            
-                
-                    
-                        
-                            
-                                
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                                     PC&nbsp;&amp; TABLETS
-                                
-                            
-                        
-                    
-                    
-                        
-                            
-                                
-                                    PHONES
-                                
-                            
-                        
-                    
-                    
-                        
-                            
-                                
-                                    SERVERS&nbsp;&amp; STORAGE
-                                
-                            
-                        
-                    
-                    
-                        
-                            
-                                
-                                    SMART DEVICES
-                                
-                            
-                        
-                    
-                    
-                        
-                            
-                                
-                                    SERVICES&nbsp;&amp; SOLUTIONS
-                                
-                            
-                        
-                    
-                    
-                        
-                            
-                                
-                                    SUPPORT
-                                
-                            
-                        
-                    
-                
-                
-                
-				
-					
-                     Employee Login					
-					
-		                
-							
-								
-								
-								
-							
-						
-					
-				
-            
-            
-                
-                    
-                        
-                    
-                    
 
-                    
+
+
+
+
+
+
+
+                                    PHONES
+
+
+
+
+
+
+
+
+                                    SERVERS&nbsp;&amp; STORAGE
+
+
+
+
+
+
+
+
+                                    SMART DEVICES
+
+
+
+
+
+
+
+
+                                    SERVICES&nbsp;&amp; SOLUTIONS
+
+
+
+
+
+
+
+
+                                    SUPPORT
+
+
+
+
+
+
+
+
+
+                     Employee Login
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                     skip to
                         main content
-                    
-                
-                
-                    Lenovo Press
-                
-            
-            
-                
-                    Lenovo Press
-					HomePortfolioPortfolio Guide3D Tour CatalogOSIG (Server OS support)Seller Training CoursesServersThinkSystem V4SR860 V4SR850 V4SC777 V4SC750 V4SR680a V4SR650a V4SR650 V4SR630 V4WR5220 G5ThinkSystem V3SR950 V3SR860 V3SR850 V3SR780a V3SR685a V3SR680a V3SR675 V3SR665 V3SR655 V3SR650 V3SR645 V3SR635 V3SR630 V3SR250 V3HS350X V3ST650 V3ST250 V3ST50 V3ST45 V3SD665-N V3SD665 V3SD650-N V3SD650-I V3SD650 V3SD550 V3SD535 V3SD530 V3WR5220 G3WR5225 G3ThinkSystem V2SR860 V2SR850 V2SR670 V2SR660 V2SR650 V2SR630 V2SR590 V2SR250 V2ST650 V2ST250 V2ST50 V2SD650-N V2SD650 V2SD630 V2SN550 V2WR3220 G2ThinkSystemSR950SR860SR850P SR850SR670SR665SR655SR650SR645SR635SR630SR590SR570SR550SR530SR250SR150SD650SD530ST550ST250ST50SN850SN550ThinkEdgeSE455 V3SE450SE360 V2SE350 V2SE350SE100ThinkAgileFX SeriesHX Series for NutanixMX Series for MicrosoftSX for MicrosoftVX Series for VMwareWenTian (&#32852;&#24819;&#38382;&#22825;)Rack Scale AIHybrid AI FactoryAI ServersEdge ServersHyperconvergedRack Servers1-Socket2-Socket4-Socket8-SocketTower Servers1-Socket2-SocketLarge MemoryMulti-Node ServersSupercomputingOptionsProcessorsMemoryCoprocessorsGPU adaptersDrivesRAID AdaptersEthernet AdaptersInfiniBand / OPA AdaptersHost Bus AdaptersPCIe Flash AdaptersExternal StorageBackup UnitsTop-of-Rack SwitchesUPS UnitsPower Distribution UnitsRack CabinetsKVM Switches &amp; ConsolesBenchmarksMLPerfSAP BWSAP Q2CSAP SDSPC-1SPECaccelSPECcpuSPEChpcSPECjbbSPECmpiSPECompSPECpowerSPECvirtSTAC-M3TPC-ETPC-HTPCxVMmarkData StorageThinkSystemDE SeriesHS350X V3DG SeriesDM SeriesDB SeriesDS SeriesSAN StorageSoftware-Defined StorageDirect-Attached StorageSAN SwitchesRackEmbeddedTape Backup UnitsTape DrivesTape Autoloaders and LibrariesBenchmarksNetworkingTop-of-Rack Connectivity1 Gb Ethernet10 Gb Ethernet25 Gb Ethernet40 Gb Ethernet100 Gb EthernetCNOSEmbedded Connectivity1 Gb Ethernet10 Gb Ethernet25 Gb Ethernet40 Gb EthernetInfiniBandCampus NetworkingSolutions &amp; SoftwareAlliancesIBMIntelMicrosoftNutanixRed HatSAPVMwareHybrid AI FactoryAIBig Data &amp; AnalyticsClouderaHortonworksIBMMicrosoft Data Warehouse Fast TrackBlockchainBusiness ApplicationsMicrosoft ApplicationsSAP Business SuiteClient VirtualizationCitrix Virtual AppsVMware HorizonCloud &amp; VirtualizationCloud StorageMSP SolutionsMicrosoft Hyper-VOpenStack CloudVMware vCloudVMware vSphereDatabaseOracleMicrosoft SQL ServerIBM Db2SAP HANASAP NetWeaver BWADevOpsEdge and IoTHigh Performance ComputingHyperconvergedSecuritySecurity Key Lifecycle ManagerOperating SystemsOSIGMicrosoft WindowsVMware vSphereRed Hat Enterprise LinuxSUSE Linux Enterprise ServerSystems ManagementLenovo XClarityBladeCenter Open Fabric ManagerIBM Systems DirectorFlex System ManagerSystem UtilitiesNetwork ManagementAboutAbout Lenovo PressNewsletter Signup                
-            
-        
-    
 
-		
-	
-		
-			
-				
-					
-						
-							
-						
-					
-					
-						
+
+
+                    Lenovo Press
+
+
+
+
+                    Lenovo Press
+					HomePortfolioPortfolio Guide3D Tour CatalogOSIG (Server OS support)Seller Training CoursesServersThinkSystem V4SR860 V4SR850 V4SC777 V4SC750 V4SR680a V4SR650a V4SR650 V4SR630 V4WR5220 G5ThinkSystem V3SR950 V3SR860 V3SR850 V3SR780a V3SR685a V3SR680a V3SR675 V3SR665 V3SR655 V3SR650 V3SR645 V3SR635 V3SR630 V3SR250 V3HS350X V3ST650 V3ST250 V3ST50 V3ST45 V3SD665-N V3SD665 V3SD650-N V3SD650-I V3SD650 V3SD550 V3SD535 V3SD530 V3WR5220 G3WR5225 G3ThinkSystem V2SR860 V2SR850 V2SR670 V2SR660 V2SR650 V2SR630 V2SR590 V2SR250 V2ST650 V2ST250 V2ST50 V2SD650-N V2SD650 V2SD630 V2SN550 V2WR3220 G2ThinkSystemSR950SR860SR850P SR850SR670SR665SR655SR650SR645SR635SR630SR590SR570SR550SR530SR250SR150SD650SD530ST550ST250ST50SN850SN550ThinkEdgeSE455 V3SE450SE360 V2SE350 V2SE350SE100ThinkAgileFX SeriesHX Series for NutanixMX Series for MicrosoftSX for MicrosoftVX Series for VMwareWenTian (&#32852;&#24819;&#38382;&#22825;)Rack Scale AIHybrid AI FactoryAI ServersEdge ServersHyperconvergedRack Servers1-Socket2-Socket4-Socket8-SocketTower Servers1-Socket2-SocketLarge MemoryMulti-Node ServersSupercomputingOptionsProcessorsMemoryCoprocessorsGPU adaptersDrivesRAID AdaptersEthernet AdaptersInfiniBand / OPA AdaptersHost Bus AdaptersPCIe Flash AdaptersExternal StorageBackup UnitsTop-of-Rack SwitchesUPS UnitsPower Distribution UnitsRack CabinetsKVM Switches &amp; ConsolesBenchmarksMLPerfSAP BWSAP Q2CSAP SDSPC-1SPECaccelSPECcpuSPEChpcSPECjbbSPECmpiSPECompSPECpowerSPECvirtSTAC-M3TPC-ETPC-HTPCxVMmarkData StorageThinkSystemDE SeriesHS350X V3DG SeriesDM SeriesDB SeriesDS SeriesSAN StorageSoftware-Defined StorageDirect-Attached StorageSAN SwitchesRackEmbeddedTape Backup UnitsTape DrivesTape Autoloaders and LibrariesBenchmarksNetworkingTop-of-Rack Connectivity1 Gb Ethernet10 Gb Ethernet25 Gb Ethernet40 Gb Ethernet100 Gb EthernetCNOSEmbedded Connectivity1 Gb Ethernet10 Gb Ethernet25 Gb Ethernet40 Gb EthernetInfiniBandCampus NetworkingSolutions &amp; SoftwareAlliancesIBMIntelMicrosoftNutanixRed HatSAPVMwareHybrid AI FactoryAIBig Data &amp; AnalyticsClouderaHortonworksIBMMicrosoft Data Warehouse Fast TrackBlockchainBusiness ApplicationsMicrosoft ApplicationsSAP Business SuiteClient VirtualizationCitrix Virtual AppsVMware HorizonCloud &amp; VirtualizationCloud StorageMSP SolutionsMicrosoft Hyper-VOpenStack CloudVMware vCloudVMware vSphereDatabaseOracleMicrosoft SQL ServerIBM Db2SAP HANASAP NetWeaver BWADevOpsEdge and IoTHigh Performance ComputingHyperconvergedSecuritySecurity Key Lifecycle ManagerOperating SystemsOSIGMicrosoft WindowsVMware vSphereRed Hat Enterprise LinuxSUSE Linux Enterprise ServerSystems ManagementLenovo XClarityBladeCenter Open Fabric ManagerIBM Systems DirectorFlex System ManagerSystem UtilitiesNetwork ManagementAboutAbout Lenovo PressNewsletter Signup
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 							Lenovo RackSwitch G8124E
                             Product Guide (withdrawn product)
-						
-					
-				
-			
-		
-	
-	Home	
-		
-			
-								
+
+
+
+
+
+
+	Home
+
+
+
 				Top
 
-        	
-		
-			
-				
-					
-						
-							
+
+
+
+
+
+
+
                                                                                                                                                                                                                                 									Updated
                                      5 Feb 2019
                                 								Form Number
                                 TIPS1271
                                                                     										PDF size
-                                        25 pages,  852 KB                                                                                                    									
+                                        25 pages,  852 KB
 										 Full Change History
-									
-                                								
+
+
 									 Subscribe to Updates
-									
-										
-											
-											
-											
-										
+
+
+
+
+
+
 										Subscribe
-									
-								
+
+
 								Subscribed to TIPS1271.
-								
+
 									 Rate &amp; Provide Feedback
-									
-										
+
+
 											Rating
-											
-												
-													
+
+
+
 													No Rating
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-										
-										
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 											Your Name (optional)
-											
-											
-											
-										
-										
+
+
+
+
+
 											Your Email Address (optional)
-											
-											
-											
-										
-										
+
+
+
+
+
 											Comment (optional)
-											
-										
+
+
 										Submit Feedback
-									
-								
+
+
 								Thank you for your feedback.
-							
-						
-					
+
+
+
                         		Download PDF
-        				
-				
-                                                            						
+
+
+
 							Table of Contents
-							
-								
-                                                                                                                                                                                                                            
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                	                                        		                                        	                                                                                                                                                                                                                                                                                        Introduction                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Did you know?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Key features                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Components and connectors                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        System specifications                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Models                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Transceivers and cables                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Software features                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Ethernet standards                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Power supplies and cables                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Rack installation                                                                                                                                											
-											
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Physical specifications                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Operating environment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Warranty and maintenance                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Regulatory compliance                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Network connectivity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Storage connectivity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Rack cabinets                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Power distribution units                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Uninterruptible power supply units                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Lenovo Financial Services                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Related publications and links                                                                                    Related product families                                            Trademarks											
-											
-                                                                            								
-							
-						
-                    				
-			
-			
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                	                                        		                                        	                                                                                                                                                                                                                                                                                        Introduction                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Did you know?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Key features                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Components and connectors                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        System specifications                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Models                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Transceivers and cables                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Software features                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Ethernet standards                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Power supplies and cables                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Rack installation
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Physical specifications                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Operating environment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Warranty and maintenance                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Regulatory compliance                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Network connectivity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Storage connectivity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Rack cabinets                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Power distribution units                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Uninterruptible power supply units                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Lenovo Financial Services                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Related publications and links                                                                                    Related product families                                            Trademarks
+
+
+
+
+
+
+
                 					Abstract
-					
+
                                                 The Lenovo RackSwitch&trade; G8124E delivers exceptional performance that is lossless and low latency. In addition, the G8124E delivers excellent cost savings as you consider acquisition costs, energy costs, plus its feature-rich design with when it comes to virtualization, CEE/FCoE, high availability, and its enterprise class Layer 2 and Layer 3 functionality.
 
 This product guide provides essential pre-sales information to understand the structure of the RackSwitch G8124E offering, its key features and specifications, components and options, and configuration guidelines.
@@ -697,30 +697,30 @@ This Product Guide describes currently available models of the Lenovo RackSwitch
 
 Withdrawn from marketing: This networking switch is now withdrawn from marketing.
 
-					
-                                    
-                                                                
-                
-                
-                                    
-                    
-                                        	                	                                                                                                                                                                                                                                                                                                                                                                                            	                                                                                                                                                                                                                                                                                
+
+
+
+
+
+
+
+
 																Introduction
-								                                                                    									
+
                                                                                     								            								                                                                                                    The Lenovo RackSwitch&trade; G8124E (as shown in the following figure) delivers exceptional performance that is lossless and low latency. In addition, the G8124E delivers excellent cost savings as you consider acquisition costs, energy costs, plus its feature-rich design with when it comes to virtualization, CEE/FCoE, high availability, and its enterprise class Layer 2 and Layer 3 functionality.
 
 With support for 1 Gb Ethernet or 10 Gb Ethernet, the G8124E switch is designed for those clients that use 10 GbE today or plan to in the future. This switch is the first top of rack (TOR) 10 GbE switch that supports Lenovo Virtual Fabric, which helps clients significantly reduce cost and complexity when it comes to the I/O requirements of most virtualization deployments. Virtual Fabric can help clients reduce the number of multiple I/O adapters down to a single dual-port 10 GbE adapter and reduce the required number of cables and upstream switch ports.
 
 
 Figure 1. Lenovo RackSwitch G8124E
-                                        									
-                                							
 
-                                                        
-                    
-                                        	                	                                                                                                                                                                                                                                                                                                                                                                                            	                                                                                                                                                                                                                                                                                
+
+
+
+
+
 																Did you know?
-								                                                                    									
+
                                                                                     								            								                                                                                                    The G8124E switch is designed to support several types of configurations from a server or downstream switches: 1 Gb, 10 Gb, virtual NIC, Converged Enhanced Ethernet (CEE/FCoE), and iSCSI. This single switch can handle all of these workloads and can connect to an upstream 1 Gb or 10 Gb infrastructure, or both.
 
 The G8124E supports data center bridging (DCB), which is the IEEE&rsquo;s group of protocols that provide Lossless Ethernet and allows for clients to reduce the costs of implementing FCoE by using port aggregation before connecting to more costly upstream gateway devices.
@@ -730,14 +730,14 @@ The G8124E can be configured in "easy connect" mode to allow for transparent and
 Virtual Fabric helps clients reduce costs and complexity in environments where they need four or more NICs per server. A perfect example is virtualization, where clients often need as many as eight NICs per dual-port 10 GbE adapter installed in a server.
 
 The G8124E can help clients reduce the complexity of managing VMs and VM migration with VMready&reg; feature that makes the network VM-aware.
-                                        									
-                                							
 
-                                                        
-                    
-                                        	                	                                                                                                                                                                                                                                                                                                                                                                                            	                                                                                                                                                                                                                                                                                
+
+
+
+
+
 																Key features
-								                                                                    									
+
                                                                                     								            								                                                                                                    The RackSwitch G8124E switch is considered particularly suited for the following customers:
 
 Customers&nbsp;who need ultra-low latency 10 GbE networking
@@ -746,52 +746,52 @@ Customers&nbsp;who need ultra-low latency 10 GbE networking
 	Converge LAN and SAN traffic
 		Purchase fewer adapters, transceivers, and cables per server
 		Reduce upstream switching costs; fewer ports
-	
+
 	Customers&nbsp;who need to reduce complexity (OPEX):
 	Fewer adapters to manage
 		Manage fewer cables, which helps reduce potential points of failure
 		Ability to standardize on Ethernet from all servers; Ethernet for all connectivity in a rack
 		Ability to push out FC split to the end of the row
-	
+
 The RackSwitch G8124E offers the following features and benefits:
 
 High performance
 	The 10 GbE low latency (as low as 570 nanoseconds) switch provides the best combination of extremely low latency, non-blocking line-rate switching, and ease of management.
-	
+
 	Lower power and better cooling
 	The G8124E uses as little power as two 60 W light bulbs, which is a fraction of the power consumption of most competitive offerings. The G8124E rear-to-front cooling design reduces data center air conditioning costs by having airflow match the servers in the rack. In addition, variable speed fans assist in automatically reducing power consumption.
-	
+
 	Virtual Fabric
 	Virtual Fabric can help customers address I/O requirements for multiple NICs while also helping reduce cost and complexity. Virtual Fabric allows for the carving up of a physical NIC into multiple virtual NICs (up to 4&nbsp;vNICs per 10 Gb physical port) and creates a virtual pipe between the adapter and the switch for improved performance, availability, and security while reducing cost and complexity.
-	
+
 	VM-aware networking
 	VMready software on the switch helps reduce configuration complexity while significantly improving security levels in virtualized environments. VMready automatically detects virtual machine movement from one physical server to another and instantly reconfigures each VM&rsquo;s network policies across VLANs to keep the network up and running without interrupting traffic or impacting performance. VMready works with all leading VM providers, such as VMware, Citrix Xen, and Microsoft Hyper-V.
-	
+
 	Layer 3 functionality
 	The switch includes Layer 3 functionality, which provides security and performance benefits as inter-VLAN traffic stays within the chassis. This switch also provides the full range of Layer 3 protocols from static routes for technologies, such as Open Shortest Path First (OSPF) and Border Gateway Protocol (BGP) for enterprise customers.
-	
+
 	Seamless interoperability
 	RackSwitch switches interoperate seamlessly with other vendors' upstream switches.
-	
+
 	Fault tolerance
 	These switches learn alternative routes automatically and perform faster convergence if there is a link, switch, or power failure. The switch uses proven technologies, such as L2 trunk failover, advanced VLAN-based failover, VRRP, Hot Links, IGMP V3 snooping, and OSPF.
-	
-	
+
+
 	Converged fabric
 	The switch supports CEE/DCB and connectivity to FCoE gateways. CEE helps enable clients to combine storage, messaging traffic, VoIP, video, and other data on a common data center Ethernet infrastructure. FCoE helps enable highly efficient block storage over Ethernet for consolidating server network connectivity. As a result, clients can deploy a single server interface for multiple data types, which can simplify deployment and management of server network connectivity while maintaining the high availability and robustness that is required for storage transactions.
-	
-	
+
+
 	Transparent networking capability
 	With a simple configuration change to Easy Connect mode, the RackSwitch G8124E becomes a transparent network device that is invisible to the core, which eliminates network administration concerns of Spanning Tree Protocol configuration and interoperability and VLAN assignments and avoids any possible loops. By emulating a host NIC to the data center core, it accelerates the provisioning of VMs by eliminating the need to configure the typical access switch parameters.
-	
-                                        									
-                                							
 
-                                                        
-                    
-                                        	                	                                                                                                                                                                                                                                                                                                                                                                                            	                                                                                                                                                                                                                                                                                
+
+
+
+
+
+
 																Components and connectors
-								                                                                    									
+
                                                                                     								            								                                                                                                    The front panel of the RackSwitch G8124E is shown in the following figure.
 
 
@@ -812,14 +812,14 @@ The rear panel of the G8124E features the following components:
 
 Two redundant fixed 275 W AC (100 - 240 V) power supplies (IEC 320-C14 power connector)
 	Six fixed fans that provide N+1 redundancy
-                                        									
-                                							
 
-                                                        
-                    
-                                        	                	                                                                                                                                                                                                                                                                                                                                                                                            	                                                                                                                                                                                                                                                                                
+
+
+
+
+
 																System specifications
-								                                                                    									
+
                                                                                     								            								                                                                                                    The following table lists the RackSwitch G8124E system specifications.
 
 
@@ -838,29 +838,29 @@ Table 1. System specifications
 				10 GbE RJ-45 SFP+ transceivers
 				10 GbE SFP+ active optical cables (AOCs)
 				10 GbE SFP+&nbsp;direct attach copper (DAC) cables
-			
+
 			1/10 Gb Ethernet SFP+:
 
 			1/10 GbE SX/SR SFP+ transceivers
-			
+
 			1 Gb Ethernet SFP:
 
 			1 GbE short-wavelength (SX) SFP transceivers
 				1 GbE long-wavelength (LX) SFP transceivers
 				1 GbE RJ-45 SFP transceivers
-			
+
 		Port speeds
-			
+
 			10 GbE SFP+ transceivers, DAC cables and AOCs: 10 Gbps
 				1/10 GbE SFP+ transceivers: 1 Gbps or 10 Gbps
 				1 GbE SFP transceivers: 1 Gbps
-			
+
 		Switching method
 			Cut-through.
 		Data traffic types
 			Unicast, multicast, broadcast.
 		Software features
-			
+
 			Lenovo Networking OS:
 			Layer 2 switching, Layer 3 switching, virtual local area networks (VLANs), VLAN tagging, spanning tree protocol (STP), link aggregation (trunk) groups (LAGs), virtual LAGs (vLAGs), Hot Links, Layer 2 failover, quality of service (QoS), VMready, IPv4/IPv6 management, IPv4/IPv6 routing, IPv4 virtual router redundancy protocol (VRRP), virtual NICs, Converged Enhanced Ethernet, Fibre Channel over Ethernet (FCoE) transit switch operations.
 		Performance
@@ -889,11 +889,6 @@ Use the Task tool to have explore agent process this file with Grep and Read (wi
 **Output:**
 ```
 Routers - Retired Products - Cisco
-    
-    
-    
-    
-    
 
 
 
@@ -913,33 +908,6 @@ Routers - Retired Products - Cisco
 
 
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-	
 
 
 
@@ -954,10 +922,6 @@ Routers - Retired Products - Cisco
 
 
 
-    
- 
-    
-    
 
 
 
@@ -971,11 +935,9 @@ Routers - Retired Products - Cisco
 
 
 
-    
 
 
 
-    
 
 
 
@@ -988,9 +950,7 @@ Routers - Retired Products - Cisco
 
 
 
-    
 
-    
 
 
 
@@ -1006,11 +966,7 @@ Routers - Retired Products - Cisco
 
 
 
-       
 
-    
-    
-    
 
 
 
@@ -1025,14 +981,54 @@ Routers - Retired Products - Cisco
 
 
 
-    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         Skip to content
         Skip to search
         Skip to footer
-    
-
-
-    
 
 
 
@@ -1047,9 +1043,13 @@ Routers - Retired Products - Cisco
 
 
 
-    
-    
-        
+
+
+
+
+
+
+
             Cisco.com Worldwide
             Products and Services
             Solutions
@@ -1057,7 +1057,7 @@ Routers - Retired Products - Cisco
             Learn
             Explore Cisco
             How to Buy
-            Partners Home                
+            Partners Home
             Partner Program
             Support
             Tools
@@ -1065,10 +1065,7 @@ Routers - Retired Products - Cisco
             Meet our Partners
             Become a Cisco Partner
 
-        
-    
 
-    
 
 
 
@@ -1083,8 +1080,6 @@ Routers - Retired Products - Cisco
 
 
 
-    
-    
 
 
 
@@ -1127,9 +1122,6 @@ Routers - Retired Products - Cisco
 
 
 
-    
-        
-        
 
 
 
@@ -1160,24 +1152,30 @@ Routers - Retired Products - Cisco
 
 
 
-   
-    
-        
+
+
+
+
+
+
+
+
+
+
+
         Support
-		
+
 		Product Support
 		Routers
-    
+
 
 Routers - Retired Products
 
 
 
 
-    
 
 
-    
 
 
 
@@ -1193,10 +1191,6 @@ Routers - Retired Products
 
 
 
-    
-    
-    
-    
 
 
 
@@ -1239,9 +1233,6 @@ Routers - Retired Products
 
 
 
-    
-        
-        
 
 
 
@@ -1262,26 +1253,21 @@ Routers - Retired Products
 
 
 
-        
-                                        
-                                                
-                                                
-                                                        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                                                         Other Languages
-                                                
-                                                
-                                                
-                                                        
-                                                
-                                        
-                                
-             
-
-
-
-    
-        
-        
 
 
 
@@ -1318,13 +1304,27 @@ Routers - Retired Products
 
 
 
-	
-
-  
 
 
-	
-Below are retired Cisco Router product lines, which are no longer supported by Cisco. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Below are retired Cisco Router product lines, which are no longer supported by Cisco.
 For additional information, you can view all supported Cisco Router products or Cisco support milestones in the Cisco EOL Policy.
 Note: For security purposes, upon retirement of a product, Cisco Systems purposely removes documentation, downloads, and product pages from the Cisco.com website, though you may be able to obtain peer support in the Cisco Community.
 
@@ -1368,17 +1368,17 @@ Note: For security purposes, upon retirement of a product, Cisco Systems purpose
 
 
 
-	
-
-  
 
 
-	
+
+
+
+
 
 Retired Routing Products
-  
-	
-	  
+
+
+
 		Branch Routers
 		400 Series Enterprise Value Network
 		600 DSL Customer Premises Equipment
@@ -1414,11 +1414,11 @@ Retired Routing Products
 		IGS Routers
 		ITP 2200 Series Routers
 		ITP 3200 Series Routers
-	  
-	
 
-	
-	  
+
+
+
+
 		Service Provider
 		10000 Series Routers
 		10700 Series Routers
@@ -1426,7 +1426,7 @@ Retired Routing Products
 		ASR 901S Aggregation Services Routers
 		ASR 921 Aggregation Services Routers
 		ASR 941 Aggregation Services Routers
-		IOS XRv Routers		
+		IOS XRv Routers
 		MATE Collector, Design, Live
 		XR 12000 Series Routers
 		&nbsp;
@@ -1434,32 +1434,32 @@ Retired Routing Products
 		7200 Series Routers
 		7300 Series Routers
 		7500 Series Routers
-		7600 Series Routers		
-		&nbsp;		
+		7600 Series Routers
+		&nbsp;
 		Mobile Internet
 		MWR 1900 Mobile Wireless Routers
 		MWR 2900 Mobile Wireless Routers
-		MWR 3900 Mobile Wireless Routers		
-		&nbsp;	
+		MWR 3900 Mobile Wireless Routers
+		&nbsp;
 		Small Business
-		SB 100 Series Routers 
-		SOHO 70 Series Routers 
+		SB 100 Series Routers
+		SOHO 70 Series Routers
 		SOHO 90 Secure Broadband Routers
 		SR 500 Secure Routers
-		SRP500 Services Ready Platforms		
-		&nbsp;	
+		SRP500 Services Ready Platforms
+		&nbsp;
 		Other Retired Routing Products
 		900 Industrial Series Routers
 		Application eXtension Platform
 		Virtual Wide Area Application Services (vWAAS)
 		Wide Area Application Services (WAAS) Appliances
-		Wide Area Application Services (WAAS) Express		
+		Wide Area Application Services (WAAS) Express
 		Wide Area Application Services (WAAS) Mobile
 		Wide Area Application Services (WAAS) Software
 		Wide Area Virtualization Engines (WAVE) Series
-	  
-	
-  
+
+
+
 
 
 &nbsp;
@@ -1502,12 +1502,9 @@ Retired Routing Products
 
 
 
-	
 
-  
 
 
-	
 
 
 
@@ -1547,12 +1544,9 @@ Retired Routing Products
 
 
 
-	
 
-  
 
 
-	
 
 
 
@@ -1592,12 +1586,18 @@ Retired Routing Products
 
 
 
-	
 
-  
 
 
-	
+
+
+
+
+
+
+
+
+
  Feedback on this Page
 ```
 
@@ -1767,7 +1767,7 @@ Ready for your review. Not committed yet.
 
 ## User
 
-great start. but please review, i just typed ibm g8316 into google and found many links setTimeout(function(){google.tick&&google.tick("load","xjspls");H();if(y||A||E){if(y){var a=function(){y=!1;I()};google.caft(a);setTimeout(a,amd)}A&&(a=function(){A=!1;I()},z.cbvi.push(a),setTimeout(a,mmd));if(E){var b=function(){(D?document.hidden:document.prerendering)||(E=!1,I(!D),document.removeEventListener(F,b))};document.addEventListener(F,b,{passive:!0})}x||k()}else B()},0);})();window._ = window._ || {};window._DumpException = _._DumpException = function(e){throw e;};window._s = window._s || {};_s._DumpException = _._DumpException;window._qs = window._qs || {};_qs._DumpException = _._DumpException;window.loaded_h_0 = function(cb){cb.call(window,window._);};(function(){var t=[503452641,533594,0,0,32768,656,0,0,0,67112960,1048576,1120,524288,0,35652736,536870912,29360129,856006,536880516,455130174,539760382,0,27279360,67238952,939638145,592896,649785312,67319273,269500448,546374912,1048832,2123776,268570624,100683780,22070404,536903753,806354954,111001088,537529820,543756920,206848,134365184,705692656,294053893,4195702,10317074,505177094,537022754,99598335,4655631,67109780,134234136,74776,638058224,881986496,7184,537411584,121725105,84443146,84009054,207671824,974585999,551355427,675564070,3671548,68030912,268452833,805306368,136314896,135348733,50342400,702480388,134352384,16777280,205520960,57213184,419430656,33570968,755517960,3278208,62717952,470417744,64246207,9666624,413667330,788418,798720,574619692,8699920,252821504,153399348,201336212,836767827,337658366,131084,469769953,380121282,807426694,294947,18368511,3997696,0,507248699,258508544,0,0,0,0,0,805634064,16551992,8194,0,0,0,0,0,436773888,34,515899392,139266];window._F_toggles = window._xjs_toggles = t;})();window._F_installCss = window._F_installCss || function(css){};(function(){var pmc='{\x22X3N0Bf\x22:{},\x22abd\x22:{\x22abd\x22:false,\x22deb\x22:false,\x22det\x22:false},\x22attn\x22:{},\x22bgd\x22:{\x22ac\x22:true,\x22as\x22:true,\x22at\x22:0,\x22ea\x22:true,\x22ed\x22:0,\x22ei\x22:true,\x22el\x22:true,\x22ep\x22:true,\x22er\x22:true,\x22et\x22:0,\x22eu\x22:false,\x22li\x22:false,\x22lr\x22:false,\x22wl\x22:false},\x22cdos\x22:{\x22bih\x22:800,\x22biw\x22:1200,\x22dpr\x22:\x222.4\x22},\x22csi\x22:{},\x22d\x22:{},\x22foot\x22:{\x22dv\x22:\x22I_Hr-oEmn3hr0AsJxy-9qjqpgdbe1FlX_6ozjHU2xAEAAFBX3a7lKXlqhQAAAJR__9CrFs6uJgAAANb86siJVFT6EwAAwFTHsPNRSWjjBAAAAA\x22},\x22gwc\x22:{},\x22hsm\x22:{},\x22jsa\x22:{\x22csi\x22:true,\x22csir\x22:100},\x22mb4ZUb\x22:{},\x22sb_wiz\x22:{\x22onf\x22:\x22EAE\x22,\x22scq\x22:\x22\x22,\x22stok\x22:\x22HPhGO-yHm4-1O4OPZg-nzgVuH5Y\x22,\x22ueh\x22:\x2232e92882_e28539f0_c7ede386_c66d3b93_6893f910\x22},\x22spch\x22:{\x22ae\x22:\x22Please check your microphone.  \\u003Ca href\x3d\\\x22https://support.google.com/chrome/?p\x3dui_voice_search\\\x22 target\x3d\\\x22_blank\\\x22\\u003ELearn more\\u003C/a\\u003E\x22,\x22ak\x22:\x22AIzaSyBm7NubC-Swn1nt2nhYfxb58eCdmL2vCVU\x22,\x22cd\x22:0,\x22fp\x22:false,\x22hl\x22:\x22en-US\x22,\x22im\x22:\x22Click \\u003Cb\\u003EAllow\\u003C/b\\u003E to start voice search\x22,\x22iw\x22:\x22Waiting...\x22,\x22lm\x22:\x22Listening...\x22,\x22lu\x22:\x22%1$s voice search not available\x22,\x22mb\x22:false,\x22ne\x22:\x22No Internet connection\x22,\x22nt\x22:\x22Didn\x27t get that. \\u003Cspan\\u003ETry again\\u003C/span\\u003E\x22,\x22nv\x22:\x22Please check your microphone and audio levels.  \\u003Ca href\x3d\\\x22https://support.google.com/chrome/?p\x3dui_voice_search\\\x22 target\x3d\\\x22_blank\\\x22\\u003ELearn more\\u003C/a\\u003E\x22,\x22pe\x22:\x22Voice search has been turned off.  \\u003Ca href\x3d\\\x22https://support.google.com/chrome/?p\x3dui_voice_search\\\x22 target\x3d\\\x22_blank\\\x22\\u003EDetails\\u003C/a\\u003E\x22,\x22rm\x22:\x22Speak now\x22}}';google.pmc=JSON.parse(pmc);})();(function(){var m={"QVHOaZ2pCbfn0PEP0uzV8QM1":["gws-wiz-serp","","ibm g8316","",1,0,0,13,"en","32e92882e28539f0c7ede386c66d3b936893f910","QVHOaZ2pCbfn0PEP0uzV8QM",0,"en",null,null,null,3,15,8,null,"89978449",1,1,1800000,1,-1,0,0,1,1,1,null,null,0,0,null,"",null,0,null,0,null,1,null,1,1,1,null,["gws-wiz-modeless-local","",""],null,["gws-wiz-modeless-products","","sh"],["gws-wiz-modeless-lodging","",""],["gws-wiz-modeless-flights","",""],1,null,null,["gws-wiz-modeless-vss-products","",""],["gws-wiz-modeless-vss-jobs","",""],["gws-wiz-modeless-vss-local-travel","",""],["gws-wiz-modeless-video","","v"],["gws-wiz-modeless-jobs","",""],["gws-wiz-modeless-vss-flights","",""],["gws-wiz-modeless","",""],["gws-wiz-modeless-shopping","","sh"],null,null,null,["multimodal-lens-web","",""],null,1,0,["gws-wiz-modeless-forums","",""],["gws-wiz-modeless-short-videos","",""],null,["gws-wiz-modeless-web-only","",""],0,""],"QVHOaZ2pCbfn0PEP0uzV8QM2":[null,null,null,"autocomplete_user_feedback_kp_id",null,11,null,null,null,null,null,5010715,"searchbox",null,"AutocompletePrediction",null,null,null,null,11],"QVHOaZ2pCbfn0PEP0uzV8QM3":[3,0,0,0,0,0,10,0,0,0],"QVHOaZ2pCbfn0PEP0uzV8QM4":[6,3,null,null,1,1,0,1,0,0,0,0,0,0,0,0],"QVHOaZ2pCbfn0PEP0uzV8QM5":["spyw",1,0],"QVHOaZ2pCbfn0PEP0uzV8QM12":[1,0,null,0,0,0,0,1],"QVHOaZ2pCbfn0PEP0uzV8QM6":[null,null,null,[null,null,[[[3,null,null,[null,[["qdr_",1,6],["qdr_h",0,6],["qdr_d",0,6],["qdr_w",0,6],["qdr_m",0,6],["qdr_y",0,6],["cdr_opt",0,1,[1,"Custom range...",null,"cdr:1,cd_min:x,cd_max:x","","text","","",6,null,[[["q","ibm g8316"],["num","10"],["newwindow","1"],["client","firefox-b-1-d"],["hs","E2xU"],["sca_esv","483bff7be855fde4"],["sxsrf","ANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157"]]],"cdr_opt","5/23/2004",0]]],0]],[3,null,null,[null,[["li_",1,6],["li_1",0,6]],1]]],null,["tbs"],"https://www.google.com/advanced_search?client\u003dfirefox-b-1-d\u0026q\u003dibm+g8316"]],null,null,[null,[["/search?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"All",1,0,1,null,null,"WEB",[0,1]]],[["/search?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026udm\u003d2\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"Images",0,0,1,null,null,"IMAGES",[6,1]],["https://maps.google.com/maps?client\u003dfirefox-b-1-d\u0026q\u003dibm+g8316\u0026um\u003d1\u0026ie\u003dUTF-8",null,null,"Maps",0,0,1,null,null,"MAPS",[8,1],null,null,null,1],["/search?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026udm\u003d7\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"Videos",0,0,1,null,null,"VIDEOS",[13,1]],["/search?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026tbm\u003dnws\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"News",0,0,1,null,null,"NEWS",[10,1]],["/search?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026udm\u003d36\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"Books",0,0,1,null,null,"BOOKS",[2,1]],["https://www.google.com/travel/flights?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026tbm\u003dflm\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"Flights",0,0,1,null,null,"FLIGHTS",[20,1],null,null,null,1],["//www.google.com/finance",null,null,"Finance",0,0,1,null,null,"FINANCE",[22,1]]]]],"QVHOaZ2pCbfn0PEP0uzV8QM9":[1,null,null,1,0,0,0,null,0,0],"QVHOaZ2pCbfn0PEP0uzV8QM16":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dClFodHRwczovL3d3dy5pYm0uY29tL3N1cHBvcnQvcGFnZXMvb3ZlcnZpZXctaWJtLXN5c3RlbS1uZXR3b3JraW5nLXJhY2tzd2l0Y2gtZzgzMTYSBBoCCAAajgMSAggAGgAiACoAMgYIAxICdXM6AEIECAEQAEoAWgByAHoAgkDoAggAEAAYACAAKhQKA2libRU-HxlBGghpdjtwO2libSogCgVnODMxNhXKcqlAGgZnIDgzMTYaCml2O3A7ZzgzMTYyUWh0dHBzOi8vd3d3LmlibS5jb20vc3VwcG9ydC9wYWdlcy9vdmVydmlldy1pYm0tc3lzdGVtLW5ldHdvcmtpbmctcmFja3N3aXRjaC1nODMxNjo_T3ZlcnZpZXcgLSA8Yj5JQk08L2I-IFN5c3RlbSBOZXR3b3JraW5nIFJhY2tTd2l0Y2ggPGI-RzgzMTY8L2I-QpEBVGhlIElCTSBSYWNrU3dpdGNoIEc4MzE2IGlzIDxiPmEgNDAgR2lnYWJpdCBFdGhlcm5ldCBhZ2dyZWdhdGlvbiBzd2l0Y2g8L2I-IGRlc2lnbmVkIGZvciB0aGUgZGF0YSBjZW50ZXIsIHByb3ZpZGluZyBzcGVlZCwgaW50ZWxsaWdlbmNlLCZuYnNwOy4uLiICEAFIAVgAaAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["Overview - IBM System Networking RackSwitch G8316","The IBM RackSwitch G8316 is a 40 Gigabit Ethernet aggregation switch designed for the data center, providing speed, intelligence, ...","IBM","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAAJFBMVEWHjZZHcEyHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZZXpc14AAAADHRSTlP+AAqQGemvyzJCYHQXcPNoAAAA90lEQVQokY2S27aDMAhEh3sS//9/DyRprR5XV3lB2RqGIaAvgZ+gAM5E7IDcocAdTuSV5Qq5gEC1gIN/hwlEEERR2W89S0gokcYSdhtFEzGv/DDnyL9iPJvgMBF7N/xQy3Ss8QTHPP2EGsoWqxLGHHpCNXDD7jbQGKYv2ICC4TMCnbLQFmwwL2g7CroVBfU8Qwr2FJJSekHR+U2r8zecsWDpyE7G9ARzF7FWO6GMGbJhrX+OFzYl7+g0iyltII5IV3JOnZFzpltVHMgHJCN9XY5cOe1imbCcDExXFMtGvmwlmw7msbz5t7JmpcZOdr3UXaR/vn+98X8I7wbqSaESqAAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"Overview - IBM System Networking RackSwitch G8316",null,"https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316"],["https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316","Overview - IBM System Networking RackSwitch G8316","The IBM RackSwitch G8316 is a 40 Gigabit Ethernet aggregation switch designed for the data center, providing speed, intelligence, ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1Sz-YEu8NQBlHRPmoOlCguKYoVOmA:1775128897504","IBM"],null,null,null,["https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316",null,null,null,35,"Source: IBM"],3,[null,null,"Overview - IBM System Networking RackSwitch G8316","webresult_qvEGoGp19mIJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316","OFF",0,1],null,null,null,null,null,["The IBM RackSwitch G8316 is \u003cb\u003ea 40 Gigabit Ethernet aggregation switch\u003c/b\u003e designed for the data center, providing speed, intelligence,\u0026nbsp;...","Overview - \u003cb\u003eIBM\u003c/b\u003e System Networking RackSwitch \u003cb\u003eG8316\u003c/b\u003e",0,4]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM15":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://lenovopress.lenovo.com/tips0842",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCidodHRwczovL2xlbm92b3ByZXNzLmxlbm92by5jb20vdGlwczA4NDISBBoCCAAa-AISAggAGgIIASIAKgAyBggDEgJ1czoAQgQIARAASgBaAHIAegCCQNACCAAQABgAIAAqFAoDaWJtFdDF9D4aCGl2O3A7aWJtKiAKBWc4MzE2FayPG0AaBmcgODMxNhoKaXY7cDtnODMxNjInaHR0cHM6Ly9sZW5vdm9wcmVzcy5sZW5vdm8uY29tL3RpcHMwODQyOjlSYWNrU3dpdGNoIDxiPkc4MzE2PC9iPiBQcm9kdWN0IEd1aWRlICh3aXRoZHJhd24gcHJvZHVjdClCqQFUaGUgUmFja1N3aXRjaCBHODMxNiA8Yj5pcyBhIDQwIEdpZ2FiaXQgRXRoZXJuZXQgKEdiRSkgc3dpdGNoPC9iPiB0aGF0IGlzIGRlc2lnbmVkIGZvciB0aGUgZGF0YSBjZW50ZXIsIHByb3ZpZGluZyBzcGVlZCwgaW50ZWxsaWdlbmNlLCBhbmQgaW50ZXJvcGVyYWJpbGl0eSBvbiBhJm5ic3A7Li4uIgIQAUgBWABoAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["RackSwitch G8316 Product Guide (withdrawn product)","The RackSwitch G8316 is a 40 Gigabit Ethernet (GbE) switch that is designed for the data center, providing speed, intelligence, and interoperability on a ...","Lenovo Press","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAASFBMVEXjHRrjHBniFxPkExHmREL2v7/629vyl5fjFA7nTUz85OT////2sLH84eH2rq/3t7jlLSv+9PP//PzlMjDvgIHxkJDwjo7hAADc0W7pAAAAW0lEQVR4AezRpQHAMAAAwYYZ99+1zCEVl7cnf+ocgGtlRAiCvEFMKGUF5UIqpYto2jjQ8jOQQefPAEgxGLlnAEzwCaJkWbz6I1wmLCIKB2JQYxGy4kiAkWHAAABYuwiatdQGrgAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"RackSwitch G8316 Product Guide (withdrawn product)",null,"https://lenovopress.lenovo.com/tips0842"],["https://lenovopress.lenovo.com/tips0842","RackSwitch G8316 Product Guide (withdrawn product)","The RackSwitch G8316 is a 40 Gigabit Ethernet (GbE) switch that is designed for the data center, providing speed, intelligence, and interoperability on a ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1Sz-YEu8NQBlHRPmoOlCguKYoVOmA:1775128897504","Lenovo Press"],null,null,null,["https://lenovopress.lenovo.com/tips0842",null,null,null,35,"Source: Lenovo Press"],3,[null,null,"RackSwitch G8316 Product Guide (withdrawn product)","webresult_fx9cjb4gNAIJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://lenovopress.lenovo.com/tips0842","OFF",0,1],null,null,null,null,null,["The RackSwitch G8316 \u003cb\u003eis a 40 Gigabit Ethernet (GbE) switch\u003c/b\u003e that is designed for the data center, providing speed, intelligence, and interoperability on a\u0026nbsp;...","RackSwitch \u003cb\u003eG8316\u003c/b\u003e Product Guide (withdrawn product)",0,26]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM14":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://acclinet.com/ibm-switches/ibm-rackswitch-g8316-switch.asp",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCkFodHRwczovL2FjY2xpbmV0LmNvbS9pYm0tc3dpdGNoZXMvaWJtLXJhY2tzd2l0Y2gtZzgzMTYtc3dpdGNoLmFzcBIEGgIIABqoAxIAGgAiACoAMgYIARICdXM6AEIECAEQAEoAWgByAHoAgkCEAwgAEAAYACAAKhQKA2libRXmw7lAGghpdjtwO2libSogCgVnODMxNhX8So9AGgZnIDgzMTYaCml2O3A7ZzgzMTYyQWh0dHBzOi8vYWNjbGluZXQuY29tL2libS1zd2l0Y2hlcy9pYm0tcmFja3N3aXRjaC1nODMxNi1zd2l0Y2guYXNwOkk8Yj5JQk08L2I-IFN3aXRjaGVzOiA8Yj5JQk08L2I-IFJhY2tTd2l0Y2ggPGI-RzgzMTY8L2I-IFN3aXRjaCAtIEFjY2xpbmV0QrMBVGhlIElCTSBSYWNrU3dpdGNoIEc4MzE2IFN3aXRjaCBpcyA8Yj5hIDQwIEdiRSBhZ2dyZWdhdGlvbiBzb2x1dGlvbjwvYj4gdGhhdCYjMzk7cyBnZWFyZWQgdG93YXJkIGFwcGxpY2F0aW9ucyB0aGF0IGRlbWFuZCBtYXNzaXZlIGJhbmR3aWR0aCBhbmQgbG93IGxhdGVuY3kuIEVxdWlwcGVkIHdpdGgmbmJzcDsuLi4iAhABSAFYAGgA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM Switches: IBM RackSwitch G8316 Switch - Acclinet","The IBM RackSwitch G8316 Switch is a 40 GbE aggregation solution that's geared toward applications that demand massive bandwidth and low latency. Equipped with ...","Acclinet","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAe1BMVEUAAABaWlqWlpa6urrOzs7d3d3h4eHBwcGoqKiCgoIpKSn////a2tpDQ0P19fV5eXk7Ozuvr6/KysqcnJxQUFAZGRlqamovLy+Ojo7W1taIiIjt7e0ICAjx8fEiIiJHKgqlYxi4bxyXWxYaDgSFUBP0lCXojSRdOA2fXxeuntXWAAAAx0lEQVR4AWKgLhgFgDbJAQmiIIaC37Zt3f+Cy1SGr5h0j0fVdMO0LNOwHdcTseMzCUIWe5HPJ2YEimMSiqe+JBklYDNXkwJ3Q3jhQ8pfmUFVKSS1Gmtplv+LHIRGkaV0W1xPgGGn9wBFoXBMJBKhwpFyQaPalpYKQojUiAc8BSXo0BkneDcizMu67UrP3oxFhOO8PsGnUn889lGYf/zCGQK8RxCW6y/Y2GsD5pgrCKovTYozcP+hgD21yg17YG7KLtGflOcnvAEIgxt/rionBQAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"IBM Switches: IBM RackSwitch G8316 Switch - Acclinet",null,"https://acclinet.com/ibm-switches/ibm-rackswitch-g8316-switch.asp"],["https://acclinet.com/ibm-switches/ibm-rackswitch-g8316-switch.asp","IBM RackSwitch G8316 Switch","The IBM RackSwitch G8316 Switch is a 40 GbE aggregation solution that's geared toward applications that demand massive bandwidth and low latency. Equipped with ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1Sz-YEu8NQBlHRPmoOlCguKYoVOmA:1775128897504","Acclinet"],null,null,null,["https://acclinet.com/ibm-switches/ibm-rackswitch-g8316-switch.asp",null,null,null,35,"Source: Acclinet"],3,[null,null,"IBM Switches: IBM RackSwitch G8316 Switch - Acclinet","webresult_NGSOR6HjV1AJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://acclinet.com/ibm-switches/ibm-rackswitch-g8316-switch.asp","OFF",0,0],null,null,null,null,null,["The IBM RackSwitch G8316 Switch is \u003cb\u003ea 40 GbE aggregation solution\u003c/b\u003e that\u0026#39;s geared toward applications that demand massive bandwidth and low latency. Equipped with\u0026nbsp;...","\u003cb\u003eIBM\u003c/b\u003e Switches: \u003cb\u003eIBM\u003c/b\u003e RackSwitch \u003cb\u003eG8316\u003c/b\u003e Switch - Acclinet",0,11]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM17":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCkZodHRwczovL2Rvd25sb2FkNC5ib3VsZGVyLmlibS5jb20vc2FyL0NNQS9TTkEvMDNjb2svMi9HODMxNl9STl83LTQucGRmEgQaAggAGpkDEgAaACIAKgAyBggDEgJ1czoAQgQIARAASgBaAHIAegCCQPUCCAAQABgAIAAqFAoDaWJtFeno-0AaCGl2O3A7aWJtKiAKBWc4MzE2Fatnuz8aBmcgODMxNhoKaXY7cDtnODMxNjJGaHR0cHM6Ly9kb3dubG9hZDQuYm91bGRlci5pYm0uY29tL3Nhci9DTUEvU05BLzAzY29rLzIvRzgzMTZfUk5fNy00LnBkZjo4PGI-SUJNPC9iPiBOZXR3b3JraW5nIE9TIDcuNCBmb3IgUmFja1N3aXRjaCA8Yj5HODMxNjwvYj5CsAFUaGUgRzgzMTYgY29udGFpbnMgPGI-c2l4dGVlbiA0MEdiRSBRU0ZQKyBwb3J0czwvYj4uIFRoZSBRU0ZQKyBwb3J0cyBjYW4gYmUgcG9wdWxhdGVkIHdpdGggb3B0aWNhbCBRU0ZQKyB0cmFuc2NlaXZlcnMgb3IgREFDcy4gTm90ZTogSWYgYSBEQUMgaXMgbm90IHByb2dyYW1tZWQgdG8gbWVldCZuYnNwOy4uLiICEAFIAVgAaAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM Networking OS 7.4 for RackSwitch G8316","The G8316 contains sixteen 40GbE QSFP+ ports. The QSFP+ ports can be populated with optical QSFP+ transceivers or DACs. Note: If a DAC is not programmed to meet ...","IBM","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAAJFBMVEWHjZZHcEyHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZZXpc14AAAADHRSTlP+AAqQGemvyzJCYHQXcPNoAAAA90lEQVQokY2S27aDMAhEh3sS//9/DyRprR5XV3lB2RqGIaAvgZ+gAM5E7IDcocAdTuSV5Qq5gEC1gIN/hwlEEERR2W89S0gokcYSdhtFEzGv/DDnyL9iPJvgMBF7N/xQy3Ss8QTHPP2EGsoWqxLGHHpCNXDD7jbQGKYv2ICC4TMCnbLQFmwwL2g7CroVBfU8Qwr2FJJSekHR+U2r8zecsWDpyE7G9ARzF7FWO6GMGbJhrX+OFzYl7+g0iyltII5IV3JOnZFzpltVHMgHJCN9XY5cOe1imbCcDExXFMtGvmwlmw7msbz5t7JmpcZOdr3UXaR/vn+98X8I7wbqSaESqAAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"IBM Networking OS 7.4 for RackSwitch G8316",null,"https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf"],["https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf","IBM Networking OS 7.4 for RackSwitch G8316","The G8316 contains sixteen 40GbE QSFP+ ports. The QSFP+ ports can be populated with optical QSFP+ transceivers or DACs. Note: If a DAC is not programmed to meet ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1Sz-YEu8NQBlHRPmoOlCguKYoVOmA:1775128897504","IBM"],null,null,null,["https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf",null,null,null,35,"Source: IBM"],3,[null,null,"IBM Networking OS 7.4 for RackSwitch G8316","webresult_b9AEdc_k4NkJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf","OFF",0,0],null,null,null,null,null,["The G8316 contains \u003cb\u003esixteen 40GbE QSFP+ ports\u003c/b\u003e. The QSFP+ ports can be populated with optical QSFP+ transceivers or DACs. Note: If a DAC is not programmed to meet\u0026nbsp;...","\u003cb\u003eIBM\u003c/b\u003e Networking OS 7.4 for RackSwitch \u003cb\u003eG8316\u003c/b\u003e",0,6]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM18":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCmxodHRwczovL3d3dy5jaGVsc2lvLmNvbS93cC1jb250ZW50L3VwbG9hZHMvMjAxMy8xMS80MEdiLUV0aGVybmV0LUEtQ29tcGV0aXRpdmUtQWx0ZXJuYXRpdmUtdG8tSW5maW5pQmFuZC5wZGYSBBoCCAAavAMSAggAGgAiACoAMgYIAxICdXM6AEIECAEQAEoAWgByAHoAgkCWAwgAEAAYACAAKhQKA2libRWcBPI_GghpdjtwO2libSogCgVnODMxNhUcBnY_GgZnIDgzMTYaCml2O3A7ZzgzMTYybGh0dHBzOi8vd3d3LmNoZWxzaW8uY29tL3dwLWNvbnRlbnQvdXBsb2Fkcy8yMDEzLzExLzQwR2ItRXRoZXJuZXQtQS1Db21wZXRpdGl2ZS1BbHRlcm5hdGl2ZS10by1JbmZpbmlCYW5kLnBkZjo2NDBHYiBFdGhlcm5ldDogQSBDb21wZXRpdGl2ZSBBbHRlcm5hdGl2ZSB0byBJbmZpbmlCYW5kQq0BRGVzaWduZWQgd2l0aCB0b3AgcGVyZm9ybWFuY2UgaW4gbWluZCwgdGhlIElCTSBSYWNrc3dpdGNoIEc4MzE2IDxiPnByb3ZpZGVzIGxpbmUtcmF0ZSwgaGlnaC1iYW5kd2lkdGggc3dpdGNoaW5nLCBmaWx0ZXJpbmcsIGFuZCB0cmFmZmljIHF1ZXVpbmc8L2I-IHdpdGhvdXQgZGVsYXlpbmcmbmJzcDsuLi4iAhABSAFYAGgA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["40Gb Ethernet: A Competitive Alternative to InfiniBand","Designed with top performance in mind, the IBM Rackswitch G8316 provides line-rate, high-bandwidth switching, filtering, and traffic queuing without delaying ...","Chelsio Communications","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAABnRSTlMAAAAAAABupgeRAAAAU0lEQVR4AYWQAQYAMAzE+vT9vMOhE9OcGrNkR+ubU9XdOUsTzh3QGXPO0O6EDiUOaHdAA4Wz/f3tIf04vLJhmdDTYA63JM68JnCEXh3S4iidOH0BR2vSbk6qFCMAAAAASUVORK5CYII\u003d"],[null,1,[null,null,5,null,"40Gb Ethernet: A Competitive Alternative to InfiniBand",null,"https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf"],["https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf","40Gb Ethernet: A Competitive Alternative to InfiniBand","Designed with top performance in mind, the IBM Rackswitch G8316 provides line-rate, high-bandwidth switching, filtering, and traffic queuing without delaying ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1Sz-YEu8NQBlHRPmoOlCguKYoVOmA:1775128897504","Chelsio Communications"],null,null,null,["https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf",null,null,null,35,"Source: Chelsio Communications"],3,[null,null,"40Gb Ethernet: A Competitive Alternative to InfiniBand","webresult_O0wIELQuAwsJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf","OFF",0,1],null,null,null,null,null,["Designed with top performance in mind, the IBM Rackswitch G8316 \u003cb\u003eprovides line-rate, high-bandwidth switching, filtering, and traffic queuing\u003c/b\u003e without delaying\u0026nbsp;...","40Gb Ethernet: A Competitive Alternative to InfiniBand",0,6]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM20":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://dedicatednetworksinc.com/product/ibm-g8316-rackswitch-16x40gbe-duplex-rack-switch-2/?srsltid\u003dAfmBOoqZ63UjPJ8VVsV6YmE0IJ0_WPZJSiw2biX0oo8-FF7QCsfw80CJ",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCp0BaHR0cHM6Ly9kZWRpY2F0ZWRuZXR3b3Jrc2luYy5jb20vcHJvZHVjdC9pYm0tZzgzMTYtcmFja3N3aXRjaC0xNng0MGdiZS1kdXBsZXgtcmFjay1zd2l0Y2gtMi8_c3JzbHRpZD1BZm1CT29xWjYzVWpQSjhWVnNWNlltRTBJSjBfV1BaSlNpdzJiaVgwb284LUZGN1FDc2Z3ODBDShIEGgIIABqQAxIAGgAiACoAMgYIARICdXM6AEIECAEQAEoAWgByAHoAgkDsAggAEAAYACAAKhQKA2libRURl6JAGghpdjtwO2libSogCgVnODMxNhVWPZ9AGgZnIDgzMTYaCml2O3A7ZzgzMTYyXGh0dHBzOi8vZGVkaWNhdGVkbmV0d29ya3NpbmMuY29tL3Byb2R1Y3QvaWJtLWc4MzE2LXJhY2tzd2l0Y2gtMTZ4NDBnYmUtZHVwbGV4LXJhY2stc3dpdGNoLTIvOjc8Yj5JQk0gRzgzMTY8L2I-IFJhY2tTd2l0Y2ggMTZYNDBHQkUgRFVQTEVYIFJBQ0sgU1dJVENIQpIBRm9yIHNhbGUgaXMgYSBSZWZ1cmJpc2hlZCA8Yj5JQk0gRzgzMTY8L2I-LiBJbmNsdWRlczogMXggRzgzMTYgNHggRmFuIE1vZHVsZXMgQkFNLTAwMTU2IDJ4IFBvd2VyIFN1cHBsaWVzIERTNDUwLTMgMXggQ29uc29sZSBDYWJsZSAyeCBQb3dlciBDb3Jkcy4iAhABSAFYAGgA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM G8316 RackSwitch 16X40GBE DUPLEX RACK SWITCH","For sale is a Refurbished IBM G8316. Includes: 1x G8316 4x Fan Modules BAM-00156 2x Power Supplies DS450-3 1x Console Cable 2x Power Cords.","Dedicated Networks",""],[null,1,[null,null,5,null,"IBM G8316 RackSwitch 16X40GBE DUPLEX RACK SWITCH",null,"https://dedicatednetworksinc.com/product/ibm-g8316-rackswitch-16x40gbe-duplex-rack-switch-2/?srsltid\u003dAfmBOoqZ63UjPJ8VVsV6YmE0IJ0_WPZJSiw2biX0oo8-FF7QCsfw80CJ"],["https://dedicatednetworksinc.com/product/ibm-g8316-rackswitch-16x40gbe-duplex-rack-switch-2/?srsltid\u003dAfmBOoqZ63UjPJ8VVsV6YmE0IJ0_WPZJSiw2biX0oo8-FF7QCsfw80CJ","IBM G8316 RackSwitch 16X40GBE DUPLEX RACK SWITCH","For sale is a Refurbished IBM G8316. Includes: 1x G8316 4x Fan Modules BAM-00156 2x Power Supplies DS450-3 1x Console Cable 2x Power Cords.",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1RmiSbGswUhthyF9RwiSPBMjG9LWw:1775128897515","Dedicated Networks"],null,null,null,["https://dedicatednetworksinc.com/product/ibm-g8316-rackswitch-16x40gbe-duplex-rack-switch-2/?srsltid\u003dAfmBOoqZ63UjPJ8VVsV6YmE0IJ0_WPZJSiw2biX0oo8-FF7QCsfw80CJ",null,null,null,35,"Source: Dedicated Networks"],3,[null,null,"IBM G8316 RackSwitch 16X40GBE DUPLEX RACK SWITCH","webresult_GhQ8EujV6HgJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://dedicatednetworksinc.com/product/ibm-g8316-rackswitch-16x40gbe-duplex-rack-switch-2/?srsltid\u003dAfmBOoqZ63UjPJ8VVsV6YmE0IJ0_WPZJSiw2biX0oo8-FF7QCsfw80CJ","OFF",0,0],null,null,null,null,null,["For sale is a Refurbished \u003cb\u003eIBM G8316\u003c/b\u003e. Includes: 1x G8316 4x Fan Modules BAM-00156 2x Power Supplies DS450-3 1x Console Cable 2x Power Cords.","\u003cb\u003eIBM G8316\u003c/b\u003e RackSwitch 16X40GBE DUPLEX RACK SWITCH",0,4]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM22":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.itjungle.com/2011/10/31/tfh103111-story08/",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCjZodHRwczovL3d3dy5pdGp1bmdsZS5jb20vMjAxMS8xMC8zMS90ZmgxMDMxMTEtc3RvcnkwOC8SBBoCCAAa-wISABoAIgAqADIGCAMSAnVzOgBCBAgBEABKAFoAcgB6AIJA1wIIABAAGAAgACoUCgNpYm0V1uiEQBoIaXY7cDtpYm0qIAoFZzgzMTYVc5JBPxoGZyA4MzE2GgppdjtwO2c4MzE2MjZodHRwczovL3d3dy5pdGp1bmdsZS5jb20vMjAxMS8xMC8zMS90ZmgxMDMxMTEtc3RvcnkwOC86PzxiPklCTTwvYj4gTGF1bmNoZXMgNDAgR2lnYWJpdCBFdGhlcm5ldCBSYWNrIFN3aXRjaCAtIElUIEp1bmdsZUKbAVRoZSBSYWNrU3dpdGNoIEc4MzE2IGlzIGEgPGI-MVUgdG9wLW9mLXJhY2tlciB0aGF0IGhhcyAxNiA0MEdFIHBvcnRzPC9iPiB1c2luZyBRU0ZQKyBjYWJsaW5nLiBUaGUgc3dpdGNoIGhhcyBhIGNoaXAgdGhhdCBjYW4gaGFuZGxlIDEuMjggVGIvc2VjIG9mJm5ic3A7Li4uIgIQAUgBWABoAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM Launches 40 Gigabit Ethernet Rack Switch - IT Jungle","The RackSwitch G8316 is a 1U top-of-racker that has 16 40GE ports using QSFP+ cabling. The switch has a chip that can handle 1.28 Tb/sec of ...","IT Jungle",""],[null,1,[null,null,5,null,"IBM Launches 40 Gigabit Ethernet Rack Switch - IT Jungle",null,"https://www.itjungle.com/2011/10/31/tfh103111-story08/"],["https://www.itjungle.com/2011/10/31/tfh103111-story08/","IBM Launches 40 Gigabit Ethernet Rack Switch","The RackSwitch G8316 is a 1U top-of-racker that has 16 40GE ports using QSFP+ cabling. The switch has a chip that can handle 1.28 Tb/sec of ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1RmiSbGswUhthyF9RwiSPBMjG9LWw:1775128897515","IT Jungle"],null,null,null,["https://www.itjungle.com/2011/10/31/tfh103111-story08/",null,null,null,35,"Source: IT Jungle"],3,[null,null,"IBM Launches 40 Gigabit Ethernet Rack Switch - IT Jungle","webresult_egaWQ_PBb7kJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.itjungle.com/2011/10/31/tfh103111-story08/","OFF",0,1],null,null,null,null,null,["The RackSwitch G8316 is a \u003cb\u003e1U top-of-racker that has 16 40GE ports\u003c/b\u003e using QSFP+ cabling. The switch has a chip that can handle 1.28 Tb/sec of\u0026nbsp;...","\u003cb\u003eIBM\u003c/b\u003e Launches 40 Gigabit Ethernet Rack Switch - IT Jungle",0,11]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM21":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCkdodHRwczovL3d3dy5yZWRkaXQuY29tL3IvbmV0d29ya2luZy9jb21tZW50cy8zOTdxdHUvb2lkc19mb3JfaWJtX2c4MzE2LxIEGgIIABqdAxIAGgAiACoAMgYIAxICdXM6AEIECAEQAEoAWgByAHoAgkD5AggAEAAYACAAKhQKA2libRWwIItAGghpdjtwO2libSogCgVnODMxNhV6mIRAGgZnIDgzMTYaCml2O3A7ZzgzMTYyR2h0dHBzOi8vd3d3LnJlZGRpdC5jb20vci9uZXR3b3JraW5nL2NvbW1lbnRzLzM5N3F0dS9vaWRzX2Zvcl9pYm1fZzgzMTYvOjZPSUQmIzM5O3MgZm9yIDxiPklCTSBHODMxNjwvYj4gOiByL25ldHdvcmtpbmcgLSBSZWRkaXRCtQFHcmVldGluZ3Mgci9uZXR3b3JraW5nISBBbnlib2R5IHdvcmtlZCB3aXRoIDxiPklCTTwvYj4gUmFja3N3aXRjaCBkZXZpY2VzIGJlZm9yZT8gSGF2aW5nIHRyb3VibGUgZmluZGluZyB0aGUgY29ycmVjdCBPSUQgdG8gbW9uaXRvciBDUFUgbG9hZCBvbiBhIGZldyA8Yj5HODMxNiYjMzk7czwvYj4uIEl0Jm5ic3A7Li4uIgIQAUgBWABoAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["OID's for IBM G8316 : r/networking - Reddit","Greetings r/networking! Anybody worked with IBM Rackswitch devices before? Having trouble finding the correct OID to monitor CPU load on a few G8316's. It ...","Reddit","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAAllBMVEVHcEz/RQD/RQD/RQD/RQD/RQD/RQD/RQD/RQD/RQD/RQD/RQD/RgD/RQD+////RQD/PAD/NQD+QgDP3+fb6e7n8PLx9vcKEhX0/f/L1tz+jXL718/+XCr4+vv0e1/olIP6pJDi3N3PqqbfNAn7cU//VgP+9vQyODv1bEb+49rdzc3/v66xu77IXlHlXDhqcHKsLABrLBlRGkQ3AAAADnRSTlMAwkSK1tA47GYdh31HPrF7ujQAAAF5SURBVCiRbZOHcoMwDIahyYUkbW3Z2GbvlT3e/+UqQSCkiY4D5A9bvwaWNdpqYTucO/ZiZf23NYLRnPUL2iyfiEvJl5sn+5khLuJacP41sq85gyNje5joZs7kLWCMhUiHk+fxKu9+YswnuOx1zvd5FZRKHYAc0jzlIAFudwCoU9RLGWHuJEIIABHnx7I85jE6eOHyylqg+DCKwnDPHrYPycd0tpbNIWcfLAduU8hPjDEKymXs07spi2GxKA09/FhyCwNrkzB2FruEFpMqPtO3GgEeC5lKmK4aGRGMRFNplqgM8Fgb1eZ+4l8a3hJseXNBN0e1NqUid9oYE7VDzDYyiTE7San0RSi0Nv6p6zyv606+0boYikC5QOoqpZXXm9JaqRT68vWFh8x1XRVcPe8aKHzN4FH4vmUiDdwgwP10D1JUM7RsaDbw7FDgHrc4ZLzv2GOMfof5gLhO0zoG6Bs2DtH3NHYgh1a+s5lNo7l+Q7OhfoWOvX3+Dn+Ini8glo+XBwAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"OID's for IBM G8316 : r/networking - Reddit",null,"https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/"],["https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/","OID's for IBM G8316 : r/networking","Greetings r/networking! Anybody worked with IBM Rackswitch devices before? Having trouble finding the correct OID to monitor CPU load on a few G8316's. It ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1RmiSbGswUhthyF9RwiSPBMjG9LWw:1775128897515","Reddit"],null,null,null,["https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/",null,null,null,35,"Source: Reddit"],3,[null,null,"OID's for IBM G8316 : r/networking - Reddit","webresult_yx38gXwc40cJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/","OFF",0,1],null,null,null,null,null,["Greetings r/networking! Anybody worked with \u003cb\u003eIBM\u003c/b\u003e Rackswitch devices before? Having trouble finding the correct OID to monitor CPU load on a few \u003cb\u003eG8316\u0026#39;s\u003c/b\u003e. It\u0026nbsp;...","OID\u0026#39;s for \u003cb\u003eIBM G8316\u003c/b\u003e : r/networking - Reddit",0,4]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM23":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCnBodHRwczovL3d3dy5rYXJtYS1ncm91cC5ydS91cGxvYWQvaWJsb2NrLzA3NS9pYm1fcmFja3N3aXRjaF9nODMxNl9kYXRhc2hlZXQuMzZGQjExQ0EzMjU2NEZBOEFCRkNDQzYyODdDRjg5OEMucGRmEgQaAggAGqIDEgAaAggBIgAqADIGCAISAnVzOgBCBAgBEABKAFoAcgB6AIJA_AIIABAAGAAgACoUCgNpYm0VUXqiQBoIaXY7cDtpYm0qIAoFZzgzMTYV0CqNQBoGZyA4MzE2GgppdjtwO2c4MzE2MnBodHRwczovL3d3dy5rYXJtYS1ncm91cC5ydS91cGxvYWQvaWJsb2NrLzA3NS9pYm1fcmFja3N3aXRjaF9nODMxNl9kYXRhc2hlZXQuMzZGQjExQ0EzMjU2NEZBOEFCRkNDQzYyODdDRjg5OEMucGRmOjQ8Yj5JQk08L2I-IFN5c3RlbSBOZXR3b3JraW5nIFJhY2tTd2l0Y2ggPGI-RzgzMTY8L2I-QpEBVGhlIFJhY2tTd2l0Y2ggRzgzMTYgPGI-b2ZmZXJzIHVwIHRvIDE2eDQwIEdiRSBwb3J0czwvYj4sIHdoaWNoIGNhbiBhbHNvIGJlIHVzZWQgYXMgYSBoaWdoLWRlbnNpdHkgMTAgR2JFIHN3aXRjaCwgd2l0aCAxLjI4IFRicHPigJRpbiBhIDFVIGZvb3QtLiICEAFIAVgAaAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM System Networking RackSwitch G8316","The RackSwitch G8316 offers up to 16x40 GbE ports, which can also be used as a high-density 10 GbE switch, with 1.28 Tbps—in a 1U foot-.","Карма Групп","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAAllBMVEX////Aw8nHyc8AACgAACsRH0EAAC3O0NUUIUIAACTh4uUAEToLGz6+xtju7/G91u7Gzt4AD3UAHHgcJkQoMUvK3/EAccgAOILP1eLS3ewATJrL4fMAfMwALn0ASpsAV6YFUJkAVaUAcMEAFXYANIAAe8ve7PcbQ4clYarr8/rv9vtnptQAistmr95zteAAjMwnltFxtOBnAb6yAAABBUlEQVR4AXTOVYKDMABF0VB39+IeZbL/zc2rJ2m5P8hBHrHyOqQ1r9tr1U6v3x8MW6w7Go36vZ/qjWHQ8a8vT6azG85mky+az8kCCluQ5dK21XqzIottv79bkP3hsLdsczxuTufLaHQ5Xw++DzUNBWEUx0mS+r6pq+z46BJFkauTIH9gcscCVvgl4N4ih+ZVncBqEIy+DHoEL1idJDVjN2PG2pLnR05LkUSipNL3JTVMKs6VFI0Q4k8pKZUsDUMwBLv3Vqr1HaHiiVq/P8zuqhsE1TfDIkNxTRu8zHBuGVTimuLL2EltQ5Ri13Mnzp1gxk43fM3Y6ca0s9N9t9Wgrrmb/4cMAF8CL+olS00zAAAAAElFTkSuQmCC"],[null,1,[null,null,5,null,"IBM System Networking RackSwitch G8316",null,"https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf"],["https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf","IBM System Networking RackSwitch G8316","The RackSwitch G8316 offers up to 16x40 GbE ports, which can also be used as a high-density 10 GbE switch, with 1.28 Tbps—in a 1U foot-.",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1RmiSbGswUhthyF9RwiSPBMjG9LWw:1775128897515","Карма Групп"],null,null,null,["https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf",null,null,null,35,"Source: Карма Групп"],3,[null,null,"IBM System Networking RackSwitch G8316","webresult_63TGAnlceB8J",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf","OFF",0,0],null,null,null,null,null,["The RackSwitch G8316 \u003cb\u003eoffers up to 16x40 GbE ports\u003c/b\u003e, which can also be used as a high-density 10 GbE switch, with 1.28 Tbps—in a 1U foot-.","\u003cb\u003eIBM\u003c/b\u003e System Networking RackSwitch \u003cb\u003eG8316\u003c/b\u003e",0,4]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM19":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.ibm.com/support/pages/ibm-rackswitch-40g-g8316-firmware-update-v6840-ibm-bladecentersystem-networking",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCnFodHRwczovL3d3dy5pYm0uY29tL3N1cHBvcnQvcGFnZXMvaWJtLXJhY2tzd2l0Y2gtNDBnLWc4MzE2LWZpcm13YXJlLXVwZGF0ZS12Njg0MC1pYm0tYmxhZGVjZW50ZXJzeXN0ZW0tbmV0d29ya2luZxIEGgIIABq5AxIAGgAiACoAMgYIAxICdXM6AEIECAEQAEoAWgByAHoAgkCVAwgAEAAYACAAKhQKA2libRUUXR9BGghpdjtwO2libSogCgVnODMxNhWuYJpAGgZnIDgzMTYaCml2O3A7ZzgzMTYycWh0dHBzOi8vd3d3LmlibS5jb20vc3VwcG9ydC9wYWdlcy9pYm0tcmFja3N3aXRjaC00MGctZzgzMTYtZmlybXdhcmUtdXBkYXRlLXY2ODQwLWlibS1ibGFkZWNlbnRlcnN5c3RlbS1uZXR3b3JraW5nOj88Yj5JQk08L2I-IFJhY2tTd2l0Y2ggNDBHIDxiPkc4MzE2PC9iPiBmaXJtd2FyZSB1cGRhdGUgdjYuOC40LjBCngE8Yj5JQk0gUmFja1N3aXRjaCA0MEcgRzgzMTYgZmlybXdhcmUgdXBkYXRlIHY2LjguNC4wPC9iPiAtIElCTSBCbGFkZUNlbnRlci9TeXN0ZW0gTmV0d29ya2luZy4gRG93bmxvYWQuIEZpbGUgZGV0YWlscy4gVmVyc2lvbjogNi44LjQuMC4gUmVsZWFzZSBEYXRlOiZuYnNwOy4uLiICEAFIAVgAaAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM RackSwitch 40G G8316 firmware update v6.8.4.0","IBM RackSwitch 40G G8316 firmware update v6.8.4.0 - IBM BladeCenter/System Networking. Download. File details. Version: 6.8.4.0. Release Date: ...","IBM","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAAJFBMVEWHjZZHcEyHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZZXpc14AAAADHRSTlP+AAqQGemvyzJCYHQXcPNoAAAA90lEQVQokY2S27aDMAhEh3sS//9/DyRprR5XV3lB2RqGIaAvgZ+gAM5E7IDcocAdTuSV5Qq5gEC1gIN/hwlEEERR2W89S0gokcYSdhtFEzGv/DDnyL9iPJvgMBF7N/xQy3Ss8QTHPP2EGsoWqxLGHHpCNXDD7jbQGKYv2ICC4TMCnbLQFmwwL2g7CroVBfU8Qwr2FJJSekHR+U2r8zecsWDpyE7G9ARzF7FWO6GMGbJhrX+OFzYl7+g0iyltII5IV3JOnZFzpltVHMgHJCN9XY5cOe1imbCcDExXFMtGvmwlmw7msbz5t7JmpcZOdr3UXaR/vn+98X8I7wbqSaESqAAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"IBM RackSwitch 40G G8316 firmware update v6.8.4.0",null,"https://www.ibm.com/support/pages/ibm-rackswitch-40g-g8316-firmware-update-v6840-ibm-bladecentersystem-networking"],["https://www.ibm.com/support/pages/ibm-rackswitch-40g-g8316-firmware-update-v6840-ibm-bladecentersystem-networking","IBM RackSwitch 40G G8316 firmware update v6.8.4.0","IBM RackSwitch 40G G8316 firmware update v6.8.4.0 - IBM BladeCenter/System Networking. Download. File details. Version: 6.8.4.0. Release Date: ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1RmiSbGswUhthyF9RwiSPBMjG9LWw:1775128897515","IBM"],null,null,null,["https://www.ibm.com/support/pages/ibm-rackswitch-40g-g8316-firmware-update-v6840-ibm-bladecentersystem-networking",null,null,null,35,"Source: IBM"],3,[null,null,"IBM RackSwitch 40G G8316 firmware update v6.8.4.0","webresult_IkNCk3ieOUQJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.ibm.com/support/pages/ibm-rackswitch-40g-g8316-firmware-update-v6840-ibm-bladecentersystem-networking","OFF",0,1],null,null,null,null,null,["\u003cb\u003eIBM RackSwitch 40G G8316 firmware update v6.8.4.0\u003c/b\u003e - IBM BladeCenter/System Networking. Download. File details. Version: 6.8.4.0. Release Date:\u0026nbsp;...","\u003cb\u003eIBM\u003c/b\u003e RackSwitch 40G \u003cb\u003eG8316\u003c/b\u003e firmware update v6.8.4.0",0,19]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM7":[null,null,null,null,null,null,null,null,null,null,3,null,null,null,null,null,null,null,null,null,0,{"44":1,"47":["86400000","604800000",2],"61":1,"62":1,"72":"UNKNOWN_BROWSER"}],"QVHOaZ2pCbfn0PEP0uzV8QM11":[null,null,null,"glbl"],"QVHOaZ2pCbfn0PEP0uzV8QM13":[1],"QVHOaZ2pCbfn0PEP0uzV8QM8":[12,"AWkwvep85eg_pvi0_3_l6D8Ac7Sd03j5vzi5_XLRePm_","-8648937497626583681","0x87f8cd2b817be28d:0xc04bac905036089d"],"QVHOaZ2pCbfn0PEP0uzV8QM10":[null,null,1,null,null,null,null,null,"",null,0]};var a=m;if(window.W_jd)for(var b in a)window.W_jd[b]=a[b];else window.W_jd=a;})();(function(){window.WIZ_global_data={"Im6cmf":"/wizrpcui/_/WizRpcUi","Yllh3e":"%.@.1775128897152733,137638839,1043691090]","MUE6Ne":"search_web","w2btAe":"%.@.\"114042261698526544687\",\"114042261698526544687\",\"0\",null,null,null,1]","xnI9P":"false","u4g7r":"%.@.null,1,3]","SNlM0e":"AKlEn5gnkKoIsbqrTB5yszOL-JM3:1775128897572","GWsdKe":"en-US","d2zrDf":"%.@.]","ocxFnb":"%.@.]","zChJod":"%.@.]","STfaRd":"{}","yFnxrf":"2848","LVIXXb":"1","S06Grb":"114042261698526544687","QrtxK":"0","S6lZl":"89978449","vJQk6":"false","oxN3nb":{"1":false},"eptZe":"/wizrpcui/_/WizRpcUi/","Ylvpqb":"%.@.\"multimodal-image-viewer\",null,null,null,1,null,null,null,null,null,null,null,\"en-US\",\"https://www.google.com\",null,1,{\"22\":1,\"44\":1,\"55\":0}]"};window.IJ_values={"A5tF3b":false,"zhkRO":"%.@.null,null,null,null,null,null,null,null,null,null,null,null,null,null,0,1,0,\"/setprefs?sig\\u003d0_ZY3WkE8r0oSaCMnMos_PyUPI5s4%3D\\u0026szl\\u003d0\",0,1,0]","w2btAe":"%.@.\"114042261698526544687\",\"114042261698526544687\",\"0\",null,null,null,1]","ea2VK":"%.@.1,1]","pxO4Zd":"0","mXOY5d":"%.@.5,1,2.4,null,[null,800,1200],null,null,1775106101012287]","SsQ4x":"USaZZnSDN5y9HlDsHf4J0Q","MuJWjd":false,"GWsdKe":"en-US","N1ycab":"en_US","MgUcDb":"US","SIsrTd":false,"fyLpDc":"","JPnTp":"%.@.\"#3c4043\",\"36px\"]","ZxtPCd":"%.@.{\"100\":\"12px\",\"101\":\"8px\",\"102\":\"8px\",\"103\":\"10px\",\"104\":\"9px\"}]","DwYRY":"%.@.null,null,null,null,\"#dadce0\",\"#5f6368\",null,null,null,null,\"rgba(191,191,191,0.38)\",null,null,null,null,null,null,null,null,null,\"rgb(from var(--lv6yU) r g b / 0.0824)\",\"rgb(from var(--lv6yU) r g b / 0.0824)\",\"rgb(from var(--lv6yU) r g b / 0.224)\",null,null,null,\"var(--D9aNi)\",null,\"rgba(232,232,232,0.24)\"]","NyzCwe":"%.@.null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,\"18px\",\"20px\",\"18px\",\"#dadce0\",\"16px\",\"var(--IXoxUe)\",\"var(--YLNNHc)\",\"var(--YLNNHc)\",\"var(--IXoxUe)\"]","spz2q":"%.@.\"var(--xhUGwc)\",null,null,null,null,\"0px\"]","geiQxc":"%.@.\"234px\",\"176px\",\"204px\",\"172px\",\"128px\",\"148px\",\"111px\",\"83px\",\"92px\"]","xFmcof":"%.@.null,null,null,\"20px\",null,\"12px\"]","lDqiof":"%.@.\"var(--YLNNHc)\",\"var(--bbQxAb)\",\"var(--rrJJUc)\",null,\"var(--IXoxUe)\",\"var(--JKqx2)\",\"#c58af9\",null,null,\"var(--xhUGwc)\",\"var(--Nsm0ce)\",\"var(--EpFNW)\",\"#394457\",\"#eef0ff\",\"#28292a\",\"var(--YLNNHc)\",\"#fff\",\"#1f1f1f\",\"#1f1f1f\",\"#fff\",\"var(--ZXiaGf)\",\"var(--EoKObe)\",\"#81c995\",\"#f28b82\",\"#fdd663\",\"var(--mXZkqc)\",\"var(--cIehld)\",\"var(--gVUKcd)\",null,\"var(--gS5jXb)\",\"#8ab4f8\",null,\"var(--TMYS9)\",\"var(--amnPwe)\",null,\"transparent\",\"var(--ONhrGd)\",\"rgba(0,0,0,0.03)\",null,null,null,null,null,null,null,null,null,\"#ea4335\",\"#34a853\",\"#4285f4\",\"#fbbc04\",\"var(--ywz01c)\",\"#80868b\",\"#171717\",null,null,null,null,\"#2c303d\",\"var(--XKMDxc)\",\"var(--aYn2S)\",null,\"var(--Aqn7xd)\",null,\"#f2b8b5\",\"#8c1d18\",\"#f4bf00\",\"#ffdf92\",\"#601410\",\"#f9dedc\",\"#241a00\",\"#241a00\",\"#0a3818\",\"#c4eed0\",\"#f2b8b5\",\"#6dd58c\",\"#6dd58c\",\"#0f5223\",\"var(--nwXobb)\",\"var(--vZe0jb)\",\"var(--QWaaaf)\",\"var(--ZEpPmd)\",\"var(--JclFj)\",\"var(--Lm570b)\",\"#303134\",\"var(--jINu6c)\",\"var(--BRLwE)\",\"var(--DEeStf)\",\"var(--TSWZIb)\",\"var(--uLz37c)\",null,\"#c3c6d6\",\"var(--TyVYld)\",null,null,null,null,\"var(--VuZXBd)\",\"rgba(23,23,23,0.75)\",{\"100\":\"rgba(48,49,52,0.94)\",\"101\":\"rgba(255,255,255,0.8)\",\"102\":\"rgba(23,23,23,0.6)\",\"103\":\"#d2e3fc\",\"104\":\"#bdc1c6\",\"105\":\"#303134\",\"106\":\"#28292a\",\"107\":\"var(--jwFC2e)\",\"108\":\"var(--jINu6c)\",\"109\":\"var(--Xqboce)\",\"110\":\"var(--vdwxpe)\",\"111\":\"#fff\",\"112\":\"#000\",\"113\":\"#fff\",\"114\":\"var(--COEmY)\",\"115\":\"#ababab\"}]","kXVUzd":"%.@.\"40px\",\"48px\"]","sCU50d":"%.@.null,\"none\",null,\"0px 1px 3px rgba(23,23,23,0.24)\",null,\"0px 2px 6px rgba(23,23,23,0.32)\",null,\"0px 4px 12px rgba(23,23,23,0.9)\",null,null,\"1px solid #5f6368\",\"0\",\"0\",\"0\",null,\"0px 1px 3px rgba(95,99,104,0.64)\",\"0\",\"0px\",\"1px\",\"2px\",\"3px\"]","w9Zicc":"%.@.\"#fff\",\"26px\",\"#fff\",\"#697988\",\"#fff\",\"1px\",\"#9aa0a6\",\"1px\",\"#fff\",\"#9aa0a6\",null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,\"28px\",\"10px\",\"8px\",\"20px\",\"10px\",\"#fff\",\"var(--JclFj)\",\"#fff\",\"#fff\",\"#5e5e5e\",\"var(--TSWZIb)\",\"var(--TMYS9)\"]","IkSsrf":"%.@.\"Google Sans,Arial,sans-serif\",\"Google Sans,Arial,sans-serif\",\"Arial,sans-serif\",\"Arial,sans-serif\",\"Arial,sans-serif\",\"Arial,sans-serif\",\"Arial,sans-serif\",\"Google Sans,Arial,sans-serif\",\"Arial,sans-serif\",\"Arial,sans-serif\"]","MR0w4":"%.@.\"var(--google-fs,1)\",\"var(--google-screen-scale-ratio,1)\"]","OItNqf":"%.@.null,\"24px\"]","j2FoS":"%.@.null,null,null,null,null,null,null,null,\"20px\"]","e2zoW":"%.@.\"16px\",\"12px\",\"0px\",\"8px\",\"4px\",\"2px\",\"20px\",\"24px\",\"48px\",\"20px\",null,null,\"0px\",\"20px\",\"36px\",\"20px\",null,\"83px\",\"52px\",\"6px\",\"20px\",\"18px\",\"16px\",\"24px\",\"12px\",\"6px\",\"75px\",\"52px\",\"799.98px\",\"684px\",\"683.98px\",\"1163.98px\",\"940px\",\"1560px\",\"1164px\",\"939.98px\",\"800px\",\"82px\",\"75px\",\"52px\",\"83px\",\"48px\"]","W1Bte":"%.@.\"cubic-bezier(0.1,1,0.2,1)\",\"cubic-bezier(0.8,0,1,0.8)\",\"cubic-bezier(0.2,0.6,0.2,1)\",\"cubic-bezier(0.4,0,1,0.8)\",\"300ms\",\"100ms\",\"200ms\",\"250ms\",\"cubic-bezier(0.4,0,0.2,1)\",\"cubic-bezier(0.4,0,0.6,1)\",\"cubic-bezier(0.6,0,0,1)\",\"cubic-bezier(0,0,1,1)\",\"cubic-bezier(0.2,0,0,1)\",\"800ms\",\"1000ms\",\"400ms\",\"500ms\",\"600ms\",\"50ms\",\"400ms\",\"300ms\",\"250ms\",\"150ms\",\"250ms\",\"200ms\",\"150ms\",\"150ms\",\"300ms\",\"250ms\",\"200ms\",\"150ms\",\"450ms\",\"450ms\",\"300ms\",\"150ms\",\"300ms\",\"250ms\",\"200ms\",\"100ms\",\"250ms\",\"200ms\",\"150ms\",\"100ms\",\"250ms\",\"200ms\",\"150ms\",\"100ms\",\"300ms\",\"250ms\",\"200ms\",\"100ms\",\"null\",\"cubic-bezier(0.3,0,0.8,0.15)\",\"cubic-bezier(0.05,0.7,0.1,1)\",\"cubic-bezier(0,0,1,1)\",\"cubic-bezier(0.2,0,0,1)\",\"cubic-bezier(0.3,0,1,1)\",\"cubic-bezier(0,0,0,1)\",\"250ms\",\"200ms\",\"150ms\",\"50ms\",\"50ms\",\"50ms\",\"400ms\",\"350ms\",\"250ms\",\"50ms\",\"50ms\",\"50ms\",\"200ms\",\"150ms\",\"100ms\",\"50ms\",\"200ms\",\"150ms\",\"100ms\",\"50ms\",\"50ms\",\"50ms\",\"250ms\",\"200ms\",\"150ms\",\"50ms\",\"50ms\",\"50ms\",\"cubic-bezier(0.05,0.7,0.1,1)\",\"cubic-bezier(0.3,0,0.8,0.15)\"]","pbvshf":"%.@.\"48px\"]","u9mep":"%.@.\"#8ab4f8\",null,\"#e8e8e8\",\"var(--JKqx2)\"]","mrqaQb":"%.@.null,null,null,null,\"2px\",\"12px\"]","Umq10e":"%.@.\"#303134\"]","k7Tqye":"%.@.null,null,null,null,null,null,null,\"16px\",\"12px\",\"8px\",\"20px\",\"4px\",\"9999px\",\"0px\",\"2px\",\"24px\"]","y50LC":"%.@.null,null,\"#bdc1c6\",null,\"#bcc0c3\"]","jfSEkd":"%.@.\"var(--Pa8Wlb)\",\"var(--KIZPne)\",\"var(--xPpiM)\",null,\"rgba(255,255,255,0.08)\",\"rgba(255,255,255,0.08)\",\"rgba(255,255,255,0.24)\",\"var(--pEa0Bc)\",\"var(--Yi4Nb)\",\"var(--kloG3)\",\"var(--YaIeMb)\",\"var(--izGsqb)\",\"var(--todMNc)\",\"rgba(255,255,255,0.16)\",null,\"rgba(255,255,255,0.4)\",\"var(--Ijc2tf)\",\"var(--VeLyLc)\",\"rgba(189,193,198,0.08)\",\"rgba(189,193,198,0.08)\",\"rgba(189,193,198,0.24)\",\"transparent\",\"var(--ngPXTb)\",null,\"rgba(138,180,248,0.08)\",\"rgba(138,180,248,0.08)\",\"rgba(138,180,248,0.24)\",null,null,null,\"rgba(189,193,198,0.08)\",\"rgba(189,193,198,0.08)\",\"rgba(189,193,198,0.24)\",\"2px\",\"2px\",\"0.38\",\"var(--bbQxAb)\",\"var(--Zia6nf)\",null,\"var(--gJjJk)\",\"var(--MV2sG)\",\"var(--bcxd3b)\",\"var(--amnPwe)\",\"var(--YLNNHc)\",\"var(--YLNNHc)\",\"0.0824\",\"0\",\"0.224\",\"var(--CRMNZd)\",\"rgba(255,255,255,0.16)\",\"0.2\",\"0.224\",\"var(--EpFNW)\",\"0.4\",\"var(--NoaQW)\",\"var(--amnPwe)\",\"0.08\",\"var(--bbQxAb)\",\"0.08\",\"var(--amnPwe)\",\"var(--bbQxAb)\",\"0.24\",\"var(--IXoxUe)\",\"transparent\",\"0.08\",\"0.08\",\"#9aa0a6\",\"0.24\",\"var(--IXoxUe)\",\"transparent\",\"0.08\",\"0.08\",\"var(--uLz37c)\",\"0.24\",\"var(--uLz37c)\",\"var(--vWq1if)\",\"var(--hwEqod)\",\"0.0824\",\"#8ab4f8\",\"0.0824\",\"var(--Wmwad)\",\"0.224\",\"var(--lv6yU)\",\"0.0824\",\"0.0824\",\"var(--MoaHse)\",\"var(--y01ou)\",\"0.224\",\"var(--p9J9c)\",\"var(--LMFHUd)\",\"0.0824\",\"0.0824\",\"0.224\",\"var(--fuvksc)\",\"var(--qdHZF)\",\"0.2\",\"0.2\",\"var(--V9ysqf)\",\"0.4\",{\"100\":\"#fff\",\"101\":\"0.08\",\"102\":\"0.08\",\"103\":\"#1f1f1f\",\"104\":\"0.24\",\"105\":\"var(--PBxOKe)\",\"106\":\"rgba(255,255,255,0.1)\",\"107\":\"0.08\",\"108\":\"#d2e3fc\",\"109\":\"0.08\",\"110\":\"0.24\",\"111\":\"var(--Nsm0ce)\",\"112\":\"0\",\"113\":\"transparent\",\"114\":\"0.08\",\"115\":\"0.08\",\"116\":\"var(--YLNNHc)\",\"117\":\"0.24\",\"118\":\"var(--YLNNHc)\",\"119\":\"0.75\",\"120\":\"0.6\",\"121\":\"rgba(232,232,232,0.08)\",\"122\":\"var(--D9aNi)\",\"123\":\"rgba(232,232,232,0.24)\",\"124\":\"rgba(11,87,208,0.078431375)\",\"125\":\"rgba(11,87,208,0.078431375)\",\"126\":\"rgba(11,87,208,0.23921569)\",\"127\":\"rgba(32,33,36,0.2)\",\"128\":\"rgba(32,33,36,0.2)\",\"129\":\"rgba(32,33,36,0.4)\",\"130\":\"rgba(32,33,36,0.078431375)\",\"131\":\"rgba(32,33,36,0.078431375)\",\"132\":\"rgba(32,33,36,0.23921569)\",\"133\":\"var(--Ehh4mf)\",\"134\":\"var(--Nsm0ce)\",\"135\":\"#f2b8b5\",\"136\":\"rgba(167,37,30,0.380392)\",\"137\":\"0.2\",\"138\":\"#e1aca9\",\"139\":\"0.2\",\"140\":\"#601410\",\"141\":\"#601410\",\"142\":\"0.4\",\"143\":\"#f9dedc\",\"144\":\"#b6cffb\",\"145\":\"rgba(42,44,49,0.08)\",\"146\":\"#434a5e\",\"147\":\"#363c4c\",\"148\":\"#3d5a87\"}]","GVtPm":"%.@.null,null,null,null,null,\"0 0 0 1px var(--mXZkqc)\",\"1px solid var(--mXZkqc)\",null,null,null,null,null,null,null,null,\"transparent\",\"rgba(23,23,23,0.3)\",null,null,\"16px\"]","MexNte":"%.@.\"700\",\"400\",\"underline\",\"none\",\"capitalize\",\"none\",\"uppercase\",\"none\",\"500\",\"lowercase\",\"italic\",null,null,\"-1px\",\"0.3px\",\"20px\",\"12px\",null,\"12px\",\"14px\",\"16px\",\"18px\",\"22px\",\"24px\",\"26px\",\"28px\",\"32px\",\"36px\",\"40px\",\"48px\",\"52px\",\"56px\",\"60px\",\"14px\",\"16px\",\"18px\",\"20px\",\"22px\",\"24px\",\"28px\",\"36px\",\"40px\",\"45px\",\"48px\",\"56px\",\"0\",\"0.1px\"]","Aahcnf":"%.@.\"var(--Ia70Xd)\",\"var(--hPDMFf)\",\"var(--Vyi8yc)\",\"var(--IT7y3c)\",null,\"var(--LI4Bo)\",\"var(--Mhs7de)\",\"var(--ofwUBc)\",\"var(--XWv1if)\",null,\"var(--uBdgTe)\",\"var(--Ok3irf)\",\"var(--Zf9Xnd)\",\"var(--rTk0E)\",null,\"Google Sans,Arial,sans-serif\",\"56px\",\"48px\",\"0\",null,\"400\",\"Google Sans,Arial,sans-serif\",\"36px\",\"400\",\"48px\",null,\"Google Sans,Arial,sans-serif\",\"36px\",\"28px\",null,\"400\",null,\"Arial,sans-serif\",\"24px\",\"18px\",null,\"400\",\"var(--YfiKf)\",\"var(--punZlc)\",\"var(--gOs6Bf)\",null,\"var(--MzKBpd)\",\"var(--nkmQOe)\",\"var(--a9X0Jc)\",\"var(--z3BFIe)\",null,\"var(--XWliwc)\",\"var(--Eou8Yc)\",\"var(--qWZYEc)\",\"var(--GiToJf)\",null,\"var(--p2Lqxe)\",\"var(--ztTqPe)\",\"var(--C74x2e)\",\"var(--gyu5L)\",null,\"var(--Yoa6qd)\",\"var(--lI1Trc)\",\"var(--HIyEKc)\",\"var(--ZNg88)\",null,\"var(--qjVU3d)\",null,null,null,null,null,\"var(--hbmnje)\",\"var(--qR8X0)\",\"var(--CbdmE)\",\"var(--Oycjt)\",\"var(--Aoh9Xe)\",\"var(--qYGXw)\",\"var(--qpdFp)\",\"var(--JT4IPc)\",\"Google Sans,Arial,sans-serif\",\"24px\",\"16px\",\"400\",\"var(--qBwyqb)\",\"var(--nUOqEc)\",\"var(--cMTvjf)\",\"var(--Aoh9Xe)\",\"var(--qYGXw)\",\"var(--qpdFp)\",\"var(--JT4IPc)\",null,null,null,null,\"var(--CUS15e)\",\"0px\",\"0px\",\"0\"]","PFhmed":"%.@.null,null,null,null,\"var(--XKMDxc)\"]","B4pZbd":"US","rkD25":"%.@.[[\"client\",\"firefox-b-1-d\"],[\"hl\",\"en-US\"]]]","rNyuJc":"DrewryPope@gmail.com","LU5fGb":true,"gXkHoe":"114042261698526544687"};})();(function(){var deia=true;window.jsl=window.jsl||{};window.jsl.dh=function(b,f,c){try{var a=document.getElementById(b),d;!a&&((d=google.stvsc)==null?0:d.dds)&&google.stvsc.dds.forEach(function(k){a||(a=k.getElementById(b))});if(!a){var l=document.querySelectorAll("template");for(d=0;d<l.length&&!(a=l[d].content.getElementById(b));d++);}if(a)a.innerHTML=f,c&&c(),deia&&(google.delt=google.delt||{},google.delt[a.id]=Date.now());else if(!(google.ia&&google.ia.rids&&google.ia.rids.has(b))){var e={id:b,script:String(!!c),milestone:String(google.jslm||0)};google.jsla&&(e.async=google.jsla);var m=b.indexOf("_"),g=m>0?b.substring(0,m):"",n=document.createElement("div");n.innerHTML=f;var h=n.children[0];if(h&&(e.tag=h.tagName,e["class"]=String(h.className||null),e.name=String(h.getAttribute("jsname")),g)){f=[];var p=document.querySelectorAll('[id^="'+g+'_"]');for(c=0;c<p.length;++c)f.push(p[c].id);e.ids=f.join(",")}google.ml(Error(g?"Missing ID with prefix "+g:"Missing ID"),!1,e)}}catch(k){google.ml(k,!0,{"jsl.dh":!0})}};})();(function(){var x=true;google.jslm=x?2:1;})();(function(){(function(){var src='https://www.googletagmanager.com/gtag/js?id\x3dAW-16521530460\x26preconnect\x3d1\x26type\x3d7\x26qid\x3dCOvi57qGz5MDFY4BrQYdlOUQig';var sendAft=true;(function(){function a(){var c=src,b=new Image;b.src=c;b.setAttribute("attributionsrc","")}sendAft&&google&&google.caft?google.caft(function(){a()}):a();}).call(this);})();})();(function(){(function(){var src='https://www.googletagmanager.com/gtm.js?id\x3dGTM-16521530460\x26preconnect\x3d1\x26type\x3d8\x26qid\x3dCOvi57qGz5MDFY4BrQYdlOUQig';var sendAft=true;(function(){function a(){var c=src,b=new Image;b.src=c;b.setAttribute("attributionsrc","")}sendAft&&google&&google.caft?google.caft(function(){a()}):a();}).call(this);})();})();(function(){(function(){var src='https://www.googleadservices.com/pagead/conversion/16521530460/?gad_source\x3d1\x26adview_type\x3d1\x26adview_query_id\x3dCOvi57qGz5MDFY4BrQYdlOUQig';var sendAft=true;(function(){function a(){var c=src,b=new Image;b.src=c;b.setAttribute("attributionsrc","")}sendAft&&google&&google.caft?google.caft(function(){a()}):a();}).call(this);})();})();(function(){(function(){var src='https://www.google.com/pagead/1p-conversion/16521530460/?gad_source\x3d1\x26adview_type\x3d4\x26adview_query_id\x3dCOvi57qGz5MDFY4BrQYdlOUQig';var sendAft=true;(function(){function a(){var c=src,b=new Image;b.src=c;b.setAttribute("attributionsrc","")}sendAft&&google&&google.caft?google.caft(function(){a()}):a();}).call(this);})();})();[[null,function(){(function(){google.csct={};google.csct.ps='AOvVaw2B0oeQN9aiG-RCQp5Rxj8L\x26ust\x3d1775215297221626';})();}],[null,function(){(function(){google.csct.sb=true;})();}],[null,function(){window.jsl=window.jsl||{};window.jsl.dh=window.jsl.dh||function(i,c,d){try{var e=document.getElementById(i);if(e){e.innerHTML=c;if(d){d();}}else{if(window.jsl.el){window.jsl.el(new Error('Missing ID.'),{'id':i});}}}catch(e){if(window.jsl.el){window.jsl.el(new Error('jsl.dh'));}}};}],[{id:'_QVHOaZ2pCbfn0PEP0uzV8QM_1'},function(){jsl.dh(this.id,"\x3csvg class=\"lJpQBb\" aria-label=\"Go to Google home\" role=\"img\" height=\"24\" width=\"24\" focusable=\"false\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cclipPath id=\"_QVHOaZ2pCbfn0PEP0uzV8QM_3\">\x3cpath d=\"M12 10v4.5h6.47c-.5 2.7-3 4.74-6.47 4.74-3.9 0-7.1-3.3-7.1-7.25S8.1 4.75 12 4.75c1.8 0 3.35.6 4.6 1.8l3.4-3.4C18 1.2 15.24 0 12 0 5.4 0 0 5.4 0 12s5.4 12 12 12c7 0 11.5-4.9 11.5-11.7 0-.8-.1-1.54-.2-2.3H12z\">\x3c/path>\x3c/clipPath>\x3cfilter id=\"_QVHOaZ2pCbfn0PEP0uzV8QM_4\">\x3cfeGaussianBlur stddeviation=\"1\">\x3c/feGaussianBlur>\x3c/filter>\x3cg style=\"clip-path:url(#_QVHOaZ2pCbfn0PEP0uzV8QM_3)\">\x3cforeignObject style=\"filter:url(#_QVHOaZ2pCbfn0PEP0uzV8QM_4)\" height=\"28\" transform=\"translate(-2,-2)\" width=\"28\">\x3cdiv style=\"width:100%;height:100%;background:conic-gradient(#FF4641,#FD5061 40deg,#FD5061 60deg,#3186FF 85deg,#3186FF 117deg,#00A5B7 142deg,#0EBC5F 167deg,#0EBC5F 200deg,#6CC500 226deg,#FFCC00 253deg,#FFD314 268deg,#FFCC00 292deg,#FF4641 327deg)\">\x3c/div>\x3c/foreignObject>\x3crect fill=\"#3186FF\" height=\"8\" width=\"16\" x=\"11\" y=\"8\">\x3c/rect>\x3c/g>\x3c/svg>");}],[{id:'_QVHOaZ2pCbfn0PEP0uzV8QM_5'},function(){jsl.dh(this.id,"\x3cdiv jscontroller=\"Dvn7fe\" jsname=\"UUbT9\" class=\"UUbT9 EyBRub\" style=\"display:none\" jsaction=\"mouseout:ItzDCd;mouseleave:MWfikb;hBEIVb:nUZ9le;ldyIye:CmVOgc\" data-ved=\"0ahUKEwjdzeG6hs-TAxW3MzQIHVJ2NT4Q4tUDCBM\">\x3cdiv jscontroller=\"Wo3n8\" jsname=\"aadvhe\" jsmodel=\" d5EhJe\" data-bkt=\"searchbox\" data-fhs=\"\" data-maindata='[null,null,null,\"autocomplete_user_feedback_kp_id\",null,11,null,null,null,null,null,5010715,\"searchbox\",null,\"AutocompletePrediction\",null,null,null,null,11]' data-ofbl=\"114,120,134\" data-pid=\"5010715\" jsdata=\"vST7rb;_;QVHOaZ2pCbfn0PEP0uzV8QM2 zEIyGd;_;\" jsaction=\"kPzEO:MlP2je;qjLxRc:FbhRG;w8f1fc:hRwSgb;kq2wxf:s5CUif;aIJAdf:UhDUnd;rwuG3b:KGQHJd;BqbTbe:naa5ve;kYAKrf:CqUGrf;hwhRRe:KyxjCd;rcuQ6b:npT2md\">\x3cdiv id=\"_QVHOaZ2pCbfn0PEP0uzV8QM_7\">\x3cdiv jsname=\"GkjeIf\" id=\"_QVHOaZ2pCbfn0PEP0uzV8QM_9\" data-jiis=\"up\" data-async-type=\"kp_feedback\" class=\"yp\" data-ved=\"0ahUKEwjdzeG6hs-TAxW3MzQIHVJ2NT4Q68cECBQ\">\x3c/div>\x3c/div>\x3c/div>\x3cdiv jscontroller=\"P10Owf\" class=\"YB4h9 ky4hfd\" aria-label=\"Choose what you’re giving feedback on\" jsdata=\"vST7rb;_;QVHOaZ2pCbfn0PEP0uzV8QM2\" role=\"dialog\" tabindex=\"-1\" jsaction=\"kPzEO:MlP2je;qjLxRc:MlP2je;w8f1fc:hRwSgb;kq2wxf:s5CUif\" data-ved=\"0ahUKEwjdzeG6hs-TAxW3MzQIHVJ2NT4QlokGCBU\">\x3cdiv id=\"_QVHOaZ2pCbfn0PEP0uzV8QM_11\">\x3c/div>\x3c/div>\x3cdiv jsname=\"RjPuVb\" class=\"RjPuVb\">\x3c/div>\x3cdiv jsname=\"aajZCb\" class=\"aajZCb\">\x3cdiv class=\"xtSCL\">\x3c/div>\x3cdiv class=\"mkHrUc\" id=\"Alh6id\" role=\"presentation\">\x3cdiv jsname=\"erkvQe\" class=\"erkvQe\">\x3c/div>\x3cdiv jsname=\"tovEib\" class=\"rLrQHf\" role=\"presentation\">\x3c/div>\x3c/div>\x3cdiv jsname=\"E80e9e\" class=\"OBMEnb\" id=\"shJ2Vb\" role=\"presentation\">\x3cul jsname=\"bw4e9b\" class=\"G43f7e\" role=\"listbox\">\x3c/ul>\x3c/div>\x3cdiv jsname=\"XiTF2e\" class=\"OBMEnb\" role=\"presentation\">\x3cdiv jsname=\"Q7Erhd\" class=\"G43f7e\" role=\"presentation\">\x3c/div>\x3c/div>\x3cdiv class=\"ynRric\" id=\"ynRric\" role=\"presentation\">\x3c/div>\x3cli data-view-type=\"1\" class=\"sbct PZPZlf\" id=\"YMXe\" role=\"presentation\" data-attrid=\"AutocompletePrediction\" data-entityid=\"autocomplete_user_feedback_kp_id\">\x3cdiv class=\"eIPGRd\">\x3cdiv class=\"sbic\">\x3c/div>\x3cdiv class=\"pcTkSc\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"wM6W7d\">\x3cspan>\x3c/span>\x3c/div>\x3cdiv class=\"ClJ9Yb\">\x3cdiv class=\"zjKSsb\">\x3c/div>\x3cspan class=\"dKU7sc\">\x3c/span>\x3c/div>\x3cdiv class=\"a5RLac\">\x3cspan>\x3c/span>\x3c/div>\x3c/div>\x3cdiv class=\"TfeWfb\">\x3c/div>\x3c/div>\x3cdiv class=\"AQZ9Vd\" aria-atomic=\"true\" role=\"button\">\x3cdiv class=\"sbai\" role=\"presentation\">Delete\x3c/div>\x3c/div>\x3c/div>\x3c/li>\x3cdiv class=\"xAmryf\" id=\"bgeLZd\">\x3cspan class=\"jtAOgd\">\x3c/span>\x3c/div>\x3cli class=\"AB2Fdd\" data-view-type=\"9\" id=\"d6ItKb\" role=\"presentation\">\x3cdiv class=\"eIPGRd\">\x3cdiv class=\"ZDHp\" style=\"display:none\" id=\"fU0xAb\" role=\"presentation\">\x3cdiv class=\"kZtr1b\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cdiv class=\"xAmryf\" id=\"bgeLZd\">\x3cspan class=\"jtAOgd\">\x3c/span>\x3c/div>\x3cdiv class=\"TfeWfb\" role=\"presentation\" style=\"display:none\">\x3c/div>\x3cdiv class=\"kSFCof MagqMc U48fD\" style=\"display:none\" aria-label=\"See more\" role=\"button\" tabindex=\"0\">\x3chr class=\"Bi9oQd\" aria-hidden=\"true\">\x3cdiv class=\"ZFiwCf\">\x3cspan class=\"LGwnxb JGD2rd\">See more\x3c/span>\x3cspan class=\"w2fKdd z1asCe\" style=\"height:20px;line-height:20px;width:20px\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3c/div>\x3cdiv class=\"Vlt3wb\" style=\"display:none\">\x3c/div>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3cdiv class=\"j0GJWd\" style=\"display:none\">\x3cdiv>\x3cimg class=\"uHGFVd AZNDm\" alt=\"\" style=\"display:none\">\x3c/div>\x3cdiv class=\"iQxPRb\">\x3cimg class=\"uHGFVd EOLKOc\" alt=\"\" style=\"display:none\">\x3cimg class=\"uHGFVd EOLKOc\" alt=\"\" style=\"display:none\">\x3c/div>\x3c/div>\x3c/div>\x3c/div>\x3c/li>\x3cli class=\"W3CMNd\" data-view-type=\"10\" id=\"JglY8e\" role=\"option\">\x3cdiv class=\"eIPGRd\" role=\"presentation\">\x3cdiv class=\"AsqS6c\" style=\"display:none\" id=\"GTYqfc\" role=\"presentation\">\x3cdiv class=\"gfT7kc\">\x3cdiv class=\"cJpYle\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3c/div>\x3cdiv class=\"gTtFDd\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3c/div>\x3c/div>\x3cdiv class=\"xAmryf\" id=\"bgeLZd\">\x3cspan class=\"jtAOgd\">\x3c/span>\x3c/div>\x3cdiv class=\"TfeWfb\" role=\"presentation\" style=\"display:none\">\x3c/div>\x3cdiv class=\"Vlt3wb\" style=\"display:none\">\x3c/div>\x3c/div>\x3c/div>\x3c/li>\x3cli data-view-type=\"8\" class=\"sbct PZPZlf\" id=\"mitGyb\" role=\"presentation\" data-attrid=\"AutocompletePrediction\" data-entityid=\"autocomplete_user_feedback_kp_id\">\x3cdiv class=\"eIPGRd hdt0ld\">\x3cdiv class=\"sbic\">\x3c/div>\x3cdiv class=\"pcTkSc\">\x3cdiv>\x3cdiv class=\"wM6W7d\">\x3cspan>\x3c/span>\x3c/div>\x3cdiv class=\"ClJ9Yb\">\x3cspan class=\"dKU7sc\">\x3c/span>\x3c/div>\x3c/div>\x3c/div>\x3cdiv class=\"AQZ9Vd\" aria-atomic=\"true\" role=\"button\">\x3cdiv class=\"sbai\" role=\"presentation\">Delete\x3c/div>\x3c/div>\x3c/div>\x3c/li>\x3cdiv class=\"ZDHp\" style=\"display:none\" id=\"fU0xAb\" role=\"presentation\">\x3cdiv class=\"kZtr1b\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cdiv class=\"xAmryf\" id=\"bgeLZd\">\x3cspan class=\"jtAOgd\">\x3c/span>\x3c/div>\x3cdiv class=\"TfeWfb\" role=\"presentation\" style=\"display:none\">\x3c/div>\x3cdiv class=\"kSFCof MagqMc U48fD\" style=\"display:none\" aria-label=\"See more\" role=\"button\" tabindex=\"0\">\x3chr class=\"Bi9oQd\" aria-hidden=\"true\">\x3cdiv class=\"ZFiwCf\">\x3cspan class=\"LGwnxb JGD2rd\">See more\x3c/span>\x3cspan class=\"w2fKdd z1asCe\" style=\"height:20px;line-height:20px;width:20px\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3c/div>\x3cdiv class=\"Vlt3wb\" style=\"display:none\">\x3c/div>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3cdiv class=\"j0GJWd\" style=\"display:none\">\x3cdiv>\x3cimg class=\"uHGFVd AZNDm\" alt=\"\" style=\"display:none\">\x3c/div>\x3cdiv class=\"iQxPRb\">\x3cimg class=\"uHGFVd EOLKOc\" alt=\"\" style=\"display:none\">\x3cimg class=\"uHGFVd EOLKOc\" alt=\"\" style=\"display:none\">\x3c/div>\x3c/div>\x3c/div>\x3cdiv class=\"AsqS6c\" style=\"display:none\" id=\"GTYqfc\" role=\"presentation\">\x3cdiv class=\"gfT7kc\">\x3cdiv class=\"cJpYle\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3c/div>\x3cdiv class=\"gTtFDd\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3c/div>\x3c/div>\x3cdiv class=\"xAmryf\" id=\"bgeLZd\">\x3cspan class=\"jtAOgd\">\x3c/span>\x3c/div>\x3cdiv class=\"TfeWfb\" role=\"presentation\" style=\"display:none\">\x3c/div>\x3cdiv class=\"Vlt3wb\" style=\"display:none\">\x3c/div>\x3c/div>\x3cli class=\"IDVnvc PZPZlf\" data-view-type=\"6\" id=\"TN4rFf\" role=\"presentation\" data-attrid=\"AutocompletePrediction\" data-entityid=\"autocomplete_user_feedback_kp_id\">\x3cdiv class=\"cRV9hb\">\x3cdiv class=\"aVbWac\">\x3cdiv class=\"sbic\">\x3c/div>\x3c/div>\x3cdiv class=\"pcTkSc\" role=\"presentation\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"wM6W7d\">\x3cspan>\x3c/span>\x3c/div>\x3cdiv class=\"ClJ9Yb\">\x3cspan class=\"dKU7sc\">\x3c/span>\x3c/div>\x3c/div>\x3c/div>\x3c/div>\x3c/li>\x3c/div>\x3cdiv jsname=\"JUypV\">\x3cdiv class=\"WzNHm mWcf0e\" jscontroller=\"gSZvdb\" data-dccl=\"false\" role=\"button\" tabindex=\"0\" jsdata=\"vST7rb;_;QVHOaZ2pCbfn0PEP0uzV8QM2\" jsaction=\"i5KCU;kVBCVd:yM1YJe\" data-ved=\"0ahUKEwjdzeG6hs-TAxW3MzQIHVJ2NT4Q6scECBk\">\x3cdiv class=\"VfL2Y LRZwuc\">Report inappropriate predictions\x3c/div>\x3c/div>\x3c/div>\x3cdiv class=\"KxWPre\" id=\"TWnylf\">\x3cdiv class=\"E2ShOd\">\x3c/div>\x3cspan class=\"VUsake\">\x3c/span>\x3cg-dropdown-menu jscontroller=\"pFsdhd\" class=\"adGN6\" jsdata=\"xJGXK;_;QVHOaZ2pCbfn0PEP0uzV8QM3\" jsshadow=\"\" jsaction=\"rcuQ6b:npT2md;mMf61e:GKlhgf;YraOve:cCpuJc;kNOP9c:bzkPEc;hmb6Ye:oyYkKb;KyPa0e:G8Ofmd;wjOG7e:rWoVB;ZvRO4b:L76sMb;LyWNEf:L76sMb\">\x3cg-popup jsname=\"zpo2ue\" jscontroller=\"DPreE\" jsaction=\"A05xBd:IYtByb;EOZ57e:WFrRFb;\" jsdata=\"mVjAjf;_;QVHOaZ2pCbfn0PEP0uzV8QM4\">\x3cdiv jsname=\"oYxtQd\" class=\"CcNe6e\" aria-expanded=\"false\" aria-haspopup=\"true\" jsslot=\"\" role=\"button\" tabindex=\"0\" aria-label=\"See more\" jsaction=\"WFrRFb;keydown:uYT2Vb\">\x3cdiv class=\"wSGdUc\">\x3cspan class=\"IjabWd z1asCe SaPW2b\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3c/div>\x3cdiv jsname=\"V68bde\" class=\"UjBGL pkWBse iRQHZe\" style=\"display:none;z-index:1000\">\x3cg-menu jsname=\"iXXGtd\" class=\"WNN1b Shjy3b yTik0 PBn44e iQXTJe wplJBd\" jscontroller=\"WlNQGd\" role=\"menu\" tabindex=\"-1\" jsaction=\"PSl28c;focus:h06R8;keydown:uYT2Vb;mouseenter:WOQqYb;mouseleave:Tx5Rb;mouseover:IgJl9c\">\x3cg-menu-item jsname=\"NNJLud\" class=\"GuoVP EpPYLd GZnQqe\" jscontroller=\"CnSW2d\" role=\"menuitem\" tabindex=\"-1\" data-short-label=\"\" jsdata=\"zPXzie;_;QVHOaZ2pCbfn0PEP0uzV8QM5\">\x3cdiv jsname=\"ibnC6b\" class=\"YpcDnf OSrXXb\">Dismiss\x3c/div>\x3c/g-menu-item>\x3c/g-menu>\x3c/div>\x3c/g-popup>\x3c/g-dropdown-menu>\x3c/div>\x3cdiv class=\"zs1JGd\" data-view-type=\"7\" jsname=\"RqJ7oe\" id=\"dh215c\" role=\"presentation\">\x3cdiv class=\"JqPLlb\" role=\"option\" tabindex=\"0\">\x3c/div>\x3c/div>\x3c/div>");}],[{id:'_QVHOaZ2pCbfn0PEP0uzV8QM_11'},function(){jsl.dh(this.id,"\x3cspan class=\"Job8vb z1asCe wuXmqc\" aria-label=\"Close Choose what you’re giving feedback on\" role=\"button\" tabindex=\"0\" jsaction=\"kEOk4d\" style=\"height:20px;line-height:20px;width:20px\" data-ved=\"0ahUKEwjdzeG6hs-TAxW3MzQIHVJ2NT4QmIkGCBY\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z\">\x3c/path>\x3c/svg>\x3c/span>\x3cdiv class=\"C85rO\" aria-level=\"1\" role=\"heading\">Choose what you’re giving feedback on\x3c/div>");}],[null,function(){(function(){  maybe you could try that for the other ones after you have validated and added the better links from here. ibm/lenovo same thing for this model. 
+great start. but please review, i just typed ibm g8316 into google and found many links setTimeout(function(){google.tick&&google.tick("load","xjspls");H();if(y||A||E){if(y){var a=function(){y=!1;I()};google.caft(a);setTimeout(a,amd)}A&&(a=function(){A=!1;I()},z.cbvi.push(a),setTimeout(a,mmd));if(E){var b=function(){(D?document.hidden:document.prerendering)||(E=!1,I(!D),document.removeEventListener(F,b))};document.addEventListener(F,b,{passive:!0})}x||k()}else B()},0);})();window._ = window._ || {};window._DumpException = _._DumpException = function(e){throw e;};window._s = window._s || {};_s._DumpException = _._DumpException;window._qs = window._qs || {};_qs._DumpException = _._DumpException;window.loaded_h_0 = function(cb){cb.call(window,window._);};(function(){var t=[503452641,533594,0,0,32768,656,0,0,0,67112960,1048576,1120,524288,0,35652736,536870912,29360129,856006,536880516,455130174,539760382,0,27279360,67238952,939638145,592896,649785312,67319273,269500448,546374912,1048832,2123776,268570624,100683780,22070404,536903753,806354954,111001088,537529820,543756920,206848,134365184,705692656,294053893,4195702,10317074,505177094,537022754,99598335,4655631,67109780,134234136,74776,638058224,881986496,7184,537411584,121725105,84443146,84009054,207671824,974585999,551355427,675564070,3671548,68030912,268452833,805306368,136314896,135348733,50342400,702480388,134352384,16777280,205520960,57213184,419430656,33570968,755517960,3278208,62717952,470417744,64246207,9666624,413667330,788418,798720,574619692,8699920,252821504,153399348,201336212,836767827,337658366,131084,469769953,380121282,807426694,294947,18368511,3997696,0,507248699,258508544,0,0,0,0,0,805634064,16551992,8194,0,0,0,0,0,436773888,34,515899392,139266];window._F_toggles = window._xjs_toggles = t;})();window._F_installCss = window._F_installCss || function(css){};(function(){var pmc='{\x22X3N0Bf\x22:{},\x22abd\x22:{\x22abd\x22:false,\x22deb\x22:false,\x22det\x22:false},\x22attn\x22:{},\x22bgd\x22:{\x22ac\x22:true,\x22as\x22:true,\x22at\x22:0,\x22ea\x22:true,\x22ed\x22:0,\x22ei\x22:true,\x22el\x22:true,\x22ep\x22:true,\x22er\x22:true,\x22et\x22:0,\x22eu\x22:false,\x22li\x22:false,\x22lr\x22:false,\x22wl\x22:false},\x22cdos\x22:{\x22bih\x22:800,\x22biw\x22:1200,\x22dpr\x22:\x222.4\x22},\x22csi\x22:{},\x22d\x22:{},\x22foot\x22:{\x22dv\x22:\x22I_Hr-oEmn3hr0AsJxy-9qjqpgdbe1FlX_6ozjHU2xAEAAFBX3a7lKXlqhQAAAJR__9CrFs6uJgAAANb86siJVFT6EwAAwFTHsPNRSWjjBAAAAA\x22},\x22gwc\x22:{},\x22hsm\x22:{},\x22jsa\x22:{\x22csi\x22:true,\x22csir\x22:100},\x22mb4ZUb\x22:{},\x22sb_wiz\x22:{\x22onf\x22:\x22EAE\x22,\x22scq\x22:\x22\x22,\x22stok\x22:\x22HPhGO-yHm4-1O4OPZg-nzgVuH5Y\x22,\x22ueh\x22:\x2232e92882_e28539f0_c7ede386_c66d3b93_6893f910\x22},\x22spch\x22:{\x22ae\x22:\x22Please check your microphone.  \\u003Ca href\x3d\\\x22https://support.google.com/chrome/?p\x3dui_voice_search\\\x22 target\x3d\\\x22_blank\\\x22\\u003ELearn more\\u003C/a\\u003E\x22,\x22ak\x22:\x22AIzaSyBm7NubC-Swn1nt2nhYfxb58eCdmL2vCVU\x22,\x22cd\x22:0,\x22fp\x22:false,\x22hl\x22:\x22en-US\x22,\x22im\x22:\x22Click \\u003Cb\\u003EAllow\\u003C/b\\u003E to start voice search\x22,\x22iw\x22:\x22Waiting...\x22,\x22lm\x22:\x22Listening...\x22,\x22lu\x22:\x22%1$s voice search not available\x22,\x22mb\x22:false,\x22ne\x22:\x22No Internet connection\x22,\x22nt\x22:\x22Didn\x27t get that. \\u003Cspan\\u003ETry again\\u003C/span\\u003E\x22,\x22nv\x22:\x22Please check your microphone and audio levels.  \\u003Ca href\x3d\\\x22https://support.google.com/chrome/?p\x3dui_voice_search\\\x22 target\x3d\\\x22_blank\\\x22\\u003ELearn more\\u003C/a\\u003E\x22,\x22pe\x22:\x22Voice search has been turned off.  \\u003Ca href\x3d\\\x22https://support.google.com/chrome/?p\x3dui_voice_search\\\x22 target\x3d\\\x22_blank\\\x22\\u003EDetails\\u003C/a\\u003E\x22,\x22rm\x22:\x22Speak now\x22}}';google.pmc=JSON.parse(pmc);})();(function(){var m={"QVHOaZ2pCbfn0PEP0uzV8QM1":["gws-wiz-serp","","ibm g8316","",1,0,0,13,"en","32e92882e28539f0c7ede386c66d3b936893f910","QVHOaZ2pCbfn0PEP0uzV8QM",0,"en",null,null,null,3,15,8,null,"89978449",1,1,1800000,1,-1,0,0,1,1,1,null,null,0,0,null,"",null,0,null,0,null,1,null,1,1,1,null,["gws-wiz-modeless-local","",""],null,["gws-wiz-modeless-products","","sh"],["gws-wiz-modeless-lodging","",""],["gws-wiz-modeless-flights","",""],1,null,null,["gws-wiz-modeless-vss-products","",""],["gws-wiz-modeless-vss-jobs","",""],["gws-wiz-modeless-vss-local-travel","",""],["gws-wiz-modeless-video","","v"],["gws-wiz-modeless-jobs","",""],["gws-wiz-modeless-vss-flights","",""],["gws-wiz-modeless","",""],["gws-wiz-modeless-shopping","","sh"],null,null,null,["multimodal-lens-web","",""],null,1,0,["gws-wiz-modeless-forums","",""],["gws-wiz-modeless-short-videos","",""],null,["gws-wiz-modeless-web-only","",""],0,""],"QVHOaZ2pCbfn0PEP0uzV8QM2":[null,null,null,"autocomplete_user_feedback_kp_id",null,11,null,null,null,null,null,5010715,"searchbox",null,"AutocompletePrediction",null,null,null,null,11],"QVHOaZ2pCbfn0PEP0uzV8QM3":[3,0,0,0,0,0,10,0,0,0],"QVHOaZ2pCbfn0PEP0uzV8QM4":[6,3,null,null,1,1,0,1,0,0,0,0,0,0,0,0],"QVHOaZ2pCbfn0PEP0uzV8QM5":["spyw",1,0],"QVHOaZ2pCbfn0PEP0uzV8QM12":[1,0,null,0,0,0,0,1],"QVHOaZ2pCbfn0PEP0uzV8QM6":[null,null,null,[null,null,[[[3,null,null,[null,[["qdr_",1,6],["qdr_h",0,6],["qdr_d",0,6],["qdr_w",0,6],["qdr_m",0,6],["qdr_y",0,6],["cdr_opt",0,1,[1,"Custom range...",null,"cdr:1,cd_min:x,cd_max:x","","text","","",6,null,[[["q","ibm g8316"],["num","10"],["newwindow","1"],["client","firefox-b-1-d"],["hs","E2xU"],["sca_esv","483bff7be855fde4"],["sxsrf","ANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157"]]],"cdr_opt","5/23/2004",0]]],0]],[3,null,null,[null,[["li_",1,6],["li_1",0,6]],1]]],null,["tbs"],"https://www.google.com/advanced_search?client\u003dfirefox-b-1-d\u0026q\u003dibm+g8316"]],null,null,[null,[["/search?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"All",1,0,1,null,null,"WEB",[0,1]]],[["/search?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026udm\u003d2\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"Images",0,0,1,null,null,"IMAGES",[6,1]],["https://maps.google.com/maps?client\u003dfirefox-b-1-d\u0026q\u003dibm+g8316\u0026um\u003d1\u0026ie\u003dUTF-8",null,null,"Maps",0,0,1,null,null,"MAPS",[8,1],null,null,null,1],["/search?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026udm\u003d7\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"Videos",0,0,1,null,null,"VIDEOS",[13,1]],["/search?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026tbm\u003dnws\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"News",0,0,1,null,null,"NEWS",[10,1]],["/search?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026udm\u003d36\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"Books",0,0,1,null,null,"BOOKS",[2,1]],["https://www.google.com/travel/flights?q\u003dibm+g8316\u0026num\u003d10\u0026newwindow\u003d1\u0026client\u003dfirefox-b-1-d\u0026hs\u003dE2xU\u0026sca_esv\u003d483bff7be855fde4\u0026tbm\u003dflm\u0026sxsrf\u003dANbL-n5Zs-JQeTX9Nc7Lv4GQ0BFY420IFw:1775128897157\u0026source\u003dlnms",null,null,"Flights",0,0,1,null,null,"FLIGHTS",[20,1],null,null,null,1],["//www.google.com/finance",null,null,"Finance",0,0,1,null,null,"FINANCE",[22,1]]]]],"QVHOaZ2pCbfn0PEP0uzV8QM9":[1,null,null,1,0,0,0,null,0,0],"QVHOaZ2pCbfn0PEP0uzV8QM16":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dClFodHRwczovL3d3dy5pYm0uY29tL3N1cHBvcnQvcGFnZXMvb3ZlcnZpZXctaWJtLXN5c3RlbS1uZXR3b3JraW5nLXJhY2tzd2l0Y2gtZzgzMTYSBBoCCAAajgMSAggAGgAiACoAMgYIAxICdXM6AEIECAEQAEoAWgByAHoAgkDoAggAEAAYACAAKhQKA2libRU-HxlBGghpdjtwO2libSogCgVnODMxNhXKcqlAGgZnIDgzMTYaCml2O3A7ZzgzMTYyUWh0dHBzOi8vd3d3LmlibS5jb20vc3VwcG9ydC9wYWdlcy9vdmVydmlldy1pYm0tc3lzdGVtLW5ldHdvcmtpbmctcmFja3N3aXRjaC1nODMxNjo_T3ZlcnZpZXcgLSA8Yj5JQk08L2I-IFN5c3RlbSBOZXR3b3JraW5nIFJhY2tTd2l0Y2ggPGI-RzgzMTY8L2I-QpEBVGhlIElCTSBSYWNrU3dpdGNoIEc4MzE2IGlzIDxiPmEgNDAgR2lnYWJpdCBFdGhlcm5ldCBhZ2dyZWdhdGlvbiBzd2l0Y2g8L2I-IGRlc2lnbmVkIGZvciB0aGUgZGF0YSBjZW50ZXIsIHByb3ZpZGluZyBzcGVlZCwgaW50ZWxsaWdlbmNlLCZuYnNwOy4uLiICEAFIAVgAaAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["Overview - IBM System Networking RackSwitch G8316","The IBM RackSwitch G8316 is a 40 Gigabit Ethernet aggregation switch designed for the data center, providing speed, intelligence, ...","IBM","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAAJFBMVEWHjZZHcEyHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZZXpc14AAAADHRSTlP+AAqQGemvyzJCYHQXcPNoAAAA90lEQVQokY2S27aDMAhEh3sS//9/DyRprR5XV3lB2RqGIaAvgZ+gAM5E7IDcocAdTuSV5Qq5gEC1gIN/hwlEEERR2W89S0gokcYSdhtFEzGv/DDnyL9iPJvgMBF7N/xQy3Ss8QTHPP2EGsoWqxLGHHpCNXDD7jbQGKYv2ICC4TMCnbLQFmwwL2g7CroVBfU8Qwr2FJJSekHR+U2r8zecsWDpyE7G9ARzF7FWO6GMGbJhrX+OFzYl7+g0iyltII5IV3JOnZFzpltVHMgHJCN9XY5cOe1imbCcDExXFMtGvmwlmw7msbz5t7JmpcZOdr3UXaR/vn+98X8I7wbqSaESqAAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"Overview - IBM System Networking RackSwitch G8316",null,"https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316"],["https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316","Overview - IBM System Networking RackSwitch G8316","The IBM RackSwitch G8316 is a 40 Gigabit Ethernet aggregation switch designed for the data center, providing speed, intelligence, ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1Sz-YEu8NQBlHRPmoOlCguKYoVOmA:1775128897504","IBM"],null,null,null,["https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316",null,null,null,35,"Source: IBM"],3,[null,null,"Overview - IBM System Networking RackSwitch G8316","webresult_qvEGoGp19mIJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316","OFF",0,1],null,null,null,null,null,["The IBM RackSwitch G8316 is \u003cb\u003ea 40 Gigabit Ethernet aggregation switch\u003c/b\u003e designed for the data center, providing speed, intelligence,\u0026nbsp;...","Overview - \u003cb\u003eIBM\u003c/b\u003e System Networking RackSwitch \u003cb\u003eG8316\u003c/b\u003e",0,4]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM15":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://lenovopress.lenovo.com/tips0842",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCidodHRwczovL2xlbm92b3ByZXNzLmxlbm92by5jb20vdGlwczA4NDISBBoCCAAa-AISAggAGgIIASIAKgAyBggDEgJ1czoAQgQIARAASgBaAHIAegCCQNACCAAQABgAIAAqFAoDaWJtFdDF9D4aCGl2O3A7aWJtKiAKBWc4MzE2FayPG0AaBmcgODMxNhoKaXY7cDtnODMxNjInaHR0cHM6Ly9sZW5vdm9wcmVzcy5sZW5vdm8uY29tL3RpcHMwODQyOjlSYWNrU3dpdGNoIDxiPkc4MzE2PC9iPiBQcm9kdWN0IEd1aWRlICh3aXRoZHJhd24gcHJvZHVjdClCqQFUaGUgUmFja1N3aXRjaCBHODMxNiA8Yj5pcyBhIDQwIEdpZ2FiaXQgRXRoZXJuZXQgKEdiRSkgc3dpdGNoPC9iPiB0aGF0IGlzIGRlc2lnbmVkIGZvciB0aGUgZGF0YSBjZW50ZXIsIHByb3ZpZGluZyBzcGVlZCwgaW50ZWxsaWdlbmNlLCBhbmQgaW50ZXJvcGVyYWJpbGl0eSBvbiBhJm5ic3A7Li4uIgIQAUgBWABoAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["RackSwitch G8316 Product Guide (withdrawn product)","The RackSwitch G8316 is a 40 Gigabit Ethernet (GbE) switch that is designed for the data center, providing speed, intelligence, and interoperability on a ...","Lenovo Press","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAASFBMVEXjHRrjHBniFxPkExHmREL2v7/629vyl5fjFA7nTUz85OT////2sLH84eH2rq/3t7jlLSv+9PP//PzlMjDvgIHxkJDwjo7hAADc0W7pAAAAW0lEQVR4AezRpQHAMAAAwYYZ99+1zCEVl7cnf+ocgGtlRAiCvEFMKGUF5UIqpYto2jjQ8jOQQefPAEgxGLlnAEzwCaJkWbz6I1wmLCIKB2JQYxGy4kiAkWHAAABYuwiatdQGrgAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"RackSwitch G8316 Product Guide (withdrawn product)",null,"https://lenovopress.lenovo.com/tips0842"],["https://lenovopress.lenovo.com/tips0842","RackSwitch G8316 Product Guide (withdrawn product)","The RackSwitch G8316 is a 40 Gigabit Ethernet (GbE) switch that is designed for the data center, providing speed, intelligence, and interoperability on a ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1Sz-YEu8NQBlHRPmoOlCguKYoVOmA:1775128897504","Lenovo Press"],null,null,null,["https://lenovopress.lenovo.com/tips0842",null,null,null,35,"Source: Lenovo Press"],3,[null,null,"RackSwitch G8316 Product Guide (withdrawn product)","webresult_fx9cjb4gNAIJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://lenovopress.lenovo.com/tips0842","OFF",0,1],null,null,null,null,null,["The RackSwitch G8316 \u003cb\u003eis a 40 Gigabit Ethernet (GbE) switch\u003c/b\u003e that is designed for the data center, providing speed, intelligence, and interoperability on a\u0026nbsp;...","RackSwitch \u003cb\u003eG8316\u003c/b\u003e Product Guide (withdrawn product)",0,26]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM14":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://acclinet.com/ibm-switches/ibm-rackswitch-g8316-switch.asp",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCkFodHRwczovL2FjY2xpbmV0LmNvbS9pYm0tc3dpdGNoZXMvaWJtLXJhY2tzd2l0Y2gtZzgzMTYtc3dpdGNoLmFzcBIEGgIIABqoAxIAGgAiACoAMgYIARICdXM6AEIECAEQAEoAWgByAHoAgkCEAwgAEAAYACAAKhQKA2libRXmw7lAGghpdjtwO2libSogCgVnODMxNhX8So9AGgZnIDgzMTYaCml2O3A7ZzgzMTYyQWh0dHBzOi8vYWNjbGluZXQuY29tL2libS1zd2l0Y2hlcy9pYm0tcmFja3N3aXRjaC1nODMxNi1zd2l0Y2guYXNwOkk8Yj5JQk08L2I-IFN3aXRjaGVzOiA8Yj5JQk08L2I-IFJhY2tTd2l0Y2ggPGI-RzgzMTY8L2I-IFN3aXRjaCAtIEFjY2xpbmV0QrMBVGhlIElCTSBSYWNrU3dpdGNoIEc4MzE2IFN3aXRjaCBpcyA8Yj5hIDQwIEdiRSBhZ2dyZWdhdGlvbiBzb2x1dGlvbjwvYj4gdGhhdCYjMzk7cyBnZWFyZWQgdG93YXJkIGFwcGxpY2F0aW9ucyB0aGF0IGRlbWFuZCBtYXNzaXZlIGJhbmR3aWR0aCBhbmQgbG93IGxhdGVuY3kuIEVxdWlwcGVkIHdpdGgmbmJzcDsuLi4iAhABSAFYAGgA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM Switches: IBM RackSwitch G8316 Switch - Acclinet","The IBM RackSwitch G8316 Switch is a 40 GbE aggregation solution that's geared toward applications that demand massive bandwidth and low latency. Equipped with ...","Acclinet","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAe1BMVEUAAABaWlqWlpa6urrOzs7d3d3h4eHBwcGoqKiCgoIpKSn////a2tpDQ0P19fV5eXk7Ozuvr6/KysqcnJxQUFAZGRlqamovLy+Ojo7W1taIiIjt7e0ICAjx8fEiIiJHKgqlYxi4bxyXWxYaDgSFUBP0lCXojSRdOA2fXxeuntXWAAAAx0lEQVR4AWKgLhgFgDbJAQmiIIaC37Zt3f+Cy1SGr5h0j0fVdMO0LNOwHdcTseMzCUIWe5HPJ2YEimMSiqe+JBklYDNXkwJ3Q3jhQ8pfmUFVKSS1Gmtplv+LHIRGkaV0W1xPgGGn9wBFoXBMJBKhwpFyQaPalpYKQojUiAc8BSXo0BkneDcizMu67UrP3oxFhOO8PsGnUn889lGYf/zCGQK8RxCW6y/Y2GsD5pgrCKovTYozcP+hgD21yg17YG7KLtGflOcnvAEIgxt/rionBQAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"IBM Switches: IBM RackSwitch G8316 Switch - Acclinet",null,"https://acclinet.com/ibm-switches/ibm-rackswitch-g8316-switch.asp"],["https://acclinet.com/ibm-switches/ibm-rackswitch-g8316-switch.asp","IBM RackSwitch G8316 Switch","The IBM RackSwitch G8316 Switch is a 40 GbE aggregation solution that's geared toward applications that demand massive bandwidth and low latency. Equipped with ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1Sz-YEu8NQBlHRPmoOlCguKYoVOmA:1775128897504","Acclinet"],null,null,null,["https://acclinet.com/ibm-switches/ibm-rackswitch-g8316-switch.asp",null,null,null,35,"Source: Acclinet"],3,[null,null,"IBM Switches: IBM RackSwitch G8316 Switch - Acclinet","webresult_NGSOR6HjV1AJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://acclinet.com/ibm-switches/ibm-rackswitch-g8316-switch.asp","OFF",0,0],null,null,null,null,null,["The IBM RackSwitch G8316 Switch is \u003cb\u003ea 40 GbE aggregation solution\u003c/b\u003e that\u0026#39;s geared toward applications that demand massive bandwidth and low latency. Equipped with\u0026nbsp;...","\u003cb\u003eIBM\u003c/b\u003e Switches: \u003cb\u003eIBM\u003c/b\u003e RackSwitch \u003cb\u003eG8316\u003c/b\u003e Switch - Acclinet",0,11]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM17":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCkZodHRwczovL2Rvd25sb2FkNC5ib3VsZGVyLmlibS5jb20vc2FyL0NNQS9TTkEvMDNjb2svMi9HODMxNl9STl83LTQucGRmEgQaAggAGpkDEgAaACIAKgAyBggDEgJ1czoAQgQIARAASgBaAHIAegCCQPUCCAAQABgAIAAqFAoDaWJtFeno-0AaCGl2O3A7aWJtKiAKBWc4MzE2Fatnuz8aBmcgODMxNhoKaXY7cDtnODMxNjJGaHR0cHM6Ly9kb3dubG9hZDQuYm91bGRlci5pYm0uY29tL3Nhci9DTUEvU05BLzAzY29rLzIvRzgzMTZfUk5fNy00LnBkZjo4PGI-SUJNPC9iPiBOZXR3b3JraW5nIE9TIDcuNCBmb3IgUmFja1N3aXRjaCA8Yj5HODMxNjwvYj5CsAFUaGUgRzgzMTYgY29udGFpbnMgPGI-c2l4dGVlbiA0MEdiRSBRU0ZQKyBwb3J0czwvYj4uIFRoZSBRU0ZQKyBwb3J0cyBjYW4gYmUgcG9wdWxhdGVkIHdpdGggb3B0aWNhbCBRU0ZQKyB0cmFuc2NlaXZlcnMgb3IgREFDcy4gTm90ZTogSWYgYSBEQUMgaXMgbm90IHByb2dyYW1tZWQgdG8gbWVldCZuYnNwOy4uLiICEAFIAVgAaAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM Networking OS 7.4 for RackSwitch G8316","The G8316 contains sixteen 40GbE QSFP+ ports. The QSFP+ ports can be populated with optical QSFP+ transceivers or DACs. Note: If a DAC is not programmed to meet ...","IBM","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAAJFBMVEWHjZZHcEyHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZZXpc14AAAADHRSTlP+AAqQGemvyzJCYHQXcPNoAAAA90lEQVQokY2S27aDMAhEh3sS//9/DyRprR5XV3lB2RqGIaAvgZ+gAM5E7IDcocAdTuSV5Qq5gEC1gIN/hwlEEERR2W89S0gokcYSdhtFEzGv/DDnyL9iPJvgMBF7N/xQy3Ss8QTHPP2EGsoWqxLGHHpCNXDD7jbQGKYv2ICC4TMCnbLQFmwwL2g7CroVBfU8Qwr2FJJSekHR+U2r8zecsWDpyE7G9ARzF7FWO6GMGbJhrX+OFzYl7+g0iyltII5IV3JOnZFzpltVHMgHJCN9XY5cOe1imbCcDExXFMtGvmwlmw7msbz5t7JmpcZOdr3UXaR/vn+98X8I7wbqSaESqAAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"IBM Networking OS 7.4 for RackSwitch G8316",null,"https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf"],["https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf","IBM Networking OS 7.4 for RackSwitch G8316","The G8316 contains sixteen 40GbE QSFP+ ports. The QSFP+ ports can be populated with optical QSFP+ transceivers or DACs. Note: If a DAC is not programmed to meet ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1Sz-YEu8NQBlHRPmoOlCguKYoVOmA:1775128897504","IBM"],null,null,null,["https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf",null,null,null,35,"Source: IBM"],3,[null,null,"IBM Networking OS 7.4 for RackSwitch G8316","webresult_b9AEdc_k4NkJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf","OFF",0,0],null,null,null,null,null,["The G8316 contains \u003cb\u003esixteen 40GbE QSFP+ ports\u003c/b\u003e. The QSFP+ ports can be populated with optical QSFP+ transceivers or DACs. Note: If a DAC is not programmed to meet\u0026nbsp;...","\u003cb\u003eIBM\u003c/b\u003e Networking OS 7.4 for RackSwitch \u003cb\u003eG8316\u003c/b\u003e",0,6]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM18":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCmxodHRwczovL3d3dy5jaGVsc2lvLmNvbS93cC1jb250ZW50L3VwbG9hZHMvMjAxMy8xMS80MEdiLUV0aGVybmV0LUEtQ29tcGV0aXRpdmUtQWx0ZXJuYXRpdmUtdG8tSW5maW5pQmFuZC5wZGYSBBoCCAAavAMSAggAGgAiACoAMgYIAxICdXM6AEIECAEQAEoAWgByAHoAgkCWAwgAEAAYACAAKhQKA2libRWcBPI_GghpdjtwO2libSogCgVnODMxNhUcBnY_GgZnIDgzMTYaCml2O3A7ZzgzMTYybGh0dHBzOi8vd3d3LmNoZWxzaW8uY29tL3dwLWNvbnRlbnQvdXBsb2Fkcy8yMDEzLzExLzQwR2ItRXRoZXJuZXQtQS1Db21wZXRpdGl2ZS1BbHRlcm5hdGl2ZS10by1JbmZpbmlCYW5kLnBkZjo2NDBHYiBFdGhlcm5ldDogQSBDb21wZXRpdGl2ZSBBbHRlcm5hdGl2ZSB0byBJbmZpbmlCYW5kQq0BRGVzaWduZWQgd2l0aCB0b3AgcGVyZm9ybWFuY2UgaW4gbWluZCwgdGhlIElCTSBSYWNrc3dpdGNoIEc4MzE2IDxiPnByb3ZpZGVzIGxpbmUtcmF0ZSwgaGlnaC1iYW5kd2lkdGggc3dpdGNoaW5nLCBmaWx0ZXJpbmcsIGFuZCB0cmFmZmljIHF1ZXVpbmc8L2I-IHdpdGhvdXQgZGVsYXlpbmcmbmJzcDsuLi4iAhABSAFYAGgA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["40Gb Ethernet: A Competitive Alternative to InfiniBand","Designed with top performance in mind, the IBM Rackswitch G8316 provides line-rate, high-bandwidth switching, filtering, and traffic queuing without delaying ...","Chelsio Communications","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAABnRSTlMAAAAAAABupgeRAAAAU0lEQVR4AYWQAQYAMAzE+vT9vMOhE9OcGrNkR+ubU9XdOUsTzh3QGXPO0O6EDiUOaHdAA4Wz/f3tIf04vLJhmdDTYA63JM68JnCEXh3S4iidOH0BR2vSbk6qFCMAAAAASUVORK5CYII\u003d"],[null,1,[null,null,5,null,"40Gb Ethernet: A Competitive Alternative to InfiniBand",null,"https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf"],["https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf","40Gb Ethernet: A Competitive Alternative to InfiniBand","Designed with top performance in mind, the IBM Rackswitch G8316 provides line-rate, high-bandwidth switching, filtering, and traffic queuing without delaying ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1Sz-YEu8NQBlHRPmoOlCguKYoVOmA:1775128897504","Chelsio Communications"],null,null,null,["https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf",null,null,null,35,"Source: Chelsio Communications"],3,[null,null,"40Gb Ethernet: A Competitive Alternative to InfiniBand","webresult_O0wIELQuAwsJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.chelsio.com/wp-content/uploads/2013/11/40Gb-Ethernet-A-Competitive-Alternative-to-InfiniBand.pdf","OFF",0,1],null,null,null,null,null,["Designed with top performance in mind, the IBM Rackswitch G8316 \u003cb\u003eprovides line-rate, high-bandwidth switching, filtering, and traffic queuing\u003c/b\u003e without delaying\u0026nbsp;...","40Gb Ethernet: A Competitive Alternative to InfiniBand",0,6]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM20":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://dedicatednetworksinc.com/product/ibm-g8316-rackswitch-16x40gbe-duplex-rack-switch-2/?srsltid\u003dAfmBOoqZ63UjPJ8VVsV6YmE0IJ0_WPZJSiw2biX0oo8-FF7QCsfw80CJ",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCp0BaHR0cHM6Ly9kZWRpY2F0ZWRuZXR3b3Jrc2luYy5jb20vcHJvZHVjdC9pYm0tZzgzMTYtcmFja3N3aXRjaC0xNng0MGdiZS1kdXBsZXgtcmFjay1zd2l0Y2gtMi8_c3JzbHRpZD1BZm1CT29xWjYzVWpQSjhWVnNWNlltRTBJSjBfV1BaSlNpdzJiaVgwb284LUZGN1FDc2Z3ODBDShIEGgIIABqQAxIAGgAiACoAMgYIARICdXM6AEIECAEQAEoAWgByAHoAgkDsAggAEAAYACAAKhQKA2libRURl6JAGghpdjtwO2libSogCgVnODMxNhVWPZ9AGgZnIDgzMTYaCml2O3A7ZzgzMTYyXGh0dHBzOi8vZGVkaWNhdGVkbmV0d29ya3NpbmMuY29tL3Byb2R1Y3QvaWJtLWc4MzE2LXJhY2tzd2l0Y2gtMTZ4NDBnYmUtZHVwbGV4LXJhY2stc3dpdGNoLTIvOjc8Yj5JQk0gRzgzMTY8L2I-IFJhY2tTd2l0Y2ggMTZYNDBHQkUgRFVQTEVYIFJBQ0sgU1dJVENIQpIBRm9yIHNhbGUgaXMgYSBSZWZ1cmJpc2hlZCA8Yj5JQk0gRzgzMTY8L2I-LiBJbmNsdWRlczogMXggRzgzMTYgNHggRmFuIE1vZHVsZXMgQkFNLTAwMTU2IDJ4IFBvd2VyIFN1cHBsaWVzIERTNDUwLTMgMXggQ29uc29sZSBDYWJsZSAyeCBQb3dlciBDb3Jkcy4iAhABSAFYAGgA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM G8316 RackSwitch 16X40GBE DUPLEX RACK SWITCH","For sale is a Refurbished IBM G8316. Includes: 1x G8316 4x Fan Modules BAM-00156 2x Power Supplies DS450-3 1x Console Cable 2x Power Cords.","Dedicated Networks",""],[null,1,[null,null,5,null,"IBM G8316 RackSwitch 16X40GBE DUPLEX RACK SWITCH",null,"https://dedicatednetworksinc.com/product/ibm-g8316-rackswitch-16x40gbe-duplex-rack-switch-2/?srsltid\u003dAfmBOoqZ63UjPJ8VVsV6YmE0IJ0_WPZJSiw2biX0oo8-FF7QCsfw80CJ"],["https://dedicatednetworksinc.com/product/ibm-g8316-rackswitch-16x40gbe-duplex-rack-switch-2/?srsltid\u003dAfmBOoqZ63UjPJ8VVsV6YmE0IJ0_WPZJSiw2biX0oo8-FF7QCsfw80CJ","IBM G8316 RackSwitch 16X40GBE DUPLEX RACK SWITCH","For sale is a Refurbished IBM G8316. Includes: 1x G8316 4x Fan Modules BAM-00156 2x Power Supplies DS450-3 1x Console Cable 2x Power Cords.",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1RmiSbGswUhthyF9RwiSPBMjG9LWw:1775128897515","Dedicated Networks"],null,null,null,["https://dedicatednetworksinc.com/product/ibm-g8316-rackswitch-16x40gbe-duplex-rack-switch-2/?srsltid\u003dAfmBOoqZ63UjPJ8VVsV6YmE0IJ0_WPZJSiw2biX0oo8-FF7QCsfw80CJ",null,null,null,35,"Source: Dedicated Networks"],3,[null,null,"IBM G8316 RackSwitch 16X40GBE DUPLEX RACK SWITCH","webresult_GhQ8EujV6HgJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://dedicatednetworksinc.com/product/ibm-g8316-rackswitch-16x40gbe-duplex-rack-switch-2/?srsltid\u003dAfmBOoqZ63UjPJ8VVsV6YmE0IJ0_WPZJSiw2biX0oo8-FF7QCsfw80CJ","OFF",0,0],null,null,null,null,null,["For sale is a Refurbished \u003cb\u003eIBM G8316\u003c/b\u003e. Includes: 1x G8316 4x Fan Modules BAM-00156 2x Power Supplies DS450-3 1x Console Cable 2x Power Cords.","\u003cb\u003eIBM G8316\u003c/b\u003e RackSwitch 16X40GBE DUPLEX RACK SWITCH",0,4]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM22":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.itjungle.com/2011/10/31/tfh103111-story08/",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCjZodHRwczovL3d3dy5pdGp1bmdsZS5jb20vMjAxMS8xMC8zMS90ZmgxMDMxMTEtc3RvcnkwOC8SBBoCCAAa-wISABoAIgAqADIGCAMSAnVzOgBCBAgBEABKAFoAcgB6AIJA1wIIABAAGAAgACoUCgNpYm0V1uiEQBoIaXY7cDtpYm0qIAoFZzgzMTYVc5JBPxoGZyA4MzE2GgppdjtwO2c4MzE2MjZodHRwczovL3d3dy5pdGp1bmdsZS5jb20vMjAxMS8xMC8zMS90ZmgxMDMxMTEtc3RvcnkwOC86PzxiPklCTTwvYj4gTGF1bmNoZXMgNDAgR2lnYWJpdCBFdGhlcm5ldCBSYWNrIFN3aXRjaCAtIElUIEp1bmdsZUKbAVRoZSBSYWNrU3dpdGNoIEc4MzE2IGlzIGEgPGI-MVUgdG9wLW9mLXJhY2tlciB0aGF0IGhhcyAxNiA0MEdFIHBvcnRzPC9iPiB1c2luZyBRU0ZQKyBjYWJsaW5nLiBUaGUgc3dpdGNoIGhhcyBhIGNoaXAgdGhhdCBjYW4gaGFuZGxlIDEuMjggVGIvc2VjIG9mJm5ic3A7Li4uIgIQAUgBWABoAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM Launches 40 Gigabit Ethernet Rack Switch - IT Jungle","The RackSwitch G8316 is a 1U top-of-racker that has 16 40GE ports using QSFP+ cabling. The switch has a chip that can handle 1.28 Tb/sec of ...","IT Jungle",""],[null,1,[null,null,5,null,"IBM Launches 40 Gigabit Ethernet Rack Switch - IT Jungle",null,"https://www.itjungle.com/2011/10/31/tfh103111-story08/"],["https://www.itjungle.com/2011/10/31/tfh103111-story08/","IBM Launches 40 Gigabit Ethernet Rack Switch","The RackSwitch G8316 is a 1U top-of-racker that has 16 40GE ports using QSFP+ cabling. The switch has a chip that can handle 1.28 Tb/sec of ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1RmiSbGswUhthyF9RwiSPBMjG9LWw:1775128897515","IT Jungle"],null,null,null,["https://www.itjungle.com/2011/10/31/tfh103111-story08/",null,null,null,35,"Source: IT Jungle"],3,[null,null,"IBM Launches 40 Gigabit Ethernet Rack Switch - IT Jungle","webresult_egaWQ_PBb7kJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.itjungle.com/2011/10/31/tfh103111-story08/","OFF",0,1],null,null,null,null,null,["The RackSwitch G8316 is a \u003cb\u003e1U top-of-racker that has 16 40GE ports\u003c/b\u003e using QSFP+ cabling. The switch has a chip that can handle 1.28 Tb/sec of\u0026nbsp;...","\u003cb\u003eIBM\u003c/b\u003e Launches 40 Gigabit Ethernet Rack Switch - IT Jungle",0,11]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM21":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCkdodHRwczovL3d3dy5yZWRkaXQuY29tL3IvbmV0d29ya2luZy9jb21tZW50cy8zOTdxdHUvb2lkc19mb3JfaWJtX2c4MzE2LxIEGgIIABqdAxIAGgAiACoAMgYIAxICdXM6AEIECAEQAEoAWgByAHoAgkD5AggAEAAYACAAKhQKA2libRWwIItAGghpdjtwO2libSogCgVnODMxNhV6mIRAGgZnIDgzMTYaCml2O3A7ZzgzMTYyR2h0dHBzOi8vd3d3LnJlZGRpdC5jb20vci9uZXR3b3JraW5nL2NvbW1lbnRzLzM5N3F0dS9vaWRzX2Zvcl9pYm1fZzgzMTYvOjZPSUQmIzM5O3MgZm9yIDxiPklCTSBHODMxNjwvYj4gOiByL25ldHdvcmtpbmcgLSBSZWRkaXRCtQFHcmVldGluZ3Mgci9uZXR3b3JraW5nISBBbnlib2R5IHdvcmtlZCB3aXRoIDxiPklCTTwvYj4gUmFja3N3aXRjaCBkZXZpY2VzIGJlZm9yZT8gSGF2aW5nIHRyb3VibGUgZmluZGluZyB0aGUgY29ycmVjdCBPSUQgdG8gbW9uaXRvciBDUFUgbG9hZCBvbiBhIGZldyA8Yj5HODMxNiYjMzk7czwvYj4uIEl0Jm5ic3A7Li4uIgIQAUgBWABoAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["OID's for IBM G8316 : r/networking - Reddit","Greetings r/networking! Anybody worked with IBM Rackswitch devices before? Having trouble finding the correct OID to monitor CPU load on a few G8316's. It ...","Reddit","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAAllBMVEVHcEz/RQD/RQD/RQD/RQD/RQD/RQD/RQD/RQD/RQD/RQD/RQD/RgD/RQD+////RQD/PAD/NQD+QgDP3+fb6e7n8PLx9vcKEhX0/f/L1tz+jXL718/+XCr4+vv0e1/olIP6pJDi3N3PqqbfNAn7cU//VgP+9vQyODv1bEb+49rdzc3/v66xu77IXlHlXDhqcHKsLABrLBlRGkQ3AAAADnRSTlMAwkSK1tA47GYdh31HPrF7ujQAAAF5SURBVCiRbZOHcoMwDIahyYUkbW3Z2GbvlT3e/+UqQSCkiY4D5A9bvwaWNdpqYTucO/ZiZf23NYLRnPUL2iyfiEvJl5sn+5khLuJacP41sq85gyNje5joZs7kLWCMhUiHk+fxKu9+YswnuOx1zvd5FZRKHYAc0jzlIAFudwCoU9RLGWHuJEIIABHnx7I85jE6eOHyylqg+DCKwnDPHrYPycd0tpbNIWcfLAduU8hPjDEKymXs07spi2GxKA09/FhyCwNrkzB2FruEFpMqPtO3GgEeC5lKmK4aGRGMRFNplqgM8Fgb1eZ+4l8a3hJseXNBN0e1NqUid9oYE7VDzDYyiTE7San0RSi0Nv6p6zyv606+0boYikC5QOoqpZXXm9JaqRT68vWFh8x1XRVcPe8aKHzN4FH4vmUiDdwgwP10D1JUM7RsaDbw7FDgHrc4ZLzv2GOMfof5gLhO0zoG6Bs2DtH3NHYgh1a+s5lNo7l+Q7OhfoWOvX3+Dn+Ini8glo+XBwAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"OID's for IBM G8316 : r/networking - Reddit",null,"https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/"],["https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/","OID's for IBM G8316 : r/networking","Greetings r/networking! Anybody worked with IBM Rackswitch devices before? Having trouble finding the correct OID to monitor CPU load on a few G8316's. It ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1RmiSbGswUhthyF9RwiSPBMjG9LWw:1775128897515","Reddit"],null,null,null,["https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/",null,null,null,35,"Source: Reddit"],3,[null,null,"OID's for IBM G8316 : r/networking - Reddit","webresult_yx38gXwc40cJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.reddit.com/r/networking/comments/397qtu/oids_for_ibm_g8316/","OFF",0,1],null,null,null,null,null,["Greetings r/networking! Anybody worked with \u003cb\u003eIBM\u003c/b\u003e Rackswitch devices before? Having trouble finding the correct OID to monitor CPU load on a few \u003cb\u003eG8316\u0026#39;s\u003c/b\u003e. It\u0026nbsp;...","OID\u0026#39;s for \u003cb\u003eIBM G8316\u003c/b\u003e : r/networking - Reddit",0,4]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM23":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCnBodHRwczovL3d3dy5rYXJtYS1ncm91cC5ydS91cGxvYWQvaWJsb2NrLzA3NS9pYm1fcmFja3N3aXRjaF9nODMxNl9kYXRhc2hlZXQuMzZGQjExQ0EzMjU2NEZBOEFCRkNDQzYyODdDRjg5OEMucGRmEgQaAggAGqIDEgAaAggBIgAqADIGCAISAnVzOgBCBAgBEABKAFoAcgB6AIJA_AIIABAAGAAgACoUCgNpYm0VUXqiQBoIaXY7cDtpYm0qIAoFZzgzMTYV0CqNQBoGZyA4MzE2GgppdjtwO2c4MzE2MnBodHRwczovL3d3dy5rYXJtYS1ncm91cC5ydS91cGxvYWQvaWJsb2NrLzA3NS9pYm1fcmFja3N3aXRjaF9nODMxNl9kYXRhc2hlZXQuMzZGQjExQ0EzMjU2NEZBOEFCRkNDQzYyODdDRjg5OEMucGRmOjQ8Yj5JQk08L2I-IFN5c3RlbSBOZXR3b3JraW5nIFJhY2tTd2l0Y2ggPGI-RzgzMTY8L2I-QpEBVGhlIFJhY2tTd2l0Y2ggRzgzMTYgPGI-b2ZmZXJzIHVwIHRvIDE2eDQwIEdiRSBwb3J0czwvYj4sIHdoaWNoIGNhbiBhbHNvIGJlIHVzZWQgYXMgYSBoaWdoLWRlbnNpdHkgMTAgR2JFIHN3aXRjaCwgd2l0aCAxLjI4IFRicHPigJRpbiBhIDFVIGZvb3QtLiICEAFIAVgAaAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM System Networking RackSwitch G8316","The RackSwitch G8316 offers up to 16x40 GbE ports, which can also be used as a high-density 10 GbE switch, with 1.28 Tbps—in a 1U foot-.","Карма Групп","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAAllBMVEX////Aw8nHyc8AACgAACsRH0EAAC3O0NUUIUIAACTh4uUAEToLGz6+xtju7/G91u7Gzt4AD3UAHHgcJkQoMUvK3/EAccgAOILP1eLS3ewATJrL4fMAfMwALn0ASpsAV6YFUJkAVaUAcMEAFXYANIAAe8ve7PcbQ4clYarr8/rv9vtnptQAistmr95zteAAjMwnltFxtOBnAb6yAAABBUlEQVR4AXTOVYKDMABF0VB39+IeZbL/zc2rJ2m5P8hBHrHyOqQ1r9tr1U6v3x8MW6w7Go36vZ/qjWHQ8a8vT6azG85mky+az8kCCluQ5dK21XqzIottv79bkP3hsLdsczxuTufLaHQ5Xw++DzUNBWEUx0mS+r6pq+z46BJFkauTIH9gcscCVvgl4N4ih+ZVncBqEIy+DHoEL1idJDVjN2PG2pLnR05LkUSipNL3JTVMKs6VFI0Q4k8pKZUsDUMwBLv3Vqr1HaHiiVq/P8zuqhsE1TfDIkNxTRu8zHBuGVTimuLL2EltQ5Ri13Mnzp1gxk43fM3Y6ca0s9N9t9Wgrrmb/4cMAF8CL+olS00zAAAAAElFTkSuQmCC"],[null,1,[null,null,5,null,"IBM System Networking RackSwitch G8316",null,"https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf"],["https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf","IBM System Networking RackSwitch G8316","The RackSwitch G8316 offers up to 16x40 GbE ports, which can also be used as a high-density 10 GbE switch, with 1.28 Tbps—in a 1U foot-.",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1RmiSbGswUhthyF9RwiSPBMjG9LWw:1775128897515","Карма Групп"],null,null,null,["https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf",null,null,null,35,"Source: Карма Групп"],3,[null,null,"IBM System Networking RackSwitch G8316","webresult_63TGAnlceB8J",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf","OFF",0,0],null,null,null,null,null,["The RackSwitch G8316 \u003cb\u003eoffers up to 16x40 GbE ports\u003c/b\u003e, which can also be used as a high-density 10 GbE switch, with 1.28 Tbps—in a 1U foot-.","\u003cb\u003eIBM\u003c/b\u003e System Networking RackSwitch \u003cb\u003eG8316\u003c/b\u003e",0,4]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM19":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"https://www.ibm.com/support/pages/ibm-rackswitch-40g-g8316-firmware-update-v6840-ibm-bladecentersystem-networking",null,null,null,null,[null,null,null,null,null,null,[null,null,null,"/search/about-this-result?origin\u003dwww.google.com\u0026cs\u003d1\u0026req\u003dCnFodHRwczovL3d3dy5pYm0uY29tL3N1cHBvcnQvcGFnZXMvaWJtLXJhY2tzd2l0Y2gtNDBnLWc4MzE2LWZpcm13YXJlLXVwZGF0ZS12Njg0MC1pYm0tYmxhZGVjZW50ZXJzeXN0ZW0tbmV0d29ya2luZxIEGgIIABq5AxIAGgAiACoAMgYIAxICdXM6AEIECAEQAEoAWgByAHoAgkCVAwgAEAAYACAAKhQKA2libRUUXR9BGghpdjtwO2libSogCgVnODMxNhWuYJpAGgZnIDgzMTYaCml2O3A7ZzgzMTYycWh0dHBzOi8vd3d3LmlibS5jb20vc3VwcG9ydC9wYWdlcy9pYm0tcmFja3N3aXRjaC00MGctZzgzMTYtZmlybXdhcmUtdXBkYXRlLXY2ODQwLWlibS1ibGFkZWNlbnRlcnN5c3RlbS1uZXR3b3JraW5nOj88Yj5JQk08L2I-IFJhY2tTd2l0Y2ggNDBHIDxiPkc4MzE2PC9iPiBmaXJtd2FyZSB1cGRhdGUgdjYuOC40LjBCngE8Yj5JQk0gUmFja1N3aXRjaCA0MEcgRzgzMTYgZmlybXdhcmUgdXBkYXRlIHY2LjguNC4wPC9iPiAtIElCTSBCbGFkZUNlbnRlci9TeXN0ZW0gTmV0d29ya2luZy4gRG93bmxvYWQuIEZpbGUgZGV0YWlscy4gVmVyc2lvbjogNi44LjQuMC4gUmVsZWFzZSBEYXRlOiZuYnNwOy4uLiICEAFIAVgAaAA\u0026hl\u003den-US\u0026gl\u003dUS"],"https://www.google.com"],null,null,null,null,null,null,null,null,["IBM RackSwitch 40G G8316 firmware update v6.8.4.0","IBM RackSwitch 40G G8316 firmware update v6.8.4.0 - IBM BladeCenter/System Networking. Download. File details. Version: 6.8.4.0. Release Date: ...","IBM","data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABwAAAAcCAMAAABF0y+mAAAAJFBMVEWHjZZHcEyHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZaHjZZXpc14AAAADHRSTlP+AAqQGemvyzJCYHQXcPNoAAAA90lEQVQokY2S27aDMAhEh3sS//9/DyRprR5XV3lB2RqGIaAvgZ+gAM5E7IDcocAdTuSV5Qq5gEC1gIN/hwlEEERR2W89S0gokcYSdhtFEzGv/DDnyL9iPJvgMBF7N/xQy3Ss8QTHPP2EGsoWqxLGHHpCNXDD7jbQGKYv2ICC4TMCnbLQFmwwL2g7CroVBfU8Qwr2FJJSekHR+U2r8zecsWDpyE7G9ARzF7FWO6GMGbJhrX+OFzYl7+g0iyltII5IV3JOnZFzpltVHMgHJCN9XY5cOe1imbCcDExXFMtGvmwlmw7msbz5t7JmpcZOdr3UXaR/vn+98X8I7wbqSaESqAAAAABJRU5ErkJggg\u003d\u003d"],[null,1,[null,null,5,null,"IBM RackSwitch 40G G8316 firmware update v6.8.4.0",null,"https://www.ibm.com/support/pages/ibm-rackswitch-40g-g8316-firmware-update-v6840-ibm-bladecentersystem-networking"],["https://www.ibm.com/support/pages/ibm-rackswitch-40g-g8316-firmware-update-v6840-ibm-bladecentersystem-networking","IBM RackSwitch 40G G8316 firmware update v6.8.4.0","IBM RackSwitch 40G G8316 firmware update v6.8.4.0 - IBM BladeCenter/System Networking. Download. File details. Version: 6.8.4.0. Release Date: ...",1,"en","US",[null,null,null,null,"DrewryPope@gmail.com"],"/s?tbm\u003dmap\u0026gs_ri\u003dmaps\u0026suggest\u003dp","AKPOr1RmiSbGswUhthyF9RwiSPBMjG9LWw:1775128897515","IBM"],null,null,null,["https://www.ibm.com/support/pages/ibm-rackswitch-40g-g8316-firmware-update-v6840-ibm-bladecentersystem-networking",null,null,null,35,"Source: IBM"],3,[null,null,"IBM RackSwitch 40G G8316 firmware update v6.8.4.0","webresult_IkNCk3ieOUQJ",null,1,null,null,null,null,null,100334,"MSAF - SRP",[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,"WEB_RESULT_INNER",["https://www.ibm.com/support/pages/ibm-rackswitch-40g-g8316-firmware-update-v6840-ibm-bladecentersystem-networking","OFF",0,1],null,null,null,null,null,["\u003cb\u003eIBM RackSwitch 40G G8316 firmware update v6.8.4.0\u003c/b\u003e - IBM BladeCenter/System Networking. Download. File details. Version: 6.8.4.0. Release Date:\u0026nbsp;...","\u003cb\u003eIBM\u003c/b\u003e RackSwitch 40G \u003cb\u003eG8316\u003c/b\u003e firmware update v6.8.4.0",0,19]],null,null,null,null,null,98,null,null,null,1,null,null,null,1,1]]],"QVHOaZ2pCbfn0PEP0uzV8QM7":[null,null,null,null,null,null,null,null,null,null,3,null,null,null,null,null,null,null,null,null,0,{"44":1,"47":["86400000","604800000",2],"61":1,"62":1,"72":"UNKNOWN_BROWSER"}],"QVHOaZ2pCbfn0PEP0uzV8QM11":[null,null,null,"glbl"],"QVHOaZ2pCbfn0PEP0uzV8QM13":[1],"QVHOaZ2pCbfn0PEP0uzV8QM8":[12,"AWkwvep85eg_pvi0_3_l6D8Ac7Sd03j5vzi5_XLRePm_","-8648937497626583681","0x87f8cd2b817be28d:0xc04bac905036089d"],"QVHOaZ2pCbfn0PEP0uzV8QM10":[null,null,1,null,null,null,null,null,"",null,0]};var a=m;if(window.W_jd)for(var b in a)window.W_jd[b]=a[b];else window.W_jd=a;})();(function(){window.WIZ_global_data={"Im6cmf":"/wizrpcui/_/WizRpcUi","Yllh3e":"%.@.1775128897152733,137638839,1043691090]","MUE6Ne":"search_web","w2btAe":"%.@.\"114042261698526544687\",\"114042261698526544687\",\"0\",null,null,null,1]","xnI9P":"false","u4g7r":"%.@.null,1,3]","SNlM0e":"AKlEn5gnkKoIsbqrTB5yszOL-JM3:1775128897572","GWsdKe":"en-US","d2zrDf":"%.@.]","ocxFnb":"%.@.]","zChJod":"%.@.]","STfaRd":"{}","yFnxrf":"2848","LVIXXb":"1","S06Grb":"114042261698526544687","QrtxK":"0","S6lZl":"89978449","vJQk6":"false","oxN3nb":{"1":false},"eptZe":"/wizrpcui/_/WizRpcUi/","Ylvpqb":"%.@.\"multimodal-image-viewer\",null,null,null,1,null,null,null,null,null,null,null,\"en-US\",\"https://www.google.com\",null,1,{\"22\":1,\"44\":1,\"55\":0}]"};window.IJ_values={"A5tF3b":false,"zhkRO":"%.@.null,null,null,null,null,null,null,null,null,null,null,null,null,null,0,1,0,\"/setprefs?sig\\u003d0_ZY3WkE8r0oSaCMnMos_PyUPI5s4%3D\\u0026szl\\u003d0\",0,1,0]","w2btAe":"%.@.\"114042261698526544687\",\"114042261698526544687\",\"0\",null,null,null,1]","ea2VK":"%.@.1,1]","pxO4Zd":"0","mXOY5d":"%.@.5,1,2.4,null,[null,800,1200],null,null,1775106101012287]","SsQ4x":"USaZZnSDN5y9HlDsHf4J0Q","MuJWjd":false,"GWsdKe":"en-US","N1ycab":"en_US","MgUcDb":"US","SIsrTd":false,"fyLpDc":"","JPnTp":"%.@.\"#3c4043\",\"36px\"]","ZxtPCd":"%.@.{\"100\":\"12px\",\"101\":\"8px\",\"102\":\"8px\",\"103\":\"10px\",\"104\":\"9px\"}]","DwYRY":"%.@.null,null,null,null,\"#dadce0\",\"#5f6368\",null,null,null,null,\"rgba(191,191,191,0.38)\",null,null,null,null,null,null,null,null,null,\"rgb(from var(--lv6yU) r g b / 0.0824)\",\"rgb(from var(--lv6yU) r g b / 0.0824)\",\"rgb(from var(--lv6yU) r g b / 0.224)\",null,null,null,\"var(--D9aNi)\",null,\"rgba(232,232,232,0.24)\"]","NyzCwe":"%.@.null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,\"18px\",\"20px\",\"18px\",\"#dadce0\",\"16px\",\"var(--IXoxUe)\",\"var(--YLNNHc)\",\"var(--YLNNHc)\",\"var(--IXoxUe)\"]","spz2q":"%.@.\"var(--xhUGwc)\",null,null,null,null,\"0px\"]","geiQxc":"%.@.\"234px\",\"176px\",\"204px\",\"172px\",\"128px\",\"148px\",\"111px\",\"83px\",\"92px\"]","xFmcof":"%.@.null,null,null,\"20px\",null,\"12px\"]","lDqiof":"%.@.\"var(--YLNNHc)\",\"var(--bbQxAb)\",\"var(--rrJJUc)\",null,\"var(--IXoxUe)\",\"var(--JKqx2)\",\"#c58af9\",null,null,\"var(--xhUGwc)\",\"var(--Nsm0ce)\",\"var(--EpFNW)\",\"#394457\",\"#eef0ff\",\"#28292a\",\"var(--YLNNHc)\",\"#fff\",\"#1f1f1f\",\"#1f1f1f\",\"#fff\",\"var(--ZXiaGf)\",\"var(--EoKObe)\",\"#81c995\",\"#f28b82\",\"#fdd663\",\"var(--mXZkqc)\",\"var(--cIehld)\",\"var(--gVUKcd)\",null,\"var(--gS5jXb)\",\"#8ab4f8\",null,\"var(--TMYS9)\",\"var(--amnPwe)\",null,\"transparent\",\"var(--ONhrGd)\",\"rgba(0,0,0,0.03)\",null,null,null,null,null,null,null,null,null,\"#ea4335\",\"#34a853\",\"#4285f4\",\"#fbbc04\",\"var(--ywz01c)\",\"#80868b\",\"#171717\",null,null,null,null,\"#2c303d\",\"var(--XKMDxc)\",\"var(--aYn2S)\",null,\"var(--Aqn7xd)\",null,\"#f2b8b5\",\"#8c1d18\",\"#f4bf00\",\"#ffdf92\",\"#601410\",\"#f9dedc\",\"#241a00\",\"#241a00\",\"#0a3818\",\"#c4eed0\",\"#f2b8b5\",\"#6dd58c\",\"#6dd58c\",\"#0f5223\",\"var(--nwXobb)\",\"var(--vZe0jb)\",\"var(--QWaaaf)\",\"var(--ZEpPmd)\",\"var(--JclFj)\",\"var(--Lm570b)\",\"#303134\",\"var(--jINu6c)\",\"var(--BRLwE)\",\"var(--DEeStf)\",\"var(--TSWZIb)\",\"var(--uLz37c)\",null,\"#c3c6d6\",\"var(--TyVYld)\",null,null,null,null,\"var(--VuZXBd)\",\"rgba(23,23,23,0.75)\",{\"100\":\"rgba(48,49,52,0.94)\",\"101\":\"rgba(255,255,255,0.8)\",\"102\":\"rgba(23,23,23,0.6)\",\"103\":\"#d2e3fc\",\"104\":\"#bdc1c6\",\"105\":\"#303134\",\"106\":\"#28292a\",\"107\":\"var(--jwFC2e)\",\"108\":\"var(--jINu6c)\",\"109\":\"var(--Xqboce)\",\"110\":\"var(--vdwxpe)\",\"111\":\"#fff\",\"112\":\"#000\",\"113\":\"#fff\",\"114\":\"var(--COEmY)\",\"115\":\"#ababab\"}]","kXVUzd":"%.@.\"40px\",\"48px\"]","sCU50d":"%.@.null,\"none\",null,\"0px 1px 3px rgba(23,23,23,0.24)\",null,\"0px 2px 6px rgba(23,23,23,0.32)\",null,\"0px 4px 12px rgba(23,23,23,0.9)\",null,null,\"1px solid #5f6368\",\"0\",\"0\",\"0\",null,\"0px 1px 3px rgba(95,99,104,0.64)\",\"0\",\"0px\",\"1px\",\"2px\",\"3px\"]","w9Zicc":"%.@.\"#fff\",\"26px\",\"#fff\",\"#697988\",\"#fff\",\"1px\",\"#9aa0a6\",\"1px\",\"#fff\",\"#9aa0a6\",null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,\"28px\",\"10px\",\"8px\",\"20px\",\"10px\",\"#fff\",\"var(--JclFj)\",\"#fff\",\"#fff\",\"#5e5e5e\",\"var(--TSWZIb)\",\"var(--TMYS9)\"]","IkSsrf":"%.@.\"Google Sans,Arial,sans-serif\",\"Google Sans,Arial,sans-serif\",\"Arial,sans-serif\",\"Arial,sans-serif\",\"Arial,sans-serif\",\"Arial,sans-serif\",\"Arial,sans-serif\",\"Google Sans,Arial,sans-serif\",\"Arial,sans-serif\",\"Arial,sans-serif\"]","MR0w4":"%.@.\"var(--google-fs,1)\",\"var(--google-screen-scale-ratio,1)\"]","OItNqf":"%.@.null,\"24px\"]","j2FoS":"%.@.null,null,null,null,null,null,null,null,\"20px\"]","e2zoW":"%.@.\"16px\",\"12px\",\"0px\",\"8px\",\"4px\",\"2px\",\"20px\",\"24px\",\"48px\",\"20px\",null,null,\"0px\",\"20px\",\"36px\",\"20px\",null,\"83px\",\"52px\",\"6px\",\"20px\",\"18px\",\"16px\",\"24px\",\"12px\",\"6px\",\"75px\",\"52px\",\"799.98px\",\"684px\",\"683.98px\",\"1163.98px\",\"940px\",\"1560px\",\"1164px\",\"939.98px\",\"800px\",\"82px\",\"75px\",\"52px\",\"83px\",\"48px\"]","W1Bte":"%.@.\"cubic-bezier(0.1,1,0.2,1)\",\"cubic-bezier(0.8,0,1,0.8)\",\"cubic-bezier(0.2,0.6,0.2,1)\",\"cubic-bezier(0.4,0,1,0.8)\",\"300ms\",\"100ms\",\"200ms\",\"250ms\",\"cubic-bezier(0.4,0,0.2,1)\",\"cubic-bezier(0.4,0,0.6,1)\",\"cubic-bezier(0.6,0,0,1)\",\"cubic-bezier(0,0,1,1)\",\"cubic-bezier(0.2,0,0,1)\",\"800ms\",\"1000ms\",\"400ms\",\"500ms\",\"600ms\",\"50ms\",\"400ms\",\"300ms\",\"250ms\",\"150ms\",\"250ms\",\"200ms\",\"150ms\",\"150ms\",\"300ms\",\"250ms\",\"200ms\",\"150ms\",\"450ms\",\"450ms\",\"300ms\",\"150ms\",\"300ms\",\"250ms\",\"200ms\",\"100ms\",\"250ms\",\"200ms\",\"150ms\",\"100ms\",\"250ms\",\"200ms\",\"150ms\",\"100ms\",\"300ms\",\"250ms\",\"200ms\",\"100ms\",\"null\",\"cubic-bezier(0.3,0,0.8,0.15)\",\"cubic-bezier(0.05,0.7,0.1,1)\",\"cubic-bezier(0,0,1,1)\",\"cubic-bezier(0.2,0,0,1)\",\"cubic-bezier(0.3,0,1,1)\",\"cubic-bezier(0,0,0,1)\",\"250ms\",\"200ms\",\"150ms\",\"50ms\",\"50ms\",\"50ms\",\"400ms\",\"350ms\",\"250ms\",\"50ms\",\"50ms\",\"50ms\",\"200ms\",\"150ms\",\"100ms\",\"50ms\",\"200ms\",\"150ms\",\"100ms\",\"50ms\",\"50ms\",\"50ms\",\"250ms\",\"200ms\",\"150ms\",\"50ms\",\"50ms\",\"50ms\",\"cubic-bezier(0.05,0.7,0.1,1)\",\"cubic-bezier(0.3,0,0.8,0.15)\"]","pbvshf":"%.@.\"48px\"]","u9mep":"%.@.\"#8ab4f8\",null,\"#e8e8e8\",\"var(--JKqx2)\"]","mrqaQb":"%.@.null,null,null,null,\"2px\",\"12px\"]","Umq10e":"%.@.\"#303134\"]","k7Tqye":"%.@.null,null,null,null,null,null,null,\"16px\",\"12px\",\"8px\",\"20px\",\"4px\",\"9999px\",\"0px\",\"2px\",\"24px\"]","y50LC":"%.@.null,null,\"#bdc1c6\",null,\"#bcc0c3\"]","jfSEkd":"%.@.\"var(--Pa8Wlb)\",\"var(--KIZPne)\",\"var(--xPpiM)\",null,\"rgba(255,255,255,0.08)\",\"rgba(255,255,255,0.08)\",\"rgba(255,255,255,0.24)\",\"var(--pEa0Bc)\",\"var(--Yi4Nb)\",\"var(--kloG3)\",\"var(--YaIeMb)\",\"var(--izGsqb)\",\"var(--todMNc)\",\"rgba(255,255,255,0.16)\",null,\"rgba(255,255,255,0.4)\",\"var(--Ijc2tf)\",\"var(--VeLyLc)\",\"rgba(189,193,198,0.08)\",\"rgba(189,193,198,0.08)\",\"rgba(189,193,198,0.24)\",\"transparent\",\"var(--ngPXTb)\",null,\"rgba(138,180,248,0.08)\",\"rgba(138,180,248,0.08)\",\"rgba(138,180,248,0.24)\",null,null,null,\"rgba(189,193,198,0.08)\",\"rgba(189,193,198,0.08)\",\"rgba(189,193,198,0.24)\",\"2px\",\"2px\",\"0.38\",\"var(--bbQxAb)\",\"var(--Zia6nf)\",null,\"var(--gJjJk)\",\"var(--MV2sG)\",\"var(--bcxd3b)\",\"var(--amnPwe)\",\"var(--YLNNHc)\",\"var(--YLNNHc)\",\"0.0824\",\"0\",\"0.224\",\"var(--CRMNZd)\",\"rgba(255,255,255,0.16)\",\"0.2\",\"0.224\",\"var(--EpFNW)\",\"0.4\",\"var(--NoaQW)\",\"var(--amnPwe)\",\"0.08\",\"var(--bbQxAb)\",\"0.08\",\"var(--amnPwe)\",\"var(--bbQxAb)\",\"0.24\",\"var(--IXoxUe)\",\"transparent\",\"0.08\",\"0.08\",\"#9aa0a6\",\"0.24\",\"var(--IXoxUe)\",\"transparent\",\"0.08\",\"0.08\",\"var(--uLz37c)\",\"0.24\",\"var(--uLz37c)\",\"var(--vWq1if)\",\"var(--hwEqod)\",\"0.0824\",\"#8ab4f8\",\"0.0824\",\"var(--Wmwad)\",\"0.224\",\"var(--lv6yU)\",\"0.0824\",\"0.0824\",\"var(--MoaHse)\",\"var(--y01ou)\",\"0.224\",\"var(--p9J9c)\",\"var(--LMFHUd)\",\"0.0824\",\"0.0824\",\"0.224\",\"var(--fuvksc)\",\"var(--qdHZF)\",\"0.2\",\"0.2\",\"var(--V9ysqf)\",\"0.4\",{\"100\":\"#fff\",\"101\":\"0.08\",\"102\":\"0.08\",\"103\":\"#1f1f1f\",\"104\":\"0.24\",\"105\":\"var(--PBxOKe)\",\"106\":\"rgba(255,255,255,0.1)\",\"107\":\"0.08\",\"108\":\"#d2e3fc\",\"109\":\"0.08\",\"110\":\"0.24\",\"111\":\"var(--Nsm0ce)\",\"112\":\"0\",\"113\":\"transparent\",\"114\":\"0.08\",\"115\":\"0.08\",\"116\":\"var(--YLNNHc)\",\"117\":\"0.24\",\"118\":\"var(--YLNNHc)\",\"119\":\"0.75\",\"120\":\"0.6\",\"121\":\"rgba(232,232,232,0.08)\",\"122\":\"var(--D9aNi)\",\"123\":\"rgba(232,232,232,0.24)\",\"124\":\"rgba(11,87,208,0.078431375)\",\"125\":\"rgba(11,87,208,0.078431375)\",\"126\":\"rgba(11,87,208,0.23921569)\",\"127\":\"rgba(32,33,36,0.2)\",\"128\":\"rgba(32,33,36,0.2)\",\"129\":\"rgba(32,33,36,0.4)\",\"130\":\"rgba(32,33,36,0.078431375)\",\"131\":\"rgba(32,33,36,0.078431375)\",\"132\":\"rgba(32,33,36,0.23921569)\",\"133\":\"var(--Ehh4mf)\",\"134\":\"var(--Nsm0ce)\",\"135\":\"#f2b8b5\",\"136\":\"rgba(167,37,30,0.380392)\",\"137\":\"0.2\",\"138\":\"#e1aca9\",\"139\":\"0.2\",\"140\":\"#601410\",\"141\":\"#601410\",\"142\":\"0.4\",\"143\":\"#f9dedc\",\"144\":\"#b6cffb\",\"145\":\"rgba(42,44,49,0.08)\",\"146\":\"#434a5e\",\"147\":\"#363c4c\",\"148\":\"#3d5a87\"}]","GVtPm":"%.@.null,null,null,null,null,\"0 0 0 1px var(--mXZkqc)\",\"1px solid var(--mXZkqc)\",null,null,null,null,null,null,null,null,\"transparent\",\"rgba(23,23,23,0.3)\",null,null,\"16px\"]","MexNte":"%.@.\"700\",\"400\",\"underline\",\"none\",\"capitalize\",\"none\",\"uppercase\",\"none\",\"500\",\"lowercase\",\"italic\",null,null,\"-1px\",\"0.3px\",\"20px\",\"12px\",null,\"12px\",\"14px\",\"16px\",\"18px\",\"22px\",\"24px\",\"26px\",\"28px\",\"32px\",\"36px\",\"40px\",\"48px\",\"52px\",\"56px\",\"60px\",\"14px\",\"16px\",\"18px\",\"20px\",\"22px\",\"24px\",\"28px\",\"36px\",\"40px\",\"45px\",\"48px\",\"56px\",\"0\",\"0.1px\"]","Aahcnf":"%.@.\"var(--Ia70Xd)\",\"var(--hPDMFf)\",\"var(--Vyi8yc)\",\"var(--IT7y3c)\",null,\"var(--LI4Bo)\",\"var(--Mhs7de)\",\"var(--ofwUBc)\",\"var(--XWv1if)\",null,\"var(--uBdgTe)\",\"var(--Ok3irf)\",\"var(--Zf9Xnd)\",\"var(--rTk0E)\",null,\"Google Sans,Arial,sans-serif\",\"56px\",\"48px\",\"0\",null,\"400\",\"Google Sans,Arial,sans-serif\",\"36px\",\"400\",\"48px\",null,\"Google Sans,Arial,sans-serif\",\"36px\",\"28px\",null,\"400\",null,\"Arial,sans-serif\",\"24px\",\"18px\",null,\"400\",\"var(--YfiKf)\",\"var(--punZlc)\",\"var(--gOs6Bf)\",null,\"var(--MzKBpd)\",\"var(--nkmQOe)\",\"var(--a9X0Jc)\",\"var(--z3BFIe)\",null,\"var(--XWliwc)\",\"var(--Eou8Yc)\",\"var(--qWZYEc)\",\"var(--GiToJf)\",null,\"var(--p2Lqxe)\",\"var(--ztTqPe)\",\"var(--C74x2e)\",\"var(--gyu5L)\",null,\"var(--Yoa6qd)\",\"var(--lI1Trc)\",\"var(--HIyEKc)\",\"var(--ZNg88)\",null,\"var(--qjVU3d)\",null,null,null,null,null,\"var(--hbmnje)\",\"var(--qR8X0)\",\"var(--CbdmE)\",\"var(--Oycjt)\",\"var(--Aoh9Xe)\",\"var(--qYGXw)\",\"var(--qpdFp)\",\"var(--JT4IPc)\",\"Google Sans,Arial,sans-serif\",\"24px\",\"16px\",\"400\",\"var(--qBwyqb)\",\"var(--nUOqEc)\",\"var(--cMTvjf)\",\"var(--Aoh9Xe)\",\"var(--qYGXw)\",\"var(--qpdFp)\",\"var(--JT4IPc)\",null,null,null,null,\"var(--CUS15e)\",\"0px\",\"0px\",\"0\"]","PFhmed":"%.@.null,null,null,null,\"var(--XKMDxc)\"]","B4pZbd":"US","rkD25":"%.@.[[\"client\",\"firefox-b-1-d\"],[\"hl\",\"en-US\"]]]","rNyuJc":"DrewryPope@gmail.com","LU5fGb":true,"gXkHoe":"114042261698526544687"};})();(function(){var deia=true;window.jsl=window.jsl||{};window.jsl.dh=function(b,f,c){try{var a=document.getElementById(b),d;!a&&((d=google.stvsc)==null?0:d.dds)&&google.stvsc.dds.forEach(function(k){a||(a=k.getElementById(b))});if(!a){var l=document.querySelectorAll("template");for(d=0;d<l.length&&!(a=l[d].content.getElementById(b));d++);}if(a)a.innerHTML=f,c&&c(),deia&&(google.delt=google.delt||{},google.delt[a.id]=Date.now());else if(!(google.ia&&google.ia.rids&&google.ia.rids.has(b))){var e={id:b,script:String(!!c),milestone:String(google.jslm||0)};google.jsla&&(e.async=google.jsla);var m=b.indexOf("_"),g=m>0?b.substring(0,m):"",n=document.createElement("div");n.innerHTML=f;var h=n.children[0];if(h&&(e.tag=h.tagName,e["class"]=String(h.className||null),e.name=String(h.getAttribute("jsname")),g)){f=[];var p=document.querySelectorAll('[id^="'+g+'_"]');for(c=0;c<p.length;++c)f.push(p[c].id);e.ids=f.join(",")}google.ml(Error(g?"Missing ID with prefix "+g:"Missing ID"),!1,e)}}catch(k){google.ml(k,!0,{"jsl.dh":!0})}};})();(function(){var x=true;google.jslm=x?2:1;})();(function(){(function(){var src='https://www.googletagmanager.com/gtag/js?id\x3dAW-16521530460\x26preconnect\x3d1\x26type\x3d7\x26qid\x3dCOvi57qGz5MDFY4BrQYdlOUQig';var sendAft=true;(function(){function a(){var c=src,b=new Image;b.src=c;b.setAttribute("attributionsrc","")}sendAft&&google&&google.caft?google.caft(function(){a()}):a();}).call(this);})();})();(function(){(function(){var src='https://www.googletagmanager.com/gtm.js?id\x3dGTM-16521530460\x26preconnect\x3d1\x26type\x3d8\x26qid\x3dCOvi57qGz5MDFY4BrQYdlOUQig';var sendAft=true;(function(){function a(){var c=src,b=new Image;b.src=c;b.setAttribute("attributionsrc","")}sendAft&&google&&google.caft?google.caft(function(){a()}):a();}).call(this);})();})();(function(){(function(){var src='https://www.googleadservices.com/pagead/conversion/16521530460/?gad_source\x3d1\x26adview_type\x3d1\x26adview_query_id\x3dCOvi57qGz5MDFY4BrQYdlOUQig';var sendAft=true;(function(){function a(){var c=src,b=new Image;b.src=c;b.setAttribute("attributionsrc","")}sendAft&&google&&google.caft?google.caft(function(){a()}):a();}).call(this);})();})();(function(){(function(){var src='https://www.google.com/pagead/1p-conversion/16521530460/?gad_source\x3d1\x26adview_type\x3d4\x26adview_query_id\x3dCOvi57qGz5MDFY4BrQYdlOUQig';var sendAft=true;(function(){function a(){var c=src,b=new Image;b.src=c;b.setAttribute("attributionsrc","")}sendAft&&google&&google.caft?google.caft(function(){a()}):a();}).call(this);})();})();[[null,function(){(function(){google.csct={};google.csct.ps='AOvVaw2B0oeQN9aiG-RCQp5Rxj8L\x26ust\x3d1775215297221626';})();}],[null,function(){(function(){google.csct.sb=true;})();}],[null,function(){window.jsl=window.jsl||{};window.jsl.dh=window.jsl.dh||function(i,c,d){try{var e=document.getElementById(i);if(e){e.innerHTML=c;if(d){d();}}else{if(window.jsl.el){window.jsl.el(new Error('Missing ID.'),{'id':i});}}}catch(e){if(window.jsl.el){window.jsl.el(new Error('jsl.dh'));}}};}],[{id:'_QVHOaZ2pCbfn0PEP0uzV8QM_1'},function(){jsl.dh(this.id,"\x3csvg class=\"lJpQBb\" aria-label=\"Go to Google home\" role=\"img\" height=\"24\" width=\"24\" focusable=\"false\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cclipPath id=\"_QVHOaZ2pCbfn0PEP0uzV8QM_3\">\x3cpath d=\"M12 10v4.5h6.47c-.5 2.7-3 4.74-6.47 4.74-3.9 0-7.1-3.3-7.1-7.25S8.1 4.75 12 4.75c1.8 0 3.35.6 4.6 1.8l3.4-3.4C18 1.2 15.24 0 12 0 5.4 0 0 5.4 0 12s5.4 12 12 12c7 0 11.5-4.9 11.5-11.7 0-.8-.1-1.54-.2-2.3H12z\">\x3c/path>\x3c/clipPath>\x3cfilter id=\"_QVHOaZ2pCbfn0PEP0uzV8QM_4\">\x3cfeGaussianBlur stddeviation=\"1\">\x3c/feGaussianBlur>\x3c/filter>\x3cg style=\"clip-path:url(#_QVHOaZ2pCbfn0PEP0uzV8QM_3)\">\x3cforeignObject style=\"filter:url(#_QVHOaZ2pCbfn0PEP0uzV8QM_4)\" height=\"28\" transform=\"translate(-2,-2)\" width=\"28\">\x3cdiv style=\"width:100%;height:100%;background:conic-gradient(#FF4641,#FD5061 40deg,#FD5061 60deg,#3186FF 85deg,#3186FF 117deg,#00A5B7 142deg,#0EBC5F 167deg,#0EBC5F 200deg,#6CC500 226deg,#FFCC00 253deg,#FFD314 268deg,#FFCC00 292deg,#FF4641 327deg)\">\x3c/div>\x3c/foreignObject>\x3crect fill=\"#3186FF\" height=\"8\" width=\"16\" x=\"11\" y=\"8\">\x3c/rect>\x3c/g>\x3c/svg>");}],[{id:'_QVHOaZ2pCbfn0PEP0uzV8QM_5'},function(){jsl.dh(this.id,"\x3cdiv jscontroller=\"Dvn7fe\" jsname=\"UUbT9\" class=\"UUbT9 EyBRub\" style=\"display:none\" jsaction=\"mouseout:ItzDCd;mouseleave:MWfikb;hBEIVb:nUZ9le;ldyIye:CmVOgc\" data-ved=\"0ahUKEwjdzeG6hs-TAxW3MzQIHVJ2NT4Q4tUDCBM\">\x3cdiv jscontroller=\"Wo3n8\" jsname=\"aadvhe\" jsmodel=\" d5EhJe\" data-bkt=\"searchbox\" data-fhs=\"\" data-maindata='[null,null,null,\"autocomplete_user_feedback_kp_id\",null,11,null,null,null,null,null,5010715,\"searchbox\",null,\"AutocompletePrediction\",null,null,null,null,11]' data-ofbl=\"114,120,134\" data-pid=\"5010715\" jsdata=\"vST7rb;_;QVHOaZ2pCbfn0PEP0uzV8QM2 zEIyGd;_;\" jsaction=\"kPzEO:MlP2je;qjLxRc:FbhRG;w8f1fc:hRwSgb;kq2wxf:s5CUif;aIJAdf:UhDUnd;rwuG3b:KGQHJd;BqbTbe:naa5ve;kYAKrf:CqUGrf;hwhRRe:KyxjCd;rcuQ6b:npT2md\">\x3cdiv id=\"_QVHOaZ2pCbfn0PEP0uzV8QM_7\">\x3cdiv jsname=\"GkjeIf\" id=\"_QVHOaZ2pCbfn0PEP0uzV8QM_9\" data-jiis=\"up\" data-async-type=\"kp_feedback\" class=\"yp\" data-ved=\"0ahUKEwjdzeG6hs-TAxW3MzQIHVJ2NT4Q68cECBQ\">\x3c/div>\x3c/div>\x3c/div>\x3cdiv jscontroller=\"P10Owf\" class=\"YB4h9 ky4hfd\" aria-label=\"Choose what you’re giving feedback on\" jsdata=\"vST7rb;_;QVHOaZ2pCbfn0PEP0uzV8QM2\" role=\"dialog\" tabindex=\"-1\" jsaction=\"kPzEO:MlP2je;qjLxRc:MlP2je;w8f1fc:hRwSgb;kq2wxf:s5CUif\" data-ved=\"0ahUKEwjdzeG6hs-TAxW3MzQIHVJ2NT4QlokGCBU\">\x3cdiv id=\"_QVHOaZ2pCbfn0PEP0uzV8QM_11\">\x3c/div>\x3c/div>\x3cdiv jsname=\"RjPuVb\" class=\"RjPuVb\">\x3c/div>\x3cdiv jsname=\"aajZCb\" class=\"aajZCb\">\x3cdiv class=\"xtSCL\">\x3c/div>\x3cdiv class=\"mkHrUc\" id=\"Alh6id\" role=\"presentation\">\x3cdiv jsname=\"erkvQe\" class=\"erkvQe\">\x3c/div>\x3cdiv jsname=\"tovEib\" class=\"rLrQHf\" role=\"presentation\">\x3c/div>\x3c/div>\x3cdiv jsname=\"E80e9e\" class=\"OBMEnb\" id=\"shJ2Vb\" role=\"presentation\">\x3cul jsname=\"bw4e9b\" class=\"G43f7e\" role=\"listbox\">\x3c/ul>\x3c/div>\x3cdiv jsname=\"XiTF2e\" class=\"OBMEnb\" role=\"presentation\">\x3cdiv jsname=\"Q7Erhd\" class=\"G43f7e\" role=\"presentation\">\x3c/div>\x3c/div>\x3cdiv class=\"ynRric\" id=\"ynRric\" role=\"presentation\">\x3c/div>\x3cli data-view-type=\"1\" class=\"sbct PZPZlf\" id=\"YMXe\" role=\"presentation\" data-attrid=\"AutocompletePrediction\" data-entityid=\"autocomplete_user_feedback_kp_id\">\x3cdiv class=\"eIPGRd\">\x3cdiv class=\"sbic\">\x3c/div>\x3cdiv class=\"pcTkSc\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"wM6W7d\">\x3cspan>\x3c/span>\x3c/div>\x3cdiv class=\"ClJ9Yb\">\x3cdiv class=\"zjKSsb\">\x3c/div>\x3cspan class=\"dKU7sc\">\x3c/span>\x3c/div>\x3cdiv class=\"a5RLac\">\x3cspan>\x3c/span>\x3c/div>\x3c/div>\x3cdiv class=\"TfeWfb\">\x3c/div>\x3c/div>\x3cdiv class=\"AQZ9Vd\" aria-atomic=\"true\" role=\"button\">\x3cdiv class=\"sbai\" role=\"presentation\">Delete\x3c/div>\x3c/div>\x3c/div>\x3c/li>\x3cdiv class=\"xAmryf\" id=\"bgeLZd\">\x3cspan class=\"jtAOgd\">\x3c/span>\x3c/div>\x3cli class=\"AB2Fdd\" data-view-type=\"9\" id=\"d6ItKb\" role=\"presentation\">\x3cdiv class=\"eIPGRd\">\x3cdiv class=\"ZDHp\" style=\"display:none\" id=\"fU0xAb\" role=\"presentation\">\x3cdiv class=\"kZtr1b\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cdiv class=\"xAmryf\" id=\"bgeLZd\">\x3cspan class=\"jtAOgd\">\x3c/span>\x3c/div>\x3cdiv class=\"TfeWfb\" role=\"presentation\" style=\"display:none\">\x3c/div>\x3cdiv class=\"kSFCof MagqMc U48fD\" style=\"display:none\" aria-label=\"See more\" role=\"button\" tabindex=\"0\">\x3chr class=\"Bi9oQd\" aria-hidden=\"true\">\x3cdiv class=\"ZFiwCf\">\x3cspan class=\"LGwnxb JGD2rd\">See more\x3c/span>\x3cspan class=\"w2fKdd z1asCe\" style=\"height:20px;line-height:20px;width:20px\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3c/div>\x3cdiv class=\"Vlt3wb\" style=\"display:none\">\x3c/div>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3cdiv class=\"j0GJWd\" style=\"display:none\">\x3cdiv>\x3cimg class=\"uHGFVd AZNDm\" alt=\"\" style=\"display:none\">\x3c/div>\x3cdiv class=\"iQxPRb\">\x3cimg class=\"uHGFVd EOLKOc\" alt=\"\" style=\"display:none\">\x3cimg class=\"uHGFVd EOLKOc\" alt=\"\" style=\"display:none\">\x3c/div>\x3c/div>\x3c/div>\x3c/div>\x3c/li>\x3cli class=\"W3CMNd\" data-view-type=\"10\" id=\"JglY8e\" role=\"option\">\x3cdiv class=\"eIPGRd\" role=\"presentation\">\x3cdiv class=\"AsqS6c\" style=\"display:none\" id=\"GTYqfc\" role=\"presentation\">\x3cdiv class=\"gfT7kc\">\x3cdiv class=\"cJpYle\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3c/div>\x3cdiv class=\"gTtFDd\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3c/div>\x3c/div>\x3cdiv class=\"xAmryf\" id=\"bgeLZd\">\x3cspan class=\"jtAOgd\">\x3c/span>\x3c/div>\x3cdiv class=\"TfeWfb\" role=\"presentation\" style=\"display:none\">\x3c/div>\x3cdiv class=\"Vlt3wb\" style=\"display:none\">\x3c/div>\x3c/div>\x3c/div>\x3c/li>\x3cli data-view-type=\"8\" class=\"sbct PZPZlf\" id=\"mitGyb\" role=\"presentation\" data-attrid=\"AutocompletePrediction\" data-entityid=\"autocomplete_user_feedback_kp_id\">\x3cdiv class=\"eIPGRd hdt0ld\">\x3cdiv class=\"sbic\">\x3c/div>\x3cdiv class=\"pcTkSc\">\x3cdiv>\x3cdiv class=\"wM6W7d\">\x3cspan>\x3c/span>\x3c/div>\x3cdiv class=\"ClJ9Yb\">\x3cspan class=\"dKU7sc\">\x3c/span>\x3c/div>\x3c/div>\x3c/div>\x3cdiv class=\"AQZ9Vd\" aria-atomic=\"true\" role=\"button\">\x3cdiv class=\"sbai\" role=\"presentation\">Delete\x3c/div>\x3c/div>\x3c/div>\x3c/li>\x3cdiv class=\"ZDHp\" style=\"display:none\" id=\"fU0xAb\" role=\"presentation\">\x3cdiv class=\"kZtr1b\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cdiv class=\"xAmryf\" id=\"bgeLZd\">\x3cspan class=\"jtAOgd\">\x3c/span>\x3c/div>\x3cdiv class=\"TfeWfb\" role=\"presentation\" style=\"display:none\">\x3c/div>\x3cdiv class=\"kSFCof MagqMc U48fD\" style=\"display:none\" aria-label=\"See more\" role=\"button\" tabindex=\"0\">\x3chr class=\"Bi9oQd\" aria-hidden=\"true\">\x3cdiv class=\"ZFiwCf\">\x3cspan class=\"LGwnxb JGD2rd\">See more\x3c/span>\x3cspan class=\"w2fKdd z1asCe\" style=\"height:20px;line-height:20px;width:20px\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3c/div>\x3cdiv class=\"Vlt3wb\" style=\"display:none\">\x3c/div>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3cdiv class=\"j0GJWd\" style=\"display:none\">\x3cdiv>\x3cimg class=\"uHGFVd AZNDm\" alt=\"\" style=\"display:none\">\x3c/div>\x3cdiv class=\"iQxPRb\">\x3cimg class=\"uHGFVd EOLKOc\" alt=\"\" style=\"display:none\">\x3cimg class=\"uHGFVd EOLKOc\" alt=\"\" style=\"display:none\">\x3c/div>\x3c/div>\x3c/div>\x3cdiv class=\"AsqS6c\" style=\"display:none\" id=\"GTYqfc\" role=\"presentation\">\x3cdiv class=\"gfT7kc\">\x3cdiv class=\"cJpYle\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3c/div>\x3cdiv class=\"gTtFDd\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"SHFPkb\">\x3c/div>\x3cdiv class=\"bTSf5c\">\x3c/div>\x3cdiv class=\"PnfqLc\">\x3c/div>\x3cdiv class=\"HrUlUc\">\x3c/div>\x3c/div>\x3cdiv class=\"Tnv2td\" style=\"display:none\" aria-label=\"Word pronunciation\" aria-atomic=\"true\" role=\"button\">\x3cspan class=\"z76Rnb z1asCe JKu1je\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3cspan class=\"XAFD5c\" style=\"display:none\">\x3c/span>\x3c/div>\x3c/div>\x3cdiv class=\"xAmryf\" id=\"bgeLZd\">\x3cspan class=\"jtAOgd\">\x3c/span>\x3c/div>\x3cdiv class=\"TfeWfb\" role=\"presentation\" style=\"display:none\">\x3c/div>\x3cdiv class=\"Vlt3wb\" style=\"display:none\">\x3c/div>\x3c/div>\x3cli class=\"IDVnvc PZPZlf\" data-view-type=\"6\" id=\"TN4rFf\" role=\"presentation\" data-attrid=\"AutocompletePrediction\" data-entityid=\"autocomplete_user_feedback_kp_id\">\x3cdiv class=\"cRV9hb\">\x3cdiv class=\"aVbWac\">\x3cdiv class=\"sbic\">\x3c/div>\x3c/div>\x3cdiv class=\"pcTkSc\" role=\"presentation\">\x3cdiv class=\"lnnVSe\" aria-atomic=\"true\" role=\"option\">\x3cdiv class=\"wM6W7d\">\x3cspan>\x3c/span>\x3c/div>\x3cdiv class=\"ClJ9Yb\">\x3cspan class=\"dKU7sc\">\x3c/span>\x3c/div>\x3c/div>\x3c/div>\x3c/div>\x3c/li>\x3c/div>\x3cdiv jsname=\"JUypV\">\x3cdiv class=\"WzNHm mWcf0e\" jscontroller=\"gSZvdb\" data-dccl=\"false\" role=\"button\" tabindex=\"0\" jsdata=\"vST7rb;_;QVHOaZ2pCbfn0PEP0uzV8QM2\" jsaction=\"i5KCU;kVBCVd:yM1YJe\" data-ved=\"0ahUKEwjdzeG6hs-TAxW3MzQIHVJ2NT4Q6scECBk\">\x3cdiv class=\"VfL2Y LRZwuc\">Report inappropriate predictions\x3c/div>\x3c/div>\x3c/div>\x3cdiv class=\"KxWPre\" id=\"TWnylf\">\x3cdiv class=\"E2ShOd\">\x3c/div>\x3cspan class=\"VUsake\">\x3c/span>\x3cg-dropdown-menu jscontroller=\"pFsdhd\" class=\"adGN6\" jsdata=\"xJGXK;_;QVHOaZ2pCbfn0PEP0uzV8QM3\" jsshadow=\"\" jsaction=\"rcuQ6b:npT2md;mMf61e:GKlhgf;YraOve:cCpuJc;kNOP9c:bzkPEc;hmb6Ye:oyYkKb;KyPa0e:G8Ofmd;wjOG7e:rWoVB;ZvRO4b:L76sMb;LyWNEf:L76sMb\">\x3cg-popup jsname=\"zpo2ue\" jscontroller=\"DPreE\" jsaction=\"A05xBd:IYtByb;EOZ57e:WFrRFb;\" jsdata=\"mVjAjf;_;QVHOaZ2pCbfn0PEP0uzV8QM4\">\x3cdiv jsname=\"oYxtQd\" class=\"CcNe6e\" aria-expanded=\"false\" aria-haspopup=\"true\" jsslot=\"\" role=\"button\" tabindex=\"0\" aria-label=\"See more\" jsaction=\"WFrRFb;keydown:uYT2Vb\">\x3cdiv class=\"wSGdUc\">\x3cspan class=\"IjabWd z1asCe SaPW2b\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z\">\x3c/path>\x3c/svg>\x3c/span>\x3c/div>\x3c/div>\x3cdiv jsname=\"V68bde\" class=\"UjBGL pkWBse iRQHZe\" style=\"display:none;z-index:1000\">\x3cg-menu jsname=\"iXXGtd\" class=\"WNN1b Shjy3b yTik0 PBn44e iQXTJe wplJBd\" jscontroller=\"WlNQGd\" role=\"menu\" tabindex=\"-1\" jsaction=\"PSl28c;focus:h06R8;keydown:uYT2Vb;mouseenter:WOQqYb;mouseleave:Tx5Rb;mouseover:IgJl9c\">\x3cg-menu-item jsname=\"NNJLud\" class=\"GuoVP EpPYLd GZnQqe\" jscontroller=\"CnSW2d\" role=\"menuitem\" tabindex=\"-1\" data-short-label=\"\" jsdata=\"zPXzie;_;QVHOaZ2pCbfn0PEP0uzV8QM5\">\x3cdiv jsname=\"ibnC6b\" class=\"YpcDnf OSrXXb\">Dismiss\x3c/div>\x3c/g-menu-item>\x3c/g-menu>\x3c/div>\x3c/g-popup>\x3c/g-dropdown-menu>\x3c/div>\x3cdiv class=\"zs1JGd\" data-view-type=\"7\" jsname=\"RqJ7oe\" id=\"dh215c\" role=\"presentation\">\x3cdiv class=\"JqPLlb\" role=\"option\" tabindex=\"0\">\x3c/div>\x3c/div>\x3c/div>");}],[{id:'_QVHOaZ2pCbfn0PEP0uzV8QM_11'},function(){jsl.dh(this.id,"\x3cspan class=\"Job8vb z1asCe wuXmqc\" aria-label=\"Close Choose what you’re giving feedback on\" role=\"button\" tabindex=\"0\" jsaction=\"kEOk4d\" style=\"height:20px;line-height:20px;width:20px\" data-ved=\"0ahUKEwjdzeG6hs-TAxW3MzQIHVJ2NT4QmIkGCBY\">\x3csvg focusable=\"false\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">\x3cpath d=\"M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z\">\x3c/path>\x3c/svg>\x3c/span>\x3cdiv class=\"C85rO\" aria-level=\"1\" role=\"heading\">Choose what you’re giving feedback on\x3c/div>");}],[null,function(){(function(){  maybe you could try that for the other ones after you have validated and added the better links from here. ibm/lenovo same thing for this model.
 
 ---
 
@@ -1779,7 +1779,7 @@ Fair point — I should have just googled it instead of guessing TIPS numbers. T
 
 From the Google results I can see:
 
-1. **Lenovo Press TIPS0842** — G8316 Product Guide (withdrawn product) 
+1. **Lenovo Press TIPS0842** — G8316 Product Guide (withdrawn product)
 2. **IBM Support Overview** — ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316
 3. **karma-group.ru G8316 datasheet PDF**
 4. **IBM Boulder — G8316 Release Notes PDF** (Networking OS 7.4)
@@ -1798,7 +1798,7 @@ The user pasted Google search results for "ibm g8316" and there are clearly seve
 
 2. **Lenovo Press TIPS0842**: https://lenovopress.lenovo.com/tips0842
    - "RackSwitch G8316 Product Guide (withdrawn product)" - This is the one I was looking for! TIPS0842, not in the range I was guessing.
-   
+
 I'm also finding some additional resources: an Acclinet product page describing it as a 40 GbE aggregation solution, an IBM Boulder release notes PDF for Networking OS 7.4, and what looks like a Chelsio whitepaper starting to come through. I'm finding way more resources on the G8316 than I initially thought—there's a datasheet, Reddit discussions, IBM firmware pages, and even a Lenovo press release. Turns out the press page is TIPS0842, not in that 1267-1273 range I was guessing at. I should've just searched for it directly instead of trying to narrow down the range.
 
 Now I need to verify these key links are actually valid, update the G8316 section with them, and then work through the other difficult cases the same way.
@@ -1817,322 +1817,322 @@ Now I need to verify these key links are actually valid, update the G8316 sectio
 **Output:**
 ```
 RackSwitch G8316 Product Guide (withdrawn product) &gt; Lenovo Press
-	
-	
-	
-	
-	
-	
-	
-    
-    
-	
-    
-    
-    
-    
-    
-    
-    
-    
 
 
 
 
 
-    
-        
-            
-                
-                    
-                        
-                            
-                                
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                                     PC&nbsp;&amp; TABLETS
-                                
-                            
-                        
-                    
-                    
-                        
-                            
-                                
-                                    PHONES
-                                
-                            
-                        
-                    
-                    
-                        
-                            
-                                
-                                    SERVERS&nbsp;&amp; STORAGE
-                                
-                            
-                        
-                    
-                    
-                        
-                            
-                                
-                                    SMART DEVICES
-                                
-                            
-                        
-                    
-                    
-                        
-                            
-                                
-                                    SERVICES&nbsp;&amp; SOLUTIONS
-                                
-                            
-                        
-                    
-                    
-                        
-                            
-                                
-                                    SUPPORT
-                                
-                            
-                        
-                    
-                
-                
-                
-				
-					
-                     Employee Login					
-					
-		                
-							
-								
-								
-								
-							
-						
-					
-				
-            
-            
-                
-                    
-                        
-                    
-                    
 
-                    
+
+
+
+
+
+
+
+                                    PHONES
+
+
+
+
+
+
+
+
+                                    SERVERS&nbsp;&amp; STORAGE
+
+
+
+
+
+
+
+
+                                    SMART DEVICES
+
+
+
+
+
+
+
+
+                                    SERVICES&nbsp;&amp; SOLUTIONS
+
+
+
+
+
+
+
+
+                                    SUPPORT
+
+
+
+
+
+
+
+
+
+                     Employee Login
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                     skip to
                         main content
-                    
-                
-                
-                    Lenovo Press
-                
-            
-            
-                
-                    Lenovo Press
-					HomePortfolioPortfolio Guide3D Tour CatalogOSIG (Server OS support)Seller Training CoursesServersThinkSystem V4SR860 V4SR850 V4SC777 V4SC750 V4SR680a V4SR650a V4SR650 V4SR630 V4WR5220 G5ThinkSystem V3SR950 V3SR860 V3SR850 V3SR780a V3SR685a V3SR680a V3SR675 V3SR665 V3SR655 V3SR650 V3SR645 V3SR635 V3SR630 V3SR250 V3HS350X V3ST650 V3ST250 V3ST50 V3ST45 V3SD665-N V3SD665 V3SD650-N V3SD650-I V3SD650 V3SD550 V3SD535 V3SD530 V3WR5220 G3WR5225 G3ThinkSystem V2SR860 V2SR850 V2SR670 V2SR660 V2SR650 V2SR630 V2SR590 V2SR250 V2ST650 V2ST250 V2ST50 V2SD650-N V2SD650 V2SD630 V2SN550 V2WR3220 G2ThinkSystemSR950SR860SR850P SR850SR670SR665SR655SR650SR645SR635SR630SR590SR570SR550SR530SR250SR150SD650SD530ST550ST250ST50SN850SN550ThinkEdgeSE455 V3SE450SE360 V2SE350 V2SE350SE100ThinkAgileFX SeriesHX Series for NutanixMX Series for MicrosoftSX for MicrosoftVX Series for VMwareWenTian (&#32852;&#24819;&#38382;&#22825;)Rack Scale AIHybrid AI FactoryAI ServersEdge ServersHyperconvergedRack Servers1-Socket2-Socket4-Socket8-SocketTower Servers1-Socket2-SocketLarge MemoryMulti-Node ServersSupercomputingOptionsProcessorsMemoryCoprocessorsGPU adaptersDrivesRAID AdaptersEthernet AdaptersInfiniBand / OPA AdaptersHost Bus AdaptersPCIe Flash AdaptersExternal StorageBackup UnitsTop-of-Rack SwitchesUPS UnitsPower Distribution UnitsRack CabinetsKVM Switches &amp; ConsolesBenchmarksMLPerfSAP BWSAP Q2CSAP SDSPC-1SPECaccelSPECcpuSPEChpcSPECjbbSPECmpiSPECompSPECpowerSPECvirtSTAC-M3TPC-ETPC-HTPCxVMmarkData StorageThinkSystemDE SeriesHS350X V3DG SeriesDM SeriesDB SeriesDS SeriesSAN StorageSoftware-Defined StorageDirect-Attached StorageSAN SwitchesRackEmbeddedTape Backup UnitsTape DrivesTape Autoloaders and LibrariesBenchmarksNetworkingTop-of-Rack Connectivity1 Gb Ethernet10 Gb Ethernet25 Gb Ethernet40 Gb Ethernet100 Gb EthernetCNOSEmbedded Connectivity1 Gb Ethernet10 Gb Ethernet25 Gb Ethernet40 Gb EthernetInfiniBandCampus NetworkingSolutions &amp; SoftwareAlliancesIBMIntelMicrosoftNutanixRed HatSAPVMwareHybrid AI FactoryAIBig Data &amp; AnalyticsClouderaHortonworksIBMMicrosoft Data Warehouse Fast TrackBlockchainBusiness ApplicationsMicrosoft ApplicationsSAP Business SuiteClient VirtualizationCitrix Virtual AppsVMware HorizonCloud &amp; VirtualizationCloud StorageMSP SolutionsMicrosoft Hyper-VOpenStack CloudVMware vCloudVMware vSphereDatabaseOracleMicrosoft SQL ServerIBM Db2SAP HANASAP NetWeaver BWADevOpsEdge and IoTHigh Performance ComputingHyperconvergedSecuritySecurity Key Lifecycle ManagerOperating SystemsOSIGMicrosoft WindowsVMware vSphereRed Hat Enterprise LinuxSUSE Linux Enterprise ServerSystems ManagementLenovo XClarityBladeCenter Open Fabric ManagerIBM Systems DirectorFlex System ManagerSystem UtilitiesNetwork ManagementAboutAbout Lenovo PressNewsletter Signup                
-            
-        
-    
 
-		
-	
-		
-			
-				
-					
-						
-							
-						
-					
-					
-						
+
+
+                    Lenovo Press
+
+
+
+
+                    Lenovo Press
+					HomePortfolioPortfolio Guide3D Tour CatalogOSIG (Server OS support)Seller Training CoursesServersThinkSystem V4SR860 V4SR850 V4SC777 V4SC750 V4SR680a V4SR650a V4SR650 V4SR630 V4WR5220 G5ThinkSystem V3SR950 V3SR860 V3SR850 V3SR780a V3SR685a V3SR680a V3SR675 V3SR665 V3SR655 V3SR650 V3SR645 V3SR635 V3SR630 V3SR250 V3HS350X V3ST650 V3ST250 V3ST50 V3ST45 V3SD665-N V3SD665 V3SD650-N V3SD650-I V3SD650 V3SD550 V3SD535 V3SD530 V3WR5220 G3WR5225 G3ThinkSystem V2SR860 V2SR850 V2SR670 V2SR660 V2SR650 V2SR630 V2SR590 V2SR250 V2ST650 V2ST250 V2ST50 V2SD650-N V2SD650 V2SD630 V2SN550 V2WR3220 G2ThinkSystemSR950SR860SR850P SR850SR670SR665SR655SR650SR645SR635SR630SR590SR570SR550SR530SR250SR150SD650SD530ST550ST250ST50SN850SN550ThinkEdgeSE455 V3SE450SE360 V2SE350 V2SE350SE100ThinkAgileFX SeriesHX Series for NutanixMX Series for MicrosoftSX for MicrosoftVX Series for VMwareWenTian (&#32852;&#24819;&#38382;&#22825;)Rack Scale AIHybrid AI FactoryAI ServersEdge ServersHyperconvergedRack Servers1-Socket2-Socket4-Socket8-SocketTower Servers1-Socket2-SocketLarge MemoryMulti-Node ServersSupercomputingOptionsProcessorsMemoryCoprocessorsGPU adaptersDrivesRAID AdaptersEthernet AdaptersInfiniBand / OPA AdaptersHost Bus AdaptersPCIe Flash AdaptersExternal StorageBackup UnitsTop-of-Rack SwitchesUPS UnitsPower Distribution UnitsRack CabinetsKVM Switches &amp; ConsolesBenchmarksMLPerfSAP BWSAP Q2CSAP SDSPC-1SPECaccelSPECcpuSPEChpcSPECjbbSPECmpiSPECompSPECpowerSPECvirtSTAC-M3TPC-ETPC-HTPCxVMmarkData StorageThinkSystemDE SeriesHS350X V3DG SeriesDM SeriesDB SeriesDS SeriesSAN StorageSoftware-Defined StorageDirect-Attached StorageSAN SwitchesRackEmbeddedTape Backup UnitsTape DrivesTape Autoloaders and LibrariesBenchmarksNetworkingTop-of-Rack Connectivity1 Gb Ethernet10 Gb Ethernet25 Gb Ethernet40 Gb Ethernet100 Gb EthernetCNOSEmbedded Connectivity1 Gb Ethernet10 Gb Ethernet25 Gb Ethernet40 Gb EthernetInfiniBandCampus NetworkingSolutions &amp; SoftwareAlliancesIBMIntelMicrosoftNutanixRed HatSAPVMwareHybrid AI FactoryAIBig Data &amp; AnalyticsClouderaHortonworksIBMMicrosoft Data Warehouse Fast TrackBlockchainBusiness ApplicationsMicrosoft ApplicationsSAP Business SuiteClient VirtualizationCitrix Virtual AppsVMware HorizonCloud &amp; VirtualizationCloud StorageMSP SolutionsMicrosoft Hyper-VOpenStack CloudVMware vCloudVMware vSphereDatabaseOracleMicrosoft SQL ServerIBM Db2SAP HANASAP NetWeaver BWADevOpsEdge and IoTHigh Performance ComputingHyperconvergedSecuritySecurity Key Lifecycle ManagerOperating SystemsOSIGMicrosoft WindowsVMware vSphereRed Hat Enterprise LinuxSUSE Linux Enterprise ServerSystems ManagementLenovo XClarityBladeCenter Open Fabric ManagerIBM Systems DirectorFlex System ManagerSystem UtilitiesNetwork ManagementAboutAbout Lenovo PressNewsletter Signup
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 							RackSwitch G8316
                             Product Guide (withdrawn product)
-						
-					
-				
-			
-		
-	
-	Home	
-		
-			
-								
+
+
+
+
+
+
+	Home
+
+
+
 				Top
 
-        	
-		
-			
-				
-					
-						
-							
+
+
+
+
+
+
+
                                                                                                     Author									Jon Tate
                                                                                                                                                                                                                                     									Updated
                                      8 Jun 2015
                                 								Form Number
                                 TIPS0842
                                                                     										PDF size
-                                        19 pages,  573 KB                                                                                                    								
+                                        19 pages,  573 KB
 									 Subscribe to Updates
-									
-										
-											
-											
-											
-										
+
+
+
+
+
+
 										Subscribe
-									
-								
+
+
 								Subscribed to TIPS0842.
-								
+
 									 Rate &amp; Provide Feedback
-									
-										
+
+
 											Rating
-											
-												
-													
+
+
+
 													No Rating
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-											
-												
-													
-													
-													
-													
-													
-													
-												
-											
-										
-										
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 											Your Name (optional)
-											
-											
-											
-										
-										
+
+
+
+
+
 											Your Email Address (optional)
-											
-											
-											
-										
-										
+
+
+
+
+
 											Comment (optional)
-											
-										
+
+
 										Submit Feedback
-									
-								
+
+
 								Thank you for your feedback.
-							
-						
-					
+
+
+
                         		Download PDF
-        				
-				
-                                                            						
+
+
+
 							Table of Contents
-							
-								
-                                                                                                                                                                                                                            
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                	                                        		                                        	                                                                                                                                                                                                                                                                                        Introduction                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Did you know?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Part number information                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Supported cables and transceivers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Benefits                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Features and specifications                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Standards supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Connectors and LEDs                                                                                                                                											
-											
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Network cabling requirements                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Warranty                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Physical specifications                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Operating environment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Agency approvals                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Typical configurations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Related publications and links                                                                                    Related product families                                            Trademarks											
-											
-                                                                            								
-							
-						
-                    				
-			
-			
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                	                                        		                                        	                                                                                                                                                                                                                                                                                        Introduction                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Did you know?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Part number information                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Supported cables and transceivers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Benefits                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Features and specifications                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Standards supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Connectors and LEDs
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Network cabling requirements                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Warranty                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Physical specifications                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Operating environment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Agency approvals                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Typical configurations                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        	                                        		                                        	                                                                                                                                                                                                                                                                                        Related publications and links                                                                                    Related product families                                            Trademarks
+
+
+
+
+
+
+
                 					Abstract
-					
+
                                                 The RackSwitch&trade; G8316 is a 40 Gigabit Ethernet (GbE) switch that is designed for the data center, providing speed, intelligence, and interoperability on a proven platform. Most clients look at it as an ideal aggregation class switch for connecting multiple RackSwitch G8264 class switches, and others leverage it for high-performance computing (HPC) of other applications running on servers that are using 40 Gb Ethernet adapters, which have started to hit the market. Designed with top performance in mind, the RackSwitch G8316 provides line-rate, high-bandwidth switching, filtering, and traffic queuing without delaying data. Large data center grade buffers keep traffic moving. Hot-swappable, redundant power and fans, along with numerous high-availability features, enable the RackSwitch G8316 to be available for business-sensitive traffic.
 
 
 Withdrawn from marketing: This networking switch is now withdrawn from marketing.
 
-					
-                                    
-                                                                
-                
-                
-                                    
-                    
-                                        	                	                                                                                                                                                                                                                                                                                                                                                                                            	                                                                                                                                                                                                                                                                                
+
+
+
+
+
+
+
+
 																Introduction
-								                                                                    									
+
                                                                                     								            								                                                                                                    The RackSwitch&trade; G8316 (shown in Figure 1) provides low latency, lossless performance, and a feature-rich design with key virtualization features, such as Converged Enhance Ethernet (CEE)/Data Center Bridging (DCB), high availability, and enterprise class Layer 2 and Layer 3 functions. In addition, the G8316 also delivers excellent cost savings as you consider acquisition costs, energy costs, operational expense, and ease of use and management for a 40 Gb class switch. The RackSwitch G8316 is suitable for clients using 10 Gb or 40 Gb connectivity (or both).
 The G8316 Ethernet aggregation switch enables customers to own an end-to-end flat 2-tier network that is based on industry standards using RackSwitch switches and System x and ThinkServer servers. For example, the G8316 is an ideal tier two switch to use when connecting a number of RackSwitch G8264 40 Gb uplink ports at the access layer. Other clients like the G8316 as an investment protection switch, as they can use it with their 10 Gb Ethernet environments today, but can also leverage it in the future as they move to 40 Gb Ethernet.
 With latency below 1 microsecond, the G8316 is an industry leader. This and the 1.28 Tbps throughput makes the G8316 an ideal offering for latency-sensitive applications, such as high-performance computing, financial applications, hosting environments, and cloud designs. In addition, VMready&reg; with Virtual Vision enables the network to be Virtual Machine (VM) aware, and provides the capability to have a virtualization environment that is simpler, less expensive, and provides exceptional performance.
 Figure 1. RackSwitch G8316
 &nbsp;
-                                        									
-                                							
 
-                                                        
-                    
-                                        	                	                                                                                                                                                                                                                                                                                                                                                                                            	                                                                                                                                                                                                                                                                                
+
+
+
+
+
 																Did you know?
-								                                                                    									
+
                                                                                     								            								                                                                                                    The RackSwitch G8316 supports several types of configurations: 10 Gb, and 40 Gb, Virtual NIC, Converged Enhanced Ethernet (CEE/DCB), and iSCSI.
 
 The G8316 supports Data Center Bridging (DCB), which is the IEEE&rsquo;s group of protocols that provide lossless Ethernet and allows for clients to reduce the costs of implementing either NAS or iSCSI convergence and priority-based flow control.
@@ -2141,14 +2141,14 @@ Uses VMready on-switch software that helps reduce the complexity of managing vir
 
 The RackSwitch G8316 is OpenFlow enabled. With OpenFlow, you can easily create user-controlled virtual networks, optimize performance dynamically, and minimize complexity.
 &nbsp;
-                                        									
-                                							
 
-                                                        
-                    
-                                        	                	                                                                                                                                                                                                                                                                                                                                                                                            	                                                                                                                                                                                                                                                                                
+
+
+
+
+
 																Part number information
-								                                                                    									
+
                                                                                     								            								                                                                                                    The part numbers to order the switch and additional options are shown in Table 1.
 Table 1. Part numbers and feature codes for ordering
 
@@ -2158,7 +2158,7 @@ Description
 			Feature code for MTM 8036-HC2
 			Feature code for MTM 8036-HC1
 		Switch
-			
+
 		RackSwitch G8316 (Rear to Front)
 			8036ARX
 			A2MZ
@@ -2168,7 +2168,7 @@ Description
 			None
 			A2N0
 		Miscellaneous options
-			
+
 		Console Cable Kit Spare
 			90Y9462
 			A2MG
@@ -2201,7 +2201,7 @@ Description
 			88Y6026
 			A2ME
 			None
-		
+
 
 
 The part numbers for the G8316 switches include the following items:
@@ -2214,7 +2214,7 @@ One RackSwitch G8316 with two power supplies and four fan assemblies (rear-to-fr
 	RJ-45 (plug) to RJ-45 (plug) serial cable (1 m)
 		Mini-USB to RJ-45 (jack) adapter cable (0.2 m) with retention clip
 		DB-9 to RJ-45 (jack) adapter
-	
+
 	Warranty Flyer
 	Important Notices Flyer
 	Documentation CD-ROM
@@ -2294,22 +2294,22 @@ Description
 		Japan 10A/100V C13 to JIS C-8303 2.8m power cord
 			46M2593
 			A1RE
-		
+
 
 &nbsp;
-                                        									
-                                							
 
-                                                        
-                    
-                                        	                	                                                                                                                                                                                                                                                                                                                                                                                            	                                                                                                                                                                                                                                                                                
+
+
+
+
+
 																Supported cables and transceivers
-								                                                                    									
+
                                                                                     								            								                                                                                                    With the flexibility of the G8316 switch, clients can take advantage of the technologies that they require for multiple environments:
 
 For 10 GbE links, clients can use the 10GBASE-SR transceivers for distances up to 300 meters over OM3 multimode fiber or up to 400 meters over OM4 multimode fiber with LC connectors. For longer distances, the 10GBASE-LR transceivers can support distances up to 10 kilometers on single mode fiber with LC connectors. The use of an SFP+ transceiver in a QSFP+ port requires the optional QSFP-to-SFP+ adapter (00D9676).
 	To increase the number of available 10 GbE ports, clients can split out four 10 GbE ports for each 40 GbE port using QSFP+ DAC Breakout Cables for distances up to 5 meters. For distances up to 100 m, optical MTP-to-LC break-out cables can be used with the 40GBASE-SR4 transceiver, but Lenovo does not supply these optical breakout cables.
-	
+
 	For 40 GbE to 40 GbE connectivity, clients can use the affordable QSFP+ to QSFP+ DAC cables for distances up to 7 meters. For distances up to 100 m, the 40GBASE-SR4 QSFP+ transceiver can be used with OM3 multimode fiber with MTP connectors or up to 150 m when using OM4 multimode fiber with MTP connectors.
 
 Table 3 lists the supported cables and transceivers.
@@ -2415,24 +2415,24 @@ Description
 			00D6151
 			A3RH
 			16
-		
+
 
 * Require QSFP to SFP+ Adapter (00D9676).
 &nbsp;
-                                        									
-                                							
 
-                                                        
-                    
-                                        	                	                                                                                                                                                                                                                                                                                                                                                                                            	                                                                                                                                                                                                                                                                                
+
+
+
+
+
 																Benefits
-								                                                                    									
+
                                                                                     								            								                                                                                                    The RackSwitch G8316 is considered particularly suited for these environments:
 
 Clients who are deploying 10 GbE on servers or blade chassis and require 40 GbE upstream aggregation to build a POD or cluster
 	Flex System embedded switches &ndash; SI4093, EN4093R, CN4093
 		Also ideal for 2nd tier networking when using with RackSwitch G8264/T/CS
-	
+
 	Client who are deploying 40 GbE server connectivity
 	Clients looking to converge their SAN and LAN on to one network via NAS, iSCSI, or FCoE
 	Looking for ways to reduce I/O cost (CAPEX) &ndash; adapters, cables, transceivers &amp; upstream network
@@ -2455,14 +2455,14 @@ High performance: This 10/40Gb low latency (880 nanoseconds) switch with 1.28 Tb
 	Multicast: This supports IGMP Snooping v1, v2, and v3 with 2K IGMP groups, as well as Protocol Independent Multicast, such as PIM Sparse Mode or PIM Dense Mode.
 	Converged fabric: The G8316 switch supports CEE and Data Center Bridging, which is ideal for storage connectivity (NAS and iSCSI). CEE enables clients to combine storage, messaging traffic, VoIP, video, and other data on a common data center Ethernet infrastructure. Data Center Bridging helps with iSCSI and FCoE with features such as Priority-based Flow Control, Enhanced Transmission Selection, and Congestion Notifications. FCoE enables highly efficient block storage over Ethernet for consolidating server network connectivity. As a result, clients can deploy a single server interface for multiple data types, which can simplify both deployment and management of server network connectivity, while maintaining the high availability and robustness required for storage transactions.
 &nbsp;
-                                        									
-                                							
 
-                                                        
-                    
-                                        	                	                                                                                                                                                                                                                                                                                                                                                                                            	                                                                                                                                                                                                                                                                                
+
+
+
+
+
 																Features and specifications
-								                                                                    									
+
                                                                                     								            								                                                                                                    Note: Features and specifications listed in this section are based on Networking OS 7.9.
 The RackSwitch G8316 has the following features and specifications:
 
@@ -2471,13 +2471,13 @@ The RackSwitch G8316 has the following features and specifications:
 Form factor: 1U rack mount switch
 	RackSwitch G8316 Rear-to-Front version for ports located in the rear of the rack matching System x&reg;, ThinkServer&reg;, BladeCenter&reg; and Flex System&reg; designs
 		RackSwitch G8316 Front-to-Rear version for ports located in the front of the rack matching airflow of the iDataPlex design
-	
+
 	Ports
 	16 ports for 40 Gb Ethernet QSFP+ transceivers (40GBASE-SR4), SFP+ transceivers (10GBASE-SR or 10GBASE-LR with the optional QSFP-to-SFP+ adapter, 00D9676), QSFP+ to QSFP+ DAC cables (40GBASE-CR4), or QSFP+ to 4x 10 Gb SFP+ break-out cables. QSFP+ and SFP+ modules and DAC cables are not included and must be purchased separately (see Table 3).
 		One 10/100/1000 Ethernet port (RJ-45 connector) for out of band (OOB) management
 		One RS-232 serial port (mini-USB connector) that provides an additional means to configure the switch
 		One USB port for mass storage devices
-	
+
 	Scalability and performance
 	40 Gb Ethernet ports with optional 10 GbE support for bandwidth optimization and performance
 		Non-blocking architecture with wire-speed forwarding of traffic and aggregated throughput of 1.28 Tbps
@@ -2643,26 +2643,6 @@ Overview - IBM System Networking RackSwitch G8316
 
 
 
-  
-      
-    
-      
-
-  
-    
-  
-    
-            
-          
-  
-
-
-
-
-
-    
-  
-  
 
 
 
@@ -2671,115 +2651,135 @@ Overview - IBM System Networking RackSwitch G8316
 
 
 
-  
-    
-      
-        
 
-                                
-	
-    	
-			
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 				IBM Support
-				
-					
-						
-							
-								
-									
-										
-											
-											
-											
-												
-													
+
+
+
+
+
+
+
+
+
+
+
+
 														&nbsp;
-													
-													
-														
+
+
+
 															No results were found for your search query.
-															
+
 															Tips
 															To return expected results, you can:
-															
+
 																Reduce the number of search terms. Each term you use focuses the search further.
 																Check your spelling. A single misspelled or incorrectly typed term can change your result.
 																Try substituting synonyms for your original terms. For example, instead of searching for "java classes", try "java training"
 																Did you search for an IBM acquired or sold product ? If so, follow the appropriate link below to find the content you need.
-															
-														
-													
-													
+
+
+
+
 														Our apologies
-														
+
 															Search results are not available at this time. Please try again later or use one of the other support options on this page.
-														
-													
-													
-													
-													
-													
-												
-											
-										
-									
-								
-							
-						
-					
-				
-			
-		
-	
-          
-                                      
-                    
-    
-  
-    
-            
-          
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   Overview - IBM System Networking RackSwitch G8316
 
 
 
-    
-  
-  
-    
-            
-          
-
-  
-                
-  
 
 
-  
-      
-        
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                                                   Product Documentation
-                                      
-          
-          
-          
-          
-          
-  
+
+
+
+
+
+
+
         Abstract
                     Technical overview for the IBM System Networking RackSwitch G8316.
-          
 
-          
-          
-          
-          
-  
+
+
+
+
+
+
         Content
-                    
+
       Overview
-    
+
 
     The IBM RackSwitch G8316 is a 40 Gigabit Ethernet aggregation switch designed for the data center, providing speed, intelligence, and interoperability on a proven platform.
 
@@ -2787,13 +2787,13 @@ Overview - IBM System Networking RackSwitch G8316
 
     The low latency offered by the RackSwitch G8316 makes it ideal for latency-sensitive applications, such as high performance computing clusters and financial applications. The G8316 supports the newest protocols, including Data Center Bridging/Converged Enhanced Ethernet (DCB/CEE) for support of Fibre Channel over Ethernet (FCoE).
 
-    
+
       At a Glance
-    
+
 
     The IBM System Networking RackSwitch G8316 provides:
 
-    
+
       Sixteen 40 Gigabit ports; up to sixty four (64) 10 Gigabit ports with optional breakout cables
 
       Redundant power supplies and fans
@@ -2801,29 +2801,29 @@ Overview - IBM System Networking RackSwitch G8316
       Available front-to-rear cooling (RackSwitch G8316F, Model AFX only)
 
       Available rear-to-front cooling (RackSwitch G8316R, Model ARX only)
-    
 
-    
+
+
       Key prerequisites
-    
+
 
     None.
 
-    
+
       Warranty
-    
 
-    
+
+
       One year - Customer Replaceable Unit (CRU)
-    
 
-    
+
+
       Physical specifications
-    
+
 
     Dimensions
 
-    
+
       Height: 1.75 inch (4.45 cm); 1U
 
       Width: 17.3 inch (43.9 cm)
@@ -2831,47 +2831,47 @@ Overview - IBM System Networking RackSwitch G8316
       Depth: 19.0 in h(44.5 cm)
 
       Weight: 22 lb (9.98 kg)
-    
+
 
     Rack installation kit
 
-    
+
       iDataPlex rack mount kit option available with F models
 
       Adjustable 4-post rack kit option available for server racks
 
       Two-post rack ears included with all models
-    
+
 
     LEDs
 
-    
+
       System LEDs to indicate status
 
       Stacking LEDs to indicate Master/Member
-    
+
 
     Airflow
 
-    
+
       Front-to-rear or rear-to-front cooling
 
       Redundant fans with variable speed to reduce power draw
-    
+
 
     Power
 
-    
+
       Dual load-sharing hot-swap internal power modules, 50 - 60 Hz, 100 - 240 V AC auto-switching per module.
 
       Typical power consumption of 330 watts redundant.
-    
+
 
     Approvals and Safety
 
     Safety Certifications
 
-    
+
       UL60950-1
 
       CAN/CSA 22.2 No.60950-1
@@ -2885,12 +2885,12 @@ Overview - IBM System Networking RackSwitch G8316
       GOST R MEK 60950-1
 
       GB4943-2001
-      
-    
+
+
 
     Electromagnetic Compatibility Certifications
 
-    
+
       FCC 47CFR Part 15 Class A
 
       EN 55022 Class A
@@ -2908,71 +2908,71 @@ Overview - IBM System Networking RackSwitch G8316
       EN 300386
 
       CE
-    
+
 
     Environmental
 
-    
-      
+
+
         Reduction of Hazardous Substances (ROHS) 6
-      
-    
+
+
 
     The IBM Ethernet products in this announcement are not approved to be sold for connecting to the public telecommunication networks in all countries.
 
-    
-      Product marketing and replacement part numbers (FRU)
-    
 
-    
-      
-        
+      Product marketing and replacement part numbers (FRU)
+
+
+
+
+
           Description
 
           Marketing part number
 
           Replacement part number
-        
-      
 
-      
+
+
+
         IBM System Networking RackSwitch G8316F
 
         8036AFX
-        
+
 
         90Y9467
-      
 
-      
+
+
         IBM System Networking RackSwitch G8316R
 
         8036ARX
-        
+
 
         90Y9467
-      
-    
 
-    
+
+
+
       Hardware requirements
-    
+
 
     None.
 
-    
+
       Software requirements
-    
+
 
     None.
 
-    
+
       Compatibility
-    
+
 
     The IBM BNT RackSwitches are designed to support network connectivity for the following servers:
 
-    
+
       IBM Power Systems
 
       IBM System p servers
@@ -2980,105 +2980,104 @@ Overview - IBM System Networking RackSwitch G8316
       IBM System i servers
 
       IBM System x servers
-    
 
-    
+
+
       Limitations
-    
+
 
     None.
-    
 
 
-          
 
-          
-          
-          
-          
-          
-          
-          
-          
-          
-          
-          
-          
-          
-                      
-                                                                      
-          
-          
-          
-          
-          
-          
-          
-          
-          
-                    
-                              
-                    
-          
-          
-          
-          
-                    
-          
-                    
-          
-          
-                                                                                    
-          
-          
-          
-          
-          
-          
-  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         Document Location
-          
+
                     Worldwide
-              
-      
 
-          
-  
+
+
+
+
         Operating System
-          
+
                     System x Hardware Options:Operating system independent / None
-              
-      
 
-                    
-                                        
-          
+
+
+
+
+
           [{&quot;Type&quot;:&quot;HW&quot;,&quot;Business Unit&quot;:{&quot;code&quot;:&quot;BU016&quot;,&quot;label&quot;:&quot;Multiple Vendor Support&quot;},&quot;Product&quot;:{&quot;code&quot;:&quot;QUOEALM&quot;,&quot;label&quot;:&quot;System x Hardware Options-&gt;BladeCenter Switch Module-&gt;RackSwitch-&gt;8036AFX&quot;},&quot;Platform&quot;:[{&quot;code&quot;:&quot;PF025&quot;,&quot;label&quot;:&quot;Platform Independent&quot;}],&quot;Line of Business&quot;:{&quot;code&quot;:&quot;&quot;,&quot;label&quot;:&quot;&quot;}},{&quot;Type&quot;:&quot;HW&quot;,&quot;Business Unit&quot;:{&quot;code&quot;:&quot;BU054&quot;,&quot;label&quot;:&quot;Systems w\/TPS&quot;},&quot;Product&quot;:{&quot;code&quot;:&quot;QUOEALN&quot;,&quot;label&quot;:&quot;System x Hardware Options-&gt;BladeCenter Switch Module-&gt;RackSwitch-&gt;8036ARX&quot;},&quot;Platform&quot;:[{&quot;code&quot;:&quot;PF025&quot;,&quot;label&quot;:&quot;Platform Independent&quot;}],&quot;Line of Business&quot;:{&quot;code&quot;:&quot;&quot;,&quot;label&quot;:&quot;&quot;}}]
-          
-                                                  
-          
-          
-          
-          
-          
 
-        
-        
-        
-      
-    
-      
-        
-            
-            
-               
-  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         Was this topic helpful?
-                    
-  
+
+
         Not usefulUseful
 
-        
 
 
 
@@ -3086,54 +3085,55 @@ Overview - IBM System Networking RackSwitch G8316
 
 
 
-          
 
-            
+
+
+
             Document Information
 
-            
-            
 
-                        
+
+
+
             Modified date:
-            
+
             24 January 2019
-            
-            
-                        
-  
+
+
+
+
         UID
                     ibm1MIGR-5088740
-          
 
-            
-          
-        
-      
-    
-   
-  
 
-    
-  
-  
-    
-            
+
+
+
+
+
+
+
+
+
+
+
+
+
           Page Feedback
-    
-  
-  
 
-                
-                              
-      
-    
-  
 
-  
+
+
+
+
+
+
+
+
+
 	Share your feedback
 	Need support?
-	
+
 		Submit feedback to IBM Support
 		1-800-IBM-7378 (USA)
 		Directory of worldwide contacts
@@ -3153,7 +3153,7 @@ Overview - IBM System Networking RackSwitch G8316
 **Output:**
 ```
 %PDF-1.5%����
-206 0 obj<</Linearized 1/L 147774/O 209/E 62843/N 2/T 143606/H [ 1424 377]>>endobj             
+206 0 obj<</Linearized 1/L 147774/O 209/E 62843/N 2/T 143606/H [ 1424 377]>>endobj
 xref
 206 55
 0000000016 00000 n
@@ -3216,7 +3216,7 @@ trailer
 startxref
 0
 %%EOF
-                        
+
 260 0 obj<</Length 276/C 294/Filter/FlateDecode/I 319/L 278/O 262/S 121>>stream
 x�b`````������V����X��,=L��0`L<�fϛy->�V������z�i���A����54��P��" �@BL�1@�����)1��� �t��A1���{,;�;��>�%x�ʰ�b�n�7ņ�ݹLy�&��|�~3Xp��NP��S��}���qK�cX3�0F0�aX!;A�!�������G$��ViV�����<�8ȃ@lĲ@���@|��y@�2��O ��� 0 *R?F
 endstreamendobj259 0 obj<</Length 28/Filter/FlateDecode/W[1 1 1]/Index[36 170]/DecodeParms<</Columns 3/Predictor 12>>/Size 206/Type/XRef>>stream
@@ -3319,7 +3319,7 @@ h���56P]>�۫7r��U7=�d������և�P�k��0�Hj
 endstreamendobj244 0 obj<</Length 2597/Filter/FlateDecode/N 3/Alternate/DeviceRGB>>stream
 hޜ�wTT��Ͻwz��0�z�.0��. Qf� �Ml��@DE�����H��b!(�`HPb0���dF�J|yy����ǽ��g�s��{��. $O./� �'�z8�W�Gб� x�� 0Y驾A��@$/7z��	���H��e��O���OҬT�  �_��lN:K��"N����3"��$�F��/JP�rb�[䥟}�Q��d[��S��l1��x{��#b�G�\N��o�X3I���[ql2�� �$�8�x����t�r p��/8�p��C���f�q��.K�njm͠{r2�8��?�����.)ɩL^6 �g�,qm�"[�Z[Z��~Q����7%��"�
 ��3�������R� `̊j��[�~ :� w���! $E}k���yh�y�Rm��333��������:�}�=#�v����ʉe
-�tq�X)I)B>==�����<��8��Xȉ��9<QD�hʸ�8Q�yl���£sy����0�OZ�k�(�� 5�Hݠ��>��yP�������:�8�����p���΍��Lg	��k�k	Ѐ $��t�!0V�87���`��ɀ2A.�
+�tq�X)I)B>==�����<��8��Xȉ��9<QD�hʸ�8Q�yl���£sy����0�OZ�k�(�� 5�Hݠ��>��yP�������:�8�����p���΍��Lg	��k�k	Ѐ $��t�!0V�87���`��ɀ2A.�
 @���JP�A#h'@8.���:�	�`���`��a!2D��!UH2�� d�A>P ECqB���*�*�Z��:]��B�=h��~���L���2���	����5p�����N��������:|��ó@�QC��!H,�G6 �H9R�� ]H/rA��w(����Q�(OT��JCm@�*QGQ���-�(j�	MF+��6h/�*t:]�.G7��З�w���7����Xa<1��:L1� �s3���b�Xy���eb��~�1�9� v�Gĩ��p���+�5���q�y�^o��ó���|=�?��'Htv�`Ba3���B�DxHxE$Չ�� "���XA<N�B%�#ɐ�I.�H����t�t�t��L&k��dy'��|����V�"a$�%���(Q%�.1(�B/�%�$�V2G�\���i)�����Sj�T��)�a�Yi�����t�t�t��U�I�����[&_��E�1
 BѠ�PX�-�z�%�8CաzQ�E�o���Y�e���Y�U�gdGhM��EK���NІh�(/qZ�Y�cI˒�%sr�r�r�B�V�;r����n���;�)��2*\R�V�*�*�O(�W������)V�S�UVQ�PNUޯ|QyZ��⨒�R�rVeJ��j��U-S=���.Kw�'�+�=�5%5O5�Z�Z�ڼ��z�z�z��#�C#V�L�[cFSU�W3W�Y�^����O�WkN[G;L{�v�������N�N��C]���n�n��m=�C/Q��M}X�B?^�J��l`i�58`0���z)oi��aC���a�a�����(Ϩ�腱�q��n�^�O&&I&�&LeLW��v��j�o�2�2�mN6w7�h�i�r��2β���ZP,|-�Yt[|����[�XNYiZE[U[3�F1�5���z��i�w6�6�6���&�6�N.�Y�Y^�|�NݎiWk7bO���?d?���t�sx���vlp�p�sJp:����ę���<�b���+���Z���&��V���]�=ν�}���c��yO����n�a/e/�W���
 ��W�x����+������}�|a��{|��Z�[�������=���O��> �P�4�407�7���&�9�$�A�n�0�;T242�1t.�5�4ld������+�s�;#�����V�]=iY9�FgM֚�k�&�=%Ō:���n����c�1gc�b�cfX.�}��lGv{�c�)�L��Ŗ�N���퉛�w�/���p+�/<j���$.$�%�&㒣�O�dx��������T�Ԃԑ4���i3|o~C:��&�S@�L�	u�[���Uo3C3OfIg�����wdO��|�����;W-ws��z����1�7jl��8��c��͉̈́��3�+�{�%lKW�r�����[�$
@@ -3327,14 +3327,14 @@ BѠ�PX�-�z�%�8CաzQ�E�o���Y�e���Y�U�gdGhM�
 E����<��h��ؤ�T�7���E����7�-�-���֢�����o��:�}��$�d�wZ�U�Q�
 ۡ����������΁S+Nuw�v�}o����j���Ȟ)9K8�v�\ι���/�]��~pq���==���/]��~�b�S�+vWN_��z��Z�u���}}m?X���o��~��F�M�]��:^��z��m���לּ302tw8rx�.��佤{/�gܟ��!�a�#�G叕����c��șQ�Ѿ'AO��ƞ���Ӈ��������f���ܧn>[�l�y���邟��~���_�Y53���r���W򯎼^��{����7�s�o��}�x��>���|�쇊�z�>yz�����  ����
 endstreamendobj245 0 obj<</Subtype/Image/Length 19382/Filter/DCTDecode/BitsPerComponent 8/ColorSpace 210 0 R/Width 648/Height 269/Type/XObject>>stream
-���� Adobe d�   �� � 		
+���� Adobe d�   �� � 		
 
-
 
-�� � ���            	
-         	
- s !1AQa"q�2���B#�R��3b�$r��%C4S���cs�5D'���6Tdt���&�	
-��EF��V�U(�������eu��������fv��������7GWgw��������8HXhx��������)9IYiy��������*:JZjz�������� m !1AQa"q��2������#BRbr�3$4C��S%�c��s�5�D�T�	
+
+�� � ���            
+         
+ s !1AQa"q�2���B#�R��3b�$r��%C4S���cs�5D'���6Tdt���&�
+��EF��V�U(�������eu��������fv��������7GWgw��������8HXhx��������)9IYiy��������*:JZjz�������� m !1AQa"q��2������#BRbr�3$4C��S%�c��s�5�D�T�
 &6E'dtU7��()��󄔤�����eu��������FVfv��������GWgw��������8HXhx��������9IYiy��������*:JZjz����������   ? ᙹd�Uث�Wb��]��v*�Uث�Wb��]���� &痿�$��a�� AWۙ�b��d� T��BG7��7����>��)v*�Uث�Wb��]��v*�Uث�U���<�p����l���GB68�ag�O1X�g��[S��<�>���a���G�~r�e��z�
 
 ...155194 bytes truncated...
@@ -3360,27 +3360,6 @@ IBM Launches 40 Gigabit Ethernet Rack Switch - IT Jungle
 
 
 
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
-	
 
 
 
@@ -3393,8 +3372,6 @@ IBM Launches 40 Gigabit Ethernet Rack Switch - IT Jungle
 
 
 
-		
-							
 
 
 
@@ -3402,32 +3379,55 @@ IBM Launches 40 Gigabit Ethernet Rack Switch - IT Jungle
 
 
 
-	
 
 
 
 
 
 
-	
-		
-							
-					
-											
-							 
-								 
-							 
-						
-								   	
-									
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 						   The Four Hundred
 Subscribe
 Media Kit
 Contributors
 About Us
 Contact
-						 
-			
+
+
 					 Menu
 										   The Four Hundred
 Subscribe
@@ -3435,32 +3435,32 @@ Media Kit
 Contributors
 About Us
 Contact
-								 
-		 
-		
-			
-			    				
-		        					
-											
-							
-								
-																	
+
+
+
+
+
+
+
+
+
+
 								IBM Launches 40 Gigabit Ethernet Rack Switch
-								
+
 									October 31, 2011
-									
-										Timothy Prickett Morgan									
-								
-																
-                      
+
+										Timothy Prickett Morgan
 
 
 
-                            
-                          
 
-                            
-                          
+
+
+
+
+
+
+
 
                             IBM has been wheeling and dealing to try to peddle its Gigabit and 10 Gigabit Ethernet switches from its Blade Network RackSwitch lineup for the past several months, and now it has the launched a new 40 Gigabit Ethernet switch if your network backbones are getting a bit skinny for the traffic load.
 The RackSwitch G8316 is a 1U top-of-racker that has 16 40GE ports using QSFP+ cabling. The switch has a chip that can handle 1.28 Tb/sec of switching bandwidth, and it can handle 960 million packets per second of message passing. The switch ports have under one microsecond of latency on a hop from one 40GE port to another one in the same switch, which is pretty low. It can also be equipped with special SFP+ splitter cables that turn each 40GE port into four 10GE ports, making it effectively a 64-port 10GE switch. So you can start using it as a 10GE switch now and consolidate it down to 40GE switch at some future date. It supports all the modern converged enhanced Ethernet (allowing Fibre Channel traffic over the switch) and data center bridging goodies that most 10GE switches have these days.
@@ -3484,18 +3484,18 @@ The Data Center Is the Computer
 						                       Post this story to del.icio.us
 						                 Post this story to Digg
 						      Post this story to Slashdot
-                          
 
 
 
-Share this:RedditFacebookLinkedInTwitterEmail															
-							Tags: 
-																						
-									
+
+Share this:RedditFacebookLinkedInTwitterEmail
+							Tags:
+
+
 										Sponsored by
 										Mason Associates, Inc.
-									
-									
+
+
 										Your Trusted Partner in All Things IBM i
 As an IBM Business Partner, Mason Associates, Inc. assists with hardware and software renewals, system upgrades, expansion, AI readiness, and cloud migration &amp; hosting to keep your technology up to date.
 
@@ -3506,131 +3506,131 @@ Consulting &amp; Management
 AI Readiness &amp; Use Case Assessments
 
 Learn More
-Share this:RedditFacebookLinkedInTwitterEmail									
-								
-																												
-							
+Share this:RedditFacebookLinkedInTwitterEmail
+
+
+
 								100,000 And Counting in IBM i Grassroots Campaign
 								Q3 Financial Report Bumps Manhattan Associates Stock
-							
-							
-								
-			
-	
-		
-							Leave a Reply					Cancel reply
-				
-						
-				
 
-		
-							
-						
-										
-									 
-				
-	
-		
-				
+
+
+
+
+
+							Leave a Reply					Cancel reply
+
+
+
+
+
+
+
+
+
+
+
+
+
 					Search for:
-					
-					
-				
-				
-				
-				
-					Volume 20, Number 37 -- October 31, 2011				
-			
-					
-				
-					
-                        
-                          
+
+
+
+
+
+
+					Volume 20, Number 37 -- October 31, 2011
+
+
+
+
+
+
                             THIS ISSUE SPONSORED BY:
-                             
-                          
-                        
-                        
-                          
-                            
-                              
+
+
+
+
+
+
+
                                BCD
                                PowerTech
                                Maxava
                                Cosyn
                                VAULT400
-                               
-                            
-                          
-                        
-                      				
-			
-					
-				
-					
-						
-					
-				
-			
-		Table of ContentsBang For The Buck on Power7 Gen 2 ServersPalmisano Hands The IBM Reins To RomettyIBM To Unchain RPG Open Access?European Slowdown Puts The Profit Squeeze On AvnetBest i Blog Bets: A Top 10 ListDisk Drive Shortage Coming Due To Thailand Flooding?100,000 And Counting in IBM i Grassroots CampaignIBM Launches 40 Gigabit Ethernet Rack SwitchQ3 Financial Report Bumps Manhattan Associates StockWhat Could IBM Do Instead Of Spending $12.2 Billion On Shares?			
-				
-									
-			
-			Content archive			
+
+
+
+
+
+
+
+
+
+
+
+
+
+		Table of ContentsBang For The Buck on Power7 Gen 2 ServersPalmisano Hands The IBM Reins To RomettyIBM To Unchain RPG Open Access?European Slowdown Puts The Profit Squeeze On AvnetBest i Blog Bets: A Top 10 ListDisk Drive Shortage Coming Due To Thailand Flooding?100,000 And Counting in IBM i Grassroots CampaignIBM Launches 40 Gigabit Ethernet Rack SwitchQ3 Financial Report Bumps Manhattan Associates StockWhat Could IBM Do Instead Of Spending $12.2 Billion On Shares?
+
+
+
+			Content archive
 The Four Hundred
 Four Hundred Stuff
 Four Hundred Guru
 
 
-		
-			 
-		 
 
 
-			
-											
-		
+
+
+
+
+
+
 		Recent Posts
-		
-											
-					What IBM i Ideas Are Cooking In IBM’s Ideas Portal?
-									
-											
-					Early Bob Excels In Medhost IBM i Tryout
-									
-											
-					Counting The Cost Of AI Inference – And Projecting It Far Out
-									
-											
-					IBM i PTF Guide, Volume 28, Number 13
-									
-											
-					The Next Generation Of IBM i Talent in GenAI Action
-									
-											
-					IBM Taps Nvidia GPUs For AI-Turbocharged Data Mart
-									
-											
-					Izzi Partners With Capricorn For IBM i Services And Bluehouse For Software Peddling
-									
-											
-					IBM i PTF Guide, Volume 28, Number 12
-									
-											
-					What Is Your Plan For Offsite Data Protection?
-									
-											
-					What Is Threatening IBM i Security Now
-									
-					
 
-										
-			
+
+					What IBM i Ideas Are Cooking In IBM’s Ideas Portal?
+
+
+					Early Bob Excels In Medhost IBM i Tryout
+
+
+					Counting The Cost Of AI Inference – And Projecting It Far Out
+
+
+					IBM i PTF Guide, Volume 28, Number 13
+
+
+					The Next Generation Of IBM i Talent in GenAI Action
+
+
+					IBM Taps Nvidia GPUs For AI-Turbocharged Data Mart
+
+
+					Izzi Partners With Capricorn For IBM i Services And Bluehouse For Software Peddling
+
+
+					IBM i PTF Guide, Volume 28, Number 12
+
+
+					What Is Your Plan For Offsite Data Protection?
+
+
+					What Is Threatening IBM i Security Now
+
+
+
+
+
 											Subscribe			To get news from IT Jungle sent to your inbox every week, subscribe to our newsletter.
-										
-			
+
+
 											Pages
-			
+
 				About Us
 Contact
 Contributors
@@ -3638,17 +3638,17 @@ Four Hundred Monitor
 IBM i PTF Guide
 Media Kit
 Subscribe
-			
 
-											
-			
+
+
+
 											Search
-				
+
 					Search for:
-					
-					
-				
-											
+
+
+
+
 			Copyright © 2025 IT Jungle
 ```
 
@@ -3815,7 +3815,7 @@ endstreamendobj472 0 obj<</Filter/FlateDecode/First 197/Length 478/N 26/Type/
 hެ��jA�_Eo�#i���hr.ӛ���K���-�o-.�Ȥ2A7[��[���re(��Ԡ�}B�a�
 �
 �AU�z��;�e�h��
-������ڤB�v�lolE�n�0A�C:�n ������YA�*�nI��P� ��6m4,MS�2� &Kxw7=���v���r\��z�X�U��������������u���pU}:�����ֹ����������RY��:C���}�m�����^���C���r<.�y?�·(6��Q��0Z0���怅n������6��SIb*�)U{K�>�HLӣ�zP9���5i���&�񖓸<���`�&�$��Y�7V�]����?'�]"z���H׀�ސ�#�;��Dzt�ջ��D����}R���G����ѽ�D�ѽ�d$�#שw�R"=r�z���]7���ԻN{"=r�x�5L�G��V��Ļ��<:���u�$�?�ͫ  ���
+������ڤB�v�lolE�n�0A�C:�n ������YA�*�nI��P� ��6m4,MS�2� &Kxw7=���v���r\��z�X�U��������������u���pU}:�����ֹ����������RY��:C���}�m�����^���C���r<.�y?�·(6��Q��0Z0���怅n������6��SIb*�)U{K�>�HLӣ�zP9���5i���&�񖓸<���`�&�$��Y�7V�]����?'�]"z���H׀�ސ�#�;��Dzt�ջ��D����}R���G����ѽ�D�ѽ�d$�#שw�R"=r�z���]7���ԻN{"=r�x�5L�G��V��Ļ��<:���u�$�?�ͫ  ���
 endstreamendobj2 0 obj<</Filter/FlateDecode/Length 858>>stream
 h�tT�n�8��W��"��$��[���{��0��I�8	�#���m��<�za`LR�buuu��r�O��f�iJ��<m�50��-� �4U���~�S�8�ڰ��~m���C�KZo������� )dAK�B6Wf��d
 6OY��$�3p�l��d�V��O�����ӂ�z��]�H���|;ƀ�;���H��T��L,�ʠH��8�c� SVPM>�3� �	>���K�&���t����!pM�x�S1��� ȥ,P�U�r��������\1񄖗�ʺ�����T�B�u���.��?��g��t������L�\�Q^��],6h$���8O�J�$������qps���μy�������@7����"I�ۋ/��Q!P��v���N��`d��"-��k�JE�3�˫��;��hQV����(��W�5���D��!\j����k�h����T(v�Cz~AUrU
@@ -3850,7 +3850,7 @@ z�W5�׭��N����ͧ�H�y �O��j,���F�
 ��ҕPMg�Y/V��"m�k�� �9��B�yS��%S�J��L�	:����r����px�G���*�3�X�w�Zp�@N�G�:�P�Z��樧T��Q�nfD��K�3�^�髡��|p^k���V�����k�}��ί,.��� ��lX7����k�h2!���� �&[��.��R�p�>*����h�X�}��*��/g4��H+�'���!��[> ��uH� ʥs���K�.a�h�6>�K��Bͨ\�����@�lq3[��b|/A��Y�>d��D@i�p��h?pǤ�9CnH�f���_`�PC*����I�\����T ��p���W��L�t�D����pN���ǜ��!=׊x7�2�?l��Z+7J%ؒ��[ޞb=���WM�׍e�9&��K8l�,�|ue r6�o`����\�6� ř�6ݑ�϶5�5���"{|����:��������ߜ���i��t��LRHTA����4������fu(S�i�3l������a~���F�Ȝ�Ug�B%Iu~��z^K+ff���?� ��=U��+;���
 �I۵��,�犞��FA��j^C벆_oS/��Sđ{�C�u�_șHm)J�d��-Z�z�nn��
 D�q�87Z�T\"aɃJ�T���>�݅��#�k!��}�B��K�=�]� �o%��\�m���%]�=ʬ�k�Jr��
-�;��ef@�Z���G�j�Lo������ΡY%��HV�ZP
+�;��ef@�Z���G�j�Lo������ΡY%��HV�ZP
 ��Y][� �qܽ�5��Sϡy;�D=��<�t�uºM�l@��a�E���X�hO׫�/>X�N�`�R��0���G|fKAi����e�	��7��
 mP[����������)���DؤF���
 �� ��C\�7��7<8ۤR����t����x�S��X�-P����0f&a�}��6��KP6�4�����-�e�����0�V���.:
@@ -4187,11 +4187,11 @@ Let me read the file to see the current references section.
 ```
 <path>/home/user/code/docs/inventory/routing-and-switching.md</path>
 <type>file</type>
-<content>545: 
+<content>545:
 546: ---
-547: 
+547:
 548: ## References
-549: 
+549:
 550: > **Note on link availability:** Many of the devices in this inventory are end-of-life (EOL)
 551: > or discontinued. Cisco [deliberately removes all documentation for retired products][cisco-retired].
 552: > IBM/Lenovo has migrated legacy docs to Lenovo Press but coverage is incomplete.
@@ -4201,139 +4201,139 @@ Let me read the file to see the current references section.
 556: > documentation are listed with a note explaining what was attempted.
 557: >
 558: > [cisco-retired]: https://www.cisco.com/c/en/us/obsolete/routers/cisco-2811-integrated-services-router.html
-559: 
+559:
 560: ### Celestica Haliburton (DX010)
-561: 
+561:
 562: 1. [ServeTheHome — Celestica Haliburton DX010 Teardown](https://www.servethehome.com/celestica-haliburton-dx010-teardown/) — Detailed hardware teardown and photos
 563: 2. [SONiC GitHub — platform/broadcom/sonic-platform-modules-cel](https://github.com/sonic-net/sonic-buildimage/tree/master/platform/broadcom/sonic-platform-modules-cel) — SONiC platform driver source code for Celestica switches
 564: 3. [Broadcom BCM56960 (Memory, Memories, & Interfaces)](https://www.broadcom.com/products/ethernet-connectivity/switching/memory-memories-interfaces) — Memory datasheet for the Memory Memories and Interfaces product family including BCM56960 (Memoria)
 565: 4. [Azure SONiC Project](https://azure.github.io/SONiC/) — Official SONiC documentation and architecture
 566: 5. [OCP Networking — SONiC](https://www.opencompute.org/projects/onic) — Open Compute Project SONiC resources
-567: 
+567:
 568: ### IBM/Lenovo RackSwitch G8264
-569: 
+569:
 570: 1. [Lenovo Press TIPS1272 — RackSwitch G8264 Product Guide (PDF, 29 pages)](https://lenovopress.lenovo.com/tips1272) — Comprehensive product guide with specs, components, and configuration
 571: 2. [DirectIndustry — IBM RackSwitch G8264 Datasheet](https://pdf.directindustry.com/pdf/ibm/system-networking-rackswitch-g8264/27444-337791.html) — Full datasheet PDF
 572: 3. [ManualsLib — IBM RackSwitch G8264](https://www.manualslib.com/brand/ibm/?q=G8264) — Installation and user guides
 573: 4. [karma-group.ru — IBM G8264 Product Brief (PDF)](https://karma-group.ru/upload/iblock/d1e/IBM_System_Networking_RackSwitch_G8264.pdf) — Marketing product brief
 574: 5. [eyo.com.au — IBM G8264 Brochure (PDF)](https://www.eyo.com.au/wp-content/uploads/2015/08/IBM-System-Networking-RackSwitch-G8264.pdf) — Product brochure with diagrams
-575: 
+575:
 576: ### IBM/Lenovo RackSwitch G8264e
-577: 
+577:
 578: The G8264e does not have a dedicated Lenovo Press product guide. It is a variant of the G8264 family with enhanced 10GbE SFP+ port density.
-579: 
+579:
 580: 1. [Lenovo Press — RackSwitch G8264 Product Guide (TIPS1272)](https://lenovopress.lenovo.com/tips1272) — G8264 family documentation (covers G8264e variants)
 581: 2. [Lenovo Press — RackSwitch G8264CS Product Guide (TIPS1273)](https://lenovopress.lenovo.com/tips1273) — Related G8264 campus switch variant
-582: 
+582:
 583: <!-- No additional manufacturer documentation found for the G8264e specifically -->
-584: 
+584:
 585: ### IBM/Lenovo RackSwitch G8316
-586: 
+586:
 587: 1. [Lenovo Press TIPS0842 — RackSwitch G8316 Product Guide (PDF, 19 pages)](https://lenovopress.lenovo.com/tips0842) — Comprehensive product guide with specs, part numbers, transceivers, and configuration (withdrawn product)
 588: 2. [IBM Support — Overview: IBM System Networking RackSwitch G8316](https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316) — Technical overview with physical specs, part numbers, and warranty info
 589: 3. [karma-group.ru — IBM RackSwitch G8316 Datasheet (PDF)](https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf) — Official IBM datasheet PDF
 590: 4. [IBM — Networking OS 7.4 for RackSwitch G8316 Release Notes (PDF)](https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf) — Firmware release notes with port specifications and supported features
 591: 5. [IT Jungle — IBM Launches 40 Gigabit Ethernet Rack Switch (2011)](https://www.itjungle.com/2011/10/31/tfh103111-story08/) — Launch announcement with pricing ($35,999) and technical overview
-592: 
+592:
 593: ### IBM/Mellanox SX6036
-594: 
+594:
 595: No surviving manufacturer documentation has been found for the SX6036. This was a Mellanox 36-port QSFP FDR InfiniBand switch. After NVIDIA acquired Mellanox, legacy product PDFs were removed from the Mellanox domain and not migrated to NVIDIA's documentation portal.
-596: 
+596:
 597: <!-- Attempted: mellanox.com PDF URLs (404), network.nvidia.com PDF (404), archive.org (404),
 598:      NVIDIA networking portal (no SX6036-specific docs), ManualsLib (wrong products) -->
-599: 
+599:
 600: ### Arista 7050QX-32
-601: 
+601:
 602: 1. [Arista Networks — 7050X Series Product Page](https://www.arista.com/en/products/7050x-series) — Full specifications, features, and datasheets (includes 7050QX-32)
-603: 
+603:
 604: <!-- Arista requires a login to download PDF datasheets directly; the product page has inline specs -->
-605: 
+605:
 606: ### Mono Gateway (mono.si)
-607: 
+607:
 608: The Mono Gateway manufacturer website (mono.si) is completely offline. Documentation is referenced via the NXP SoC that powers the device.
-609: 
+609:
 610: 1. [NXP LS1046A Product Page](https://www.nxp.com/products/processors-and-microcontrollers/arm-processors/layerscape-processors/layerscape-1046a-and-1026a-processors:LS1046A) — SoC datasheet and reference manual
 611: 2. [NXP LS1046A Fact Sheet (PDF)](https://www.nxp.com/docs/en/fact-sheet/LS1046AFS.pdf) — SoC specifications summary
-612: 
+612:
 613: ### Calix GP1101X
-614: 
+614:
 615: No publicly accessible documentation has been found for the Calix GP1101X. Calix restricts all product documentation behind a partner/customer login portal. This is a 10G GPON ONT used as ISP customer premises equipment.
-616: 
+616:
 617: <!-- Attempted: calix.com product page (404), FCC ID search (no results), community forums (login required) -->
-618: 
+618:
 619: ### Netgear XS712T
-620: 
+620:
 621: 1. [Netgear XS712T Product Page](https://www.netgear.com/support/product/xs712t/) — Support downloads, firmware, and documentation
 622: 2. [Netgear XS712T Datasheet (PDF)](https://www.downloads.netgear.com/files/GDC/datasheet/en/XS712T.pdf) — Official product datasheet
 623: 3. [Netgear ProSAFE 10-Gigabit Smart Switches Datasheet (PDF)](https://www.downloads.netgear.com/files/GDC/datasheet/en/ProSAFE_10-Gigabit_Smart_Managed_Switches.pdf) — Combined family datasheet
-624: 
+624:
 625: ### TRENDnet TEG-30284
-626: 
+626:
 627: 1. [TRENDnet TEG-30284 Product Page](https://www.trendnet.com/products/28-port-10g-web-smart-switch-TEG-30284) — Official product page with specifications and downloads
-628: 
+628:
 629: <!-- TRENDnet has limited documentation beyond the product page for this model -->
-630: 
+630:
 631: ### TP-Link SG3210XHP-M2
-632: 
+632:
 633: 1. [TP-Link SG3210XHP-M2 Product Page](https://www.tp-link.com/us/business-networking/omada-switch-poe/sg3210xhp-m2/) — Official product page with specifications, datasheet, and firmware
-634: 
+634:
 635: ### Dell PowerConnect 5448
-636: 
+636:
 637: 1. [Dell PowerConnect 5448 Support Page](https://www.dell.com/support/home/en-us/product-support/product/powerconnect-5448/overview) — Support overview, drivers, and documentation
-638: 
+638:
 639: <!-- Dell has limited legacy documentation for the PowerConnect 5448 series -->
-640: 
+640:
 641: ### Cisco Catalyst 3560
-642: 
+642:
 643: 1. [Cisco Catalyst 3560 Series End-of-Life Information](https://www.cisco.com/c/en/us/obsolete/switches/cisco-catalyst-3560-series-switches.html) — EOL notices and last-available support references
-644: 
+644:
 645: <!-- Original datasheets and configuration guides have been removed per Cisco's retirement policy -->
-646: 
+646:
 647: ### Cisco Catalyst 2960
-648: 
+648:
 649: 1. [Cisco Catalyst 2960 Series LAN Lite Switches Data Sheet](https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-2960-series-switches/data_sheet_c78-728003.html) — Datasheet (may be intermittently available)
 650: 2. [Cisco Catalyst 2960 Series Switches](https://www.cisco.com/c/en/us/products/switches/catalyst-2960-series-switches/index.html) — Product family page
-651: 
+651:
 652: ### Cisco 2811
-653: 
+653:
 654: No surviving manufacturer documentation. Cisco has removed all datasheets, configuration guides, and EOL bulletins for the 2800 series. The 2811 was a modular integrated services router with 2x GbE ports and HWIC/AIM slots.
-655: 
+655:
 656: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404), router-switch.com (403/404),
 657:      ManualsLib (returned wrong products). Cisco's retired products page confirms intentional removal. -->
-658: 
+658:
 659: ### Cisco 1841
-660: 
+660:
 661: No surviving manufacturer documentation. Cisco has removed all documentation for the 1800 series integrated services routers. The 1841 was a modular router with 2x FastEthernet ports and HWIC slots.
-662: 
+662:
 663: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404), router-switch.com (404) -->
-664: 
+664:
 665: ### Cisco 881
-666: 
+666:
 667: 1. [Cisco 880 Series Integrated Services Routers Data Sheet](https://www.cisco.com/c/en/us/products/collateral/routers/800-series-routers/datasheet-c78-731755.html) — Covers 881, 887, 891 and other 880 variants
 668: 2. [Cisco 880 Series Product Page](https://www.cisco.com/c/en/us/products/routers/800-series-routers/index.html) — 800 series family page
 669: 3. [ManualsLib — Cisco 881 Manuals](https://www.manualslib.com/brand/cisco/?q=881) — Hardware installation and configuration guides
-670: 
+670:
 671: ### Cisco ASA 5505
-672: 
+672:
 673: 1. [Cisco ASA 5505 Adaptive Security Appliance Data Sheet](https://www.cisco.com/c/en/us/products/collateral/security/asa-5500-series-next-generation-firewalls/datasheet-c78-733510.html) — Product datasheet (may be intermittently available)
 674: 2. [Cisco ASA 5505 Support Page](https://www.cisco.com/c/en/us/support/security/asa-5505-adaptive-security-appliance/model.html) — Support resources and EOL information
-675: 
+675:
 676: ### Cisco SG300-52
-677: 
+677:
 678: No surviving manufacturer documentation. Cisco has removed documentation for the Small Business 300 series managed switches. The SG300-52 was a 52-port Gigabit L3-lite managed switch with 2x SFP combo uplinks.
-679: 
+679:
 680: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404) -->
-681: 
+681:
 682: ### Netgear GS116E (ProSAFE Plus)
-683: 
+683:
 684: No surviving manufacturer documentation. Netgear has removed product pages and datasheet downloads for the GS116E. This was a 16-port Gigabit Plus (smart-managed) desktop switch.
-685: 
+685:
 686: <!-- Attempted: netgear.com product/support pages (404), datasheet downloads (403), archive.org (no cache) -->
-687: 
+687:
 688: ### Cisco 4402 Wireless LAN Controller
-689: 
+689:
 690: 1. [Cisco 4400 Series Wireless LAN Controllers End-of-Life Notice](https://www.cisco.com/c/en/us/obsolete/wireless/cisco-4400-series-wireless-lan-controllers.html) — Retirement notification and migration guidance
-691: 
+691:
 692: <!-- Original datasheets and configuration guides removed per Cisco's retirement policy -->
 
 (End of file - total 692 lines)
@@ -4654,53 +4654,53 @@ Good findings. 4 of 5 DX010 links are dead, and SX6036 has a Wayback Machine PDF
 <content>556: > documentation are listed with a note explaining what was attempted.
 557: >
 558: > [cisco-retired]: https://www.cisco.com/c/en/us/obsolete/routers/cisco-2811-integrated-services-router.html
-559: 
+559:
 560: ### Celestica Haliburton (DX010)
-561: 
+561:
 562: 1. [ServeTheHome — Celestica Haliburton DX010 Teardown](https://www.servethehome.com/celestica-haliburton-dx010-teardown/) — Detailed hardware teardown and photos
 563: 2. [SONiC GitHub — platform/broadcom/sonic-platform-modules-cel](https://github.com/sonic-net/sonic-buildimage/tree/master/platform/broadcom/sonic-platform-modules-cel) — SONiC platform driver source code for Celestica switches
 564: 3. [Broadcom BCM56960 (Memory, Memories, & Interfaces)](https://www.broadcom.com/products/ethernet-connectivity/switching/memory-memories-interfaces) — Memory datasheet for the Memory Memories and Interfaces product family including BCM56960 (Memoria)
 565: 4. [Azure SONiC Project](https://azure.github.io/SONiC/) — Official SONiC documentation and architecture
 566: 5. [OCP Networking — SONiC](https://www.opencompute.org/projects/onic) — Open Compute Project SONiC resources
-567: 
+567:
 568: ### IBM/Lenovo RackSwitch G8264
-569: 
+569:
 570: 1. [Lenovo Press TIPS1272 — RackSwitch G8264 Product Guide (PDF, 29 pages)](https://lenovopress.lenovo.com/tips1272) — Comprehensive product guide with specs, components, and configuration
 571: 2. [DirectIndustry — IBM RackSwitch G8264 Datasheet](https://pdf.directindustry.com/pdf/ibm/system-networking-rackswitch-g8264/27444-337791.html) — Full datasheet PDF
 572: 3. [ManualsLib — IBM RackSwitch G8264](https://www.manualslib.com/brand/ibm/?q=G8264) — Installation and user guides
 573: 4. [karma-group.ru — IBM G8264 Product Brief (PDF)](https://karma-group.ru/upload/iblock/d1e/IBM_System_Networking_RackSwitch_G8264.pdf) — Marketing product brief
 574: 5. [eyo.com.au — IBM G8264 Brochure (PDF)](https://www.eyo.com.au/wp-content/uploads/2015/08/IBM-System-Networking-RackSwitch-G8264.pdf) — Product brochure with diagrams
-575: 
+575:
 576: ### IBM/Lenovo RackSwitch G8264e
-577: 
+577:
 578: The G8264e does not have a dedicated Lenovo Press product guide. It is a variant of the G8264 family with enhanced 10GbE SFP+ port density.
-579: 
+579:
 580: 1. [Lenovo Press — RackSwitch G8264 Product Guide (TIPS1272)](https://lenovopress.lenovo.com/tips1272) — G8264 family documentation (covers G8264e variants)
 581: 2. [Lenovo Press — RackSwitch G8264CS Product Guide (TIPS1273)](https://lenovopress.lenovo.com/tips1273) — Related G8264 campus switch variant
-582: 
+582:
 583: <!-- No additional manufacturer documentation found for the G8264e specifically -->
-584: 
+584:
 585: ### IBM/Lenovo RackSwitch G8316
-586: 
+586:
 587: 1. [Lenovo Press TIPS0842 — RackSwitch G8316 Product Guide (PDF, 19 pages)](https://lenovopress.lenovo.com/tips0842) — Comprehensive product guide with specs, part numbers, transceivers, and configuration (withdrawn product)
 588: 2. [IBM Support — Overview: IBM System Networking RackSwitch G8316](https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316) — Technical overview with physical specs, part numbers, and warranty info
 589: 3. [karma-group.ru — IBM RackSwitch G8316 Datasheet (PDF)](https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf) — Official IBM datasheet PDF
 590: 4. [IBM — Networking OS 7.4 for RackSwitch G8316 Release Notes (PDF)](https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf) — Firmware release notes with port specifications and supported features
 591: 5. [IT Jungle — IBM Launches 40 Gigabit Ethernet Rack Switch (2011)](https://www.itjungle.com/2011/10/31/tfh103111-story08/) — Launch announcement with pricing ($35,999) and technical overview
-592: 
+592:
 593: ### IBM/Mellanox SX6036
-594: 
+594:
 595: No surviving manufacturer documentation has been found for the SX6036. This was a Mellanox 36-port QSFP FDR InfiniBand switch. After NVIDIA acquired Mellanox, legacy product PDFs were removed from the Mellanox domain and not migrated to NVIDIA's documentation portal.
-596: 
+596:
 597: <!-- Attempted: mellanox.com PDF URLs (404), network.nvidia.com PDF (404), archive.org (404),
 598:      NVIDIA networking portal (no SX6036-specific docs), ManualsLib (wrong products) -->
-599: 
+599:
 600: ### Arista 7050QX-32
-601: 
+601:
 602: 1. [Arista Networks — 7050X Series Product Page](https://www.arista.com/en/products/7050x-series) — Full specifications, features, and datasheets (includes 7050QX-32)
-603: 
+603:
 604: <!-- Arista requires a login to download PDF datasheets directly; the product page has inline specs -->
-605: 
+605:
 
 (Showing lines 556-605 of 692. Use offset=606 to continue.)
 </content>
@@ -5156,53 +5156,53 @@ Let me read the current DX010 and SX6036 sections to see what needs fixing:
 <content>556: > documentation are listed with a note explaining what was attempted.
 557: >
 558: > [cisco-retired]: https://www.cisco.com/c/en/us/obsolete/routers/cisco-2811-integrated-services-router.html
-559: 
+559:
 560: ### Celestica Haliburton (DX010)
-561: 
+561:
 562: 1. [SONiC GitHub — Celestica Platform Modules](https://github.com/sonic-net/sonic-buildimage/tree/master/platform/broadcom/sonic-platform-modules-cel) — SONiC platform driver source code for Celestica switches (dx010, haliburton directories)
 563: 2. [SONiC GitHub — DX010 Platform Definition (platform.json)](https://github.com/sonic-net/sonic-buildimage/blob/master/device/celestica/x86_64-cel_seastone-r0/platform.json) — Hardware spec: 32x QSFP28, 5 fan drawers, 2 PSUs, breakout modes (1x100G, 2x50G, 4x25G)
 564: 3. [SONiC Foundation](https://sonicfoundation.dev/) — SONiC project home at the Linux Foundation
 565: 4. [SONiC Wiki — Supported Devices & Architecture](https://github.com/sonic-net/SONiC/wiki) — Supported platforms list, building guides, and architecture documentation
-566: 
+566:
 567: ### IBM/Lenovo RackSwitch G8264
-568: 
+568:
 569: 1. [Lenovo Press TIPS1272 — RackSwitch G8264 Product Guide (PDF, 29 pages)](https://lenovopress.lenovo.com/tips1272) — Comprehensive product guide with specs, components, and configuration
 570: 2. [DirectIndustry — IBM RackSwitch G8264 Datasheet](https://pdf.directindustry.com/pdf/ibm/system-networking-rackswitch-g8264/27444-337791.html) — Full datasheet PDF
 571: 3. [ManualsLib — IBM RackSwitch G8264](https://www.manualslib.com/brand/ibm/?q=G8264) — Installation and user guides
 572: 4. [karma-group.ru — IBM G8264 Product Brief (PDF)](https://karma-group.ru/upload/iblock/d1e/IBM_System_Networking_RackSwitch_G8264.pdf) — Marketing product brief
 573: 5. [eyo.com.au — IBM G8264 Brochure (PDF)](https://www.eyo.com.au/wp-content/uploads/2015/08/IBM-System-Networking-RackSwitch-G8264.pdf) — Product brochure with diagrams
-574: 
+574:
 575: ### IBM/Lenovo RackSwitch G8264e
-576: 
+576:
 577: The G8264e does not have a dedicated Lenovo Press product guide. It is a variant of the G8264 family with enhanced 10GbE SFP+ port density.
-578: 
+578:
 579: 1. [Lenovo Press — RackSwitch G8264 Product Guide (TIPS1272)](https://lenovopress.lenovo.com/tips1272) — G8264 family documentation (covers G8264e variants)
 580: 2. [Lenovo Press — RackSwitch G8264CS Product Guide (TIPS1273)](https://lenovopress.lenovo.com/tips1273) — Related G8264 campus switch variant
-581: 
+581:
 582: <!-- No additional manufacturer documentation found for the G8264e specifically -->
-583: 
+583:
 584: ### IBM/Lenovo RackSwitch G8316
-585: 
+585:
 586: 1. [Lenovo Press TIPS0842 — RackSwitch G8316 Product Guide (PDF, 19 pages)](https://lenovopress.lenovo.com/tips0842) — Comprehensive product guide with specs, part numbers, transceivers, and configuration (withdrawn product)
 587: 2. [IBM Support — Overview: IBM System Networking RackSwitch G8316](https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316) — Technical overview with physical specs, part numbers, and warranty info
 588: 3. [karma-group.ru — IBM RackSwitch G8316 Datasheet (PDF)](https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf) — Official IBM datasheet PDF
 589: 4. [IBM — Networking OS 7.4 for RackSwitch G8316 Release Notes (PDF)](https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf) — Firmware release notes with port specifications and supported features
 590: 5. [IT Jungle — IBM Launches 40 Gigabit Ethernet Rack Switch (2011)](https://www.itjungle.com/2011/10/31/tfh103111-story08/) — Launch announcement with pricing ($35,999) and technical overview
-591: 
+591:
 592: ### IBM/Mellanox SX6036
-593: 
+593:
 594: 1. [Mellanox SX6036 Product Brief (PDF, archived)](https://web.archive.org/web/20210124132727/https://www.mellanox.com/related-docs/prod_ib_switch_systems/PB_SX6036.pdf) — Official product brief via Wayback Machine (Mellanox site absorbed by NVIDIA, originals removed)
 595: 2. [ManualsLib — Mellanox SX60 Series](https://www.manualslib.com/brand/mellanox/) — Mellanox manuals index including SX60 series and MSX6036G gateway variant manuals
 596: 3. [NVIDIA InfiniBand OFED Documentation — Fabric Utilities](https://docs.nvidia.com/networking/display/MLNXOFEDv461000/InfiniBand+Fabric+Utilities) — FDR InfiniBand technology reference (covers the FDR 56Gbps technology used in the SX6036)
-597: 
+597:
 598: ### Arista 7050QX-32
-599: 
+599:
 600: 1. [Arista Networks — 7050X Series Product Page](https://www.arista.com/en/products/7050x-series) — Full specifications, features, and datasheets (includes 7050QX-32)
-601: 
+601:
 602: <!-- Arista requires a login to download PDF datasheets directly; the product page has inline specs -->
-603: 
+603:
 604: ### Mono Gateway (mono.si)
-605: 
+605:
 
 (Showing lines 556-605 of 690. Use offset=606 to continue.)
 </content>
@@ -5527,54 +5527,54 @@ You're right — I should be searching more thoroughly and adding links as I fin
 <path>/home/user/code/docs/inventory/routing-and-switching.md</path>
 <type>file</type>
 <content>560: ### Celestica Haliburton (DX010)
-561: 
+561:
 562: 1. [SONiC GitHub — Celestica Platform Modules](https://github.com/sonic-net/sonic-buildimage/tree/master/platform/broadcom/sonic-platform-modules-cel) — SONiC platform driver source code for Celestica switches (dx010, haliburton directories)
 563: 2. [SONiC GitHub — DX010 Platform Definition (platform.json)](https://github.com/sonic-net/sonic-buildimage/blob/master/device/celestica/x86_64-cel_seastone-r0/platform.json) — Hardware spec: 32x QSFP28, 5 fan drawers, 2 PSUs, breakout modes (1x100G, 2x50G, 4x25G)
 564: 3. [SONiC Foundation](https://sonicfoundation.dev/) — SONiC project home at the Linux Foundation
 565: 4. [SONiC Wiki — Supported Devices & Architecture](https://github.com/sonic-net/SONiC/wiki) — Supported platforms list, building guides, and architecture documentation
-566: 
+566:
 567: #### Dead/Unresolvable Links
-568: 
+568:
 569: - ~~[ServeTheHome — Celestica Haliburton DX010 Teardown](https://www.servethehome.com/celestica-haliburton-dx010-teardown/)~~ — Detailed hardware teardown and photos (page removed, 404)
 570: - ~~[Broadcom BCM56960 Product Page](https://www.broadcom.com/products/ethernet-connectivity/switching/memory-memories-interfaces)~~ — Memory & Interfaces product family including BCM56960 Memory (Broadcom reorganized site, 404)
 571: - ~~[Azure SONiC Project](https://azure.github.io/SONiC/)~~ — Old SONiC documentation URL (moved to Linux Foundation, replaced by sonicfoundation.dev)
 572: - ~~[OCP Networking — SONiC](https://www.opencompute.org/projects/onic)~~ — Open Compute Project SONiC resources (OCP reorganized, 404)
-573: 
+573:
 574: ### IBM/Lenovo RackSwitch G8264
-575: 
+575:
 576: 1. [Lenovo Press TIPS1272 — RackSwitch G8264 Product Guide (PDF, 29 pages)](https://lenovopress.lenovo.com/tips1272) — Comprehensive product guide with specs, components, and configuration
 577: 2. [DirectIndustry — IBM RackSwitch G8264 Datasheet](https://pdf.directindustry.com/pdf/ibm/system-networking-rackswitch-g8264/27444-337791.html) — Full datasheet PDF
 578: 3. [ManualsLib — IBM RackSwitch G8264](https://www.manualslib.com/brand/ibm/?q=G8264) — Installation and user guides
 579: 4. [karma-group.ru — IBM G8264 Product Brief (PDF)](https://karma-group.ru/upload/iblock/d1e/IBM_System_Networking_RackSwitch_G8264.pdf) — Marketing product brief
 580: 5. [eyo.com.au — IBM G8264 Brochure (PDF)](https://www.eyo.com.au/wp-content/uploads/2015/08/IBM-System-Networking-RackSwitch-G8264.pdf) — Product brochure with diagrams
-581: 
+581:
 582: ### IBM/Lenovo RackSwitch G8264e
-583: 
+583:
 584: The G8264e does not have a dedicated Lenovo Press product guide. It is a variant of the G8264 family with enhanced 10GbE SFP+ port density.
-585: 
+585:
 586: 1. [Lenovo Press — RackSwitch G8264 Product Guide (TIPS1272)](https://lenovopress.lenovo.com/tips1272) — G8264 family documentation (covers G8264e variants)
 587: 2. [Lenovo Press — RackSwitch G8264CS Product Guide (TIPS1273)](https://lenovopress.lenovo.com/tips1273) — Related G8264 campus switch variant
-588: 
+588:
 589: <!-- No additional manufacturer documentation found for the G8264e specifically -->
-590: 
+590:
 591: ### IBM/Lenovo RackSwitch G8316
-592: 
+592:
 593: 1. [Lenovo Press TIPS0842 — RackSwitch G8316 Product Guide (PDF, 19 pages)](https://lenovopress.lenovo.com/tips0842) — Comprehensive product guide with specs, part numbers, transceivers, and configuration (withdrawn product)
 594: 2. [IBM Support — Overview: IBM System Networking RackSwitch G8316](https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316) — Technical overview with physical specs, part numbers, and warranty info
 595: 3. [karma-group.ru — IBM RackSwitch G8316 Datasheet (PDF)](https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf) — Official IBM datasheet PDF
 596: 4. [IBM — Networking OS 7.4 for RackSwitch G8316 Release Notes (PDF)](https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf) — Firmware release notes with port specifications and supported features
 597: 5. [IT Jungle — IBM Launches 40 Gigabit Ethernet Rack Switch (2011)](https://www.itjungle.com/2011/10/31/tfh103111-story08/) — Launch announcement with pricing ($35,999) and technical overview
-598: 
+598:
 599: ### IBM/Mellanox SX6036
-600: 
+600:
 601: 1. [Mellanox SX6036 Product Brief (PDF, archived)](https://web.archive.org/web/20210124132727/https://www.mellanox.com/related-docs/prod_ib_switch_systems/PB_SX6036.pdf) — Official product brief via Wayback Machine (Mellanox site absorbed by NVIDIA, originals removed)
 602: 2. [ManualsLib — Mellanox SX60 Series](https://www.manualslib.com/brand/mellanox/) — Mellanox manuals index including SX60 series and MSX6036G gateway variant manuals
 603: 3. [NVIDIA InfiniBand OFED Documentation — Fabric Utilities](https://docs.nvidia.com/networking/display/MLNXOFEDv461000/InfiniBand+Fabric+Utilities) — FDR InfiniBand technology reference (covers the FDR 56Gbps technology used in the SX6036)
-604: 
+604:
 605: ### Arista 7050QX-32
-606: 
+606:
 607: 1. [Arista Networks — 7050X Series Product Page](https://www.arista.com/en/products/7050x-series) — Full specifications, features, and datasheets (includes 7050QX-32)
-608: 
+608:
 609: <!-- Arista requires a login to download PDF datasheets directly; the product page has inline specs -->
 
 (Showing lines 560-609 of 697. Use offset=610 to continue.)
@@ -5875,11 +5875,11 @@ Let me first read the current state of the references section to see exactly wha
 <path>/home/user/code/docs/inventory/routing-and-switching.md</path>
 <type>file</type>
 <content>544: | **Cisco 4402 WLC** | 1 | 1GbE | 4x RJ45 | Yes | N/A | No | No | WLAN Ctrl | 2006 |
-545: 
+545:
 546: ---
-547: 
+547:
 548: ## References
-549: 
+549:
 550: > **Note on link availability:** Many of the devices in this inventory are end-of-life (EOL)
 551: > or discontinued. Cisco [deliberately removes all documentation for retired products][cisco-retired].
 552: > IBM/Lenovo has migrated legacy docs to Lenovo Press but coverage is incomplete.
@@ -5889,9 +5889,9 @@ Let me first read the current state of the references section to see exactly wha
 556: > documentation are listed with a note explaining what was attempted.
 557: >
 558: > [cisco-retired]: https://www.cisco.com/c/en/us/obsolete/routers/cisco-2811-integrated-services-router.html
-559: 
+559:
 560: ### Celestica Haliburton (DX010)
-561: 
+561:
 562: 1. [ServeTheHome — Inside a Celestica Seastone DX010 32x 100GbE Switch](https://www.servethehome.com/inside-a-celestica-seastone-dx010-32x-100gbe-switch/) — Hardware teardown with photos and component analysis
 563: 2. [ServeTheHome Forums — PSA: SONiC builds on Celestica DX010](https://forums.servethehome.com/index.php?threads/psa-new-builds-of-older-sonic-versions-no-longer-work-on-the-celestica-dx010.41603/page-2) — Community discussion on SONiC compatibility and firmware issues
 564: 3. [YouTube — Celestica DX010 Overview](https://www.youtube.com/watch?v=fkc2pFFGCtE) — Video overview of the DX010 switch
@@ -5899,137 +5899,137 @@ Let me first read the current state of the references section to see exactly wha
 566: 5. [SONiC GitHub — DX010 Platform Definition (platform.json)](https://github.com/sonic-net/sonic-buildimage/blob/master/device/celestica/x86_64-cel_seastone-r0/platform.json) — Hardware spec: 32x QSFP28, 5 fan drawers, 2 PSUs, breakout modes (1x100G, 2x50G, 4x25G)
 567: 6. [SONiC Foundation](https://sonicfoundation.dev/) — SONiC project home at the Linux Foundation
 568: 7. [SONiC Wiki — Supported Devices & Architecture](https://github.com/sonic-net/SONiC/wiki) — Supported platforms list, building guides, and architecture documentation
-569: 
+569:
 570: #### Dead/Unresolvable Links
-571: 
+571:
 572: - ~~[ServeTheHome — Celestica Haliburton DX010 Teardown (old URL)](https://www.servethehome.com/celestica-haliburton-dx010-teardown/)~~ — Original teardown URL (moved/renamed, 404; replaced by link #1 above)
 573: - ~~[Broadcom BCM56960 Product Page](https://www.broadcom.com/products/ethernet-connectivity/switching/memory-memories-interfaces)~~ — Memory & Interfaces product family including BCM56960 (Broadcom reorganized site, 404)
 574: - ~~[Azure SONiC Project](https://azure.github.io/SONiC/)~~ — Old SONiC documentation URL (moved to Linux Foundation, replaced by sonicfoundation.dev)
 575: - ~~[OCP Networking — SONiC](https://www.opencompute.org/projects/onic)~~ — Open Compute Project SONiC resources (OCP reorganized, 404)
-576: 
+576:
 577: ### IBM/Lenovo RackSwitch G8264
-578: 
+578:
 579: 1. [Lenovo Press TIPS1272 — RackSwitch G8264 Product Guide (PDF, 29 pages)](https://lenovopress.lenovo.com/tips1272) — Comprehensive product guide with specs, components, and configuration
 580: 2. [DirectIndustry — IBM RackSwitch G8264 Datasheet](https://pdf.directindustry.com/pdf/ibm/system-networking-rackswitch-g8264/27444-337791.html) — Full datasheet PDF
 581: 3. [ManualsLib — IBM RackSwitch G8264](https://www.manualslib.com/brand/ibm/?q=G8264) — Installation and user guides
 582: 4. [karma-group.ru — IBM G8264 Product Brief (PDF)](https://karma-group.ru/upload/iblock/d1e/IBM_System_Networking_RackSwitch_G8264.pdf) — Marketing product brief
 583: 5. [eyo.com.au — IBM G8264 Brochure (PDF)](https://www.eyo.com.au/wp-content/uploads/2015/08/IBM-System-Networking-RackSwitch-G8264.pdf) — Product brochure with diagrams
-584: 
+584:
 585: ### IBM/Lenovo RackSwitch G8264e
-586: 
+586:
 587: The G8264e does not have a dedicated Lenovo Press product guide. It is a variant of the G8264 family with enhanced 10GbE SFP+ port density.
-588: 
+588:
 589: 1. [Lenovo Press — RackSwitch G8264 Product Guide (TIPS1272)](https://lenovopress.lenovo.com/tips1272) — G8264 family documentation (covers G8264e variants)
 590: 2. [Lenovo Press — RackSwitch G8264CS Product Guide (TIPS1273)](https://lenovopress.lenovo.com/tips1273) — Related G8264 campus switch variant
-591: 
+591:
 592: <!-- No additional manufacturer documentation found for the G8264e specifically -->
-593: 
+593:
 594: ### IBM/Lenovo RackSwitch G8316
-595: 
+595:
 596: 1. [Lenovo Press TIPS0842 — RackSwitch G8316 Product Guide (PDF, 19 pages)](https://lenovopress.lenovo.com/tips0842) — Comprehensive product guide with specs, part numbers, transceivers, and configuration (withdrawn product)
 597: 2. [IBM Support — Overview: IBM System Networking RackSwitch G8316](https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316) — Technical overview with physical specs, part numbers, and warranty info
 598: 3. [karma-group.ru — IBM RackSwitch G8316 Datasheet (PDF)](https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf) — Official IBM datasheet PDF
 599: 4. [IBM — Networking OS 7.4 for RackSwitch G8316 Release Notes (PDF)](https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf) — Firmware release notes with port specifications and supported features
 600: 5. [IT Jungle — IBM Launches 40 Gigabit Ethernet Rack Switch (2011)](https://www.itjungle.com/2011/10/31/tfh103111-story08/) — Launch announcement with pricing ($35,999) and technical overview
-601: 
+601:
 602: ### IBM/Mellanox SX6036
-603: 
+603:
 604: 1. [Mellanox SX6036 Product Brief (PDF, archived)](https://web.archive.org/web/20210124132727/https://www.mellanox.com/related-docs/prod_ib_switch_systems/PB_SX6036.pdf) — Official product brief via Wayback Machine (Mellanox site absorbed by NVIDIA, originals removed)
 605: 2. [ManualsLib — Mellanox SX60 Series](https://www.manualslib.com/brand/mellanox/) — Mellanox manuals index including SX60 series and MSX6036G gateway variant manuals
 606: 3. [NVIDIA InfiniBand OFED Documentation — Fabric Utilities](https://docs.nvidia.com/networking/display/MLNXOFEDv461000/InfiniBand+Fabric+Utilities) — FDR InfiniBand technology reference (covers the FDR 56Gbps technology used in the SX6036)
-607: 
+607:
 608: ### Arista 7050QX-32
-609: 
+609:
 610: 1. [Arista Networks — 7050X Series Product Page](https://www.arista.com/en/products/7050x-series) — Full specifications, features, and datasheets (includes 7050QX-32)
-611: 
+611:
 612: <!-- Arista requires a login to download PDF datasheets directly; the product page has inline specs -->
-613: 
+613:
 614: ### Mono Gateway (mono.si)
-615: 
+615:
 616: The Mono Gateway manufacturer website (mono.si) is completely offline. Documentation is referenced via the NXP SoC that powers the device.
-617: 
+617:
 618: 1. [NXP LS1046A Product Page](https://www.nxp.com/products/processors-and-microcontrollers/arm-processors/layerscape-processors/layerscape-1046a-and-1026a-processors:LS1046A) — SoC datasheet and reference manual
 619: 2. [NXP LS1046A Fact Sheet (PDF)](https://www.nxp.com/docs/en/fact-sheet/LS1046AFS.pdf) — SoC specifications summary
-620: 
+620:
 621: ### Calix GP1101X
-622: 
+622:
 623: No publicly accessible documentation has been found for the Calix GP1101X. Calix restricts all product documentation behind a partner/customer login portal. This is a 10G GPON ONT used as ISP customer premises equipment.
-624: 
+624:
 625: <!-- Attempted: calix.com product page (404), FCC ID search (no results), community forums (login required) -->
-626: 
+626:
 627: ### Netgear XS712T
-628: 
+628:
 629: 1. [Netgear XS712T Product Page](https://www.netgear.com/support/product/xs712t/) — Support downloads, firmware, and documentation
 630: 2. [Netgear XS712T Datasheet (PDF)](https://www.downloads.netgear.com/files/GDC/datasheet/en/XS712T.pdf) — Official product datasheet
 631: 3. [Netgear ProSAFE 10-Gigabit Smart Switches Datasheet (PDF)](https://www.downloads.netgear.com/files/GDC/datasheet/en/ProSAFE_10-Gigabit_Smart_Managed_Switches.pdf) — Combined family datasheet
-632: 
+632:
 633: ### TRENDnet TEG-30284
-634: 
+634:
 635: 1. [TRENDnet TEG-30284 Product Page](https://www.trendnet.com/products/28-port-10g-web-smart-switch-TEG-30284) — Official product page with specifications and downloads
-636: 
+636:
 637: <!-- TRENDnet has limited documentation beyond the product page for this model -->
-638: 
+638:
 639: ### TP-Link SG3210XHP-M2
-640: 
+640:
 641: 1. [TP-Link SG3210XHP-M2 Product Page](https://www.tp-link.com/us/business-networking/omada-switch-poe/sg3210xhp-m2/) — Official product page with specifications, datasheet, and firmware
-642: 
+642:
 643: ### Dell PowerConnect 5448
-644: 
+644:
 645: 1. [Dell PowerConnect 5448 Support Page](https://www.dell.com/support/home/en-us/product-support/product/powerconnect-5448/overview) — Support overview, drivers, and documentation
-646: 
+646:
 647: <!-- Dell has limited legacy documentation for the PowerConnect 5448 series -->
-648: 
+648:
 649: ### Cisco Catalyst 3560
-650: 
+650:
 651: 1. [Cisco Catalyst 3560 Series End-of-Life Information](https://www.cisco.com/c/en/us/obsolete/switches/cisco-catalyst-3560-series-switches.html) — EOL notices and last-available support references
-652: 
+652:
 653: <!-- Original datasheets and configuration guides have been removed per Cisco's retirement policy -->
-654: 
+654:
 655: ### Cisco Catalyst 2960
-656: 
+656:
 657: 1. [Cisco Catalyst 2960 Series LAN Lite Switches Data Sheet](https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-2960-series-switches/data_sheet_c78-728003.html) — Datasheet (may be intermittently available)
 658: 2. [Cisco Catalyst 2960 Series Switches](https://www.cisco.com/c/en/us/products/switches/catalyst-2960-series-switches/index.html) — Product family page
-659: 
+659:
 660: ### Cisco 2811
-661: 
+661:
 662: No surviving manufacturer documentation. Cisco has removed all datasheets, configuration guides, and EOL bulletins for the 2800 series. The 2811 was a modular integrated services router with 2x GbE ports and HWIC/AIM slots.
-663: 
+663:
 664: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404), router-switch.com (403/404),
 665:      ManualsLib (returned wrong products). Cisco's retired products page confirms intentional removal. -->
-666: 
+666:
 667: ### Cisco 1841
-668: 
+668:
 669: No surviving manufacturer documentation. Cisco has removed all documentation for the 1800 series integrated services routers. The 1841 was a modular router with 2x FastEthernet ports and HWIC slots.
-670: 
+670:
 671: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404), router-switch.com (404) -->
-672: 
+672:
 673: ### Cisco 881
-674: 
+674:
 675: 1. [Cisco 880 Series Integrated Services Routers Data Sheet](https://www.cisco.com/c/en/us/products/collateral/routers/800-series-routers/datasheet-c78-731755.html) — Covers 881, 887, 891 and other 880 variants
 676: 2. [Cisco 880 Series Product Page](https://www.cisco.com/c/en/us/products/routers/800-series-routers/index.html) — 800 series family page
 677: 3. [ManualsLib — Cisco 881 Manuals](https://www.manualslib.com/brand/cisco/?q=881) — Hardware installation and configuration guides
-678: 
+678:
 679: ### Cisco ASA 5505
-680: 
+680:
 681: 1. [Cisco ASA 5505 Adaptive Security Appliance Data Sheet](https://www.cisco.com/c/en/us/products/collateral/security/asa-5500-series-next-generation-firewalls/datasheet-c78-733510.html) — Product datasheet (may be intermittently available)
 682: 2. [Cisco ASA 5505 Support Page](https://www.cisco.com/c/en/us/support/security/asa-5505-adaptive-security-appliance/model.html) — Support resources and EOL information
-683: 
+683:
 684: ### Cisco SG300-52
-685: 
+685:
 686: No surviving manufacturer documentation. Cisco has removed documentation for the Small Business 300 series managed switches. The SG300-52 was a 52-port Gigabit L3-lite managed switch with 2x SFP combo uplinks.
-687: 
+687:
 688: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404) -->
-689: 
+689:
 690: ### Netgear GS116E (ProSAFE Plus)
-691: 
+691:
 692: No surviving manufacturer documentation. Netgear has removed product pages and datasheet downloads for the GS116E. This was a 16-port Gigabit Plus (smart-managed) desktop switch.
-693: 
+693:
 694: <!-- Attempted: netgear.com product/support pages (404), datasheet downloads (403), archive.org (no cache) -->
-695: 
+695:
 696: ### Cisco 4402 Wireless LAN Controller
-697: 
+697:
 698: 1. [Cisco 4400 Series Wireless LAN Controllers End-of-Life Notice](https://www.cisco.com/c/en/us/obsolete/wireless/cisco-4400-series-wireless-lan-controllers.html) — Retirement notification and migration guidance
-699: 
+699:
 700: <!-- Original datasheets and configuration guides removed per Cisco's retirement policy -->
 
 (End of file - total 700 lines)
@@ -6576,7 +6576,7 @@ More information is in the [`COPYRIGHT.md`](COPYRIGHT.md) file in the root direc
 Good — G8264, G8264e, and Arista are all updated. Now I'll continue with the remaining 16 devices, doing Google searches to find additional references. Let me batch-search the next set of devices. I'll start with the ones that have the fewest links (most need):
 
 - Calix GP1101X (0 links)
-- Cisco 2811 (0 links)  
+- Cisco 2811 (0 links)
 - Cisco 1841 (0 links)
 - Cisco SG300-52 (0 links)
 - Netgear GS116E (0 links)
@@ -6809,297 +6809,278 @@ Request failed with status code: 404
 **Output:**
 ```
 Gigabit Plus Switch Series - GS116Ev2
-        
-                
-            
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-
-    
-    
-    
-    
-    
-    
-
-    
-    
-
-    
-    
-
-    
-
-    
-    
-    
-
-    
-    
-
-    
-    
-
-    
-    
-
-    
-    
-
-    
-
-                
-                    
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-
-        
-            
-            
-            
-    
-        
-        
-        
-        
-        
-
-    
-    
-
-
-    
 
 
 
-  
-    
-  
-    
-      
-    
-    
-      
-      
-      
-                
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                     19 captures
           17 Feb 2021 - 21 Sep 2024
-          
-        
-          
-            
-              
-            
-          
-        
-      
-    
-    
-      
-        
-          
-          
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             Nov
             DEC
             Jan
-          
-          
-          
-            
+
+
+
+
             01
-            
-          
-          
-          
+
+
+
+
             2021
             2022
             2023
-          
-        
-      
-    
-    
-      
-                
+
+
+
+
+
+
+
           success
           fail
-          
-            
-          
-          
-            
-          
-          
-        
-                
-        
-      
-      
-        
-          
-        
-        
-          
-        
-        
-        
-      
-      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
          About this capture
-      
-    
-  
-    
-        
-                
+
+
+
+
+
+
     COLLECTED BY
-    
-      
-			
+
+
+
 		Collection: Common Crawl
-		
-	  
+
+
 	  Web crawl data from Common Crawl.
-	
-	      
-    
-    
-    
+
+
+
+
+
     TIMESTAMPS
-    
-      
-      
-    
-    
+
+
+
+
+
   The Wayback Machine - https://web.archive.org/web/20221201135008/https://www.netgear.com/business/wired/switches/plus/gs116ev2/
 
 
-    
-    
-
-    
 
 
 
 
-    
 
 
-        
-            
+
+
+
+
+
+
+
 
     Skip to main content
-    
 
 
-        
-            
-                
-                                    
-                                        
+
+
+
+
+
+
 
                                             Shop the Black Friday Cyber Monday Event
 
-                                        
-                                    
-                                    
-                                        
+
+
+
+
 
                                             Free 2-day shipping on all orders
 
-                                        
-                                    
-                                    
-                                        
+
+
+
+
 
                                             Shop great gifts for all
 
-                                        
-                                    
-                                    
-                                        
+
+
+
+
 
                                             Find the right Orbi for you
 
-                                        
-                                    
-                                    
-                                        
+
+
+
+
 
                                             Sign up for 10% off your first item
 
-                                        
-                                    
 
 
-                
-                    
-                        
+
+
+
+
+
                         Previous
-                    
-                    
-                        
+
+
+
                         Next
-                    
-            
-        
-
-
-
-
-
-
-        
-
-        
-            
-
-                
-    
-            
-                    
-    
 
 
 
@@ -7107,625 +7088,644 @@ Gigabit Plus Switch Series - GS116Ev2
 
 
 
-                
-                    
-                
-                
-                    
 
 
-            
-                    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                         HOME SOLUTIONS
-                    
 
-                    
-                        
-                            
-                                
-                                    
-                                    
-                                        
-                                        
-                                                        
-                                                            
-                                                            
+
+
+
+
+
+
+
+
+
+
+
+
                                                                 SHOP HOME
-                                                            
-                                                        
-                                                        
-                                                            
-                                                            
-                                                                ORBI PREMIUM WIFI
-                                                            
-                                                        
-                                        
 
-                                        
-                                        
-                                                    
-                                                            
+
+
+
+
+                                                                ORBI PREMIUM WIFI
+
+
+
+
+
+
+
+
                                                                     Home WiFi
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         Whole Home Mesh WiFi
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         WiFi Routers
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Cable Modems
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Cable Modem Routers
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         WiFi Range Extenders
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         USB WiFi Adapters
-                                                                                                                                                                            
-                                                                                
-                                                                
-                                                            
-                                                    
-                                                    
-                                                            
+
+
+
+
+
+
+
                                                                     Wired Networking
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         Switches
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Powerline
-                                                                                                                                                                            
-                                                                                
-                                                                
-                                                            
-                                                            
+
+
+
+
+
                                                                     Mobile WiFi
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         4G/5G Mobile Hotspots
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         4G LTE Modems
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         4G/5G Home WiFi Solutions
-                                                                                                                                                                            
-                                                                                
-                                                                
-                                                            
-                                                    
-                                                    
-                                                            
+
+
+
+
+
+
+
                                                                     Gaming
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         Gaming Routers
                                                                                                                                                                                     Proven performance to reduce lag and latency spikes
-                                                                                    
-                                                                                
-                                                                
-                                                            
-                                                            
+
+
+
+
+
                                                                     Digital Canvas
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         Meural Canvas II
                                                                                                                                                                                     Bring thousands of artworks to your wall in a single frame
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Meural WiFi Photo Frame
                                                                                                                                                                                     Enjoy your photos on a reimagined digital photo frame
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Display NFT Artworks
                                                                                                                                                                                     Showcase your NFTs with a viewing experience unlike that of any other digital frame
-                                                                                    
-                                                                                
-                                                                
-                                                            
-                                                    
-                                        
-                                    
 
-                                    
-                                        
-                                                        
+
+
+
+
+
+
+
+
+
+
                                                             SERVICES &amp; SUBSCRIPTIONS
-                                                        
-                                                                                                    
-                                                            LEARNING CENTER
-                                                        
 
-                                        
-                                        
-                                                    
-                                                        
-                                                            
-                                                                            
-                                                                                
+
+                                                            LEARNING CENTER
+
+
+
+
+
+
+
+
+
                                                                                     NETGEAR ProSupport
                                                                                                                                                                             Extended warranty and support
-                                                                                
-                                                                            
-                                                                            
-                                                                                
+
+
+
+
                                                                                     NETGEAR Armor
                                                                                                                                                                             Protect your family’s WiFi with an automatic shield of security
-                                                                                
-                                                                            
-                                                                            
-                                                                                
+
+
+
+
                                                                                     NETGEAR Smart Parental Controls
                                                                                                                                                                             Monitor and manage screen time
-                                                                                
-                                                                            
-                                                            
-                                                        
-                                                    
-                                                                                                    
-                                                            
-                                                                
-                                                                                
-                                                                                    
+
+
+
+
+
+
+
+
+
+
                                                                                         Discover New Tech
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         WiFi 6E
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         WiFi 6
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         What is Mesh WiFi?
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         DOCSIS 3.1
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         4G/5G Fixed Wireless For Home
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Tri-Band / Quad-Band WiFi
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         5G
-                                                                                    
-                                                                                
-                                                                
-                                                            
-                                                        
 
-                                        
-                                    
-                                
 
-                                
-                                    
-                                        
-                                            
+
+
+
+
+
+
+
+
+
+
+
+
                                                 Shop By Brand :
-                                                            
-                                                                
-                                                                    
-                                                                
-                                                            
-                                                            
-                                                                
-                                                                    
-                                                                
-                                                            
-                                                            
-                                                                
-                                                                    
-                                                                
-                                                            
-                                                            
-                                                                
-                                                                    
-                                                                
-                                                            
-                                                            
-                                                                
-                                                                    
-                                                                
-                                                            
-                                            
-                                        
-                                    
-                                
 
-                            
-                        
-                    
 
-            
 
-            
-                    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                         BUSINESS SOLUTIONS
-                    
 
-                    
-                        
-                            
-                                
-                                    
-                                    
-                                        
-                                        
-                                                        
-                                                            
-                                                            
+
+
+
+
+
+
+
+
+
+
+
+
                                                                 ALL BUSINESS
-                                                            
-                                                        
-                                        
 
-                                        
-                                        
-                                                    
-                                                            
+
+
+
+
+
+
+
                                                                     Wireless Networking
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         Pro WiFi Access Points
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Business Essentials Access Points
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Orbi Pro Mesh Systems
-                                                                                                                                                                            
-                                                                                
-                                                                
-                                                            
-                                                            
+
+
+
+
+
                                                                     Wired Networking
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         Multi-Gig Switches
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         PoE Switches
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Managed Switches
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Smart Cloud Managed Switches
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Smart Switches
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Plus Switches
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Unmanaged Switches
-                                                                                                                                                                            
-                                                                                
-                                                                
-                                                            
-                                                    
-                                                    
-                                                            
+
+
+
+
+
+
+
                                                                     Mobile WiFi
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         Insight Pro on Mobile Hotspots
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         4G/5G Mobile Hotspots
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         4G LTE Modems
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         4G WiFi Routers For Home
-                                                                                                                                                                            
-                                                                                
-                                                                
-                                                            
-                                                            
+
+
+
+
+
                                                                     Software
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         NETGEAR Insight Management
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Engage Controller
-                                                                                                                                                                            
-                                                                                
-                                                                
-                                                            
-                                                            
+
+
+
+
+
                                                                     Support
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         NETGEAR ProSupport
-                                                                                                                                                                            
-                                                                                
-                                                                
-                                                            
-                                                    
-                                                    
-                                                            
+
+
+
+
+
+
+
                                                                     Applications
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         VARs &amp; MSPs
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         IT Professionals
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Mid-Sized Business
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Small Business - Home Office
-                                                                                                                                                                            
-                                                                                
-                                                                
-                                                            
-                                                    
-                                        
-                                    
 
-                                    
-                                        
-                                                                                                    
+
+
+
+
+
+
+
+
+
+
                                                             RESOURCES
-                                                        
-                                                        
+
+
                                                             LEARNING CENTER
-                                                        
 
-                                        
-                                        
-                                                                                                    
-                                                            
-                                                                
-                                                                                
-                                                                                    
+
+
+
+
+
+
+
+
                                                                                         Webinars
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Press Room
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Blogs
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Community
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Success Stories
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Become a Partner
-                                                                                    
-                                                                                
-                                                                
-                                                            
-                                                        
-                                                        
-                                                            
-                                                                
-                                                                                
-                                                                                    
+
+
+
+
+
+
+
+
+
+
                                                                                         WiFi 6E Access Points
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         WiFi 6 Access Points
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         PoE: Power over Ethernet
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         ProAV / AV over IP
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         10-Gigabit Switching
-                                                                                    
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         Multi-Gig switching
-                                                                                    
-                                                                                
-                                                                
-                                                            
-                                                        
 
-                                        
-                                    
-                                
 
-                                
-                                    
-                                        
-                                            
+
+
+
+
+
+
+
+
+
+
+
+
                                                 Shop By Brand :
-                                                            
-                                                                
-                                                                    
-                                                                
-                                                            
-                                                            
-                                                                
-                                                                    
-                                                                
-                                                            
-                                                            
-                                                                
-                                                                    
-                                                                
-                                                            
-                                                            
-                                                                
-                                                                    
-                                                                
-                                                            
-                                            
-                                        
-                                    
-                                
 
-                            
-                        
-                    
 
-            
 
-            
-                    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                         AV SOLUTIONS
-                    
 
-                    
-                        
-                            
-                                
-                                    
-                                    
-                                        
-                                        
-                                                        
-                                                            
-                                                            
+
+
+
+
+
+
+
+
+
+
+
+
                                                                 AV SOLUTIONS OVERVIEW
-                                                            
-                                                        
-                                        
 
-                                        
-                                        
-                                                    
-                                                            
+
+
+
+
+
+
+
                                                                     PRODUCTS
-                                                                
-                                                                                
-                                                                                    
+
+
+
                                                                                         M4250 Managed Switches
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         M4300 Managed Switches
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         M4500 Managed Switches
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         NETGEAR Engage Controller
-                                                                                                                                                                            
-                                                                                
-                                                                                
-                                                                                    
+
+
+
+
                                                                                         NETGEAR Insight Management
-                                                                                                                                                                            
-                                                                                
+
+
 
 ...102000 bytes truncated...
 
@@ -7883,11 +7883,11 @@ CDX API is timing out. Let me try with more specific URLs and also try some alte
 
 **Output:**
 ```
-Wayback Machine                 
+Wayback Machine
 
 [Ask the publishers](https://change.org/LetReadersRead) to restore access to 500,000+ books.
 
-                  
+
 
 Hamburger icon An icon used to represent a menu that can be toggled by interacting with this icon.
 
@@ -8052,7 +8052,7 @@ Search the Wayback Machine   Search icon An illustration of a magnifying glass.
 
 Capture a web page as it appears now for use as a trusted citation in the future.
 
-Enter a URL to save  
+Enter a URL to save
 
 Please enter a valid web address
 
@@ -8083,10 +8083,10 @@ Please enter a valid web address
 
 [](# "Share on Facebook")[](# "Share on Twitter")
 
-The Wayback Machine requires your browser to support JavaScript, please email [info@archive.org](mailto:info@archive.org)  
+The Wayback Machine requires your browser to support JavaScript, please email [info@archive.org](mailto:info@archive.org)
 if you have any questions about this.
 
-The Wayback Machine is an initiative of the [Internet Archive](//archive.org/), a 501(c)(3) non-profit, building a digital library of Internet sites and other cultural artifacts in digital form.  
+The Wayback Machine is an initiative of the [Internet Archive](//archive.org/), a 501(c)(3) non-profit, building a digital library of Internet sites and other cultural artifacts in digital form.
 Other [projects](//archive.org/projects/) include [Open Library](https://openlibrary.org/) & [archive-it.org](https://archive-it.org).
 
 Your use of the Wayback Machine is subject to the Internet Archive's [Terms of Use](//archive.org/about/terms.php).
@@ -8104,9 +8104,9 @@ Your use of the Wayback Machine is subject to the Internet Archive's [Terms of U
 
 **Output:**
 ```
- MARTINDALE MM34 INSTRUCTIONS FOR USE MANUAL Pdf Download | ManualsLib                         
+ MARTINDALE MM34 INSTRUCTIONS FOR USE MANUAL Pdf Download | ManualsLib
 
-       
+
 
 [![ManualsLib](//static2.manualslib.com/public/img/manualslib_de.png)](https://www.manualslib.com "Manuals Library")
 
@@ -8120,9 +8120,9 @@ Your use of the Wayback Machine is subject to the Internet Archive's [Terms of U
 
 [Share](# "Share this manual")
 
-URL of this page: 
+URL of this page:
 
-HTML Link: 
+HTML Link:
 
 [Bookmark this page](# "Bookmark this manual")
 
@@ -8172,9 +8172,9 @@ Digital multimeter
 **6**](/manual/874874/Martindale-Mm34.html?page=6#manual "Diode Test")
 
 -   page  of 6 Go
-    
+
       / 6
-    
+
 -   [Contents](#zeropagepanel)
 -   [Table of Contents](#zeropagepanel)
 -   [Bookmarks](#summary)
@@ -8184,81 +8184,81 @@ Digital multimeter
 Table of Contents
 
 -   [Calibration](/manual/874874/Martindale-Mm34.html?page=2#manual "Calibration")
-    
+
 -   [Repair & Service](/manual/874874/Martindale-Mm34.html?page=2#manual "Repair & Service")
-    
+
 -   [Storage Conditions](/manual/874874/Martindale-Mm34.html?page=2#manual "Storage Conditions")
-    
+
 -   [Warranty](/manual/874874/Martindale-Mm34.html?page=2#manual "Warranty")
-    
+
 -   [
-    
+
     ### Maintenance
-    
+
     ](/manual/874874/Martindale-Mm34.html?page=3#manual "Maintenance")
-    
+
 -   [
-    
+
     ### Cleaning
-    
+
     ](/manual/874874/Martindale-Mm34.html?page=3#manual "Cleaning")
-    
+
 -   [
-    
+
     ### Battery Replacement
-    
+
     ](/manual/874874/Martindale-Mm34.html?page=3#manual "Battery Replacement")
-    
+
 -   [
-    
+
     ### Fuse Replacement
-    
+
     ](/manual/874874/Martindale-Mm34.html?page=3#manual "Fuse Replacement")
-    
+
     -   [
-        
+
         ### Introduction
-        
+
         ](/manual/874874/Martindale-Mm34.html?page=4#manual "Introduction")
-        
+
         -   [Description](/manual/874874/Martindale-Mm34.html?page=4#manual "Description")
-            
+
         -   [Unpacking and Inspection](/manual/874874/Martindale-Mm34.html?page=4#manual "Unpacking and Inspection")
-            
+
         -   [Battery Installation](/manual/874874/Martindale-Mm34.html?page=4#manual "Battery Installation")
-            
+
             -   [Current Measurement](/manual/874874/Martindale-Mm34.html?page=4#manual "Current Measurement")
-                
+
             -   [Resistance Measurement](/manual/874874/Martindale-Mm34.html?page=4#manual "Resistance Measurement")
-                
+
             -   [Diode Test](/manual/874874/Martindale-Mm34.html?page=4#manual "Diode Test")
-                
+
             -   [Battery Test](/manual/874874/Martindale-Mm34.html?page=4#manual "Battery Test")
-                
-            
-        
+
+
+
     -   [
-        
+
         ### Technical Specification
-        
+
         ](/manual/874874/Martindale-Mm34.html?page=5#manual "Technical Specification")
-        
+
     -   [
-        
+
         ### Operation
-        
+
         ](/manual/874874/Martindale-Mm34.html?page=5#manual "Operation")
-        
+
         -   [Precautions](/manual/874874/Martindale-Mm34.html?page=5#manual "Precautions")
-            
+
         -   [Voltage Measurement](/manual/874874/Martindale-Mm34.html?page=5#manual "Voltage Measurement")
-            
+
         -   [Battery Test](/manual/874874/Martindale-Mm34.html?page=6#manual "Battery Test")
-            
+
         -   [Diode Test](/manual/874874/Martindale-Mm34.html?page=6#manual "Diode Test")
-            
-        
-    
+
+
+
 
 #### Quick Links
 
@@ -8369,156 +8369,156 @@ Ask a question
 #### Related Manuals for MARTINDALE MM34
 
 -   [
-    
+
     ![Multimeter MARTINDALE MM84 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
+
     ](/manual/770134/Martindale-Mm84.html)
-    
+
     [Multimeter MARTINDALE MM84 Instruction Manual](/manual/770134/Martindale-Mm84.html)
-    
+
     (12 pages)
-    
--   [
-    
-    ![Multimeter MARTINDALE MM84 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
-    ](/manual/847946/Martindale-Mm84.html)
-    
-    [Multimeter MARTINDALE MM84 Instruction Manual](/manual/847946/Martindale-Mm84.html)
-    
-    (5 pages)
-    
--   [
-    
-    ![Multimeter MARTINDALE MM44 Operating Instructions](https://static-data2.manualslib.com/product-images/0c9/846512/60x60/martindale-mm44-multimeter.jpg)
-    
-    ](/manual/846512/Martindale-Mm44.html)
-    
-    [Multimeter MARTINDALE MM44 Operating Instructions](/manual/846512/Martindale-Mm44.html)
-    
-    Digital multimeter (2 pages)
-    
--   [
-    
-    ![Multimeter MARTINDALE MM47 Operating Instructions](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
-    ](/manual/846554/Martindale-Mm47.html)
-    
-    [Multimeter MARTINDALE MM47 Operating Instructions](/manual/846554/Martindale-Mm47.html)
-    
-    Digital multimeter (2 pages)
-    
--   [
-    
-    ![Multimeter MARTINDALE MM64 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
-    ](/manual/852890/Martindale-Mm64.html)
-    
-    [Multimeter MARTINDALE MM64 Instruction Manual](/manual/852890/Martindale-Mm64.html)
-    
-    Multimeter (5 pages)
-    
--   [
-    
-    ![Multimeter MARTINDALE MM65 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
-    ](/manual/853032/Martindale-Mm65.html)
-    
-    [Multimeter MARTINDALE MM65 Instruction Manual](/manual/853032/Martindale-Mm65.html)
-    
-    (5 pages)
-    
--   [
-    
-    ![Multimeter MARTINDALE MM37 Instructions Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
-    ](/manual/884486/Martindale-Mm37.html)
-    
-    [Multimeter MARTINDALE MM37 Instructions Manual](/manual/884486/Martindale-Mm37.html)
-    
-    Digital (6 pages)
-    
--   [
-    
-    ![Multimeter MARTINDALE MM42 Operating Instructions](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
-    ](/manual/885074/Martindale-Mm42.html)
-    
-    [Multimeter MARTINDALE MM42 Operating Instructions](/manual/885074/Martindale-Mm42.html)
-    
-    Digital (2 pages)
-    
 
 -   [
-    
-    ![Multimeter MARTINDALE MM68 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
-    ](/manual/885736/Martindale-Mm68.html)
-    
-    [Multimeter MARTINDALE MM68 Instruction Manual](/manual/885736/Martindale-Mm68.html)
-    
-    (7 pages)
-    
+
+    ![Multimeter MARTINDALE MM84 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
+
+    ](/manual/847946/Martindale-Mm84.html)
+
+    [Multimeter MARTINDALE MM84 Instruction Manual](/manual/847946/Martindale-Mm84.html)
+
+    (5 pages)
+
 -   [
-    
-    ![Multimeter MARTINDALE MM45 Operating Instructions](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
-    ](/manual/893946/Martindale-Mm45.html)
-    
-    [Multimeter MARTINDALE MM45 Operating Instructions](/manual/893946/Martindale-Mm45.html)
-    
+
+    ![Multimeter MARTINDALE MM44 Operating Instructions](https://static-data2.manualslib.com/product-images/0c9/846512/60x60/martindale-mm44-multimeter.jpg)
+
+    ](/manual/846512/Martindale-Mm44.html)
+
+    [Multimeter MARTINDALE MM44 Operating Instructions](/manual/846512/Martindale-Mm44.html)
+
+    Digital multimeter (2 pages)
+
+-   [
+
+    ![Multimeter MARTINDALE MM47 Operating Instructions](//static2.manualslib.com/public/img/no_image_60x60.svg)
+
+    ](/manual/846554/Martindale-Mm47.html)
+
+    [Multimeter MARTINDALE MM47 Operating Instructions](/manual/846554/Martindale-Mm47.html)
+
+    Digital multimeter (2 pages)
+
+-   [
+
+    ![Multimeter MARTINDALE MM64 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
+
+    ](/manual/852890/Martindale-Mm64.html)
+
+    [Multimeter MARTINDALE MM64 Instruction Manual](/manual/852890/Martindale-Mm64.html)
+
+    Multimeter (5 pages)
+
+-   [
+
+    ![Multimeter MARTINDALE MM65 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
+
+    ](/manual/853032/Martindale-Mm65.html)
+
+    [Multimeter MARTINDALE MM65 Instruction Manual](/manual/853032/Martindale-Mm65.html)
+
+    (5 pages)
+
+-   [
+
+    ![Multimeter MARTINDALE MM37 Instructions Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
+
+    ](/manual/884486/Martindale-Mm37.html)
+
+    [Multimeter MARTINDALE MM37 Instructions Manual](/manual/884486/Martindale-Mm37.html)
+
+    Digital (6 pages)
+
+-   [
+
+    ![Multimeter MARTINDALE MM42 Operating Instructions](//static2.manualslib.com/public/img/no_image_60x60.svg)
+
+    ](/manual/885074/Martindale-Mm42.html)
+
+    [Multimeter MARTINDALE MM42 Operating Instructions](/manual/885074/Martindale-Mm42.html)
+
     Digital (2 pages)
-    
+
+
 -   [
-    
+
+    ![Multimeter MARTINDALE MM68 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
+
+    ](/manual/885736/Martindale-Mm68.html)
+
+    [Multimeter MARTINDALE MM68 Instruction Manual](/manual/885736/Martindale-Mm68.html)
+
+    (7 pages)
+
+-   [
+
+    ![Multimeter MARTINDALE MM45 Operating Instructions](//static2.manualslib.com/public/img/no_image_60x60.svg)
+
+    ](/manual/893946/Martindale-Mm45.html)
+
+    [Multimeter MARTINDALE MM45 Operating Instructions](/manual/893946/Martindale-Mm45.html)
+
+    Digital (2 pages)
+
+-   [
+
     ![Multimeter MARTINDALE MM35 Instructions For Use Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
+
     ](/manual/935508/Martindale-Mm35.html)
-    
+
     [Multimeter MARTINDALE MM35 Instructions For Use Manual](/manual/935508/Martindale-Mm35.html)
-    
+
     Digital multimeter (6 pages)
-    
+
 -   [
-    
+
     ![Multimeter MARTINDALE MM94 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
+
     ](/manual/1274918/Martindale-Mm94.html)
-    
+
     [Multimeter MARTINDALE MM94 Instruction Manual](/manual/1274918/Martindale-Mm94.html)
-    
+
     High peformance trms multimeter (8 pages)
-    
+
 -   [
-    
+
     ![Multimeter MARTINDALE MM39 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
+
     ](/manual/1414901/Martindale-Mm39.html)
-    
+
     [Multimeter MARTINDALE MM39 Instruction Manual](/manual/1414901/Martindale-Mm39.html)
-    
+
     (2 pages)
-    
+
 -   [
-    
+
     ![Multimeter MARTINDALE VERITEST 2240 Quick Start Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
+
     ](/manual/926204/Martindale-Veritest-2240.html)
-    
+
     [Multimeter MARTINDALE VERITEST 2240 Quick Start Manual](/manual/926204/Martindale-Veritest-2240.html)
-    
+
     Veritest 2240 all-in-one (12 pages)
-    
+
 -   [
-    
+
     ![Multimeter MARTINDALE CM57 Instruction Manual](//static2.manualslib.com/public/img/no_image_60x60.svg)
-    
+
     ](/manual/1275588/Martindale-Cm57.html)
-    
+
     [Multimeter MARTINDALE CM57 Instruction Manual](/manual/1275588/Martindale-Cm57.html)
-    
+
     Trms ac smart clamp multimeter (6 pages)
-    
+
 
 #### Summary of Contents for MARTINDALE MM34
 
@@ -8537,7 +8537,7 @@ Ask a question
 
 #### Rename the bookmark
 
-  
+
 
  Cancel
 
@@ -8579,7 +8579,7 @@ OR
 
 Sign in with Facebook Sign in with Google
 
-[Don't have an account? Sign up!](/auth/action/sign_up "Sign Up")    
+[Don't have an account? Sign up!](/auth/action/sign_up "Sign Up")  
 [Restore password](/auth/action/restore_password "Remember password")
 
 #### Upload manual
@@ -8603,9 +8603,9 @@ Thank you for your help!
 
 **Output:**
 ```
- BLACK & DECKER SCREWDRIVER MANUAL Pdf Download | ManualsLib                         
+ BLACK & DECKER SCREWDRIVER MANUAL Pdf Download | ManualsLib
 
-       
+
 
 [![ManualsLib](//static2.manualslib.com/public/img/manualslib_de.png)](https://www.manualslib.com "Manuals Library")
 
@@ -8619,9 +8619,9 @@ Thank you for your help!
 
 [Share](# "Share this manual")
 
-URL of this page: 
+URL of this page:
 
-HTML Link: 
+HTML Link:
 
 [Bookmark this page](# "Bookmark this manual")
 
@@ -8700,9 +8700,9 @@ Drill/screwdriver
 **12**](/manual/889024/Black-And-Decker-Screwdriver.html?page=12#manual)
 
 -   page  of 12 Go
-    
+
       / 12
-    
+
 -   [Contents](#zeropagepanel)
 -   [Table of Contents](#zeropagepanel)
 -   [Bookmarks](#summary)
@@ -8776,45 +8776,45 @@ Ask a question
 #### Related Manuals for Black & Decker screwdriver
 
 -   [
-    
+
     ![Power Screwdriver Black & Decker Pivot Driver PP360 User Manual](https://static-data2.manualslib.com/product-images/b63/833142/60x60/black-decker-pivot-driver-pp360-power-screwdriver.jpg)
-    
+
     ](/manual/833142/Black-And-Decker-Pivot-Driver-Pp360.html)
-    
+
     [Power Screwdriver Black & Decker Pivot Driver PP360 User Manual](/manual/833142/Black-And-Decker-Pivot-Driver-Pp360.html)
-    
+
     Screwdriving (12 pages)
-    
+
 
 -   [
-    
+
     ![Power Screwdriver Black & Decker screwdriver Manual](https://static-data2.manualslib.com/product-images/9ab/900075/60x60/black-decker-screwdriver-power-screwdriver.jpg)
-    
+
     ](/manual/900075/Black-And-Decker-Screwdriver.html)
-    
+
     [Power Screwdriver Black & Decker screwdriver Manual](/manual/900075/Black-And-Decker-Screwdriver.html)
-    
+
     (8 pages)
-    
+
 
 #### Summary of Contents for Black & Decker screwdriver
 
 -   [Page 1](/manual/889024/Black-And-Decker-Screwdriver.html#manual) Ireland Australia New Zealand...
 -   ### [Page 4: Intended Use](/manual/889024/Black-And-Decker-Screwdriver.html?page=4#manual)
-    
+
     If operating a power tool in a damp location is unavoidable, use a residual current device (RCD) Your Black & Decker drill/screwdriver has been designed for protected supply. Use of an RCD reduces the risk of screwdriving applications and for drilling in wood, metal and electric shock.
 -   [Page 5](/manual/889024/Black-And-Decker-Screwdriver.html?page=5#manual) Hold power tool by insulated gripping surfaces when e. Maintain power tools. Check for misalignment or  performing an operation where the cutting accessory binding of moving parts, breakage of parts and any may contact hidden wiring or its own cord. Cutting other condition that may affect the power tools accessory contacting a "live"...
 -   ### [Page 6: Additional Safety Instructions For Batteries And Chargers](/manual/889024/Black-And-Decker-Screwdriver.html?page=6#manual)
-    
+
      Fitting and removing a drill bit or screwdriver bit (ﬁg. B) This tool uses screwdriver bits and drill bits with a 1/4" (6.35 mm) The charger is intended for indoor use only. hexagonal shank. Pull back the bit holder sleeve (5).
 -   ### [Page 7: Hints For Optimum Use](/manual/889024/Black-And-Decker-Screwdriver.html?page=7#manual)
-    
+
     Set the collar (4) to the lowest torque setting. amount of washing liquid or soap as a lubricant.  Tighten the ﬁrst screw. Always hold the tool and screwdriver bit in a straight line   If the clutch ratchets before the desired result is achieved, with the screw.
 -   ### [Page 8: Maintenance](/manual/889024/Black-And-Decker-Screwdriver.html?page=8#manual)
-    
+
     Alternatively, a list of authorised Black & Decker repair agents and full details of our This tool uses screwdriver bits and drill bits with a 1/4" (6.35 mm) after-sales service and contacts are available on the Internet hexagonal shank.
 -   ### [Page 9: Ec Declaration Of Conformity](/manual/889024/Black-And-Decker-Screwdriver.html?page=9#manual)
-    
+
     EC declaration of conformity Alternatively, a list of authorised Black & Decker repair agents and full details of our after-sales service and contacts are HP9060 available on the Internet at: www.2helpU.com Black & Decker declares that these products conform to: 98/37/EC, EN 60745 Please visit our website www.blackanddecker.co.uk to register your new Black &...
 -   [Page 12](/manual/889024/Black-And-Decker-Screwdriver.html?page=12#manual) Australia Black & Decker (Australia) Pty. Ltd. Tel. 03-8720 5100 20 Fletcher Road, Mooroolbark, Fax 03-9727 5940 Victoria, 3138 New Zealand Black & Decker Tel. +64 9 259 1133 5 Te Apunga Place Fax +64 9 259 1122 Mt Wellington Auckland 1060 United Kingdom Black &...
 
@@ -8830,7 +8830,7 @@ Ask a question
 
 #### Rename the bookmark
 
-  
+
 
  Cancel
 
@@ -8872,7 +8872,7 @@ OR
 
 Sign in with Facebook Sign in with Google
 
-[Don't have an account? Sign up!](/auth/action/sign_up "Sign Up")    
+[Don't have an account? Sign up!](/auth/action/sign_up "Sign Up")  
 [Restore password](/auth/action/restore_password "Remember password")
 
 #### Upload manual
@@ -9528,11 +9528,6 @@ Let me first try to find a replacement for the Cisco 3560 and also try archive.o
 **Output:**
 ```
 Cisco Catalyst 3560 Series Switches - Cisco
-    
-    
-    
-    
-    
 
 
 
@@ -9552,35 +9547,6 @@ Cisco Catalyst 3560 Series Switches - Cisco
 
 
 
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-	
 
 
 
@@ -9595,10 +9561,6 @@ Cisco Catalyst 3560 Series Switches - Cisco
 
 
 
-    
- 
-    
-    
 
 
 
@@ -9612,11 +9574,9 @@ Cisco Catalyst 3560 Series Switches - Cisco
 
 
 
-    
 
 
 
-    
 
 
 
@@ -9629,9 +9589,7 @@ Cisco Catalyst 3560 Series Switches - Cisco
 
 
 
-    
 
-    
 
 
 
@@ -9647,11 +9605,7 @@ Cisco Catalyst 3560 Series Switches - Cisco
 
 
 
-       
 
-    
-    
-    
 
 
 
@@ -9666,14 +9620,56 @@ Cisco Catalyst 3560 Series Switches - Cisco
 
 
 
-    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         Skip to content
         Skip to search
         Skip to footer
-    
-
-
-    
 
 
 
@@ -9688,9 +9684,13 @@ Cisco Catalyst 3560 Series Switches - Cisco
 
 
 
-    
-    
-        
+
+
+
+
+
+
+
             Cisco.com Worldwide
             Products and Services
             Solutions
@@ -9698,7 +9698,7 @@ Cisco Catalyst 3560 Series Switches - Cisco
             Learn
             Explore Cisco
             How to Buy
-            Partners Home                
+            Partners Home
             Partner Program
             Support
             Tools
@@ -9706,55 +9706,6 @@ Cisco Catalyst 3560 Series Switches - Cisco
             Meet our Partners
             Become a Cisco Partner
 
-        
-    
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-   
-
-
-
-
-
-
-
-
-
-	
-        
-            
 
 
 
@@ -9776,33 +9727,62 @@ Cisco Catalyst 3560 Series Switches - Cisco
 
 
 
-   
-    
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         SupportProduct SupportSwitches
-    
+
 
 Cisco Catalyst 3560 Series Switches
-		
-	
-
-     
-    
-
-
-
-
-
-
-
-
-
-
-
- 
-
-     
-        
 
 
 
@@ -9831,99 +9811,112 @@ Cisco Catalyst 3560 Series Switches
 
 
 
-  
-  
-
-  
 
 
-  
-      
-      
-        
-        
-        
-          
-           
-                        
-            
-            
-            
-              
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                 Product Type
                 Campus LAN Switches - Access
-              
-            
 
-            
+
+
+
               Status
-              
-                
-                  
+
+
+
                     End of Support
                     EOL Details
-                    
-                    
-                  
-                  
-                  
-                
 
-              
-            
 
-            
-              
-                
-                    
+
+
+
+
+
+
+
+
+
+
+
+
                     Series Release Date
-                 
-                10-FEB-2004
-              
-            
 
-            
-            
+                10-FEB-2004
+
+
+
+
+
               End-of-Sale Date
-              
+
                  14-MAY-2016
-                
-                
-                
-              
-            
-              
-              
-            
+
+
+
+
+
+
+
+
               End-of-Support Date
-              
+
                  31-MAY-2021
-                
-                
-                
-              
-            
-           
-          
-            
-              
-              
-              
+
+
+
+
+
+
+
+
+
+
+
                 Diagram
-                
-               
-               
-                
-                  
+
+
+
+
+
                     Visio Stencil
                      (2 MB .zip file)
-                  
-                
-              
-            
-            
-              
-                
 
 
 
@@ -9939,17 +9932,17 @@ Cisco Catalyst 3560 Series Switches
 
 
 
- 
 
-      
+
+
+
+
+
+
+
+
+
         This product is no longer Supported by Cisco. Consider switching to something new:  The Cisco Catalyst 9300 Series Switches offer greater speed, performance and security.  View the benefits of upgrading &gt;
-      
-  
-
-              
-             
-            
-              
 
 
 
@@ -9980,59 +9973,6 @@ Cisco Catalyst 3560 Series Switches
 
 
 
-            
-            
-
-
-
-  
-    
-  
-
-  
-    
-      
-        
-    
-    
-      
-        
-    
-    
-      
-        
-    
-    
-      
-        
-    
-    
-      
-        
-    
-    
-  
-
-            
-        
-        
-    
-
-    
-
-  
-
-
-
-    
-    
-  
-
-
-
-     
-        
-        
 
 
 
@@ -10049,54 +9989,105 @@ Cisco Catalyst 3560 Series Switches
 
 
 
-    
-    Alerts 
-    
 
 
-    
-  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    Alerts
+
+
+
+
+
    Cisco is dedicated to protecting your business and networks from illegal activities. Purchase through official Cisco partners. Why where you purchase matters&nbsp;&nbsp;| &nbsp;&nbsp;Identify counterfeit and pirated products&nbsp;&nbsp;| &nbsp;&nbsp;Serial Number Health Check
-  
 
 
-    
 
-	Contact Cisco 
-	
-		Open a TAC Case Online  
-	
+
+
+	Contact Cisco
+
+		Open a TAC Case Online
+
 				US/Canada 800-553-2447
-	
+
 		Worldwide Support Phone Numbers
-	
+
 		All Tools
          Feedback
-	
 
 
 
-        
 
 
 
-        
-                                        
-                                        
-                                                
+
+
+
+
+
+
                                           		Other Languages
-                                        
-                                        
-                                        
-                                                
-                                        
-                                
-             
 
 
 
-            
-        
 
 
 
@@ -10133,19 +10124,14 @@ Cisco Catalyst 3560 Series Switches
 
 
 
-	
 
-  
 
 
-	
 
 
 
 
-        
 
-        
 
 
 
@@ -10162,9 +10148,7 @@ Cisco Catalyst 3560 Series Switches
 
 
 
-    
 
-         
 
 
 
@@ -10186,18 +10170,29 @@ Cisco Catalyst 3560 Series Switches
 
 
 
- 
-         
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
          Documentation
-        
-           
-            
+
+
+
                 Log in to see full product documentation.
-            
-            
-           
-                
-                   
 
 
 
@@ -10217,39 +10212,40 @@ Cisco Catalyst 3560 Series Switches
 
 
 
-         
 
 
-        
-            
-              
+
+
+
+
+
+
+
+
+
                 Data Sheets and Product Information
-            
-                            
-                            
+
+
+
                             End-of-Life and End-of-Sale Notices
-                        
-                             End-of-Sale and End-of-Life Announcement for the Cisco Catalyst 3750G, 3560G, 3750-E, and 3560-E Series Switches 17-Aug-2017 End-of-Sale and End-of-Life Announcement for the Cisco Catalyst 3560V2 and 3750V2 Switches 11-Nov-2015 End-of-Sale and End-of-Life Announcement for the Cisco Catalyst 3750 24- and 48-Port 10/100, 3560 24- and 48-Port 10/100 Switches 27-Jan-2011  End-of-Sale and End-of-Life Announcement for the Cisco Catalyst 3560 IOS Advanced IP Services Feature Set 27-Jan-2009                                                                 
-                
-                
-    
-            
-        
-    
 
-    
+                             End-of-Sale and End-of-Life Announcement for the Cisco Catalyst 3750G, 3560G, 3750-E, and 3560-E Series Switches 17-Aug-2017 End-of-Sale and End-of-Life Announcement for the Cisco Catalyst 3560V2 and 3750V2 Switches 11-Nov-2015 End-of-Sale and End-of-Life Announcement for the Cisco Catalyst 3750 24- and 48-Port 10/100, 3560 24- and 48-Port 10/100 Switches 27-Jan-2011  End-of-Sale and End-of-Life Announcement for the Cisco Catalyst 3560 IOS Advanced IP Services Feature Set 27-Jan-2009
 
-    
-  
-                
-            
-        
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         Downloads
-        
-            
-
-             
 
 
 
@@ -10271,20 +10267,20 @@ Cisco Catalyst 3560 Series Switches
 
 
 
-                
-                
+
+
+
+
+
+
                     Log in to see available downloads.
-                
-
-                
-            
 
 
-            Community  
-        
-            
 
-            
+
+
+
+            Community
 
 
 
@@ -10299,43 +10295,44 @@ Cisco Catalyst 3560 Series Switches
 
 
 
-                
-                    
-                            
+
+
+
+
+
+
+
                             Cisco Community Home
-   
+
                                     Ask a Question
-                                           
-                        
-                    
 
-                                        
-                        
+
+
+
+
+
                             Select a Community Board
-                            Reset                            
-                                                                              
-                    
-                    
+                            Reset
 
-                        
+
+
+
+
                             Latest Community Activity For This Product
-                            
-                        
-                        
+
+
+
                             Solved Issues
-                            
-                        
-                        
+
+
+
                             Community Documents
-                            
-                        
-                     
-                 
+
+
+
+
 
 Retired Models
-        
-
-        
 
 
 
@@ -10372,9 +10369,12 @@ Retired Models
 
 
 
-	
 
-  
+
+
+
+
+
 
 
 	The Cisco Catalyst 3560 Series Switches are past their End-of-Support date. Find out more about the Cisco End-of-Life Policy.
@@ -10385,101 +10385,101 @@ Below are the retired models within this series with their respective End-of-Sup
 
 Retired Models
 
-		
-		  
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 			&nbsp;&nbsp;&nbsp;&nbsp;End-of-Support Date
-			&nbsp;&nbsp;&nbsp;&nbsp;Catalyst 3560 Switch Model			
-		  
-		  
+			&nbsp;&nbsp;&nbsp;&nbsp;Catalyst 3560 Switch Model
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 		    &nbsp;&nbsp;&#9675;&nbsp;&nbsp;31-May-2021
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560V2-24DC Switch
-		  
-		  
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560V2-24PS Switch
-		  
-		  
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 			&nbsp;&nbsp;&nbsp;&nbsp;
-			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560V2-24TS Switch			
-		  
-		  
+			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560V2-24TS Switch
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560V2-48PS Switch
-		  
-		  
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560V2-48TS Switch
-		  
 
-		  
+
+
 		    &nbsp;
 		    &nbsp;
 		    &nbsp;
-		  
-		  
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;31-July-2018
-			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560-8PC Compact Switch			
-		  
-		  
+			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560-8PC Compact Switch
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
-			&nbsp;					
+			&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560-12PC-S Compact Switch
-		  
-		  
+
+
 		    &nbsp;
 		    &nbsp;
 		    &nbsp;
-		  
-		  
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;31-January-2018
-			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560G-24PS Switch			
-		  
-		  
+			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560G-24PS Switch
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
-			&nbsp;						
+			&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560G-24TS Switch
-		  
-		  
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
-			&nbsp;						
+			&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560G-48PS Switch
-		  
-		  
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
-			&nbsp;						
+			&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560G-48TS Switch
-		  
-		  
+
+
 		    &nbsp;
 		    &nbsp;
 		    &nbsp;
-		  
-		  
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;31-July-2015
-			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560-24PS Switch			
-		  
-		  
+			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560-24PS Switch
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
-			&nbsp;					
+			&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560-24TS Switch
-		  		  
-		  
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
-			&nbsp;					
+			&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560-48PS Switch
-		  
-		  
+
+
 		    &nbsp;&nbsp;&nbsp;&nbsp;
-			&nbsp;						
+			&nbsp;
 			&nbsp;&nbsp;&#9675;&nbsp;&nbsp;Cisco Catalyst 3560-48TS Switch
 ```
 
@@ -10496,887 +10496,887 @@ Retired Models
 **Output:**
 ```
 Wayback Machine
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
 
 
-                    
-              
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         Ask the publishers to restore access to 500,000+ books.
-        
-          
-            
-          
-        
-      
-          
-                    
-              
-    
 
-  
-    
-      
-        
-          
-            
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
               Hamburger icon
               An icon used to represent a menu that can be
                 toggled by interacting with this icon.
-              
-              
-              
-        
 
-        
-          
-            
+
+
+
+
+
+
+
               Internet Archive logo
               A line drawing of the Internet Archive headquarters
                 building façade.
-              
-                
-                  
-                  
-                  
-                  
-                  
-                  
-                  
-                  
-                  
-                  
-            
-              
-                
-                  
-                  
-                  
-                  
-                  
-                  
-                  
-                  
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
 
-          
-          
-        
-        
-          
-            
-              
-                
-                  
-                  
-                    
-                      
-                      
-                        
-                        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                           Web icon
                           An illustration of a computer
                             application window
-                          
-                          
 
-                      
+
+
+
                       Wayback Machine
 
-                    
-                    
-                    
-                    
-                    
-                      
-                      
-                        
-                        
+
+
+
+
+
+
+
+
+
                           Texts icon
                           An illustration of an open book.
-                          
-                          
-                          
-                          
 
-                      
+
+
+
+
+
                       Texts
 
-                    
-                    
-                    
-                    
-                    
-                      
-                      
-                        
-                        
+
+
+
+
+
+
+
+
+
                           Video icon
                           An illustration of two cells of a film
                             strip.
-                          
-                          
 
-                      
+
+
+
                       Video
 
-                    
-                    
-                    
-                    
-                    
-                      
-                      
-                        
-                        
+
+
+
+
+
+
+
+
+
                           Audio icon
                           An illustration of an audio speaker.
-                          
-                          
-                            
-                              
-                              
-                              
-                              
-                              
 
-                      
+
+
+
+
+
+
+
+
+
                       Audio
 
-                    
-                    
-                    
-                    
-                    
-                      
-                      
-                        
-                        
+
+
+
+
+
+
+
+
+
                           Software icon
                           An illustration of a 3.5" floppy
                             disk.
-                          
-                          
-                          
 
-                      
+
+
+
+
                       Software
 
-                    
-                    
-                    
-                    
-                    
-                      
-                      
-                        
-                        
+
+
+
+
+
+
+
+
+
                           Images icon
                           An illustration of two photographs.
-                          
-                          
-                          
 
-                      
+
+
+
+
                       Images
 
-                    
-                    
-                    
-                    
-                    
-                      
-                      
-                        
-                        
+
+
+
+
+
+
+
+
+
                           Donate icon
                           An illustration of a heart shape
-                          
-                          
-                          
-                          
 
-                      
+
+
+
+
+
                       Donate
 
-                    
-                    
-                    
-                    
-                    
-                      
-                      
-                        
-                        
+
+
+
+
+
+
+
+
+
                           Ellipses icon
                           An illustration of text ellipses.
-                          
-                          
-                          
 
-                      
+
+
+
+
                       More
 
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-                    
-        
-          
-          
-            
-            
+
+
+
+
+
+
+
+
+
+
+
+
+
               Donate icon
               An illustration of a heart shape
-              
-              
-              
+
+
+
 
             "Donate to the archive"
-            
 
-          
-          
-            
-            
-              
-                
-                  
-                  
+
+
+
+
+
+
+
+
+
                     User icon
                     An illustration of a person's head and chest.
-                    
-                    
-                    
-                
-                
+
+
+
+
+
                   Sign up
                   |
                   Log in
-                
-                
-                
 
-          
-          
-          
-            
-            
+
+
+
+
+
+
+
+
               Upload icon
               An illustration of a horizontal line over an up
                 pointing arrow.
-              
-              
+
+
 
             Upload
-            
-          
-          
-            
-            
+
+
+
+
+
               Search icon
               An illustration of a magnifying glass.
-              
-              
 
-          
-          
-            
-              
+
+
+
+
+
+
                 Search the Archive
-                
-                
-                
-                  
-                  
+
+
+
+
+
                     Search icon
                     An illustration of a magnifying glass.
-                    
-                    
 
-                
-                
-                
-                
 
-        
-      
-    
-    
-      
-        
-          
-            
-              
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
                 Internet Archive Audio
-                
-                  
+
+
                   Live Music
                     Archive
-                  
+
                   Librivox
                     Free Audio
-                  
-                  
-                  
+
+
+
                     Featured
-                    
-                      
+
+
                     All Audio
-                    
+
                     Grateful Dead
-                    
+
                     Netlabels
-                    
+
                     Old Time Radio
-                    
-                    
+
+
                     78 RPMs
                         and Cylinder Recordings
-                    
-                    
-                    
-                    
+
+
+
+
                       Top
-                      
-                        
+
+
                     Audio Books
                         &amp; Poetry
-                    
+
                     Computers,
                         Technology and Science
-                    
+
                     Music, Arts
                         &amp; Culture
-                    
+
                     News &amp;
                         Public Affairs
-                    
+
                     Spirituality
                         &amp; Religion
-                    
+
                     Podcasts
-                    
+
                     Radio News
                         Archive
-                    
-                    
-                    
-                    
-              
+
+
+
+
+
                 Images
-                
-                  
+
+
                   Metropolitan Museum
-                  
+
                   Cleveland
                     Museum of Art
-                  
-                  
-                  
+
+
+
                     Featured
-                    
-                      
+
+
                     All Images
-                    
+
                     Flickr Commons
-                    
-                    
+
+
                     Occupy Wall
                         Street Flickr
-                    
+
                     Cover Art
-                    
+
                     USGS Maps
-                    
-                    
-                    
-                    
+
+
+
+
                       Top
-                      
-                        
+
+
                     NASA Images
-                    
+
                     Solar System
                         Collection
-                    
+
                     Ames Research
                         Center
-                    
-                    
-                    
-                    
-              
+
+
+
+
+
                 Software
-                
-                  
+
+
                   Internet
                     Arcade
-                  
+
                   Console Living Room
-                  
-                  
-                  
+
+
+
                     Featured
-                    
-                      
+
+
                     All Software
-                    
-                    
+
+
                     Old School
                         Emulation
-                    
+
                     MS-DOS Games
-                    
-                    
+
+
                     Historical
                         Software
-                    
+
                     Classic PC
                         Games
-                    
+
                     Software
                         Library
-                    
-                    
-                    
-                    
+
+
+
+
                       Top
-                      
-                        
+
+
                     Kodi
                         Archive and Support File
-                    
+
                     Vintage
                         Software
-                    
+
                     APK
-                    
+
                     MS-DOS
-                    
+
                     CD-ROM
                         Software
-                    
+
                     CD-ROM
                         Software Library
-                    
+
                     Software Sites
-                    
-                    
+
+
                     Tucows
                         Software Library
-                    
+
                     Shareware
                         CD-ROMs
-                    
+
                     Software
                         Capsules Compilation
-                    
+
                     CD-ROM Images
-                    
-                    
+
+
                     ZX Spectrum
-                    
+
                     DOOM Level CD
-                    
-                    
-                    
-                    
-                    
-              
+
+
+
+
+
+
                 Texts
-                
-                  
+
+
                   Open Library
-                  
+
                   American
                     Libraries
-                  
-                  
-                  
+
+
+
                     Featured
-                    
-                      
+
+
                     All Texts
-                    
+
                     Smithsonian
                         Libraries
-                    
+
                     FEDLINK (US)
-                    
+
                     Genealogy
-                    
+
                     Lincoln
                         Collection
-                    
-                    
-                    
-                    
+
+
+
+
                       Top
-                      
-                        
+
+
                     American
                         Libraries
-                    
+
                     Canadian
                         Libraries
-                    
+
                     Universal
                         Library
-                    
+
                     Project
                         Gutenberg
-                    
+
                     Children's
                         Library
-                    
+
                     Biodiversity
                         Heritage Library
-                    
+
                     Books by
                         Language
-                    
+
                     Folkscanomy
-                    
+
                     Government Documents
-                    
-                    
-                    
-                    
-              
+
+
+
+
+
                 Video
-                
-                  
+
+
                   TV News
-                  
+
                   Understanding
                     9/11
-                  
-                  
-                  
+
+
+
                     Featured
-                    
-                      
+
+
                     All Video
-                    
+
                     Prelinger
                         Archives
-                    
+
                     Democracy Now!
-                    
-                    
+
+
                     Occupy Wall
                         Street
-                    
+
                     TV NSA Clip
                         Library
-                    
-                    
-                    
-                    
+
+
+
+
                       Top
-                      
-                        
+
+
                     Animation
                         &amp; Cartoons
-                    
+
                     Arts &amp; Music
-                    
-                    
+
+
                     Computers
                         &amp; Technology
-                    
+
                     Cultural
                         &amp; Academic Films
-                    
+
                     Ephemeral Films
-                    
-                    
+
+
                     Movies
-                    
+
                     News &amp;
                         Public Affairs
-                    
+
                     Spirituality
                         &amp; Religion
-                    
+
                     Sports Videos
-                    
+
                     Television
-                    
+
                     Videogame
                         Videos
-                    
+
                     Vlogs
-                    
+
                     Youth Media
-                    
-                    
-                    
-                    
-              
-                
-                  
-                    
-                      
-                        
+
+
+
+
+
+
+
+
+
+
                           Search the history of more than 1 trillion
                           web pages.
-                          
-                          
-                          
-                            
-                              
-                                
-                                
-                              
-                            
-                          
-                          
+
+
+
+
+
+
+
+
+
+
+
                             Search the Wayback Machine
-                            
-                            
-                            
+
+
+
                               Search icon
                               An illustration of a magnifying
                                 glass.
-                              
-                              
 
-                          
-                          
-                          
-                          
-                          
-                            
+
+
+
+
+
+
+
+
                               Mobile Apps
-                              
-                          
-                          
+
+
+
                             Wayback Machine (iOS)
-                          
-                          
+
+
                             Wayback Machine (Android)
-                          
-                          
+
+
                           Browser Extensions
-                          
-                          
-                          
+
+
+
                             Chrome
-                          
-                          
+
+
                             Firefox
-                          
-                          
+
+
                             Safari
-                          
-                          
+
+
                             Edge
-                          
-                          
-                          
-                          
+
+
+
+
                             Archive-It Subscription
-                            
-                          
-                          
+
+
+
                             Explore the Collections
-                          
-                          
+
+
                             Learn More
-                          
-                          
+
+
                             Build Collections
-                          
-                          
-                          
-                          
-                          
-                      
+
+
+
+
+
+
                         Save Page Now
                         Capture a web page as it appears now for use as a trusted
                           citation in the future.
-                        
-                          Enter a URL to save
-                          
-                          
-                          
-                          Please enter a valid web address
-                          
-                          
-                          
-                          
-              
-                
-                  
-                    
-                    About
-                    
-                    Blog
-                    
-                    Events
-                    
-                    Projects
-                    
-                    Help
-                    
-                    Donate
-                    
-                    Contact
-                    
-                    Jobs
-                    
-                    Volunteer
-                    
-                    
-            
-          
-        
-      
-    
-  
-  
-  
-    
-      
-        
-          
-          
-              
-              Sign up for free
-              
-            
-          
-          
-              
-              Log in
-              
-            
-          
-          
-          
-          
-          
 
-  
-    
-      
-        
-        
-          
+                          Enter a URL to save
+
+
+
+                          Please enter a valid web address
+
+
+
+
+
+
+
+
+                    About
+
+                    Blog
+
+                    Events
+
+                    Projects
+
+                    Help
+
+                    Donate
+
+                    Contact
+
+                    Jobs
+
+                    Volunteer
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+              Sign up for free
+
+
+
+
+
+              Log in
+
+
+
+
+
+
+
+
+
+
+
+
+
+
           Search metadata
-        
-        
-        
-          
+
+
+
+
           Search text contents
-        
-        
-        
-          
+
+
+
+
           Search TV news captions
-        
-        
-        
-          
+
+
+
+
           Search radio transcripts
-        
-        
-        
-          
+
+
+
+
           Search archived web sites
-        
-        
+
+
         Advanced Search
-        
-        
-        
-        
-          
-            
-            
+
+
+
+
+
+
+
         About
-        
-      
-      
+
+
+
         Blog
-        
-      
-      
+
+
+
         Events
-        
-      
-      
+
+
+
         Projects
-        
-      
-      
+
+
+
         Help
-        
-      
-      
+
+
+
         Donate
-          
+
             Donate icon
             An illustration of a heart shape
-            
-            
-            
-            
-            
-      
-      
-        Contact
-        
-      
-      
-        Jobs
-        
-      
-      
-        Volunteer
-        
-      
-    
-    
-    
-    
-                  
 
-        
-    
-        
-        
-    
-    
-    
-      
-        
+
+
+
+
+
+
+        Contact
+
+
+
+        Jobs
+
+
+
+        Volunteer
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
           The Wayback Machine is an initiative of the
           Internet Archive,
           a 501(c)(3) non-profit, building a digital library of
@@ -11384,8 +11384,8 @@ Wayback Machine
           Other projects include
           Open Library &amp;
           archive-it.org.
-        
-        
+
+
           Your use of the Wayback Machine is subject to the Internet Archive's
           Terms of Use.
 ```
@@ -11808,56 +11808,56 @@ Please read the file again before modifying it.
 ```
 <path>/home/user/code/docs/inventory/routing-and-switching.md</path>
 <type>file</type>
-<content>670: 
+<content>670:
 671: #### Dead/Unresolvable Links
-672: 
+672:
 673: - ~~[Cisco Catalyst 2960 Series LAN Lite Switches Data Sheet](https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-2960-series-switches/data_sheet_c78-728003.html)~~ — Datasheet (404; removed by Cisco)
-674: 
+674:
 675: ### Cisco 2811
-676: 
+676:
 677: 1. [Cisco 2800 Series ISR — Retired Products Page](https://www.cisco.com/c/en/us/obsolete/routers/cisco-2800-series-integrated-services-routers.html) — Retirement confirmation and migration guidance; Cisco deliberately removes all documentation for retired products
-678: 
+678:
 679: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404), router-switch.com (403/404),
 680:      ManualsLib (returned wrong products — manual ID 874874 is a Martindale multimeter, not Cisco 2811). -->
-681: 
+681:
 682: ### Cisco 1841
-683: 
+683:
 684: 1. [Cisco 1800 Series ISR — Retired Products Page](https://www.cisco.com/c/en/us/obsolete/routers/cisco-1800-series-integrated-services-routers.html) — Retirement confirmation and migration guidance; Cisco deliberately removes all documentation for retired products
-685: 
+685:
 686: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404), router-switch.com (404),
 687:      ManualsLib (returned wrong products — manual ID 889024 is a Black & Decker screwdriver, not Cisco 1841) -->
-688: 
+688:
 689: ### Cisco 881
-690: 
+690:
 691: 1. [Cisco 800 Series Routers Product Page](https://www.cisco.com/c/en/us/products/routers/800-series-routers/index.html) — 800 series family page with datasheets, config guides, and troubleshooting for 881 and all other 800 series variants
 692: 2. [ManualsLib — Cisco 881 Manuals](https://www.manualslib.com/brand/cisco/?q=881) — Hardware installation and configuration guides (requires JavaScript for search filtering)
-693: 
+693:
 694: #### Dead/Unresolvable Links
-695: 
+695:
 696: - ~~[Cisco 880 Series Integrated Services Routers Data Sheet](https://www.cisco.com/c/en/us/products/collateral/routers/800-series-routers/datasheet-c78-731755.html)~~ — Datasheet (404; removed by Cisco)
-697: 
+697:
 698: ### Cisco ASA 5505
-699: 
+699:
 700: 1. [Cisco ASA 5505 Adaptive Security Appliance Data Sheet](https://www.cisco.com/c/en/us/products/collateral/security/asa-5500-series-next-generation-firewalls/datasheet-c78-733510.html) — Product datasheet (may be intermittently available)
 701: 2. [Cisco ASA 5505 Support Page](https://www.cisco.com/c/en/us/support/security/asa-5505-adaptive-security-appliance/model.html) — Support resources and EOL information
-702: 
+702:
 703: ### Cisco SG300-52
-704: 
+704:
 705: 1. [Cisco Small Business 300 Series — Retired Switches Page](https://www.cisco.com/c/en/us/obsolete/switches/cisco-small-business-300-series-managed-switches.html) — Retirement confirmation; Cisco deliberately removes all documentation for retired products
-706: 
+706:
 707: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404). The SG300-52 was a 52-port Gigabit L3-lite managed switch with 2x SFP combo uplinks. -->
-708: 
+708:
 709: ### Netgear GS116E (ProSAFE Plus)
-710: 
+710:
 711: 1. [Netgear GS116Ev2 Product Page (archived Dec 2022)](https://web.archive.org/web/20221201135008/https://www.netgear.com/business/wired/switches/plus/gs116ev2/) — Full product page with specifications via Wayback Machine (Netgear removed the original)
-712: 
+712:
 713: <!-- Attempted: netgear.com product/support pages (empty/404), datasheet PDF downloads (403), archive.org found one good snapshot.
 714:      This was a 16-port Gigabit Plus (smart-managed) desktop switch. -->
-715: 
+715:
 716: ### Cisco 4402 Wireless LAN Controller
-717: 
+717:
 718: 1. [Cisco 4400 Series Wireless LAN Controllers End-of-Life Notice](https://www.cisco.com/c/en/us/obsolete/wireless/cisco-4400-series-wireless-lan-controllers.html) — Retirement notification and migration guidance
-719: 
+719:
 720: <!-- Original datasheets and configuration guides removed per Cisco's retirement policy -->
 
 (End of file - total 720 lines)
@@ -12127,7 +12127,7 @@ Now let me update progress and see what's left to do. Let me read the current st
 <path>/home/user/code/docs/inventory/routing-and-switching.md</path>
 <type>file</type>
 <content>548: ## References
-549: 
+549:
 550: > **Note on link availability:** Many of the devices in this inventory are end-of-life (EOL)
 551: > or discontinued. Cisco [deliberately removes all documentation for retired products][cisco-retired].
 552: > IBM/Lenovo has migrated legacy docs to Lenovo Press but coverage is incomplete.
@@ -12137,9 +12137,9 @@ Now let me update progress and see what's left to do. Let me read the current st
 556: > documentation are listed with a note explaining what was attempted.
 557: >
 558: > [cisco-retired]: https://www.cisco.com/c/en/us/obsolete/routers/cisco-2811-integrated-services-router.html
-559: 
+559:
 560: ### Celestica Haliburton (DX010)
-561: 
+561:
 562: 1. [ServeTheHome — Inside a Celestica Seastone DX010 32x 100GbE Switch](https://www.servethehome.com/inside-a-celestica-seastone-dx010-32x-100gbe-switch/) — Hardware teardown with photos and component analysis
 563: 2. [ServeTheHome Forums — PSA: SONiC builds on Celestica DX010](https://forums.servethehome.com/index.php?threads/psa-new-builds-of-older-sonic-versions-no-longer-work-on-the-celestica-dx010.41603/page-2) — Community discussion on SONiC compatibility and firmware issues
 564: 3. [YouTube — Celestica DX010 Overview](https://www.youtube.com/watch?v=fkc2pFFGCtE) — Video overview of the DX010 switch
@@ -12147,157 +12147,157 @@ Now let me update progress and see what's left to do. Let me read the current st
 566: 5. [SONiC GitHub — DX010 Platform Definition (platform.json)](https://github.com/sonic-net/sonic-buildimage/blob/master/device/celestica/x86_64-cel_seastone-r0/platform.json) — Hardware spec: 32x QSFP28, 5 fan drawers, 2 PSUs, breakout modes (1x100G, 2x50G, 4x25G)
 567: 6. [SONiC Foundation](https://sonicfoundation.dev/) — SONiC project home at the Linux Foundation
 568: 7. [SONiC Wiki — Supported Devices & Architecture](https://github.com/sonic-net/SONiC/wiki) — Supported platforms list, building guides, and architecture documentation
-569: 
+569:
 570: #### Dead/Unresolvable Links
-571: 
+571:
 572: - ~~[ServeTheHome — Celestica Haliburton DX010 Teardown (old URL)](https://www.servethehome.com/celestica-haliburton-dx010-teardown/)~~ — Original teardown URL (moved/renamed, 404; replaced by link #1 above)
 573: - ~~[Broadcom BCM56960 Product Page](https://www.broadcom.com/products/ethernet-connectivity/switching/memory-memories-interfaces)~~ — Memory & Interfaces product family including BCM56960 (Broadcom reorganized site, 404)
 574: - ~~[Azure SONiC Project](https://azure.github.io/SONiC/)~~ — Old SONiC documentation URL (moved to Linux Foundation, replaced by sonicfoundation.dev)
 575: - ~~[OCP Networking — SONiC](https://www.opencompute.org/projects/onic)~~ — Open Compute Project SONiC resources (OCP reorganized, 404)
-576: 
+576:
 577: ### IBM/Lenovo RackSwitch G8264
-578: 
+578:
 579: 1. [Lenovo Press TIPS1272 — RackSwitch G8264 Product Guide](https://lenovopress.lenovo.com/tips1272) — Comprehensive product guide with specs, components, transceivers, and configuration (withdrawn product)
 580: 2. [Lenovo Press TIPS1272 — RackSwitch G8264 Product Guide (direct PDF, 29 pages)](https://lenovopress.lenovo.com/tips1272.pdf) — Same content as above in downloadable PDF format
-581: 
+581:
 582: #### Dead/Unresolvable Links
-583: 
+583:
 584: - ~~[DirectIndustry — IBM RackSwitch G8264 Datasheet](https://pdf.directindustry.com/pdf/ibm/system-networking-rackswitch-g8264/27444-337791.html)~~ — Full datasheet PDF (HTTP 410 Gone)
 585: - ~~[ManualsLib — IBM RackSwitch G8264](https://www.manualslib.com/brand/ibm/?q=G8264)~~ — Generic IBM brand page; query parameter does not filter to G8264-specific content
 586: - ~~[karma-group.ru — IBM G8264 Product Brief (PDF)](https://karma-group.ru/upload/iblock/d1e/IBM_System_Networking_RackSwitch_G8264.pdf)~~ — Marketing product brief (404)
 587: - ~~[eyo.com.au — IBM G8264 Brochure (PDF)](https://www.eyo.com.au/wp-content/uploads/2015/08/IBM-System-Networking-RackSwitch-G8264.pdf)~~ — Product brochure with diagrams (404)
-588: 
+588:
 589: ### IBM/Lenovo RackSwitch G8264e
-590: 
+590:
 591: The G8264e does not have a dedicated Lenovo Press product guide. It is a variant of the G8264 family with enhanced 10GbE SFP+ port density.
-592: 
+592:
 593: 1. [Lenovo Press — RackSwitch G8264 Product Guide (TIPS1272)](https://lenovopress.lenovo.com/tips1272) — G8264 family documentation (closest match; no G8264e-specific guide exists)
 594: 2. [Lenovo Press — RackSwitch G8264CS Product Guide (TIPS1273)](https://lenovopress.lenovo.com/tips1273) — G8264CS Converged Switch variant (36 SFP+, 12 Omni Ports with FC, 4x 40G QSFP+) — **not** the G8264e but a related G8264 family member
-595: 
+595:
 596: <!-- No additional manufacturer documentation found for the G8264e specifically. TIPS1273 covers the G8264CS (Converged Switch with Fibre Channel Omni Ports), not the G8264e. -->
-597: 
+597:
 598: ### IBM/Lenovo RackSwitch G8316
-599: 
+599:
 600: 1. [Lenovo Press TIPS0842 — RackSwitch G8316 Product Guide (PDF, 19 pages)](https://lenovopress.lenovo.com/tips0842) — Comprehensive product guide with specs, part numbers, transceivers, and configuration (withdrawn product)
 601: 2. [IBM Support — Overview: IBM System Networking RackSwitch G8316](https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316) — Technical overview with physical specs, part numbers, and warranty info
 602: 3. [karma-group.ru — IBM RackSwitch G8316 Datasheet (PDF)](https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf) — Official IBM datasheet PDF
 603: 4. [IBM — Networking OS 7.4 for RackSwitch G8316 Release Notes (PDF)](https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf) — Firmware release notes with port specifications and supported features
 604: 5. [IT Jungle — IBM Launches 40 Gigabit Ethernet Rack Switch (2011)](https://www.itjungle.com/2011/10/31/tfh103111-story08/) — Launch announcement with pricing ($35,999) and technical overview
-605: 
+605:
 606: ### IBM/Mellanox SX6036
-607: 
+607:
 608: 1. [Mellanox SX6036 Product Brief (PDF, archived)](https://web.archive.org/web/20210124132727/https://www.mellanox.com/related-docs/prod_ib_switch_systems/PB_SX6036.pdf) — Official product brief via Wayback Machine (Mellanox site absorbed by NVIDIA, originals removed)
 609: 2. [ManualsLib — Mellanox SX60 Series](https://www.manualslib.com/brand/mellanox/) — Mellanox manuals index including SX60 series and MSX6036G gateway variant manuals
 610: 3. [NVIDIA InfiniBand OFED Documentation — Fabric Utilities](https://docs.nvidia.com/networking/display/MLNXOFEDv461000/InfiniBand+Fabric+Utilities) — FDR InfiniBand technology reference (covers the FDR 56Gbps technology used in the SX6036)
-611: 
+611:
 612: ### Arista 7050QX-32
-613: 
+613:
 614: 1. [Arista Networks — 7050X Series Product Page](https://www.arista.com/en/products/7050x-series) — Full specifications, features, and datasheets (includes 7050QX-32 under the 7050QX tab)
 615: 2. [Arista 7050QX-32/32S Datasheet (PDF)](https://www.arista.com/assets/data/pdf/Datasheets/7050QX-32_32S_Datasheet_S.pdf) — Official datasheet with specs, port layout, power, and performance data
-616: 
+616:
 617: <!-- Arista requires a login to download some documents; the product page has inline specs and the datasheet PDF above is publicly accessible -->
-618: 
+618:
 619: ### Mono Gateway (mono.si)
-620: 
+620:
 621: The Mono Gateway manufacturer website (mono.si) is completely offline. Documentation is referenced via the NXP SoC that powers the device.
-622: 
+622:
 623: 1. [NXP LS1046A Product Page](https://www.nxp.com/products/processors-and-microcontrollers/arm-processors/layerscape-processors/layerscape-1046a-and-1026a-processors:LS1046A) — SoC datasheet and reference manual
 624: 2. [NXP LS1046A Fact Sheet (PDF)](https://www.nxp.com/docs/en/fact-sheet/LS1046AFS.pdf) — SoC specifications summary
-625: 
+625:
 626: ### Calix GP1101X
-627: 
+627:
 628: No publicly accessible documentation has been found for the Calix GP1101X. Calix restricts all product documentation behind a partner/customer login portal. This is a 10G GPON ONT used as ISP customer premises equipment.
-629: 
+629:
 630: <!-- Attempted: calix.com product page (404), FCC ID search (no results), community forums (login required) -->
-631: 
+631:
 632: ### Netgear XS712T
-633: 
+633:
 634: 1. [Netgear XS712T Support Page](https://www.netgear.com/support/product/xs712t/) — Support downloads, firmware, and documentation
 635: 2. [Netgear XS712T Datasheet (PDF)](https://www.downloads.netgear.com/files/GDC/datasheet/en/XS712T.pdf) — Official product datasheet
-636: 
+636:
 637: #### Dead/Unresolvable Links
-638: 
+638:
 639: - ~~[Netgear ProSAFE 10-Gigabit Smart Switches Datasheet (PDF)](https://www.downloads.netgear.com/files/GDC/datasheet/en/ProSAFE_10-Gigabit_Smart_Managed_Switches.pdf)~~ — Combined family datasheet (HTTP 403 Forbidden)
-640: 
+640:
 641: ### TRENDnet TEG-30284
-642: 
+642:
 643: 1. [TRENDnet TEG-30284 Product Page](https://www.trendnet.com/products/28-port-10g-web-smart-switch-TEG-30284) — Official product page with specifications and downloads
-644: 
+644:
 645: <!-- TRENDnet has limited documentation beyond the product page for this model -->
-646: 
+646:
 647: ### TP-Link SG3210XHP-M2
-648: 
+648:
 649: 1. [TP-Link SG3210XHP-M2 Product Page](https://www.tp-link.com/us/business-networking/omada-switch-poe/sg3210xhp-m2/) — Official product page with specifications, datasheet, and firmware
-650: 
+650:
 651: ### Dell PowerConnect 5448
-652: 
+652:
 653: 1. [Dell PowerConnect 5448 Support Page](https://www.dell.com/support/home/en-us/product-support/product/powerconnect-5448/overview) — Support overview, drivers, and documentation
-654: 
+654:
 655: <!-- Dell has limited legacy documentation for the PowerConnect 5448 series -->
-656: 
+656:
 657: ### Cisco Catalyst 3560
-658: 
+658:
 659: 1. [Cisco Catalyst 3560 Series Support Page](https://www.cisco.com/c/en/us/support/switches/catalyst-3560-series-switches/series.html) — Support hub with model listing, EOL notices, and community links (End-of-Support May 2021)
-660: 
+660:
 661: #### Dead/Unresolvable Links
-662: 
+662:
 663: - ~~[Cisco Catalyst 3560 Series End-of-Life Information](https://www.cisco.com/c/en/us/obsolete/switches/cisco-catalyst-3560-series-switches.html)~~ — EOL notices page (404; replaced by support page above)
-664: 
+664:
 665: <!-- Original datasheets and configuration guides have been removed per Cisco's retirement policy -->
-666: 
+666:
 667: ### Cisco Catalyst 2960
-668: 
+668:
 669: 1. [Cisco Catalyst 2960 Series Switches](https://www.cisco.com/c/en/us/products/switches/catalyst-2960-series-switches/index.html) — Product family support page (End-of-Sale Oct 2022, End-of-Support Oct 2027)
-670: 
+670:
 671: #### Dead/Unresolvable Links
-672: 
+672:
 673: - ~~[Cisco Catalyst 2960 Series LAN Lite Switches Data Sheet](https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-2960-series-switches/data_sheet_c78-728003.html)~~ — Datasheet (404; removed by Cisco)
-674: 
+674:
 675: ### Cisco 2811
-676: 
+676:
 677: 1. [Cisco 2800 Series ISR — Retired Products Page](https://www.cisco.com/c/en/us/obsolete/routers/cisco-2800-series-integrated-services-routers.html) — Retirement confirmation and migration guidance; Cisco deliberately removes all documentation for retired products
-678: 
+678:
 679: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404), router-switch.com (403/404),
 680:      ManualsLib (returned wrong products — manual ID 874874 is a Martindale multimeter, not Cisco 2811). -->
-681: 
+681:
 682: ### Cisco 1841
-683: 
+683:
 684: 1. [Cisco 1800 Series ISR — Retired Products Page](https://www.cisco.com/c/en/us/obsolete/routers/cisco-1800-series-integrated-services-routers.html) — Retirement confirmation and migration guidance; Cisco deliberately removes all documentation for retired products
-685: 
+685:
 686: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404), router-switch.com (404),
 687:      ManualsLib (returned wrong products — manual ID 889024 is a Black & Decker screwdriver, not Cisco 1841) -->
-688: 
+688:
 689: ### Cisco 881
-690: 
+690:
 691: 1. [Cisco 800 Series Routers Product Page](https://www.cisco.com/c/en/us/products/routers/800-series-routers/index.html) — 800 series family page with datasheets, config guides, and troubleshooting for 881 and all other 800 series variants
 692: 2. [ManualsLib — Cisco 881 Manuals](https://www.manualslib.com/brand/cisco/?q=881) — Hardware installation and configuration guides (requires JavaScript for search filtering)
-693: 
+693:
 694: #### Dead/Unresolvable Links
-695: 
+695:
 696: - ~~[Cisco 880 Series Integrated Services Routers Data Sheet](https://www.cisco.com/c/en/us/products/collateral/routers/800-series-routers/datasheet-c78-731755.html)~~ — Datasheet (404; removed by Cisco)
-697: 
+697:
 698: ### Cisco ASA 5505
-699: 
+699:
 700: 1. [Cisco ASA 5505 Adaptive Security Appliance Data Sheet](https://www.cisco.com/c/en/us/products/collateral/security/asa-5500-series-next-generation-firewalls/datasheet-c78-733510.html) — Full datasheet with specs (150Mbps throughput, 10/25 VPN peers, 8-port FE with PoE)
 701: 2. [Cisco ASA 5505 Support Page](https://www.cisco.com/c/en/us/support/security/asa-5505-adaptive-security-appliance/model.html) — Support resources, EOL notices, and documentation (End-of-Support Sept 2025)
-702: 
+702:
 703: ### Cisco SG300-52
-704: 
+704:
 705: 1. [Cisco Small Business 300 Series — Retired Switches Page](https://www.cisco.com/c/en/us/obsolete/switches/cisco-small-business-300-series-managed-switches.html) — Retirement confirmation; Cisco deliberately removes all documentation for retired products
-706: 
+706:
 707: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404). The SG300-52 was a 52-port Gigabit L3-lite managed switch with 2x SFP combo uplinks. -->
-708: 
+708:
 709: ### Netgear GS116E (ProSAFE Plus)
-710: 
+710:
 711: 1. [Netgear GS116Ev2 Product Page (archived Dec 2022)](https://web.archive.org/web/20221201135008/https://www.netgear.com/business/wired/switches/plus/gs116ev2/) — Full product page with specifications via Wayback Machine (Netgear removed the original)
-712: 
+712:
 713: <!-- Attempted: netgear.com product/support pages (empty/404), datasheet PDF downloads (403), archive.org found one good snapshot.
 714:      This was a 16-port Gigabit Plus (smart-managed) desktop switch. -->
-715: 
+715:
 716: ### Cisco 4402 Wireless LAN Controller
-717: 
+717:
 718: 1. [Cisco 4400 Series Wireless LAN Controllers End-of-Life Notice](https://www.cisco.com/c/en/us/obsolete/wireless/cisco-4400-series-wireless-lan-controllers.html) — Retirement notification and migration guidance
-719: 
+719:
 720: <!-- Original datasheets and configuration guides removed per Cisco's retirement policy -->
 
 (End of file - total 720 lines)
@@ -14191,7 +14191,7 @@ Now let me read the current state of the full references section to do a final a
 <path>/home/user/code/docs/inventory/routing-and-switching.md</path>
 <type>file</type>
 <content>548: ## References
-549: 
+549:
 550: > **Note on link availability:** Many of the devices in this inventory are end-of-life (EOL)
 551: > or discontinued. Cisco [deliberately removes all documentation for retired products][cisco-retired].
 552: > IBM/Lenovo has migrated legacy docs to Lenovo Press but coverage is incomplete.
@@ -14201,9 +14201,9 @@ Now let me read the current state of the full references section to do a final a
 556: > documentation are listed with a note explaining what was attempted.
 557: >
 558: > [cisco-retired]: https://www.cisco.com/c/en/us/obsolete/routers/cisco-2811-integrated-services-router.html
-559: 
+559:
 560: ### Celestica Haliburton (DX010)
-561: 
+561:
 562: 1. [ServeTheHome — Inside a Celestica Seastone DX010 32x 100GbE Switch](https://www.servethehome.com/inside-a-celestica-seastone-dx010-32x-100gbe-switch/) — Hardware teardown with photos and component analysis
 563: 2. [ServeTheHome Forums — PSA: SONiC builds on Celestica DX010](https://forums.servethehome.com/index.php?threads/psa-new-builds-of-older-sonic-versions-no-longer-work-on-the-celestica-dx010.41603/page-2) — Community discussion on SONiC compatibility and firmware issues
 564: 3. [YouTube — Celestica DX010 Overview](https://www.youtube.com/watch?v=fkc2pFFGCtE) — Video overview of the DX010 switch
@@ -14211,171 +14211,171 @@ Now let me read the current state of the full references section to do a final a
 566: 5. [SONiC GitHub — DX010 Platform Definition (platform.json)](https://github.com/sonic-net/sonic-buildimage/blob/master/device/celestica/x86_64-cel_seastone-r0/platform.json) — Hardware spec: 32x QSFP28, 5 fan drawers, 2 PSUs, breakout modes (1x100G, 2x50G, 4x25G)
 567: 6. [SONiC Foundation](https://sonicfoundation.dev/) — SONiC project home at the Linux Foundation
 568: 7. [SONiC Wiki — Supported Devices & Architecture](https://github.com/sonic-net/SONiC/wiki) — Supported platforms list, building guides, and architecture documentation
-569: 
+569:
 570: #### Dead/Unresolvable Links
-571: 
+571:
 572: - ~~[ServeTheHome — Celestica Haliburton DX010 Teardown (old URL)](https://www.servethehome.com/celestica-haliburton-dx010-teardown/)~~ — Original teardown URL (moved/renamed, 404; replaced by link #1 above)
 573: - ~~[Broadcom BCM56960 Product Page](https://www.broadcom.com/products/ethernet-connectivity/switching/memory-memories-interfaces)~~ — Memory & Interfaces product family including BCM56960 (Broadcom reorganized site, 404)
 574: - ~~[Azure SONiC Project](https://azure.github.io/SONiC/)~~ — Old SONiC documentation URL (moved to Linux Foundation, replaced by sonicfoundation.dev)
 575: - ~~[OCP Networking — SONiC](https://www.opencompute.org/projects/onic)~~ — Open Compute Project SONiC resources (OCP reorganized, 404)
-576: 
+576:
 577: ### IBM/Lenovo RackSwitch G8264
-578: 
+578:
 579: 1. [Lenovo Press TIPS1272 — RackSwitch G8264 Product Guide](https://lenovopress.lenovo.com/tips1272) — Comprehensive product guide with specs, components, transceivers, and configuration (withdrawn product)
 580: 2. [Lenovo Press TIPS1272 — RackSwitch G8264 Product Guide (direct PDF, 29 pages)](https://lenovopress.lenovo.com/tips1272.pdf) — Same content as above in downloadable PDF format
-581: 
+581:
 582: #### Dead/Unresolvable Links
-583: 
+583:
 584: - ~~[DirectIndustry — IBM RackSwitch G8264 Datasheet](https://pdf.directindustry.com/pdf/ibm/system-networking-rackswitch-g8264/27444-337791.html)~~ — Full datasheet PDF (HTTP 410 Gone)
 585: - ~~[ManualsLib — IBM RackSwitch G8264](https://www.manualslib.com/brand/ibm/?q=G8264)~~ — Generic IBM brand page; query parameter does not filter to G8264-specific content
 586: - ~~[karma-group.ru — IBM G8264 Product Brief (PDF)](https://karma-group.ru/upload/iblock/d1e/IBM_System_Networking_RackSwitch_G8264.pdf)~~ — Marketing product brief (404)
 587: - ~~[eyo.com.au — IBM G8264 Brochure (PDF)](https://www.eyo.com.au/wp-content/uploads/2015/08/IBM-System-Networking-RackSwitch-G8264.pdf)~~ — Product brochure with diagrams (404)
-588: 
+588:
 589: ### IBM/Lenovo RackSwitch G8264e
-590: 
+590:
 591: The G8264e does not have a dedicated Lenovo Press product guide. It is a variant of the G8264 family with enhanced 10GbE SFP+ port density.
-592: 
+592:
 593: 1. [Lenovo Press — RackSwitch G8264 Product Guide (TIPS1272)](https://lenovopress.lenovo.com/tips1272) — G8264 family documentation (closest match; no G8264e-specific guide exists)
 594: 2. [Lenovo Press — RackSwitch G8264CS Product Guide (TIPS1273)](https://lenovopress.lenovo.com/tips1273) — G8264CS Converged Switch variant (36 SFP+, 12 Omni Ports with FC, 4x 40G QSFP+) — **not** the G8264e but a related G8264 family member
-595: 
+595:
 596: <!-- No additional manufacturer documentation found for the G8264e specifically. TIPS1273 covers the G8264CS (Converged Switch with Fibre Channel Omni Ports), not the G8264e. -->
-597: 
+597:
 598: ### IBM/Lenovo RackSwitch G8316
-599: 
+599:
 600: 1. [Lenovo Press TIPS0842 — RackSwitch G8316 Product Guide (PDF, 19 pages)](https://lenovopress.lenovo.com/tips0842) — Comprehensive product guide with specs, part numbers, transceivers, and configuration (withdrawn product)
 601: 2. [IBM Support — Overview: IBM System Networking RackSwitch G8316](https://www.ibm.com/support/pages/overview-ibm-system-networking-rackswitch-g8316) — Technical overview with physical specs, part numbers, and warranty info
 602: 3. [karma-group.ru — IBM RackSwitch G8316 Datasheet (PDF)](https://www.karma-group.ru/upload/iblock/075/ibm_rackswitch_g8316_datasheet.36FB11CA32564FA8ABFCCC6287CF898C.pdf) — Official IBM datasheet PDF
 603: 4. [IBM — Networking OS 7.4 for RackSwitch G8316 Release Notes (PDF)](https://download4.boulder.ibm.com/sar/CMA/SNA/03cok/2/G8316_RN_7-4.pdf) — Firmware release notes with port specifications and supported features
 604: 5. [IT Jungle — IBM Launches 40 Gigabit Ethernet Rack Switch (2011)](https://www.itjungle.com/2011/10/31/tfh103111-story08/) — Launch announcement with pricing ($35,999) and technical overview
-605: 
+605:
 606: ### IBM/Mellanox SX6036
-607: 
+607:
 608: 1. [Mellanox SX6036 Product Brief (PDF, archived)](https://web.archive.org/web/20210124132727/https://www.mellanox.com/related-docs/prod_ib_switch_systems/PB_SX6036.pdf) — Official product brief via Wayback Machine (Mellanox site absorbed by NVIDIA, originals removed)
 609: 2. [ManualsLib — Mellanox SX60 Series](https://www.manualslib.com/brand/mellanox/) — Mellanox manuals index including SX60 series and MSX6036G gateway variant manuals
 610: 3. [NVIDIA InfiniBand OFED Documentation — Fabric Utilities](https://docs.nvidia.com/networking/display/MLNXOFEDv461000/InfiniBand+Fabric+Utilities) — FDR InfiniBand technology reference (covers the FDR 56Gbps technology used in the SX6036)
-611: 
+611:
 612: ### Arista 7050QX-32
-613: 
+613:
 614: 1. [Arista Networks — 7050X Series Product Page](https://www.arista.com/en/products/7050x-series) — Full specifications, features, and datasheets (includes 7050QX-32 under the 7050QX tab)
 615: 2. [Arista 7050QX-32/32S Datasheet (PDF)](https://www.arista.com/assets/data/pdf/Datasheets/7050QX-32_32S_Datasheet_S.pdf) — Official datasheet with specs, port layout, power, and performance data
 616: 3. [Arista Product Documentation Library](https://www.arista.com/en/support/product-documentation) — Hardware installation guides, EOS software docs, and product bulletins for all Arista switch series
-617: 
+617:
 618: <!-- Arista requires a login to download some documents; the product page has inline specs and the datasheet PDF above is publicly accessible -->
-619: 
+619:
 620: ### Mono Gateway (mono.si)
-621: 
+621:
 622: The Mono Gateway manufacturer website (mono.si) is now offline (parked domain). An archived copy preserves the original product information. Documentation is also referenced via the NXP SoC that powers the device.
-623: 
+623:
 624: 1. [Mono Gateway Product Page (archived Feb 2025)](https://web.archive.org/web/20250206220702/https://mono.si/) — Original product page via Wayback Machine: open-source 10-gigabit NXP-based router dev kit ($600), specs include NXP LS1046A (1.6 GHz quad Cortex-A72), 2x 10G SFP+, 3x GbE RJ-45, 2x M.2 (WiFi 5+BT+Thread, WiFi 6), 32GB eMMC, preloaded with OpenWRT
 625: 2. [NXP LS1046A Product Page](https://www.nxp.com/products/processors-and-microcontrollers/arm-processors/layerscape-processors/layerscape-1046a-and-1026a-processors:LS1046A) — SoC datasheet and reference manual
 626: 3. [NXP LS1046A Fact Sheet (PDF)](https://www.nxp.com/docs/en/fact-sheet/LS1046AFS.pdf) — SoC specifications summary
-627: 
+627:
 628: ### Calix GP1101X
-629: 
+629:
 630: No publicly accessible documentation has been found for the Calix GP1101X. Calix restricts all product documentation behind a partner/customer login portal. This is a 10G GPON ONT used as ISP customer premises equipment.
-631: 
+631:
 632: <!-- Attempted: calix.com product page (404), FCC ID search (no results), community forums (login required) -->
-633: 
+633:
 634: ### Netgear XS712T
-635: 
+635:
 636: 1. [Netgear XS712T Support Page](https://www.netgear.com/support/product/xs712t/) — Support downloads, firmware, and documentation
 637: 2. [Netgear XS712T Datasheet (PDF)](https://www.downloads.netgear.com/files/GDC/datasheet/en/XS712T.pdf) — Official product datasheet
-638: 
+638:
 639: #### Dead/Unresolvable Links
-640: 
+640:
 641: - ~~[Netgear ProSAFE 10-Gigabit Smart Switches Datasheet (PDF)](https://www.downloads.netgear.com/files/GDC/datasheet/en/ProSAFE_10-Gigabit_Smart_Managed_Switches.pdf)~~ — Combined family datasheet (HTTP 403 Forbidden)
-642: 
+642:
 643: ### TRENDnet TEG-30284
-644: 
+644:
 645: 1. [TRENDnet TEG-30284 Product Page](https://www.trendnet.com/products/28-port-10g-web-smart-switch-TEG-30284) — Official product page with specifications and downloads
-646: 
+646:
 647: <!-- TRENDnet has limited documentation beyond the product page for this model -->
-648: 
+648:
 649: ### TP-Link SG3210XHP-M2
-650: 
+650:
 651: 1. [TP-Link SG3210XHP-M2 Product Page](https://www.tp-link.com/us/business-networking/omada-switch-poe/sg3210xhp-m2/) — Official product page with specifications, datasheet, and firmware
 652: 2. [TP-Link SG3210XHP-M2 Specifications](https://www.tp-link.com/us/business-networking/omada-switch-poe/sg3210xhp-m2/#spec) — Detailed hardware specs: 8x 2.5G RJ45, 2x 10G SFP+, 240W PoE budget, 80Gbps switching, L2+ features, Omada SDN
 653: 3. [TP-Link SG3210XHP-M2 Support & Downloads](https://www.tp-link.com/us/support/download/sg3210xhp-m2/) — Firmware downloads, release notes, configuration guides, and knowledgebase articles
-654: 
+654:
 655: ### Dell PowerConnect 5448
-656: 
+656:
 657: 1. [Dell PowerConnect 5448 Support Page](https://www.dell.com/support/home/en-us/product-support/product/powerconnect-5448/overview) — Support overview, drivers, and documentation
 658: 2. [Dell PowerConnect 5448 Documentation](https://www.dell.com/support/home/en-us/product-support/product/powerconnect-5448/docs) — Manuals, documents, articles, videos, and advisories
 659: 3. [Dell PowerConnect 5448 Drivers & Downloads](https://www.dell.com/support/home/en-us/product-support/product/powerconnect-5448/drivers) — Firmware and software downloads
-660: 
+660:
 661: <!-- Dell has limited legacy documentation for the PowerConnect 5448 series -->
-662: 
+662:
 663: ### Cisco Catalyst 3560
-664: 
+664:
 665: 1. [Cisco Catalyst 3560 Series Support Page](https://www.cisco.com/c/en/us/support/switches/catalyst-3560-series-switches/series.html) — Support hub with model listing, EOL notices, and community links (End-of-Support May 2021)
 666: 2. [Cisco Catalyst 3560 Series Product Page (archived Nov 2019)](https://web.archive.org/web/20191113050830/https://www.cisco.com/c/en/us/products/switches/catalyst-3560-series-switches/index.html) — Original product page via Wayback Machine showing end-of-sale status and migration to Catalyst 9300
-667: 
+667:
 668: #### Dead/Unresolvable Links
-669: 
+669:
 670: - ~~[Cisco Catalyst 3560 Series End-of-Life Information](https://www.cisco.com/c/en/us/obsolete/switches/cisco-catalyst-3560-series-switches.html)~~ — EOL notices page (404; replaced by support page above)
-671: 
+671:
 672: <!-- Original datasheets and configuration guides have been removed per Cisco's retirement policy -->
-673: 
+673:
 674: ### Cisco Catalyst 2960
-675: 
+675:
 676: 1. [Cisco Catalyst 2960 Series Switches](https://www.cisco.com/c/en/us/products/switches/catalyst-2960-series-switches/index.html) — Product family support page (End-of-Sale Oct 2022, End-of-Support Oct 2027)
 677: 2. [Cisco Catalyst 2960 Series Support Page](https://www.cisco.com/c/en/us/support/switches/catalyst-2960-series-switches/series.html) — Support hub with data sheets, EOL notices, and retired model listings (End-of-Support Oct 2019 for original 2960)
-678: 
+678:
 679: #### Dead/Unresolvable Links
-680: 
+680:
 681: - ~~[Cisco Catalyst 2960 Series LAN Lite Switches Data Sheet](https://www.cisco.com/c/en/us/products/collateral/switches/catalyst-2960-series-switches/data_sheet_c78-728003.html)~~ — Datasheet (404; removed by Cisco)
-682: 
+682:
 683: ### Cisco 2811
-684: 
+684:
 685: 1. [Cisco 2800 Series ISR — Retired Products Page](https://www.cisco.com/c/en/us/obsolete/routers/cisco-2800-series-integrated-services-routers.html) — Retirement confirmation and migration guidance; Cisco deliberately removes all documentation for retired products
 686: 2. [Cisco 2811 ISR Product Page (archived Apr 2019)](https://web.archive.org/web/20190426175659/https://www.cisco.com/c/en/us/products/routers/2811-integrated-services-router-isr/index.html) — Original product page via Wayback Machine with specs, end-of-sale notice, and ISR 4000 upgrade path
-687: 
+687:
 688: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org datasheets (404), router-switch.com (403/404),
 689:      ManualsLib (returned wrong products — manual ID 874874 is a Martindale multimeter, not Cisco 2811). -->
-690: 
+690:
 691: ### Cisco 1841
-692: 
+692:
 693: 1. [Cisco 1800 Series ISR — Retired Products Page](https://www.cisco.com/c/en/us/obsolete/routers/cisco-1800-series-integrated-services-routers.html) — Retirement confirmation and migration guidance; Cisco deliberately removes all documentation for retired products
-694: 
+694:
 695: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404), router-switch.com (404),
 696:      ManualsLib (returned wrong products — manual ID 889024 is a Black & Decker screwdriver, not Cisco 1841) -->
-697: 
+697:
 698: ### Cisco 881
-699: 
+699:
 700: 1. [Cisco 800 Series Routers Product Page](https://www.cisco.com/c/en/us/products/routers/800-series-routers/index.html) — 800 series family page with datasheets, config guides, and troubleshooting for 881 and all other 800 series variants
 701: 2. [Cisco 800 Series Routers Support Page](https://www.cisco.com/c/en/us/support/routers/800-series-routers/series.html) — Support hub with documentation, firmware, and model listings across 800M/810/860/880/890 product lines (881 listed under 880 section)
 702: 3. [ManualsLib — Cisco 881 Manuals](https://www.manualslib.com/brand/cisco/?q=881) — Hardware installation and configuration guides (requires JavaScript for search filtering)
-703: 
+703:
 704: #### Dead/Unresolvable Links
-705: 
+705:
 706: - ~~[Cisco 880 Series Integrated Services Routers Data Sheet](https://www.cisco.com/c/en/us/products/collateral/routers/800-series-routers/datasheet-c78-731755.html)~~ — Datasheet (404; removed by Cisco)
-707: 
+707:
 708: ### Cisco ASA 5505
-709: 
+709:
 710: 1. [Cisco ASA 5505 Adaptive Security Appliance Data Sheet](https://www.cisco.com/c/en/us/products/collateral/security/asa-5500-series-next-generation-firewalls/datasheet-c78-733510.html) — Full datasheet with specs (150Mbps throughput, 10/25 VPN peers, 8-port FE with PoE)
 711: 2. [Cisco ASA 5505 Support Page](https://www.cisco.com/c/en/us/support/security/asa-5505-adaptive-security-appliance/model.html) — Support resources, EOL notices, and documentation (End-of-Support Sept 2025)
 712: 3. [Cisco ASA 9.6 CLI Configuration Guide](https://www.cisco.com/c/en/us/td/docs/security/asa/asa96/configuration/general/asa-96-general-config.html) — CLI Book 1: General Operations configuration reference (applies to ASA 5505, ASA 5500-X, Firepower 4100/9300, and ISA 3000)
-713: 
+713:
 714: ### Cisco SG300-52
-715: 
+715:
 716: 1. [Cisco Small Business 300 Series — Retired Switches Page](https://www.cisco.com/c/en/us/obsolete/switches/cisco-small-business-300-series-managed-switches.html) — Retirement confirmation; Cisco deliberately removes all documentation for retired products
 717: 2. [Cisco Small Business 300 Series Support Page](https://www.cisco.com/c/en/us/support/switches/small-business-300-series-managed-switches/series.html) — Support hub listing all retired Small Business switch product lines with EOL policy links
-718: 
+718:
 719: <!-- Attempted: cisco.com datasheet URLs (removed), archive.org (404). The SG300-52 was a 52-port Gigabit L3-lite managed switch with 2x SFP combo uplinks. -->
-720: 
+720:
 721: ### Netgear GS116E (ProSAFE Plus)
-722: 
+722:
 723: 1. [Netgear GS116Ev2 Product Page (archived Dec 2022)](https://web.archive.org/web/20221201135008/https://www.netgear.com/business/wired/switches/plus/gs116ev2/) — Full product page with specifications via Wayback Machine (Netgear removed the original)
 724: 2. [Netgear GS116Ev2 Support Page (archived Jan 2022)](https://web.archive.org/web/20220124201429/https://www.netgear.com/support/product/GS116Ev2) — Firmware downloads (up to v2.6.0.48), user manuals, installation guide, and ProSAFE Plus Utility downloads via Wayback Machine
-725: 
+725:
 726: <!-- Attempted: netgear.com product/support pages (empty/404), datasheet PDF downloads (403), archive.org found two good snapshots.
 727:      This was a 16-port Gigabit Plus (smart-managed) desktop switch. -->
-728: 
+728:
 729: ### Cisco 4402 Wireless LAN Controller
-730: 
+730:
 731: 1. [Cisco 4400 Series Wireless LAN Controllers End-of-Life Notice](https://www.cisco.com/c/en/us/obsolete/wireless/cisco-4400-series-wireless-lan-controllers.html) — Retirement notification and migration guidance
 732: 2. [Cisco 4400 Series WLC Support Page](https://www.cisco.com/c/en/us/support/wireless/4400-series-wireless-lan-controllers/series.html) — Support hub with retirement dates (End-of-Sale June 2011, End-of-Support June 2016)
-733: 
+733:
 734: <!-- Original datasheets and configuration guides removed per Cisco's retirement policy -->
 
 (End of file - total 734 lines)

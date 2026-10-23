@@ -1,0 +1,13 @@
+## Randomized run: 300 trials, 8 rounds, group of 5, buffering=false
+converged: 1 of 300
+nobody left to settle (not compared): 0
+out-of-order deliveries buffered: 0
+out-of-order deliveries dropped: 7668
+max predecessors named by one op: 5
+failures by reason:
+     1  member cannot derive root: NoRootKey
+   298  membership views differ
+merge or op errors (other than out-of-order):
+   370  IdentifierNotFound
+     3  NoMembers
+panics: 0

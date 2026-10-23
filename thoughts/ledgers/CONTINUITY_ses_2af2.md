@@ -46,7 +46,7 @@ OK with caching everything, don't need `--frozen`. Try vendoring per ibsenware.o
 2. Add deno to `nix-common.nix`
 3. Create `lootbox.config.json` with MCP servers: codedb (`/home/user/bin/codedb mcp`), fff (`/home/user/.local/bin/fff-mcp`), chrome-devtools (`npx -y chrome-devtools-mcp@latest`)
 4. Update `opencode.jsonc` — remove mcpServers, add lootbox CLI
-5. Update `.opencode/instructions/` 
+5. Update `.opencode/instructions/`
 6. Add `just update-lootbox` recipe
 7. Update `.envrc`/shellHook to auto-start lootbox server
 8. Run `lootbox init`

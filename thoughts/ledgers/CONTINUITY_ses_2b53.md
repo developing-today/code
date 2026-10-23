@@ -41,7 +41,7 @@ A comprehensive codebase research was completed — **no code was modified**. Th
 - Purely extension-based — no magic byte sniffing
 - `get_content_type()` maps extensions to MIME strings (images, video, audio, PDF, text, code, default octet-stream)
 - `detect_mode()` / `detect_mode_with_content()` classifies into Rich/Markdown/Plain/Raw/Media/Binary
-- Media images already render in a viewer via `render_media_viewer()` with `<img src="/blob/{hash}?filename=...">` 
+- Media images already render in a viewer via `render_media_viewer()` with `<img src="/blob/{hash}?filename=...">`
 
 ### What Needs to Be Done (Implementation Plan)
 

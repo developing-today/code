@@ -16,6 +16,10 @@ let
   # Read Cargo.toml for package metadata
   cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
 
+  # The Rust version the check installs, from the pin in rust-toolchain.toml
+  toolchainToml = builtins.fromTOML (builtins.readFile ./rust-toolchain.toml);
+  rustVersion = toolchainToml.toolchain.channel;
+
   pname = cargoToml.package.name;
   inherit (cargoToml.package) version;
 
@@ -26,12 +30,16 @@ in
     inherit pname version;
     src = ./.;
 
+    buildFeatures = [
+      "sandbox"
+      "world"
+    ];
+
     cargoLock = {
       lockFile = ./Cargo.lock;
-      # If you have git dependencies, add them here:
-      # outputHashes = {
-      #   "distributed-topic-tracker-0.1.0" = "sha256-...";
-      # };
+      outputHashes = {
+        "p2panda-core-0.7.1" = "sha256-t1FDJkQ6B43clPF0lD36I+Uxav0YbqJ2e/UwWUoI6fk=";
+      };
     };
 
     nativeBuildInputs = with pkgs; [
@@ -90,7 +98,7 @@ in
       export RUSTUP_HOME=$HOME/.rustup
 
       # Install Rust toolchain
-      rustup default 1.89.0
+      rustup default ${rustVersion}
       rustup component add clippy rustfmt
 
       echo "══════════════════════════════════════════════════════"
@@ -108,6 +116,9 @@ in
 
       echo "→ Running integration tests..."
       cargo test --test cli_integration
+
+      echo "→ Checking the toolchain pin..."
+      cargo test --test toolchain_pin
 
       echo "→ Running doc tests..."
       cargo test --doc

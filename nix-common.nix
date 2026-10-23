@@ -8,19 +8,44 @@
 #
 # Usage in shell.nix:
 #   nixCommon = import ./nix-common.nix { inherit pkgs; };
+#
+# Package management: add dev dependencies here only (never directly to
+# shell.nix or flake.nix). Both shells and the system profile mirror this list.
 
 { pkgs }:
 
 let
-  # Rust toolchain from rust-toolchain.toml (includes rustc, cargo, rustfmt, clippy)
-  # Works because both shell.nix and flake.nix apply rust-overlay before importing
-  # Uses pkgs/id path directly (root symlink not tracked by git, won't be in Nix store)
+  # Rust toolchain, pinned by pkgs/id/rust-toolchain.toml and resolved through
+  # rust-overlay. This is the modern way to get a complete toolchain: the
+  # file's `components` list is what places clippy, rust-analyzer, rustfmt and
+  # llvm-tools in the toolchain, and `channel` (currently 1.99.0) is the single
+  # place the version lives. Nothing else needs to be added for those tools.
   rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./pkgs/id/rust-toolchain.toml;
 
-  # Formatter binaries (keep in sync with treefmt.toml)
-  # Used by formatter wrapper (nix fmt), nix flake checks, and devShell PATH
+  # mcpx (MCP gateway / Code Mode runner) is built from this repository. It is
+  # callPackaged here so `nix develop` and `nix-shell` both get the same build,
+  # the same way nixos/environment/default.nix pulls it in system-wide.
+  mcpx = pkgs.callPackage ./pkgs/mcpx/package.nix { };
+
+  # Android SDK for building Android projects (notably the OpenChamber mobile
+  # app) from either shell. Mirrors nixos/environment/default.nix exactly, so
+  # the dev shells and the system profile expose the same SDK. Emulator,
+  # sources and system images are deliberately excluded (large, and the build
+  # host does not need them). Requires allowUnfree + android_sdk.accept_license
+  # on the pkgs passed in -- the flake devShell and shell.nix both set them.
+  androidSdk = pkgs.androidenv.composeAndroidPackages {
+    cmdLineToolsVersion = "latest";
+    buildToolsVersions = [ "35.0.0" ];
+    platformVersions = [ "35" ];
+    includeEmulator = false;
+    includeSources = false;
+    includeSystemImages = false;
+  };
+
+  # Formatter binaries (keep in sync with treefmt.toml).
+  # Used by the formatter wrapper (nix fmt), nix flake checks, and devShell PATH.
   fmtBins = [
-    # Rust toolchain (includes rustfmt)
+    # Rust toolchain (includes rustfmt and clippy)
     rustToolchain
   ]
   ++ (with pkgs; [
@@ -36,7 +61,7 @@ let
     ruff
     rufo
     elmPackages.elm-format
-    go
+    go_1_27 # highest released Go; also provides gofmt, the treefmt Go formatter
     haskellPackages.ormolu
     taplo
     # Utilities needed by formatter wrapper
@@ -47,28 +72,61 @@ let
     bash
   ]);
 
-  # Native build inputs (tools) — used by nativeBuildInputs and packages
-  nativeBuildInputs =
-    fmtBins
-    ++ (with pkgs; [
-      # Build dependencies (Rust compilation)
-      pkg-config
-      openssl
+  # Everything else the repository's workflows reference. Grouped so it is
+  # obvious why each package is here.
+  devTools = with pkgs; [
+    # --- NixOS management (just switch -> lib/rebuild-*.sh, lib/auth.sh) ---
+    nix # nix / nix flakes / flake locking
+    nix-output-monitor # the `nom` used to filter nixos-rebuild --json output
+    home-manager
+    git
+    jq # `jq` in rebuild-simple.sh and the justfile
+    sops
+    ssh-to-age
+    gnupg
+    age
 
-      nix
-      home-manager
-      git
-      sops
-      ssh-to-age
-      gnupg
-      age
+    # --- Rust (this repo's crates + the id sub-project) ---
+    # The toolchain itself (rustc, cargo, rustfmt, clippy, rust-analyzer,
+    # llvm-tools) is `rustToolchain` above, added via fmtBins.
+    pkg-config
+    openssl
+    cmake # id: libsql-ffi builds its bundled SQLite through cmake
+    zig # id: builds the roc-world wasm host (build.zig.zon wants 0.16)
+    cargo-watch
+    cargo-nextest
+    cargo-llvm-cov
+    cargo-audit
+    cargo-outdated
+    cargo-machete
+    cargo-edit
 
-      # Python/uv (used by scripts)
-      uv
+    # --- Go (mcpx) ---
+    # The go_1_27 toolchain is in fmtBins (it also provides gofmt); mcpx is the
+    # repository's Go program, built with the same toolchain (buildGo127Module).
+    mcpx
 
-      # Manual linters (not in treefmt, run manually)
-      deadnix
-    ]);
+    # --- Git hooks (lefthook.yml: treefmt pre-commit, conform commit-msg) ---
+    lefthook
+    conform
+
+    # --- Web (id web UI) ---
+    # Playwright browsers deliberately stay in pkgs/id's own shell, which wires
+    # PLAYWRIGHT_BROWSERS_PATH; installing them here would be dead weight.
+    bun # JavaScript bundler and runtime (required for id web builds)
+    nodejs # npm, npx
+    typescript # TypeScript for type checking
+
+    # --- Assorted workflow tools referenced by justfile/scripts ---
+    ripgrep
+    fd
+    tokei
+    hyperfine
+    uv
+    deadnix # manual nix linter (kept out of treefmt on purpose)
+  ];
+
+  nativeBuildInputs = fmtBins ++ devTools;
 in
 {
   inherit rustToolchain fmtBins nativeBuildInputs;
@@ -101,6 +159,14 @@ in
     ))
     pkgs.gobject-introspection
     pkgs.glib
+
+    # Android: the composed SDK (cmdline-tools, platform-tools, build-tools
+    # 35.0.0, platforms;android-35) and JDK 21 for Gradle 8.x. android-tools adds
+    # adb/fastboot directly to PATH; ANDROID_HOME/ANDROID_SDK_ROOT/JAVA_HOME are
+    # exported in shellHook below. Keep in sync with nixos/environment/default.nix.
+    pkgs.jdk21
+    pkgs.android-tools
+    androidSdk.androidsdk
   ];
 
   # Shared shell hook for both nix-shell and nix develop
@@ -141,18 +207,18 @@ in
       export PATH="$_devshell_only''${_hm_paths:+:$_hm_paths}''${_system_only:+:$_system_only}"
       unset _pre_profile_path _hm_paths _devshell_only _system_only _remaining _e _is_sys _p
     fi
-    # Lootbox setup: install if missing, start server if not running
-    export PATH="$HOME/.deno/bin:$PATH"
-    if ! command -v lootbox &>/dev/null; then
-      echo "Installing lootbox..."
-      curl -fsSL https://raw.githubusercontent.com/jx-codes/lootbox/main/install.sh | bash
-    fi
-    if command -v lootbox &>/dev/null; then
-      if ! ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then
-        echo "Starting lootbox server (port 9420)..."
-        nohup lootbox server --port 9420 &>/dev/null &
-        disown
-      fi
+    # Android SDK + JDK 21. Exported here (not as a mkShell attr) so both
+    # shell.nix and the flake devShell pick them up through the shared hook.
+    # The OpenChamber mobile scripts read ANDROID_HOME and fall back to a
+    # Homebrew JAVA_HOME when it is unset, so JAVA_HOME must be exported.
+    export ANDROID_HOME="${androidSdk.androidsdk}/libexec/android-sdk"
+    export ANDROID_SDK_ROOT="$ANDROID_HOME"
+    export JAVA_HOME="${pkgs.jdk21.home}"
+    export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+
+    # mcpx daemon autostart
+    if command -v mcpx &>/dev/null; then
+      mcpx daemon start 2>/dev/null || true
     fi
 
     echo ""

@@ -89,13 +89,13 @@ pub fn render_main_page_wrapper(content: &str) -> String {
     html.push_str("    <header class=\"inline-header flex items-center justify-between px-3 py-1 bg-base-100 border-b border-base-300 text-xs\" id=\"main-header\">\n");
     html.push_str("        <span class=\"font-bold\"><a href=\"/\" data-nav class=\"crt-bloom\">id</a> <span class=\"text-muted\" id=\"header-subtitle\">// p2p file sharing</span></span>\n");
     html.push_str("        <nav class=\"flex items-center gap-3\">\n");
-    html.push_str("            <a href=\"/\" data-nav class=\"crt-glow\">files</a>\n");
+    html.push_str("            <a href=\"/files\" data-nav class=\"crt-glow\">files</a>\n");
     html.push_str("            <a href=\"/peers\" data-nav class=\"crt-glow\">peers</a>\n");
     html.push_str("            <a href=\"/settings\" data-nav class=\"crt-glow\">settings</a>\n");
     html.push_str("            <span class=\"flex items-center gap-1\">\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\"></button>\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\" aria-label=\"Sneak theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\" aria-label=\"Arch theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\" aria-label=\"Mech theme\"></button>\n");
     html.push_str("            </span>\n");
     html.push_str("        </nav>\n");
     html.push_str("    </header>\n");
@@ -454,13 +454,13 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
     // Copy button
     html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
-    html.push_str("            <a href=\"/\" data-nav>files</a>\n");
+    html.push_str("            <a href=\"/files\" data-nav>files</a>\n");
     html.push_str("            <a href=\"/peers\" data-nav>peers</a>\n");
     html.push_str("            <a href=\"/settings\" data-nav>settings</a>\n");
     html.push_str("            <span class=\"flex items-center gap-1\">\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\"></button>\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\"></button>\n");
-    html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"sneak\" title=\"Sneak theme\" aria-label=\"Sneak theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"arch\" title=\"Arch theme\" aria-label=\"Arch theme\"></button>\n");
+    html.push_str("                <button class=\"theme-btn\" data-theme=\"mech\" title=\"Mech theme\" aria-label=\"Mech theme\"></button>\n");
     html.push_str("            </span>\n");
     html.push_str("        </nav>\n");
     html.push_str("    </div>\n");
@@ -474,7 +474,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("        <span class=\"flex items-center gap-1\" id=\"tag-add-inline\">\n");
     html.push_str("            <input type=\"text\" id=\"tag-add-key\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"key\" />\n");
     html.push_str("            <input type=\"text\" id=\"tag-add-value\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"value\" />\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" onclick=\"window.idApp?.addTagInline?.()\">+</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" aria-label=\"Add tag\" onclick=\"window.idApp?.addTagInline?.()\">+</button>\n");
     html.push_str("        </span>\n");
     html.push_str("    </div>\n");
 
@@ -745,6 +745,96 @@ pub fn render_settings(node_id: &str) -> String {
     html
 }
 
+/// Render a browser presentation for the optional multiplayer world.
+pub fn render_world_page(assets: &AssetUrls) -> String {
+    let content = r#"
+<section data-world-app class="space-y-5" aria-labelledby="world-title">
+  <nav aria-label="World documents" class="text-sm">
+    <a href="/files" data-nav class="link link-primary">Open shared documents (file browser and ProseMirror collaborative editor/viewer)</a>
+  </nav>
+  <header class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <p class="font-mono text-xs uppercase tracking-widest text-primary">p2p / live session</p>
+      <h1 id="world-title" class="text-2xl font-bold">Lobby</h1>
+      <p class="text-sm opacity-70">The host is authoritative. Chat and game inputs share one sequenced world.</p>
+    </div>
+    <output data-world-status role="status" aria-live="polite" class="badge badge-outline">Not connected</output>
+  </header>
+
+  <section class="card border border-base-300 bg-base-100 p-4 space-y-3" aria-label="Join world">
+    <h2 class="font-bold">Join or invite</h2>
+    <label class="form-control max-w-xl">
+      <span class="label-text">Display name</span>
+      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest">
+    </label>
+    <label class="form-control max-w-xl">
+      <span class="label-text">World <span class="opacity-60">(blank for the server's default)</span></span>
+      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*">
+    </label>
+    <label class="form-control max-w-xl">
+      <span class="label-text">Guest capability</span>
+      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability">
+    </label>
+    <div class="flex flex-wrap gap-2">
+      <button data-world-join class="btn btn-primary" type="button">Join world</button>
+      <button data-world-copy class="btn btn-ghost" type="button">Copy capability</button>
+    </div>
+    <div data-world-invite-output hidden>
+      <p class="text-sm">This bearer capability grants guest access. Share it privately.</p>
+    </div>
+    <details>
+      <summary class="cursor-pointer text-sm">Host: create a guest invite</summary>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <input data-world-admin class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="World admin token">
+        <button data-world-invite class="btn btn-secondary" type="button">Create invite</button>
+      </div>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <input data-world-module class="file-input file-input-bordered" type="file" accept=".wasm,application/wasm" aria-label="Wasm world module">
+        <input data-world-seed class="input input-bordered w-24" type="number" value="1" aria-label="World seed">
+        <button data-world-install class="btn btn-warning" type="button">Install Wasm module</button>
+      </div>
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <input data-world-source class="file-input file-input-bordered" type="file" accept=".roc,text/plain" multiple aria-label="Roc world sources">
+        <button data-world-compile class="btn btn-warning" type="button">Compile &amp; install Roc sources</button>
+      </div>
+      <p class="text-xs opacity-60">Choose main.roc and up to 7 additional .roc files. Each file is limited to 128 KiB and all sources together to 256 KiB. Compilation runs on the host (up to 120 seconds).</p>
+      <p class="text-xs opacity-60">Uploads run in the host's import-free Wasmtime sandbox. The current world restarts at its module seed.</p>
+    </details>
+  </section>
+
+  <section class="grid gap-4 md:grid-cols-2">
+    <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
+      <h2 class="font-bold">World view</h2>
+      <div data-world-view tabindex="0" aria-label="World screen. Focus here to send keyboard input." class="min-h-32 max-h-[70vh] overflow-auto whitespace-pre-wrap rounded bg-base-200 p-4 font-mono text-lg leading-none" aria-live="polite">Waiting for a world view…</div>
+      <p class="text-xs opacity-60">Rendered by the host's world program; clients do not decide authoritative state.</p>
+      <div class="flex items-center justify-between">
+        <h2 class="font-bold">Records</h2>
+        <button data-world-records-refresh class="btn btn-ghost btn-xs" type="button">Refresh</button>
+      </div>
+      <pre data-world-records class="h-40 overflow-auto rounded bg-base-200 p-3 font-mono text-xs" aria-live="polite">{}</pre>
+      <p class="text-xs opacity-60">Structured data the program publishes. Mirrors peer-to-peer with
+        <code>id world mirror</code>.</p>
+    </div>
+    <div class="card border border-base-300 bg-base-100 p-4 space-y-3">
+      <h2 class="font-bold">Participants</h2>
+      <div data-world-participants class="min-h-8" aria-live="polite"></div>
+      <h2 class="font-bold">Chat &amp; events</h2>
+      <ol data-world-log class="h-48 overflow-auto rounded bg-base-200 p-3 font-mono text-sm" aria-live="polite"></ol>
+      <form data-world-chat-form class="flex gap-2">
+        <input data-world-chat class="input input-bordered min-w-0 flex-1" maxlength="2048" placeholder="Say something…">
+        <button class="btn btn-primary" type="submit">Chat</button>
+      </form>
+      <form data-world-input-form class="flex gap-2">
+        <input data-world-input class="input input-bordered min-w-0 flex-1 font-mono" maxlength="4096" value="inc" aria-label="Game input">
+        <button class="btn btn-secondary" type="submit">Send input</button>
+      </form>
+    </div>
+  </section>
+</section>
+"#;
+    render_page("World", content, "", assets)
+}
+
 /// Render the peers page showing discovered peers.
 ///
 /// # Arguments
@@ -809,7 +899,7 @@ fn format_age(secs: u64) -> String {
 }
 
 /// Escape HTML special characters.
-fn html_escape(s: &str) -> String {
+pub(super) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -941,6 +1031,33 @@ mod tests {
         let html = render_page("Test", "<p>Content</p>", "", &assets);
         assert!(html.contains("/assets/main.abc12345.js"));
         assert!(html.contains("/assets/styles.def67890.css"));
+    }
+
+    #[test]
+    fn test_render_world_page_exposes_presentation_controls() {
+        let html = render_world_page(&AssetUrls::default());
+        assert!(html.contains("data-world-app"));
+        assert!(html.contains("data-world-invite"));
+        assert!(html.contains("data-world-join"));
+        assert!(html.contains("data-world-world"));
+        assert!(html.contains("data-world-chat-form"));
+        assert!(html.contains("data-world-input-form"));
+        assert!(html.contains("data-world-view"));
+        assert!(html.contains("href=\"/files\""));
+        assert!(html.contains("ProseMirror collaborative editor/viewer"));
+    }
+
+    #[test]
+    fn test_render_editor_page_keeps_file_browser_navigation() {
+        let html = render_editor_page(
+            "doc-id",
+            "notes.md",
+            "content",
+            "hash",
+            &AssetUrls::default(),
+        );
+        assert!(html.contains("<a href=\"/files\" data-nav>files</a>"));
+        assert!(html.contains("<a href=\"/\" data-nav>id</a>"));
     }
 
     #[test]

@@ -29,7 +29,7 @@
 //! # Protocol Identifier
 //!
 //! The meta protocol uses the ALPN identifier defined in [`crate::META_ALPN`]:
-//! `b"/id/meta/1"`. This allows nodes to negotiate the correct protocol handler.
+//! `b"/iroh-meta/2"`. This allows nodes to negotiate the correct protocol handler.
 //!
 //! # Usage Example
 //!
@@ -61,11 +61,14 @@
 use futures_lite::StreamExt;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
+use iroh_base::EndpointId;
 use iroh_blobs::{Hash, api::Store};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::access::AccessPolicy;
 use crate::discovery::{PeerAnnouncement, PeerDiscovery};
+use crate::fileops::{FileOpError, FileOps};
 use crate::tags::TagStore;
 
 /// Match quality for find/search operations.
@@ -196,141 +199,192 @@ pub struct TaggedMatch {
 /// let bytes = postcard::to_allocvec(&req).unwrap();
 /// let decoded: MetaRequest = postcard::from_bytes(&bytes).unwrap();
 /// ```
+/// A metadata tag as carried on the wire.
+///
+/// Subject, key and value are raw bytes. The tag store is binary-safe, and the
+/// v2 wire format no longer forces a lossy UTF-8 conversion on the way out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireTag {
+    /// The subject (usually a filename).
+    pub subject: Vec<u8>,
+    /// The tag key.
+    pub key: Vec<u8>,
+    /// The tag value, `None` for key-only tags.
+    pub value: Option<Vec<u8>>,
+}
+
+impl WireTag {
+    /// Build a wire tag from UTF-8 strings (convenience for callers and tests).
+    pub fn from_strs(subject: &str, key: &str, value: Option<&str>) -> Self {
+        Self {
+            subject: subject.as_bytes().to_vec(),
+            key: key.as_bytes().to_vec(),
+            value: value.map(|v| v.as_bytes().to_vec()),
+        }
+    }
+}
+
+impl From<crate::tags::Tag> for WireTag {
+    fn from(t: crate::tags::Tag) -> Self {
+        Self {
+            subject: t.subject.into_bytes(),
+            key: t.key.into_bytes(),
+            value: t.value.map(crate::tags::TagValue::into_bytes),
+        }
+    }
+}
+
+/// Maximum size of a single request on the meta protocol (1 MiB).
+pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+
+/// How long a server waits for a just-pushed blob to finish arriving before a
+/// `Put` naming it is refused.
+pub const DEFAULT_BLOB_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Requests to a remote node via the meta protocol (`/iroh-meta/2`).
+///
+/// **Compatibility rule:** postcard encodes enum variants by position. Within
+/// a protocol version, new variants may only be *appended*; reordering,
+/// inserting or changing a payload requires a new ALPN. The
+/// `wire_format_is_pinned` test fixes every discriminant.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum MetaRequest {
-    /// Create or update a tag on the remote node.
+    /// Create or update a name on the remote node.
     ///
-    /// Associates `filename` with `hash` in the remote store. The blob
-    /// content must already exist on the remote (transferred via Iroh's
-    /// blob protocol).
+    /// Associates `filename` with `hash`. The blob content must already be on
+    /// the remote (push it via the blobs protocol *first*): the server verifies
+    /// the blob is present and refuses to create a dangling name.
     Put {
         /// The tag name to create or update.
         filename: String,
         /// The content hash to associate with this tag.
         hash: Hash,
     },
-    /// Look up a tag by name on the remote node.
-    ///
-    /// Returns the hash associated with `filename`, if it exists.
+    /// Look up a name on the remote node, returning its hash if it exists.
     Get {
         /// The tag name to look up.
         filename: String,
     },
-    /// List all tags on the remote node.
-    ///
-    /// Returns a list of (hash, name) pairs for all stored tags.
+    /// List all names on the remote node as (hash, name) pairs.
     List,
-    /// Delete a tag from the remote node.
+    /// Delete a name from the remote node (hard delete).
     ///
-    /// Removes the tag but does not delete the underlying blob content.
+    /// Removes the name, its metadata tags and its archive tags. The blob
+    /// bytes remain until garbage collected.
     Delete {
         /// The tag name to delete.
         filename: String,
     },
-    /// Rename a tag on the remote node.
+    /// Rename a file on the remote node.
     ///
-    /// Atomically moves the tag from `from` to `to`. The old tag is
-    /// deleted after the new one is created.
+    /// Metadata follows the file; a file replaced at the destination and the
+    /// original name are archived as `<name>.archive.<unix-ts>`.
     Rename {
         /// The current tag name.
         from: String,
         /// The new tag name.
         to: String,
     },
-    /// Copy a tag on the remote node.
+    /// Copy a file on the remote node.
     ///
-    /// Creates a new tag `to` pointing to the same hash as `from`.
+    /// Creates `to` pointing at the same hash and duplicates the metadata.
     Copy {
         /// The source tag name.
         from: String,
         /// The destination tag name.
         to: String,
     },
-    /// Search for tags matching a query on the remote node.
-    ///
-    /// Searches both tag names and hashes, returning matches ranked
-    /// by quality (exact > prefix > contains).
+    /// Search for names and hashes matching a query, ranked by match quality.
     Find {
         /// The search query (matched case-insensitively).
         query: String,
         /// If `true`, prioritize name matches over hash matches in results.
         prefer_name: bool,
     },
-    /// Set a metadata tag on the remote node.
-    ///
-    /// Creates or updates a tag in the global `TagStore` namespace.
+    /// Set a metadata tag (global namespace).
     SetTag {
         /// The subject (usually a filename) to tag.
-        subject: String,
+        subject: Vec<u8>,
         /// The tag key (e.g. "author", "status").
-        key: String,
-        /// Optional tag value.
-        value: Option<String>,
+        key: Vec<u8>,
+        /// Optional tag value (arbitrary bytes).
+        value: Option<Vec<u8>>,
     },
-    /// Delete a metadata tag from the remote node.
+    /// Delete metadata tags (global namespace).
     DelTag {
         /// The subject (usually a filename).
-        subject: String,
+        subject: Vec<u8>,
         /// The tag key to delete.
-        key: String,
-        /// Optional specific value to delete (None = delete all values for key).
-        value: Option<String>,
+        key: Vec<u8>,
+        /// A specific value to delete. `None` deletes **every** tag with this
+        /// subject and key (including a value-less key-only tag).
+        value: Option<Vec<u8>>,
     },
-    /// List metadata tags for a subject on the remote node.
+    /// List metadata tags for a subject (or every tag when `None`).
     GetTags {
-        /// The subject (filename) to list tags for. None = list all.
-        subject: Option<String>,
+        /// The subject (filename) to list tags for. `None` = list all.
+        subject: Option<Vec<u8>>,
     },
-    /// Search metadata tags using structured query syntax.
+    /// Search metadata tags with the structured query syntax.
     ///
-    /// Query syntax supports `key:`, `:value`, `key:value`, `"literal"`, and
-    /// bare word searches. Multiple terms are `ANDed` together.
+    /// Supports `key:`, `:value`, `key:value`, `"literal"` and bare words;
+    /// multiple terms are `AND`ed.
     SearchTags {
         /// The search query string.
         query: String,
     },
-    /// Migrate all existing blob tags to have name/file/path auto-tags.
-    ///
-    /// Iterates every blob tag in the store and adds `name`, `file`, and
-    /// optionally `path` metadata tags for subjects that lack them.
+    /// Add `name`/`file` auto-tags to every blob name that lacks them.
     MigrateTags,
-    /// Request the list of known peers from a remote node.
-    ///
-    /// Returns all peers that the remote node has discovered via gossip.
-    /// If the remote node is not running peer discovery, it returns an
-    /// empty list.
-    ///
-    /// **Wire compatibility note:** This variant MUST remain the last
-    /// variant in the enum. Postcard uses positional discriminants, so
-    /// inserting a new variant before this one would break wire compatibility
-    /// with older nodes.
+    /// Request the peers this node has discovered via gossip.
     ListPeers,
+    /// Ask the node who it is and whether the caller may write to it.
+    ///
+    /// Lets clients give an actionable error instead of an opaque failure when
+    /// a write is refused.
+    Whoami,
+}
+
+impl MetaRequest {
+    /// Whether this request mutates the store (and therefore needs write access).
+    pub const fn is_write(&self) -> bool {
+        matches!(
+            self,
+            Self::Put { .. }
+                | Self::Delete { .. }
+                | Self::Rename { .. }
+                | Self::Copy { .. }
+                | Self::SetTag { .. }
+                | Self::DelTag { .. }
+                | Self::MigrateTags
+        )
+    }
 }
 
 /// Responses from a remote node via the meta protocol.
 ///
-/// Each variant corresponds to a [`MetaRequest`] variant and contains
-/// the result of that operation.
+/// Each variant corresponds to a [`MetaRequest`] variant. Any request may also
+/// be answered with [`MetaResponse::Error`]. The same append-only rule as
+/// [`MetaRequest`] applies.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum MetaResponse {
     /// Response to [`MetaRequest::Put`].
     Put {
-        /// Whether the tag was successfully created/updated.
+        /// Whether the name was created/updated.
         success: bool,
     },
     /// Response to [`MetaRequest::Get`].
     Get {
-        /// The hash if found, or `None` if the tag doesn't exist.
+        /// The hash if found, or `None` if the name doesn't exist.
         hash: Option<Hash>,
     },
     /// Response to [`MetaRequest::List`].
     List {
-        /// All tags as (hash, name) pairs.
+        /// All names as (hash, name) pairs.
         items: Vec<(Hash, String)>,
     },
     /// Response to [`MetaRequest::Delete`].
     Delete {
-        /// Whether the tag was successfully deleted.
+        /// Whether the name existed and was deleted.
         success: bool,
     },
     /// Response to [`MetaRequest::Rename`].
@@ -345,28 +399,30 @@ pub enum MetaResponse {
     },
     /// Response to [`MetaRequest::Find`].
     Find {
-        /// Matching tags, sorted by match quality.
+        /// Matches, sorted by match quality.
         matches: Vec<FindMatch>,
     },
     /// Response to [`MetaRequest::SetTag`].
     SetTag {
-        /// Whether the tag was successfully set.
+        /// Whether the tag was set.
         success: bool,
     },
     /// Response to [`MetaRequest::DelTag`].
     DelTag {
-        /// Whether the tag was successfully deleted.
+        /// Whether at least one tag was deleted.
         success: bool,
+        /// How many tags were deleted.
+        deleted: u32,
     },
     /// Response to [`MetaRequest::GetTags`].
     GetTags {
-        /// Tags as (subject, key, value) tuples.
-        tags: Vec<(String, String, Option<String>)>,
+        /// The matching tags.
+        tags: Vec<WireTag>,
     },
     /// Response to [`MetaRequest::SearchTags`].
     SearchTags {
-        /// Matching tags as (subject, key, value) tuples.
-        tags: Vec<(String, String, Option<String>)>,
+        /// The matching tags.
+        tags: Vec<WireTag>,
     },
     /// Response to [`MetaRequest::MigrateTags`].
     MigrateTags {
@@ -374,127 +430,98 @@ pub enum MetaResponse {
         migrated: usize,
     },
     /// Response to [`MetaRequest::ListPeers`].
-    ///
-    /// Contains the list of peers currently known to the node via gossip.
-    /// May be empty if the node is not running peer discovery or has
-    /// not yet discovered any peers.
-    ///
-    /// **Wire compatibility note:** This variant MUST remain the last
-    /// variant in the enum. See [`MetaRequest::ListPeers`] for details.
     ListPeers {
-        /// Known peers as announcements.
+        /// Known peers as announcements. Empty if peer discovery is off.
         peers: Vec<PeerAnnouncement>,
     },
+    /// Response to [`MetaRequest::Whoami`].
+    Whoami {
+        /// The responding node's ID.
+        node_id: EndpointId,
+        /// The responding node's `id` version.
+        version: String,
+        /// Whether the *caller* may perform mutating requests.
+        can_write: bool,
+        /// Whether the node lets every peer write.
+        open_writes: bool,
+    },
+    /// The request was refused or failed; `message` explains why.
+    Error {
+        /// Human-readable reason.
+        message: String,
+    },
+}
+
+impl MetaResponse {
+    /// If this is an [`MetaResponse::Error`], return its message.
+    pub fn error_message(&self) -> Option<&str> {
+        match self {
+            Self::Error { message } => Some(message),
+            _ => None,
+        }
+    }
 }
 
 /// Protocol handler for the meta protocol.
 ///
-/// Implements Iroh's [`ProtocolHandler`] trait to handle incoming
-/// meta protocol connections. When a remote node connects with the
-/// `META_ALPN` protocol identifier, this handler processes the requests.
-///
-/// # Connection Handling
-///
-/// Each connection can contain multiple request/response pairs. The
-/// handler reads requests in a loop until the connection is closed:
+/// Implements Iroh's [`ProtocolHandler`] trait. When a remote node connects
+/// with [`crate::META_ALPN`], each bidirectional stream carries one
+/// [`MetaRequest`] and is answered with one [`MetaResponse`]. Mutating
+/// requests are checked against the [`AccessPolicy`] using the authenticated
+/// identity of the connection.
 ///
 /// ```text
-/// Connection opened
+/// Connection opened → identity = conn.remote_id()
 ///     ↓
 /// Accept bidirectional stream
 ///     ↓
-/// Read request → Process → Send response
+/// Read request → authorize (writes) → handle → send response
 ///     ↓
 /// Loop until connection closed
 /// ```
-///
-/// # Example
-///
-/// Creating a meta protocol handler for a store:
-///
-/// ```rust,ignore
-/// use id::protocol::MetaProtocol;
-/// use iroh_blobs::api::Store;
-///
-/// let store: Store = /* ... */;
-/// let handler = MetaProtocol::new(&store, None);
-///
-/// // Register with router using META_ALPN
-/// router.accept(META_ALPN, handler);
-/// ```
 #[derive(Clone, Debug)]
 pub struct MetaProtocol {
-    /// The blob store used for tag operations.
+    /// The blob store used for name operations.
     pub store: Store,
     /// Optional peer discovery table for the `ListPeers` RPC.
-    ///
-    /// When `Some`, the handler returns known peers in response to
-    /// `ListPeers` requests. When `None`, an empty list is returned.
     pub peer_discovery: Option<PeerDiscovery>,
-    /// Optional `TagStore` for metadata operations (rename, put, delete).
-    ///
-    /// When `Some`, tag metadata (created, modified, archives) is managed
-    /// via the iroh-docs–backed `TagStore`. When `None`, falls back to legacy
-    /// `MetaDoc` blob-based metadata.
-    pub tag_store: Option<Arc<TagStore>>,
+    /// Metadata tag store (iroh-docs backed).
+    pub tag_store: Arc<TagStore>,
+    /// Who may perform mutating requests.
+    pub access: AccessPolicy,
+    /// This node's ID (reported by `Whoami`).
+    pub node_id: EndpointId,
+    /// How long a `Put` waits for a blob that is still arriving (see
+    /// [`FileOps::with_blob_wait`]). Zero for in-process use.
+    pub blob_wait: std::time::Duration,
 }
 
 impl MetaProtocol {
-    /// Creates a new meta protocol handler for the given store.
+    /// Creates a new meta protocol handler.
     ///
-    /// Returns an `Arc` for easy registration with Iroh's router.
-    ///
-    /// The `peer_discovery` parameter is optional. When provided, the
-    /// handler will respond to `ListPeers` requests with the current
-    /// peer table contents. When `None`, `ListPeers` returns an empty list.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// use id::protocol::MetaProtocol;
-    ///
-    /// // Without peer discovery
-    /// let handler = MetaProtocol::new(&store, None);
-    ///
-    /// // With peer discovery
-    /// let discovery = PeerDiscovery::new();
-    /// let handler = MetaProtocol::new(&store, Some(discovery));
-    /// router.accept(META_ALPN, handler);
-    /// ```
+    /// Returns an `Arc` for registration with Iroh's router.
     pub fn new(
         store: &Store,
         peer_discovery: Option<PeerDiscovery>,
-        tag_store: Option<Arc<TagStore>>,
+        tag_store: Arc<TagStore>,
+        access: AccessPolicy,
+        node_id: EndpointId,
     ) -> Arc<Self> {
         Arc::new(Self {
             store: store.clone(),
             peer_discovery,
             tag_store,
+            access,
+            node_id,
+            blob_wait: DEFAULT_BLOB_WAIT,
         })
     }
 
     /// Determines the match quality of a needle in a haystack.
     ///
     /// Returns the best applicable [`MatchKind`], or `None` if no match.
-    /// Matching is case-sensitive; callers should lowercase both strings
-    /// for case-insensitive matching.
-    ///
-    /// # Match Priority
-    ///
-    /// 1. [`MatchKind::Exact`] - strings are equal
-    /// 2. [`MatchKind::Prefix`] - haystack starts with needle
-    /// 3. [`MatchKind::Contains`] - haystack contains needle
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use id::protocol::{MetaProtocol, MatchKind};
-    ///
-    /// assert_eq!(MetaProtocol::match_kind("hello", "hello"), Some(MatchKind::Exact));
-    /// assert_eq!(MetaProtocol::match_kind("hello world", "hello"), Some(MatchKind::Prefix));
-    /// assert_eq!(MetaProtocol::match_kind("say hello", "hello"), Some(MatchKind::Contains));
-    /// assert_eq!(MetaProtocol::match_kind("goodbye", "hello"), None);
-    /// ```
+    /// Matching is case-sensitive; callers lowercase both for case-insensitive
+    /// matching. Priority: exact, then prefix, then contains.
     fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
         if haystack == needle {
             Some(MatchKind::Exact)
@@ -506,389 +533,211 @@ impl MetaProtocol {
             None
         }
     }
+
+    /// Handle one request on behalf of `remote` and produce the response.
+    ///
+    /// This is the whole server-side behaviour of the protocol, independent of
+    /// QUIC, so it can be exercised directly in tests.
+    pub async fn handle(&self, remote: &EndpointId, req: MetaRequest) -> MetaResponse {
+        if req.is_write() && !self.access.can_write(remote) {
+            return MetaResponse::Error {
+                message: format!(
+                    "permission denied: node {remote} may not modify this store \
+                     (ask the owner to run `id serve --allow-node {remote}`)"
+                ),
+            };
+        }
+        let ops = FileOps::new(&self.store, &self.tag_store).with_blob_wait(self.blob_wait);
+        let ts = &self.tag_store;
+        let ns = &ts.global;
+        match req {
+            MetaRequest::Put { filename, hash } => match ops.put(&filename, hash).await {
+                Ok(()) => MetaResponse::Put { success: true },
+                Err(e) => MetaResponse::Error {
+                    message: e.to_string(),
+                },
+            },
+            MetaRequest::Get { filename } => {
+                let hash = self
+                    .store
+                    .tags()
+                    .get(&filename)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|t| t.hash);
+                MetaResponse::Get { hash }
+            }
+            MetaRequest::List => {
+                let mut items = Vec::new();
+                if let Ok(mut list) = self.store.tags().list().await {
+                    while let Some(Ok(item)) = list.next().await {
+                        let name = String::from_utf8_lossy(item.name.as_ref()).into_owned();
+                        items.push((item.hash, name));
+                    }
+                }
+                MetaResponse::List { items }
+            }
+            MetaRequest::Delete { filename } => match ops.delete(&filename).await {
+                Ok(outcome) => MetaResponse::Delete {
+                    success: outcome.existed,
+                },
+                Err(e) => MetaResponse::Error {
+                    message: e.to_string(),
+                },
+            },
+            MetaRequest::Rename { from, to } => match ops.rename(&from, &to, true).await {
+                Ok(_) => MetaResponse::Rename { success: true },
+                Err(FileOpError::NotFound(_)) => MetaResponse::Rename { success: false },
+                Err(e) => MetaResponse::Error {
+                    message: e.to_string(),
+                },
+            },
+            MetaRequest::Copy { from, to } => match ops.copy(&from, &to).await {
+                Ok(_) => MetaResponse::Copy { success: true },
+                Err(FileOpError::NotFound(_)) => MetaResponse::Copy { success: false },
+                Err(e) => MetaResponse::Error {
+                    message: e.to_string(),
+                },
+            },
+            MetaRequest::Find { query, prefer_name } => MetaResponse::Find {
+                matches: self.find(&query, prefer_name).await,
+            },
+            MetaRequest::SetTag {
+                subject,
+                key,
+                value,
+            } => match ts.set_tag(ns, &subject, &key, value.as_deref(), b"").await {
+                Ok(()) => MetaResponse::SetTag { success: true },
+                Err(e) => MetaResponse::Error {
+                    message: format!("{e:#}"),
+                },
+            },
+            MetaRequest::DelTag {
+                subject,
+                key,
+                value,
+            } => match ts
+                .delete_matching(ns, &subject, &key, value.as_deref())
+                .await
+            {
+                Ok(n) => MetaResponse::DelTag {
+                    success: n > 0,
+                    deleted: u32::try_from(n).unwrap_or(u32::MAX),
+                },
+                Err(e) => MetaResponse::Error {
+                    message: format!("{e:#}"),
+                },
+            },
+            MetaRequest::GetTags { subject } => {
+                let result = match &subject {
+                    Some(s) => ts.get_tags(ns, s).await,
+                    None => ts.list_all(ns).await,
+                };
+                match result {
+                    Ok(list) => MetaResponse::GetTags {
+                        tags: list.into_iter().map(WireTag::from).collect(),
+                    },
+                    Err(e) => MetaResponse::Error {
+                        message: format!("{e:#}"),
+                    },
+                }
+            }
+            MetaRequest::SearchTags { query } => match ts.search_by_query(ns, &query).await {
+                Ok(list) => MetaResponse::SearchTags {
+                    tags: list.into_iter().map(WireTag::from).collect(),
+                },
+                Err(e) => MetaResponse::Error {
+                    message: format!("{e:#}"),
+                },
+            },
+            MetaRequest::MigrateTags => match ts.migrate_tags(&self.store, ns).await {
+                Ok(migrated) => MetaResponse::MigrateTags { migrated },
+                Err(e) => MetaResponse::Error {
+                    message: format!("{e:#}"),
+                },
+            },
+            MetaRequest::ListPeers => {
+                let peers = self
+                    .peer_discovery
+                    .as_ref()
+                    .map(|pd| pd.peers().into_iter().map(|pi| pi.announcement).collect())
+                    .unwrap_or_default();
+                MetaResponse::ListPeers { peers }
+            }
+            MetaRequest::Whoami => MetaResponse::Whoami {
+                node_id: self.node_id,
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                can_write: self.access.can_write(remote),
+                open_writes: self.access.is_open(),
+            },
+        }
+    }
+
+    /// Rank blob names and hashes against `query`.
+    async fn find(&self, query: &str, prefer_name: bool) -> Vec<FindMatch> {
+        let mut matches = Vec::new();
+        let query_lower = query.to_lowercase();
+        if let Ok(mut list) = self.store.tags().list().await {
+            while let Some(Ok(item)) = list.next().await {
+                let name = String::from_utf8_lossy(item.name.as_ref()).into_owned();
+                let hash_str = item.hash.to_string();
+                if let Some(kind) = Self::match_kind(&name.to_lowercase(), &query_lower) {
+                    matches.push(FindMatch {
+                        hash: item.hash,
+                        name,
+                        kind,
+                        is_hash_match: false,
+                    });
+                } else if let Some(kind) = Self::match_kind(&hash_str, &query_lower) {
+                    matches.push(FindMatch {
+                        hash: item.hash,
+                        name,
+                        kind,
+                        is_hash_match: true,
+                    });
+                }
+            }
+        }
+        // Best kind first; ties prefer name matches (`prefer_name`) or hash matches.
+        matches.sort_by(|a, b| {
+            a.kind.cmp(&b.kind).then_with(|| {
+                if prefer_name {
+                    a.is_hash_match.cmp(&b.is_hash_match)
+                } else {
+                    b.is_hash_match.cmp(&a.is_hash_match)
+                }
+            })
+        });
+        matches
+    }
 }
 
 impl ProtocolHandler for MetaProtocol {
-    /// Handles an incoming meta protocol connection.
-    ///
-    /// Processes multiple request/response pairs on bidirectional QUIC streams
-    /// until the connection is closed. Each request is deserialized, processed
-    /// against the local store, and a response is sent back.
-    ///
-    /// # Request Processing
-    ///
-    /// - **Put**: Creates or updates a tag pointing to the given hash
-    /// - **Get**: Looks up a tag by name and returns its hash
-    /// - **List**: Returns all (hash, name) pairs in the store
-    /// - **Delete**: Removes a tag from the store
-    /// - **Rename**: Moves a tag from one name to another
-    /// - **Copy**: Creates a new tag pointing to the same hash
-    /// - **Find**: Searches tags by name/hash and returns ranked matches
-    /// - **`ListPeers`**: Returns known peers from the gossip-based peer discovery table
+    /// Serves requests on a connection until the peer closes it.
     ///
     /// # Errors
     ///
-    /// Returns `AcceptError` if:
-    /// - Tag operations fail
-    /// - Serialization/deserialization fails
-    /// - Stream write fails
+    /// Returns `AcceptError` if a response cannot be serialized or written.
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        // Handle multiple requests per connection
-        loop {
-            let Ok((mut send, mut recv)) = conn.accept_bi().await else {
-                break; // Connection closed
+        let remote = conn.remote_id();
+        while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+            let resp = match recv.read_to_end(MAX_REQUEST_BYTES).await {
+                Ok(buf) => match postcard::from_bytes::<MetaRequest>(&buf) {
+                    Ok(req) => self.handle(&remote, req).await,
+                    Err(e) => MetaResponse::Error {
+                        message: format!("malformed request: {e}"),
+                    },
+                },
+                Err(e) => MetaResponse::Error {
+                    message: format!("could not read request: {e}"),
+                },
             };
-            let Ok(buf) = recv.read_to_end(64 * 1024).await else {
-                break;
-            };
-            let Ok(req): Result<MetaRequest, _> = postcard::from_bytes(&buf) else {
-                break;
-            };
-            match req {
-                MetaRequest::Put { filename, hash } => {
-                    self.store
-                        .tags()
-                        .set(&filename, hash)
-                        .await
-                        .map_err(AcceptError::from_err)?;
-
-                    // Set created/modified tags via TagStore if available
-                    if let Some(ts) = &self.tag_store {
-                        let now_str = crate::tags::now_unix().to_string();
-                        let ns = &ts.global;
-                        if let Err(e) = ts
-                            .set_if_absent(
-                                ns,
-                                filename.as_bytes(),
-                                b"created",
-                                Some(now_str.as_bytes()),
-                                b"",
-                            )
-                            .await
-                        {
-                            tracing::warn!("Failed to set created tag: {e:#}");
-                        }
-                        if let Err(e) = ts
-                            .set_singleton(
-                                ns,
-                                filename.as_bytes(),
-                                b"modified",
-                                Some(now_str.as_bytes()),
-                                b"",
-                            )
-                            .await
-                        {
-                            tracing::warn!("Failed to set modified tag: {e:#}");
-                        }
-                        // Auto-tag with name/file metadata
-                        if let Err(e) = ts.auto_tag(ns, filename.as_bytes(), None).await {
-                            tracing::warn!("Failed to auto-tag: {e:#}");
-                        }
-                    }
-
-                    let resp = postcard::to_allocvec(&MetaResponse::Put { success: true })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::Get { filename } => {
-                    let mut found: Option<Hash> = None;
-                    if let Ok(Some(tag)) = self.store.tags().get(&filename).await {
-                        found = Some(tag.hash);
-                    } else if let Ok(mut list) = self.store.tags().list().await {
-                        while let Some(item) = list.next().await {
-                            let item = item.map_err(AcceptError::from_err)?;
-                            if item.name.as_ref() == filename.as_bytes() {
-                                found = Some(item.hash);
-                                break;
-                            }
-                        }
-                    }
-                    let resp = postcard::to_allocvec(&MetaResponse::Get { hash: found })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::List => {
-                    let mut items = Vec::new();
-                    if let Ok(mut list) = self.store.tags().list().await {
-                        while let Some(item) = list.next().await {
-                            if let Ok(item) = item {
-                                let name = String::from_utf8_lossy(item.name.as_ref()).to_string();
-                                items.push((item.hash, name));
-                            }
-                        }
-                    }
-                    let resp = postcard::to_allocvec(&MetaResponse::List { items })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::Delete { filename } => {
-                    let success = self.store.tags().delete(&filename).await.is_ok();
-                    let resp = postcard::to_allocvec(&MetaResponse::Delete { success })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::Rename { from, to } => {
-                    let success = if let Ok(Some(tag)) = self.store.tags().get(&from).await {
-                        let hash = tag.hash;
-                        // Archive replaced file if target already exists
-                        if let Ok(Some(existing)) = self.store.tags().get(&to).await {
-                            let ts = crate::tags::now_unix();
-                            let archive_name = format!("{to}.archive.{ts}");
-                            let _ = self.store.tags().set(&archive_name, existing.hash).await;
-                        }
-                        if self.store.tags().set(&to, hash).await.is_ok() {
-                            // Archive original
-                            {
-                                let ts = crate::tags::now_unix();
-                                let archive_name = format!("{from}.archive.{ts}");
-                                let _ = self.store.tags().set(&archive_name, hash).await;
-                            }
-                            // Update metadata tags via TagStore or legacy
-                            if let Some(ts) = &self.tag_store {
-                                let ns = &ts.global;
-                                if let Err(e) = ts
-                                    .transfer_all_tags(ns, from.as_bytes(), to.as_bytes())
-                                    .await
-                                {
-                                    tracing::warn!("Failed to transfer tags: {e:#}");
-                                }
-                                let archive_name =
-                                    format!("{from}.archive.{}", crate::tags::now_unix());
-                                let _ = ts
-                                    .set_tag(
-                                        ns,
-                                        to.as_bytes(),
-                                        b"archive.rename",
-                                        Some(archive_name.as_bytes()),
-                                        b"",
-                                    )
-                                    .await;
-                            } else if let Ok(mut meta) = crate::tags::load_meta(&self.store).await {
-                                crate::tags::transfer_tags(&mut meta, &from, &to);
-                                let hash_str = hash.to_string();
-                                let ts = crate::tags::now_unix();
-                                let archive_name = format!("{from}.archive.{ts}");
-                                crate::tags::add_archive_tag(
-                                    &mut meta,
-                                    &from,
-                                    &archive_name,
-                                    &hash_str,
-                                    "rename",
-                                );
-                                let _ = crate::tags::save_meta(&self.store, &meta).await;
-                            }
-                            self.store.tags().delete(&from).await.is_ok()
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    };
-                    let resp = postcard::to_allocvec(&MetaResponse::Rename { success })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::Copy { from, to } => {
-                    let success = if let Ok(Some(tag)) = self.store.tags().get(&from).await {
-                        self.store.tags().set(&to, tag.hash).await.is_ok()
-                    } else {
-                        false
-                    };
-                    let resp = postcard::to_allocvec(&MetaResponse::Copy { success })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::Find { query, prefer_name } => {
-                    let mut matches = Vec::new();
-                    let query_lower = query.to_lowercase();
-
-                    if let Ok(mut list) = self.store.tags().list().await {
-                        while let Some(item) = list.next().await {
-                            if let Ok(item) = item {
-                                let name = String::from_utf8_lossy(item.name.as_ref()).to_string();
-                                let hash_str = item.hash.to_string();
-                                let name_lower = name.to_lowercase();
-
-                                // Check name matches
-                                if let Some(kind) = Self::match_kind(&name_lower, &query_lower) {
-                                    matches.push(FindMatch {
-                                        hash: item.hash,
-                                        name: name.clone(),
-                                        kind,
-                                        is_hash_match: false,
-                                    });
-                                }
-                                // Check hash matches (only if no name match or query looks like a hash)
-                                else if let Some(kind) = Self::match_kind(&hash_str, &query_lower)
-                                {
-                                    matches.push(FindMatch {
-                                        hash: item.hash,
-                                        name,
-                                        kind,
-                                        is_hash_match: true,
-                                    });
-                                }
-                            }
-                        }
-                    }
-
-                    // Sort: by match kind first, then by preference (hash vs name)
-                    matches.sort_by(|a, b| {
-                        match a.kind.cmp(&b.kind) {
-                            std::cmp::Ordering::Equal => {
-                                // If prefer_name, name matches come first (is_hash_match=false < true)
-                                // If prefer_hash (default), hash matches come first (is_hash_match=true < false)
-                                if prefer_name {
-                                    a.is_hash_match.cmp(&b.is_hash_match)
-                                } else {
-                                    b.is_hash_match.cmp(&a.is_hash_match)
-                                }
-                            }
-                            other => other,
-                        }
-                    });
-
-                    let resp = postcard::to_allocvec(&MetaResponse::Find { matches })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::SetTag {
-                    subject,
-                    key,
-                    value,
-                } => {
-                    let success = if let Some(ts) = &self.tag_store {
-                        ts.set_tag(
-                            &ts.global,
-                            subject.as_bytes(),
-                            key.as_bytes(),
-                            value.as_ref().map(String::as_bytes),
-                            b"",
-                        )
-                        .await
-                        .is_ok()
-                    } else {
-                        false
-                    };
-                    let resp = postcard::to_allocvec(&MetaResponse::SetTag { success })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::DelTag {
-                    subject,
-                    key,
-                    value,
-                } => {
-                    let success = if let Some(ts) = &self.tag_store {
-                        ts.del_tag(
-                            &ts.global,
-                            subject.as_bytes(),
-                            key.as_bytes(),
-                            value.as_ref().map(String::as_bytes),
-                        )
-                        .await
-                        .is_ok()
-                    } else {
-                        false
-                    };
-                    let resp = postcard::to_allocvec(&MetaResponse::DelTag { success })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::GetTags { subject } => {
-                    let tags = if let Some(ts) = &self.tag_store {
-                        let result = if let Some(subj) = &subject {
-                            ts.get_tags(&ts.global, subj.as_bytes()).await
-                        } else {
-                            ts.list_all(&ts.global).await
-                        };
-                        match result {
-                            Ok(list) => list
-                                .into_iter()
-                                .map(|t| {
-                                    (
-                                        t.subject.display_lossy(),
-                                        t.key.display_lossy(),
-                                        t.value.map(|v| v.display_lossy()),
-                                    )
-                                })
-                                .collect(),
-                            Err(_) => vec![],
-                        }
-                    } else {
-                        vec![]
-                    };
-                    let resp = postcard::to_allocvec(&MetaResponse::GetTags { tags })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::SearchTags { query } => {
-                    let tags = if let Some(ts) = &self.tag_store {
-                        match ts.search_by_query(&ts.global, &query).await {
-                            Ok(list) => list
-                                .into_iter()
-                                .map(|t| {
-                                    (
-                                        t.subject.display_lossy(),
-                                        t.key.display_lossy(),
-                                        t.value.map(|v| v.display_lossy()),
-                                    )
-                                })
-                                .collect(),
-                            Err(_) => vec![],
-                        }
-                    } else {
-                        vec![]
-                    };
-                    let resp = postcard::to_allocvec(&MetaResponse::SearchTags { tags })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::MigrateTags => {
-                    let migrated = if let Some(ts) = &self.tag_store {
-                        match ts.migrate_tags(&self.store, &ts.global).await {
-                            Ok(count) => count,
-                            Err(e) => {
-                                tracing::warn!("Failed to migrate tags: {e:#}");
-                                0
-                            }
-                        }
-                    } else {
-                        0
-                    };
-                    let resp = postcard::to_allocvec(&MetaResponse::MigrateTags { migrated })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-                MetaRequest::ListPeers => {
-                    let peers = self
-                        .peer_discovery
-                        .as_ref()
-                        .map(|pd| {
-                            pd.peers()
-                                .into_iter()
-                                .map(|pi| pi.announcement)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    let resp = postcard::to_allocvec(&MetaResponse::ListPeers { peers })
-                        .map_err(AcceptError::from_err)?;
-                    send.write_all(&resp).await.map_err(AcceptError::from_err)?;
-                    send.finish()?;
-                }
-            }
+            let bytes = postcard::to_allocvec(&resp).map_err(AcceptError::from_err)?;
+            send.write_all(&bytes)
+                .await
+                .map_err(AcceptError::from_err)?;
+            send.finish()?;
         }
         Ok(())
     }
@@ -1260,49 +1109,707 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_list_peers_is_last_discriminant() {
-        // Verify that ListPeers has the highest discriminant value.
-        // This test will fail at compile time if a new variant is added
-        // after ListPeers (the match won't compile), reminding developers
-        // to keep ListPeers last.
-        let req = MetaRequest::ListPeers;
-        let bytes = postcard::to_allocvec(&req).unwrap();
-        // ListPeers should be discriminant 12 (0-indexed: Put=0, Get=1, List=2,
-        // Delete=3, Rename=4, Copy=5, Find=6, SetTag=7, DelTag=8, GetTags=9,
-        // SearchTags=10, MigrateTags=11, ListPeers=12)
-        assert_eq!(
-            bytes[0], 12,
-            "ListPeers should be the 13th variant (discriminant 12)"
-        );
+    // ========================================================================
+    // Wire format
+    // ========================================================================
 
-        let resp = MetaResponse::ListPeers { peers: vec![] };
-        let bytes = postcard::to_allocvec(&resp).unwrap();
-        assert_eq!(
-            bytes[0], 12,
-            "ListPeers response should be the 13th variant (discriminant 12)"
-        );
+    fn eid(n: u8) -> EndpointId {
+        iroh_base::SecretKey::from_bytes(&[n; 32]).public()
     }
 
     #[test]
-    fn test_existing_variants_unchanged_after_list_peers() {
-        // Verify adding ListPeers didn't shift existing discriminants.
-        // This is critical for wire compatibility.
-        let put_bytes = postcard::to_allocvec(&MetaRequest::Put {
-            filename: "x".to_owned(),
-            hash: Hash::from_bytes([0u8; 32]),
-        })
-        .unwrap();
-        assert_eq!(put_bytes[0], 0, "Put should still be discriminant 0");
+    fn wire_format_is_pinned() {
+        // postcard encodes the enum variant index as the first byte. These
+        // indices are the wire format of `/iroh-meta/2`: within a version only
+        // append new variants; anything else needs a new ALPN.
+        let h = Hash::from_bytes([0u8; 32]);
+        let s = String::from("x");
+        let requests: Vec<(MetaRequest, u8)> = vec![
+            (
+                MetaRequest::Put {
+                    filename: s.clone(),
+                    hash: h,
+                },
+                0,
+            ),
+            (
+                MetaRequest::Get {
+                    filename: s.clone(),
+                },
+                1,
+            ),
+            (MetaRequest::List, 2),
+            (
+                MetaRequest::Delete {
+                    filename: s.clone(),
+                },
+                3,
+            ),
+            (
+                MetaRequest::Rename {
+                    from: s.clone(),
+                    to: s.clone(),
+                },
+                4,
+            ),
+            (
+                MetaRequest::Copy {
+                    from: s.clone(),
+                    to: s.clone(),
+                },
+                5,
+            ),
+            (
+                MetaRequest::Find {
+                    query: s.clone(),
+                    prefer_name: false,
+                },
+                6,
+            ),
+            (
+                MetaRequest::SetTag {
+                    subject: vec![],
+                    key: vec![],
+                    value: None,
+                },
+                7,
+            ),
+            (
+                MetaRequest::DelTag {
+                    subject: vec![],
+                    key: vec![],
+                    value: None,
+                },
+                8,
+            ),
+            (MetaRequest::GetTags { subject: None }, 9),
+            (MetaRequest::SearchTags { query: s.clone() }, 10),
+            (MetaRequest::MigrateTags, 11),
+            (MetaRequest::ListPeers, 12),
+            (MetaRequest::Whoami, 13),
+        ];
+        for (req, idx) in &requests {
+            let bytes = postcard::to_allocvec(req).unwrap();
+            assert_eq!(bytes[0], *idx, "request {req:?}");
+        }
+        let responses: Vec<(MetaResponse, u8)> = vec![
+            (MetaResponse::Put { success: true }, 0),
+            (MetaResponse::Get { hash: None }, 1),
+            (MetaResponse::List { items: vec![] }, 2),
+            (MetaResponse::Delete { success: true }, 3),
+            (MetaResponse::Rename { success: true }, 4),
+            (MetaResponse::Copy { success: true }, 5),
+            (MetaResponse::Find { matches: vec![] }, 6),
+            (MetaResponse::SetTag { success: true }, 7),
+            (
+                MetaResponse::DelTag {
+                    success: true,
+                    deleted: 1,
+                },
+                8,
+            ),
+            (MetaResponse::GetTags { tags: vec![] }, 9),
+            (MetaResponse::SearchTags { tags: vec![] }, 10),
+            (MetaResponse::MigrateTags { migrated: 0 }, 11),
+            (MetaResponse::ListPeers { peers: vec![] }, 12),
+            (
+                MetaResponse::Whoami {
+                    node_id: eid(1),
+                    version: "0".to_owned(),
+                    can_write: true,
+                    open_writes: false,
+                },
+                13,
+            ),
+            (MetaResponse::Error { message: s }, 14),
+        ];
+        for (resp, idx) in &responses {
+            let bytes = postcard::to_allocvec(resp).unwrap();
+            assert_eq!(bytes[0], *idx, "response {resp:?}");
+        }
+    }
 
-        let list_bytes = postcard::to_allocvec(&MetaRequest::List).unwrap();
-        assert_eq!(list_bytes[0], 2, "List should still be discriminant 2");
+    #[test]
+    fn is_write_classifies_every_request() {
+        let h = Hash::from_bytes([0u8; 32]);
+        let s = String::from("x");
+        for req in [
+            MetaRequest::Put {
+                filename: s.clone(),
+                hash: h,
+            },
+            MetaRequest::Delete {
+                filename: s.clone(),
+            },
+            MetaRequest::Rename {
+                from: s.clone(),
+                to: s.clone(),
+            },
+            MetaRequest::Copy {
+                from: s.clone(),
+                to: s.clone(),
+            },
+            MetaRequest::SetTag {
+                subject: vec![],
+                key: vec![],
+                value: None,
+            },
+            MetaRequest::DelTag {
+                subject: vec![],
+                key: vec![],
+                value: None,
+            },
+            MetaRequest::MigrateTags,
+        ] {
+            assert!(req.is_write(), "{req:?} must require write access");
+        }
+        for req in [
+            MetaRequest::Get {
+                filename: s.clone(),
+            },
+            MetaRequest::List,
+            MetaRequest::Find {
+                query: s.clone(),
+                prefer_name: true,
+            },
+            MetaRequest::GetTags { subject: None },
+            MetaRequest::SearchTags { query: s },
+            MetaRequest::ListPeers,
+            MetaRequest::Whoami,
+        ] {
+            assert!(!req.is_write(), "{req:?} is read-only");
+        }
+    }
 
-        let find_bytes = postcard::to_allocvec(&MetaRequest::Find {
-            query: "x".to_owned(),
-            prefer_name: false,
-        })
-        .unwrap();
-        assert_eq!(find_bytes[0], 6, "Find should still be discriminant 6");
+    #[test]
+    fn wire_tag_keeps_binary_values_intact() {
+        let tag = WireTag {
+            subject: b"f".to_vec(),
+            key: b"k".to_vec(),
+            value: Some(vec![0xff, 0xfe, 0x00, 0x80]),
+        };
+        let bytes = postcard::to_allocvec(&tag).unwrap();
+        let back: WireTag = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(back, tag);
+    }
+
+    // ========================================================================
+    // Handler behaviour against real iroh-blobs + iroh-docs (in memory)
+    // ========================================================================
+
+    use crate::local::LocalNode;
+
+    async fn put(node: &LocalNode, name: &str, data: &[u8]) -> Hash {
+        // A temp tag protects the blob without leaving an `auto-*` tag behind.
+        let guard = node
+            .blobs()
+            .add_bytes(data.to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        let hash = guard.hash();
+        let resp = node
+            .request(MetaRequest::Put {
+                filename: name.to_owned(),
+                hash,
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Put { success: true }),
+            "{resp:?}"
+        );
+        hash
+    }
+
+    async fn set_tag(node: &LocalNode, subject: &str, key: &str, value: Option<&[u8]>) {
+        let resp = node
+            .request(MetaRequest::SetTag {
+                subject: subject.as_bytes().to_vec(),
+                key: key.as_bytes().to_vec(),
+                value: value.map(<[u8]>::to_vec),
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::SetTag { success: true }),
+            "{resp:?}"
+        );
+    }
+
+    async fn tags_of(node: &LocalNode, subject: &str) -> Vec<WireTag> {
+        match node
+            .request(MetaRequest::GetTags {
+                subject: Some(subject.as_bytes().to_vec()),
+            })
+            .await
+        {
+            MetaResponse::GetTags { tags } => tags,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn has_tag(tags: &[WireTag], key: &str, value: Option<&str>) -> bool {
+        tags.iter()
+            .any(|t| t.key == key.as_bytes() && t.value.as_deref() == value.map(str::as_bytes))
+    }
+
+    async fn names(node: &LocalNode) -> Vec<String> {
+        match node.request(MetaRequest::List).await {
+            MetaResponse::List { items } => items.into_iter().map(|(_, n)| n).collect(),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn put_refuses_a_blob_the_store_does_not_have() {
+        let node = LocalNode::open(true).await.unwrap();
+        let missing = Hash::from_bytes([7u8; 32]);
+        let resp = node
+            .request(MetaRequest::Put {
+                filename: "ghost.txt".to_owned(),
+                hash: missing,
+            })
+            .await;
+        let msg = resp.error_message().expect("must be an error");
+        assert!(msg.contains("not present"), "{msg}");
+        assert!(
+            names(&node).await.is_empty(),
+            "no dangling name may be created"
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn put_records_created_modified_and_identity_tags() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "dir/a.txt", b"hello").await;
+        let tags = tags_of(&node, "dir/a.txt").await;
+        assert!(tags.iter().any(|t| t.key == b"created"));
+        assert!(tags.iter().any(|t| t.key == b"modified"));
+        assert!(has_tag(&tags, "name", Some("dir/a.txt")));
+        assert!(has_tag(&tags, "file", Some("a.txt")));
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deltag_without_value_deletes_every_value_of_the_key() {
+        // Regression: the handler used to treat `None` as "the key-only tag",
+        // so `id tag del FILE KEY` reported success and deleted nothing.
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "f.md", b"x").await;
+        set_tag(&node, "f.md", "color", Some(b"blue")).await;
+        set_tag(&node, "f.md", "color", Some(b"green")).await;
+        set_tag(&node, "f.md", "color", None).await;
+        set_tag(&node, "f.md", "keep", Some(b"me")).await;
+
+        let resp = node
+            .request(MetaRequest::DelTag {
+                subject: b"f.md".to_vec(),
+                key: b"color".to_vec(),
+                value: None,
+            })
+            .await;
+        assert!(
+            matches!(
+                resp,
+                MetaResponse::DelTag {
+                    success: true,
+                    deleted: 3
+                }
+            ),
+            "{resp:?}"
+        );
+        let tags = tags_of(&node, "f.md").await;
+        assert!(!tags.iter().any(|t| t.key == b"color"), "{tags:?}");
+        assert!(has_tag(&tags, "keep", Some("me")));
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn deltag_with_value_deletes_only_that_value() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "f.md", b"x").await;
+        set_tag(&node, "f.md", "color", Some(b"blue")).await;
+        set_tag(&node, "f.md", "color", Some(b"green")).await;
+        let resp = node
+            .request(MetaRequest::DelTag {
+                subject: b"f.md".to_vec(),
+                key: b"color".to_vec(),
+                value: Some(b"blue".to_vec()),
+            })
+            .await;
+        assert!(
+            matches!(
+                resp,
+                MetaResponse::DelTag {
+                    success: true,
+                    deleted: 1
+                }
+            ),
+            "{resp:?}"
+        );
+        let tags = tags_of(&node, "f.md").await;
+        assert!(has_tag(&tags, "color", Some("green")));
+        assert!(!has_tag(&tags, "color", Some("blue")));
+
+        let resp = node
+            .request(MetaRequest::DelTag {
+                subject: b"f.md".to_vec(),
+                key: b"color".to_vec(),
+                value: Some(b"absent".to_vec()),
+            })
+            .await;
+        assert!(
+            matches!(
+                resp,
+                MetaResponse::DelTag {
+                    success: false,
+                    deleted: 0
+                }
+            ),
+            "{resp:?}"
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn binary_tag_values_survive_the_round_trip() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "blob.bin", b"x").await;
+        let value = [0xffu8, 0xfe, 0x00, 0x80, b'a'];
+        set_tag(&node, "blob.bin", "checksum", Some(&value)).await;
+        let tags = tags_of(&node, "blob.bin").await;
+        let got = tags
+            .iter()
+            .find(|t| t.key == b"checksum")
+            .and_then(|t| t.value.clone())
+            .expect("checksum tag");
+        assert_eq!(
+            got, value,
+            "binary value must not be mangled by lossy UTF-8"
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn copy_duplicates_metadata_and_refreshes_identity_tags() {
+        // Regression: copy over the meta protocol only created a second name.
+        let node = LocalNode::open(true).await.unwrap();
+        let hash = put(&node, "a.txt", b"payload").await;
+        set_tag(&node, "a.txt", "priority", Some(b"high")).await;
+
+        let resp = node
+            .request(MetaRequest::Copy {
+                from: "a.txt".to_owned(),
+                to: "b.txt".to_owned(),
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Copy { success: true }),
+            "{resp:?}"
+        );
+
+        let resp = node
+            .request(MetaRequest::Get {
+                filename: "b.txt".to_owned(),
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Get { hash: Some(h) } if h == hash),
+            "{resp:?}"
+        );
+        let tags = tags_of(&node, "b.txt").await;
+        assert!(
+            has_tag(&tags, "priority", Some("high")),
+            "metadata copied: {tags:?}"
+        );
+        assert!(
+            has_tag(&tags, "name", Some("b.txt")),
+            "name follows the copy: {tags:?}"
+        );
+        assert!(has_tag(&tags, "file", Some("b.txt")));
+        // The source is untouched.
+        let src = tags_of(&node, "a.txt").await;
+        assert!(has_tag(&src, "name", Some("a.txt")));
+        assert!(has_tag(&src, "priority", Some("high")));
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_moves_metadata_and_archives_the_original() {
+        let node = LocalNode::open(true).await.unwrap();
+        let hash = put(&node, "old.txt", b"payload").await;
+        set_tag(&node, "old.txt", "priority", Some(b"high")).await;
+
+        let resp = node
+            .request(MetaRequest::Rename {
+                from: "old.txt".to_owned(),
+                to: "new.txt".to_owned(),
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Rename { success: true }),
+            "{resp:?}"
+        );
+
+        let resp = node
+            .request(MetaRequest::Get {
+                filename: "old.txt".to_owned(),
+            })
+            .await;
+        assert!(matches!(resp, MetaResponse::Get { hash: None }), "{resp:?}");
+        let resp = node
+            .request(MetaRequest::Get {
+                filename: "new.txt".to_owned(),
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Get { hash: Some(h) } if h == hash),
+            "{resp:?}"
+        );
+
+        assert!(
+            tags_of(&node, "old.txt").await.is_empty(),
+            "metadata moved away"
+        );
+        let tags = tags_of(&node, "new.txt").await;
+        assert!(has_tag(&tags, "priority", Some("high")));
+        assert!(
+            has_tag(&tags, "name", Some("new.txt")),
+            "identity follows the rename: {tags:?}"
+        );
+        assert!(tags.iter().any(|t| t.key == b"archive.rename"));
+        assert!(
+            names(&node)
+                .await
+                .iter()
+                .any(|n| n.starts_with("old.txt.archive."))
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_and_copy_report_missing_sources() {
+        let node = LocalNode::open(true).await.unwrap();
+        let resp = node
+            .request(MetaRequest::Rename {
+                from: "nope".to_owned(),
+                to: "x".to_owned(),
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Rename { success: false }),
+            "{resp:?}"
+        );
+        let resp = node
+            .request(MetaRequest::Copy {
+                from: "nope".to_owned(),
+                to: "x".to_owned(),
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Copy { success: false }),
+            "{resp:?}"
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_removes_name_metadata_and_archives() {
+        // Regression: delete left metadata behind, so a re-created name
+        // inherited the old tags.
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "doomed.txt", b"x").await;
+        set_tag(&node, "doomed.txt", "priority", Some(b"high")).await;
+        let _ = node
+            .request(MetaRequest::Rename {
+                from: "doomed.txt".to_owned(),
+                to: "doomed2.txt".to_owned(),
+            })
+            .await;
+        // doomed.txt.archive.<ts> now exists; delete that file's remains too.
+        let resp = node
+            .request(MetaRequest::Delete {
+                filename: "doomed2.txt".to_owned(),
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Delete { success: true }),
+            "{resp:?}"
+        );
+        assert!(tags_of(&node, "doomed2.txt").await.is_empty());
+        let resp = node
+            .request(MetaRequest::Delete {
+                filename: "doomed2.txt".to_owned(),
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Delete { success: false }),
+            "{resp:?}"
+        );
+
+        // Re-creating the name starts clean.
+        put(&node, "doomed2.txt", b"y").await;
+        let tags = tags_of(&node, "doomed2.txt").await;
+        assert!(!has_tag(&tags, "priority", Some("high")), "{tags:?}");
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_only_removes_numeric_archive_suffixes() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "a", b"1").await;
+        put(&node, "a.archive.notes", b"2").await; // a user file that merely shares the prefix
+        let resp = node
+            .request(MetaRequest::Delete {
+                filename: "a".to_owned(),
+            })
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Delete { success: true }),
+            "{resp:?}"
+        );
+        assert!(names(&node).await.contains(&"a.archive.notes".to_owned()));
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn writes_are_denied_to_unlisted_nodes_but_reads_are_open() {
+        let node = LocalNode::open(true).await.unwrap();
+        let hash = put(&node, "pub.txt", b"public").await;
+        let owner = eid(1);
+        let stranger = eid(2);
+        let proto = MetaProtocol::new(
+            &node.blobs(),
+            None,
+            Arc::clone(node.tags()),
+            AccessPolicy::restricted([owner]),
+            eid(9),
+        );
+
+        // Reads are public.
+        let resp = proto
+            .handle(
+                &stranger,
+                MetaRequest::Get {
+                    filename: "pub.txt".to_owned(),
+                },
+            )
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Get { hash: Some(h) } if h == hash),
+            "{resp:?}"
+        );
+        assert!(matches!(
+            proto.handle(&stranger, MetaRequest::List).await,
+            MetaResponse::List { .. }
+        ));
+
+        // Every kind of write is refused with an actionable message.
+        for req in [
+            MetaRequest::Put {
+                filename: "x".to_owned(),
+                hash,
+            },
+            MetaRequest::Delete {
+                filename: "pub.txt".to_owned(),
+            },
+            MetaRequest::Rename {
+                from: "pub.txt".to_owned(),
+                to: "y".to_owned(),
+            },
+            MetaRequest::Copy {
+                from: "pub.txt".to_owned(),
+                to: "y".to_owned(),
+            },
+            MetaRequest::SetTag {
+                subject: b"pub.txt".to_vec(),
+                key: b"k".to_vec(),
+                value: None,
+            },
+            MetaRequest::DelTag {
+                subject: b"pub.txt".to_vec(),
+                key: b"k".to_vec(),
+                value: None,
+            },
+            MetaRequest::MigrateTags,
+        ] {
+            let resp = proto.handle(&stranger, req).await;
+            let msg = resp.error_message().expect("write must be refused");
+            assert!(msg.contains("permission denied"), "{msg}");
+            assert!(
+                msg.contains(&stranger.to_string()),
+                "message names the node: {msg}"
+            );
+        }
+        // Nothing changed.
+        assert_eq!(names(&node).await, vec!["pub.txt".to_owned()]);
+
+        // The listed node may write.
+        let resp = proto
+            .handle(
+                &owner,
+                MetaRequest::Copy {
+                    from: "pub.txt".to_owned(),
+                    to: "copy.txt".to_owned(),
+                },
+            )
+            .await;
+        assert!(
+            matches!(resp, MetaResponse::Copy { success: true }),
+            "{resp:?}"
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn whoami_reports_identity_and_write_permission() {
+        let node = LocalNode::open(true).await.unwrap();
+        let proto = MetaProtocol::new(
+            &node.blobs(),
+            None,
+            Arc::clone(node.tags()),
+            AccessPolicy::restricted([eid(1)]),
+            eid(9),
+        );
+        match proto.handle(&eid(1), MetaRequest::Whoami).await {
+            MetaResponse::Whoami {
+                node_id,
+                can_write,
+                open_writes,
+                ..
+            } => {
+                assert_eq!(node_id, eid(9));
+                assert!(can_write);
+                assert!(!open_writes);
+            }
+            other => panic!("{other:?}"),
+        }
+        match proto.handle(&eid(2), MetaRequest::Whoami).await {
+            MetaResponse::Whoami { can_write, .. } => assert!(!can_write),
+            other => panic!("{other:?}"),
+        }
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn find_ranks_name_matches_before_contains() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "readme", b"1").await;
+        put(&node, "readme.md", b"2").await;
+        put(&node, "the-readme", b"3").await;
+        let resp = node
+            .request(MetaRequest::Find {
+                query: "README".to_owned(),
+                prefer_name: true,
+            })
+            .await;
+        let MetaResponse::Find { matches } = resp else {
+            panic!("{resp:?}")
+        };
+        let order: Vec<&str> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(order[0], "readme", "exact first: {order:?}");
+        assert_eq!(order[1], "readme.md", "prefix second: {order:?}");
+        assert_eq!(order[2], "the-readme", "contains last: {order:?}");
+        node.shutdown().await.unwrap();
     }
 }

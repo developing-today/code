@@ -45,7 +45,7 @@ updated: 2026-04-03T00:10:47.600Z
 - ⏠**NOT YET DONE: git commit** — need to commit with message:
   ```
   feat(id/web): name-first URL scheme (/edit/{name}, /hash/{hash})
-  
+
   Phase 1 Part 3: Primary URLs are now /edit/{filename} instead of
   /edit/{hash}. Old hash-based access via /hash/{hash} redirects to the
   name-based URL. /view/{name} added as stub (redirects to edit for now).

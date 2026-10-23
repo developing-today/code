@@ -17,7 +17,7 @@ import { test, expect } from "@playwright/test";
 
 // Helper: create a file and navigate to its editor
 async function createFile(page: import("@playwright/test").Page, name: string) {
-  await page.goto("/");
+  await page.goto("/files");
   await page.fill("#new-file-name", name);
   await page.click("#new-file-form button[type='submit']");
   await page.waitForURL(/\/(file|edit)\//, { timeout: 15_000 });
@@ -142,7 +142,9 @@ test.describe("SPA Navigation", () => {
   test("can navigate between all main pages", async ({ page }) => {
     await page.goto("/");
 
-    // Files page
+    // Home remains the root; the file browser is a separate page.
+    await expect(page.getByRole("heading", { name: "World explorer" })).toBeVisible();
+    await page.click("a[data-nav][href='/files']");
     await expect(page.locator("#new-file-form")).toBeVisible();
 
     // Go to settings
@@ -154,14 +156,15 @@ test.describe("SPA Navigation", () => {
     await expect(page.locator("text=Discovered Peers")).toBeVisible({ timeout: 10_000 });
 
     // Go back to files
-    await page.click("a[data-nav][href='/']");
+    await page.click("a[data-nav][href='/files']");
     await expect(page.locator("#new-file-form")).toBeVisible({ timeout: 10_000 });
   });
 
   test("nav links exist in header", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("a[data-nav][href='/']", { hasText: "files" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "files", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "id", exact: true })).toBeVisible();
     await expect(page.locator("a[data-nav][href='/peers']", { hasText: "peers" })).toBeVisible();
     await expect(page.locator("a[data-nav][href='/settings']", { hasText: "settings" })).toBeVisible();
   });
@@ -171,7 +174,7 @@ test.describe("SPA Navigation", () => {
     await createFile(page, fileName);
 
     // Editor should also have nav links
-    await expect(page.locator("a[data-nav][href='/']", { hasText: "files" })).toBeVisible();
+    await expect(page.locator("a[data-nav][href='/files']", { hasText: "files" })).toBeVisible();
     await expect(page.locator("a[data-nav][href='/peers']", { hasText: "peers" })).toBeVisible();
     await expect(page.locator("a[data-nav][href='/settings']", { hasText: "settings" })).toBeVisible();
   });
@@ -183,7 +186,7 @@ test.describe("SPA Navigation", () => {
 
 test.describe("Browser History", () => {
   test("back button navigates to previous page", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/files");
 
     // Navigate to settings via SPA
     await page.click("a[data-nav][href='/settings']");
@@ -196,7 +199,7 @@ test.describe("Browser History", () => {
   });
 
   test("forward button navigates forward after back", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/files");
 
     // Navigate to settings
     await page.click("a[data-nav][href='/settings']");
@@ -213,7 +216,7 @@ test.describe("Browser History", () => {
   });
 
   test("multi-page history works correctly", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/files");
 
     // Navigate: files -> settings -> peers
     await page.click("a[data-nav][href='/settings']");
@@ -239,7 +242,7 @@ test.describe("Browser History", () => {
     expect(page.url()).toMatch(/\/(file|edit)\//);
 
     // Navigate back to file list via SPA link
-    await page.click("a[data-nav][href='/']");
+    await page.click("a[data-nav][href='/files']");
     await expect(page.locator("#new-file-form")).toBeVisible({ timeout: 10_000 });
 
     // Go back to editor via browser back

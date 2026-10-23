@@ -9,6 +9,7 @@
     with lib;
     [
       (from-root "nixos/all")
+      (from-root "nixos/agent-auth") # Jules + 1Password auth in every (hidden) shell
       (from-root "nixos/environment")
       #(from-root "nixos/fonts")
       (from-root "nixos/virtualisation")

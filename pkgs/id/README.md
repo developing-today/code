@@ -181,7 +181,7 @@ Enter the Nix dev shell for all required tools:
 nix develop
 ```
 
-This provides: Rust 1.89.0, clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-machete, just, Bun, TypeScript, chromium, firefox.
+This provides: Rust 1.99.0, clippy, rustfmt, cargo-llvm-cov, cargo-audit, cargo-machete, just, Bun, TypeScript, chromium, firefox.
 
 ### Testing
 

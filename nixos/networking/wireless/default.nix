@@ -26,10 +26,9 @@
       #       useful for manual configuration
       secretsFile = config.sops.templates.wireless-secrets.path;
       allowAuxiliaryImperativeNetworks = true; # TODO: can we disable this?
-      userControlled = {
-        enable = true;
-        group = "network";
-      };
+      # was { enable = true; group = "network"; }; now a plain bool, group fixed to wpa_supplicant
+      # NOTE: users needing control must be in the `wpa_supplicant` group now
+      userControlled = true;
       # whats extraConfig.update_config=1 do?
       extraConfig = ''
         update_config=1
@@ -37,6 +36,12 @@
       '';
     };
   };
-  sops.templates.wireless-secrets.content = host.wireless-secrets-template config;
+  sops.templates.wireless-secrets = {
+    content = host.wireless-secrets-template config;
+    # wpa_supplicant runs as its own user and must be able to read this at boot.
+    owner = "wpa_supplicant";
+    group = "wpa_supplicant";
+    mode = "0400";
+  };
   users.groups.network = { }; # Ensure group exists this would be for users that aren't root or sudoers or doassers or whatever
 }

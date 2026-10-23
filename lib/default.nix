@@ -42,7 +42,7 @@ let
       #   in merge "" a b;
 
     in
-    array |> flattenDeep |> builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate { };
+    builtins.foldl' inputs.nixpkgs.lib.attrsets.recursiveUpdate { } (flattenDeep array);
 
   matrix =
     spec: f:
@@ -103,7 +103,7 @@ let
         # tags?
         system = "x86_64-linux";
         init = from-root "nixos/init";
-        stateVersion = "23.11";
+        stateVersion = "26.11";
         group-key = lib.group-key name;
         # groups =
         # or maybe secretGroups =
@@ -163,7 +163,7 @@ let
   default-home-manager-user-configuration = name: {
     # TODO: make this work? integrate into users?
     system = "x86_64-linux";
-    stateVersion = "23.11";
+    stateVersion = "26.11";
     home = {
       ide = rec {
         inherit name;
@@ -300,9 +300,26 @@ let
       lib = _self;
     };
 
+  # nixpkgs source with repo-local patches applied (see patches/nixpkgs/).
+  # applyPatches needs a concrete system for its stdenv; use the host's.
+  patched-nixpkgs-src =
+    config:
+    config.inputs.nixpkgs.legacyPackages.${config.system}.applyPatches {
+      name = "nixpkgs-patched";
+      src = config.inputs.nixpkgs;
+      patches = [ (from-root "patches/nixpkgs/neededforboot-nixos-unstable.patch") ];
+    };
+
   make-nixos-from-config =
     config:
-    lib.nixosSystem {
+    let
+      src = patched-nixpkgs-src config;
+      # replicate nixpkgs flake's nixosSystem wrapper, but against the PATCHED
+      # source so nixos module files come from the patched tree
+      patched-lib = import (src + "/lib");
+    in
+    import (src + "/nixos/lib/eval-config.nix") {
+      lib = patched-lib;
       system = null;
       specialArgs = {
         inherit (config)
@@ -314,7 +331,12 @@ let
           lib
           ;
       };
-      modules = ensure-list config.host.init;
+      modules = ensure-list config.host.init ++ [
+        # keep pkgs.path / <nixpkgs> pointing at the patched tree
+        (_: {
+          config.nixpkgs.flake.source = src.outPath;
+        })
+      ];
     };
 
   make-nixos-configurations = lib.mapAttrs (
@@ -324,7 +346,7 @@ let
   make-vim =
     let
       enablePkgs =
-        { ... }@args:
+        args:
         builtins.mapAttrs (
           n: v:
           merge [
@@ -369,6 +391,36 @@ let
     inputs.flake-utils.lib.eachDefaultSystem (
       system:
       let
+        # TODO: check upstream neovim-nightly-overlay for a fixed tree-sitter cargoHash, then drop this local rebuild
+        # neovim-nightly-overlay pins a stale cargoHash for its bundled tree-sitter; rebuild with the current one
+        nightlySrc = inputs.neovim-nightly-overlay.outPath;
+        stock = import inputs.nixpkgs { inherit system; };
+        nightlyDeps = import (nightlySrc + "/flake/packages/neovim-dependencies.nix") {
+          inherit (inputs) neovim-src;
+          inherit (stock) lib;
+          pkgs = stock;
+        };
+        nightlyTreeSitter =
+          (import (nightlySrc + "/flake/packages/tree-sitter.nix") {
+            inherit (stock) lib;
+            pkgs = stock;
+            neovim-dependencies = nightlyDeps;
+          }).overrideAttrs
+            (oa: {
+              cargoHash = "sha256-GbW/qFq8X0UNi9LIepTIAKSAqCXM/gdy6XV6s5YO8r0=";
+              cargoDeps = stock.rustPlatform.fetchCargoVendor {
+                name = "${oa.pname}-cargo-deps";
+                src = nightlyDeps.treesitter;
+                hash = "sha256-GbW/qFq8X0UNi9LIepTIAKSAqCXM/gdy6XV6s5YO8r0=";
+              };
+            });
+        nightlyNeovim = import (nightlySrc + "/flake/packages/neovim.nix") {
+          inherit (inputs) neovim-src;
+          inherit (stock) lib;
+          pkgs = stock;
+          neovim-dependencies = nightlyDeps;
+          tree-sitter = nightlyTreeSitter;
+        };
         pkgs = import inputs.nixpkgs {
           ## TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
           # pkgs = import inputs.nixpkgs-unstable { # breaks xrdb?? x11 move pr
@@ -383,12 +435,15 @@ let
               "qtwebkit-5.212.0-alpha4"
             ];
           };
-          overlays = [ inputs.neovim-nightly-overlay.overlays.default ];
+          overlays = [
+            inputs.neovim-nightly-overlay.overlays.default
+            (_: _: { neovim-unwrapped = nightlyNeovim; })
+          ];
         };
         module = import (from-root "pkgs/vim/config") { inherit enableModules pkgs; };
         neovim = inputs.nixvim.legacyPackages.${system}.makeNixvimWithModule {
           inherit pkgs;
-          module = module;
+          inherit module;
         };
         nixosModules = inputs.nixvim.nixosModules.nixvim;
         homeManagerModules = inputs.nixvim.homeManagerModules.nixvim;
@@ -397,14 +452,14 @@ let
         packages = {
           default = neovim;
         };
-        nixosModules = nixosModules; # unsure how to overlay nightly here.
-        homeManagerModules = homeManagerModules; # unsure how to overlay nightly here.
-        vimOverlay = final: prev: { neovim = neovim; };
-        enableModules = enableModules;
-        enableColorschemes = enableColorschemes;
-        enableLspServers = enableLspServers;
-        enablePkgs = enablePkgs;
-        enablePlugins = enablePlugins;
+        inherit nixosModules; # unsure how to overlay nightly here.
+        inherit homeManagerModules; # unsure how to overlay nightly here.
+        vimOverlay = final: prev: { inherit neovim; };
+        inherit enableModules;
+        inherit enableColorschemes;
+        inherit enableLspServers;
+        inherit enablePkgs;
+        inherit enablePlugins;
       }
     );
 
@@ -412,7 +467,7 @@ let
     let
       # Usage see: https://docs.clan.lol
       clan = inputs.clan-core.lib.clan {
-        self = inputs.self;
+        inherit (inputs) self;
         meta.name = "developing-today";
         # Prerequisite: boot into the installer.
         # See: https://docs.clan.lol/getting-started/installer
@@ -429,14 +484,24 @@ let
       inherit (clan.config) nixosConfigurations clanInternals;
       clan = clan.config;
       devShells =
-        inputs.clan-core.inputs.nixpkgs.lib.genAttrs
+        inputs.nixpkgs-unstable.lib.genAttrs
           [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ]
           (
             system:
             let
-              pkgs = import inputs.clan-core.inputs.nixpkgs {
+              # The flake's canonical nixpkgs (nixpkgs-unstable) -- the same
+              # tree the system, shell.nix and the id sub-flake use, so
+              # `nix develop` and `nix-shell` resolve identical versions.
+              pkgs = import inputs.nixpkgs-unstable {
                 inherit system;
                 overlays = [ (import inputs.id-rust-overlay) ];
+                # The dev shell includes the Android SDK (nix-common.nix):
+                # androidenv is unfree and its derivations are gated on license
+                # acceptance. Both are required for `nix develop` to evaluate.
+                config = {
+                  allowUnfree = true;
+                  android_sdk.accept_license = true;
+                };
               };
               # Import shared configuration (same as shell.nix)
               nixCommon = import ../nix-common.nix { inherit pkgs; };
@@ -511,9 +576,24 @@ let
       publicRecipes = pkgs.lib.filterAttrs (
         name: recipe: !(recipe.private or false) && name != "default"
       ) justRecipes.recipes;
+
+      mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
     in
     {
-      apps = pkgs.lib.mapAttrs mkRecipeApp publicRecipes;
+      packages = {
+        inherit mcpx idMailDeploy;
+      };
+      apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
+        id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
+        mcpx = {
+          type = "app";
+          program = "${mcpx}/bin/mcpx";
+          meta = commonMeta // {
+            description = "mcpx MCP gateway and Code Mode execution runner";
+          };
+        };
+      };
     }
   );
 
@@ -570,6 +650,7 @@ let
         "just"
       ])
       (prefixAttr "checks" [ "default" ])
+      { inherit (idOutputs) packages; }
       # 'id' app: runs the id binary
       {
         apps = builtins.mapAttrs (system: _: {
@@ -586,8 +667,25 @@ let
           };
           nixCommon = import ../nix-common.nix { inherit pkgs; };
           inherit (nixCommon) fmtBins;
+          formatCheck = pkgs.writeShellScriptBin "format-check" ''
+            export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
+            if [ "$#" -eq 0 ]; then
+              echo "usage: nix run .#format-check -- <changed-file>..." >&2
+              exit 2
+            fi
+            exec treefmt \
+              --config-file "$PWD/treefmt.toml" \
+              --tree-root "$PWD" \
+              --fail-on-change \
+              "$@"
+          '';
         in
         {
+          apps.format-check = {
+            type = "app";
+            program = "${formatCheck}/bin/format-check";
+          };
+
           formatter = pkgs.writeShellScriptBin "formatter" ''
             export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
             # fix = strip-whitespace + lockfiles + fmt (treefmt with --config-file/--tree-root)
@@ -861,6 +959,17 @@ let
       ))
     ];
 
+  make-mcpx-overlay = {
+    overlays = {
+      default = final: prev: {
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+      };
+      mcpx = final: prev: {
+        mcpx = prev.callPackage ../pkgs/mcpx/package.nix { };
+      };
+    };
+  };
+
   _self = merge [
     lib
     {
@@ -904,6 +1013,7 @@ let
         make-clan
         make-root-apps
         make-id
+        make-mcpx-overlay
         ;
     }
   ];

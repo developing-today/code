@@ -307,11 +307,66 @@ pub fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
     }
 }
 
+/// Parse a duration such as `45s`, `90m`, `12h` or `3d` into seconds.
+///
+/// # Errors
+///
+/// Fails without a whole-number amount and one of the units `s`, `m`, `h`, `d`,
+/// or when the result does not fit in a `u64`.
+pub fn parse_duration_secs(text: &str) -> Result<u64, String> {
+    let digits_end = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    let (digits, unit) = text.split_at(digits_end);
+    if digits.is_empty() {
+        return Err(format!("`{text}` is not a duration; try 12h or 3d"));
+    }
+    let amount: u64 = digits
+        .parse()
+        .map_err(|error| format!("`{text}` is too long: {error}"))?;
+    let unit_secs: u64 = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        _ => return Err(format!("`{text}` needs a unit: s, m, h or d")),
+    };
+    amount
+        .checked_mul(unit_secs)
+        .ok_or_else(|| format!("`{text}` is too long"))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use iroh_blobs::Hash;
+
+    #[test]
+    fn test_parse_duration_secs_units() {
+        assert_eq!(parse_duration_secs("45s"), Ok(45));
+        assert_eq!(parse_duration_secs("90m"), Ok(5_400));
+        assert_eq!(parse_duration_secs("12h"), Ok(43_200));
+        assert_eq!(parse_duration_secs("3d"), Ok(259_200));
+        assert_eq!(parse_duration_secs("0h"), Ok(0));
+    }
+
+    #[test]
+    fn test_parse_duration_secs_refuses_malformed_input() {
+        for text in ["", "h", "12", "3.5d", "3w", "-1d", "2 d"] {
+            assert!(parse_duration_secs(text).is_err(), "{text}");
+        }
+        assert!(
+            parse_duration_secs("99999999999999999999d")
+                .unwrap_err()
+                .contains("too long")
+        );
+        assert!(
+            parse_duration_secs("18446744073709551615d")
+                .unwrap_err()
+                .contains("too long")
+        );
+    }
 
     #[test]
     fn test_parse_put_spec_simple() {

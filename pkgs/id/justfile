@@ -222,6 +222,20 @@ test: test-rust test-web-unit test-web-typecheck
 test-sandbox:
     cargo test --all-features -- --skip serve_tests
 
+# Full Rust run: the complete suite, then the regression replay and the tuple property tests at a higher case count
+[group('test')]
+test-full:
+    cargo test --all-features --no-fail-fast
+    cargo test --all-features --test regression_replay
+    PROPTEST_CASES="${PROPTEST_CASES:-4096}" ID_TUPLE_FUZZ_CASES="${ID_TUPLE_FUZZ_CASES:-20000}" cargo test --all-features --test tuple_properties
+    @echo "✓ Full Rust test run passed"
+
+# Crash-safety gate for redb and the identity store: every storage call under every survival policy, and the lying-sync control, in release
+[group('test')]
+crash-gate:
+    cargo test --release --features web --test crash -- --skip write_corpus --include-ignored
+    @echo "✓ Crash gate passed"
+
 # Run unit tests only (fast)
 [group('test')]
 test-unit:
@@ -275,7 +289,6 @@ test-web-typecheck:
 test-nix:
     nix flake check
     @echo "✓ nix flake check passed (27 checks — runs everything)"
-alias test-full := test-nix
 alias check-nix := test-nix
 alias nix-check := test-nix
 

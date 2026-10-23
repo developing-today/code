@@ -1,0 +1,34 @@
+# Fast PR checks for pkgs/id — the canonical list built by id-check.yml.
+#
+# One check name per line (a checks.x86_64-linux attribute of
+# pkgs/id/flake.nix). check-id-pr-checks.sh guards this list against the
+# flake: a flake check that is neither listed here nor excluded there
+# fails the PR gate by name, as does a listed name the flake no longer
+# defines.
+#
+# Intentionally NOT listed (see check-id-pr-checks.sh for the single
+# exclusion list): the `default` aggregate, which re-runs this same set
+# inside a single derivation, and the heavy checks that run nightly in
+# id-e2e-nightly.yml (test-e2e and the nixos-* VM checks).
+cargo-fmt-check
+rustfmt-check
+web-fmt-check
+prettier-check
+nix-fmt-check
+treefmt-check
+biome-check
+shellcheck-check
+shfmt-check
+statix-check
+taplo-check
+clippy-lint
+web-lint
+cargo-check
+test
+test-unit
+test-int
+test-web
+test-web-unit
+test-web-typecheck
+crash-gate
+doc

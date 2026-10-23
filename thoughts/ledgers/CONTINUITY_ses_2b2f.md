@@ -38,6 +38,6 @@ Add community/forum/video links to ALL 21 devices in `~/code/docs/inventory/rout
 
 ### Key Technical Details
 - **File**: `~/code/docs/inventory/routing-and-switching.md` (~900 lines)
-- **DNS workaround**: Environment DNS (100.100.100.100) sometimes returns SERVFAIL; use `dig @8.8.8.8` + `curl --resolve` 
+- **DNS workaround**: Environment DNS (100.100.100.100) sometimes returns SERVFAIL; use `dig @8.8.8.8` + `curl --resolve`
 - **Cisco Community**: Always returns 403 (Cloudflare bot block) but pages are confirmed real
 - **Google CAPTCHA**: Blocks browser automation, so user pastes search results manually
