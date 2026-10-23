@@ -19,6 +19,40 @@ test("validateCrawlUrl accepts public http(s) targets", () => {
   assert.equal(validateCrawlUrl("https://8.8.8.8/").ok, true);
 });
 
+test("validateCrawlUrl percent-encodes non-ASCII outside the host (#615)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG UTF-8 percent-encoding in userinfo/path/query.
+  const cases: Array<[string, string]> = [
+    ["http://example.com/café", "http://example.com/caf%C3%A9"],
+    ["http://example.com/?q=café", "http://example.com/?q=caf%C3%A9"],
+    ["http://user:café@example.com/", "http://user:caf%C3%A9@example.com/"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+});
+
+test("validateCrawlUrl percent-encodes C0 controls, space and DEL outside the host (#614)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG percent-encodes C0 controls, space and DEL inside
+  // the path/query/fragment/userinfo, and trims leading and trailing
+  // C0-or-space from the whole input.
+  const cases: Array<[string, string]> = [
+    ["http://example.com/pa\x00th", "http://example.com/pa%00th"],
+    ["http://example.com/pa th", "http://example.com/pa%20th"],
+    ["http://example.com/?q=a\x7fb", "http://example.com/?q=a%7Fb"],
+    ["\x00http://example.com/", "http://example.com/"],
+    ["http://example.com/\x00", "http://example.com/"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+});
+
 test("validateCrawlUrl refuses non-http schemes and junk", () => {
   assert.equal(validateCrawlUrl("ftp://example.com/").ok, false);
   assert.equal(validateCrawlUrl("file:///etc/passwd").ok, false);
@@ -150,6 +184,45 @@ test("validateCrawlUrl refuses trailing-dot spellings of blocked hosts (#466)", 
   assert.equal(validateCrawlUrl("http://example.com./").ok, true);
 });
 
+test("validateCrawlUrl refuses the bare home.arpa apex (#608)", () => {
+  // Every subdomain of home.arpa is refused via the ".home.arpa"
+  // suffix, but the apex itself is the RFC 8375 special-use name for
+  // the local home network — it needs the equality arm localhost has.
+  const blocked = ["http://home.arpa/", "http://home.arpa./", "http://HOME.ARPA/", "http://router.home.arpa/"];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  // Controls: an ordinary public name still passes.
+  assert.equal(validateCrawlUrl("http://example.com/").ok, true);
+});
+
+test("validateCrawlUrl strips tab/CR/LF before judging, like WHATWG (#611)", () => {
+  // The URL parser removes every ASCII tab, LF and CR from the input
+  // before parsing — even inside the scheme spelling — and the
+  // returned URL carries none. The container validator must reach
+  // the same verdicts and return the same stripped spelling.
+  const T = "\t",
+    N = "\n",
+    R = "\r";
+  const accepted: Array<[string, string]> = [
+    [`http://exa${T}mple.com/`, "http://example.com/"],
+    [`http://exa${N}mple.com/`, "http://example.com/"],
+    [`http://exa${R}mple.com/`, "http://example.com/"],
+    [`http://example.com${T}.evil.com/`, "http://example.com.evil.com/"],
+    [`http://example.com${R}${N}.evil.com/`, "http://example.com.evil.com/"],
+    [`http://example.com/pa${T}th`, "http://example.com/path"],
+    [`ht${T}tp://example.com/`, "http://example.com/"],
+  ];
+  for (const [u, normalized] of accepted) {
+    const r = validateCrawlUrl(u);
+    assert.equal(r.ok, true, u);
+    if (r.ok) assert.equal(r.url, normalized, u);
+  }
+  for (const u of [`http://127${T}.0.0.1/`, `http://192.168${N}.0.1/`, `http://local${R}host/`]) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+});
+
 test("validateCrawlUrl refuses empty-label hosts (#511)", () => {
   // A second trailing dot defeats the one-dot strip (#466): "localhost.."
   // becomes "localhost." and misses the blocked-host checks. An interior
@@ -213,6 +286,49 @@ test("validateCrawlUrl refuses Arabic numbers outside RTL labels (#595)", () => 
   assert.equal(validateCrawlUrl("http://\u05d0\u{10d30}\u05d0.com/").ok, true);
   assert.equal(validateCrawlUrl("http://\u0627\u{10d30}\u0627.com/").ok, true);
   assert.equal(validateCrawlUrl("http://\u{10d00}\u{10d30}.com/").ok, true);
+});
+
+test("validateCrawlUrl judges Arabic-Indic digits by their bidi context (#605)", () => {
+  // U+0660-U+0669 are bidi class AN, like the astral digits in the
+  // #595 test: valid inside a genuine RTL label, refused outside
+  // one. The container validator's blanket range refused the RTL
+  // spellings too; it now pins the same contextual verdicts (#605).
+  const blocked = [
+    "http://\u0661.com/",
+    "http://\u0661\u0662\u0667.\u0660.\u0660.\u0661/",
+    "http://ex\u0661ample.com/",
+    "http://\u05d0\u06611.com/",
+    "http://\u0661\u0627.com/",
+  ];
+  for (const u of blocked) {
+    assert.equal(validateCrawlUrl(u).ok, false, u);
+  }
+  // Controls: the digits inside RTL labels, raw and A-label form.
+  assert.equal(validateCrawlUrl("http://\u0627\u0661.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://\u0645\u0631\u062d\u0628\u0627\u0661.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://\u05d0\u0661.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://xn--mgb0j.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://xn--mgbbop3hzh.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://xn--4db40a.com/").ok, true);
+});
+
+test("validateCrawlUrl judges U+0345 by its UTS-46 mapping (#596)", () => {
+  // UTS-46 maps U+0345 (combining Greek ypogegrammeni) to U+03B9
+  // (ι, bidi class L): inside an RTL label the mapped form mixes
+  // L with R and is refused. The container validator judged the
+  // unmapped mark (bidi NSM) and certified these hosts; it now
+  // pins the same verdicts (#596).
+  assert.equal(validateCrawlUrl("http://\u05d0\u0345\u05d0.com/").ok, false);
+  assert.equal(validateCrawlUrl("http://\u05d0\u0345.com/").ok, false);
+  // (The A-label spelling xn--jua51kba is refused under Bun but
+  // accepted by Node's URL parser, so it is pinned only in the
+  // container suite.)
+  // Controls: LTR/Greek contexts and the label-start spelling
+  // (U+0345 maps to a letter, so the label starts with one) stay
+  // accepted.
+  assert.equal(validateCrawlUrl("http://ex\u0345ample.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://\u03b1\u0345.com/").ok, true);
+  assert.equal(validateCrawlUrl("http://\u0345abc.com/").ok, true);
 });
 
 test("validateCrawlUrl refuses hosts whose mapping introduces a separator (#593)", () => {
