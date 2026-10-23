@@ -221,12 +221,27 @@ const dispatchWithFallback = (body, clientRes) => {
       // the in-body quota check below can still call onFail, and onFail is
       // a no-op once headers are sent — writing the head first made that
       // check hang the request forever instead of falling back (#681).
-      const writeHead = () => {
+      // The backend's framing headers describe the backend's body, not
+      // the one this proxy sends: the non-stream success path
+      // re-serializes the JSON (model rewritten, pretty-printed) and the
+      // stream path rewrites each chunk's model, so a forwarded
+      // Content-Length truncates the client at the backend's byte count
+      // (#684). When the exact body being sent is known, advertise its
+      // real length; for streaming, drop the stale framing and let Node
+      // chunk the response.
+      const writeHead = (sentBody) => {
         if (!clientRes.headersSent) {
-          clientRes.writeHead(localRes.statusCode || 200, {
+          const headers = {
             ...localRes.headers,
             'Access-Control-Allow-Origin': '*'
-          });
+          };
+          delete headers['transfer-encoding'];
+          if (sentBody !== undefined) {
+            headers['content-length'] = Buffer.byteLength(sentBody);
+          } else {
+            delete headers['content-length'];
+          }
+          clientRes.writeHead(localRes.statusCode || 200, headers);
         }
       };
 
@@ -268,10 +283,11 @@ const dispatchWithFallback = (body, clientRes) => {
               return onFail(new Error('Quota exceeded in JSON body'));
             }
             json.model = modelId;
-            writeHead();
-            clientRes.end(JSON.stringify(json, null, 2));
+            const sentBody = JSON.stringify(json, null, 2);
+            writeHead(sentBody);
+            clientRes.end(sentBody);
           } catch (_) {
-            writeHead();
+            writeHead(fullBody);
             clientRes.end(fullBody);
           }
         });
