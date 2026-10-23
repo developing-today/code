@@ -7,7 +7,8 @@
 # DESIGN, as the documented fallback for launches that never see those
 # variables:
 #
-#   - bin/<name>-proxy.mjs: process.env.<VAR> || '<port>'
+#   - bin/<name>-proxy.mjs: parseProxyPort('<VAR>', <port>) (or the older
+#     process.env.<VAR> || '<port>' form)
 #   - .opencode/opencode.jsonc: {env:<VAR>:-<port>} in the provider
 #     baseURL (opencode's {env:VAR} substitution has no fallback of its
 #     own; the :- form is what keeps a non-shell launch — systemd
@@ -30,6 +31,7 @@ proxies=(
   "AGY_PROXY_PORT|agyProxyPort|bin/agy-proxy.mjs|yes"
   "CODEX_PROXY_PORT|codexProxyPort|bin/codex-proxy.mjs|yes"
   "ANTIGRAVITY_LS_PROXY_PORT|antigravityLsProxyPort|bin/antigravity-ls-proxy.mjs|yes"
+  "DESIGN_CODE_PROXY_PORT|designCodeProxyPort|bin/design-code-proxy.mjs|yes"
 )
 
 failed=0
@@ -43,7 +45,8 @@ for entry in "${proxies[@]}"; do
     continue
   fi
 
-  if ! grep -qF "process.env.${var} || '${let_port}'" "$repo_root/$script"; then
+  if ! grep -qF "parseProxyPort('${var}', ${let_port})" "$repo_root/$script" &&
+    ! grep -qF "process.env.${var} || '${let_port}'" "$repo_root/$script"; then
     echo "::error::$script fallback for ${var} does not match the ${let_name} definition (${let_port}) in home/common/default.nix."
     failed=1
   fi

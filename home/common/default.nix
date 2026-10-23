@@ -18,6 +18,7 @@ let
   agyProxyPort = 18743;
   codexProxyPort = 18744;
   antigravityLsProxyPort = 18745;
+  designCodeProxyPort = 18746;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -579,7 +580,7 @@ in
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "DESIGN_CODE_PROXY_PORT=18746"
+        "DESIGN_CODE_PROXY_PORT=${toString designCodeProxyPort}"
         "DESIGN_CODE_PROXY_HOST=127.0.0.1"
       ];
     };
@@ -1247,6 +1248,7 @@ in
       AGY_PROXY_PORT = toString agyProxyPort;
       CODEX_PROXY_PORT = toString codexProxyPort;
       ANTIGRAVITY_LS_PROXY_PORT = toString antigravityLsProxyPort;
+      DESIGN_CODE_PROXY_PORT = toString designCodeProxyPort;
       OPENCODE_EXPERIMENTAL_ICON_DISCOVERY = "1";
       OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
       # File watcher off by default (Drew, 2026-10-20): the working trees
