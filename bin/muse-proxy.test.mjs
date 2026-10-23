@@ -25,6 +25,10 @@ for a in "$@"; do
   if [ "$prev" = "--prompt-file" ]; then prompt="$a"; fi
   prev="$a"
 done
+if grep -q FAILME "$prompt" 2>/dev/null; then
+  echo "stub muse: auth expired" >&2
+  exit 3
+fi
 if grep -q DIVERGE "$prompt" 2>/dev/null; then
   printf '%s\\n' '{"payload_type":"run.output.delta","payload":{"text":"abc"}}'
   printf '%s\\n' '{"payload_type":"run.terminal.completed","payload":{"terminal":"completed","text":"xyz-longer"}}'
@@ -110,6 +114,35 @@ test('streaming emits the terminal text tail the deltas missed (#484)', async (t
   const { content, finish } = streamedContent(await chat(port, { messages, stream: true }));
   assert.equal(content, 'Hello world', 'streamed content must equal the non-streamed content');
   assert.equal(finish, 'stop');
+});
+
+test('execution failure: stream gets an SSE-framed error + [DONE], non-stream gets 500 (#670)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const messages = [{ role: 'user', content: 'please FAILME now' }];
+
+  const plainRes = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages })
+  });
+  assert.equal(plainRes.status, 500);
+  const plainBody = JSON.parse(await plainRes.text());
+  assert.match(plainBody.error.message, /Muse execution failed: stub muse: auth expired/);
+
+  const streamRes = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages, stream: true })
+  });
+  assert.equal(streamRes.status, 200);
+  assert.match(streamRes.headers.get('content-type'), /text\/event-stream/);
+  const sse = await streamRes.text();
+  const dataLines = sse.split('\n').filter(l => l.startsWith('data: '));
+  assert.ok(dataLines.length >= 2, `expected a framed error event and [DONE], got: ${JSON.stringify(sse)}`);
+  const errorEvent = JSON.parse(dataLines[0].slice('data: '.length));
+  assert.match(errorEvent.error.message, /Muse execution failed: stub muse: auth expired/);
+  assert.equal(dataLines[dataLines.length - 1], 'data: [DONE]');
 });
 
 test('divergent terminal text: non-stream uses it, stream keeps the deltas already sent', async (t) => {

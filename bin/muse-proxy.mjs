@@ -399,10 +399,24 @@ const server = http.createServer((req, res) => {
         const failed = (code !== 0 && fullContent.length === 0) || (terminalState && terminalState !== 'completed' && fullContent.length === 0);
         if (failed) {
           const detail = (stderrTail.trim().split('\n').pop() || `muse exec exited with code ${code}`).trim();
+          const errorBody = { error: { message: `Muse execution failed: ${detail}` } };
+          if (stream) {
+            // The 200 + text/event-stream headers are already on the wire,
+            // so a bare JSON body would be invisible to an SSE client
+            // parsing `data:` lines — it would see an empty, successful
+            // stream (#670). Frame the error as an SSE event and close
+            // the stream with [DONE] instead.
+            if (!res.writableEnded) {
+              res.write(`data: ${JSON.stringify(errorBody)}\n\n`);
+              res.write('data: [DONE]\n\n');
+            }
+            res.end();
+            return;
+          }
           if (!res.headersSent) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
           }
-          res.end(JSON.stringify({ error: { message: `Muse execution failed: ${detail}` } }));
+          res.end(JSON.stringify(errorBody));
           return;
         }
 
