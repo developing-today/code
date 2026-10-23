@@ -1,0 +1,26 @@
+[31m[1mERROR[0m[39m:
+  [31m×[0m I am not smart enough to figure out the concrete type for all the generic
+  [31m│[0m parameters in `app::stream_file::<std::path::PathBuf>`.
+  [31m│[0m There should no unassigned generic parameters in request handlers, but `T`
+  [31m│[0m does not seem to have been assigned a concrete type.
+  [31m│[0m
+  [31m│[0m     ╭─[[36;1;4msrc/lib.rs[0m:8:1]
+  [31m│[0m  [2m 8[0m │     let mut bp = Blueprint::new();
+  [31m│[0m  [2m 9[0m │     bp.route(GET, "/home", f!(crate::stream_file::<std::path::PathBuf>));
+  [31m│[0m     · [35;1m                           ──────────────────────┬─────────────────────[0m
+  [31m│[0m     ·                                                  [35;1m╰── [35;1mThe request handler was registered here[0m[0m
+  [31m│[0m  [2m10[0m │     bp
+  [31m│[0m     ╰────
+  [31m│[0m   [31m×[0m
+  [31m│[0m    ╭─[[36;1;4msrc/lib.rs[0m:1:1]
+  [31m│[0m  [2m1[0m │ pub fn stream_file<T>(_inner: T) -> pavex_runtime::response::Response {
+  [31m│[0m    · [35;1m                   ┬[0m
+  [31m│[0m    ·                    [35;1m╰── [35;1mThe generic parameter without a concrete type[0m[0m
+  [31m│[0m  [2m2[0m │     todo!()
+  [31m│[0m    ╰────
+  [31m│[0m [36m  help: [0mSpecify the concrete type for `T` when registering the request
+  [31m│[0m         handler against the blueprint:
+  [31m│[0m         |  bp.route(
+  [31m│[0m         |    ..
+  [31m│[0m         |    f!(my_crate::my_handler::<ConcreteType>),
+  [31m│[0m         |  )

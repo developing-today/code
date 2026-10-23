@@ -1,0 +1,10 @@
+profile: 4 relay(s) (0 with QAD off), policy RelayOnly, n0-pkarr publish, n0-pkarr resolve, n0-dns resolve
+IROH_FORCE_STAGING_RELAYS set: false
+server online after 3.243188175s
+client online after 10.139µs
+record visible through n0 lookups after 697.185698ms: ["dns: 1 relay, 0 direct", "pkarr: 1 relay, 0 direct"]
+dial by ID (no ticket): connected 215.791598ms, replied 398.031311ms, echoed true, handshake over relay https://usw1-1.relay.n0.iroh.link./
+  path after reply: * relay https://usw1-1.relay.n0.iroh.link./
+  after 5 s: path   relay https://usw1-1.relay.n0.iroh.link./
+  after 5 s: path * direct (address withheld)
+RESULT t4: PASS

@@ -1,0 +1,18 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: argocd-gateway
+  namespace: testing-privileged
+  labels:
+    app.kubernetes.io/instance: testing-privileged-argocd-gateway
+    app.kubernetes.io/name: argocd-gateway
+    app.kubernetes.io/part-of: argocd
+spec:
+  gatewayClassName: apisix
+  listeners:
+    - allowedRoutes:
+        namespaces:
+          from: All
+      name: http
+      port: 80
+      protocol: HTTP

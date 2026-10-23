@@ -1,0 +1,8 @@
+> square 8192
+> List.reverse [1,2,3,4]
+> 4 + 6
+> 5.0 / 2.0
+> not true
+favoritePie : Text
+favoritePie = "Apple pie"
+> favoritePie

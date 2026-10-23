@@ -1,54 +1,68 @@
-{pkgs ? import <nixpkgs> {}}: let
-  tailwindcss = import ./tailwindcss.nix {pkgs = pkgs;};
+# Nix shell environment for the project.
+#
+# This shell.nix uses the exact same versions as flake.nix by reading
+# the flake.lock file for reproducible builds without requiring flakes.
+#
+# Usage:
+#   nix-shell                      # Enter development environment
+#   nix-shell --pure               # Enter isolated environment
+#   nix-shell --run "just test"    # Run tests
+#
+# For flake users: `nix develop` provides an equivalent environment.
+
+let
+  # Read flake.lock to get exact versions
+  flakeLock = builtins.fromJSON (builtins.readFile ./flake.lock);
+
+  # Extract locked versions from flake.lock. nixpkgs is aliased to
+  # nixpkgs-unstable in flake.nix, so both shells use the same tree as the
+  # system and the id sub-flake.
+  nixpkgsLock = flakeLock.nodes.nixpkgs-unstable.locked;
+  rustOverlayLock = flakeLock.nodes.id-rust-overlay.locked;
+
+  # Fetch nixpkgs with exact hash from flake.lock
+  nixpkgs = fetchTarball {
+    url = "https://github.com/${nixpkgsLock.owner}/${nixpkgsLock.repo}/archive/${nixpkgsLock.rev}.tar.gz";
+    sha256 = nixpkgsLock.narHash;
+  };
+
+  # Fetch rust-overlay with exact hash from flake.lock
+  rustOverlay = fetchTarball {
+    url = "https://github.com/${rustOverlayLock.owner}/${rustOverlayLock.repo}/archive/${rustOverlayLock.rev}.tar.gz";
+    sha256 = rustOverlayLock.narHash;
+  };
+
+  pkgs = import nixpkgs {
+    overlays = [ (import rustOverlay) ];
+    # nix-common.nix includes the Android SDK (androidenv is unfree and gated
+    # on license acceptance); see nixos/nixpkgs/default.nix for the system copy.
+    config = {
+      allowUnfree = true;
+      android_sdk.accept_license = true;
+    };
+  };
+
+  # Import shared configuration (defines rustToolchain, fmtBins, nativeBuildInputs, etc.)
+  nixCommon = import ./nix-common.nix { inherit pkgs; };
+
 in
-  pkgs.mkShell rec {
-    buildInputs = with pkgs; [
-      clang
-      llvmPackages.bintools
-      rustup
-      postgresql
-      libiconv
-      openssl
-      pkgconfig
-      sqlite
-      cmake
-      openjdk19
-      nodejs
-      tailwindcss
-      shellcheck
-      python311
-      python311Packages.pip
-      python311Packages.virtualenv
-      docker
-      jq
-      yq
-      protobuf
-      capnproto
-      poetry
-    ];
+pkgs.mkShell {
+  name = "code-dev";
 
-    RUSTC_VERSION = pkgs.lib.readFile ./rust-toolchain;
+  inherit (nixCommon)
+    NIX_CONFIG
+    TREEFMT_TREE_ROOT_CMD
+    buildInputs
+    nativeBuildInputs
+    packages
+    shellHook
+    ;
 
-    LIBCLANG_PATH = pkgs.lib.makeLibraryPath [pkgs.llvmPackages_latest.libclang.lib];
-
-    shellHook = ''
-      export PATH=$PATH:''${CARGO_HOME:-~/.cargo}/bin
-      export PATH=$PATH:''${RUSTUP_HOME:-~/.rustup}/toolchains/$RUSTC_VERSION-x86_64-unknown-linux-gnu/bin/
-      source ./export-lib.sh > /dev/null
-      printf "G'day, $(whoami)!\\n"
-    '';
-
-    RUSTFLAGS = builtins.map (a: ''-L ${a}/lib'') [];
-
-    BINDGEN_EXTRA_CLANG_ARGS =
-      (builtins.map (a: ''-I"${a}/include"'') [
-        pkgs.glibc.dev
-      ])
-      ++ [
-        ''-I"${pkgs.llvmPackages_latest.libclang.lib}/lib/clang/${pkgs.llvmPackages_latest.libclang.version}/include"''
-        ''-I"${pkgs.glib.dev}/include/glib-2.0"''
-        ''-I${pkgs.glib.out}/lib/glib-2.0/include/''
-      ];
-
-    LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [pkgs.openssl];
-  }
+  # OpenSSL configuration for native builds
+  inherit (nixCommon.opensslEnv)
+    OPENSSL_DIR
+    OPENSSL_LIB_DIR
+    OPENSSL_INCLUDE_DIR
+    PKG_CONFIG_PATH
+    ;
+}

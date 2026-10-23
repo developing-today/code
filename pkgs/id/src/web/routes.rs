@@ -1,0 +1,2439 @@
+//! HTTP route handlers for the web interface.
+//!
+//! Defines all the Axum routes and their handlers for serving the web UI.
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use axum::{
+    Json, Router,
+    body::Body,
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{Html, IntoResponse, Redirect, Response},
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+
+use super::AppState;
+use super::content_mode::{ContentMode, detect_mode, detect_mode_with_content, get_content_type};
+use super::markdown::prosemirror_to_markdown;
+use super::templates::{
+    render_binary_viewer, render_editor, render_editor_page, render_file_list,
+    render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
+    render_peers, render_settings,
+};
+use crate::fileops::{FileOpError, FileOps};
+
+/// Default number of files per page.
+const DEFAULT_PER_PAGE: usize = 50;
+
+/// Image MIME types allowed for upload.
+const ALLOWED_IMAGE_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/svg+xml",
+    "image/bmp",
+    "image/x-icon",
+];
+
+/// Map an image MIME type to a file extension.
+fn mime_to_extension(mime: &str) -> &'static str {
+    match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "image/bmp" => "bmp",
+        "image/x-icon" => "ico",
+        _ => "bin",
+    }
+}
+
+/// Query parameters for the file list (pagination + search).
+#[derive(Debug, Deserialize, Default)]
+pub struct FileListQuery {
+    /// Current page (1-indexed). Defaults to 1.
+    pub page: Option<usize>,
+    /// Items per page. Defaults to [`DEFAULT_PER_PAGE`].
+    pub per_page: Option<usize>,
+    /// Search query — matches filenames and tag keys/values.
+    pub search: Option<String>,
+    /// Whether to show soft-deleted files. Defaults to false.
+    pub show_deleted: Option<bool>,
+}
+
+/// Paginated file list result.
+pub struct FileListPage {
+    /// Files for the current page.
+    pub files: Vec<FileInfo>,
+    /// Total number of files (after filtering, before pagination).
+    pub total: usize,
+    /// Current page (1-indexed).
+    pub page: usize,
+    /// Items per page.
+    pub per_page: usize,
+    /// The search query (if any).
+    pub search: Option<String>,
+    /// Whether deleted files are shown.
+    pub show_deleted: bool,
+}
+
+/// Classification of a file based on its tag name pattern.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileKind {
+    /// Normal user-created file.
+    Primary,
+    /// Auto-backup file matching `auto-{ISO_DATE}` pattern.
+    Auto,
+    /// Archive file matching `{name}.archive.{unix_timestamp}` pattern.
+    Archive,
+}
+
+/// Rich file metadata for the file list UI.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // not every renderer shows every field
+pub struct FileInfo {
+    /// Tag name (filename).
+    pub name: String,
+    /// Display name derived from name/file/path metadata tags.
+    /// Falls back to `name` if no metadata tags exist.
+    pub display_name: Option<String>,
+    /// Content hash.
+    pub hash: String,
+    /// File size in bytes.
+    pub size: u64,
+    /// File classification.
+    pub kind: FileKind,
+    /// For auto/archive files: the primary file they relate to (by shared hash).
+    pub parent_name: Option<String>,
+    /// Unix timestamp parsed from the tag name (if available).
+    pub timestamp: Option<u64>,
+    /// Creation timestamp from metadata tags (unix seconds).
+    pub created_at: Option<u64>,
+    /// Last modification timestamp from metadata tags (unix seconds).
+    pub modified_at: Option<u64>,
+    /// User-visible tags (excludes system tags like created/modified/deleted/archive.*).
+    pub tags: Vec<(String, Option<String>)>,
+    /// Whether this file is soft-deleted.
+    pub is_deleted: bool,
+}
+
+/// Classify a tag name into a `FileKind` and extract an optional timestamp.
+fn classify_tag(name: &str) -> (FileKind, Option<u64>) {
+    // Check for auto-backup: "auto-{ISO_DATE}"
+    if let Some(iso_str) = name.strip_prefix("auto-") {
+        // Try to parse the ISO date to extract a unix timestamp
+        // Format: 2026-03-12T06:42:30.015Z
+        let ts = parse_iso_timestamp(iso_str);
+        return (FileKind::Auto, ts);
+    }
+
+    // Check for archive: "{name}.archive.{unix_timestamp}"
+    if let Some(pos) = name.rfind(".archive.") {
+        let ts_str = &name[pos + ".archive.".len()..];
+        let ts = ts_str.parse::<u64>().ok();
+        return (FileKind::Archive, ts);
+    }
+
+    (FileKind::Primary, None)
+}
+
+/// Parse a simplified ISO 8601 timestamp to unix seconds.
+///
+/// Handles format like `2026-03-12T06:42:30.015Z` or `2026-03-12T06:42:30Z`.
+/// Returns `None` if parsing fails.
+fn parse_iso_timestamp(s: &str) -> Option<u64> {
+    // Strip trailing 'Z' and optional fractional seconds
+    let s = s.strip_suffix('Z').unwrap_or(s);
+    let s = if let Some(dot_pos) = s.rfind('.') {
+        &s[..dot_pos]
+    } else {
+        s
+    };
+
+    // Parse: YYYY-MM-DDThh:mm:ss
+    let parts: Vec<&str> = s.split('T').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let date_parts: Vec<u64> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
+    let time_parts: Vec<u64> = parts[1].split(':').filter_map(|p| p.parse().ok()).collect();
+
+    if date_parts.len() != 3 || time_parts.len() != 3 {
+        return None;
+    }
+
+    let (year, month, day) = (date_parts[0], date_parts[1], date_parts[2]);
+    let (hour, min, sec) = (time_parts[0], time_parts[1], time_parts[2]);
+
+    // Simple days-since-epoch calculation (not accounting for leap seconds)
+    let mut days: u64 = 0;
+    for y in 1970..year {
+        days += if is_leap_year(y) { 366 } else { 365 };
+    }
+    let month_days = [
+        31,
+        28 + u64::from(is_leap_year(year)),
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    #[allow(clippy::cast_possible_truncation)] // month is max 12, fits in usize
+    for m in 0..(month.saturating_sub(1) as usize) {
+        if m < month_days.len() {
+            days += month_days[m];
+        }
+    }
+    days += day.saturating_sub(1);
+
+    Some(days * 86400 + hour * 3600 + min * 60 + sec)
+}
+
+/// Check if a year is a leap year.
+const fn is_leap_year(year: u64) -> bool {
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+}
+
+/// Create the main router with all web routes.
+pub fn create_router(state: AppState) -> Router {
+    Router::new()
+        // Page routes (return full HTML pages)
+        .route("/", get(index_handler))
+        .route("/files", get(files_page_handler))
+        .route("/world", get(world_page_handler))
+        .route("/settings", get(settings_handler))
+        .route("/peers", get(peers_handler))
+        .route("/edit/{*name}", get(file_by_name_handler))
+        .route("/hash/{hash}", get(hash_redirect_handler))
+        .route("/view/{*name}", get(view_handler))
+        // Blob route (serves raw file content)
+        .route("/blob/{hash}", get(blob_handler))
+        // Partial routes (return HTML fragments for SPA navigation)
+        .route("/api/files", get(files_list_handler))
+        .route("/api/home/feed", get(super::home::feed_handler))
+        .route("/api/peers", get(peers_partial_handler))
+        // File management API routes
+        .route("/api/save", post(save_handler))
+        .route("/api/new", post(new_file_handler))
+        .route("/api/rename", post(rename_handler))
+        .route("/api/copy", post(copy_handler))
+        .route("/api/download", post(download_handler))
+        .route("/api/delete", post(delete_handler))
+        .route("/api/restore", post(restore_handler))
+        .route("/api/hard-delete", post(hard_delete_handler))
+        // Image upload API
+        .route("/api/upload", post(upload_handler))
+        // Image listing API
+        .route("/api/images", get(images_list_handler))
+        // Tag REST API
+        .route(
+            "/api/tags",
+            get(super::tags_ws::get_tags_handler)
+                .post(super::tags_ws::set_tag_handler)
+                .delete(super::tags_ws::del_tag_handler),
+        )
+        // Tag search endpoint with structured query syntax
+        .route("/api/tags/search", get(super::tags_ws::search_tags_handler))
+        // Identity API routes
+        .route("/api/identity/register", post(identity_register_handler))
+        .route("/api/identity/me", get(identity_me_handler))
+        .route("/api/identity/name", post(identity_update_name_handler))
+        // WebSocket for collaboration
+        .route("/ws/collab/{doc_id}", get(super::collab::ws_collab_handler))
+        // WebSocket for live tag updates
+        .route("/ws/tags", get(super::tags_ws::ws_tags_handler))
+        // Static assets
+        .route("/assets/{*path}", get(assets_handler))
+        // Optional authoritative in-memory world session bridge
+        .merge(
+            super::world_ws::world_routes().with_state(super::world_ws::WorldWebState {
+                hub: state.world.clone(),
+                cookie_secure: state.cookie_secure,
+            }),
+        )
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        .with_state(state)
+}
+
+async fn world_page_handler(State(state): State<AppState>) -> Response {
+    if state.world.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    Html(super::templates::render_world_page(&state.assets)).into_response()
+}
+
+/// Check if this is a partial request (SPA navigation, returns fragment not full page).
+fn is_partial_request(headers: &HeaderMap) -> bool {
+    let is_partial = headers.contains_key("X-Partial-Request");
+    tracing::debug!("[routes] is_partial_request: {}", is_partial);
+    is_partial
+}
+
+/// Index page handler - discovery home.
+async fn index_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let worlds = state.world.as_ref().map_or_else(Vec::new, |hub| hub.list());
+    let default_world = state
+        .world
+        .as_ref()
+        .map_or("lobby", |hub| hub.default_world());
+    let content = super::home::render_home(&worlds, default_world, state.world.is_some());
+    if is_partial_request(&headers) {
+        Html(render_main_page_wrapper(&content))
+    } else {
+        Html(render_page("Home", &content, "", &state.assets))
+    }
+}
+
+/// File browser page retained separately from home/discovery.
+async fn files_page_handler(
+    State(state): State<AppState>,
+    Query(query): Query<FileListQuery>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let page = get_file_list_page(&state, &query).await;
+    let content = render_file_list(&page);
+    if is_partial_request(&headers) {
+        // Partial request - return wrapped content with header/footer
+        Html(render_main_page_wrapper(&content))
+    } else {
+        Html(render_page("Files", &content, "", &state.assets))
+    }
+}
+
+/// Settings page handler.
+async fn settings_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let content = render_settings(&state.node_id);
+    if is_partial_request(&headers) {
+        // Partial request - return wrapped content with header/footer
+        Html(render_main_page_wrapper(&content))
+    } else {
+        Html(render_page("Settings", &content, "", &state.assets))
+    }
+}
+
+/// Peers page handler - shows discovered peers from gossip.
+async fn peers_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let peers_data: Vec<(String, String, u64, u64)> = if let Some(ref discovery) = state.peers {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        discovery
+            .peers()
+            .into_iter()
+            .map(|info| {
+                let ann = &info.announcement;
+                let name = ann.name.clone().unwrap_or_else(|| "-".to_owned());
+                let age = now.saturating_sub(ann.timestamp_secs);
+                (ann.node_id.to_string(), name, ann.blob_count, age)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let content = render_peers(&peers_data);
+    if is_partial_request(&headers) {
+        Html(render_main_page_wrapper(&content))
+    } else {
+        Html(render_page("Peers", &content, "", &state.assets))
+    }
+}
+
+/// Query parameters for blob requests.
+#[derive(Debug, Deserialize)]
+struct BlobQuery {
+    /// Optional filename for Content-Type detection.
+    filename: Option<String>,
+}
+
+/// Look up a content hash for a given tag name.
+///
+/// Iterates all tags in the store to find one matching `name` and returns its hash.
+pub(crate) async fn get_hash_for_name(
+    store: &iroh_blobs::api::Store,
+    name: &str,
+) -> Option<String> {
+    use futures_lite::StreamExt;
+
+    let mut tags = store.tags().list().await.ok()?;
+    while let Some(Ok(tag_info)) = tags.next().await {
+        let tag_name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
+        if tag_name == name {
+            return Some(tag_info.hash.to_string());
+        }
+    }
+    None
+}
+
+/// Escape HTML special characters for inline error messages.
+fn html_escape_inline(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Handler for `/edit/*name` — resolve a file by tag name and render the editor.
+///
+/// Looks up the content hash for the given name, then delegates to
+/// edit/view logic based on content mode detection.
+async fn file_by_name_handler(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    tracing::info!("[routes] file_by_name_handler called for name: {}", name);
+
+    let is_partial = is_partial_request(&headers);
+
+    // Look up the hash for this tag name
+    let Some(hash) = get_hash_for_name(&state.store, &name).await else {
+        let escaped = html_escape_inline(&name);
+        let err_html = format!("<p>File not found: {escaped}</p>");
+        if is_partial {
+            return Html(render_editor("", &name, &err_html, ""));
+        }
+        return Html(render_editor_page("", &name, &err_html, "", &state.assets));
+    };
+
+    // Get file content bytes from store
+    let content_result = get_file_bytes(&state.store, &hash).await;
+
+    match content_result {
+        Ok(bytes) => {
+            let mode = detect_mode_with_content(&name, &bytes);
+
+            match mode {
+                ContentMode::Media(media_type) => {
+                    let viewer_html = render_media_viewer(&hash, &name, media_type);
+                    if is_partial {
+                        Html(viewer_html)
+                    } else {
+                        Html(render_page(
+                            &format!("View: {name}"),
+                            &viewer_html,
+                            "",
+                            &state.assets,
+                        ))
+                    }
+                }
+                ContentMode::Binary => {
+                    let viewer_html = render_binary_viewer(&hash, &name);
+                    if is_partial {
+                        Html(viewer_html)
+                    } else {
+                        Html(render_page(
+                            &format!("File: {name}"),
+                            &viewer_html,
+                            "",
+                            &state.assets,
+                        ))
+                    }
+                }
+                _ => {
+                    let content = get_file_content_html(&bytes);
+                    if is_partial {
+                        Html(render_editor(&name, &name, &content, &hash))
+                    } else {
+                        Html(render_editor_page(
+                            &name,
+                            &name,
+                            &content,
+                            &hash,
+                            &state.assets,
+                        ))
+                    }
+                }
+            }
+        }
+        Err(err_msg) => {
+            if is_partial {
+                Html(render_editor(&name, &name, &err_msg, &hash))
+            } else {
+                Html(render_editor_page(
+                    &name,
+                    &name,
+                    &err_msg,
+                    &hash,
+                    &state.assets,
+                ))
+            }
+        }
+    }
+}
+
+/// Handler for `/hash/:hash` — redirect hash-based URLs to name-based URLs.
+///
+/// Resolves the hash to a file name and issues a 302 redirect to `/edit/{name}`.
+/// Returns 404 if no file is found with that hash.
+async fn hash_redirect_handler(
+    State(state): State<AppState>,
+    Path(hash): Path<String>,
+) -> impl IntoResponse {
+    tracing::info!("[routes] hash_redirect_handler called for hash: {}", hash);
+
+    if let Some(name) = get_file_name(&state.store, &hash).await {
+        let encoded_name = urlencoding::encode(&name);
+        let redirect_url = format!("/edit/{encoded_name}");
+        tracing::info!("[routes] Redirecting /hash/{} -> {}", hash, redirect_url);
+        Redirect::to(&redirect_url).into_response()
+    } else {
+        tracing::warn!(
+            "[routes] hash_redirect_handler: no file found for hash {}",
+            hash
+        );
+        (StatusCode::NOT_FOUND, "File not found for hash").into_response()
+    }
+}
+
+/// Handler for `/view/*name` — read-only view stub.
+///
+/// Currently redirects to the editor at `/edit/{name}`.
+/// Will be enhanced to provide a proper read-only view in the future.
+async fn view_handler(Path(name): Path<String>) -> impl IntoResponse {
+    let encoded_name = urlencoding::encode(&name);
+    let redirect_url = format!("/edit/{encoded_name}");
+    Redirect::to(&redirect_url)
+}
+
+/// Blob handler - serves raw file content with appropriate Content-Type.
+///
+/// Used for media files to render directly in browser (images, video, audio, PDF).
+async fn blob_handler(
+    State(state): State<AppState>,
+    Path(hash): Path<String>,
+    Query(query): Query<BlobQuery>,
+) -> Response {
+    // Parse the hash
+    let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() else {
+        return (StatusCode::BAD_REQUEST, "Invalid hash format").into_response();
+    };
+
+    // Read the blob content
+    let Ok(bytes) = state.store.blobs().get_bytes(parsed_hash).await else {
+        return (StatusCode::NOT_FOUND, "File not found").into_response();
+    };
+
+    // Determine content type from filename if provided, otherwise from hash lookup
+    let filename = match query.filename {
+        Some(name) => name,
+        None => get_file_name(&state.store, &hash)
+            .await
+            .unwrap_or_else(|| "file.bin".to_owned()),
+    };
+
+    let content_type = get_content_type(&filename);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+        .body(Body::from(bytes.to_vec()))
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to build response",
+            )
+                .into_response()
+        })
+}
+
+/// API handler for file list (partial fragment).
+async fn files_list_handler(
+    State(state): State<AppState>,
+    Query(query): Query<FileListQuery>,
+) -> impl IntoResponse {
+    let page = get_file_list_page(&state, &query).await;
+    // Return just the inner content (list + pagination) for partial replacement
+    Html(render_file_list_content(&page))
+}
+
+/// API handler for peers partial (used by auto-refresh).
+///
+/// Returns just the peers content fragment for replacing #peers-content.
+async fn peers_partial_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let peers_data: Vec<(String, String, u64, u64)> = if let Some(ref discovery) = state.peers {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        discovery
+            .peers()
+            .into_iter()
+            .map(|info| {
+                let ann = &info.announcement;
+                let name = ann.name.clone().unwrap_or_else(|| "-".to_owned());
+                let age = now.saturating_sub(ann.timestamp_secs);
+                (ann.node_id.to_string(), name, ann.blob_count, age)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    Html(render_peers(&peers_data))
+}
+
+/// Static assets handler.
+async fn assets_handler(Path(path): Path<String>) -> impl IntoResponse {
+    super::assets::static_handler(&path)
+}
+
+/// System tag keys that are excluded from user-visible tags display.
+const SYSTEM_TAG_KEYS: &[&str] = &["created", "modified", "deleted", "name", "file", "path"];
+
+/// Check if a tag key is a system/internal key that shouldn't be shown in tag pills.
+fn is_system_tag_key(key: &[u8]) -> bool {
+    // Check against known system keys (all are valid UTF-8)
+    if let Ok(s) = std::str::from_utf8(key) {
+        SYSTEM_TAG_KEYS.contains(&s) || s.starts_with("archive.")
+    } else {
+        false
+    }
+}
+
+/// Size in bytes of a complete blob; `0` if it is missing or only partial.
+async fn blob_size(store: &iroh_blobs::api::Store, hash: iroh_blobs::Hash) -> u64 {
+    match store.blobs().status(hash).await {
+        Ok(iroh_blobs::api::blobs::BlobStatus::Complete { size }) => size,
+        _ => 0,
+    }
+}
+
+/// Get list of files from the store with classification metadata.
+///
+/// Returns a list of `FileInfo` structs with file kind, parent name, timestamp, and user tags.
+/// Files are sorted: primary files first (alphabetically), then auto, then archive.
+/// Internal tags (starting with `.`) are excluded.
+/// Soft-deleted files are included but marked with `is_deleted = true`.
+async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
+    use futures_lite::StreamExt;
+    use std::collections::HashMap;
+
+    let mut files = Vec::new();
+
+    // Load all tags from the global namespace for created/modified/user-tag lookups.
+    let all_meta_tags = state
+        .tag_store
+        .list_all(&state.tag_store.global)
+        .await
+        .unwrap_or_default();
+    let mut created_map: HashMap<String, u64> = HashMap::new();
+    let mut modified_map: HashMap<String, u64> = HashMap::new();
+    let mut deleted_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut user_tags_map: HashMap<String, Vec<(String, Option<String>)>> = HashMap::new();
+    let mut display_name_map: HashMap<String, String> = HashMap::new();
+    for tag in &all_meta_tags {
+        if tag.key == "created" {
+            if let Some(ref v) = tag.value
+                && let Some(s) = v.as_str()
+                && let Ok(ts) = s.parse::<u64>()
+            {
+                created_map.insert(tag.subject.display_lossy(), ts);
+            }
+        } else if tag.key == "modified" {
+            if let Some(ref v) = tag.value
+                && let Some(s) = v.as_str()
+                && let Ok(ts) = s.parse::<u64>()
+            {
+                modified_map.insert(tag.subject.display_lossy(), ts);
+            }
+        } else if tag.key == "deleted" {
+            deleted_set.insert(tag.subject.display_lossy());
+        }
+        // Resolve display name from name/file/path tags (prefer name > file > path)
+        if matches!(tag.key.as_bytes(), b"name" | b"file" | b"path") {
+            let subj = tag.subject.display_lossy();
+            if !display_name_map.contains_key(&subj)
+                && let Some(ref v) = tag.value
+                && let Some(s) = v.as_str()
+            {
+                display_name_map.insert(subj, s.to_owned());
+            }
+        }
+        // Collect user-visible tags (not system tags)
+        if !is_system_tag_key(&tag.key) {
+            user_tags_map
+                .entry(tag.subject.display_lossy())
+                .or_default()
+                .push((
+                    tag.key.display_lossy(),
+                    tag.value
+                        .as_ref()
+                        .map(super::super::tags::TagValue::display_lossy),
+                ));
+        }
+    }
+
+    // First pass: collect all tags and build hash→primary-name map
+    let mut hash_to_primary: HashMap<String, String> = HashMap::new();
+    let mut raw_tags: Vec<(String, String, u64)> = Vec::new();
+
+    let Ok(mut tags) = state.store.tags().list().await else {
+        return files;
+    };
+    while let Some(Ok(tag_info)) = tags.next().await {
+        let name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
+
+        // Skip internal tags (e.g., .meta)
+        if crate::tags::is_internal_tag(&name) {
+            continue;
+        }
+
+        let hash = tag_info.hash.to_string();
+        let size = blob_size(&state.store, tag_info.hash).await;
+
+        let (kind, _) = classify_tag(&name);
+        if kind == FileKind::Primary {
+            hash_to_primary.insert(hash.clone(), name.clone());
+        }
+
+        raw_tags.push((name, hash, size));
+    }
+
+    // Second pass: build FileInfo with parent_name resolution and metadata dates
+    for (name, hash, size) in raw_tags {
+        let is_deleted = deleted_set.contains(&name);
+        let (kind, timestamp) = classify_tag(&name);
+
+        let parent_name = if kind == FileKind::Primary {
+            None
+        } else {
+            hash_to_primary.get(&hash).cloned()
+        };
+
+        let created_at = created_map.get(&name).copied();
+        let modified_at = modified_map.get(&name).copied();
+        let tags = user_tags_map.remove(&name).unwrap_or_default();
+        let display_name = display_name_map.get(&name).cloned();
+
+        files.push(FileInfo {
+            name,
+            display_name,
+            hash,
+            size,
+            kind,
+            parent_name,
+            timestamp,
+            created_at,
+            modified_at,
+            tags,
+            is_deleted,
+        });
+    }
+
+    // Deduplicate files with the same hash, display name, and user tags
+    {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        files.retain(|f| {
+            let dedup_key = format!(
+                "{}|{}|{:?}",
+                f.hash,
+                f.display_name.as_deref().unwrap_or(&f.name),
+                f.tags
+            );
+            seen.insert(dedup_key)
+        });
+    }
+
+    // Sort: primary first (alphabetically), then auto (by timestamp desc), then archive (by timestamp desc)
+    files.sort_by(|a, b| {
+        let kind_order = |k: &FileKind| -> u8 {
+            match k {
+                FileKind::Primary => 0,
+                FileKind::Auto => 1,
+                FileKind::Archive => 2,
+            }
+        };
+        kind_order(&a.kind).cmp(&kind_order(&b.kind)).then_with(|| {
+            if a.kind == FileKind::Primary {
+                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+            } else {
+                // Newer timestamps first for auto/archive
+                b.timestamp.unwrap_or(0).cmp(&a.timestamp.unwrap_or(0))
+            }
+        })
+    });
+
+    files
+}
+
+/// Get a paginated, optionally filtered file list.
+///
+/// When `search` is provided, matches against:
+/// 1. Filename (case-insensitive substring)
+/// 2. Tag keys/values for the file in the global namespace
+///
+/// When `show_deleted` is false (default), soft-deleted files are hidden.
+async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileListPage {
+    let mut files = get_file_list(state).await;
+
+    let show_deleted = query.show_deleted.unwrap_or(false);
+
+    // Filter out deleted files unless show_deleted is set
+    if !show_deleted {
+        files.retain(|f| !f.is_deleted);
+    }
+
+    // Apply search filter
+    let search = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+
+    if let Some(ref needle) = search {
+        let needle_lower = needle.to_lowercase();
+
+        // Collect subjects that match via tags (key or value contains needle)
+        let mut tag_matches: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Ok(all_tags) = state.tag_store.list_all(&state.tag_store.global).await {
+            for tag in &all_tags {
+                // Skip internal/system tags for search
+                if tag.key.starts_with(b"archive.") {
+                    continue;
+                }
+                if tag
+                    .key
+                    .display_lossy()
+                    .to_lowercase()
+                    .contains(&needle_lower)
+                    || tag
+                        .value
+                        .as_ref()
+                        .is_some_and(|v| v.display_lossy().to_lowercase().contains(&needle_lower))
+                {
+                    tag_matches.insert(tag.subject.display_lossy());
+                }
+            }
+        }
+
+        files.retain(|f| {
+            f.name.to_lowercase().contains(&needle_lower) || tag_matches.contains(&f.name)
+        });
+    }
+
+    let total = files.len();
+    let per_page = query.per_page.unwrap_or(DEFAULT_PER_PAGE).max(1);
+    let page = query.page.unwrap_or(1).max(1);
+    let start = (page - 1) * per_page;
+
+    let page_files = if start < total {
+        files[start..(start + per_page).min(total)].to_vec()
+    } else {
+        Vec::new()
+    };
+
+    FileListPage {
+        files: page_files,
+        total,
+        page,
+        per_page,
+        search,
+        show_deleted,
+    }
+}
+
+/// Get the human-readable name for a hash, preferring primary file names.
+///
+/// When multiple tags share the same hash, returns the first primary
+/// (non-auto, non-archive) name found. Falls back to any matching name.
+async fn get_file_name(store: &iroh_blobs::api::Store, hash: &str) -> Option<String> {
+    use futures_lite::StreamExt;
+
+    // Parse hash
+    let hash: iroh_blobs::Hash = hash.parse().ok()?;
+
+    // Find tag with this hash, preferring primary names
+    let mut tags = store.tags().list().await.ok()?;
+    let mut first_match: Option<String> = None;
+    while let Some(Ok(tag_info)) = tags.next().await {
+        if tag_info.hash == hash {
+            let name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
+            let (kind, _) = classify_tag(&name);
+            if kind == FileKind::Primary {
+                return Some(name);
+            }
+            if first_match.is_none() {
+                first_match = Some(name);
+            }
+        }
+    }
+
+    first_match
+}
+
+/// Get file bytes from the blob store.
+///
+/// Returns the file content as bytes if found, or an HTML error message.
+async fn get_file_bytes(store: &iroh_blobs::api::Store, hash: &str) -> Result<Vec<u8>, String> {
+    // Parse the hash
+    let hash = hash
+        .parse::<iroh_blobs::Hash>()
+        .map_err(|_err| "<p>Invalid hash format</p>".to_owned())?;
+
+    // Read the blob content
+    store
+        .blobs()
+        .get_bytes(hash)
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|_err| "<p>File not found</p>".to_owned())
+}
+
+/// Convert file bytes to HTML for editor display.
+fn get_file_content_html(bytes: &[u8]) -> String {
+    // Convert to string (lossy for non-UTF8)
+    let text = String::from_utf8_lossy(bytes);
+
+    // Escape HTML and wrap in <pre> for plain text display
+    // The editor will handle this as text content
+    let escaped = text
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+
+    format!("<pre>{escaped}</pre>")
+}
+
+// --- File Management API ---
+
+/// Request body for saving a file.
+#[derive(Debug, Deserialize)]
+struct SaveRequest {
+    /// Current document hash (used to find and archive old tag).
+    doc_id: String,
+    /// File name (tag name).
+    name: String,
+    /// `ProseMirror` document JSON.
+    doc: serde_json::Value,
+}
+
+/// Response from saving a file.
+#[derive(Debug, Serialize)]
+struct SaveResponse {
+    /// New blob hash after save.
+    hash: String,
+    /// The signed `document.put` event ID for this saved revision.
+    document_id: String,
+    /// File name.
+    name: String,
+    /// Archive tag name (if original was archived).
+    archive_name: Option<String>,
+}
+
+/// Request body for creating a new file.
+#[derive(Debug, Deserialize)]
+struct NewFileRequest {
+    /// File name for the new file.
+    name: String,
+}
+
+/// Response from creating a new file.
+#[derive(Debug, Serialize)]
+struct NewFileResponse {
+    /// Blob hash of the new file.
+    hash: String,
+    /// File name.
+    name: String,
+}
+
+/// Response from the image upload endpoint.
+#[derive(Debug, Serialize)]
+struct UploadResponse {
+    /// Blake3 hash of the uploaded file.
+    hash: String,
+    /// Name/tag assigned to the uploaded file.
+    name: String,
+    /// URL to access the uploaded file.
+    url: String,
+}
+
+/// Entry in the image listing response.
+#[derive(Debug, Serialize)]
+struct ImageEntry {
+    hash: String,
+    name: String,
+    url: String,
+    size: u64,
+}
+
+/// Request body for renaming a file.
+#[derive(Debug, Deserialize)]
+struct RenameRequest {
+    /// Current file name.
+    name: String,
+    /// New file name.
+    new_name: String,
+    /// Whether to archive the old name as `{name}.archive.{timestamp}`.
+    archive: bool,
+}
+
+/// Response from renaming a file.
+#[derive(Debug, Serialize)]
+struct RenameResponse {
+    /// New file name.
+    name: String,
+    /// Content hash (unchanged).
+    hash: String,
+    /// Archive tag for the original name (if archived).
+    archived_original: Option<String>,
+    /// Archive tag for the replaced file (if target name existed).
+    archived_replaced: Option<String>,
+}
+
+/// Request body for copying a file.
+#[derive(Debug, Deserialize)]
+struct CopyRequest {
+    /// Source file name to copy from.
+    name: String,
+    /// New file name for the copy.
+    new_name: String,
+}
+
+/// Response from copying a file.
+#[derive(Debug, Serialize)]
+struct CopyResponse {
+    /// New file name.
+    name: String,
+    /// Content hash (same as source).
+    hash: String,
+}
+
+/// Request body for downloading editor content.
+#[derive(Debug, Deserialize)]
+struct DownloadRequest {
+    /// `ProseMirror` document JSON (current editor state).
+    doc: serde_json::Value,
+    /// File name (used for format detection and Content-Disposition).
+    name: String,
+    /// Download format: "raw" (native format) or "json" (`ProseMirror` JSON).
+    format: String,
+}
+
+/// Save the current editor document to the blob store.
+///
+/// Converts the `ProseMirror` JSON to the appropriate format based on filename,
+/// creates a new blob and signed document revision, archives the original under
+/// a timestamped name, and updates the legacy filename tag to point to the new blob.
+///
+/// Rate-limited: rejects saves within the cooldown period (default 5s) per file.
+async fn save_handler(State(state): State<AppState>, Json(req): Json<SaveRequest>) -> Response {
+    tracing::info!(
+        "[routes] save_handler: doc_id={}, name={}",
+        req.doc_id,
+        req.name
+    );
+
+    // Check save rate limit
+    if let Err(remaining) = state.save_limiter.check(&req.name).await {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let secs = remaining.as_secs_f64().ceil() as u64;
+        tracing::info!(
+            "[routes] Save rate limited for '{}': {}s remaining",
+            req.name,
+            secs
+        );
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("Save rate limited. Try again in {secs}s."),
+        )
+            .into_response();
+    }
+
+    // Convert ProseMirror doc to the appropriate format based on file name
+    let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
+        Ok(b) => b,
+        Err(err) => {
+            tracing::error!("[routes] Failed to convert document: {}", err);
+            return (StatusCode::BAD_REQUEST, err).into_response();
+        }
+    };
+
+    // Add new blob to store
+    let add_result = state.store.blobs().add_bytes(bytes.clone()).await;
+    let outcome = match add_result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::error!("[routes] Failed to add blob: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to save file").into_response();
+        }
+    };
+    let new_hash = outcome.hash;
+    let new_hash_str = new_hash.to_string();
+
+    // A saved revision is durable only once its bytes are addressable and its signed event is
+    // applied. The mutex protects LocalEvents' synchronous redb writes and is released before any
+    // subsequent network-backed metadata operations.
+    let filename_tag = [("filename".to_owned(), Some(req.name.clone()))];
+    let publish_result = {
+        let mut events = state.local_events.lock().await;
+        events.publish(get_content_type(&req.name), &bytes, &filename_tag)
+    };
+    let published = match publish_result {
+        Ok(published) => published,
+        Err(err) => {
+            tracing::error!("[routes] Failed to publish saved revision: {:#}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to publish document revision",
+            )
+                .into_response();
+        }
+    };
+    let document_id = published.id.to_hex();
+
+    // Archive the original blob under a timestamped tag
+    let archive_name = archive_original_tag(&state.store, &req.name, &req.doc_id).await;
+
+    // Set the tag to point to the new blob
+    let tag = iroh_blobs::api::Tag::from(req.name.clone());
+    if let Err(err) = state.store.tags().set(tag, new_hash).await {
+        tracing::error!("[routes] Failed to set tag: {}", err);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update tag").into_response();
+    }
+
+    // Update metadata tags: set created (if first save) and modified
+    let now_str = crate::tags::now_unix().to_string();
+    if let Err(err) = state
+        .tag_store
+        .set_if_absent(
+            &state.tag_store.global,
+            req.name.as_bytes(),
+            b"created",
+            Some(now_str.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+    }
+    if let Err(err) = state
+        .tag_store
+        .set_singleton(
+            &state.tag_store.global,
+            req.name.as_bytes(),
+            b"modified",
+            Some(now_str.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set modified tag: {:#}", err);
+    }
+    if let Some(ref archive) = archive_name
+        && let Err(err) = state
+            .tag_store
+            .set_tag(
+                &state.tag_store.global,
+                req.name.as_bytes(),
+                b"archive.save",
+                Some(archive.as_bytes()),
+                b"",
+            )
+            .await
+    {
+        tracing::warn!("[routes] Failed to set archive tag: {}", err);
+    }
+
+    tracing::info!(
+        "[routes] File saved: name={}, hash={}, archive={:?}",
+        req.name,
+        new_hash_str,
+        archive_name
+    );
+
+    // Notify collab clients editing the old hash about the new version
+    state
+        .collab
+        .notify_new_version(&req.name, &new_hash_str)
+        .await;
+
+    // Record successful save for rate limiting
+    state.save_limiter.record(&req.name).await;
+
+    Json(SaveResponse {
+        hash: new_hash_str,
+        document_id,
+        name: req.name,
+        archive_name,
+    })
+    .into_response()
+}
+
+/// Create a new empty file in the blob store.
+///
+/// Creates appropriate empty content based on the file extension,
+/// adds it as a blob, and creates a tag for it.
+async fn new_file_handler(
+    State(state): State<AppState>,
+    Json(req): Json<NewFileRequest>,
+) -> Response {
+    tracing::info!("[routes] new_file_handler: name={}", req.name);
+
+    if req.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    }
+
+    // Create appropriate empty content based on file type
+    let mode = detect_mode(&req.name);
+    let content = match mode {
+        ContentMode::Rich => b"{}".to_vec(), // Empty PM JSON
+        ContentMode::Markdown
+        | ContentMode::Plain
+        | ContentMode::Raw
+        | ContentMode::Binary
+        | ContentMode::Media(_) => b"".to_vec(),
+    };
+
+    // Add blob to store
+    let add_result = state.store.blobs().add_bytes(content).await;
+    let outcome = match add_result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::error!("[routes] Failed to add blob: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create file").into_response();
+        }
+    };
+    let hash = outcome.hash;
+    let hash_str = hash.to_string();
+
+    // Set tag
+    let tag = iroh_blobs::api::Tag::from(req.name.clone());
+    if let Err(err) = state.store.tags().set(tag, hash).await {
+        tracing::error!("[routes] Failed to set tag: {}", err);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to set file name").into_response();
+    }
+
+    // Set metadata tags: created + modified
+    let now_str = crate::tags::now_unix().to_string();
+    if let Err(err) = state
+        .tag_store
+        .set_if_absent(
+            &state.tag_store.global,
+            req.name.as_bytes(),
+            b"created",
+            Some(now_str.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+    }
+    if let Err(err) = state
+        .tag_store
+        .set_singleton(
+            &state.tag_store.global,
+            req.name.as_bytes(),
+            b"modified",
+            Some(now_str.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set modified tag: {:#}", err);
+    }
+
+    tracing::info!(
+        "[routes] New file created: name={}, hash={}",
+        req.name,
+        hash_str
+    );
+
+    Json(NewFileResponse {
+        hash: hash_str,
+        name: req.name,
+    })
+    .into_response()
+}
+
+/// Upload an image file via multipart form data.
+///
+/// Accepts a single file field, validates the MIME type against allowed
+/// image types, stores the blob, creates a named tag, and sets metadata.
+async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart) -> Response {
+    // Read the first field from the multipart body
+    let field = match multipart.next_field().await {
+        Ok(Some(field)) => field,
+        Ok(None) => {
+            return (StatusCode::BAD_REQUEST, "No file field in upload").into_response();
+        }
+        Err(err) => {
+            tracing::error!("[routes] Failed to read multipart field: {}", err);
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid multipart data: {err}"),
+            )
+                .into_response();
+        }
+    };
+
+    // Validate content type
+    let content_type = field
+        .content_type()
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    if !ALLOWED_IMAGE_TYPES.contains(&content_type.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("Unsupported image type: {content_type}"),
+        )
+            .into_response();
+    }
+
+    // Get filename from the field, or generate one
+    let ext = mime_to_extension(&content_type);
+    let filename = match field.file_name().map(ToOwned::to_owned) {
+        Some(name) if !name.trim().is_empty() => name,
+        _ => {
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            format!("paste-{ts}.{ext}")
+        }
+    };
+
+    // Read the file bytes
+    let data = match field.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::error!("[routes] Failed to read upload bytes: {}", err);
+            return (StatusCode::BAD_REQUEST, "Failed to read file data").into_response();
+        }
+    };
+
+    if data.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Uploaded file is empty").into_response();
+    }
+
+    tracing::info!(
+        "[routes] upload_handler: name={}, content_type={}, size={}",
+        filename,
+        content_type,
+        data.len()
+    );
+
+    // Store blob
+    let outcome = match state.store.blobs().add_bytes(data.to_vec()).await {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::error!("[routes] Failed to add upload blob: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to store file").into_response();
+        }
+    };
+    let hash = outcome.hash;
+    let hash_str = hash.to_string();
+
+    // Set named tag
+    let tag = iroh_blobs::api::Tag::from(filename.clone());
+    if let Err(err) = state.store.tags().set(tag, hash).await {
+        tracing::error!("[routes] Failed to set upload tag: {}", err);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to set file name").into_response();
+    }
+
+    // Set metadata tags (created, modified, content-type)
+    let now_str = crate::tags::now_unix().to_string();
+    if let Err(err) = state
+        .tag_store
+        .set_if_absent(
+            &state.tag_store.global,
+            filename.as_bytes(),
+            b"created",
+            Some(now_str.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set created tag: {:#}", err);
+    }
+    if let Err(err) = state
+        .tag_store
+        .set_singleton(
+            &state.tag_store.global,
+            filename.as_bytes(),
+            b"modified",
+            Some(now_str.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set modified tag: {:#}", err);
+    }
+    if let Err(err) = state
+        .tag_store
+        .set_singleton(
+            &state.tag_store.global,
+            filename.as_bytes(),
+            b"content-type",
+            Some(content_type.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("[routes] Failed to set content-type tag: {:#}", err);
+    }
+
+    let url = format!("/blob/{hash_str}?filename={filename}");
+
+    Json(UploadResponse {
+        hash: hash_str,
+        name: filename,
+        url,
+    })
+    .into_response()
+}
+
+/// List all uploaded images.
+///
+/// Scans blob tags for entries with image content-type metadata.
+/// Returns a JSON array of `ImageEntry` objects.
+async fn images_list_handler(State(state): State<AppState>) -> Response {
+    use futures_lite::StreamExt;
+
+    let mut images: Vec<ImageEntry> = Vec::new();
+
+    // List all tags (named blobs) and filter to those with image content-types
+    let mut tags_stream = match state.store.tags().list().await {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::error!("[routes] Failed to list tags for images: {}", err);
+            return Json(images).into_response();
+        }
+    };
+    while let Some(Ok(tag_info)) = tags_stream.next().await {
+        let name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
+        let hash_str = tag_info.hash.to_string();
+
+        // Skip internal tags
+        if crate::tags::is_internal_tag(&name) {
+            continue;
+        }
+
+        // Check content-type metadata via tag store
+        let ct_tags = state
+            .tag_store
+            .get_by_key(&state.tag_store.global, name.as_bytes(), b"content-type")
+            .await
+            .unwrap_or_default();
+
+        let ct = ct_tags
+            .first()
+            .and_then(|t| t.value.as_ref())
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if !ALLOWED_IMAGE_TYPES.contains(&ct) {
+            continue;
+        }
+
+        let url = format!("/blob/{hash_str}?filename={name}");
+
+        images.push(ImageEntry {
+            hash: hash_str,
+            name,
+            url,
+            size: blob_size(&state.store, tag_info.hash).await,
+        });
+    }
+
+    Json(images).into_response()
+}
+
+/// Rename a file by changing its tag name.
+///
+/// If the target name already exists, archives it first under
+/// `{new_name}.archive.{timestamp}`. Optionally archives the original name
+/// as `{name}.archive.{timestamp}` (when `archive` is true) or simply
+/// deletes it (when `archive` is false).
+async fn rename_handler(State(state): State<AppState>, Json(req): Json<RenameRequest>) -> Response {
+    tracing::info!(
+        "[routes] rename_handler: name={}, new_name={}, archive={}",
+        req.name,
+        req.new_name,
+        req.archive
+    );
+    let new_name = req.new_name.trim().to_owned();
+    let ops = FileOps::new(&state.store, &state.tag_store);
+    match ops.rename(&req.name, &new_name, req.archive).await {
+        Ok(outcome) => {
+            tracing::info!(
+                "[routes] File renamed: {} -> {}, hash={}, archived_original={:?}, archived_replaced={:?}",
+                req.name,
+                new_name,
+                outcome.hash,
+                outcome.archived_original,
+                outcome.archived_replaced
+            );
+            Json(RenameResponse {
+                name: new_name,
+                hash: outcome.hash.to_string(),
+                archived_original: outcome.archived_original,
+                archived_replaced: outcome.archived_replaced,
+            })
+            .into_response()
+        }
+        Err(FileOpError::EmptyName) => {
+            (StatusCode::BAD_REQUEST, "New name cannot be empty").into_response()
+        }
+        Err(FileOpError::SameName) => (
+            StatusCode::BAD_REQUEST,
+            "New name must differ from current name",
+        )
+            .into_response(),
+        Err(FileOpError::NotFound(_)) => (StatusCode::NOT_FOUND, "File not found").into_response(),
+        Err(err) => {
+            tracing::error!("[routes] rename failed: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to rename file").into_response()
+        }
+    }
+}
+
+/// Copy a file by creating a new tag pointing to the same content hash.
+///
+/// If the destination name already exists, the existing file at that name
+/// is archived as `{new_name}.archive.{timestamp}` before the copy.
+async fn copy_handler(State(state): State<AppState>, Json(req): Json<CopyRequest>) -> Response {
+    tracing::info!(
+        "[routes] copy_handler: name={}, new_name={}",
+        req.name,
+        req.new_name
+    );
+    let new_name = req.new_name.trim().to_owned();
+    let ops = FileOps::new(&state.store, &state.tag_store);
+    match ops.copy(&req.name, &new_name).await {
+        Ok(outcome) => {
+            tracing::info!(
+                "[routes] File copied: {} -> {}, hash={}",
+                req.name,
+                new_name,
+                outcome.hash
+            );
+            Json(CopyResponse {
+                name: new_name,
+                hash: outcome.hash.to_string(),
+            })
+            .into_response()
+        }
+        Err(FileOpError::EmptyName) => {
+            (StatusCode::BAD_REQUEST, "New name cannot be empty").into_response()
+        }
+        Err(FileOpError::SameName) => (
+            StatusCode::BAD_REQUEST,
+            "New name must differ from current name",
+        )
+            .into_response(),
+        Err(FileOpError::NotFound(_)) => {
+            (StatusCode::NOT_FOUND, "Source file not found").into_response()
+        }
+        Err(err) => {
+            tracing::error!("[routes] copy failed: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to copy file").into_response()
+        }
+    }
+}
+
+/// Download the current editor content in the requested format.
+///
+/// Supports two formats:
+/// - `raw`: Converts `ProseMirror` JSON to the native file format (markdown, plain text, etc.)
+/// - `json`: Returns the `ProseMirror` JSON document as-is
+///
+/// For downloading the original stored blob, use `GET /blob/:hash` directly.
+async fn download_handler(Json(req): Json<DownloadRequest>) -> Response {
+    tracing::info!(
+        "[routes] download_handler: name={}, format={}",
+        req.name,
+        req.format
+    );
+
+    match req.format.as_str() {
+        "raw" => {
+            // Convert PM doc to native format
+            let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
+                Ok(b) => b,
+                Err(err) => {
+                    return (StatusCode::BAD_REQUEST, err).into_response();
+                }
+            };
+            let content_type = get_content_type(&req.name);
+            let filename_encoded = urlencoding::encode(&req.name);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, content_type)
+                .header(
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{filename_encoded}\""),
+                )
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to build response",
+                    )
+                        .into_response()
+                })
+        }
+        "json" => {
+            // Return PM JSON as-is
+            let json_bytes = serde_json::to_vec_pretty(&req.doc).unwrap_or_default();
+            let json_name = if req.name.ends_with(".pm.json") {
+                req.name.clone()
+            } else {
+                format!("{}.pm.json", req.name)
+            };
+            let filename_encoded = urlencoding::encode(&json_name);
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{filename_encoded}\""),
+                )
+                .body(Body::from(json_bytes))
+                .unwrap_or_else(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to build response",
+                    )
+                        .into_response()
+                })
+        }
+        _ => (
+            StatusCode::BAD_REQUEST,
+            "Invalid format. Use 'raw' or 'json'",
+        )
+            .into_response(),
+    }
+}
+
+/// Request body for soft-deleting or hard-deleting a file.
+#[derive(Debug, Deserialize)]
+struct DeleteRequest {
+    /// File name to delete.
+    name: String,
+}
+
+/// Response from deleting a file.
+#[derive(Debug, Serialize)]
+struct DeleteResponse {
+    /// File name that was deleted.
+    name: String,
+    /// Whether this was a soft or hard delete.
+    hard: bool,
+}
+
+/// Soft-delete a file by adding a "deleted" tag.
+///
+/// The file remains in the store and can be restored by removing the "deleted" tag.
+/// Soft-deleted files are hidden from the file list.
+async fn delete_handler(State(state): State<AppState>, Json(req): Json<DeleteRequest>) -> Response {
+    tracing::info!("[routes] delete_handler: name={}", req.name);
+
+    if req.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    }
+
+    // Verify the file exists
+    match state.store.tags().get(&req.name).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
+        Err(err) => {
+            tracing::error!("[routes] Failed to look up tag: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to look up file").into_response();
+        }
+    }
+
+    // Add "deleted" tag with timestamp
+    let now_str = crate::tags::now_unix().to_string();
+    if let Err(err) = state
+        .tag_store
+        .set_singleton(
+            &state.tag_store.global,
+            req.name.as_bytes(),
+            b"deleted",
+            Some(now_str.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::error!("[routes] Failed to set deleted tag: {}", err);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to mark file as deleted",
+        )
+            .into_response();
+    }
+
+    tracing::info!("[routes] File soft-deleted: name={}", req.name);
+
+    Json(DeleteResponse {
+        name: req.name,
+        hard: false,
+    })
+    .into_response()
+}
+
+/// Restore a soft-deleted file by removing the "deleted" tag.
+async fn restore_handler(
+    State(state): State<AppState>,
+    Json(req): Json<DeleteRequest>,
+) -> Response {
+    tracing::info!("[routes] restore_handler: name={}", req.name);
+
+    if req.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    }
+
+    // Remove the "deleted" tag (all values for this key)
+    if let Err(err) = state
+        .tag_store
+        .del_by_key(&state.tag_store.global, req.name.as_bytes(), b"deleted")
+        .await
+    {
+        tracing::error!("[routes] Failed to remove deleted tag: {}", err);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to restore file").into_response();
+    }
+
+    tracing::info!("[routes] File restored: name={}", req.name);
+
+    Json(DeleteResponse {
+        name: req.name,
+        hard: false,
+    })
+    .into_response()
+}
+
+/// Hard-delete a file (admin only).
+///
+/// Removes the blob tag, all archive tags for this file, and all metadata tags.
+/// The blob data itself may be garbage-collected later by iroh-blobs.
+async fn hard_delete_handler(
+    State(state): State<AppState>,
+    Json(req): Json<DeleteRequest>,
+) -> Response {
+    tracing::info!("[routes] hard_delete_handler: name={}", req.name);
+    let ops = FileOps::new(&state.store, &state.tag_store);
+    match ops.delete(&req.name).await {
+        Ok(outcome) => {
+            tracing::info!(
+                "[routes] File hard-deleted: name={} (metadata={}, archives={})",
+                req.name,
+                outcome.metadata_removed,
+                outcome.archives_removed
+            );
+            Json(DeleteResponse {
+                name: req.name,
+                hard: true,
+            })
+            .into_response()
+        }
+        Err(FileOpError::EmptyName) => {
+            (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response()
+        }
+        Err(err) => {
+            tracing::error!("[routes] hard delete failed: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to delete file").into_response()
+        }
+    }
+}
+
+/// Convert a `ProseMirror` document JSON to bytes in the appropriate file format.
+///
+/// The format is determined by the file name extension:
+/// - `.pm.json` → `ProseMirror` JSON (serialized as-is)
+/// - `.md` → Markdown (via `prosemirror_to_markdown`)
+/// - `.txt` → Plain text (extracted from paragraphs)
+/// - Other text files → Raw text (extracted from `code_block` nodes)
+fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, String> {
+    let mode = detect_mode(name);
+
+    match mode {
+        ContentMode::Rich => {
+            // .pm.json files: store the ProseMirror JSON directly
+            serde_json::to_vec_pretty(doc).map_err(|e| format!("Failed to serialize JSON: {e}"))
+        }
+        ContentMode::Markdown => {
+            // .md files: convert PM doc to markdown
+            let markdown = prosemirror_to_markdown(doc)
+                .map_err(|e| format!("Failed to convert to markdown: {e}"))?;
+            Ok(markdown.into_bytes())
+        }
+        ContentMode::Plain => {
+            // .txt files: extract plain text from paragraphs
+            let text = extract_plain_text(doc);
+            Ok(text.into_bytes())
+        }
+        ContentMode::Raw => {
+            // Code/config files: extract text from code_block nodes
+            let text = extract_raw_text(doc);
+            Ok(text.into_bytes())
+        }
+        ContentMode::Binary | ContentMode::Media(_) => {
+            Err("Cannot save binary/media files from editor".to_owned())
+        }
+    }
+}
+
+/// Extract plain text from a `ProseMirror` doc with paragraph nodes.
+///
+/// Joins paragraphs with newlines, preserving `hard_break` as newlines.
+fn extract_plain_text(doc: &serde_json::Value) -> String {
+    let mut lines = Vec::new();
+
+    if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
+        for node in content {
+            let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match node_type {
+                "paragraph" => {
+                    let mut line = String::new();
+                    if let Some(inline_content) = node.get("content").and_then(|c| c.as_array()) {
+                        for inline in inline_content {
+                            let inline_type =
+                                inline.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                            match inline_type {
+                                "text" => {
+                                    if let Some(text) = inline.get("text").and_then(|t| t.as_str())
+                                    {
+                                        line.push_str(text);
+                                    }
+                                }
+                                "hard_break" => {
+                                    line.push('\n');
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    lines.push(line);
+                }
+                "heading" => {
+                    let mut text = String::new();
+                    if let Some(inline_content) = node.get("content").and_then(|c| c.as_array()) {
+                        for inline in inline_content {
+                            if let Some(t) = inline.get("text").and_then(|t| t.as_str()) {
+                                text.push_str(t);
+                            }
+                        }
+                    }
+                    lines.push(text);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Extract raw text from a `ProseMirror` doc with `code_block` nodes.
+///
+/// Used for code and config files where the content is a single `code_block`.
+fn extract_raw_text(doc: &serde_json::Value) -> String {
+    let mut parts = Vec::new();
+
+    if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
+        for node in content {
+            let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if node_type == "code_block"
+                && let Some(inline_content) = node.get("content").and_then(|c| c.as_array())
+            {
+                for inline in inline_content {
+                    if let Some(text) = inline.get("text").and_then(|t| t.as_str()) {
+                        parts.push(text.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    parts.join("\n")
+}
+
+/// Archive the original tag by creating a timestamped copy.
+///
+/// If a tag with the given name exists and points to the expected hash,
+/// creates a new tag `{name}.archive.{timestamp}` pointing to the same hash.
+async fn archive_original_tag(
+    store: &iroh_blobs::api::Store,
+    name: &str,
+    expected_hash: &str,
+) -> Option<String> {
+    use futures_lite::StreamExt;
+
+    let expected: iroh_blobs::Hash = expected_hash.parse().ok()?;
+
+    // Find the current tag
+    let mut tags = store.tags().list().await.ok()?;
+    let mut found = false;
+    while let Some(Ok(tag_info)) = tags.next().await {
+        let tag_name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
+        if tag_name == name && tag_info.hash == expected {
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        return None;
+    }
+
+    // Create archive tag with timestamp
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let archive_name = format!("{name}.archive.{timestamp}");
+    let archive_tag = iroh_blobs::api::Tag::from(archive_name.clone());
+
+    match store.tags().set(archive_tag, expected).await {
+        Ok(()) => {
+            tracing::info!(
+                "[routes] Archived original: {} -> {}",
+                archive_name,
+                expected_hash
+            );
+            Some(archive_name)
+        }
+        Err(err) => {
+            tracing::error!("[routes] Failed to create archive tag: {}", err);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod save_publication_tests {
+    use std::{sync::Arc, time::Duration};
+
+    use axum::{body::to_bytes, extract::State};
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+    use serde_json::json;
+
+    use super::*;
+    use crate::{
+        local_events::Entry,
+        tags::TagStore,
+        web::{AppState, SaveRateLimiter},
+    };
+
+    async fn state() -> (AppState, Endpoint, Docs) {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "save-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let state = AppState::new(
+            store,
+            None,
+            "save-test".to_owned(),
+            tags,
+            [3; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        (state, endpoint, docs)
+    }
+
+    async fn save(state: AppState, name: &str, text: &str) -> Response {
+        save_handler(
+            State(state),
+            Json(SaveRequest {
+                doc_id: iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+                name: name.to_owned(),
+                doc: json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":text}]}]}),
+            }),
+        )
+        .await
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn successful_save_publishes_an_applied_signed_document_and_keeps_the_blob_fetchable() {
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+        let response = save(state.clone(), "revision.md", "first revision").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let event_id: p2panda_core::Hash = body["document_id"].as_str().unwrap().parse().unwrap();
+        let history = state.local_events.lock().await.history(event_id).unwrap();
+        let (author, document) = history
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::Document {
+                    id,
+                    author,
+                    document,
+                } if *id == event_id => Some((*author, document.clone())),
+                _ => None,
+            })
+            .unwrap();
+        let blob_hash = iroh_blobs::Hash::from_bytes(*document.content.as_bytes());
+        assert_eq!(body["hash"].as_str().unwrap(), blob_hash.to_string());
+        let bytes = state.store.blobs().get_bytes(blob_hash).await.unwrap();
+        document.verify_content(&bytes).unwrap();
+        assert_eq!(document.blob_hash().to_string(), blob_hash.to_string());
+        assert_eq!(document.size, u64::try_from(bytes.len()).unwrap());
+        assert_eq!(document.media_type, "text/markdown; charset=utf-8");
+        assert_eq!(
+            author,
+            p2panda_core::SigningKey::from_bytes(&[3; 32])
+                .verifying_key()
+                .as_bytes()
+                .to_owned()
+        );
+        assert!(history.iter().any(|entry| matches!(
+            entry,
+            Entry::Set { subject, name, value: Some(value), .. }
+                if *subject == event_id && name == "filename" && value == "revision.md"
+        )));
+
+        // Repeated successful checkpoints get distinct durable revision events.
+        let second = save(state.clone(), "revision.md", "second revision").await;
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_body = response_json(second).await;
+        assert_ne!(body["document_id"], second_body["document_id"]);
+        let second_id: p2panda_core::Hash = second_body["document_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(state.local_events.lock().await.history(event_id).is_ok());
+        assert!(state.local_events.lock().await.history(second_id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn refused_filename_tag_does_not_return_a_success_response() {
+        let (state, _endpoint, _docs) = state().await;
+        let response = save(state.clone(), &format!("{}.md", "x".repeat(600)), "content").await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            state
+                .local_events
+                .lock()
+                .await
+                .frontier()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+// =============================================================================
+// Identity API Handlers
+// =============================================================================
+
+/// Request body for identity registration.
+#[derive(Debug, Deserialize)]
+struct IdentityRegisterRequest {
+    /// Optional display name for the client.
+    name: Option<String>,
+}
+
+/// Response body for identity registration and lookup.
+#[derive(Debug, Serialize)]
+struct IdentityResponse {
+    /// Opaque token for the client to store in `localStorage`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+    /// The client's unique identifier.
+    client_id: String,
+    /// Display name (if set).
+    name: Option<String>,
+}
+
+/// Request body for name update.
+#[derive(Debug, Deserialize)]
+struct IdentityUpdateNameRequest {
+    /// The token proving client identity.
+    token: String,
+    /// New display name (or null/empty to clear).
+    name: Option<String>,
+}
+
+/// `POST /api/identity/register` - Register a new client identity.
+///
+/// Returns a signed token that the client stores in `localStorage`
+/// for future reconnection.
+async fn identity_register_handler(
+    State(state): State<AppState>,
+    Json(req): Json<IdentityRegisterRequest>,
+) -> impl IntoResponse {
+    match state.identity.register(req.name).await {
+        Ok((token, identity)) => {
+            tracing::info!("[identity] Registered new client: {}", identity.client_id);
+            (
+                StatusCode::OK,
+                Json(IdentityResponse {
+                    token: Some(token),
+                    client_id: identity.client_id,
+                    name: identity.name,
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            tracing::error!("[identity] Registration failed: {}", err);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// `GET /api/identity/me?token=...` - Look up current identity from token.
+///
+/// Used by the client on page load to check if a stored token is still valid.
+/// Returns a refreshed token on success, resetting the 30-day expiry clock.
+async fn identity_me_handler(
+    State(state): State<AppState>,
+    Query(params): Query<IdentityMeQuery>,
+) -> impl IntoResponse {
+    let Some((fresh_token, identity)) = state.identity.verify_and_refresh(&params.token).await
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+
+    (
+        StatusCode::OK,
+        Json(IdentityResponse {
+            token: Some(fresh_token),
+            client_id: identity.client_id,
+            name: identity.name,
+        }),
+    )
+        .into_response()
+}
+
+/// Query parameters for the identity lookup endpoint.
+#[derive(Debug, Deserialize)]
+struct IdentityMeQuery {
+    /// The client's token.
+    token: String,
+}
+
+/// `POST /api/identity/name` - Update display name.
+async fn identity_update_name_handler(
+    State(state): State<AppState>,
+    Json(req): Json<IdentityUpdateNameRequest>,
+) -> impl IntoResponse {
+    // Verify the token first
+    let Some(identity) = state.identity.verify_token(&req.token).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+
+    // Update the name
+    let Some(updated) = state
+        .identity
+        .update_name(&identity.client_id, req.name)
+        .await
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+
+    // Immediately update cursors in all active documents so other clients
+    // (and newly joining clients) see the new name without waiting for
+    // the renamed client's next cursor move.
+    let display_name = updated
+        .name
+        .clone()
+        .unwrap_or_else(|| super::identity::short_id(&updated.client_id));
+    state
+        .collab
+        .update_client_name(&updated.client_id, &display_name)
+        .await;
+
+    tracing::info!(
+        "[identity] Updated name for {}: {:?}",
+        updated.client_id,
+        updated.name
+    );
+
+    (
+        StatusCode::OK,
+        Json(IdentityResponse {
+            token: None,
+            client_id: updated.client_id,
+            name: updated.name,
+        }),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_classify_tag_primary() {
+        let (kind, ts) = classify_tag("my-document.md");
+        assert_eq!(kind, FileKind::Primary);
+        assert!(ts.is_none());
+    }
+
+    #[test]
+    fn test_classify_tag_auto() {
+        let (kind, ts) = classify_tag("auto-2026-03-12T06:42:30.015Z");
+        assert_eq!(kind, FileKind::Auto);
+        assert!(ts.is_some());
+    }
+
+    #[test]
+    fn test_classify_tag_archive() {
+        let (kind, ts) = classify_tag("notes.md.archive.1711000000");
+        assert_eq!(kind, FileKind::Archive);
+        assert_eq!(ts.unwrap(), 1_711_000_000);
+    }
+
+    #[test]
+    fn test_classify_tag_archive_no_timestamp() {
+        // Even without a valid timestamp, .archive. pattern is recognized
+        let (kind, ts) = classify_tag("notes.md.archive.notanumber");
+        assert_eq!(kind, FileKind::Archive);
+        assert!(ts.is_none());
+    }
+
+    #[test]
+    fn test_parse_iso_timestamp_valid() {
+        // 2026-03-12T06:42:30.015Z → should produce a valid timestamp
+        let ts = parse_iso_timestamp("auto-2026-03-12T06:42:30.015Z");
+        assert!(ts.is_some());
+        let t = ts.unwrap();
+        // 2026-03-12 is after 2025-01-01 (approx 1735689600)
+        assert!(t > 1_735_689_600);
+    }
+
+    #[test]
+    fn test_parse_iso_timestamp_invalid() {
+        assert!(parse_iso_timestamp("auto-not-a-date").is_none());
+        assert!(parse_iso_timestamp("auto-").is_none());
+        assert!(parse_iso_timestamp("noprefix").is_none());
+    }
+
+    #[test]
+    fn test_parse_iso_timestamp_epoch() {
+        // 1970-01-01T00:00:00.000Z should be 0
+        let ts = parse_iso_timestamp("auto-1970-01-01T00:00:00.000Z");
+        assert_eq!(ts, Some(0));
+    }
+
+    #[test]
+    fn test_is_leap_year() {
+        assert!(is_leap_year(2000)); // divisible by 400
+        assert!(!is_leap_year(1900)); // divisible by 100 but not 400
+        assert!(is_leap_year(2024)); // divisible by 4
+        assert!(!is_leap_year(2023)); // not divisible by 4
+    }
+
+    #[test]
+    fn test_html_escape_inline() {
+        assert_eq!(html_escape_inline("hello"), "hello");
+        assert_eq!(html_escape_inline("<script>"), "&lt;script&gt;");
+        assert_eq!(html_escape_inline("a&b"), "a&amp;b");
+        assert_eq!(html_escape_inline("\"quoted\""), "&quot;quoted&quot;");
+    }
+
+    #[test]
+    fn test_rename_archive_naming_pattern() {
+        // The rename handler creates archives with format: {name}.archive.{timestamp}
+        // This must be recognized by classify_tag as FileKind::Archive
+        let timestamp = 1_711_000_000u64;
+        let original_archive = format!("old-name.md.archive.{timestamp}");
+        let (kind, ts) = classify_tag(&original_archive);
+        assert_eq!(kind, FileKind::Archive);
+        assert_eq!(ts, Some(timestamp));
+
+        // Same pattern for the "replaced" file archive
+        let replaced_archive = format!("new-name.md.archive.{timestamp}");
+        let (kind2, ts2) = classify_tag(&replaced_archive);
+        assert_eq!(kind2, FileKind::Archive);
+        assert_eq!(ts2, Some(timestamp));
+    }
+
+    #[test]
+    fn test_classify_tag_dotted_filenames() {
+        // Files with dots in their name should be Primary, not Archive
+        let (kind, _) = classify_tag("my.file.name.txt");
+        assert_eq!(kind, FileKind::Primary);
+
+        let (kind, _) = classify_tag("v1.2.3.tar.gz");
+        assert_eq!(kind, FileKind::Primary);
+    }
+
+    #[test]
+    fn test_classify_tag_archive_preserves_original_name() {
+        // Given an archive tag, we can extract the original file name
+        let tag = "README.md.archive.1711000000";
+        let (kind, _) = classify_tag(tag);
+        assert_eq!(kind, FileKind::Archive);
+        // The part before ".archive." is the original file name
+        let parts: Vec<&str> = tag.splitn(2, ".archive.").collect();
+        assert_eq!(parts[0], "README.md");
+    }
+
+    // ========================================================================
+    // CopyRequest / CopyResponse serde tests
+    // ========================================================================
+
+    #[test]
+    fn test_copy_request_deserialization() {
+        let json = r#"{"name":"source.md","new_name":"dest.md"}"#;
+        let req: CopyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "source.md");
+        assert_eq!(req.new_name, "dest.md");
+    }
+
+    #[test]
+    fn test_copy_request_missing_field() {
+        let json = r#"{"name":"source.md"}"#;
+        let result: Result<CopyRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_copy_response_serialization() {
+        let resp = CopyResponse {
+            name: "dest.md".to_owned(),
+            hash: "abc123def".to_owned(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"name\":\"dest.md\""));
+        assert!(json.contains("\"hash\":\"abc123def\""));
+    }
+
+    #[test]
+    fn test_copy_request_with_special_chars() {
+        let json = r#"{"name":"file with spaces.txt","new_name":"新しいファイル.txt"}"#;
+        let req: CopyRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "file with spaces.txt");
+        assert_eq!(req.new_name, "新しいファイル.txt");
+    }
+
+    // ========================================================================
+    // Existing rename tests
+    // ========================================================================
+
+    #[test]
+    fn test_rename_request_deserialization() {
+        let json = r#"{"name":"old.md","new_name":"new.md","archive":true}"#;
+        let req: RenameRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.name, "old.md");
+        assert_eq!(req.new_name, "new.md");
+        assert!(req.archive);
+    }
+
+    #[test]
+    fn test_rename_response_serialization() {
+        let resp = RenameResponse {
+            name: "new.md".to_owned(),
+            hash: "abc123".to_owned(),
+            archived_original: Some("old.md.archive.1711000000".to_owned()),
+            archived_replaced: None,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"name\":\"new.md\""));
+        assert!(json.contains("\"archived_original\":\"old.md.archive.1711000000\""));
+        assert!(json.contains("\"archived_replaced\":null"));
+    }
+
+    #[test]
+    fn test_rename_response_with_both_archives() {
+        let resp = RenameResponse {
+            name: "target.md".to_owned(),
+            hash: "def456".to_owned(),
+            archived_original: Some("source.md.archive.100".to_owned()),
+            archived_replaced: Some("target.md.archive.100".to_owned()),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"archived_original\":\"source.md.archive.100\""));
+        assert!(json.contains("\"archived_replaced\":\"target.md.archive.100\""));
+    }
+
+    // ========================================================================
+    // Upload endpoint tests
+    // ========================================================================
+
+    #[test]
+    fn test_upload_response_serialization() {
+        let resp = UploadResponse {
+            hash: "abc123def456".to_owned(),
+            name: "photo.png".to_owned(),
+            url: "/blob/abc123def456?filename=photo.png".to_owned(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"hash\":\"abc123def456\""));
+        assert!(json.contains("\"name\":\"photo.png\""));
+        assert!(json.contains("\"url\":\"/blob/abc123def456?filename=photo.png\""));
+    }
+
+    #[test]
+    fn test_allowed_image_types_contains_expected() {
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/png"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/jpeg"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/gif"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/webp"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/svg+xml"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/bmp"));
+        assert!(ALLOWED_IMAGE_TYPES.contains(&"image/x-icon"));
+    }
+
+    #[test]
+    fn test_allowed_image_types_rejects_non_images() {
+        assert!(!ALLOWED_IMAGE_TYPES.contains(&"text/plain"));
+        assert!(!ALLOWED_IMAGE_TYPES.contains(&"application/pdf"));
+        assert!(!ALLOWED_IMAGE_TYPES.contains(&"application/json"));
+        assert!(!ALLOWED_IMAGE_TYPES.contains(&"video/mp4"));
+    }
+
+    #[test]
+    fn test_mime_to_extension() {
+        assert_eq!(mime_to_extension("image/png"), "png");
+        assert_eq!(mime_to_extension("image/jpeg"), "jpg");
+        assert_eq!(mime_to_extension("image/gif"), "gif");
+        assert_eq!(mime_to_extension("image/webp"), "webp");
+        assert_eq!(mime_to_extension("image/svg+xml"), "svg");
+        assert_eq!(mime_to_extension("image/bmp"), "bmp");
+        assert_eq!(mime_to_extension("image/x-icon"), "ico");
+        assert_eq!(mime_to_extension("application/octet-stream"), "bin");
+        assert_eq!(mime_to_extension("text/plain"), "bin");
+    }
+}
