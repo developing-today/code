@@ -2711,7 +2711,11 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "OpenAI Codex CLI (via codex)",
       "options": {
-        "baseURL": "http://127.0.0.1:18744/v1",
+        // Port comes from CODEX_PROXY_PORT (set by home config from the
+        // same single definition the codex-proxy service binds) — never
+        // hardcode a port here; a hardcoded one silently breaks on any
+        // device where the proxy isn't on that exact port.
+        "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT}/v1",
         "apiKey": "codex-local"
       },
       "models": {
