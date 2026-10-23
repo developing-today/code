@@ -75,6 +75,15 @@ _IDNA_DISALLOWED = frozenset(
 
 
 def validate_crawl_url(raw):
+    # WHATWG URL parsing first removes leading and trailing C0 control
+    # or space (U+0000-U+0020) from the whole input, so "\x00http://
+    # example.com/" names example.com and "http://example.com/\x00"
+    # names the path "/" — the trailing character is gone before path
+    # parsing, not percent-encoded into it. Trim the same way before
+    # anything else judges or returns the spelling (#614). (Interior
+    # C0 controls, space and DEL are a different arm: they survive
+    # parsing and are percent-encoded on the returned URL, below.)
+    raw = re.sub(r"^[\x00-\x20]+|[\x00-\x20]+$", "", raw)
     # WHATWG URL parsing removes every ASCII tab, LF and CR from the
     # input before doing anything else — even inside the scheme
     # spelling — so "http://exa\tmple.com/" names example.com and the
@@ -357,7 +366,7 @@ def validate_crawl_url(raw):
                 )
             # A public DNS name; literal-IP policy does not apply.
             # A percent-decoded host is fetched in its decoded form.
-            return _url_with_encoded_non_ascii(
+            return _url_with_encoded_components(
                 _url_with_host(u, host) if percent_decoded else raw
             )
     embedded = _embedded_ipv4(ip)
@@ -397,7 +406,7 @@ def validate_crawl_url(raw):
     elif not ip.is_global:
         raise ValueError(f"refusing to crawl non-public address {host}")
     # A percent-decoded host is fetched in its decoded form (#529).
-    return _url_with_encoded_non_ascii(
+    return _url_with_encoded_components(
         _url_with_host(u, host) if percent_decoded else raw
     )
 
@@ -651,40 +660,54 @@ def _url_with_host(u, new_host):
     return u._replace(netloc=prefix + new_host).geturl()
 
 
-def _encode_non_ascii(text):
-    # UTF-8 percent-encode every non-ASCII character, the way WHATWG's
-    # URL serializer encodes the userinfo, path, query and fragment
-    # components. ASCII characters — including existing %XX sequences —
-    # pass through byte-identical, so nothing is double-encoded.
+def _encode_url_component(text):
+    # Percent-encode every character http.client cannot carry, the way
+    # WHATWG's URL serializer encodes the userinfo, path, query and
+    # fragment components: non-ASCII characters as UTF-8 (#615), and
+    # the C0 controls, space and DEL as their single byte (#614) —
+    # for an ASCII control the UTF-8 encoding is that byte, so one
+    # rule covers both. Ordinary ASCII — including existing %XX
+    # sequences — passes through byte-identical, so nothing is
+    # double-encoded. (Tab, LF and CR never reach here: they are
+    # removed from the whole input at the top of validate_crawl_url.)
     return "".join(
         "".join(f"%{byte:02X}" for byte in char.encode("utf-8"))
-        if ord(char) > 0x7F
+        if ord(char) > 0x7F or ord(char) <= 0x20 or ord(char) == 0x7F
         else char
         for char in text
     )
 
 
-def _url_with_encoded_non_ascii(url):
+# Backwards-compatible alias: the #615 name for the same helper.
+_encode_non_ascii = _encode_url_component
+
+
+def _url_with_encoded_components(url):
     # The URL validate_crawl_url returns is the URL the fetcher fetches,
     # and http.client encodes the request line as ASCII: a raw non-ASCII
     # character in the path, query or userinfo raises UnicodeEncodeError
-    # before any request is sent, so a target both validators accepted
-    # 502s in the container while the Worker fetches its WHATWG-encoded
-    # form (#615). Encode those components on the returned URL. The host
-    # is deliberately untouched: it is judged in mapped form above and
-    # fetched via IDNA, as with the existing IDN spellings.
+    # before any request is sent, and a raw C0 control, space or DEL
+    # raises InvalidURL — so a target both validators accepted 502s in
+    # the container while the Worker fetches its WHATWG-encoded form
+    # (#615, #614). Encode those components on the returned URL. The
+    # host is deliberately untouched: it is judged in mapped form above
+    # and fetched via IDNA, as with the existing IDN spellings.
     u = urlparse(url)
     netloc = u.netloc
     if "@" in netloc:
         userinfo, _, hostport = netloc.rpartition("@")
-        netloc = f"{_encode_non_ascii(userinfo)}@{hostport}"
+        netloc = f"{_encode_url_component(userinfo)}@{hostport}"
     return u._replace(
         netloc=netloc,
-        path=_encode_non_ascii(u.path),
-        params=_encode_non_ascii(u.params),
-        query=_encode_non_ascii(u.query),
-        fragment=_encode_non_ascii(u.fragment),
+        path=_encode_url_component(u.path),
+        params=_encode_url_component(u.params),
+        query=_encode_url_component(u.query),
+        fragment=_encode_url_component(u.fragment),
     ).geturl()
+
+
+# Backwards-compatible alias: the #615 name for the same helper.
+_url_with_encoded_non_ascii = _url_with_encoded_components
 
 
 def _embedded_ipv4(ip):
