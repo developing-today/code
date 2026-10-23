@@ -18,7 +18,7 @@ func handle(err error) {
 func main() {
 	log.Info("Hello")
 
-	e, err := os.Executable()
+	_, err := os.Executable()
 	if err != nil {
 		fmt.Println(err)
 		return

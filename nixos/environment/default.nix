@@ -448,6 +448,8 @@ in
       wpa_supplicant_gui
       # Cloudflare Workers CLI; available as a native nixpkgs package.
       wrangler
+      # cf, Wrangler's successor (open beta, not in nixpkgs). See pkgs/cf.
+      (pkgs.callPackage ../../pkgs/cf { })
       bitwarden-cli # Bitwarden Vault CLI (bw)
       bws # Bitwarden Secrets Manager CLI (bws)
     ])
@@ -1135,7 +1137,7 @@ in
       element-desktop
 
       # Security and authentication
-      _1password-gui
+      # _1password-gui: now programs._1password-gui in nixos/agent-auth (adds `op` + CLI integration)
       yubikey-agent
       keepassxc
 

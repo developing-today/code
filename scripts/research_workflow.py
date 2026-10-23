@@ -5,6 +5,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import shutil
@@ -39,6 +40,24 @@ RESOLUTION = re.compile(
     r"<!-- workflow:resolution -->\s*(.*?)\s*<!-- /workflow:resolution -->", re.S
 )
 NOTE = re.compile(r"<!-- workflow:note -->\s*(.*?)\s*<!-- /workflow:note -->", re.S)
+
+
+EXTENSIONS = ("research_workflow_items", "research_workflow_live")
+# Extensions register readers (package, root) -> {note path: entry} for note
+# dispositions kept outside concept files; each reader validates what it returns.
+DISPOSITION_READERS = {}
+
+
+def extensions():
+    """Load sibling command modules by path; `python3 -I` keeps scripts/ off sys.path."""
+    sys.modules.setdefault("research_workflow", sys.modules[__name__])
+    for name in EXTENSIONS:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).with_name(name + ".py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        yield module
 
 
 def fail(message):
@@ -453,6 +472,26 @@ def prose(text):
     return re.sub(r"(`+)(?:(?!\1).)+?\1", "", clean)
 
 
+def _fenced_blocks(text):
+    """Yield (content, closed) for each fenced block, in order.
+
+    A trailing block whose fence is never closed is yielded as well
+    (closed=False), so a trigger-issue draft in an unclosed fence is
+    checked rather than silently dropped (#393).
+    """
+    current = None
+    for kind, line in fence_events(text):
+        if kind == "open":
+            current = []
+        elif kind == "content" and current is not None:
+            current.append(line)
+        elif kind == "close":
+            yield "\n".join(current), True
+            current = None
+    if current is not None:
+        yield "\n".join(current), False
+
+
 def fenced_blocks(text):
     """Return the contents of each fenced code block, in order.
 
@@ -460,18 +499,70 @@ def fenced_blocks(text):
     so a trigger-issue draft in an unclosed fence is checked rather
     than silently dropped (#393).
     """
-    blocks, current = [], None
-    for kind, line in fence_events(text):
-        if kind == "open":
-            current = []
-        elif kind == "content" and current is not None:
-            current.append(line)
-        elif kind == "close":
-            blocks.append("\n".join(current))
-            current = None
-    if current is not None:
-        blocks.append("\n".join(current))
-    return blocks
+    return [block for block, _closed in _fenced_blocks(text)]
+
+
+def draft_prose(block):
+    """Return a draft's prose with embedded code examples stripped.
+
+    Examples are buffered while their fence is open and discarded
+    when it closes, so a properly closed example's contents stay
+    exempt from link checks (#393). Two authoring slips are recovered
+    instead of silently dropping the rest of the draft (#401):
+
+    - a bare fence closes the innermost example whatever its length:
+      an example opened with four backticks and closed with three
+      was left open by fence_events()' length rule, and every line
+      after the attempted close went unchecked;
+    - an example still open at the end of the draft has no known
+      end, so its buffered lines are kept as prose and checked
+      rather than dropped: a draft whose example is never closed
+      cannot exempt everything after the example's opening fence.
+      Authors who want example contents exempt must close the
+      example.
+    """
+    out, buffer, stack = [], [], []
+    for line in block.splitlines():
+        found = re.match(r"^ {0,3}(`{3,}|~{3,})\s*(.*?)\s*$", line)
+        if not found:
+            (buffer if stack else out).append(line)
+            continue
+        token, info = found[1], found[2]
+        if stack and token[0] == stack[-1][0] and not info:
+            stack.pop()
+            if stack:
+                buffer.append(line)
+            else:
+                buffer = []
+        elif stack and token[0] != stack[-1][0]:
+            # A fence of the other character is literal example content.
+            buffer.append(line)
+        else:
+            if stack:
+                # An info-string fence opens a nested example.
+                stack.append(token)
+                buffer.append(line)
+            else:
+                stack = [token]
+                buffer = [line]
+    if stack:
+        out.extend(buffer)
+    return "\n".join(out)
+
+
+def concept_pointers(text):
+    """Return the draft's Concept Document pointer lines, as a set.
+
+    The pointer line (``- Concept Document: [..](..)``) is, with the
+    workflow:issue marker, one of the two elements that define a
+    trigger-issue draft: it is the link the draft check exists to
+    validate (#382).
+    """
+    return {
+        line.strip()
+        for line in text.splitlines()
+        if re.match(r"^ {0,3}- Concept Document:", line)
+    }
 
 
 def issue_drafts(text):
@@ -482,13 +573,60 @@ def issue_drafts(text):
     base check_link applies to ordinary prose links. Other fenced blocks are
     raw evidence/code and stay exempt, as unfenced() documents.
     """
-    for block in fenced_blocks(text):
+    for block, closed in _fenced_blocks(text):
         if "workflow:issue" in block:
+            if not closed:
+                # The draft's fence was never closed at document level,
+                # so a trailing bare fence line in the block may be the
+                # draft's own closing fence, consumed as the embedded
+                # example's close (#401): dropping it lets draft_prose()
+                # see that example as the unclosed one it is and recover
+                # the draft prose trapped inside it. But the same shape
+                # arises when the trailing fence is a properly closed
+                # example's genuine close and the example is simply the
+                # draft's last element (#410): dropping it there strips
+                # the closed example's exemption and link-checks its
+                # contents. The shapes are indistinguishable from the
+                # block alone, so drop the fence only when doing so
+                # surfaces a draft-defining element the kept prose
+                # lacks entirely: the workflow:issue marker itself
+                # (#401, #411), or a Concept Document pointer when the
+                # kept prose carries no pointer at all (#414 — a draft
+                # whose marker sits before an unclosed example traps
+                # its only pointer inside the example the same way).
+                # The pointer signal must stay that narrow: a properly
+                # closed appendix example (#410) that itself depicts a
+                # draft carries its own distinct pointer line, and the
+                # broader #414 set-difference signal fired on exactly
+                # that, stripping the closed example's exemption
+                # (#422). So a draft already carrying a pointer in its
+                # kept prose never drops the fence on the pointer
+                # signal, and its appendix example stays exempt.
+                # Trapped prose that is neither element, and a second
+                # pointer trapped in a draft already carrying one
+                # before the example, remain indistinguishable from a
+                # closed example's contents and stay exempt (#414,
+                # #422).
+                lines = block.splitlines()
+                found = (
+                    re.match(r"^ {0,3}(`{3,}|~{3,})\s*(.*?)\s*$", lines[-1])
+                    if lines
+                    else None
+                )
+                if found and not found[2]:
+                    dropped = "\n".join(lines[:-1])
+                    kept = draft_prose(block)
+                    recovered = draft_prose(dropped)
+                    if (
+                        "workflow:issue" not in kept and "workflow:issue" in recovered
+                    ) or (not concept_pointers(kept) and concept_pointers(recovered)):
+                        block = dropped
             # Nested fenced blocks inside a draft are embedded code
             # examples, not draft prose: strip them whole (as
             # unfenced() does at document level) so their contents are
-            # not link-checked either (#393).
-            clean = re.sub(r"<!--.*?-->", "", unfenced(block), flags=re.S)
+            # not link-checked either (#393); draft_prose() recovers
+            # the parts after an unclosed example instead (#401).
+            clean = re.sub(r"<!--.*?-->", "", draft_prose(block), flags=re.S)
             yield re.sub(r"(`+)(?:(?!\1).)+?\1", "", clean)
 
 
@@ -675,9 +813,17 @@ def check_package(package, root, require_resolved=False):
             if entry.get("note") in resolutions:
                 fail("Duplicate note disposition")
             resolutions[entry.get("note")] = (item["id"], entry)
+    recorded = set()
+    for read in DISPOSITION_READERS.values():
+        for key in read(package, root):
+            if key in resolutions or key in recorded:
+                fail(f"Duplicate note disposition: {key}")
+            recorded.add(key)
     unresolved = []
     note_paths = sorted((package / "notes").glob("*.md"))
-    if set(resolutions) - {p.relative_to(package).as_posix() for p in note_paths}:
+    if (set(resolutions) | set(recorded)) - {
+        p.relative_to(package).as_posix() for p in note_paths
+    }:
         fail("Note disposition refers to a missing note")
     for path in note_paths:
         content = path.read_bytes().decode("utf-8")
@@ -697,6 +843,8 @@ def check_package(package, root, require_resolved=False):
         ):
             fail(f"{path}: invalid note participants")
         key = path.relative_to(package).as_posix()
+        if key in recorded:
+            continue
         if key not in resolutions:
             unresolved.append(key)
         else:
@@ -802,98 +950,41 @@ def notes(args, package, root):
     check_package(package, root)
     state = read_state(package)
     by_id = {c["id"]: c for c in state["concepts"]}
-    if args.command == "note":
-        if (
-            args.sender not in by_id
-            or args.receiver not in by_id
-            or args.sender == args.receiver
-        ):
-            fail("Notes require two distinct known concept IDs")
-        body = Path(args.input).read_bytes().decode("utf-8")
-        now = timestamp()
-        relative = f"notes/{args.sender}__to__{args.receiver}__{uuid.uuid4().hex}.md"
-        path = contained(package, relative)
-        content = (
-            f"# {args.sender} to {args.receiver}\n\n"
-            + marker(
-                "note",
-                {
-                    "id": path.stem,
-                    "from": args.sender,
-                    "to": args.receiver,
-                    "at": now,
-                    "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
-                },
-            )
-            + "\n"
-            + body
+    if (
+        args.sender not in by_id
+        or args.receiver not in by_id
+        or args.sender == args.receiver
+    ):
+        fail("Notes require two distinct known concept IDs")
+    body = Path(args.input).read_bytes().decode("utf-8")
+    now = timestamp()
+    relative = f"notes/{args.sender}__to__{args.receiver}__{uuid.uuid4().hex}.md"
+    path = contained(package, relative)
+    content = (
+        f"# {args.sender} to {args.receiver}\n\n"
+        + marker(
+            "note",
+            {
+                "id": path.stem,
+                "from": args.sender,
+                "to": args.receiver,
+                "at": now,
+                "body_sha256": hashlib.sha256(body.encode()).hexdigest(),
+            },
         )
-        path.parent.mkdir(exist_ok=True)
-        with path.open("x") as stream:
-            stream.write(content)
-        return {"note": relative}
-    if not re.fullmatch(r"notes/[^/]+\.md", args.note):
-        fail("--note must name a file under notes/")
-    path = contained(package, args.note)
-    if not path.is_file():
-        fail(f"Note file does not exist: {path}")
-    import os
-
-    lock_file = contained(package, f"notes/.{Path(args.note).stem}.resolved")
-    try:
-        fd = os.open(lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.close(fd)
-    except FileExistsError:
-        fail("Note already has a disposition (or is being resolved)")
-    try:
-        found = NOTE.search(path.read_bytes().decode("utf-8"))
-        if not found:
-            fail("Expected one note marker")
-        note = json.loads(found[1])
-        target_url = urlsplit(args.target)
-        if target_url.scheme or target_url.netloc:
-            fail("Note resolution target must be inside the package")
-        target = contained(package, unquote(target_url.path))
-        if not target.exists() or note.get("to") not in by_id:
-            fail("Missing resolution target or unknown recipient")
-        if not args.reason.strip():
-            fail("Note resolution requires a reason")
-        check_link(package / "main.md", root, args.target)
-        for item in state["concepts"]:
-            if any(
-                json.loads(block).get("note") == args.note
-                for block in RESOLUTION.findall(
-                    unfenced(contained(package, item["path"]).read_text())
-                )
-            ):
-                fail("Note already has a disposition")
-    except Exception:
-        try:
-            lock_file.unlink()
-        except OSError:
-            pass
-        raise
-    document = contained(package, by_id[note["to"]]["path"])
-    entry = {
-        "note": args.note,
-        "at": timestamp(),
-        "disposition": args.disposition,
-        "target": args.target,
-        "reason": args.reason,
-    }
-    with document.open("a") as stream:
-        stream.write(
-            "\n## Note disposition\n\n"
-            + marker("resolution", entry)
-            + f"\nTarget: [{args.target}]({'../' if document.parent != package else ''}{args.target}).\n"
-        )
-    return entry
+        + "\n"
+        + body
+    )
+    path.parent.mkdir(exist_ok=True)
+    with path.open("x") as stream:
+        stream.write(content)
+    return {"note": relative}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("init", "check", "status", "ready", "note", "resolve-note"):
+    for name in ("init", "check", "status", "ready", "note"):
         command = sub.add_parser(name)
         command.add_argument("--repo-root")
         if name != "init":
@@ -914,15 +1005,9 @@ def main(argv=None):
             command.add_argument("--from", dest="sender", required=True)
             command.add_argument("--to", dest="receiver", required=True)
             command.add_argument("--input", required=True)
-        elif name == "resolve-note":
-            command.add_argument("--note", required=True)
-            command.add_argument(
-                "--disposition",
-                choices=["incorporated", "acknowledged", "declined", "superseded"],
-                required=True,
-            )
-            command.add_argument("--target", required=True)
-            command.add_argument("--reason", required=True)
+    plugins = list(extensions())
+    for plugin in plugins:
+        plugin.register(sub)
     args = parser.parse_args(argv)
     try:
         root = Path(args.repo_root or ".").resolve()
@@ -936,7 +1021,9 @@ def main(argv=None):
             fail("Package must be inside configured requests_root")
         if args.command == "init":
             result = scaffold(args, root, config)
-        elif args.command in ("note", "resolve-note"):
+        elif hasattr(args, "handler"):
+            result = args.handler(args, root, config, package)
+        elif args.command == "note":
             result = notes(args, package, root)
         elif args.command in ("status", "ready"):
             result = check_package(package, root)
@@ -967,6 +1054,9 @@ def main(argv=None):
             }
             for path in args.path:
                 links(contained(root, path), root)
+            for plugin in plugins:
+                for checked in packages:
+                    getattr(plugin, "check", lambda *_: None)(checked, root)
             result["ok"] = True
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0

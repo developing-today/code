@@ -436,6 +436,7 @@ class ResearchWorkflowTests(unittest.TestCase):
         note = created.pop()
         raw_note = note.read_bytes()
         receiver = package / self.state(package)["concepts"][1]["path"]
+        raw_receiver = receiver.read_bytes()
         self.check(package, False, "--require-resolved")
         self.cli(
             "resolve-note",
@@ -453,9 +454,12 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.assertEqual(
             note.read_bytes(), raw_note, "Resolving cannot rewrite the sender's note."
         )
-        self.assertIn(
-            "<!-- workflow:resolution -->", receiver.read_text(encoding="utf-8")
+        self.assertEqual(
+            receiver.read_bytes(),
+            raw_receiver,
+            "The receipt is its own file; the concept keeps one writer.",
         )
+        self.assertTrue((package / "receipts" / note.name).is_file())
         self.check(package, True, "--require-resolved")
 
     def test_completed_concept_cannot_still_be_an_unfilled_generated_stub(self):
@@ -848,6 +852,208 @@ class ResearchWorkflowTests(unittest.TestCase):
         # neither was checked and this broken pointer passed silently.
         self.append_issue_draft_with_inner_code(
             package, "concepts/C001-source-preservation.md", code_link=False
+        )
+        self.check(package, ok=False)
+
+    def append_issue_draft_with_unclosed_inner_code(
+        self, package, concept_pointer, short_close=False
+    ):
+        document = package / "concepts" / "C001-source-preservation.md"
+        # Byte-level append, for the same \r\n reason as append_issue_draft.
+        # The draft's embedded code example is never closed (#401): with
+        # short_close=False its only closing fence is the draft's own, so
+        # the example consumes it; with short_close=True the example opens
+        # with four backticks and its attempted close uses three. Either
+        # way the Context Pointer sits after the example, past where the
+        # pre-fix checker stopped looking.
+        if short_close:
+            example = "````python\nprint('example')\n```\n"
+        else:
+            example = "```python\nprint('example')\n"
+        draft = (
+            "\n\n## Trigger Issue Draft\n\n```markdown\n"
+            "# Research: Exact source preservation\n\n"
+            f"{example}"
+            f"- Concept Document: [concept]({concept_pointer})\n"
+            '<!-- workflow:issue {"package": "pkg", "concept": "C001", '
+            '"stage": "S1"} -->\n'
+            "```\n"
+        )
+        document.write_bytes(document.read_bytes() + draft.encode("utf-8"))
+
+    def test_issue_draft_with_an_unclosed_inner_code_block_and_a_broken_pointer_fails_check(
+        self,
+    ):
+        package = self.init()
+        # #401: the unclosed inner example used to exempt every line
+        # after its opening fence, so this broken pointer passed silently.
+        self.append_issue_draft_with_unclosed_inner_code(
+            package, "concepts/C001-source-preservation.md"
+        )
+        self.check(package, ok=False)
+
+    def test_issue_draft_with_an_unclosed_inner_code_block_passes_when_valid(self):
+        package = self.init()
+        self.append_issue_draft_with_unclosed_inner_code(
+            package, "C001-source-preservation.md"
+        )
+        self.check(package, ok=True)
+
+    def test_issue_draft_with_a_short_closed_inner_code_block_and_a_broken_pointer_fails_check(
+        self,
+    ):
+        package = self.init()
+        # #401: an example opened with four backticks and closed with
+        # three was treated as unclosed, so the pointer after its
+        # attempted close went unchecked.
+        self.append_issue_draft_with_unclosed_inner_code(
+            package, "concepts/C001-source-preservation.md", short_close=True
+        )
+        self.check(package, ok=False)
+
+    def test_issue_draft_with_a_short_closed_inner_code_block_passes_when_valid(
+        self,
+    ):
+        package = self.init()
+        self.append_issue_draft_with_unclosed_inner_code(
+            package, "C001-source-preservation.md", short_close=True
+        )
+        self.check(package, ok=True)
+
+    def append_issue_draft_ending_with_closed_inner_code(
+        self, package, concept_pointer
+    ):
+        document = package / "concepts" / "C001-source-preservation.md"
+        # Byte-level append, for the same \r\n reason as append_issue_draft.
+        # The draft's own fence is never closed and a properly closed
+        # code example is its last element (#410): the example's genuine
+        # closing fence is the document's last line, and the example
+        # contains a broken link-shaped string that must stay exempt.
+        # The marker sits before the example, as in a draft whose
+        # example is an appendix.
+        draft = (
+            "\n\n## Trigger Issue Draft\n\n```markdown\n"
+            "# Research: Exact source preservation\n\n"
+            f"- Concept Document: [concept]({concept_pointer})\n\n"
+            '<!-- workflow:issue {"package": "pkg", "concept": "C001", '
+            '"stage": "S1"} -->\n\n'
+            "```python\n"
+            "# [not a pointer](missing/code-example.md)\n"
+            "print('example')\n"
+            "```\n"
+        )
+        document.write_bytes(document.read_bytes() + draft.encode("utf-8"))
+
+    def test_unclosed_issue_draft_ending_with_a_closed_inner_code_block_passes_when_valid(
+        self,
+    ):
+        package = self.init()
+        # #410: the trailing fence is the example's genuine close, not
+        # the draft's mis-consumed one — dropping it (#407) stripped the
+        # closed example's exemption and failed this valid draft on the
+        # example's broken link-shaped string.
+        self.append_issue_draft_ending_with_closed_inner_code(
+            package, "C001-source-preservation.md"
+        )
+        self.check(package, ok=True)
+
+    def test_unclosed_issue_draft_ending_with_a_closed_inner_code_block_and_a_broken_pointer_fails_check(
+        self,
+    ):
+        package = self.init()
+        # #410: keeping the example exempt must not exempt the draft's
+        # own prose — its broken pointer is still checked.
+        self.append_issue_draft_ending_with_closed_inner_code(
+            package, "concepts/C001-source-preservation.md"
+        )
+        self.check(package, ok=False)
+
+    def append_issue_draft_marker_before_unclosed_inner_code(
+        self, package, concept_pointer
+    ):
+        document = package / "concepts" / "C001-source-preservation.md"
+        # Byte-level append, for the same \r\n reason as append_issue_draft.
+        # The marker sits before the draft's embedded code example, as
+        # in the #410 appendix shape, but the example is never closed
+        # (#414): the draft's own closing fence is consumed as the
+        # example's close, so the Concept Document pointer written
+        # after the example's opening fence is trapped inside it.
+        draft = (
+            "\n\n## Trigger Issue Draft\n\n```markdown\n"
+            "# Research: Exact source preservation\n\n"
+            '<!-- workflow:issue {"package": "pkg", "concept": "C001", '
+            '"stage": "S1"} -->\n\n'
+            "```python\n"
+            "print('example')\n"
+            f"- Concept Document: [concept]({concept_pointer})\n"
+            "```\n"
+        )
+        document.write_bytes(document.read_bytes() + draft.encode("utf-8"))
+
+    def test_issue_draft_marker_before_unclosed_inner_code_and_a_broken_pointer_fails_check(
+        self,
+    ):
+        package = self.init()
+        # #414: the #411 recovery keyed only on a trapped marker, so a
+        # marker-before draft's trapped broken pointer passed silently.
+        self.append_issue_draft_marker_before_unclosed_inner_code(
+            package, "concepts/C001-source-preservation.md"
+        )
+        self.check(package, ok=False)
+
+    def test_issue_draft_marker_before_unclosed_inner_code_passes_when_valid(
+        self,
+    ):
+        package = self.init()
+        self.append_issue_draft_marker_before_unclosed_inner_code(
+            package, "C001-source-preservation.md"
+        )
+        self.check(package, ok=True)
+
+    def append_issue_draft_ending_with_closed_inner_code_example_pointer(
+        self, package, concept_pointer
+    ):
+        document = package / "concepts" / "C001-source-preservation.md"
+        # Byte-level append, for the same \\r\\n reason as append_issue_draft.
+        # The #410 appendix shape, except the properly closed example
+        # itself depicts a draft and so carries its own distinct
+        # Concept Document pointer line (#422), pointing at a target
+        # that does not resolve: the example must stay exempt, so only
+        # the draft's own pointer is checked.
+        draft = (
+            "\n\n## Trigger Issue Draft\n\n```markdown\n"
+            "# Research: Exact source preservation\n\n"
+            f"- Concept Document: [concept]({concept_pointer})\n\n"
+            '<!-- workflow:issue {"package": "pkg", "concept": "C001", '
+            '"stage": "S1"} -->\n\n'
+            "```python\n"
+            "- Concept Document: [example](missing/example-pointer.md)\n"
+            "print('example')\n"
+            "```\n"
+        )
+        document.write_bytes(document.read_bytes() + draft.encode("utf-8"))
+
+    def test_unclosed_issue_draft_ending_with_a_closed_inner_code_block_with_its_own_pointer_passes_when_valid(
+        self,
+    ):
+        package = self.init()
+        # #422: PR #419's set-difference pointer signal fired on the
+        # closed example's distinct pointer, dropped its genuine
+        # closing fence, and link-checked the example's broken pointer
+        # as draft prose — failing this valid draft.
+        self.append_issue_draft_ending_with_closed_inner_code_example_pointer(
+            package, "C001-source-preservation.md"
+        )
+        self.check(package, ok=True)
+
+    def test_unclosed_issue_draft_ending_with_a_closed_inner_code_block_with_its_own_pointer_and_a_broken_pointer_fails_check(
+        self,
+    ):
+        package = self.init()
+        # #422: keeping the example exempt must not exempt the draft's
+        # own prose — its broken pointer is still checked.
+        self.append_issue_draft_ending_with_closed_inner_code_example_pointer(
+            package, "concepts/C001-source-preservation.md"
         )
         self.check(package, ok=False)
 

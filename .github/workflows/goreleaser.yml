@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "*"
+  # Manual runs prove the workflow still works without cutting a
+  # release: they build a snapshot (see the GoReleaser args below).
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -64,15 +67,23 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: "${{ matrix.working-directory }}/go.work"
+          # The release builds pkgs/graph (.goreleaser.yaml: dir
+          # sources/graph, and sources is a symlink to pkgs/), so its
+          # go.mod/go.sum are the version/cache files — the same pair
+          # mod-tidy.yml uses. (This pointed at ./go.work until #344;
+          # go.work was deleted in Feb 2024 and setup-go fails on the
+          # missing file before GoReleaser ever runs.)
+          go-version-file: pkgs/graph/go.mod
           check-latest: true
-          cache-dependency-path: "${{ matrix.working-directory }}/go.work.sum"
+          cache-dependency-path: pkgs/graph/go.sum
       - name: Run GoReleaser ${{ matrix.working-directory }}
-        uses: goreleaser/goreleaser-action@v5
+        uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
-          version: latest
-          args: release --clean
+          version: v2.18.3
+          # Tag pushes cut the real release; manual dispatch runs a
+          # snapshot build instead (no publish, no tag required).
+          args: ${{ github.event_name == 'workflow_dispatch' && 'release --snapshot --clean' || 'release --clean' }}
           workdir: ${{ matrix.working-directory }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

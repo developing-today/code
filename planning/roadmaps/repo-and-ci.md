@@ -35,3 +35,11 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 | PR gate cannot drift from the flake                 | 2026-10-18 | #318 (closes #300)  |
 | `mcpx` and `id` workflow speed-up                   | 2026-10-18 | #295                |
 | Package build check when dependencies change        | 2026-10-18 | `mcpx-nixbuild.yml` |
+| Action pins aligned to the repo-standard v7         | 2026-10-20 | #395 (closes #394)  |
+| mcpx-conformance artifact majors aligned (v7)       | 2026-10-20 | #399 (closes #398)  |
+| Last lagging action pins aligned                    | 2026-10-20 | #406 (closes #405)  |
+| mcpx workflow setup-deno/setup-bun SHA-pinned       | 2026-10-20 | #409 (closes #408)  |
+| Jules action pinned to commit SHA                   | 2026-10-20 | #424 (opencode#184) |
+| Push-to-main runs get their own concurrency group   | 2026-10-20 | #428 (closes #392)  |
+| Goreleaser workflow repaired (v2 schema)            | 2026-10-21 | #452 (closes #344)  |
+| `pkgs/graph` builds again, in go-modules-build CI   | 2026-10-21 | #446 (closes #166)  |

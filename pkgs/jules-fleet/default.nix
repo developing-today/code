@@ -41,7 +41,11 @@ buildNpmPackage {
       fs.writeFileSync("package.json",JSON.stringify(p,null,2));'
   '';
   npmDepsHash = "sha256-IsIQhQpylHn7VQU0EctV/sZBPob/F9F+qK1aWlbQnjM=";
-  npmFlags = [ "--ignore-scripts" "--no-audit" "--no-fund" ];
+  npmFlags = [
+    "--ignore-scripts"
+    "--no-audit"
+    "--no-fund"
+  ];
   dontNpmBuild = true;
   meta = {
     description = "Experimental multi-agent fleet orchestration for Jules";

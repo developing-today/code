@@ -7,9 +7,19 @@ const DRY_RUN = process.argv.includes('--dry-run');
 const VERBOSE = process.argv.includes('--verbose') || process.argv.includes('-v');
 
 const ROOT_DIR = path.resolve(import.meta.dirname, '..');
-const OPENCODE_CONFIG_PATH = path.join(ROOT_DIR, '.opencode/opencode.jsonc');
-const POLICY_PATH = path.join(import.meta.dirname, 'sync-models.policy.json');
 const HOME_DIR = process.env.HOME || '/home/user';
+// Config resolution (#591): in a repo checkout, sync the repo's own
+// .opencode/opencode.jsonc. When home-manager installs this script it lands
+// alone in the Nix store, so ROOT_DIR resolves to /nix and the repo-relative
+// path never exists — fall back to the deployed user config, which is the
+// file the sync-models service actually maintains. $OPENCODE_CONFIG_PATH
+// overrides both.
+const REPO_CONFIG_PATH = path.join(ROOT_DIR, '.opencode/opencode.jsonc');
+const USER_CONFIG_PATH = path.join(HOME_DIR, '.config/opencode/opencode.jsonc');
+const OPENCODE_CONFIG_PATH =
+  process.env.OPENCODE_CONFIG_PATH ||
+  (fs.existsSync(REPO_CONFIG_PATH) ? REPO_CONFIG_PATH : USER_CONFIG_PATH);
+const POLICY_PATH = path.join(import.meta.dirname, 'sync-models.policy.json');
 const CODEX_CACHE_PATH = path.join(HOME_DIR, '.codex/models_cache.json');
 const GEMINI_CACHE_PATH = path.join(HOME_DIR, '.gemini/antigravity_models_cache.json');
 const LS_LOG_PATH = path.join(HOME_DIR, '.config/Antigravity/logs/language_server.log');
