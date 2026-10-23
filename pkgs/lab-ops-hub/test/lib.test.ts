@@ -459,6 +459,25 @@ function stubFetcher(routes: Record<string, { status: number; location?: string 
   return { fetchFn, seen };
 }
 
+test("fetchFollowingValidatedRedirects fetches userinfo URLs in their validated form (#622)", async () => {
+  // The Worker side of the #622 pair: validateCrawlUrl accepts
+  // userinfo targets and this helper hands the validated form —
+  // userinfo intact, for the platform fetch to turn into an
+  // Authorization: Basic header — to the fetcher, for the start URL
+  // and for redirect targets alike. (The container fetcher used to
+  // 502 every such URL; its side is pinned in the Python suite.)
+  const { fetchFn, seen } = stubFetcher({
+    "https://user:pass@example.com/start": {
+      status: 302,
+      location: "https://caf%C3%A9@example.org/final",
+    },
+    "https://caf%C3%A9@example.org/final": { status: 200 },
+  });
+  const res = await fetchFollowingValidatedRedirects("https://user:pass@example.com/start", fetchFn);
+  assert.equal(res.status, 200);
+  assert.deepEqual(seen, ["https://user:pass@example.com/start", "https://caf%C3%A9@example.org/final"]);
+});
+
 test("fetchFollowingValidatedRedirects follows public redirects, resolving relative Locations (#460)", async () => {
   const { fetchFn, seen } = stubFetcher({
     "https://example.com/start": { status: 302, location: "/next" },
