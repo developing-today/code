@@ -983,6 +983,35 @@ class TestValidateCrawlUrl(unittest.TestCase):
         )
         self.assertEqual(followed.full_url, "http://example.org/pa%20th")
 
+    def test_redirect_handler_derives_auth_from_the_targets_userinfo(self):
+        # #622: a redirect target carrying userinfo is fetched with
+        # the userinfo stripped and its own credentials as the
+        # Authorization header; a target without userinfo inherits
+        # nothing from the credentialed request that led to it.
+        import base64
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://first:secret@example.com/start")
+        app._apply_userinfo_auth(req)
+        self.assertEqual(req.full_url, "http://example.com/start")
+        self.assertEqual(
+            req.get_header("Authorization"),
+            "Basic " + base64.b64encode(b"first:secret").decode("ascii"),
+        )
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://user:pass@example.org/land"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/land")
+        self.assertEqual(
+            followed.get_header("Authorization"),
+            "Basic " + base64.b64encode(b"user:pass").decode("ascii"),
+        )
+        for target in ("http://example.org/plain", "http://@example.org/plain"):
+            followed = handler.redirect_request(req, None, 302, "Found", {}, target)
+            self.assertEqual(followed.full_url, "http://example.org/plain", target)
+            self.assertIsNone(followed.get_header("Authorization"), target)
+
 
 class TestFetchCrawl(unittest.TestCase):
     # _fetch_crawl fetches an already-validated URL (validation is
@@ -1003,12 +1032,30 @@ class TestFetchCrawl(unittest.TestCase):
             b"<html><head><title>Missing Thing</title></head>"
             b"<body><a href='/x'>x</a> not here</body></html>"
         )
+        seen = []
+        cls.seen = seen
 
         class Target(BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
 
             def do_GET(self):
+                seen.append((self.path, self.headers.get("Authorization")))
+                if self.path == "/to-userinfo":
+                    port = self.server.server_address[1]
+                    self.send_response(302)
+                    self.send_header(
+                        "Location", f"http://user:pass@127.0.0.1:{port}/landing"
+                    )
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    return
+                if self.path == "/to-plain":
+                    self.send_response(302)
+                    self.send_header("Location", "/landing")
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    return
                 if self.path == "/loop":
                     self.send_response(302)
                     self.send_header("Location", "/loop")
@@ -1112,6 +1159,78 @@ class TestFetchCrawl(unittest.TestCase):
         status, raw = app._fetch_crawl(url)
         self.assertEqual(status, 200)
         self.assertIn(b"Missing Thing", raw)
+
+    def test_fetches_userinfo_targets_with_basic_auth(self):
+        # #622: every userinfo spelling both validators accept 502'd
+        # in the container — urllib kept "user@host" as the hostname
+        # and getaddrinfo failed before any request was sent (the
+        # #615/#618 fetcher tests only ever fetched path/query forms).
+        # The fetcher now strips the userinfo and sends the
+        # percent-decoded credentials as Authorization: Basic, the way
+        # WHATWG fetch does; a userinfo with empty username AND empty
+        # password ("@", ":@") carries no credentials and sends none.
+        import base64
+
+        def basic(credentials):
+            return "Basic " + base64.b64encode(credentials).decode("ascii")
+
+        cases = (
+            ("user@", basic(b"user:")),
+            ("user:pass@", basic(b"user:pass")),
+            # The #619 returned form: the password colon is data.
+            ("user:pa%3Ass@", basic(b"user:pa:ss")),
+            # The #615 returned form: credentials decode as UTF-8.
+            ("caf%C3%A9@", basic("café:".encode("utf-8"))),
+            ("caf%C3%A9:p%C3%A4ss@", basic("café:päss".encode("utf-8"))),
+            (":pass@", basic(b":pass")),
+            ("user:@", basic(b"user:")),
+            ("@", None),
+            (":@", None),
+            ("", None),
+        )
+        for userinfo, expected_auth in cases:
+            self.seen.clear()
+            status, raw = app._fetch_crawl(f"http://{userinfo}127.0.0.1:{self.port}/x")
+            self.assertEqual(status, 200, userinfo)
+            self.assertIn(b"Missing Thing", raw, userinfo)
+            self.assertEqual(self.seen, [("/x", expected_auth)], userinfo)
+
+    def test_redirect_to_userinfo_target_fetches_with_its_auth(self):
+        # #622: redirect targets carrying userinfo fetch the same way
+        # as userinfo start URLs, and a credentialed start URL's
+        # Authorization is not carried onto a plain redirect target.
+        # The validating handler refuses 127.0.0.1 targets by design,
+        # so validation is stubbed to isolate the redirect/auth
+        # mechanics (the same reason the #576 test uses a plain
+        # opener); per-hop validation itself is pinned elsewhere.
+        import base64
+        import urllib.request
+        from unittest import mock
+
+        def basic(credentials):
+            return "Basic " + base64.b64encode(credentials).decode("ascii")
+
+        opener = urllib.request.build_opener(app._ValidatingRedirectHandler)
+        with (
+            mock.patch.object(app, "_OPENER", opener),
+            mock.patch.object(app, "validate_crawl_url", lambda url: url),
+        ):
+            self.seen.clear()
+            status, _ = app._fetch_crawl(f"http://127.0.0.1:{self.port}/to-userinfo")
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                self.seen,
+                [("/to-userinfo", None), ("/landing", basic(b"user:pass"))],
+            )
+            self.seen.clear()
+            status, _ = app._fetch_crawl(
+                f"http://first:secret@127.0.0.1:{self.port}/to-plain"
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                self.seen,
+                [("/to-plain", basic(b"first:secret")), ("/landing", None)],
+            )
 
     def test_ascii_punctuation_percent_encoded_per_component(self):
         # #618: WHATWG's per-component percent-encode sets for ASCII

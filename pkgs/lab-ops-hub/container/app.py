@@ -8,6 +8,7 @@ JSON in the same shape the Worker's fallback produces. Runs only on demand
 burns container minutes only while crawling.
 """
 
+import base64
 import glob
 import ipaddress
 import json
@@ -19,7 +20,7 @@ import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 # Crawl-target policy (#441): the Worker validates before dispatching,
 # and this service re-validates independently (defence in depth — it is
@@ -802,6 +803,55 @@ def _inet_aton_ipv4(host):
         return None
 
 
+def _split_userinfo(url):
+    # Split a validated URL into the URL the fetcher may hand to
+    # urllib and the Authorization header WHATWG fetch derives from
+    # its userinfo (#622). urllib never strips userinfo itself:
+    # Request.host keeps "user@host" / "user:pass@host" whole,
+    # http.client is built with it as the hostname and getaddrinfo
+    # fails on it — so every userinfo target both validators accept
+    # 502'd in the container before any request was sent, while the
+    # Worker fallback fetched it. Strip the userinfo here and send
+    # the credentials the way WHATWG fetch does: an Authorization:
+    # Basic header built from the percent-decoded username/password
+    # (UTF-8). A URL only "includes credentials" when the username
+    # or the password is non-empty, so a bare "@" (or ":@") carries
+    # none and sends no header — which also resolves the returned-form
+    # spellings the Worker serialises away ("user:@" fetches exactly
+    # as "user@", "@" exactly as no userinfo at all).
+    u = urlparse(url)
+    if "@" not in u.netloc:
+        return url, None
+    userinfo, _, hostport = u.netloc.rpartition("@")
+    username, _, password = userinfo.partition(":")
+    username = unquote(username)
+    password = unquote(password)
+    stripped = u._replace(netloc=hostport).geturl()
+    if not username and not password:
+        return stripped, None
+    token = base64.b64encode(f"{username}:{password}".encode("utf-8"))
+    return stripped, f"Basic {token.decode('ascii')}"
+
+
+def _apply_userinfo_auth(req):
+    # Point a Request at its userinfo-stripped URL and (re)derive its
+    # Authorization header from that URL's own userinfo (#622).
+    # Redirect handling needs the re-derivation, not just the strip:
+    # urllib's redirect_request copies the previous request's headers
+    # onto the follow-up, so without this a credentialed start URL's
+    # Authorization would leak to a redirect target that carries no
+    # credentials of its own, and a credentialed target would be
+    # fetched with the previous hop's credentials (or none).
+    stripped, auth = _split_userinfo(req.full_url)
+    if stripped != req.full_url:
+        req.full_url = stripped
+    if req.has_header("Authorization"):
+        req.remove_header("Authorization")
+    if auth is not None:
+        req.add_header("Authorization", auth)
+    return req
+
+
 class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         # Follow the validated form, not the raw Location: a redirect
@@ -809,7 +859,12 @@ class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
         # and a percent-encoded target must be fetched as the decoded
         # host that was judged (#529).
         newurl = validate_crawl_url(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        followed = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if followed is not None:
+            # A redirect target carrying userinfo fetches the same way
+            # as a start URL with userinfo (#622).
+            _apply_userinfo_auth(followed)
+        return followed
 
 
 _OPENER = None  # built after CTX below (the HTTPS handler carries it)
@@ -842,6 +897,10 @@ def _fetch_crawl(url):
     req = urllib.request.Request(
         url, headers={"User-Agent": "LabOpsHub-Crawler/0.1 (container)"}
     )
+    # Strip any userinfo and send its credentials as Authorization:
+    # Basic instead — urllib would try to resolve "user@host" as the
+    # hostname and fail before any request is sent (#622).
+    _apply_userinfo_auth(req)
     try:
         response = _OPENER.open(req, timeout=20)
     except urllib.error.HTTPError as e:
