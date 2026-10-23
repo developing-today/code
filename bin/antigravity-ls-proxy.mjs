@@ -135,8 +135,16 @@ const resolveModelEnum = (requestedModel, requestedEffort, liveModels = {}) => {
   for (const cand of candIds) {
     const family = MODEL_MAP[cand];
     if (family) {
+      // A family entry also carries metadata keys — `default` (an effort
+      // name) and `name` (a display name) — whose values are not model
+      // enums. Accept an effort only when it maps to an actual enum,
+      // otherwise fall back to the family's default effort (#686).
+      const isModelEnum = (v) => typeof v === 'string' && v.startsWith('MODEL_');
       let effort = (requestedEffort || family.default || 'medium').toLowerCase().trim();
-      if (!family[effort]) effort = family.default || Object.keys(family)[0];
+      if (!isModelEnum(family[effort])) effort = family.default;
+      if (!isModelEnum(family[effort])) {
+        effort = Object.keys(family).find((k) => isModelEnum(family[k]));
+      }
       const enumVal = family[effort];
       return {
         modelEnum: enumVal,
