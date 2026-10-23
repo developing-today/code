@@ -672,9 +672,13 @@ class TestValidateCrawlUrl(unittest.TestCase):
             self.assertRefused("http://exam" + ch + "ple.com/")
         # Controls: the UTS-46 "ignored" codepoints are deleted by
         # IDNA processing, not disallowed — the Worker accepts these
-        # hosts (as example.com) and so must the container.
+        # hosts (as example.com) and so must the container, which
+        # returns the host with the codepoint deleted (#652).
         for ch in ("\u00ad", "\u180e", "\u200b", "\u2060", "\u2064", "\ufeff"):
-            self.assertAccepted("http://exam" + ch + "ple.com/")
+            self.assertEqual(
+                validate_crawl_url("http://exam" + ch + "ple.com/"),
+                "http://example.com/",
+            )
 
     def test_refuses_arabic_indic_digit_hosts(self):
         # WHATWG's domain-to-ASCII rejects an Arabic-Indic digit
@@ -888,7 +892,11 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # and the blocked-host check must see through them (#526):
         # 60 "a"s plus ten soft hyphens is a 60-character label to the
         # Worker, but 77 characters of raw punycode to the old check.
-        self.assertAccepted("http://" + "a" * 60 + "\u00ad" * 10 + ".com/")
+        # The returned form carries the judged (deleted) host (#652).
+        self.assertEqual(
+            validate_crawl_url("http://" + "a" * 60 + "\u00ad" * 10 + ".com/"),
+            "http://" + "a" * 60 + ".com/",
+        )
         # NFKC expansion runs the other way: four U+FDFA ligatures
         # expand to a long Arabic phrase whose A-label is overlong.
         self.assertRefused("http://" + "\ufdfa" * 4 + ".com/")
@@ -1273,6 +1281,87 @@ class TestValidateCrawlUrl(unittest.TestCase):
             req, None, 302, "Found", {}, "http://example.org\u3002/path"
         )
         self.assertEqual(followed.full_url, "http://example.org./path")
+
+    def test_returns_the_host_without_uts46_ignored_codepoints(self):
+        # Judging deletes the UTS-46 "ignored" codepoints from the
+        # host before every check (#526), but the non-percent return
+        # path returned the raw spelling verbatim, so the recorded
+        # URL kept codepoints the Worker deletes in its returned
+        # host — and U+180E cannot be IDNA-encoded at fetch time at
+        # all (#652). The return now rebuilds from the judged host
+        # whenever the deletion changed it (the issue's option (a):
+        # exactly the ignored codepoints are dropped; every other
+        # spelling, IDN included, keeps its established form).
+        # Every codepoint in the ignored set, interior to a label:
+        for cp in app._UTS46_IGNORED:
+            ch = chr(cp)
+            self.assertEqual(
+                validate_crawl_url("http://exa" + ch + "mple.com/"),
+                "http://example.com/",
+                hex(cp),
+            )
+        cases = {
+            # Leading, trailing and repeated positions, and more
+            # than one label carrying a codepoint.
+            "http://\u200bexample.com/": "http://example.com/",
+            "http://example.com\u200b/": "http://example.com/",
+            "http://ex\u200ba\u200bmple.com/": "http://example.com/",
+            "http://exa\u00admple.co\ufeffm/": "http://example.com/",
+            # The root dot survives the rebuild, in either order.
+            "http://exa\u200bmple.com./": "http://example.com./",
+            "http://example.com.\u200b/": "http://example.com./",
+            # Port, userinfo, path and the empty ?/# markers are
+            # preserved around the rebuilt host.
+            "http://exa\u200bmple.com:8080/path?q=1#frag": (
+                "http://example.com:8080/path?q=1#frag"
+            ),
+            "http://user@exa\u2060mple.com/": "http://user@example.com/",
+            "http://example.com\u200b/path?#frag": "http://example.com/path?#frag",
+            "http://example.com\u200b?#": "http://example.com/?#",
+            # The percent-encoded spelling of an ignored codepoint
+            # decodes to the same judged host and returns it too.
+            "http://exa%e2%80%8bmple.com/": "http://example.com/",
+            "http://exa%C2%ADmple.com/": "http://example.com/",
+            # An IDN host keeps its U-label spelling (#659 covers
+            # the A-label form); only the codepoint is deleted.
+            "http://m\u00fc\u200bnchen.de/": "http://m\u00fcnchen.de/",
+            # An IP literal carrying one returns the canonical
+            # address, as IP literals always do.
+            "http://8\u200b.8.8.8/": "http://8.8.8.8/",
+            # Controls: hosts with no ignored codepoint are
+            # untouched, including the #596 U+0345 spelling (judged
+            # by its mapping, not deleted) and ordinary IDN.
+            "http://example.com/": "http://example.com/",
+            "http://m\u00fcnchen.de/": "http://m\u00fcnchen.de/",
+            "http://ex\u0345ample.com/": "http://ex\u0345ample.com/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Verdicts are unchanged: blocked names spelled with an
+        # ignored codepoint inside them stay refused, and a label
+        # consisting only of ignored codepoints is still an empty
+        # label / a hostless URL once they are deleted.
+        self.assertRefused("http://local\u200bhost/")
+        self.assertRefused("http://local\u00adhost/")
+        self.assertRefused("http://127\u200b.0.0.1/")
+        self.assertRefused("http://\u200b.com/")
+        self.assertRefused("http://\u200b/")
+        # Redirect targets inherit the fix: the handler fetches the
+        # validated (deleted) form of a raw Location carrying one —
+        # including U+180E, which the fetcher could not have
+        # IDNA-encoded in its raw form.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://example.org\u200b/path"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/path")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://exa\u180emple.org/"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/")
 
     def test_returns_empty_password_userinfo_without_the_colon(self):
         # WHATWG serialises userinfo from the parsed username/password:
