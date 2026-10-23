@@ -40,6 +40,13 @@ if grep -q CRASHPARTIAL "$prompt" 2>/dev/null; then
   echo "stub muse: crashed midway" >&2
   exit 3
 fi
+if grep -q FAILSTATE "$prompt" 2>/dev/null; then
+  printf '%s\\n' '{"payload_type":"run.terminal.failed","payload":{"terminal":"failed"}}'
+  exit 0
+fi
+if grep -q SIGKILLME "$prompt" 2>/dev/null; then
+  kill -9 $$
+fi
 if grep -q DIVERGE "$prompt" 2>/dev/null; then
   printf '%s\\n' '{"payload_type":"run.output.delta","payload":{"text":"abc"}}'
   printf '%s\\n' '{"payload_type":"run.terminal.completed","payload":{"terminal":"completed","text":"xyz-longer"}}'
@@ -188,6 +195,48 @@ test('partial output then failure: masked success becomes an error in both modes
     const stopChunk = events.find(e => e.choices && e.choices[0].finish_reason === 'stop');
     assert.equal(stopChunk, undefined, `${marker}: no chunk may claim finish_reason 'stop'`);
   }
+});
+
+const assertEmptyStderrFallback = async (t, marker, detail) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+
+  {
+    const messages = [{ role: 'user', content: `please ${marker} now` }];
+
+    const plainRes = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages })
+    });
+    assert.equal(plainRes.status, 500, `${marker}: non-stream must be a 500`);
+    const plainBody = JSON.parse(await plainRes.text());
+    assert.match(plainBody.error.message, detail, `${marker}: non-stream detail must name the cause, got: ${plainBody.error.message}`);
+    assert.doesNotMatch(plainBody.error.message, /code (null|0)\b/);
+
+    const streamRes = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, stream: true })
+    });
+    assert.equal(streamRes.status, 200);
+    const sse = await streamRes.text();
+    const dataLines = sse.split('\n').filter(l => l.startsWith('data: '));
+    assert.equal(dataLines[dataLines.length - 1], 'data: [DONE]', `${marker}: stream must end with [DONE]`);
+    const events = dataLines.slice(0, -1).map(l => JSON.parse(l.slice('data: '.length)));
+    const errorEvent = events.find(e => e.error);
+    assert.ok(errorEvent, `${marker}: stream must carry an error event, got: ${JSON.stringify(sse)}`);
+    assert.match(errorEvent.error.message, detail, `${marker}: stream detail must name the cause, got: ${errorEvent.error.message}`);
+    assert.doesNotMatch(errorEvent.error.message, /code (null|0)\b/);
+  }
+};
+
+test('empty-stderr fallback names the terminal state (#674)', async (t) => {
+  await assertEmptyStderrFallback(t, 'FAILSTATE', /Muse execution failed: muse run terminated with state 'failed'/);
+});
+
+test('empty-stderr fallback names the killing signal, not code null (#674)', async (t) => {
+  await assertEmptyStderrFallback(t, 'SIGKILLME', /Muse execution failed: muse exec terminated by signal SIGKILL/);
 });
 
 test('divergent terminal text: non-stream uses it, stream keeps the deltas already sent', async (t) => {
