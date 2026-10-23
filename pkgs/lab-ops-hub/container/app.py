@@ -75,6 +75,27 @@ _IDNA_DISALLOWED = frozenset(
 
 
 def validate_crawl_url(raw):
+    # WHATWG URL parsing first removes leading and trailing C0 control
+    # or space (U+0000-U+0020) from the whole input, so "\x00http://
+    # example.com/" names example.com and "http://example.com/\x00"
+    # names the path "/" — the trailing character is gone before path
+    # parsing, not percent-encoded into it. Trim the same way before
+    # anything else judges or returns the spelling (#614). (Interior
+    # C0 controls, space and DEL are a different arm: they survive
+    # parsing and are percent-encoded on the returned URL, below.)
+    raw = re.sub(r"^[\x00-\x20]+|[\x00-\x20]+$", "", raw)
+    # WHATWG URL parsing removes every ASCII tab, LF and CR from the
+    # input before doing anything else — even inside the scheme
+    # spelling — so "http://exa\tmple.com/" names example.com and the
+    # URL it produces carries no control characters. urlparse hands
+    # them through verbatim: the host checks below judged a spelling
+    # containing them (and happened to see through them for private
+    # addresses) while the returned URL — and therefore the fetcher —
+    # kept them, so the fetched host was never the judged host (#611).
+    # Strip them first, unconditionally (the removal precedes scheme
+    # parsing in WHATWG), and judge and return the stripped spelling,
+    # as with the normalizations below.
+    raw = re.sub(r"[\t\r\n]", "", raw)
     # WHATWG URL parsing treats a backslash as a path delimiter for the
     # special schemes (http/https): it ends the authority, so the host
     # of "http://127.0.0.1\\@example.com/" is 127.0.0.1. urlparse instead
@@ -88,8 +109,17 @@ def validate_crawl_url(raw):
     # host the Worker's parser names. Only a raw backslash is
     # structural — a percent-encoded %5C is data and is untouched, as
     # are non-http(s) spellings (the scheme check below refuses them).
+    # The backslash is structural only up to the first "?" or "#": in
+    # the query and fragment WHATWG keeps it as data, so replacing it
+    # there would fetch a different query than the Worker fetches for
+    # the same validated target (#620).
     if "\\" in raw and re.match(r"(?i)https?:", raw):
-        raw = raw.replace("\\", "/")
+        cut = len(raw)
+        for delim in "?#":
+            i = raw.find(delim)
+            if i != -1:
+                cut = min(cut, i)
+        raw = raw[:cut].replace("\\", "/") + raw[cut:]
     # WHATWG consumes the whole delimiter run after a special scheme's
     # colon — 0, 1, 3 or more slashes name the same host as exactly 2 —
     # while urlparse only sees a netloc behind exactly "//", so the
@@ -102,6 +132,27 @@ def validate_crawl_url(raw):
     # right reason.
     if re.match(r"(?i)https?:", raw):
         raw = re.sub(r"(?i)^(https?:)/*", r"\g<1>//", raw)
+    # A "[" or "]" in the userinfo is data, not an IPv6 bracket: WHATWG
+    # percent-encodes it (%5B/%5D) as part of the userinfo set, while
+    # urlparse raises "Invalid IPv6 URL" for any bracket it cannot pair
+    # in the netloc — so the spelling was refused outright (#618).
+    # Encode brackets in the userinfo span (before the last "@" of the
+    # authority) before parsing; brackets in the host span are the
+    # IPv6 literal's own and are untouched.
+    m = re.match(r"(?i)https?://", raw)
+    if m:
+        auth_end = len(raw)
+        for delim in "/?#":
+            i = raw.find(delim, m.end())
+            if i != -1:
+                auth_end = min(auth_end, i)
+        at = raw.rfind("@", m.end(), auth_end)
+        if at != -1:
+            raw = (
+                raw[: m.end()]
+                + raw[m.end() : at].replace("[", "%5B").replace("]", "%5D")
+                + raw[at:]
+            )
     u = urlparse(raw)
     if u.scheme not in ("http", "https"):
         raise ValueError("only http: and https: URLs may be crawled")
@@ -241,8 +292,8 @@ def validate_crawl_url(raw):
     # encodes, not by its ASCII spelling: the spelling is pure ASCII,
     # so no check above or below ever sees the decoded characters —
     # "xn--9hbcp.xn--8hb.xn--8hb.xn--9hb" is ١٢٧.٠.٠.١ (127.0.0.1 in
-    # Arabic-Indic digits, refused in raw form by the forbidden-
-    # character check below) yet sailed through as an ordinary public
+    # Arabic-Indic digits, refused in raw form by _judge_idna_label's
+    # AN rule below) yet sailed through as an ordinary public
     # DNS name, while the Worker's WHATWG parser decodes the A-label
     # and rejects it outright (#580). Decode each A-label and hold the
     # decoded form to the same policy; an A-label that does not decode
@@ -276,27 +327,37 @@ def validate_crawl_url(raw):
     # up front: C0 controls and space (#507), plus DEL, the C1 controls
     # and NBSP (0x7F-0xA0) and the forbidden host codepoints < > ^ |
     # (#510), plus the IDNA-disallowed codepoints that survive NFKC
-    # (#516), plus the Arabic-Indic digits (U+0660-U+0669): WHATWG's
-    # domain-to-ASCII rejects any host containing one, even a single
-    # digit in a mixed label, while urlparse passes the spelling
-    # through and this validator would otherwise certify it as a public
-    # DNS name — including ١٢٧.٠.٠.١, the Arabic-Indic spelling of
-    # 127.0.0.1, which the ASCII-only numeric checks cannot read as an
-    # address (#574). The other decimal-digit families (Devanagari,
-    # Extended Arabic-Indic U+06F0-U+06F9, Bengali, Thai, ...) are
-    # accepted by WHATWG as ordinary IDN characters and stay accepted
-    # here. Non-ASCII above NBSP that is a valid IDN character (e.g.
-    # é) is untouched.
+    # (#516). The Arabic-Indic digits (U+0660-U+0669) are NOT refused
+    # here: they are bidi class AN, and WHATWG's domain-to-ASCII
+    # refuses them only outside a right-to-left label — the blanket
+    # range #574 added here refused them inside one too (ا١.com,
+    # مرحبا١.com), while the Worker accepts that context (#605).
+    # _judge_idna_label's AN rule, which runs on every non-ASCII
+    # label above, makes the contextual judgement: it refuses the
+    # digits in an LTR label, in a label with no R/AL character —
+    # including ١٢٧.٠.٠.١, the Arabic-Indic spelling of 127.0.0.1
+    # (#574) — and mixed with a European digit, and accepts them
+    # inside a genuine RTL label, matching the Worker. The other
+    # decimal-digit families (Devanagari, Extended Arabic-Indic
+    # U+06F0-U+06F9, Bengali, Thai, ...) are accepted by WHATWG as
+    # ordinary IDN characters and stay accepted here. Non-ASCII
+    # above NBSP that is a valid IDN character (e.g. é) is untouched.
     if any(
         ord(c) <= 0x20
         or 0x7F <= ord(c) <= 0xA0
-        or 0x0660 <= ord(c) <= 0x0669
         or c in "<>^|"
         or ord(c) in _IDNA_DISALLOWED
         for c in host
     ):
         raise ValueError(f"refusing to crawl host with a forbidden character {host!r}")
-    if host == "localhost" or host.endswith(_BLOCKED_SUFFIXES):
+    # "home.arpa" needs the same equality arm as "localhost": the
+    # suffixes carry a leading dot, so the bare apex escapes them, but
+    # home.arpa is itself the RFC 8375 special-use name for the local
+    # home network — its subdomains are not the only local spellings
+    # (#608). (The other suffixes' bare labels — "local", "internal",
+    # "lan" — are ordinary single-label hostnames, not designated
+    # local names, and stay accepted.)
+    if host in ("localhost", "home.arpa") or host.endswith(_BLOCKED_SUFFIXES):
         raise ValueError(f"refusing to crawl local host {host}")
     try:
         ip = ipaddress.ip_address(host)
@@ -335,7 +396,9 @@ def validate_crawl_url(raw):
                 )
             # A public DNS name; literal-IP policy does not apply.
             # A percent-decoded host is fetched in its decoded form.
-            return _url_with_host(u, host) if percent_decoded else raw
+            return _url_with_encoded_components(
+                _url_with_host(u, host) if percent_decoded else raw
+            )
     embedded = _embedded_ipv4(ip)
     if embedded is not None:
         # Translation/mapped prefixes are judged by the IPv4 they embed,
@@ -373,7 +436,9 @@ def validate_crawl_url(raw):
     elif not ip.is_global:
         raise ValueError(f"refusing to crawl non-public address {host}")
     # A percent-decoded host is fetched in its decoded form (#529).
-    return _url_with_host(u, host) if percent_decoded else raw
+    return _url_with_encoded_components(
+        _url_with_host(u, host) if percent_decoded else raw
+    )
 
 
 def _judge_a_label(label, host):
@@ -388,8 +453,10 @@ def _judge_a_label(label, host):
     # spelling exactly (not the canonical encoding of anything), or
     # the decoded label carries a character the forbidden-character
     # policy in validate_crawl_url refuses in raw form (controls,
-    # space, the Arabic-Indic digits U+0660-U+0669, < > ^ |, and the
-    # _IDNA_DISALLOWED set).
+    # space, < > ^ |, and the _IDNA_DISALLOWED set). The Arabic-Indic
+    # digits U+0660-U+0669 are not in that set (#605): the
+    # _judge_idna_label call at the end of this function judges them
+    # by their bidi AN context, exactly as in raw form.
     body = label[4:]
     try:
         decoded = body.encode("ascii").decode("punycode")
@@ -410,7 +477,6 @@ def _judge_a_label(label, host):
     if any(
         ord(c) <= 0x20
         or 0x7F <= ord(c) <= 0xA0
-        or 0x0660 <= ord(c) <= 0x0669
         or c in "<>^|"
         or ord(c) in _IDNA_DISALLOWED
         for c in decoded
@@ -453,21 +519,31 @@ def _judge_idna_label(label, host):
     # - it carries a character of bidi class AN (Arabic number)
     #   outside a right-to-left label, or mixes AN with EN (European
     #   number) in one label (#595): AN is only valid inside an RTL
-    #   label, and never alongside EN. Every BMP AN codepoint is
-    #   caught by another arm (the Cf check, the U+0660-U+0669
-    #   forbidden range, the U+066B / U+066C case above, which this
-    #   rule subsumes), but the 41 astral AN codepoints — the Hanifi
-    #   Rohingya digits U+10D30-U+10D39 and the Rumi digits
-    #   U+10E60-U+10E7E — passed every other check, and an AN+EN
-    #   mix inside an RTL label passed too;
+    #   label, and never alongside EN. The BMP AN codepoints are the
+    #   Arabic-Indic digits U+0660-U+0669 themselves (judged by this
+    #   rule since #605 removed #574's blanket range — the U+066B /
+    #   U+066C case above is subsumed by it too), but the 41 astral
+    #   AN codepoints — the Hanifi Rohingya digits U+10D30-U+10D39
+    #   and the Rumi digits U+10E60-U+10E7E — passed every other
+    #   check, and an AN+EN mix inside an RTL label passed too;
     # - the stdlib IDNA codec rejects it.
     # Known residuals, measured on the #583 differential battery
     # (13,045 hosts vs the Worker's validator under Bun): this
     # interpreter's unicodedata is 15.0.0, so a few dozen codepoints
     # assigned in later Unicode versions read as Cn here while the
     # Worker's newer tables accept them (the same version skew PR
-    # #584 accepted for A-labels), and U+0345, which UTS-46 maps to
-    # a letter, reads as a leading mark here.
+    # #584 accepted for A-labels).
+    # UTS-46 mapping is not NFKC: U+0345 (combining Greek
+    # ypogegrammeni) maps to U+03B9 (ι, bidi class L), but NFKC
+    # leaves it unchanged (the mapping lives in the special-casing
+    # data), so the mapped host validate_crawl_url hands over still
+    # carries it as a combining mark (bidi NSM), legal mid-label in
+    # any context. Judge the UTS-46-mapped form: inside an RTL
+    # label the mapped letter makes the label R + L + R, a bidi
+    # violation the Worker refuses, while at label start the mapped
+    # letter is an ordinary first character, closing the former
+    # leading-mark over-refusal (#596).
+    label = label.translate({0x0345: "ι"})
     if any(_maps_to_label_separator(c) for c in label if ord(c) > 0x7F):
         # A decoded A-label is judged unmapped, so the mapped-dot
         # refusal in validate_crawl_url never sees this form.
@@ -612,6 +688,83 @@ def _url_with_host(u, new_host):
         _, _, port = hostport.partition(":")
         return u._replace(netloc=f"{prefix}{new_host}:{port}").geturl()
     return u._replace(netloc=prefix + new_host).geturl()
+
+
+# WHATWG's per-component percent-encode sets for the ASCII punctuation
+# the generic rule below does not already cover, probed against the
+# Worker's URL serializer (#618). The sets differ per component: the
+# query set is the smallest (a backtick, ^, { or } in a query is exactly
+# what the Worker fetches, raw), the userinfo set the largest.
+_PATH_EXTRA = '"<>^`{}'
+_QUERY_EXTRA = "\"'<>"
+_FRAGMENT_EXTRA = '"<>`'
+_USERINFO_EXTRA = '";<>[]^`{|}@='
+
+
+def _encode_url_component(text, extra=""):
+    # Percent-encode every character http.client cannot carry, the way
+    # WHATWG's URL serializer encodes the userinfo, path, query and
+    # fragment components: non-ASCII characters as UTF-8 (#615), and
+    # the C0 controls, space and DEL as their single byte (#614) —
+    # for an ASCII control the UTF-8 encoding is that byte, so one
+    # rule covers both — plus the ASCII punctuation in the component's
+    # WHATWG percent-encode set (extra, #618). Ordinary ASCII outside
+    # the set — including existing %XX sequences — passes through
+    # byte-identical, so nothing is double-encoded. (Tab, LF and CR
+    # never reach here: they are removed from the whole input at the
+    # top of validate_crawl_url.)
+    return "".join(
+        "".join(f"%{byte:02X}" for byte in char.encode("utf-8"))
+        if (ord(char) > 0x7F or ord(char) <= 0x20 or ord(char) == 0x7F or char in extra)
+        else char
+        for char in text
+    )
+
+
+def _encode_userinfo(userinfo):
+    # The first ":" is the username/password separator and stays raw;
+    # a ":" inside the password is data and WHATWG encodes it (%3A),
+    # as it does the rest of the userinfo set (#618).
+    username, sep, password = userinfo.partition(":")
+    encoded = _encode_url_component(username, _USERINFO_EXTRA)
+    if sep:
+        encoded += ":" + _encode_url_component(password, _USERINFO_EXTRA + ":")
+    return encoded
+
+
+# Backwards-compatible alias: the #615 name for the same helper.
+_encode_non_ascii = _encode_url_component
+
+
+def _url_with_encoded_components(url):
+    # The URL validate_crawl_url returns is the URL the fetcher fetches,
+    # and http.client encodes the request line as ASCII: a raw non-ASCII
+    # character in the path, query or userinfo raises UnicodeEncodeError
+    # before any request is sent, and a raw C0 control, space or DEL
+    # raises InvalidURL — so a target both validators accepted 502s in
+    # the container while the Worker fetches its WHATWG-encoded form
+    # (#615, #614). The same applies to the ASCII punctuation in
+    # WHATWG's per-component percent-encode sets (" < > and friends),
+    # which http.client passes onto the request line raw (#618).
+    # Encode those components on the returned URL. The
+    # host is deliberately untouched: it is judged in mapped form above
+    # and fetched via IDNA, as with the existing IDN spellings.
+    u = urlparse(url)
+    netloc = u.netloc
+    if "@" in netloc:
+        userinfo, _, hostport = netloc.rpartition("@")
+        netloc = f"{_encode_userinfo(userinfo)}@{hostport}"
+    return u._replace(
+        netloc=netloc,
+        path=_encode_url_component(u.path, _PATH_EXTRA),
+        params=_encode_url_component(u.params, _PATH_EXTRA),
+        query=_encode_url_component(u.query, _QUERY_EXTRA),
+        fragment=_encode_url_component(u.fragment, _FRAGMENT_EXTRA),
+    ).geturl()
+
+
+# Backwards-compatible alias: the #615 name for the same helper.
+_url_with_encoded_non_ascii = _url_with_encoded_components
 
 
 def _embedded_ipv4(ip):
