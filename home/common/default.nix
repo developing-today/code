@@ -7,6 +7,18 @@
   ...
 }:
 let
+  # Local proxy ports, each defined ONCE. Each value flows to the systemd
+  # user service that binds it, to the shell session (<NAME>_PROXY_PORT),
+  # and — for the proxies opencode talks to — into opencode.jsonc's
+  # baseURL via {env:...} substitution, so the copies can never drift
+  # apart and a new device that applies this config gets consistent ports
+  # automatically. The bin/*.mjs proxies keep the same numbers as fallback
+  # defaults when the env var is absent.
+  clefProxyPort = 18742;
+  agyProxyPort = 18743;
+  codexProxyPort = 18744;
+  antigravityLsProxyPort = 18745;
+  designCodeProxyPort = 18746;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -468,7 +480,7 @@ in
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "CLEF_PROXY_PORT=18742"
+        "CLEF_PROXY_PORT=${toString clefProxyPort}"
         "CLEF_PROXY_HOST=127.0.0.1"
       ];
     };
@@ -491,7 +503,7 @@ in
       );
       Restart = "no";
       Environment = [
-        "AGY_PROXY_PORT=18743"
+        "AGY_PROXY_PORT=${toString agyProxyPort}"
         "AGY_PROXY_HOST=127.0.0.1"
       ];
     };
@@ -513,7 +525,7 @@ in
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "CODEX_PROXY_PORT=18744"
+        "CODEX_PROXY_PORT=${toString codexProxyPort}"
         "CODEX_PROXY_HOST=127.0.0.1"
       ];
     };
@@ -536,7 +548,7 @@ in
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "ANTIGRAVITY_LS_PROXY_PORT=18745"
+        "ANTIGRAVITY_LS_PROXY_PORT=${toString antigravityLsProxyPort}"
         "ANTIGRAVITY_LS_PROXY_HOST=127.0.0.1"
         "ANTIGRAVITY_LS_BIN=${antigravity-hub}/share/antigravity/resources/bin/language_server"
       ];
@@ -568,7 +580,7 @@ in
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "DESIGN_CODE_PROXY_PORT=18746"
+        "DESIGN_CODE_PROXY_PORT=${toString designCodeProxyPort}"
         "DESIGN_CODE_PROXY_HOST=127.0.0.1"
       ];
     };
@@ -1214,6 +1226,35 @@ in
       # PATH = "$HOME/bin:$PATH";
       NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
       NIXPKGS_ALLOW_UNFREE = "1";
+      # OpenCode feature flags (Drew, 2026-10-20): both web-search backends
+      # (Exa + Parallel) so the websearch tool works with any provider, and
+      # the interesting experimental features. OPENCODE_EXPERIMENTAL is the
+      # umbrella (code mode keys off it). NATIVE_LLM deliberately not set.
+      OPENCODE_ENABLE_EXA = "1";
+      OPENCODE_ENABLE_PARALLEL = "1";
+      OPENCODE_ENABLE_EXPERIMENTAL_MODELS = "1";
+      OPENCODE_EXPERIMENTAL = "1";
+      OPENCODE_EXPERIMENTAL_PARALLEL = "1";
+      OPENCODE_EXPERIMENTAL_PLAN_MODE = "1";
+      OPENCODE_EXPERIMENTAL_SCOUT = "1";
+      OPENCODE_EXPERIMENTAL_WORKSPACES = "1";
+      OPENCODE_EXPERIMENTAL_LSP_TOOL = "1";
+      OPENCODE_EXPERIMENTAL_OXFMT = "1";
+      OPENCODE_EXPERIMENTAL_EXA = "1";
+      OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
+      # Single source for the local proxy ports (see the let block):
+      # opencode.jsonc reads them via {env:...} substitution.
+      CLEF_PROXY_PORT = toString clefProxyPort;
+      AGY_PROXY_PORT = toString agyProxyPort;
+      CODEX_PROXY_PORT = toString codexProxyPort;
+      ANTIGRAVITY_LS_PROXY_PORT = toString antigravityLsProxyPort;
+      DESIGN_CODE_PROXY_PORT = toString designCodeProxyPort;
+      OPENCODE_EXPERIMENTAL_ICON_DISCOVERY = "1";
+      OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
+      # File watcher off by default (Drew, 2026-10-20): the working trees
+      # are giant, and watching costs more than the live-external-edit
+      # awareness it buys. Diffs are git-computed on demand either way.
+      OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER = "1";
       # XDG_CACHE_HOME = "$HOME/.cache";
       # XDG_CONFIG_DIRS = "/etc/xdg";
       # XDG_CONFIG_HOME = "$HOME/.config";

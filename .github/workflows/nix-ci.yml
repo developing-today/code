@@ -29,6 +29,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      # The proxy ports' fallback copies (bin/*.mjs script defaults and
+      # the {env:VAR:-port} defaults in .opencode/opencode.jsonc) must
+      # match the single definitions in home/common/default.nix, or a
+      # non-shell launch silently dials the wrong — or an empty — port
+      # (#434, #435). Pure bash/grep: no Nix needed.
+      - name: Check proxy port fallbacks match their definitions
+        run: .github/scripts/check-proxy-port-fallbacks.sh
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Check formatting for changed files
         env:
