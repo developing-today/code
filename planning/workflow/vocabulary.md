@@ -103,6 +103,6 @@ Identifiers come from the tool, never from an agent's guess. `init`, `item add` 
 - Global bucket: `G`. Holds the process directives and constraints the user gave about how to work.
 - Note: the file stem `C001__to__C002__<uuid>`, where `<uuid>` is 32 lowercase hex digits. Allocated by `note`.
 - Decision: `D001`, `D002`, ... Never reused, even after a reversal.
-- Branch: `wf/<slug>-c002-s2` for concept C002 at stage S2 of package `<slug>`, and `wf/<slug>-c002.3-s6` for a facet. A follow-up after a merge adds `-2`, `-3`.
+- Branch: `research/<slug>/s2-c002` for concept C002 at stage S2 of package `<slug>`, and `research/<slug>/s6-c002.3` for a facet. The router finds every worker branch of a package under `refs/heads/research/<slug>/`. A follow-up after a merge adds `-2`, `-3`.
 - Agent name: lowercase kebab case, unique within a run. Used in leases, logs and receipts.
 - Timestamp: UTC to the second, `2026-10-21T10:00:00Z`. In file and folder names, colons become hyphens: `2026-10-21T10-00-00Z`.

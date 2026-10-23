@@ -31,7 +31,7 @@ One agent per concept runs this stage, and the concepts reconcile in parallel. Y
 
 ## Steps
 
-1. **Check the entry condition and boot.** The concept's S2 research PR is merged into `main` (`status --live --package <pkg>` shows it). If it is still open, stop: report "blocked: S2 PR <url> not merged" and leave the concept to the router. Otherwise boot per collaboration.md on your own branch (the brief's name, else `wf/<package-slug>/C001-s3`), push it empty, take the concept lease with `lease acquire`, and append `start` to your live log.
+1. **Check the entry condition and boot.** The concept's S2 research PR is merged into `main` (`status --live --package <pkg>` shows it). If it is still open, stop: report "blocked: S2 PR <url> not merged" and leave the concept to the router. Otherwise boot per collaboration.md on your own branch (the brief's name, else `research/<slug>/s3-c001`), push it empty, take the concept lease with `lease acquire`, and append `start` to your live log.
    Done when the S2 PR is merged, your branch is pushed and `lease list` shows your lease.
 2. **Gather every note.** `git fetch origin`, then run `check --package <pkg>` for unresolved notes on your branch and `check --package <pkg> --remote-notes` for notes addressed to this concept that sit only on `origin/*` refs. Record the scan in the concept file's `## Reconciliation` section: the UTC time and every scanned ref with its SHA (`git for-each-ref refs/remotes/origin --format='%(refname:short) %(objectname)'`).
    Done when you have one list of every note addressed to the concept, each marked local or remote with its ref, and the scan is recorded.
