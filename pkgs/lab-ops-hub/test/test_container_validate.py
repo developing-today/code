@@ -1097,6 +1097,31 @@ class TestFetchCrawl(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"Missing Thing", raw)
 
+    def test_ascii_punctuation_percent_encoded_per_component(self):
+        # #618: WHATWG's per-component percent-encode sets for ASCII
+        # punctuation — the container returned these verbatim while the
+        # Worker fetches the encoded form. Path set is the widest of
+        # path/query/fragment; the query set must NOT gain the path
+        # extras (a raw backtick in a query is what the Worker fetches).
+        v = app.validate_crawl_url
+        self.assertEqual(v('http://example.com/a"b<c>d'), "http://example.com/a%22b%3Cc%3Ed")
+        self.assertEqual(v("http://example.com/a^b`c{d}e"), "http://example.com/a%5Eb%60c%7Bd%7De")
+        self.assertEqual(v('http://example.com/?q=a"b<c>d'), "http://example.com/?q=a%22b%3Cc%3Ed")
+        self.assertEqual(v("http://example.com/?q=a^b`c{d}e"), "http://example.com/?q=a^b`c{d}e")
+        self.assertEqual(v('http://example.com/#a"b<c>d`e'), "http://example.com/#a%22b%3Cc%3Ed%60e")
+        self.assertEqual(v("http://example.com/#a^b{c}"), "http://example.com/#a^b{c}")
+        # Userinfo: the separator colon stays, a password colon and the
+        # rest of the userinfo set encode.
+        self.assertEqual(v('http://us"er@example.com/'), "http://us%22er@example.com/")
+        self.assertEqual(v("http://user:pa:ss@example.com/"), "http://user:pa%3Ass@example.com/")
+        self.assertEqual(v("http://us;er@example.com/"), "http://us%3Ber@example.com/")
+        # Query also encodes the apostrophe (WHATWG special-query set),
+        # and userinfo brackets are data, not an IPv6 literal.
+        self.assertEqual(v("http://example.com/?q=a'b"), "http://example.com/?q=a%27b")
+        self.assertEqual(v("http://a[b]c@example.com/"), "http://a%5Bb%5Dc@example.com/")
+        # Existing escapes are never double-encoded.
+        self.assertEqual(v("http://example.com/a%22b"), "http://example.com/a%22b")
+
     def test_transport_failure_still_raises(self):
         import urllib.error
 

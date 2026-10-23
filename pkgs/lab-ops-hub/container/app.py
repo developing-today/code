@@ -123,6 +123,27 @@ def validate_crawl_url(raw):
     # right reason.
     if re.match(r"(?i)https?:", raw):
         raw = re.sub(r"(?i)^(https?:)/*", r"\g<1>//", raw)
+    # A "[" or "]" in the userinfo is data, not an IPv6 bracket: WHATWG
+    # percent-encodes it (%5B/%5D) as part of the userinfo set, while
+    # urlparse raises "Invalid IPv6 URL" for any bracket it cannot pair
+    # in the netloc — so the spelling was refused outright (#618).
+    # Encode brackets in the userinfo span (before the last "@" of the
+    # authority) before parsing; brackets in the host span are the
+    # IPv6 literal's own and are untouched.
+    m = re.match(r"(?i)https?://", raw)
+    if m:
+        auth_end = len(raw)
+        for delim in "/?#":
+            i = raw.find(delim, m.end())
+            if i != -1:
+                auth_end = min(auth_end, i)
+        at = raw.rfind("@", m.end(), auth_end)
+        if at != -1:
+            raw = (
+                raw[: m.end()]
+                + raw[m.end() : at].replace("[", "%5B").replace("]", "%5D")
+                + raw[at:]
+            )
     u = urlparse(raw)
     if u.scheme not in ("http", "https"):
         raise ValueError("only http: and https: URLs may be crawled")
@@ -660,22 +681,46 @@ def _url_with_host(u, new_host):
     return u._replace(netloc=prefix + new_host).geturl()
 
 
-def _encode_url_component(text):
+# WHATWG's per-component percent-encode sets for the ASCII punctuation
+# the generic rule below does not already cover, probed against the
+# Worker's URL serializer (#618). The sets differ per component: the
+# query set is the smallest (a backtick, ^, { or } in a query is exactly
+# what the Worker fetches, raw), the userinfo set the largest.
+_PATH_EXTRA = '"<>^`{}'
+_QUERY_EXTRA = "\"'<>"
+_FRAGMENT_EXTRA = '"<>`'
+_USERINFO_EXTRA = '";<>[]^`{|}@='
+
+
+def _encode_url_component(text, extra=""):
     # Percent-encode every character http.client cannot carry, the way
     # WHATWG's URL serializer encodes the userinfo, path, query and
     # fragment components: non-ASCII characters as UTF-8 (#615), and
     # the C0 controls, space and DEL as their single byte (#614) —
     # for an ASCII control the UTF-8 encoding is that byte, so one
-    # rule covers both. Ordinary ASCII — including existing %XX
-    # sequences — passes through byte-identical, so nothing is
-    # double-encoded. (Tab, LF and CR never reach here: they are
-    # removed from the whole input at the top of validate_crawl_url.)
+    # rule covers both — plus the ASCII punctuation in the component's
+    # WHATWG percent-encode set (extra, #618). Ordinary ASCII outside
+    # the set — including existing %XX sequences — passes through
+    # byte-identical, so nothing is double-encoded. (Tab, LF and CR
+    # never reach here: they are removed from the whole input at the
+    # top of validate_crawl_url.)
     return "".join(
         "".join(f"%{byte:02X}" for byte in char.encode("utf-8"))
-        if ord(char) > 0x7F or ord(char) <= 0x20 or ord(char) == 0x7F
+        if ord(char) > 0x7F or ord(char) <= 0x20 or ord(char) == 0x7F or char in extra
         else char
         for char in text
     )
+
+
+def _encode_userinfo(userinfo):
+    # The first ":" is the username/password separator and stays raw;
+    # a ":" inside the password is data and WHATWG encodes it (%3A),
+    # as it does the rest of the userinfo set (#618).
+    username, sep, password = userinfo.partition(":")
+    encoded = _encode_url_component(username, _USERINFO_EXTRA)
+    if sep:
+        encoded += ":" + _encode_url_component(password, _USERINFO_EXTRA + ":")
+    return encoded
 
 
 # Backwards-compatible alias: the #615 name for the same helper.
@@ -689,20 +734,23 @@ def _url_with_encoded_components(url):
     # before any request is sent, and a raw C0 control, space or DEL
     # raises InvalidURL — so a target both validators accepted 502s in
     # the container while the Worker fetches its WHATWG-encoded form
-    # (#615, #614). Encode those components on the returned URL. The
+    # (#615, #614). The same applies to the ASCII punctuation in
+    # WHATWG's per-component percent-encode sets (" < > and friends),
+    # which http.client passes onto the request line raw (#618).
+    # Encode those components on the returned URL. The
     # host is deliberately untouched: it is judged in mapped form above
     # and fetched via IDNA, as with the existing IDN spellings.
     u = urlparse(url)
     netloc = u.netloc
     if "@" in netloc:
         userinfo, _, hostport = netloc.rpartition("@")
-        netloc = f"{_encode_url_component(userinfo)}@{hostport}"
+        netloc = f"{_encode_userinfo(userinfo)}@{hostport}"
     return u._replace(
         netloc=netloc,
-        path=_encode_url_component(u.path),
-        params=_encode_url_component(u.params),
-        query=_encode_url_component(u.query),
-        fragment=_encode_url_component(u.fragment),
+        path=_encode_url_component(u.path, _PATH_EXTRA),
+        params=_encode_url_component(u.params, _PATH_EXTRA),
+        query=_encode_url_component(u.query, _QUERY_EXTRA),
+        fragment=_encode_url_component(u.fragment, _FRAGMENT_EXTRA),
     ).geturl()
 
 
