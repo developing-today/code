@@ -397,8 +397,11 @@ def validate_crawl_url(raw):
                 )
             # A public DNS name; literal-IP policy does not apply.
             # A percent-decoded host is fetched in its decoded form.
+            # The returned form is WHATWG-normalized (#633).
             return _url_with_encoded_components(
-                _url_with_host(u, host) if percent_decoded else raw
+                _normalize_validated_url(
+                    _url_with_host(u, host) if percent_decoded else raw
+                )
             )
     embedded = _embedded_ipv4(ip)
     if embedded is not None:
@@ -449,7 +452,9 @@ def validate_crawl_url(raw):
     canonical = (
         _canonical_ipv6(ip) if isinstance(ip, ipaddress.IPv6Address) else str(ip)
     )
-    return _url_with_encoded_components(_url_with_host(u, canonical))
+    return _url_with_encoded_components(
+        _normalize_validated_url(_url_with_host(u, canonical))
+    )
 
 
 def _judge_a_label(label, host):
@@ -729,6 +734,96 @@ def _url_with_host(u, new_host):
         _, _, port = hostport.partition(":")
         return u._replace(netloc=f"{prefix}{new_host}:{port}").geturl()
     return u._replace(netloc=prefix + new_host).geturl()
+
+
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+# WHATWG dot segments (#633): a path segment is a single-dot segment
+# when it is "." or "%2e", and a double-dot segment when it is "..",
+# ".%2e", "%2e." or "%2e%2e" — the percent spellings in any case. A
+# longer spelling ("%2e%2e%2e", "%252e%252e") is ordinary data, not a
+# dot segment: only the exact segment matches count, so a literal
+# "%252e" segment (an encoded "%2e") is never double-decoded into one.
+_SINGLE_DOT_SEGMENTS = (".", "%2e")
+_DOUBLE_DOT_SEGMENTS = ("..", ".%2e", "%2e.", "%2e%2e")
+
+
+def _resolve_dot_segments(path):
+    # Resolve a path's dot segments the way WHATWG URL parsing does
+    # (#633): a single-dot segment is dropped, a double-dot segment
+    # drops the previous segment with it, and neither may climb above
+    # the root — "/a/b/../../../c" is "/c", not an error. A trailing
+    # dot segment becomes an empty final segment ("/a/." is "/a/",
+    # "/a/.." is "/", "//%2e" is "//"). Empty segments are ordinary
+    # segments: "//" survives, and a double-dot segment after one
+    # pops that empty segment ("/a//../b" is "/a/b"), matching the
+    # Worker's serializer.
+    parts = path.split("/")
+    out = []
+    for i, seg in enumerate(parts):
+        low = seg.lower()
+        if low in _DOUBLE_DOT_SEGMENTS:
+            if out and not (len(out) == 1 and out[0] == ""):
+                out.pop()
+            if i == len(parts) - 1:
+                out.append("")
+            continue
+        if low in _SINGLE_DOT_SEGMENTS:
+            if i == len(parts) - 1:
+                out.append("")
+            continue
+        out.append(seg)
+    return "/".join(out)
+
+
+def _normalize_validated_url(url):
+    # Return a validated URL in the WHATWG-normalized form the Worker
+    # returns (#633), so both crawlers record — and fetch — the same
+    # URL for the same target: dot segments in the path resolved,
+    # the host lowercased, and the port canonicalized (the scheme's
+    # default port dropped, leading zeros on any other port stripped,
+    # an empty port's colon dropped). Only ASCII case folds in the
+    # host: the IDN spelling itself is deliberately kept, as before
+    # (judged in mapped form, fetched via IDNA — #615); urlparse has
+    # already lowercased the scheme. The path's ";params" tail is
+    # rejoined before resolving: urlparse splits it off the last
+    # segment, but WHATWG treats ";..." as part of that segment, so
+    # a trailing "..;foo" is data, not a double-dot segment.
+    u = urlparse(url)
+    netloc = u.netloc
+    if "@" in netloc:
+        userinfo, _, hostport = netloc.rpartition("@")
+        prefix = userinfo + "@"
+    else:
+        prefix, hostport = "", netloc
+    if hostport.startswith("["):
+        end = hostport.find("]")
+        host_norm = "[" + hostport[1:end].translate(_ASCII_LOWER) + "]"
+        rest = hostport[end + 1 :]
+        port_span = rest[1:] if rest.startswith(":") else None
+    elif ":" in hostport:
+        host_span, _, port_span = hostport.partition(":")
+        host_norm = host_span.translate(_ASCII_LOWER)
+    else:
+        host_norm = hostport.translate(_ASCII_LOWER)
+        port_span = None
+    port_norm = ""
+    if port_span:
+        if port_span.isdigit():
+            port = int(port_span)
+            is_default = (u.scheme == "http" and port == 80) or (
+                u.scheme == "https" and port == 443
+            )
+            if not is_default:
+                port_norm = f":{port}"
+        else:
+            port_norm = f":{port_span}"
+    full_path = u.path + (f";{u.params}" if u.params else "")
+    return u._replace(
+        netloc=f"{prefix}{host_norm}{port_norm}",
+        path=_resolve_dot_segments(full_path),
+        params="",
+    ).geturl()
 
 
 # WHATWG's per-component percent-encode sets for the ASCII punctuation

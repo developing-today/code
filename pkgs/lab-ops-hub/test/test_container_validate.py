@@ -930,6 +930,78 @@ class TestValidateCrawlUrl(unittest.TestCase):
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
 
+    def test_returns_dot_segments_host_case_and_ports_normalized(self):
+        # The container returned dot segments, host case and default
+        # ports verbatim while the Worker returns the WHATWG-normalized
+        # form, so the two crawlers recorded — and fetched — different
+        # URLs for the same target (#633). The returned URL now
+        # resolves dot segments (literal and %2e spellings, any case),
+        # lowercases the host, and canonicalizes the port (the scheme's
+        # default dropped, leading zeros stripped). Verdicts are
+        # unchanged; query and fragment dot spellings are data.
+        cases = {
+            "http://example.com/a/../b": "http://example.com/b",
+            "http://example.com/a/./b": "http://example.com/a/b",
+            "http://example.com/%2e%2e/admin": "http://example.com/admin",
+            "http://example.com/a/%2e%2e/b": "http://example.com/b",
+            "http://example.com/%2e/%2e/x": "http://example.com/x",
+            "http://example.com/a/%2E/b": "http://example.com/a/b",
+            "http://example.com/a/b/../../../c": "http://example.com/c",
+            "http://example.com/a/.": "http://example.com/a/",
+            "http://example.com/a/..": "http://example.com/",
+            "http://example.com/a/%2e%2e": "http://example.com/",
+            "http://example.com//../x": "http://example.com/x",
+            "http://example.com//./x": "http://example.com//x",
+            "http://example.com/a//../b": "http://example.com/a/b",
+            "http://example.com//%2e": "http://example.com//",
+            "HTTP://EXAMPLE.COM/Path": "http://example.com/Path",
+            "http://example.com:80/x": "http://example.com/x",
+            "https://example.com:443/x": "https://example.com/x",
+            "http://example.com:080/x": "http://example.com/x",
+            "https://example.com:0443/x": "https://example.com/x",
+            "http://example.com:08080/x": "http://example.com:8080/x",
+            "http://user:pass@EXAMPLE.com:80/": "http://user:pass@example.com/",
+            "http://8.8.8.8:80/a/../b": "http://8.8.8.8/b",
+            "https://[2001:4860:4860::8888]:443/a/./b": (
+                "https://[2001:4860:4860::8888]/a/b"
+            ),
+            "http://example.com/a/../b?x=/../y#/../z": (
+                "http://example.com/b?x=/../y#/../z"
+            ),
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Data, not dot segments: longer or double-encoded spellings,
+        # ";" tails and empty segments pass through byte-identical.
+        for url in (
+            "http://example.com/foo/%2e%2e%2e/bar",
+            "http://example.com/%252e%252e/admin",
+            "http://example.com/a/..;foo",
+            "http://example.com/..;/x",
+            "http://example.com//a//b",
+            "http://example.com:443/x",  # non-default for http
+            "https://example.com:80/x",  # non-default for https
+        ):
+            self.assertAccepted(url)
+        # Blocked targets in these spellings are refused by the
+        # ordinary checks, for the right reason.
+        self.assertRefused("http://127.0.0.1/a/../b")
+        self.assertRefused("http://LOCALHOST/a/../b")
+        self.assertRefused("http://127.0.0.1:80/x")
+
+    def test_redirect_handler_follows_the_normalized_target(self):
+        # Redirect targets inherit the normalization (#633): the
+        # handler validates the raw Location and fetches the form
+        # validate_crawl_url returns.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://EXAMPLE.org:80/a/../b"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/b")
+
     def test_percent_encodes_non_ascii_outside_the_host(self):
         # WHATWG percent-encodes non-ASCII characters in the userinfo,
         # path, query and fragment as UTF-8; urlparse hands them through
@@ -1189,6 +1261,30 @@ class TestFetchCrawl(unittest.TestCase):
         status, raw = app._fetch_crawl(url)
         self.assertEqual(status, 200)
         self.assertIn(b"Missing Thing", raw)
+
+    def test_fetches_the_resolved_path_for_dot_segment_targets(self):
+        # #633: do_POST fetches the URL validate_crawl_url returns, so
+        # a dot-segment target must reach the server in its resolved
+        # form — the same path the Worker's WHATWG fetch requests —
+        # not the verbatim spelling urllib used to send. (Validation
+        # refuses loopback targets by design, so the validated public
+        # URL's origin is swapped for the local server's, keeping the
+        # exact validated path the container would fetch.)
+        validated = app.validate_crawl_url("http://example.com/a/../b")
+        self.assertEqual(validated, "http://example.com/b")
+        local = validated.replace("http://example.com", f"http://127.0.0.1:{self.port}")
+        self.seen.clear()
+        status, raw = app._fetch_crawl(local)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Missing Thing", raw)
+        self.assertEqual(self.seen, [("/b", None)])
+        validated = app.validate_crawl_url("http://example.com/%2e%2e/admin")
+        self.assertEqual(validated, "http://example.com/admin")
+        local = validated.replace("http://example.com", f"http://127.0.0.1:{self.port}")
+        self.seen.clear()
+        status, _ = app._fetch_crawl(local)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.seen, [("/admin", None)])
 
     def test_fetches_userinfo_targets_with_basic_auth(self):
         # #622: every userinfo spelling both validators accept 502'd
