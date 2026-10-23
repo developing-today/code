@@ -3,10 +3,45 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { parseProxyPort } from './proxy-port.mjs';
 
 const PORT = parseProxyPort('AGY_PROXY_PORT', 18743);
 const HOST = process.env.AGY_PROXY_HOST || '127.0.0.1';
+
+// Publish the bound endpoint so other tools can find this proxy without
+// knowing its port in advance: $XDG_STATE_HOME/<name>/endpoint.json
+// (default ~/.local/state/<name>/endpoint.json), written on listen,
+// removed on exit.
+const publishEndpoint = () => {
+  try {
+    const stateHome =
+      process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+    const dir = path.join(stateHome, 'agy-proxy');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'endpoint.json');
+    fs.writeFileSync(
+      `${file}.tmp`,
+      JSON.stringify({ host: HOST, port: PORT, pid: process.pid, url: `http://${HOST}:${PORT}` }) + '\n',
+    );
+    fs.renameSync(`${file}.tmp`, file);
+    const cleanup = () => {
+      try {
+        fs.unlinkSync(file);
+      } catch {}
+    };
+    process.on('exit', cleanup);
+    process.on('SIGTERM', () => {
+      cleanup();
+      process.exit(0);
+    });
+    process.on('SIGINT', () => {
+      cleanup();
+      process.exit(0);
+    });
+  } catch {}
+};
 
 const MODELS = [
   { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (agy)', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
@@ -582,6 +617,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  publishEndpoint();
   console.log(`Antigravity agy Proxy listening on http://${HOST}:${PORT}`);
   console.log(`Endpoints:`);
   console.log(`  - GET  http://${HOST}:${PORT}/health`);
