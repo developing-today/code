@@ -111,8 +111,24 @@ const server = http.createServer(async (req, res) => {
     });
 
     req.on('end', async () => {
+      // Parse the client body on its own: a malformed request is a 400,
+      // not a 500 from the shared upstream catch below (sibling proxies
+      // all parse separately — #690).
+      let body;
       try {
-        const body = JSON.parse(bodyText);
+        body = JSON.parse(bodyText);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Invalid JSON body: ${err.message}` }));
+        return;
+      }
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body: expected an object' }));
+        return;
+      }
+
+      try {
         const { accountId, gatewayId, token } = getCredentials(req.headers['authorization']);
 
         if (!token) {
@@ -138,9 +154,15 @@ const server = http.createServer(async (req, res) => {
           body: JSON.stringify(payload)
         });
 
-        const cfData = await cfRes.json();
+        // The gateway can answer non-JSON (e.g. an HTML error page) or a
+        // JSON null/scalar: neither is a client parse error, so keep the
+        // upstream status and report it as an upstream failure (#690).
+        let cfData = null;
+        try {
+          cfData = await cfRes.json();
+        } catch {}
 
-        if (cfRes.ok && cfData.success && cfData.result?.answers) {
+        if (cfRes.ok && cfData?.success && cfData.result?.answers) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ answers: cfData.result.answers }));
         } else {
