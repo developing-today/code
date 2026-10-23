@@ -706,12 +706,7 @@ def _encode_url_component(text, extra=""):
     # top of validate_crawl_url.)
     return "".join(
         "".join(f"%{byte:02X}" for byte in char.encode("utf-8"))
-        if (
-            ord(char) > 0x7F
-            or ord(char) <= 0x20
-            or ord(char) == 0x7F
-            or char in extra
-        )
+        if (ord(char) > 0x7F or ord(char) <= 0x20 or ord(char) == 0x7F or char in extra)
         else char
         for char in text
     )
