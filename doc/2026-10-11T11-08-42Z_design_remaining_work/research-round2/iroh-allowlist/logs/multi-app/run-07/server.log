@@ -1,0 +1,13 @@
+2026-10-11T17:23:51.197214Z  INFO harness: bound role="server" event="ready" mode=App id=8a88e3dd74 port=36220 direct=["10.200.0.1:36220", "10.200.0.2:36220", "127.0.0.1:36220"]
+2026-10-11T17:23:51.225211Z  INFO harness: first Initial packet; no EndpointId is known yet role="server" event="incoming" remote=Ip(127.0.0.1:54374) alpns=["n30/allowlist/0"]
+2026-10-11T17:23:51.257980Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: actor started
+2026-10-11T17:23:51.258844Z TRACE RemoteStateActor{remote=ed4928c628}:handle_message{msg=AddConnection(140663668609488) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: updated local QNT addresses direct_addrs={10.200.0.1:36220, 10.200.0.2:36220, 127.0.0.1:36220}
+2026-10-11T17:23:51.259006Z TRACE RemoteStateActor{remote=ed4928c628}:handle_message{msg=AddConnection(140663668609488) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: not holepunching: no client connection
+2026-10-11T17:23:51.259694Z DEBUG RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: connections are not good enough, triggering holepunching
+2026-10-11T17:23:51.259729Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: not holepunching: no client connection
+2026-10-11T17:23:51.259816Z  INFO harness: hook runs role="server" event="after_handshake" peer=ed4928c628 allowed=false enforce=false
+2026-10-11T17:23:51.260018Z  INFO harness: Connection handed to the application role="server" event="application_has_connection" peer=ed4928c628 allowed=false remote_info=["Ip(127.0.0.1:54374)/Active"]
+2026-10-11T17:23:51.260247Z  INFO harness: stream from peer role="server" event="stream_opened" peer=ed4928c628 first_bytes=hello remote_info=["Ip(127.0.0.1:54374)/Active"]
+2026-10-11T17:23:51.260331Z  INFO harness: refusing after the stream opened role="server" event="app_refusal" peer=ed4928c628 remote_info=["Ip(127.0.0.1:54374)/Active"]
+2026-10-11T17:23:51.260805Z  INFO harness: closed role="server" event="connection_closed" why=closed
+2026-10-11T17:23:51.261068Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: last connection closed - clearing selected_path

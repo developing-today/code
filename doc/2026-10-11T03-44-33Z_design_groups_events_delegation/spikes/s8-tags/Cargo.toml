@@ -1,0 +1,18 @@
+[package]
+name = "s8-tags"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+
+# Standalone: do not join the parent spikes workspace.
+[workspace]
+
+[dependencies]
+blake3 = "1"
+# Pinned as in /home/user/work/spikes/Cargo.toml. The encoder is used without the serde feature.
+cbor-core = "=0.10.1"
+
+[dev-dependencies]
+anyhow = "1"
+proptest = "1"

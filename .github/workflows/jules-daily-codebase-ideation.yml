@@ -1,0 +1,81 @@
+name: Jules Daily Codebase Innovation & Maintenance
+
+# Daily automated codebase review, ideation, gap analysis, issue triage/refinement,
+# and opportunistic improvements across developing-today/code using Google Jules.
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      focus_app:
+        description: "Optional specific package or subsystem to focus on (e.g. pkgs/id, pkgs/mcpx, or all)"
+        type: string
+        default: "all"
+      allow_direct_prs:
+        description: "Allow opening small PRs for quick bugfixes, edge cases, and conflict-reducing refactors"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  codebase-ideation-and-maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run Jules Codebase Innovation & Review Agent
+        uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
+        with:
+          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          include_commit_log: true
+          prompt: >-
+            Perform a comprehensive daily codebase review, innovation scan, and issue/PR maintenance pass across developing-today/code.
+
+            You are acting as an unrestricted principal architect and senior systems engineer. Do not hold back: generate bold ideas, surface hidden gaps, polish proposals, and solve immediate problems opportunistically.
+
+            Follow these directives and areas of focus:
+
+            ### 1. COMPREHENSIVE REPOSITORY & ACTIVITY AUDIT
+            - Inspect recent commits on `main` to understand the latest velocity and architectural direction.
+            - Review open, recently closed, and merged issues and PRs (`gh issue list --state all --limit 50`, `gh pr list --state all --limit 30`).
+            - Review each major package, tool, and subsystem in the repository:
+              - **`pkgs/id`**: Distributed identity, cryptographic event log, p2panda synchronization, local event store, group encryption, discovery, and capability delegation.
+              - **`pkgs/mcpx`**: Model Context Protocol daemon, multi-server multiplexing, protocol compliance, session leasing, JIT secret prompt vault, and Code Mode projection.
+              - **`pkgs/jules` / `pkgs/jules-fleet` / `pkgs/jules-merge`**: Automated multi-agent coding workflows, issue triage, and parallel agent execution.
+              - **NixOS System Infrastructure & Web Services**: Modules, cloud functions, background daemons, and system services.
+
+            ### 2. UNRESTRICTED INNOVATION & NEW FEATURE GENERATION
+            - You are NOT restricted by what currently exists. Brainstorm things that *should* exist, would be exceptionally useful, or incorporate frontier concepts:
+              - Edge architectures using Cloudflare Workers, Durable Objects, KV, and Queues.
+              - Distributed SQLite / libSQL / Turso primitives for offline-first, syncable state.
+              - Advanced autonomous coding loops, speculative tool execution, and local verification loops.
+              - Cross-platform bridges, native desktop integrations, and performance optimizations.
+            - **Bias Toward Capture**: It is far better to create an issue to triage later than to let a valuable opportunity or insight pass.
+
+            ### 3. ACTIVE ISSUE & PR MAINTENANCE
+            - **Scope Variety**: Create single large architectural vision issues for strategic direction, or narrow, highly focused issues for targeted improvements.
+            - **Issue Decomposition**: If an existing issue is too broad, ambiguous, or monolithic (including issues created by others), break it apart into a series of clear, modular, linked sub-issues with explicit dependencies.
+            - **Deduplication & Consolidation**: Identify overlapping or duplicate proposals/issues and consolidate them into unified, high-quality reference issues.
+            - **Comments & Spec Refinement**: Leave comments or edit existing issues/PRs to provide missing technical specifications, edge-case analysis, data schemas, or suggested test cases.
+            - **Zero-Context Hand-off Standard**: Every issue you author must be self-contained, citing exact file paths, interfaces, architectural rationale, and verifiable acceptance criteria so a new agent with zero prior context can execute it.
+
+            ### 4. OPPORTUNISTIC IMPLEMENTATION (QUICK-WIN PRS)
+            - If you identify straightforward bugs, unhandled edge cases, missing test coverage, or clean opportunities to refactor code to prevent future merge conflicts:
+              - You are actively encouraged to open small, focused Pull Requests implementing the fix or feature directly.
+              - Ensure all added code follows repository standards, includes tests, and passes formatting/linting hooks (`treefmt`, `conform`).
+              - Never introduce breaking regressions to existing stable flows.

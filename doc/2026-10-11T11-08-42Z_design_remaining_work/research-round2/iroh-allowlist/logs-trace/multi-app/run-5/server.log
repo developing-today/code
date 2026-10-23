@@ -1,0 +1,263 @@
+2026-10-11T17:31:31.518948Z  INFO harness: bound role="server" event="ready" mode=App id=8a88e3dd74 port=34441 direct=["10.200.0.1:34441", "10.200.0.2:34441", "127.0.0.1:34441"]
+2026-10-11T17:31:31.625560Z  INFO harness: first Initial packet; no EndpointId is known yet role="server" event="incoming" remote=Ip(127.0.0.1:55759) alpns=["n30/allowlist/0"]
+2026-10-11T17:31:31.626525Z TRACE first recv:frame{ty=CRYPTO}: noq_proto::connection: consumed 292 CRYPTO bytes
+2026-10-11T17:31:31.632212Z TRACE first recv: noq_proto::connection: Handshake keys ready
+2026-10-11T17:31:31.632301Z TRACE first recv: noq_proto::connection: wrote 90 Initial CRYPTO bytes
+2026-10-11T17:31:31.632392Z TRACE first recv: noq_proto::connection: Data keys ready
+2026-10-11T17:31:31.632459Z TRACE first recv: noq_proto::connection: wrote 390 Handshake CRYPTO bytes
+2026-10-11T17:31:31.632517Z TRACE first recv: noq_proto::connection: negotiated max idle timeout Some(30s)
+2026-10-11T17:31:31.632535Z DEBUG first recv: noq_proto::connection: multipath negotiated initial_max_path_id=7
+2026-10-11T17:31:31.632552Z DEBUG first recv: noq_proto::connection: n0's nat traversal negotiated max_remote_addresses=32 max_local_addresses=32
+2026-10-11T17:31:31.632597Z TRACE noq_proto::endpoint: new connection id=0 icid=8c1753b919fa8b776b4e79420e56a352b7ad7f8c network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759)
+2026-10-11T17:31:31.632979Z TRACE noq_proto::connection: new datagram started count=1
+2026-10-11T17:31:31.633134Z TRACE send{space=Initial pn=0 path_id=0}: noq_proto::connection::packet_builder: frame=ACK_ECN ranges: [0..1] delay: 1035µs
+2026-10-11T17:31:31.633194Z TRACE send{space=Initial pn=0 path_id=0}: noq_proto::connection::packet_builder: frame=CRYPTO off: 0 len = 90
+2026-10-11T17:31:31.633240Z TRACE send{space=Initial pn=0 path_id=0}: noq_proto::connection: will coalesce with next packet
+2026-10-11T17:31:31.633286Z TRACE send{space=Initial pn=0 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=146
+2026-10-11T17:31:31.633412Z TRACE send{space=Handshake pn=0 path_id=0}: noq_proto::connection::packet_builder: frame=CRYPTO off: 0 len = 390
+2026-10-11T17:31:31.633458Z TRACE send{space=Handshake pn=0 path_id=0}: noq_proto::connection::packet_builder: PADDING * 618
+2026-10-11T17:31:31.633481Z TRACE send{space=Handshake pn=0 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=1054
+2026-10-11T17:31:31.633512Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.633524Z TRACE noq_proto::connection: sending 1200 bytes in 1 datagrams segment_size=1200 last_datagram_len=0 network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759)
+2026-10-11T17:31:31.633539Z TRACE noq_proto::connection::paths: anti amplification budget decreased network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) anti_amplification_budget=2352
+2026-10-11T17:31:31.633820Z TRACE noq_proto::connection: nothing to send in space space_id=Initial path_id=0
+2026-10-11T17:31:31.633840Z TRACE noq_proto::connection: nothing to send in space space_id=Handshake path_id=0
+2026-10-11T17:31:31.633850Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.641540Z TRACE noq_proto::connection: nothing to send in space space_id=Initial path_id=0
+2026-10-11T17:31:31.642887Z TRACE noq_proto::connection: nothing to send in space space_id=Handshake path_id=0
+2026-10-11T17:31:31.643001Z TRACE noq_proto::connection: blocked by pacing space_id=Data path_id=0 delay=9.8124ms
+2026-10-11T17:31:31.655389Z TRACE noq_proto::connection: nothing to send in space space_id=Initial path_id=0
+2026-10-11T17:31:31.655462Z TRACE noq_proto::connection: nothing to send in space space_id=Handshake path_id=0
+2026-10-11T17:31:31.655491Z TRACE noq_proto::connection: new datagram started count=1
+2026-10-11T17:31:31.655842Z TRACE send{space=Data pn=0 path_id=0}: noq_proto::connection::packet_builder: frame=NEW_CONNECTION_ID  seq: 1 id: 37c0ebae35e40ebf
+2026-10-11T17:31:31.655909Z TRACE send{space=Data pn=0 path_id=0}: noq_proto::connection::packet_builder: frame=NEW_CONNECTION_ID  seq: 2 id: 1f4350a3f80da3bd
+2026-10-11T17:31:31.655940Z TRACE send{space=Data pn=0 path_id=0}: noq_proto::connection::packet_builder: frame=NEW_CONNECTION_ID  seq: 3 id: e3d8d99b9789243b
+2026-10-11T17:31:31.655953Z TRACE send{space=Data pn=0 path_id=0}: noq_proto::connection::packet_builder: frame=NEW_CONNECTION_ID  seq: 4 id: 2b8834c37353738d
+2026-10-11T17:31:31.656008Z TRACE send{space=Data pn=0 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=138
+2026-10-11T17:31:31.656079Z TRACE noq_proto::connection::transmit_buf: clipped datagram size segment_size=138 prev_segment_size=1200
+2026-10-11T17:31:31.656119Z TRACE noq_proto::connection: sending 138 bytes in 1 datagrams segment_size=138 last_datagram_len=0 network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759)
+2026-10-11T17:31:31.656136Z TRACE noq_proto::connection::paths: anti amplification budget decreased network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) anti_amplification_budget=2214
+2026-10-11T17:31:31.656619Z TRACE noq_proto::connection: nothing to send in space space_id=Initial path_id=0
+2026-10-11T17:31:31.656643Z TRACE noq_proto::connection: nothing to send in space space_id=Handshake path_id=0
+2026-10-11T17:31:31.656657Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.656732Z TRACE timer_fired{scope="path" path_id=0 timer=Pacing}: noq_proto::connection: timeout
+2026-10-11T17:31:31.656844Z TRACE noq_proto::connection: nothing to send in space space_id=Initial path_id=0
+2026-10-11T17:31:31.656855Z TRACE noq_proto::connection: nothing to send in space space_id=Handshake path_id=0
+2026-10-11T17:31:31.656866Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.667689Z TRACE pkt{path_id=0}: noq_proto::connection: got Initial packet (52 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.668031Z TRACE pkt{path_id=0}: noq_proto::connection::paths: anti amplification budget increased network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) anti_amplification_budget=2370
+2026-10-11T17:31:31.668067Z TRACE pkt{path_id=0}: noq_proto::connection::paths: anti amplification budget increased network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) anti_amplification_budget=5814
+2026-10-11T17:31:31.668100Z TRACE pkt{path_id=0}: noq_proto::connection: got Handshake packet (1148 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.668151Z TRACE pkt{path_id=0}:recv{space=Handshake pn=0}: noq_proto::connection: discarding Initial keys
+2026-10-11T17:31:31.668247Z TRACE pkt{path_id=0}:recv{space=Handshake pn=0}:frame{ty=CRYPTO}: noq_proto::connection: consumed 181 CRYPTO bytes
+2026-10-11T17:31:31.693407Z TRACE pkt{path_id=0}:recv{space=Handshake pn=0}: noq_proto::connection: wrote 178 Data CRYPTO bytes
+2026-10-11T17:31:31.693514Z TRACE pkt{path_id=0}:recv{space=Handshake pn=0}: noq_proto::connection: discarding Handshake keys
+2026-10-11T17:31:31.693574Z TRACE pkt{path_id=0}:recv{space=Handshake pn=0}: noq_proto::connection: handshake confirmed
+2026-10-11T17:31:31.693592Z TRACE pkt{path_id=0}:recv{space=Handshake pn=0}: noq_proto::connection::state: connection state: established
+2026-10-11T17:31:31.693606Z TRACE pkt{path_id=0}:recv{space=Handshake pn=0}: noq_proto::connection: established
+2026-10-11T17:31:31.693739Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (1326 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.693845Z TRACE pkt{path_id=0}:recv{space=Data pn=0}: noq_proto::connection: got frame PING
+2026-10-11T17:31:31.693875Z TRACE pkt{path_id=0}:recv{space=Data pn=0}: noq_proto::connection: got frame IMMEDIATE_ACK
+2026-10-11T17:31:31.694180Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (1166 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.694266Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 0 seq: 1 id: 715efde079069159
+2026-10-11T17:31:31.694331Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 0 seq: 2 id: 38313bb76d131896
+2026-10-11T17:31:31.694363Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 0 seq: 3 id: 426ed56dc96b4d21
+2026-10-11T17:31:31.694391Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 0 seq: 4 id: d5656f041ab1a4da
+2026-10-11T17:31:31.694421Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 1 seq: 0 id: 4b74011f3bf89173
+2026-10-11T17:31:31.694452Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 1 seq: 1 id: 4fb864428b25a8f7
+2026-10-11T17:31:31.694483Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 1 seq: 2 id: df1a47a59d8e8065
+2026-10-11T17:31:31.694511Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 1 seq: 3 id: 0425d719327036d9
+2026-10-11T17:31:31.694540Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 1 seq: 4 id: c2566b9854fecdfe
+2026-10-11T17:31:31.694570Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 2 seq: 0 id: 83ac226d390ab36b
+2026-10-11T17:31:31.694600Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 2 seq: 1 id: 633b0e356bb115cd
+2026-10-11T17:31:31.694629Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 2 seq: 2 id: 8f3c25739ff664d8
+2026-10-11T17:31:31.694658Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 2 seq: 3 id: e4d1e919327f78f1
+2026-10-11T17:31:31.694687Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 2 seq: 4 id: 060766c72950e452
+2026-10-11T17:31:31.694717Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 3 seq: 0 id: cbee7a93dea5df6e
+2026-10-11T17:31:31.694755Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 3 seq: 1 id: 18b4d599cc62827f
+2026-10-11T17:31:31.694785Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 3 seq: 2 id: 522e29a59be51968
+2026-10-11T17:31:31.694814Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 3 seq: 3 id: 0df8781a36185466
+2026-10-11T17:31:31.694842Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 3 seq: 4 id: 941f7e8b982a195d
+2026-10-11T17:31:31.694870Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 4 seq: 0 id: ae6443b05cb3f7c8
+2026-10-11T17:31:31.694915Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 4 seq: 1 id: 999b8ab168970a63
+2026-10-11T17:31:31.694950Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 4 seq: 2 id: 4e907c985948e735
+2026-10-11T17:31:31.694977Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 4 seq: 3 id: a8f7fbf9ee7e6488
+2026-10-11T17:31:31.695003Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 4 seq: 4 id: 00780d8bb170edb5
+2026-10-11T17:31:31.695030Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 5 seq: 0 id: 8676ea6d6b9f44a1
+2026-10-11T17:31:31.695067Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 5 seq: 1 id: 33ed2e8c424c2f2b
+2026-10-11T17:31:31.695095Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 5 seq: 2 id: d3fd4d7d7d5615c2
+2026-10-11T17:31:31.695123Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 5 seq: 3 id: 52c0e16ea971fb78
+2026-10-11T17:31:31.695154Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 5 seq: 4 id: 6934a448c430f356
+2026-10-11T17:31:31.695181Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 6 seq: 0 id: a77ad98f8bf54cfc
+2026-10-11T17:31:31.695210Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 6 seq: 1 id: f440adf55244d219
+2026-10-11T17:31:31.695237Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 6 seq: 2 id: 2e9a7d98277aac07
+2026-10-11T17:31:31.695263Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 6 seq: 3 id: cb384d8470bde149
+2026-10-11T17:31:31.695290Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 6 seq: 4 id: 5362618c586c4f22
+2026-10-11T17:31:31.695320Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 7 seq: 0 id: 17fb4fd0c4da1b9c
+2026-10-11T17:31:31.695359Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 7 seq: 1 id: 0d3c6e8898541817
+2026-10-11T17:31:31.695387Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 7 seq: 2 id: 691068e17d73bae6
+2026-10-11T17:31:31.695414Z TRACE pkt{path_id=0}:recv{space=Data pn=1}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 7 seq: 3 id: 7c3c40a720a072db
+2026-10-11T17:31:31.695507Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (56 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.695596Z TRACE pkt{path_id=0}:recv{space=Data pn=2}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 7 seq: 4 id: 364a82892e65198d
+2026-10-11T17:31:31.695644Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (63 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.695690Z TRACE pkt{path_id=0}:recv{space=Data pn=3}: noq_proto::connection: got frame REACH_OUT round: 1 local_addr: 127.0.0.1:55759
+2026-10-11T17:31:31.695748Z TRACE pkt{path_id=0}:recv{space=Data pn=3}: noq_proto::connection: got frame REACH_OUT round: 1 local_addr: 10.200.0.1:55759
+2026-10-11T17:31:31.695776Z TRACE pkt{path_id=0}:recv{space=Data pn=3}: noq_proto::connection: got frame REACH_OUT round: 1 local_addr: 10.200.0.2:55759
+2026-10-11T17:31:31.695804Z TRACE pkt{path_id=0}:recv{space=Data pn=3}: noq_proto::connection: got frame PATH_STATUS_AVAILABLE path_id: 0 seq_no: 2
+2026-10-11T17:31:31.695836Z DEBUG pkt{path_id=0}:recv{space=Data pn=3}:frame{ty=PATH_STATUS_AVAILABLE path=0}: noq_proto::connection::paths: remote changed path status status=Available seq=2
+2026-10-11T17:31:31.695883Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (35 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.695958Z TRACE pkt{path_id=0}:recv{space=Data pn=4}: noq_proto::connection: got frame STREAM id=client bidirectional stream 0 offset=0 len=6 fin=false
+2026-10-11T17:31:31.696041Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (30 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.696102Z TRACE pkt{path_id=0}:recv{space=Data pn=5}: noq_proto::connection: got frame STREAM id=client bidirectional stream 0 offset=6 len=0 fin=true
+2026-10-11T17:31:31.696221Z TRACE send{space=Data pn=1 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_CHALLENGE(877fc520fb27b9db) msg="(nat-traversal)"
+2026-10-11T17:31:31.696261Z TRACE send{space=Data pn=1 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=35
+2026-10-11T17:31:31.696299Z TRACE noq_proto::connection: sending off-path NAT probe dst=(::ffff:10.200.0.2, 55759) len=35
+2026-10-11T17:31:31.697429Z TRACE send{space=Data pn=2 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_CHALLENGE(a63a788ac598c148) msg="(nat-traversal)"
+2026-10-11T17:31:31.697486Z TRACE send{space=Data pn=2 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=35
+2026-10-11T17:31:31.697521Z TRACE noq_proto::connection: sending off-path NAT probe dst=(::ffff:127.0.0.1, 55759) len=35
+2026-10-11T17:31:31.699098Z TRACE send{space=Data pn=3 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_CHALLENGE(a0c56b6e016a6866) msg="(nat-traversal)"
+2026-10-11T17:31:31.699188Z TRACE send{space=Data pn=3 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=35
+2026-10-11T17:31:31.699246Z TRACE noq_proto::connection: sending off-path NAT probe dst=(::ffff:10.200.0.1, 55759) len=35
+2026-10-11T17:31:31.699343Z TRACE noq_proto::connection: new datagram started count=1
+2026-10-11T17:31:31.699381Z TRACE send{space=Data pn=4 path_id=0}: noq_proto::connection::packet_builder: frame=HANDSHAKE_DONE
+2026-10-11T17:31:31.699421Z TRACE send{space=Data pn=4 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_ACK_ECN path_id: 0 ranges: [0..6] delay: 1616µs
+2026-10-11T17:31:31.699452Z TRACE send{space=Data pn=4 path_id=0}: noq_proto::connection::packet_builder: frame=CRYPTO off: 0 len = 178
+2026-10-11T17:31:31.699479Z TRACE send{space=Data pn=4 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_RETIRE_CONNECTION_ID path_id: 0 seq: 0
+2026-10-11T17:31:31.699519Z TRACE send{space=Data pn=4 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=223
+2026-10-11T17:31:31.699573Z TRACE noq_proto::connection::transmit_buf: clipped datagram size segment_size=223 prev_segment_size=1200
+2026-10-11T17:31:31.699595Z TRACE noq_proto::connection: sending 223 bytes in 1 datagrams segment_size=223 last_datagram_len=0 network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759)
+2026-10-11T17:31:31.699652Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.699706Z TRACE send{space=Data pn=5 path_id=0}: noq_proto::connection: writing MTUD probe probe_size=1326
+2026-10-11T17:31:31.699727Z TRACE send{space=Data pn=5 path_id=0}: noq_proto::connection::packet_builder: frame=PING
+2026-10-11T17:31:31.699741Z TRACE send{space=Data pn=5 path_id=0}: noq_proto::connection::packet_builder: frame=IMMEDIATE_ACK
+2026-10-11T17:31:31.699753Z TRACE send{space=Data pn=5 path_id=0}: noq_proto::connection::packet_builder: PADDING * 1298
+2026-10-11T17:31:31.699777Z TRACE send{space=Data pn=5 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=1326
+2026-10-11T17:31:31.699811Z TRACE noq_proto::connection: sending 1326 bytes in 1 datagrams segment_size=1326 last_datagram_len=0 network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759)
+2026-10-11T17:31:31.699873Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.701586Z TRACE noq_proto::connection: new datagram started count=1
+2026-10-11T17:31:31.701772Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 1 seq: 0 id: 06232299f5557e2d
+2026-10-11T17:31:31.701833Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 1 seq: 1 id: da652da951529c04
+2026-10-11T17:31:31.701848Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 1 seq: 2 id: db857baf3c7d7c2a
+2026-10-11T17:31:31.701872Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 1 seq: 3 id: 334ab8c176a4800f
+2026-10-11T17:31:31.701887Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 1 seq: 4 id: a89697e8d9f96f83
+2026-10-11T17:31:31.701921Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 2 seq: 0 id: 77e50c97fefe1ab2
+2026-10-11T17:31:31.701935Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 2 seq: 1 id: 2bee3ff474e35c09
+2026-10-11T17:31:31.701951Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 2 seq: 2 id: 0bd5a0296bebb3bb
+2026-10-11T17:31:31.701965Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 2 seq: 3 id: 566f102b3d722553
+2026-10-11T17:31:31.701980Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 2 seq: 4 id: 2d099768c2ace0bc
+2026-10-11T17:31:31.701993Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 3 seq: 0 id: ed72cd994f0bb412
+2026-10-11T17:31:31.702006Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 3 seq: 1 id: 91613446d7cf1dc8
+2026-10-11T17:31:31.702019Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 3 seq: 2 id: 036e247838a5681f
+2026-10-11T17:31:31.702033Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 3 seq: 3 id: 3486affb1003bd47
+2026-10-11T17:31:31.702045Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 3 seq: 4 id: 751c2bbe5b8d4932
+2026-10-11T17:31:31.702059Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 4 seq: 0 id: 3e665c660260d11b
+2026-10-11T17:31:31.702072Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 4 seq: 1 id: 48b5d487f7848e78
+2026-10-11T17:31:31.702086Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 4 seq: 2 id: ff15939206439bf8
+2026-10-11T17:31:31.702099Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 4 seq: 3 id: 666dfa429933720f
+2026-10-11T17:31:31.702113Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 4 seq: 4 id: 5ebe91198bac3668
+2026-10-11T17:31:31.702126Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 5 seq: 0 id: 18a713e5a315559e
+2026-10-11T17:31:31.702140Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 5 seq: 1 id: 3148d6276a135657
+2026-10-11T17:31:31.702153Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 5 seq: 2 id: 5acab444bad71d24
+2026-10-11T17:31:31.702167Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 5 seq: 3 id: 1802b4610276931f
+2026-10-11T17:31:31.702182Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 5 seq: 4 id: c65c80de5cbafef8
+2026-10-11T17:31:31.702196Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 6 seq: 0 id: d15d59f26d30d6a5
+2026-10-11T17:31:31.702216Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 6 seq: 1 id: b36fb3159bd1727b
+2026-10-11T17:31:31.702229Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 6 seq: 2 id: cfc4ccaca2283649
+2026-10-11T17:31:31.702242Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 6 seq: 3 id: 1fba8cc504792bb9
+2026-10-11T17:31:31.702255Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 6 seq: 4 id: 9288f9a54d2d36ca
+2026-10-11T17:31:31.702268Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 7 seq: 0 id: dd263f07b311ff99
+2026-10-11T17:31:31.702279Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 7 seq: 1 id: 1d437dc322cf4c86
+2026-10-11T17:31:31.702293Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 7 seq: 2 id: 422a1f42abef8455
+2026-10-11T17:31:31.702326Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 7 seq: 3 id: 7498f8582c89bfcb
+2026-10-11T17:31:31.702345Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_NEW_CONNECTION_ID path_id: 7 seq: 4 id: efb730fc0caa759a
+2026-10-11T17:31:31.702430Z TRACE send{space=Data pn=6 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=1076
+2026-10-11T17:31:31.702532Z TRACE noq_proto::connection::transmit_buf: clipped datagram size segment_size=1076 prev_segment_size=1200
+2026-10-11T17:31:31.702567Z TRACE noq_proto::connection: sending 1076 bytes in 1 datagrams segment_size=1076 last_datagram_len=0 network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759)
+2026-10-11T17:31:31.702784Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.702931Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: actor started
+2026-10-11T17:31:31.702969Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (1200 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.703153Z TRACE pkt{path_id=0}:recv{space=Data pn=6}: noq_proto::connection: got frame IMMEDIATE_ACK
+2026-10-11T17:31:31.703230Z TRACE pkt{path_id=0}:recv{space=Data pn=6}: noq_proto::connection: got frame PATH_ACK_ECN path_id: 0 ranges: [0..1,2..3] delay: 76µs
+2026-10-11T17:31:31.703382Z TRACE pkt{path_id=0}:recv{space=Data pn=6}: noq_proto::connection: got frame PATH_RESPONSE(a63a788ac598c148)
+2026-10-11T17:31:31.703691Z TRACE noq_proto::connection: blocked by pacing space_id=Data path_id=0 delay=709.136µs
+2026-10-11T17:31:31.704069Z TRACE RemoteStateActor{remote=ed4928c628}:handle_message{msg=AddConnection(138622888057408) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: updated local QNT addresses direct_addrs={10.200.0.1:34441, 10.200.0.2:34441, 127.0.0.1:34441}
+2026-10-11T17:31:31.704414Z TRACE RemoteStateActor{remote=ed4928c628}:handle_message{msg=AddConnection(138622888057408) send_tasks=FuturesUnorderedBounded { len: 0, .. }}: iroh::socket::remote_map::remote_state: not holepunching: no client connection
+2026-10-11T17:31:31.704963Z DEBUG RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: connections are not good enough, triggering holepunching
+2026-10-11T17:31:31.705039Z TRACE noq_proto::connection: new datagram started count=1
+2026-10-11T17:31:31.705205Z TRACE send{space=Data pn=7 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_ACK_ECN path_id: 0 ranges: [0..7] delay: 276µs
+2026-10-11T17:31:31.705260Z TRACE send{space=Data pn=7 path_id=0}: noq_proto::connection::packet_builder: frame=ADD_IPV_4_ADDRESS seq_no: 2 addr: 127.0.0.1:34441
+2026-10-11T17:31:31.705295Z TRACE send{space=Data pn=7 path_id=0}: noq_proto::connection::packet_builder: frame=ADD_IPV_4_ADDRESS seq_no: 1 addr: 10.200.0.2:34441
+2026-10-11T17:31:31.705310Z TRACE send{space=Data pn=7 path_id=0}: noq_proto::connection::packet_builder: frame=ADD_IPV_4_ADDRESS seq_no: 0 addr: 10.200.0.1:34441
+2026-10-11T17:31:31.705333Z TRACE send{space=Data pn=7 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_STATUS_AVAILABLE path_id: 0 seq_no: 2
+2026-10-11T17:31:31.705402Z TRACE send{space=Data pn=7 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=73
+2026-10-11T17:31:31.705460Z TRACE noq_proto::connection::transmit_buf: clipped datagram size segment_size=73 prev_segment_size=1200
+2026-10-11T17:31:31.705486Z TRACE noq_proto::connection: sending 73 bytes in 1 datagrams segment_size=73 last_datagram_len=0 network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759)
+2026-10-11T17:31:31.705627Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.705751Z TRACE timer_fired{scope="path" path_id=0 timer=Pacing}: noq_proto::connection: timeout
+2026-10-11T17:31:31.705848Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.705933Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: not holepunching: no client connection
+2026-10-11T17:31:31.706080Z  INFO harness: hook runs role="server" event="after_handshake" peer=ed4928c628 allowed=false enforce=false
+2026-10-11T17:31:31.706449Z  INFO harness: Connection handed to the application role="server" event="application_has_connection" peer=ed4928c628 allowed=false remote_info=["Ip(127.0.0.1:55759)/Active"]
+2026-10-11T17:31:31.706639Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.707192Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (40 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.707345Z TRACE pkt{path_id=0}:recv{space=Data pn=7}: noq_proto::connection: got frame PATH_ACK_ECN path_id: 0 ranges: [0..1,2..3,4..7] delay: 382µs
+2026-10-11T17:31:31.707443Z TRACE pkt{path_id=0}:recv{space=Data pn=7}:frame{ty=PATH_ACK_ECN path=0}: noq_proto::connection::mtud: new MTU detected current_mtu=1326
+2026-10-11T17:31:31.707565Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.707611Z TRACE send{space=Data pn=8 path_id=0}: noq_proto::connection: writing MTUD probe probe_size=1389
+2026-10-11T17:31:31.707633Z TRACE send{space=Data pn=8 path_id=0}: noq_proto::connection::packet_builder: frame=PING
+2026-10-11T17:31:31.707649Z TRACE send{space=Data pn=8 path_id=0}: noq_proto::connection::packet_builder: frame=IMMEDIATE_ACK
+2026-10-11T17:31:31.707660Z TRACE send{space=Data pn=8 path_id=0}: noq_proto::connection::packet_builder: PADDING * 1361
+2026-10-11T17:31:31.707692Z TRACE send{space=Data pn=8 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=1389
+2026-10-11T17:31:31.707730Z TRACE noq_proto::connection: sending 1389 bytes in 1 datagrams segment_size=1389 last_datagram_len=0 network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759)
+2026-10-11T17:31:31.707862Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.708094Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (1389 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.708198Z TRACE pkt{path_id=0}:recv{space=Data pn=8}: noq_proto::connection: got frame PING
+2026-10-11T17:31:31.708234Z TRACE pkt{path_id=0}:recv{space=Data pn=8}: noq_proto::connection: got frame IMMEDIATE_ACK
+2026-10-11T17:31:31.708552Z TRACE noq_proto::connection: new datagram started count=1
+2026-10-11T17:31:31.708625Z TRACE send{space=Data pn=9 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_ACK_ECN path_id: 0 ranges: [6..9] delay: 71µs
+2026-10-11T17:31:31.708725Z TRACE send{space=Data pn=9 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=36
+2026-10-11T17:31:31.708762Z TRACE noq_proto::connection::transmit_buf: clipped datagram size segment_size=36 prev_segment_size=1326
+2026-10-11T17:31:31.708782Z TRACE noq_proto::connection: sending 36 bytes in 1 datagrams segment_size=36 last_datagram_len=0 network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759)
+2026-10-11T17:31:31.708874Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.709076Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (56 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.709205Z TRACE pkt{path_id=0}:recv{space=Data pn=9}: noq_proto::connection: got frame PATH_NEW_CONNECTION_ID path_id: 0 seq: 5 id: a976968864706a17
+2026-10-11T17:31:31.709300Z TRACE noq_proto::connection: nothing to send in space space_id=Data path_id=0
+2026-10-11T17:31:31.709523Z  INFO harness: stream from peer role="server" event="stream_opened" peer=ed4928c628 first_bytes=hello remote_info=["Ip(127.0.0.1:55759)/Active"]
+2026-10-11T17:31:31.709814Z  INFO harness: refusing after the stream opened role="server" event="app_refusal" peer=ed4928c628 remote_info=["Ip(127.0.0.1:55759)/Active"]
+2026-10-11T17:31:31.709859Z TRACE noq_proto::connection: connection closed
+2026-10-11T17:31:31.709881Z TRACE noq_proto::connection::state: connection state: closed remote_reason=Application(ApplicationClose { error_code: 4098, reason: b"not on allowlist" }) is_local=true
+2026-10-11T17:31:31.710002Z  INFO harness: closed role="server" event="connection_closed" why=closed
+2026-10-11T17:31:31.710092Z TRACE noq_proto::connection: new datagram started count=1
+2026-10-11T17:31:31.710150Z TRACE send{space=Data pn=10 path_id=0}: noq_proto::connection: sending CONNECTION_CLOSE
+2026-10-11T17:31:31.710188Z TRACE send{space=Data pn=10 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_ACK_ECN path_id: 0 ranges: [6..10] delay: 140µs
+2026-10-11T17:31:31.710227Z TRACE send{space=Data pn=10 path_id=0}: noq_proto::connection::packet_builder: frame=CONNECTION_CLOSE error_code=4098 reason='not on allowlist'
+2026-10-11T17:31:31.710265Z TRACE send{space=Data pn=10 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=56
+2026-10-11T17:31:31.710298Z TRACE noq_proto::connection: sending 56 bytes in 1 datagrams segment_size=1326 last_datagram_len=56 network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759)
+2026-10-11T17:31:31.710556Z TRACE RemoteStateActor{remote=ed4928c628}: iroh::socket::remote_map::remote_state: last connection closed - clearing selected_path
+2026-10-11T17:31:31.714406Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (35 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.714598Z TRACE pkt{path_id=0}:recv{space=Data pn=10}: noq_proto::connection: processing frame in closed state frame=PathChallenge(PathChallenge(7736867852329469863))
+2026-10-11T17:31:31.714703Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (35 bytes) from (local: 10.200.0.2, remote: [::ffff:10.200.0.2]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.714761Z TRACE pkt{path_id=0}:recv{space=Data pn=11}: noq_proto::connection: processing frame in closed state frame=PathChallenge(PathChallenge(4864206648729381172))
+2026-10-11T17:31:31.714822Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (35 bytes) from (local: 10.200.0.1, remote: [::ffff:10.200.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.714866Z TRACE pkt{path_id=0}:recv{space=Data pn=12}: noq_proto::connection: processing frame in closed state frame=PathChallenge(PathChallenge(49613607994036423))
+2026-10-11T17:31:31.714938Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (59 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.714995Z TRACE pkt{path_id=0}:recv{space=Data pn=13}: noq_proto::connection: processing frame in closed state frame=ReachOut(ReachOut { round: 2, ip: 127.0.0.1, port: 55759 })
+2026-10-11T17:31:31.715037Z TRACE pkt{path_id=0}:recv{space=Data pn=13}: noq_proto::connection: processing frame in closed state frame=ReachOut(ReachOut { round: 2, ip: 10.200.0.1, port: 55759 })
+2026-10-11T17:31:31.715054Z TRACE pkt{path_id=0}:recv{space=Data pn=13}: noq_proto::connection: processing frame in closed state frame=ReachOut(ReachOut { round: 2, ip: 10.200.0.2, port: 55759 })
+2026-10-11T17:31:31.715104Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (36 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.715153Z TRACE pkt{path_id=0}:recv{space=Data pn=14}: noq_proto::connection: processing frame in closed state frame=PathAck(PathAck { path_id: PathId(0), largest: 9, delay: 88, ranges: [7..10], ecn: Some(EcnCounts { ect0: 7, ect1: 0, ce: 0 }) })
+2026-10-11T17:31:31.715207Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (1420 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.715245Z TRACE pkt{path_id=0}:recv{space=Data pn=15}: noq_proto::connection: processing frame in closed state frame=Ping
+2026-10-11T17:31:31.715261Z TRACE pkt{path_id=0}:recv{space=Data pn=15}: noq_proto::connection: processing frame in closed state frame=ImmediateAck
+2026-10-11T17:31:31.715540Z TRACE pkt{path_id=0}: noq_proto::connection: got Data packet (40 bytes) from (local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759) using id db4d08d6eb1253c2
+2026-10-11T17:31:31.715607Z TRACE pkt{path_id=0}:recv{space=Data pn=16}: noq_proto::connection: processing frame in closed state frame=PathAck(PathAck { path_id: PathId(0), largest: 10, delay: 68, ranges: [7..11], ecn: Some(EcnCounts { ect0: 8, ect1: 0, ce: 0 }) })
+2026-10-11T17:31:31.715646Z TRACE pkt{path_id=0}:recv{space=Data pn=16}: noq_proto::connection: processing frame in closed state frame=Close(Connection(ConnectionClose { error_code: NO_ERROR, frame_type: None, reason: b"" }))
+2026-10-11T17:31:31.715685Z TRACE pkt{path_id=0}:recv{space=Data pn=16}: noq_proto::connection::state: connection state: draining
+2026-10-11T17:31:31.715793Z TRACE noq_proto::connection: new datagram started count=1
+2026-10-11T17:31:31.715845Z TRACE send{space=Data pn=11 path_id=0}: noq_proto::connection: sending CONNECTION_CLOSE
+2026-10-11T17:31:31.715887Z TRACE send{space=Data pn=11 path_id=0}: noq_proto::connection::packet_builder: frame=PATH_ACK_ECN path_id: 0 ranges: [6..10] delay: 848µs
+2026-10-11T17:31:31.719123Z TRACE send{space=Data pn=11 path_id=0}: noq_proto::connection::packet_builder: frame=CONNECTION_CLOSE error_code=0 reason=''
+2026-10-11T17:31:31.719288Z TRACE send{space=Data pn=11 path_id=0}: noq_proto::connection::packet_builder: wrote packet size=40
+2026-10-11T17:31:31.719390Z TRACE noq_proto::connection: sending 40 bytes in 1 datagrams segment_size=1326 last_datagram_len=40 network_path=(local: 127.0.0.1, remote: [::ffff:127.0.0.1]:55759)
+2026-10-11T17:31:32.180610Z TRACE timeout{scope="conn" timer=Close}: noq_proto::connection: timeout
+2026-10-11T17:31:32.180673Z TRACE timeout{scope="conn" timer=Close}: noq_proto::connection::state: connection state: drained

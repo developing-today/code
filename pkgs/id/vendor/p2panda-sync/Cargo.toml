@@ -1,0 +1,50 @@
+[package]
+name = "p2panda-sync"
+version = "0.7.1"
+edition = "2024"
+authors = [
+  "adz <x12@adz.garden>",
+  "sandreae <contact@samandreae.com>",
+  "glyph <glyph@mycelial.technology>",
+]
+description = "Local-first sync for append-only logs and traits to build your own"
+repository = "https://github.com/p2panda/p2panda"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["p2p", "local-first", "sync", "replication"]
+rust-version = "1.96"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+ingest = [
+  "dep:p2panda-stream",
+]
+test_utils = [
+  "dep:rand",
+  "dep:tracing-subscriber",
+  "p2panda-core/test_utils",
+  "p2panda-store/test_utils",
+]
+
+# Vendored from p2panda rev 3e84cac. See ../README.md for the changes.
+# Every `workspace = true` below is resolved to the root's value, since this copy is outside that workspace.
+[dependencies]
+futures-channel = "0.3.32"
+futures-util = { version = "0.3.32", default-features = true, features = ["sink"] }
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = true }
+# Changed from the upstream line `p2panda-store = { workspace = true, default-features = true }`.
+# The upstream default is `sqlite`, which pulls in sqlx. Our traits do not need it.
+p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false }
+p2panda-stream = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", optional = true, default-features = false, features = ["ingest"] }
+pin-project-lite = "0.2.16"
+rand = { version = "0.10.1", optional = true }
+serde = "1.0.228"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", default-features = true, features = ["macros", "sync"] }
+tokio-stream = { version = "0.1.18", default-features = false, features = ["sync"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"], optional = true }

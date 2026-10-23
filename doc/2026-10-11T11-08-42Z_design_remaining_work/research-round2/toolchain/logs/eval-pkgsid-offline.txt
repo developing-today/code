@@ -1,0 +1,7 @@
+rust-overlay=b962e5d0c8cd97196c6a882d659fe451b52ad989
+nixpkgs=afe869b7192c6caa674e74227031eaa232a062a7
+rust-bin.stable.latest=1.99.0
+rust-bin.stable.1.99.0=present
+rust-bin.stable.1.97.0=present
+nixpkgs.rustc=1.98.1
+nixpkgs.cargo=1.98.1

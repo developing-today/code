@@ -1,0 +1,42 @@
+
+running 19 tests
+test a_swapped_endpoint_id_still_parses_so_a_plain_ticket_proves_nothing ... ok
+test a_is_the_standard_string_and_round_trips ... ok
+test b_is_rejected_by_the_standard_parser_as_expected ... ok
+test b_rejects_trailing_bytes_that_iroh_would_ignore ... ok
+test d_split_follows_the_wire_length_because_non_canonical_payloads_parse ... FAILED
+test d_is_dropped_when_a_standard_client_reads_and_writes_the_ticket ... ok
+test paste_rules_the_parser_applies_to_the_pasted_string ... ok
+test d_is_accepted_by_the_standard_parser_with_the_same_address ... ok
+test e_a_plain_ticket_is_accepted_and_unverified_not_refused ... ok
+test a_signature_made_for_option_d_is_refused_as_option_b ... ok
+test b_rejects_a_changed_ticket_and_a_wrong_signer ... ok
+test print_lengths_and_examples ... ok
+test c_rejects_an_event_from_another_key_or_with_a_forged_signature ... ok
+test c_verifies_the_unchanged_standard_ticket_against_the_signed_event ... ok
+test b_round_trips_through_our_parser_and_verifies ... ok
+test c_rejects_a_swapped_endpoint_id_that_the_standard_parser_accepts ... ok
+test d_verifies_a_valid_suffix_and_rejects_each_tamper ... ok
+test e_a_valid_event_verifies_and_a_mismatched_one_is_rejected ... ok
+test a_trailing_bytes_are_silently_ignored_at_every_length ... ok
+
+failures:
+
+---- d_split_follows_the_wire_length_because_non_canonical_payloads_parse stdout ----
+
+thread 'd_split_follows_the_wire_length_because_non_canonical_payloads_parse' (2069022) panicked at tests/options.rs:257:5:
+assertion `left == right` failed
+  left: [0, 234, 74, 108, 99, 226, 156, 82, 10, 190, 245, 80, 123, 19, 46, 197, 249, 149, 71, 118, 174, 190, 190, 123, 146, 66, 30, 234, 105, 20, 70, 210, 44, 2, 0, 28, 104, 116, 116, 112, 115, 58, 47, 47, 114, 101, 108, 97, 121, 46, 101, 120, 97, 109, 112, 108, 101, 46, 116, 101, 115, 116, 46, 47]
+ right: [0, 234, 74, 108, 99, 226, 156, 82, 10, 190, 245, 80, 123, 19, 46, 197, 249, 149, 71, 118, 174, 190, 190, 123, 146, 66, 30, 234, 105, 20, 70, 210, 44, 2, 0, 28, 104, 116, 116, 112, 115, 58, 47, 47, 114, 101, 108, 97, 121, 46, 101, 120, 97, 109, 112, 108, 101, 46, 116, 101, 115, 116, 46, 47, 0, 28, 104, 116, 116, 112, 115, 58, 47, 47, 114, 101, 108, 97, 121, 46, 101, 120, 97, 109, 112, 108, 101, 46, 116, 101, 115, 116, 46, 47]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    d_split_follows_the_wire_length_because_non_canonical_payloads_parse
+
+test result: FAILED. 18 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+   Compiling ticket-options v0.0.0 (/home/user/work/research-round2/ticket-signing/mutants/ticket-options)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.79s
+     Running tests/options.rs (/home/user/work/research-round2/ticket-signing/mutant-target/debug/deps/options-563e9fa2d57ce743)
+error: test failed, to rerun pass `--test options`
