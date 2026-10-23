@@ -888,7 +888,7 @@ dependencies = [
 [[package]]
 name = "p2panda-core"
 version = "0.7.1"
-source = "git+https://github.com/p2panda/p2panda?rev=3e84cac48bba05c6857cce2ec433862b97f8d53c#3e84cac48bba05c6857cce2ec433862b97f8d53c"
+source = "git+https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b95269926bf58121cf6a2d3dd5ca41dfc"
 dependencies = [
  "blake3",
  "cbor-core",
@@ -903,7 +903,7 @@ dependencies = [
 [[package]]
 name = "p2panda-encryption"
 version = "0.7.1"
-source = "git+https://github.com/p2panda/p2panda?rev=3e84cac48bba05c6857cce2ec433862b97f8d53c#3e84cac48bba05c6857cce2ec433862b97f8d53c"
+source = "git+https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b95269926bf58121cf6a2d3dd5ca41dfc"
 dependencies = [
  "chacha20poly1305",
  "curve25519-dalek",

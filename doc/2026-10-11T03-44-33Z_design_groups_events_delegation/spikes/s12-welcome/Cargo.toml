@@ -14,7 +14,7 @@ exclude = ["variants/found/p2panda-encryption", "variants/serde-bytes/p2panda-en
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
 cbor-core = "=0.10.1"
 # Stock crate, as pinned.
-p2panda-encryption = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", features = ["data_scheme", "test_utils"] }
+p2panda-encryption = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = ["data_scheme", "test_utils"] }
 # serde_bytes variant: the S3 path copy plus `serde_bytes` on the two welcome fields (see RESULTS.md).
 p2panda-encryption-sb = { package = "p2panda-encryption", path = "variants/serde-bytes/p2panda-encryption", features = ["data_scheme", "test_utils"] }
 # The S3 path copy as found: membership fix and add_from_join, no serde_bytes on the fields.

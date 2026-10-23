@@ -20,7 +20,7 @@ cbor-core = "=0.10.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11.19"
 # Stock crate, as pinned (the baseline).
-p2panda-encryption = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", features = ["data_scheme", "test_utils"] }
+p2panda-encryption = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = ["data_scheme", "test_utils"] }
 # Pinned source plus `serde_bytes` on both fields (the option (b) diff).
 p2panda-encryption-both = { package = "p2panda-encryption-both", path = "variants/both/p2panda-encryption", features = ["data_scheme", "test_utils"] }
 # Only the `TwoPartyPlaintext.plaintext` field annotated (inner layer).

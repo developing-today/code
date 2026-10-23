@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 # Same pin and features as the workspace in /home/user/work/spikes/Cargo.toml.
-p2panda-encryption = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", features = ["data_scheme", "message_scheme", "test_utils"] }
+p2panda-encryption = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = ["data_scheme", "message_scheme", "test_utils"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
