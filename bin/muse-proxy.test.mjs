@@ -29,6 +29,17 @@ if grep -q FAILME "$prompt" 2>/dev/null; then
   echo "stub muse: auth expired" >&2
   exit 3
 fi
+if grep -q FAILPARTIAL "$prompt" 2>/dev/null; then
+  printf '%s\\n' '{"payload_type":"run.output.delta","payload":{"text":"partial answer"}}'
+  printf '%s\\n' '{"payload_type":"run.terminal.failed","payload":{"terminal":"failed","text":"partial answer"}}'
+  echo "stub muse: run failed midway" >&2
+  exit 0
+fi
+if grep -q CRASHPARTIAL "$prompt" 2>/dev/null; then
+  printf '%s\\n' '{"payload_type":"run.output.delta","payload":{"text":"partial answer"}}'
+  echo "stub muse: crashed midway" >&2
+  exit 3
+fi
 if grep -q DIVERGE "$prompt" 2>/dev/null; then
   printf '%s\\n' '{"payload_type":"run.output.delta","payload":{"text":"abc"}}'
   printf '%s\\n' '{"payload_type":"run.terminal.completed","payload":{"terminal":"completed","text":"xyz-longer"}}'
@@ -143,6 +154,40 @@ test('execution failure: stream gets an SSE-framed error + [DONE], non-stream ge
   const errorEvent = JSON.parse(dataLines[0].slice('data: '.length));
   assert.match(errorEvent.error.message, /Muse execution failed: stub muse: auth expired/);
   assert.equal(dataLines[dataLines.length - 1], 'data: [DONE]');
+});
+
+test('partial output then failure: masked success becomes an error in both modes (#672)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+
+  for (const marker of ['FAILPARTIAL', 'CRASHPARTIAL']) {
+    const messages = [{ role: 'user', content: `please ${marker} now` }];
+
+    const plainRes = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages })
+    });
+    assert.equal(plainRes.status, 500, `${marker}: non-stream must be a 500, not a 200 'stop'`);
+    const plainBody = JSON.parse(await plainRes.text());
+    assert.match(plainBody.error.message, /Muse execution failed: stub muse:/);
+
+    const streamRes = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, stream: true })
+    });
+    assert.equal(streamRes.status, 200);
+    const sse = await streamRes.text();
+    const dataLines = sse.split('\n').filter(l => l.startsWith('data: '));
+    assert.equal(dataLines[dataLines.length - 1], 'data: [DONE]', `${marker}: stream must end with [DONE]`);
+    const events = dataLines.slice(0, -1).map(l => JSON.parse(l.slice('data: '.length)));
+    const errorEvent = events.find(e => e.error);
+    assert.ok(errorEvent, `${marker}: stream must carry an error event, got: ${JSON.stringify(sse)}`);
+    assert.match(errorEvent.error.message, /Muse execution failed: stub muse:/);
+    const stopChunk = events.find(e => e.choices && e.choices[0].finish_reason === 'stop');
+    assert.equal(stopChunk, undefined, `${marker}: no chunk may claim finish_reason 'stop'`);
+  }
 });
 
 test('divergent terminal text: non-stream uses it, stream keeps the deltas already sent', async (t) => {
