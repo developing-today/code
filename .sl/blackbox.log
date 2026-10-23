@@ -1,3 +1,0 @@
-2023/04/22 02:45:56 user @0000000000000000000000000000000000000000 (3503) [visibility]> read 0 heads: 
-2023/04/22 02:45:57 user @0000000000000000000000000000000000000000 (3503) [visibility]> read 0 heads: 
-2023/04/22 02:45:58 user @5d50dddb97b0f23537dc9ae216e3a3bad13f6f21 (3503) [command_finish]> clone 'https://github.com/thoughtpolice/buck2-nix' /home/user/buck2-nix.sl exited 0 after 2.12 seconds

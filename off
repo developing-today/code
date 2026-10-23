@@ -1,0 +1,1 @@
+./lib/auth-rebuild-offline.sh

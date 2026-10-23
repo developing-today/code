@@ -1,0 +1,3159 @@
+<!DOCTYPE html>
+<!--                         HETZNER ONLINE GMBH                                 -->
+<!-- 	 Glad to see you are interested in our source code.                      -->
+<!-- 	 We are always looking for talented people to work with us.              -->
+<!-- 	 Why don't you visit our Job Portal at career.hetzner.com?               -->
+
+<!--[if !IE]><!-->
+<html lang="en-US">
+<!--<![endif]-->
+<!--[if IE 6 ]><html lang="en-US" class="ie ie6"><![endif]-->
+<!--[if IE 7 ]><html lang="en-US" class="ie ie7"><![endif]-->
+<!--[if IE 8 ]><html lang="en-US" class="ie ie8"><![endif]-->
+<head>
+    <base href="https://www.hetzner.com/"><!--[if lte IE 6]></base><![endif]-->
+<title>404 - page not found</title>
+<meta http-equiv="Content-type" content="text/html; charset=utf-8" />
+
+
+<link rel="canonical" href="https://www.hetzner.com/seite-nicht-gefunden/">
+
+    <link rel="alternate" hreflang="de" href="https://www.hetzner.com/de/seite-nicht-gefunden/">
+
+    <link rel="alternate" hreflang="en" href="https://www.hetzner.com/seite-nicht-gefunden/">
+
+    <link rel="alternate" hreflang="x-default" href="https://www.hetzner.com/seite-nicht-gefunden/">
+
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta content='width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=1' name='viewport'/>
+
+	<link rel="shortcut icon" href="/_resources/themes/hetzner/images/favicons/favicon.ico" />
+	<link rel="apple-touch-icon" sizes="57x57" href="/_resources/themes/hetzner/images/favicons/apple-icon-57x57.png">
+	<link rel="apple-touch-icon" sizes="60x60" href="/_resources/themes/hetzner/images/favicons/apple-icon-60x60.png">
+	<link rel="apple-touch-icon" sizes="72x72" href="/_resources/themes/hetzner/images/favicons/apple-icon-72x72.png">
+	<link rel="apple-touch-icon" sizes="76x76" href="/_resources/themes/hetzner/images/favicons/apple-icon-76x76.png">
+	<link rel="apple-touch-icon" sizes="114x114" href="/_resources/themes/hetzner/images/favicons/apple-icon-114x114.png">
+	<link rel="apple-touch-icon" sizes="120x120" href="/_resources/themes/hetzner/images/favicons/apple-icon-120x120.png">
+	<link rel="apple-touch-icon" sizes="144x144" href="/_resources/themes/hetzner/images/favicons/apple-icon-144x144.png">
+	<link rel="apple-touch-icon" sizes="152x152" href="/_resources/themes/hetzner/images/favicons/apple-icon-152x152.png">
+	<link rel="apple-touch-icon" sizes="180x180" href="/_resources/themes/hetzner/images/favicons/apple-icon-180x180.png">
+	<link rel="icon" type="image/png" sizes="192x192"  href="/_resources/themes/hetzner/images/favicons/android-icon-192x192.png">
+	<link rel="icon" type="image/png" sizes="32x32" href="/_resources/themes/hetzner/images/favicons/favicon-32x32.png">
+	<link rel="icon" type="image/png" sizes="96x96" href="/_resources/themes/hetzner/images/favicons/favicon-96x96.png">
+	<link rel="icon" type="image/png" sizes="16x16" href="/_resources/themes/hetzner/images/favicons/favicon-16x16.png">
+	<meta name="msapplication-TileColor" content="#ffffff">
+	<meta name="msapplication-TileImage" content="/_resources/themes/hetzner/images/favicons/ms-icon-144x144.png">
+	<meta name="theme-color" content="#ffffff">
+
+
+<link
+    rel="stylesheet preload"
+    href="/_resources/themes/general/dist/fonts.css?m=1791530682"
+    as="style"
+    crossorigin="anonymous"
+/>
+
+
+
+<!-- Matomo -->
+
+    <script>
+        var _paq = window._paq = window._paq || []
+        _paq.push(['setDocumentTitle', document.domain + ' / ' + document.title])
+            
+            _paq.push(['setCookieDomain', '*.hetzner.com'])
+            _paq.push(['setDomains', '*.hetzner.com'])
+            
+        _paq.push(['requireCookieConsent'])
+        _paq.push(['setConversionAttributionFirstReferrer', true])
+        _paq.push(['trackPageView'])
+        _paq.push(['enableLinkTracking'])
+        _paq.push(['enableHeartBeatTimer', 15]);
+        (function () {
+            var u = 'https://use.hetzner.com/'
+            _paq.push(['setTrackerUrl', u + 'meck'])
+            _paq.push(['setSiteId', '8'])
+            var d = document, g = d.createElement('script'), s = d.getElementsByTagName('script')[0]
+            g.async = true
+            g.src = u + 'heck.js'
+            s.parentNode.insertBefore(g, s)
+        })()
+    </script>
+
+<!-- End Matomo Code -->
+
+<!-- Matomo Tag Manager -->
+
+    <script>
+        var _mtm = window._mtm = window._mtm || [];
+        _mtm.push({'mtm.startTime': (new Date().getTime()), 'event': 'mtm.Start'});
+        (function() {
+            var d=document, g=d.createElement('script'), s=d.getElementsByTagName('script')[0];
+            g.async=true; g.src='https://use.hetzner.com/js/container_IGdNOkAE.js'; s.parentNode.insertBefore(g,s);
+        })();
+    </script>
+
+<!-- End Matomo Tag Manager -->
+
+<link rel="stylesheet" type="text/css" href="/_resources/themes/general/dist/vendors.css?m=1791530682">
+<link rel="stylesheet" type="text/css" href="/_resources/themes/general/dist/fonts.css?m=1791530682">
+<link rel="stylesheet" type="text/css" href="/_resources/themes/hetzner/dist/bootstrap.css?m=1791530687">
+<link rel="stylesheet" type="text/css" href="/_resources/themes/hetzner/dist/vendors.css?m=1791530687">
+<link rel="stylesheet" type="text/css" href="/_resources/themes/hetzner/dist/app.css?m=1791530687">
+</head>
+<body class="with-toptoolbar">
+
+
+<header id="header">
+    
+<div class="modal fade h-100 justify-content-center align-items-center d-none" id="InitModal" role="dialog" style="display: flex;">
+    <div class="modal-dialog modal-dialog-centered modal-lg" style="max-width: 768px;">
+        <div class="modal-content text-center">
+            <div class="modal-header" style="padding: 20px;">
+                <h3>THIS WEBSITE USES COOKIES</h3>
+            <div class="modal-body p-0 font-size-normal" style="line-height: 1.6em;">
+                <div style="margin-bottom: 10px;">
+                    <span>We want you to have the best possible user experience on our website. We use cookies to analyze how visitors like you use our website, so we can make improvements. And we use cookies to make sure that the website functions normally. For more info, see our </span>
+                    <a href="/legal/privacy-policy" style="color: #383838; text-decoration: underline; font-weight: 500;">privacy policy</a><span>. You can edit your cookie settings there at any time.</span>
+                </div>
+                <div class="d-flex flex-column flex-md-row" style="gap: 10px;">
+                    <button
+                        class="btn btn-lg btn-block btn-prio-1"
+                        id="AcceptCookies"
+                    >
+                        Allow all cookies
+                    </button>
+                    <button
+                        class="btn btn-lg btn-block btn-prio-3 sliding-background"
+                        id="DeclineCookies"
+                        style="margin-top: 0;"
+                    >
+                        Allow necessary cookies
+                    </button>
+                </div>
+            </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+    
+    
+
+
+    <div class="modal fade" id="LangSettings" role="dialog">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content lang-model-content">
+            <div class="modal-header p-0">
+                <button type="button" class="close" data-bs-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+                <h3 class="lvc-modal-title modal-title">Choose your location settings</h3>
+            </div>
+            <div class="modal-body lang-settings-grid">
+                <div class="d-flex flex-column settings-wrapper">
+    <h4 class="lvc-modal-sub-title modal-title">
+        Language
+    </h4>
+    <div
+        id="settings-language"
+        class="settings-items"
+    >
+        
+            <button
+                class="btn btn-langsettings lvc-modal-lang-track"
+                id="language-de"
+                data-url="https://www.hetzner.com/de/_resources/app/data/app.json"
+                data-title="Deutsch"
+            >
+                <span>Deutsch</span>
+            </button>
+        
+            <button
+                class="btn btn-langsettings lvc-modal-lang-track"
+                id="language-en"
+                data-url="https://www.hetzner.com/_resources/app/data/app.json"
+                data-title="English"
+            >
+                <span>English</span>
+            </button>
+        
+    </div>
+</div>
+
+                <div class="d-flex flex-column settings-wrapper">
+    <h4 class="lvc-modal-sub-title modal-title">
+        Currency
+    </h4>
+    <div
+        id="settings-currency"
+        class="settings-items"
+    >
+        
+            <button
+                class="btn btn-langsettings lvc-modal-currency-track"
+                id="currency-EUR"
+                data-title="EUR"
+            >
+               <span><span class="currency-symbol">€</span> EUR</span>
+            </button>
+        
+            <button
+                class="btn btn-langsettings lvc-modal-currency-track"
+                id="currency-USD"
+                data-title="USD"
+            >
+               <span><span class="currency-symbol">$</span> USD</span>
+            </button>
+        
+    </div>
+</div>
+
+                <div class="d-flex flex-column settings-wrapper">
+    <h4 class="lvc-modal-sub-title modal-title">
+        Country (VAT)
+    </h4>
+    <label class="sr-only" for="settings-vat">Country (VAT)</label>
+    <select
+        class="selectpicker"
+        id="settings-vat"
+    >
+        
+    <option
+    value="ot-0"
+    
+>
+    All others
+</option>
+
+
+
+    <option
+    value="au-10"
+    
+>
+    Australia
+</option>
+
+
+    <option
+    value="at-20"
+    
+>
+    Austria
+</option>
+
+
+    <option
+    value="be-21"
+    
+>
+    Belgium
+</option>
+
+
+    <option
+    value="bg-20"
+    
+>
+    Bulgaria
+</option>
+
+
+    <option
+    value="hr-25"
+    
+>
+    Croatia
+</option>
+
+
+    <option
+    value="cy-19"
+    
+>
+    Cyprus
+</option>
+
+
+    <option
+    value="cz-21"
+    
+>
+    Czech Republic
+</option>
+
+
+    <option
+    value="dk-25"
+    
+>
+    Denmark
+</option>
+
+
+    <option
+    value="ee-24"
+    
+>
+    Estonia
+</option>
+
+
+    <option
+    value="fi-25.5"
+    
+>
+    Finland
+</option>
+
+
+    <option
+    value="fr-20"
+    
+>
+    France
+</option>
+
+
+    <option
+    value="de-19"
+    
+>
+    Germany
+</option>
+
+
+    <option
+    value="gr-24"
+    
+>
+    Greece
+</option>
+
+
+    <option
+    value="hu-27"
+    
+>
+    Hungary
+</option>
+
+
+    <option
+    value="ie-23"
+    
+>
+    Ireland
+</option>
+
+
+    <option
+    value="it-22"
+    
+>
+    Italy
+</option>
+
+
+    <option
+    value="lv-21"
+    
+>
+    Latvia
+</option>
+
+
+    <option
+    value="lt-21"
+    
+>
+    Lithuania
+</option>
+
+
+    <option
+    value="lu-17"
+    
+>
+    Luxembourg
+</option>
+
+
+    <option
+    value="mt-18"
+    
+>
+    Malta
+</option>
+
+
+    <option
+    value="nl-21"
+    
+>
+    Netherlands
+</option>
+
+
+    <option
+    value="no-25"
+    
+>
+    Norway
+</option>
+
+
+    <option
+    value="pl-23"
+    
+>
+    Poland
+</option>
+
+
+    <option
+    value="pt-23"
+    
+>
+    Portugal
+</option>
+
+
+    <option
+    value="ro-21"
+    
+>
+    Romania
+</option>
+
+
+    <option
+    value="sg-9"
+    
+>
+    Singapore
+</option>
+
+
+    <option
+    value="sk-23"
+    
+>
+    Slovakia
+</option>
+
+
+    <option
+    value="si-22"
+    
+>
+    Slovenia
+</option>
+
+
+    <option
+    value="za-15"
+    
+>
+    South Africa
+</option>
+
+
+    <option
+    value="es-21"
+    
+>
+    Spain
+</option>
+
+
+    <option
+    value="se-25"
+    
+>
+    Sweden
+</option>
+
+
+    <option
+    value="ch-8.1"
+    
+>
+    Switzerland
+</option>
+
+
+    <option
+    value="ua-0"
+    
+>
+    Ukraine
+</option>
+
+
+    <option
+    value="gb-20"
+    
+>
+    United Kingdom
+</option>
+
+
+    <option
+    value="us-0"
+    
+>
+    USA
+</option>
+
+
+
+    </select>
+</div>
+
+            </div>
+            <div class="modal-footer p-0 d-flex justify-content-center align-items-center">
+                <button
+                    id="settings-save"
+                    class="btn btn-black lvc-modal-save-track"
+                >
+                    <i class="fa fa-check"></i>
+                    <span>Save settings</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+<script type="application/javascript" src="/_resources/vendor/silverstripe/admin/client/dist/js/i18n.js?m=1772024856"></script>
+<script type="application/javascript" src="/_resources/themes/languages/javascript/static/lang/en.js?m=1791530658"></script>
+<script type="application/javascript" src="/_resources/themes/languages/javascript/static/lang/de.js?m=1791530658"></script>
+<script type="application/javascript" src="/_resources/themes/hetzner/dist/vendors.js?m=1791530687"></script>
+<script type="application/javascript" src="/_resources/themes/hetzner/dist/app.js?m=1791530687"></script>
+<script type="application/javascript" src="/_resources/themes/static/dist/vendors.js?m=1791530682"></script>
+<script type="application/javascript" src="/_resources/themes/static/dist/bundle.js?m=1791530682"></script>
+<script type="application/javascript" src="/_resources/themes/hetzner/dist/initmodal.js?m=1791530687"></script>
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        const route = ['/', '/de','/de/'].includes(window.location.pathname) ? 'hetzner.com' : window.location.pathname
+        $('.lvc-modal-save-track').on('pointerdown',function () {
+            _paq.push(['trackEvent', 'LVC', 'Submit', route])
+        })
+        $('.lvc-modal-lang-track').on('pointerdown',function () {
+            const title = $(this).data('title')
+            _paq.push(['trackEvent', 'LVC', title, route])
+        })
+        $('.lvc-modal-currency-track').on('pointerdown',function () {
+            const title = $(this).data('title')
+            _paq.push(['trackEvent', 'LVC', title, route])
+        })
+        // listen emit function from lvcSwitch.js select2 select event
+        $(document).on('vatSettingsSelect', function (event) {
+            const country = event.originalEvent.detail.country
+            _paq.push(['trackEvent', 'Country Selection', country, route]);
+        });
+    })
+
+</script>
+
+    
+    <nav id="header-nav" class="header-nav" role="navigation" aria-label="Main navigation">
+        <div
+    id="geo-suggestion"
+    class="d-none background-color-white w-100 geo-suggestion"
+>
+    <div class="container geo-header-layout">
+        <div class="geo-header-text">
+            <span class="geo-main-text">
+                We noticed you're browsing from a different part of the world.
+            </span>
+            <span>
+                Switch to settings tailored to your location?
+            </span>
+        </div>
+        <div class="d-flex" style="gap: 1rem;">
+            <button
+                id="geo-accept"
+                class="d-flex align-items-center btn btn-sm btn-prio-3"
+                style="gap: 5px;"
+            >
+                <i class="fa-solid fa-check"></i>
+                yes
+            </button>
+            <button
+                id="geo-decline"
+                class="btn btn-sm btn-text-link btn-pre-header"
+            >
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+    </div>
+</div>
+
+        <div id="header-toptoolbar" class="pre-header align-items-center">
+    <div class="flex">
+    <div class=" ">
+        <div class="drefp-obrut-go" style="display: none;"
+             data-src="/_resources/themes/hetzner/images/logo/drefp-obrut-go.png?m=1791530657"></div>
+    </div>
+</div>
+    <div class="header-wrapper">
+        <a class="navbar-brand" href="https://www.hetzner.com/">
+            <img
+                    src="/_resources/themes/hetzner/images/logo/hetzner-logo.svg?m=1751371256"
+                    class="navbar-logo" alt="Logo Hetzner Online"
+                    height="20"
+                    width="163"
+            >
+        </a>
+        <div class="d-flex justify-content-center align-items-center toptoolbar-pills">
+            
+                <button
+                        type="button"
+                        class="btn-pre-pill toptoolbar-askai"
+                        onclick="window.ChatbotWidget?.openChat({ isFullscreen: false })"
+                >
+                    <i class="ho-icon ho-icon-speech-s"></i>
+                    Ask AI
+                </button>
+            
+
+            
+                <ho-localization-provider>
+                    <ho-lvc-switch
+                            use-api="true"
+                            theme="grey"
+                            size="compact"
+                            short-currency
+                            short-vat
+                    ></ho-lvc-switch>
+                </ho-localization-provider>
+            
+
+            
+                <div class="dropdown toptoolbar-login">
+                    <button
+                            type="button"
+                            class="btn-pre-pill dropdown-toggle"
+                            data-bs-toggle="dropdown"
+                            data-bs-display="static"
+                            aria-haspopup="true"
+                            aria-expanded="false"
+                    >
+                        <span class="d-flex align-items-center" style="gap:4px;">
+                            <i class="ho-icon ho-icon-user-s"></i>
+                            
+                            <i class="ho-icon ho-icon-chevron-down-xs"></i>
+                        </span>
+                    </button>
+                    
+                        <ul class="dropdown-menu dropdown-list">
+                            
+                                <li>
+                                    <a href="https://console.hetzner.com/">
+                                        
+                                            <img src="https://cdn.hetzner.com/assets/Uploads/icon-hetzner-cloud.svg" class="login-img" alt="icon hetzner cloud">
+                                        
+                                        Console
+                                    </a>
+                                </li>
+                            
+                                <li>
+                                    <a href="https://robot.hetzner.com/">
+                                        
+                                            <img src="https://cdn.hetzner.com/assets/Uploads/icon-hetzner-robot.svg" class="login-img" alt="icon hetzner robot">
+                                        
+                                        Robot
+                                    </a>
+                                </li>
+                            
+                                <li>
+                                    <a href="https://konsoleh.hetzner.com/">
+                                        
+                                            <img src="https://cdn.hetzner.com/assets/testfolder/icon-hetzner-konsoleh.svg" class="login-img" alt="icon hetzner konsoleh">
+                                        
+                                        konsoleH
+                                    </a>
+                                </li>
+                            
+                        </ul>
+                    
+                </div>
+            
+        </div>
+        <button type="button" id="mnav-toggle" class="mnav-toggle" aria-label="Menu" aria-expanded="false"
+                aria-controls="mobile-nav">
+            <i class="ho-icon ho-icon-menu-m mnav-toggle-open"></i>
+            <i class="ho-icon ho-icon-cross-m mnav-toggle-close"></i>
+        </button>
+    </div>
+</div>
+
+        <div id="header-main-nav">
+    <ul class="main-nav-list">
+        
+            <li class="main-nav-entry">
+                
+                    <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176843" data-event-type="1" data-event-category="Navigation" data-event-action="In-Dedicated" data-event-name="nav">
+                        <span class="item">
+                            
+                            <span>Dedicated</span>
+                            <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
+                        </span>
+                    </button>
+                    <div class="main-nav-flyout" id="main-nav-flyout-176843">
+                        
+    <div class="flyout">
+        
+            <div class="flyout-content">
+    
+        <div class="flyout-col">
+            
+                <div>
+                    
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/dedicated-rootserver/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-ServerFinder" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Server Finder
+        </span>
+        <span class="flyout-item-sub">Find the right server for you</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="/dedicated-rootserver/matrix-ax/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-AXLine" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            AX-Line
+        </span>
+        <span class="flyout-item-sub">AMD based performance</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="/dedicated-rootserver/matrix-ex/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-EXLine" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            EX-Line
+        </span>
+        <span class="flyout-item-sub">Intel based performance</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+                <div>
+                    
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/dedicated-rootserver/matrix-gpu/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-GPULine" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            GPU-Line
+        </span>
+        <span class="flyout-item-sub">Maximum workloads &amp; ai</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="/dedicated-rootserver/matrix-sx/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-SXLine" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            SX-Line
+        </span>
+        <span class="flyout-item-sub">For large amounts of data</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="/dedicated-rootserver/matrix-dell/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-DXLine" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            DX-Line
+        </span>
+        <span class="flyout-item-sub">Dell server for heavy computing</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+                <div>
+                    
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/sb/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-ServerAuction" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Server Auction
+        </span>
+        <span class="flyout-item-sub">Refurbished dedicated deals</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+    
+        <div class="flyout-col flyout-col-point-out  flyout-col-teaser-item ">
+            
+                
+                    <a class="flyout-teaser-card" href="/sb" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-NAVDedicatedTeaser" data-event-name="nav">
+    
+        <img class="flyout-teaser-img" src="https://cdn.hetzner.com/assets/Uploads/ad_hetzner_server_auction.webp" alt="ad hetzner server auction">
+    
+    <span class="flyout-teaser-headline">Server Auction</span>
+    <span class="flyout-teaser-sub">Save money and do good for the planet with refurbished servers </span>
+    <div class="flyout-teaser-price-row">
+        
+            <span class="flyout-teaser-price">
+            <ho-localization-provider>
+                <ho-price-container
+                        class="price"
+                        price-view="auction"
+                        product-key="auction"
+                >
+                    
+                        <span slot="start">from </span>
+                    
+                </ho-price-container>
+            </ho-localization-provider>
+        </span>
+        
+    </div>
+</a>
+
+                
+            
+        </div>
+    
+</div>
+
+        
+    </div>
+
+
+                    </div>
+                
+            </li>
+        
+            <li class="main-nav-entry">
+                
+                    <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176855" data-event-type="1" data-event-category="Navigation" data-event-action="In-Cloud" data-event-name="nav">
+                        <span class="item">
+                            
+                            <span>Cloud</span>
+                            <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
+                        </span>
+                    </button>
+                    <div class="main-nav-flyout" id="main-nav-flyout-176855">
+                        
+    <div class="flyout">
+        
+            <div class="flyout-content">
+    
+        <div class="flyout-col">
+            
+                <div>
+                    
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item flyout-item-card" href="/cloud/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Cloud-CloudOverview" data-event-name="nav">
+    
+        <span class="flyout-item-icon">
+            <i class="ho-icon ho-icon-cloud-computing-m" aria-hidden="true"></i>
+        </span>
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Cloud Overview
+        </span>
+        <span class="flyout-item-sub">Affordable Cloud Hosting</span>
+    </span>
+    
+        <i class="ho-icon ho-icon-chevron-right-s" aria-hidden="true"></i>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+                <div>
+                    
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/cloud/cost-optimized/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Cloud-CostOptimized" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Cost-Optimized
+        </span>
+        <span class="flyout-item-sub">Perfect for test environments</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="/cloud/regular-performance/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Cloud-RegularPerformance" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Regular Performance
+        </span>
+        <span class="flyout-item-sub">Best price-performance ratio</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="/cloud/general-purpose/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Cloud-GeneralPurpose" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            General Purpose
+        </span>
+        <span class="flyout-item-sub">Ideal for business applications</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+        </div>
+    
+    
+        <div class="flyout-col flyout-col-point-out  flyout-col-teaser-item ">
+            
+                
+                    <a class="flyout-teaser-card" href="/european-cloud/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Cloud-NAVEuropeanCloud" data-event-name="nav">
+    
+        <img class="flyout-teaser-img" src="https://cdn.hetzner.com/assets/Uploads/ad_hetzner_european_cloud.webp" alt="ad hetzner european cloud">
+    
+    <span class="flyout-teaser-headline">European Cloud</span>
+    <span class="flyout-teaser-sub">Lower costs, more data sovereignty – with Hetzner Cloud</span>
+    <div class="flyout-teaser-price-row">
+        
+    </div>
+</a>
+
+                
+            
+        </div>
+    
+</div>
+
+        
+    </div>
+
+
+                    </div>
+                
+            </li>
+        
+            <li class="main-nav-entry">
+                
+                    <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176863" data-event-type="1" data-event-category="Navigation" data-event-action="In-Storage" data-event-name="nav">
+                        <span class="item">
+                            
+                            <span>Storage</span>
+                            <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
+                        </span>
+                    </button>
+                    <div class="main-nav-flyout" id="main-nav-flyout-176863">
+                        
+    <div class="flyout">
+        
+            <div class="flyout-content">
+    
+        <div class="flyout-col">
+            
+                <div>
+                    
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/storage/object-storage/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Storage-ObjectStorage" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Object Storage
+        </span>
+        <span class="flyout-item-sub">S3-compatible storage</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+                <div>
+                    
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/storage/storage-box/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Storage-StorageBox" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Storage Box
+        </span>
+        <span class="flyout-item-sub">Cheap backup servers</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+        </div>
+    
+    
+        <div class="flyout-col flyout-col-point-out  flyout-col-teaser-item ">
+            
+                
+                    <a class="flyout-teaser-card" href="/self-hosting/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Storage-NAVSelfHosting" data-event-name="nav">
+    
+        <img class="flyout-teaser-img" src="https://cdn.hetzner.com/assets/Uploads/ad_hetzner_self_hosting.webp" alt="ad hetzner self hosting">
+    
+    <span class="flyout-teaser-headline">Sovereignty starts with hosting it yourself</span>
+    <span class="flyout-teaser-sub">Start self-hosting with Hetzner</span>
+    <div class="flyout-teaser-price-row">
+        
+    </div>
+</a>
+
+                
+            
+        </div>
+    
+</div>
+
+        
+    </div>
+
+
+                    </div>
+                
+            </li>
+        
+            <li class="main-nav-entry">
+                
+                    <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176869" data-event-type="1" data-event-category="Navigation" data-event-action="In-Managed" data-event-name="nav">
+                        <span class="item">
+                            
+                            <span>Managed</span>
+                            <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
+                        </span>
+                    </button>
+                    <div class="main-nav-flyout" id="main-nav-flyout-176869">
+                        
+    <div class="flyout">
+        
+            <div class="flyout-content">
+    
+        <div class="flyout-col">
+            
+                <div>
+                    <p class="flyout-group-name">Web &amp; Mail</p>
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/webhosting/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-Webhosting" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Webhosting
+        </span>
+        <span class="flyout-item-sub">Simple &amp; cheap web hosting</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="/whois/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-DomainCheck" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Domain Check
+        </span>
+        <span class="flyout-item-sub">Search for domains</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="/registrationrobot/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-RegistrationRobot" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Registration Robot
+        </span>
+        <span class="flyout-item-sub">Domain registration</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+                <div>
+                    <p class="flyout-group-name">Servers</p>
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/managed-server/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-ManagedServer" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Managed Server
+        </span>
+        <span class="flyout-item-sub">Fully managed servers</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+                <div>
+                    <p class="flyout-group-name">Cloud Storage</p>
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/storage/storage-share/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-StorageShare" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Storage Share
+        </span>
+        <span class="flyout-item-sub">GDPR-compliant storage</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+    
+        <div class="flyout-col flyout-col-point-out  flyout-col-teaser-item ">
+            
+                
+                    <a class="flyout-teaser-card" href="https://docs.hetzner.com/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-NAVDocs" data-event-name="nav">
+    
+        <img class="flyout-teaser-img" src="https://cdn.hetzner.com/assets/Uploads/ad_hetzner_docs.webp" alt="ad hetzner docs">
+    
+    <span class="flyout-teaser-headline">Need help?</span>
+    <span class="flyout-teaser-sub">Find self service guides, technical details and helpful information in our Docs</span>
+    <div class="flyout-teaser-price-row">
+        
+    </div>
+</a>
+
+                
+            
+        </div>
+    
+</div>
+
+        
+    </div>
+
+
+                    </div>
+                
+            </li>
+        
+            <li class="main-nav-entry">
+                
+                    <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176904" data-event-type="1" data-event-category="Navigation" data-event-action="In-Services" data-event-name="nav">
+                        <span class="item">
+                            
+                            <span>Services</span>
+                            <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
+                        </span>
+                    </button>
+                    <div class="main-nav-flyout" id="main-nav-flyout-176904">
+                        
+    <div class="flyout">
+        
+            <div class="flyout-content">
+    
+        <div class="flyout-col">
+            
+                <div>
+                    <p class="flyout-group-name">Domain &amp; Security</p>
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/dns/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Services-DNSManagement" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            DNS Management
+        </span>
+        <span class="flyout-item-sub">Manage DNS entries and zones</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="/sslzertifikate/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Services-SSLCertificate" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            SSL-Certificate
+        </span>
+        <span class="flyout-item-sub">For any usecase</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+                <div>
+                    <p class="flyout-group-name">Network</p>
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/cloud/load-balancer/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Services-LoadBalancer" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Load Balancer
+        </span>
+        <span class="flyout-item-sub">Automatically distributing traffic</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+                <div>
+                    <p class="flyout-group-name">For Business</p>
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/custom-solutions/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Services-CustomSolutions" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Custom Solutions
+        </span>
+        <span class="flyout-item-sub">Customized IT infrastructure</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+    
+        <div class="flyout-col flyout-col-point-out  flyout-col-teaser-item ">
+            
+                
+                    <a class="flyout-teaser-card" href="https://docs.hetzner.com/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Services-NAVDocs" data-event-name="nav">
+    
+        <img class="flyout-teaser-img" src="https://cdn.hetzner.com/assets/Uploads/ad_hetzner_docs.webp" alt="ad hetzner docs">
+    
+    <span class="flyout-teaser-headline">Need help?</span>
+    <span class="flyout-teaser-sub">Find self service guides, technical details and helpful information in our Docs</span>
+    <div class="flyout-teaser-price-row">
+        
+    </div>
+</a>
+
+                
+            
+        </div>
+    
+</div>
+
+        
+    </div>
+
+
+                    </div>
+                
+            </li>
+        
+            <li class="main-nav-entry">
+                
+                    <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176879" data-event-type="1" data-event-category="Navigation" data-event-action="In-Resources" data-event-name="nav">
+                        <span class="item">
+                            
+                            <span>Resources</span>
+                            <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
+                        </span>
+                    </button>
+                    <div class="main-nav-flyout" id="main-nav-flyout-176879">
+                        
+    <div class="flyout">
+        
+            <div class="flyout-content">
+    
+        <div class="flyout-col">
+            
+                <div>
+                    
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="/blog/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Blog" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             <span class="badge-new">New</span>
+
+            Blog
+        </span>
+        <span class="flyout-item-sub">Inspiration, usecases &amp; insights</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="/newsletter/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Newsletter" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Newsletter
+        </span>
+        <span class="flyout-item-sub">Product news &amp; updates</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+                <div>
+                    
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="https://docs.hetzner.com/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Docs" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Docs
+        </span>
+        <span class="flyout-item-sub">Self service and technical docs</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="https://community.hetzner.com/tutorials" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Tutorials" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Tutorials
+        </span>
+        <span class="flyout-item-sub">Guides and how-tos</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="https://forum.hetzner.com/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Forum" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Forum
+        </span>
+        <span class="flyout-item-sub">Community support &amp; discussion</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+        <div class="flyout-col">
+            
+                <div>
+                    
+                    <div class="flyout-items">
+                        
+                            <a class="flyout-item" href="https://status.hetzner.com/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Status" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Status
+        </span>
+        <span class="flyout-item-sub">System and service status</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="https://docs.hetzner.cloud/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-API" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            API
+        </span>
+        <span class="flyout-item-sub">Automate via REST API</span>
+    </span>
+    
+</a>
+
+                        
+                            <a class="flyout-item" href="/unternehmen/downloads/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Downloads" data-event-name="nav">
+    
+    <span class="flyout-item-body">
+        <span class="flyout-item-label">
+             
+            Downloads
+        </span>
+        <span class="flyout-item-sub">Documents and forms</span>
+    </span>
+    
+</a>
+
+                        
+                    </div>
+                </div>
+            
+        </div>
+    
+    
+        <div class="flyout-col flyout-col-point-out  flyout-col-teaser-list ">
+            
+                
+                    <div class="flyout-topiclist">
+    <span class="flyout-topiclist-headline">Current topics</span>
+    
+        <a class="flyout-topiclist-item" href="/blog/inference-experiment/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-NAVBlogInference" data-event-name="nav">
+            
+                <div class="flyout-topiclist-item-img-wrapper">
+                    <img class="flyout-topiclist-item-img" src="https://cdn.hetzner.com/assets/Uploads/HO-Blog-Experiments.webp" alt="HO Blog Experiments">
+                </div>
+            
+            <span class="flyout-topiclist-item-text">
+                
+                    <span class="flyout-topiclist-item-label">Engineering</span>
+                
+                
+                    <span class="flyout-topiclist-item-headline">Inference Experiment</span>
+                
+            </span>
+        </a>
+    
+        <a class="flyout-topiclist-item" href="/blog/one-click-self-hosting-with-coolify/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-NAVBlogCoolify" data-event-name="nav">
+            
+                <div class="flyout-topiclist-item-img-wrapper">
+                    <img class="flyout-topiclist-item-img" src="https://cdn.hetzner.com/assets/Uploads/HO-Blog-Coolify-v2.webp" alt="HO Blog Coolify">
+                </div>
+            
+            <span class="flyout-topiclist-item-text">
+                
+                    <span class="flyout-topiclist-item-label">Engineering</span>
+                
+                
+                    <span class="flyout-topiclist-item-headline">One-click self-hosting with coolify</span>
+                
+            </span>
+        </a>
+    
+        <a class="flyout-topiclist-item" href="/blog/your-own-vpn-server-with-wireguard-what-are-the-benefits/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-NAVBlogWireguard" data-event-name="nav">
+            
+                <div class="flyout-topiclist-item-img-wrapper">
+                    <img class="flyout-topiclist-item-img" src="https://cdn.hetzner.com/assets/Uploads/HO-Blog-Grafiken-VPN.webp" alt="HO Blog Grafiken VPN">
+                </div>
+            
+            <span class="flyout-topiclist-item-text">
+                
+                    <span class="flyout-topiclist-item-label">Engineering</span>
+                
+                
+                    <span class="flyout-topiclist-item-headline">Your own vpn server with wireguard</span>
+                
+            </span>
+        </a>
+    
+</div>
+                
+            
+        </div>
+    
+</div>
+
+        
+    </div>
+
+
+                    </div>
+                
+            </li>
+        
+    </ul>
+</div>
+
+    </nav>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const route = ['/', '/de', '/de/'].includes(window.location.pathname) ? 'hetzner.com' : window.location.pathname
+        $('.nav-menu-data-track').on('pointerdown', function () {
+            const title = $(this).data('title')
+            _paq.push(['trackEvent', 'Navigation', title, route])
+        })
+        $('.nav-menu-track').on('pointerdown', function () {
+            const title = $(this).data('title')
+            _paq.push(['trackEvent', 'Navigation', title, route])
+        })
+        $('.nav-sub-menu-track').on('pointerdown', function () {
+            const title = $(this).data('title')
+            _paq.push(['trackEvent', 'Navigation', title, route])
+        })
+    })
+</script>
+
+</header>
+
+<div class="mobile-whiten">&nbsp;</div>
+<nav class="mobile-shift-menu" id="mobile-shift-menu">
+    <div class="closebtn"><h4>Close <i class="fa fa-times"></i></h4></div>
+    <div style="width: auto;">
+        
+    
+        
+            <div class="mobile-nav-section">
+                <a
+                    class="link-color-white nav-menu-item-wrapper link-highlight"
+                    href="/sb/"
+                >
+                    <div class="nav-mobile-item" data-target="serverboerse">
+                        
+                        <div class="nav-mobile-item-text">
+                            <span class="product-name">
+                                
+                                Server Auction
+                            </span>
+                            <ho-localization-provider>
+                                
+                                    <div class="highlight-menu-price">
+                                        <ho-price-container
+                                            class="price-nav-mobile"
+                                            price-view="auction"
+                                            product-key="auction"
+                                        >
+                                            
+                                                <span slot="start">from </span>
+                                            
+                                        </ho-price-container>
+                                    </div>
+                                
+                            </ho-localization-provider>
+                        </div>
+                    </div>
+                    <i class="fa fa-chevron-right"></i>
+                </a>
+            </div>
+            <hr class="hr-grey">
+        
+    
+        
+            <div class="mobile-nav-section">
+                <a
+                    class="link-color-white nav-menu-item-wrapper link-highlight"
+                    href="/dedicated-rootserver/"
+                >
+                    <div class="nav-mobile-item" data-target="serverfinder">
+                        
+                        <div class="nav-mobile-item-text">
+                            <span class="product-name">
+                                
+                                Server Finder
+                            </span>
+                            <ho-localization-provider>
+                                
+                                    <div>
+                                        <ho-price-container
+                                            class="price-nav-mobile"
+                                            price-view="nav_prices"
+                                            product-key="10003"
+                                            price-type="monthly"
+                                        >
+                                            
+                                                <span slot="start">from </span>
+                                            
+                                        </ho-price-container>
+                                    </div>
+                                
+                            </ho-localization-provider>
+                        </div>
+                    </div>
+                    <i class="fa fa-chevron-right"></i>
+                </a>
+            </div>
+            <hr class="hr-grey">
+        
+    
+
+    
+        
+    
+
+    
+
+    
+
+    
+
+
+        
+    <hr class="hr-grey">
+<div class="mobile-nav-section">
+    
+        
+            <a
+                class="link-color-white nav-menu-item-wrapper"
+                data-bs-toggle="collapse"
+                data-bs-target="#collapse-7030"
+                aria-expanded="false"
+                aria-controls="collapse-7030"
+            >
+                <h4>
+                    Dedicated <i class="fa fa-angle-down"></i>
+                </h4>
+            </a>
+            <div id="collapse-7030" class="collapse">
+                <ul class="margin-0">
+    
+        <li>
+            <a href="/dedicated-rootserver/matrix-ex/" data-target="ex-line">
+                <span class="mobile-nav-title-name">
+                    
+                    EX-Line
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="8703"
+                                        price-type="monthly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/dedicated-rootserver/matrix-ax/" data-target="ax-line">
+                <span class="mobile-nav-title-name">
+                    
+                    AX-Line
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="168047"
+                                        price-type="monthly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/dedicated-rootserver/matrix-rx/" data-target="rx-line">
+                <span class="mobile-nav-title-name">
+                    
+                    RX-Line
+                </span>
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/dedicated-rootserver/matrix-sx/" data-target="sx-line">
+                <span class="mobile-nav-title-name">
+                    
+                    SX-Line
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="398"
+                                        price-type="monthly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/dedicated-rootserver/matrix-gpu/" data-target="gpu-line">
+                <span class="mobile-nav-title-name">
+                    
+                    GPU-Line
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="168983"
+                                        price-type="monthly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/dedicated-rootserver/matrix-dell/" data-target="dx-line">
+                <span class="mobile-nav-title-name">
+                    
+                    DX-Line
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="9537"
+                                        price-type="monthly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+</ul>
+
+            </div>
+        
+    
+        
+            <a
+                href="/cloud/"
+                class="link-color-white nav-menu-item-wrapper"
+            >
+                <h4>
+                    Cloud
+                </h4>
+            </a>
+        
+    
+        
+            <a
+                class="link-color-white nav-menu-item-wrapper"
+                data-bs-toggle="collapse"
+                data-bs-target="#collapse-7078"
+                aria-expanded="false"
+                aria-controls="collapse-7078"
+            >
+                <h4>
+                    Web &amp; Managed <i class="fa fa-angle-down"></i>
+                </h4>
+            </a>
+            <div id="collapse-7078" class="collapse">
+                <ul class="margin-0">
+    
+        <li>
+            <a href="/webhosting/" data-target="web">
+                <span class="mobile-nav-title-name">
+                    
+                    Web Hosting
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="394"
+                                        price-type="monthly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/managed-server/" data-target="managed">
+                <span class="mobile-nav-title-name">
+                    
+                    Managed Server
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="10442"
+                                        price-type="monthly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+</ul>
+
+            </div>
+        
+    
+        
+            <a
+                class="link-color-white nav-menu-item-wrapper"
+                data-bs-toggle="collapse"
+                data-bs-target="#collapse-7080"
+                aria-expanded="false"
+                aria-controls="collapse-7080"
+            >
+                <h4>
+                    Storage <i class="fa fa-angle-down"></i>
+                </h4>
+            </a>
+            <div id="collapse-7080" class="collapse">
+                <ul class="margin-0">
+    
+        <li>
+            <a href="/storage/object-storage/" data-target="">
+                <span class="mobile-nav-title-name">
+                    
+                    Object Storage
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="10007"
+                                        price-type="monthly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/storage/storage-box/" data-target="storagebox">
+                <span class="mobile-nav-title-name">
+                    
+                    Storage Box
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="217"
+                                        price-type="monthly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/storage/storage-share/" data-target="storage-share">
+                <span class="mobile-nav-title-name">
+                    
+                    Storage Share
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="166886"
+                                        price-type="monthly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+</ul>
+
+            </div>
+        
+    
+        
+            <a
+                class="link-color-white nav-menu-item-wrapper"
+                data-bs-toggle="collapse"
+                data-bs-target="#collapse-7081"
+                aria-expanded="false"
+                aria-controls="collapse-7081"
+            >
+                <h4>
+                    Services <i class="fa fa-angle-down"></i>
+                </h4>
+            </a>
+            <div id="collapse-7081" class="collapse">
+                <ul class="margin-0">
+    
+        <li>
+            <a href="/cloud/load-balancer/" data-target="">
+                <span class="mobile-nav-title-name">
+                    
+                    Load Balancer
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="167933"
+                                        price-type="monthly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/whois/" data-target="domain">
+                <span class="mobile-nav-title-name">
+                    
+                    Domain check
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="10006"
+                                        price-type="domain"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/dns/" data-target="dns">
+                <span class="mobile-nav-title-name">
+                    
+                    DNS Management
+                </span>
+                
+                    
+                        
+                            <small class="pull-right">free of charge</small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/registrationrobot/" data-target="robot">
+                <span class="mobile-nav-title-name">
+                    
+                    Registration Robot
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="10005"
+                                        price-type="hourly"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/sslzertifikate/" data-target="ssl">
+                <span class="mobile-nav-title-name">
+                    
+                    SSL Certificate
+                </span>
+                
+                    
+                        
+                            <small class="pull-right nav-mobile-price">
+                                <ho-localization-provider>
+                                    <ho-price-container
+                                        class="price"
+                                        price-view="nav_prices"
+                                        product-key="10002"
+                                        price-type="setup"
+                                    >
+                                        
+                                            <span slot="start">from </span>
+                                        
+                                    </ho-price-container>
+                                </ho-localization-provider>
+                            </small>
+                        
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/custom-solutions/" data-target="custom-solutions">
+                <span class="mobile-nav-title-name">
+                    
+                    Custom Solutions
+                </span>
+                
+                    
+                        
+                            <div class="price"
+                                 style="text-transform: initial">on demand</div>
+                        
+                    
+                
+            </a>
+        </li>
+    
+</ul>
+
+            </div>
+        
+    
+</div>
+
+
+
+    <hr class="hr-grey">
+<div class="mobile-nav-section">
+    
+        
+            <a
+                href="/blog/"
+                class="link-color-white nav-menu-item-wrapper"
+            >
+                <h4>
+                    Blog
+                </h4>
+            </a>
+        
+    
+        
+            <a
+                href="https://career.hetzner.com/"
+                class="link-color-white nav-menu-item-wrapper"
+            >
+                <h4>
+                    Jobs
+                </h4>
+            </a>
+        
+    
+        
+            <a
+                href="https://community.hetzner.com/"
+                class="link-color-white nav-menu-item-wrapper"
+            >
+                <h4>
+                    Community
+                </h4>
+            </a>
+        
+    
+        
+            <a
+                class="link-color-white nav-menu-item-wrapper"
+                data-bs-toggle="collapse"
+                data-bs-target="#collapse-171351"
+                aria-expanded="false"
+                aria-controls="collapse-171351"
+            >
+                <h4>
+                    About us <i class="fa fa-angle-down"></i>
+                </h4>
+            </a>
+            <div id="collapse-171351" class="collapse">
+                <ul class="margin-0">
+    
+        <li>
+            <a href="/unternehmen/ueber-uns/" data-target="">
+                <span class="mobile-nav-title-name">
+                    
+                    Company
+                </span>
+                
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/pressroom/" data-target="">
+                <span class="mobile-nav-title-name">
+                    
+                    Pressroom
+                </span>
+                
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/customers/" data-target="">
+                <span class="mobile-nav-title-name">
+                    
+                    Our customers
+                </span>
+                
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="https://career.hetzner.com/de/" data-target="">
+                <span class="mobile-nav-title-name">
+                    
+                    Career
+                </span>
+                
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="/legal/legal-notice/" data-target="">
+                <span class="mobile-nav-title-name">
+                    
+                    Legal
+                </span>
+                
+                    
+                
+            </a>
+        </li>
+    
+</ul>
+
+            </div>
+        
+    
+        
+            <a
+                href="/support/"
+                class="link-color-white nav-menu-item-wrapper"
+            >
+                <h4>
+                    Support
+                </h4>
+            </a>
+        
+    
+        
+            <a
+                class="link-color-white nav-menu-item-wrapper"
+                data-bs-toggle="collapse"
+                data-bs-target="#collapse-171353"
+                aria-expanded="false"
+                aria-controls="collapse-171353"
+            >
+                <h4>
+                    Login <i class="fa fa-angle-down"></i>
+                </h4>
+            </a>
+            <div id="collapse-171353" class="collapse">
+                <ul class="margin-0">
+    
+        <li>
+            <a href="https://console.hetzner.com/" data-target="">
+                <span class="mobile-nav-title-name">
+                    
+                    Console
+                </span>
+                
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="https://robot.hetzner.com" data-target="">
+                <span class="mobile-nav-title-name">
+                    
+                    Robot
+                </span>
+                
+                    
+                
+            </a>
+        </li>
+    
+        <li>
+            <a href="https://konsoleh.hetzner.com/" data-target="">
+                <span class="mobile-nav-title-name">
+                    
+                    konsoleH
+                </span>
+                
+                    
+                
+            </a>
+        </li>
+    
+</ul>
+
+            </div>
+        
+    
+</div>
+
+
+
+    </div>
+</nav>
+
+
+<main>
+<div class="inner-content-error-page">
+    <div class="container">
+        <div class="d-flex justify-content-center align-content-center">
+            <img
+                style="max-width: 90%;"
+                src="/_resources/themes/hetzner/images/error/404error.gif?m=1791530657"
+                alt="404 error"
+            />
+        </div>
+    </div>
+</div>
+</main>
+<div class="container" style="height:0">
+    <div class="custom-supplement-section custom-supplement-section-white">
+        <svg class="supplement-element-left">
+            <polygon points="0,11 11,0 11,22 "/>
+        </svg>
+        <svg class="supplement-element-middle">
+            <rect width="100%" height="100%"/>
+        </svg>
+        <svg class="supplement-element-right">
+            <polygon points="0,0 11,11 0,22"/>
+        </svg>
+    </div>
+</div>
+
+
+<footer id="footer">
+    <div class="footer-pre-section">
+        <div class="container">
+            <div class="row">
+                <div class="col-12 col-sm-6 col-md-6 col-lg-6">
+                    <div class="footer-pre-section-element">
+                        <i class="fa fa-phone"></i>
+                        <a id="footer-support-phone" href="tel:+4998315050">+49 9831 505 0</a>
+                    </div>
+                </div>
+                <div class="col-12 col-sm-6 col-md-6 col-lg-6">
+                    <div class="footer-pre-section-element">
+                        <i class="fa fa-envelope"></i>
+                        <a id="footer-support-email" href="mailto:support@hetzner.com">support@hetzner.com</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="footer-main-section hidden-sm hidden-xs">
+        <div class="container">
+            <div class="row footer-row">
+                
+                    
+                        <div class="col-lg-2 col-md-2 col-sm-4">
+                            <span class="footer-headline">Hetzner</span>
+                            <ul class="list-unstyled accordion-content">
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Company"
+                                            href="/unternehmen/ueber-uns/"
+                                        >
+                                            Company
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Our Customers"
+                                            href="/customers/"
+                                        >
+                                            Our Customers
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Sustainability"
+                                            href="/unternehmen/nachhaltigkeit/"
+                                        >
+                                            Sustainability
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Blog"
+                                            href="/blog/"
+                                        >
+                                            Blog
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Career"
+                                            href="https://career.hetzner.com/"
+                                        >
+                                            Career
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Pressroom"
+                                            href="/pressroom/"
+                                        >
+                                            Pressroom
+                                        </a>
+                                    </li>
+                                
+                            </ul>
+                        </div>
+                    
+                
+                    
+                        <div class="col-lg-2 col-md-2 col-sm-4">
+                            <span class="footer-headline">Support</span>
+                            <ul class="list-unstyled accordion-content">
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Support Center"
+                                            href="/support/"
+                                        >
+                                            Support Center
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Contact"
+                                            href="/support-form/"
+                                        >
+                                            Contact
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Downloads"
+                                            href="/unternehmen/downloads/"
+                                        >
+                                            Downloads
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Hetzner Docs"
+                                            href="https://docs.hetzner.com/"
+                                        >
+                                            Hetzner Docs
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Status"
+                                            href="https://status.hetzner.com/"
+                                        >
+                                            Status
+                                        </a>
+                                    </li>
+                                
+                            </ul>
+                        </div>
+                    
+                
+                    
+                        <div class="col-lg-2 col-md-2 col-sm-4">
+                            <span class="footer-headline">Legal</span>
+                            <ul class="list-unstyled accordion-content">
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Legal notice"
+                                            href="/legal/legal-notice/"
+                                        >
+                                            Legal notice
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Data privacy"
+                                            href="/legal/privacy-policy/"
+                                        >
+                                            Data privacy
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="System policies"
+                                            href="/legal/system-policies/"
+                                        >
+                                            System policies
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Terms and conditions"
+                                            href="/legal/terms-and-conditions/"
+                                        >
+                                            Terms and conditions
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Digital Services Act"
+                                            href="/legal/digital-services-act/"
+                                        >
+                                            Digital Services Act
+                                        </a>
+                                    </li>
+                                
+                                    <li>
+                                        <a
+                                            class="footer-track-link"
+                                            data-action="Abuse form"
+                                            href="https://abuse.hetzner.com/"
+                                        >
+                                            Abuse form
+                                        </a>
+                                    </li>
+                                
+                            </ul>
+                        </div>
+                    
+                
+                <div class="col-lg-2 col-md-2 col-sm-4">
+                    <span class="footer-headline">About Us</span>
+                    <ul class="list-unstyled">
+                        <li class="join-the-team">
+                            <a href="/unternehmen/arbeiten-bei-hetzner/"
+                               class="btn btn-prio-1 on-dark btn-sm"
+                               style="white-space: normal;"
+                            >
+                                Join the team
+                            </a>
+                        </li>
+                        <li class="social-icons">
+    <span class="footer-headline hidden-sm hidden-xs">
+        Social Media
+    </span>
+    <div class="social-icons">
+        <a href="https://www.facebook.com/hetzner.de/"
+           aria-label="Visit us on facebook"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="social-media-icon-box"
+        >
+            <img
+                class="social-media-icon-image-default"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-facebook.svg?m=1791530657"
+                alt="facebook logo"
+            >
+            <img
+                class="social-media-icon-image-hover"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-facebook-hover.svg?m=1791530657"
+                alt="facebook logo hover"
+            >
+        </a>
+        <a href="https://www.instagram.com/hetzner.online/"
+           aria-label="Visit us on instagram"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="social-media-icon-box"
+        >
+            <img
+                class="social-media-icon-image-default"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-instagram.svg?m=1791530657"
+                alt="instagram logo"
+            >
+            <img
+                class="social-media-icon-image-hover"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-instagram-hover.svg?m=1791530657"
+                alt="instagram logo hover"
+            >
+        </a>
+        <a href="https://www.youtube.com/user/HetznerOnline/"
+           aria-label="Visit us on youtube"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="social-media-icon-box"
+        >
+            <img
+                class="social-media-icon-image-default"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-youtube.svg?m=1791530657"
+                alt="youtube logo"
+            >
+            <img
+                class="social-media-icon-image-hover"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-youtube-hover.svg?m=1791530657"
+                alt="youtube logo hover"
+            >
+        </a>
+        <a href="https://twitter.com/Hetzner_Online/"
+           aria-label="Visit us on x.com (formerly twitter)"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="social-media-icon-box"
+        >
+            <img
+                class="social-media-icon-image-default"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-x-twitter.svg?m=1791530657"
+                alt="twitter logo"
+            >
+            <img
+                class="social-media-icon-image-hover"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-x-twitter-hover.svg?m=1791530657"
+                alt="twitter logo hover"
+            >
+        </a>
+        <a href="https://www.linkedin.com/company/hetzner-online/"
+           aria-label="Visit us on linkedin"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="social-media-icon-box"
+        >
+            <img
+                class="social-media-icon-image-default"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-linkedin.svg?m=1791530657"
+                alt="linkedin logo"
+            >
+            <img
+                class="social-media-icon-image-hover"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-linkedin-hover.svg?m=1791530657"
+                alt="linkedin logo hover"
+            >
+        </a>
+   </div>
+</li>
+
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="footer-main-section hidden-md hidden-lg">
+        <div class="container">
+            <div class="footer-accordion">
+                <div class="row footer-row">
+                    
+                        
+                            <div class="col-lg-2 col-md-2 col-sm-4">
+                                <p class="footer-headline">Hetzner</p>
+                                <ul class="list-unstyled accordion-content">
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Company"
+                                                href="/unternehmen/ueber-uns/"
+                                            >
+                                                Company
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Our Customers"
+                                                href="/customers/"
+                                            >
+                                                Our Customers
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Sustainability"
+                                                href="/unternehmen/nachhaltigkeit/"
+                                            >
+                                                Sustainability
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Blog"
+                                                href="/blog/"
+                                            >
+                                                Blog
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Career"
+                                                href="https://career.hetzner.com/"
+                                            >
+                                                Career
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Pressroom"
+                                                href="/pressroom/"
+                                            >
+                                                Pressroom
+                                            </a>
+                                        </li>
+                                    
+                                </ul>
+                            </div>
+                        
+                    
+                        
+                            <div class="col-lg-2 col-md-2 col-sm-4">
+                                <p class="footer-headline">Support</p>
+                                <ul class="list-unstyled accordion-content">
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Support Center"
+                                                href="/support/"
+                                            >
+                                                Support Center
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Contact"
+                                                href="/support-form/"
+                                            >
+                                                Contact
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Downloads"
+                                                href="/unternehmen/downloads/"
+                                            >
+                                                Downloads
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Hetzner Docs"
+                                                href="https://docs.hetzner.com/"
+                                            >
+                                                Hetzner Docs
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Status"
+                                                href="https://status.hetzner.com/"
+                                            >
+                                                Status
+                                            </a>
+                                        </li>
+                                    
+                                </ul>
+                            </div>
+                        
+                    
+                        
+                            <div class="col-lg-2 col-md-2 col-sm-4">
+                                <p class="footer-headline">Legal</p>
+                                <ul class="list-unstyled accordion-content">
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Legal notice"
+                                                href="/legal/legal-notice/"
+                                            >
+                                                Legal notice
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Data privacy"
+                                                href="/legal/privacy-policy/"
+                                            >
+                                                Data privacy
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="System policies"
+                                                href="/legal/system-policies/"
+                                            >
+                                                System policies
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Terms and conditions"
+                                                href="/legal/terms-and-conditions/"
+                                            >
+                                                Terms and conditions
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Digital Services Act"
+                                                href="/legal/digital-services-act/"
+                                            >
+                                                Digital Services Act
+                                            </a>
+                                        </li>
+                                    
+                                        <li>
+                                            <a
+                                                class="footer-track-link"
+                                                data-action="Abuse form"
+                                                href="https://abuse.hetzner.com/"
+                                            >
+                                                Abuse form
+                                            </a>
+                                        </li>
+                                    
+                                </ul>
+                            </div>
+                        
+                    
+                    <div class="col-lg-2 col-md-2 col-sm-12 col-12">
+                        <ul class="list-unstyled">
+                            <li>
+                                <a
+                                    href="https://career.hetzner.com/"
+                                    class="btn btn-prio-1 on-dark btn-sm"
+                                >
+                                    Join the team
+                                </a>
+                            </li>
+                            <li class="social-icons">
+    <span class="footer-headline hidden-sm hidden-xs">
+        Social Media
+    </span>
+    <div class="social-icons">
+        <a href="https://www.facebook.com/hetzner.de/"
+           aria-label="Visit us on facebook"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="social-media-icon-box"
+        >
+            <img
+                class="social-media-icon-image-default"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-facebook.svg?m=1791530657"
+                alt="facebook logo"
+            >
+            <img
+                class="social-media-icon-image-hover"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-facebook-hover.svg?m=1791530657"
+                alt="facebook logo hover"
+            >
+        </a>
+        <a href="https://www.instagram.com/hetzner.online/"
+           aria-label="Visit us on instagram"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="social-media-icon-box"
+        >
+            <img
+                class="social-media-icon-image-default"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-instagram.svg?m=1791530657"
+                alt="instagram logo"
+            >
+            <img
+                class="social-media-icon-image-hover"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-instagram-hover.svg?m=1791530657"
+                alt="instagram logo hover"
+            >
+        </a>
+        <a href="https://www.youtube.com/user/HetznerOnline/"
+           aria-label="Visit us on youtube"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="social-media-icon-box"
+        >
+            <img
+                class="social-media-icon-image-default"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-youtube.svg?m=1791530657"
+                alt="youtube logo"
+            >
+            <img
+                class="social-media-icon-image-hover"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-youtube-hover.svg?m=1791530657"
+                alt="youtube logo hover"
+            >
+        </a>
+        <a href="https://twitter.com/Hetzner_Online/"
+           aria-label="Visit us on x.com (formerly twitter)"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="social-media-icon-box"
+        >
+            <img
+                class="social-media-icon-image-default"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-x-twitter.svg?m=1791530657"
+                alt="twitter logo"
+            >
+            <img
+                class="social-media-icon-image-hover"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-x-twitter-hover.svg?m=1791530657"
+                alt="twitter logo hover"
+            >
+        </a>
+        <a href="https://www.linkedin.com/company/hetzner-online/"
+           aria-label="Visit us on linkedin"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="social-media-icon-box"
+        >
+            <img
+                class="social-media-icon-image-default"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-linkedin.svg?m=1791530657"
+                alt="linkedin logo"
+            >
+            <img
+                class="social-media-icon-image-hover"
+                src="/_resources/themes/hetzner/images/icons/social-media/ICO-linkedin-hover.svg?m=1791530657"
+                alt="linkedin logo hover"
+            >
+        </a>
+   </div>
+</li>
+
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="footer-post-section">
+        <div class="container">
+            <div class="row">
+                <div class="col-12">
+                    <p class="text-center">
+                        <small>
+                            <span>
+                                © 2026. Hetzner Online GmbH. All Rights Reserved.
+                            </span>
+                            <span id="footer-vat">
+                                <ho-localization-provider>
+                                    <ho-vat-holder></ho-vat-holder>
+                                </ho-localization-provider>
+                            </span>
+                        </small>
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</footer>
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        const route = ['/', '/de','/de/'].includes(window.location.pathname) ? 'hetzner.com' : window.location.pathname
+        $("#footer-support-phone").on('pointerdown',function() {
+            _paq.push(['trackEvent', 'Footer', 'Phone', route])
+        })
+        $("#footer-support-email").on('pointerdown',function() {
+            _paq.push(['trackEvent', 'Footer', 'Mail', route])
+        })
+        $('.footer-track-link').on('pointerdown', function() {
+            const action = $(this).data('action')
+            _paq.push(['trackEvent', 'Footer', action, route])
+        })
+    })
+</script>
+
+
+<div class="back-top animate animated"><i class="fa fa-arrow-up"></i></div>
+</body>
+</html>
+

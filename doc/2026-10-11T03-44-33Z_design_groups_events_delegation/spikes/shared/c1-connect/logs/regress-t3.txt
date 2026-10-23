@@ -1,0 +1,14 @@
+publisher: 1 relay(s) (0 with QAD off), policy RelayOnly, mainline(bootstrap=1, publish=true)
+publisher online after 3.014587216s
+publisher's own address: 1 relay, 2 direct (the record must hold none of the direct ones)
+record readable on the testnet 190.641708ms after online
+  record text: _iroh43oa5niyxjbjwnfspy947hmxfcsuury1z6pzexkozdhge8ytfgc4o
+  record text: relay=http://localhost:32981/
+  parsed: 1 relay URL(s), 0 direct address(es); IP literals in record bytes: 0
+resolver online after 3.017046785s
+resolve and dial by ID: 1 attempt(s), 140.637959ms from the first attempt
+resolver dial by ID: connected 122.494315ms, replied 140.62293ms, echoed true, handshake over relay http://localhost:32981/
+  path after reply: * relay http://localhost:32981/
+2026-10-11T10:40:42.126405Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+2026-10-11T10:40:42.126518Z  WARN iroh_relay::server::client: actor errored Stream terminated, exiting
+RESULT t3: PASS

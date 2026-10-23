@@ -1,0 +1,266 @@
+[package]
+name = "id"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "A peer-to-peer file sharing CLI built with Iroh"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/example/id"
+keywords = ["p2p", "file-sharing", "iroh", "cli"]
+categories = ["command-line-utilities", "network-programming"]
+
+# =============================================================================
+# Features
+# =============================================================================
+
+[features]
+default = ["sandbox", "world"]
+sandbox = ["dep:wasmtime", "world"]
+world = ["dep:sha2", "dep:subtle", "dep:hmac", "dep:scrypt", "dep:rmp-serde"]
+ssh = ["world", "dep:russh"]
+web = [
+  "world",
+  "dep:axum",
+  "dep:tower",
+  "dep:tower-http",
+  "dep:rust-embed",
+  "dep:mime_guess",
+  "dep:futures",
+  "dep:rmp-serde",
+  "dep:comrak",
+  "dep:urlencoding",
+  "dep:aes-gcm",
+  "dep:base64",
+  "dep:hkdf",
+  "dep:sha2",
+  "dep:qrcode",
+]
+# Mainline DHT address lookup (P7.3, decision 15). Off in the default build; src/dht.rs decides per server.
+dht = ["dep:iroh-mainline-address-lookup"]
+
+[dependencies]
+anyhow = "1"
+cbor-core = { version = "=0.10.1", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+libc = "0.2"
+distributed-topic-tracker = "0.3"
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+futures-lite = "2"
+futures-util = { version = "0.3", features = ["sink"] }
+iroh = "1"
+iroh-mdns-address-lookup = "0.6"
+# Mainline DHT address lookup (P7.3). Optional: only the `dht` feature brings it and n0-mainline in.
+iroh-mainline-address-lookup = { version = "0.6", optional = true }
+iroh-base = "1"
+iroh-tickets = "1"
+iroh-blobs = "0.103"
+iroh-docs = "0.101"
+iroh-gossip = { version = "0.101", features = ["net"] }
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
+# Store traits only. The default features would pull in SQLite (explainers section 14).
+p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false }
+# LogSync. A vendored copy whose store dependency has no SQLite default (vendor/README.md).
+p2panda-sync = { path = "vendor/p2panda-sync" }
+# Group membership and the auth DAG (P2.1). The `serde` feature (P2.3) serializes group actions,
+# which the event store keeps with each group operation. `test_utils` is not enabled: it turns on
+# test-only behaviour in p2panda-core, so the test types come from our own tests.
+p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", features = ["serde"] }
+# DataScheme group encryption (P4.1, src/encryption/). `data_scheme` is on because the adapter is the
+# scheme. `test_utils` and `message_scheme` stay off: the adapter brings its own orderer and membership.
+p2panda-encryption = { path = "vendor/p2panda-encryption", default-features = false, features = ["data_scheme"] }
+postcard = { version = "1", features = ["alloc"] }
+rand = "0.10"
+redb = "=4.3.0"
+rustyline = "18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+# TOML parser for the server config (P2.9).
+toml = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-normalization = "0.1"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
+
+# Web feature dependencies (optional)
+axum = { version = "0.8", features = ["ws", "multipart"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
+tower-http = { version = "0.7", features = [
+  "fs",
+  "cors",
+  "compression-gzip",
+], optional = true }
+rust-embed = { version = "8", optional = true }
+mime_guess = { version = "2", optional = true }
+futures = { version = "0.3.32", optional = true }
+rmp-serde = { version = "1", optional = true }
+comrak = { version = "0.56", default-features = false, optional = true }
+urlencoding = { version = "2", optional = true }
+aes-gcm = { version = "0.11", default-features = false, features = [
+  "aes",
+  "alloc",
+], optional = true }
+base64 = { version = "0.22", optional = true }
+blake3 = "1"
+qrcode = { version = "0.14.1", default-features = false, optional = true }
+hkdf = { version = "0.13", optional = true }
+sha2 = { version = "0.11", optional = true }
+# HMAC-SHA512 for the Seitan V2 invite ID and Ed25519 seed (P6.1, src/seitan/derive.rs). Already in the lock.
+hmac = { version = "0.13", optional = true }
+# scrypt for the Seitan V2 stretch (P6.1). Already in the lock as a transitive dependency.
+scrypt = { version = "0.12", optional = true }
+subtle = { version = "2", optional = true }
+wasmtime = { version = "=43.0.2", default-features = false, features = [
+  "cranelift",
+  "runtime",
+  "std",
+], optional = true }
+russh = { version = "=0.64.1", optional = true }
+
+[dev-dependencies]
+wat = "=1.261.0"
+tokio-tungstenite = "0.29"
+vt100 = "=0.16.2"
+rqrr = { version = "0.11.0", default-features = false }
+proptest = "1.12"
+# Interop vectors for the canonical CBOR of event headers. Dev only.
+dcbor = "=0.25.2"
+# Local relay server for the startup-wait tests (iroh's test-utils feature). Dev only.
+iroh = { version = "1", features = ["test-utils"] }
+# Parses the relay kit's configs in tests/relay_ops.rs. Dev only.
+toml = "1"
+# Local mainline DHT testnet for tests/dht_testnet.rs (P7.3). Dev only; already in the lock via the `dht` feature.
+n0-mainline = "0.7"
+# XSalsa20-Poly1305 for the Keybase V2 vector's pkey box (P6.1 known-answer test). Dev only; not in the lock before P6.1.
+crypto_secretbox = "0.1"
+# Reads the vector's msgpack byte strings (P6.1 known-answer test). Dev only; already in the lock.
+serde_bytes = "0.11"
+# Decodes the Keybase vector constants as published (P6.1 known-answer test). Dev only; already in the lock.
+base64 = "0.22"
+
+# The DHT testnet test needs the `dht` feature (P7.3).
+[[test]]
+name = "dht_testnet"
+required-features = ["dht"]
+
+# =============================================================================
+# Lints Configuration
+# =============================================================================
+# Comprehensive linting using Cargo's built-in lints table (Rust 1.74+).
+# This provides consistent linting across `cargo build`, `cargo clippy`, etc.
+
+[lints.rust]
+# Rust compiler lints
+unsafe_code = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+rust_2024_compatibility = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+# Treat some warnings as errors in CI
+# dead_code = "deny"
+# unused_imports = "deny"
+
+[lints.clippy]
+# Enable standard lint groups
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Deny critical issues - these indicate bugs or serious problems
+# Test modules should add: #[allow(clippy::unwrap_used, clippy::expect_used)]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+dbg_macro = "deny"
+# Allow print macros - this is a CLI application
+print_stdout = "allow"
+print_stderr = "allow"
+
+# Restriction lints - selectively enable valuable checks
+clone_on_ref_ptr = "warn"
+create_dir = "warn"
+deref_by_slicing = "warn"
+empty_structs_with_brackets = "warn"
+filetype_is_file = "warn"
+float_cmp_const = "warn"
+fn_to_numeric_cast_any = "warn"
+format_push_string = "warn"
+get_unwrap = "warn"
+if_then_some_else_none = "warn"
+lossy_float_literal = "warn"
+map_err_ignore = "warn"
+mem_forget = "warn"
+mixed_read_write_in_expression = "warn"
+mutex_atomic = "warn"
+rc_buffer = "warn"
+rc_mutex = "warn"
+redundant_type_annotations = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+same_name_method = "warn"
+self_named_module_files = "warn"
+str_to_string = "warn"
+string_add = "warn"
+# string_to_string removed - clippy::implicit_clone covers it
+suspicious_xor_used_as_pow = "warn"
+try_err = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unnecessary_self_imports = "warn"
+unneeded_field_pattern = "warn"
+verbose_file_reads = "warn"
+
+# Allow specific lints - too noisy or conflict with project style
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+redundant_pub_crate = "allow"
+significant_drop_tightening = "allow"
+option_if_let_else = "allow"
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
+too_many_lines = "allow"
+# Allow these - they're reasonable for CLI app complexity
+too_many_arguments = "allow"
+fn_params_excessive_bools = "allow"
+struct_excessive_bools = "allow"
+cognitive_complexity = "allow"
+future_not_send = "allow"
+# TODO(P8.8): Clippy 1.99 fires these on about 50 `assert!(x.is_empty())` sites
+# and 2 `chunks_exact` sites. Allowed until the lints review in plan step P8.8
+# (doc/2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md).
+assert_is_empty = "allow"
+chunks_exact_to_as_chunks = "allow"
+
+# =============================================================================
+# Profile Configuration
+# =============================================================================
+
+[profile.dev]
+# Faster debug builds with some optimization
+opt-level = 0
+debug = true
+incremental = true
+
+[profile.release]
+# Optimize for size and speed
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.test]
+# Include debug info for better error messages
+debug = true
+opt-level = 0
