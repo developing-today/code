@@ -396,9 +396,18 @@ const server = http.createServer((req, res) => {
           }
         }
 
-        const failed = (code !== 0 && fullContent.length === 0) || (terminalState && terminalState !== 'completed' && fullContent.length === 0);
+        // Failure is judged by the run's authoritative terminal state when
+        // one was emitted, otherwise by the exit code (#672). Partial
+        // content must not mask a failure: a run that failed midway used to
+        // be reported as a successful 'stop' carrying the truncated text,
+        // because both clauses of the old predicate required empty content.
+        const failed = terminalState ? terminalState !== 'completed' : code !== 0;
         if (failed) {
-          const detail = (stderrTail.trim().split('\n').pop() || `muse exec exited with code ${code}`).trim();
+          const stderrLine = stderrTail.trim().split('\n').pop();
+          const fallback = terminalState && terminalState !== 'completed'
+            ? `muse run terminated with state '${terminalState}'`
+            : `muse exec exited with code ${code}`;
+          const detail = (stderrLine || fallback).trim();
           const errorBody = { error: { message: `Muse execution failed: ${detail}` } };
           if (stream) {
             // The 200 + text/event-stream headers are already on the wire,
