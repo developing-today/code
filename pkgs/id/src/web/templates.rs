@@ -159,7 +159,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
     html.push_str("<div class=\"flex items-center gap-2 px-3 py-2 border-b border-base-300\" id=\"file-filter\">");
     let _ = write!(
         html,
-        "<input type=\"text\" id=\"file-search\" class=\"input input-bordered input-xs flex-1 bg-base-100\" name=\"search\" \
+        "<input type=\"text\" id=\"file-search\" aria-label=\"Search files\" class=\"input input-bordered input-xs flex-1 bg-base-100\" name=\"search\" \
          placeholder=\"search files & tags...\" autocomplete=\"off\" \
          value=\"{}\" />",
         search_value
@@ -202,8 +202,8 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             "<div class=\"flex items-center gap-2 px-3 py-2 border-b border-base-300 text-xs\" id=\"bulk-action-bar\" style=\"display:none;\">",
         );
         html.push_str("<span class=\"font-bold\" id=\"bulk-count\">0 selected</span>");
-        html.push_str("<input type=\"text\" id=\"bulk-tag-key\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"key\" />");
-        html.push_str("<input type=\"text\" id=\"bulk-tag-value\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"value (optional)\" />");
+        html.push_str("<input type=\"text\" id=\"bulk-tag-key\" aria-label=\"Bulk tag key\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"key\" />");
+        html.push_str("<input type=\"text\" id=\"bulk-tag-value\" aria-label=\"Bulk tag value\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"value (optional)\" />");
         html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
         html.push_str("<button class=\"btn btn-ghost btn-xs font-mono text-base-content/50\" onclick=\"window.idApp?.bulkClearSelection?.()\">clear</button>");
         html.push_str("</div>");
@@ -699,7 +699,7 @@ pub fn render_settings(node_id: &str) -> String {
     html.push_str("        <h3>Display Name</h3>\n");
     html.push_str("        <p class=\"text-muted mb-4\">Set a name that appears on your cursor when collaborating.</p>\n");
     html.push_str("        <div class=\"flex gap-2 items-center\">\n");
-    html.push_str("            <input type=\"text\" id=\"display-name-input\" class=\"input input-sm input-bordered w-48\" placeholder=\"Anonymous\" />\n");
+    html.push_str("            <input type=\"text\" id=\"display-name-input\" aria-label=\"Display name\" class=\"input input-sm input-bordered w-48\" placeholder=\"Anonymous\" />\n");
     html.push_str("            <button id=\"display-name-save\" class=\"btn btn-sm btn-primary\">Save</button>\n");
     html.push_str(
         "            <span id=\"display-name-status\" class=\"text-muted text-sm\"></span>\n",
@@ -785,7 +785,7 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
     <details>
       <summary class="cursor-pointer text-sm">Host: create a guest invite</summary>
       <div class="mt-3 flex flex-wrap gap-2">
-        <input data-world-admin class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="World admin token">
+        <input data-world-admin class="input input-bordered font-mono" type="password" autocomplete="off" aria-label="World admin token" placeholder="World admin token">
         <button data-world-invite class="btn btn-secondary" type="button">Create invite</button>
       </div>
       <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -821,7 +821,7 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
       <h2 class="font-bold">Chat &amp; events</h2>
       <ol data-world-log class="h-48 overflow-auto rounded bg-base-200 p-3 font-mono text-sm" aria-live="polite"></ol>
       <form data-world-chat-form class="flex gap-2">
-        <input data-world-chat class="input input-bordered min-w-0 flex-1" maxlength="2048" placeholder="Say something…">
+        <input data-world-chat class="input input-bordered min-w-0 flex-1" maxlength="2048" aria-label="Chat message" placeholder="Say something…">
         <button class="btn btn-primary" type="submit">Chat</button>
       </form>
       <form data-world-input-form class="flex gap-2">
