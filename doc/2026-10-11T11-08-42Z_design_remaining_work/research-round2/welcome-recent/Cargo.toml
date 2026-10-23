@@ -11,7 +11,7 @@ publish = false
 exclude = ["variants/serde-bytes/p2panda-encryption"]
 
 [dependencies]
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 cbor-core = "=0.10.1"
 serde = { version = "1", features = ["derive"] }
 # Stock crate, as pinned.

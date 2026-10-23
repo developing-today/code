@@ -2081,7 +2081,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 [[package]]
 name = "p2panda-core"
 version = "0.7.1"
-source = "git+https://github.com/p2panda/p2panda?rev=3e84cac48bba05c6857cce2ec433862b97f8d53c#3e84cac48bba05c6857cce2ec433862b97f8d53c"
+source = "git+https://github.com/p2panda/p2panda?rev=da80c05b95269926bf58121cf6a2d3dd5ca41dfc#da80c05b95269926bf58121cf6a2d3dd5ca41dfc"
 dependencies = [
  "blake3",
  "cbor-core",
