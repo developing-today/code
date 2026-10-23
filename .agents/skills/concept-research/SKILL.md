@@ -31,7 +31,7 @@ Many concept owners run at once, one per concept, so nothing here waits on anoth
 
 ## Steps
 
-1. **Claim and boot.** Follow the worker boot in collaboration.md: git env, fresh worktree from `origin/main`, your own branch (the brief's name, else `wf/<package-slug>/C001-s2`), push it empty. Take the concept lease with `lease acquire` and renew it before it expires. Append a `start` line to your live log.
+1. **Claim and boot.** Follow the worker boot in collaboration.md: git env, fresh worktree from `origin/main`, your own branch (the brief's name, else `research/<slug>/s2-c001`), push it empty. Take the concept lease with `lease acquire` and renew it before it expires. Append a `start` line to your live log.
    Done when `lease list` shows your lease, `git ls-remote origin <branch>` shows the branch, and the log has `start`.
 2. **Read the inputs.** Read the concept file (S0 excerpts and thoughts, the S1 repo map and research questions), its research issue, the concept's section of `main.md`, the "Reading of garbled input" register, and every transcript segment the state block lists (`ids` resolves allocated ids; never invent one). Run `check --package <pkg> --remote-notes` and read every note already addressed to you.
    Done when you can list each segment and each S1 question for this concept, and each note addressed to it.
