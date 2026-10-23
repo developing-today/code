@@ -165,7 +165,33 @@ def validate_crawl_url(raw):
         u.port
     except ValueError:
         raise ValueError("url has an invalid port") from None
+    # Capture the host spelling as written in the netloc before
+    # extraction folds it: urlparse's hostname property already
+    # lowercases, and Python's Unicode lowercase mapping folds
+    # U+212A KELVIN SIGN to ASCII "k", so the extracted host is
+    # "k.example.com" from the start and no later step (the NFKC
+    # measurement below included) ever sees the original spelling.
+    # When that extraction fold changed the spelling and the folded
+    # form is ASCII, the return path must rebuild from the judged
+    # host exactly as it does for a mapping fold, or the raw Kelvin
+    # spelling is returned while the Worker returns the folded form
+    # it judged (#667). Scoped to ASCII for the same reason as
+    # host_was_mapped below: a fold landing on a non-ASCII host is
+    # an IDN spelling, whose return form is the separate #659
+    # question. (Plain ASCII case folds are covered too, but the
+    # normalizer already lowercases those, so the rebuild agrees.)
+    _hostport_spelling = u.netloc.rsplit("@", 1)[-1]
+    if _hostport_spelling.startswith("["):
+        _bracket_end = _hostport_spelling.find("]")
+        raw_host_spelling = (
+            _hostport_spelling[1:_bracket_end]
+            if _bracket_end != -1
+            else _hostport_spelling
+        )
+    else:
+        raw_host_spelling = _hostport_spelling.partition(":")[0]
     host = (u.hostname or "").lower()
+    has_extraction_fold = raw_host_spelling != host and host.isascii()
     # WHATWG URL parsing percent-decodes the host before judging it —
     # %65xample.com is example.com, %6cocalhost is localhost — while
     # urlparse hands the spelling through verbatim (#505, #529). Decode
@@ -444,7 +470,9 @@ def validate_crawl_url(raw):
             # dotted form too instead of the fullwidth character
             # (#660), and a host that carried a UTS-46 ignored
             # codepoint returns the judged host with the codepoint
-            # deleted, as the Worker returns it (#652). (IP literals
+            # deleted, as the Worker returns it (#652). A host whose
+            # spelling was folded at extraction time (the Kelvin
+            # sign, #667) gets the same rebuild. (IP literals
             # take the canonical-address return below instead, and
             # WHATWG serializes those without a root dot, as here.)
             return _url_with_encoded_components(
@@ -454,6 +482,7 @@ def validate_crawl_url(raw):
                     or has_literal_separator
                     or host_was_mapped
                     or has_ignored_codepoint
+                    or has_extraction_fold
                     else raw
                 )
             )

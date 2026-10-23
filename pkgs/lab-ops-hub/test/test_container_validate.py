@@ -1363,6 +1363,57 @@ class TestValidateCrawlUrl(unittest.TestCase):
         )
         self.assertEqual(followed.full_url, "http://example.org/")
 
+    def test_returns_the_extraction_folded_host_for_kelvin_sign_spellings(self):
+        # urlparse's hostname extraction folds U+212A KELVIN SIGN to
+        # ASCII "k" before the NFKC step runs, so #666's mapped-host
+        # measurement never saw the original spelling and the raw
+        # Kelvin host came back verbatim while the Worker returns
+        # the folded form it judged (#667). The return now rebuilds
+        # from the judged host whenever extraction itself folded the
+        # spelling to a different ASCII form.
+        cases = {
+            # Kelvin sign as a full label and inside a label.
+            "http://\u212a.example.com/": "http://k.example.com/",
+            "http://\u212a.com/": "http://k.com/",
+            "http://\u212aexample.com/": "http://kexample.com/",
+            "http://exa\u212aple.com/": "http://exakple.com/",
+            # Port, userinfo, path and the empty ?/# markers are
+            # preserved around the rebuilt host; default ports drop.
+            "http://\u212aexample.com:8080/p": "http://kexample.com:8080/p",
+            "http://\u212a.example.com:80/": "http://k.example.com/",
+            "https://\u212a.example.com:443/": "https://k.example.com/",
+            "http://user@\u212a.example.com/": "http://user@k.example.com/",
+            "http://\u212aexample.com/path?#frag": ("http://kexample.com/path?#frag"),
+            "http://\u212aexample.com?#": "http://kexample.com/?#",
+            # The root dot survives the rebuild.
+            "http://\u212a.example.com./": "http://k.example.com./",
+            # Controls: the percent-encoded and mixed spellings keep
+            # the returns they already had, and spellings the
+            # pipeline does not change are untouched — ordinary
+            # hosts, ASCII case folds (already normalized) and IDN
+            # U-label spellings (#659 covers the A-label form).
+            "http://%e2%84%aa.example.com/": "http://k.example.com/",
+            "http://\u212a\uff45.com/": "http://ke.com/",
+            "http://example.com/": "http://example.com/",
+            "http://EXAMPLE.COM/": "http://example.com/",
+            "http://m\u00fcnchen.de/": "http://m\u00fcnchen.de/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Verdicts are unchanged: a blocked name spelled with the
+        # Kelvin sign as its first label stays refused.
+        self.assertRefused("http://\u212a.localhost/")
+        # Redirect targets inherit the fix: the handler fetches the
+        # validated (folded) form of a raw Location carrying one.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://\u212a.example.org/path"
+        )
+        self.assertEqual(followed.full_url, "http://k.example.org/path")
+
     def test_returns_empty_password_userinfo_without_the_colon(self):
         # WHATWG serialises userinfo from the parsed username/password:
         # the ":" separator appears only when the password is non-empty,
