@@ -129,6 +129,34 @@ test("validateCrawlUrl returns the ASCII dot for literal separator spellings (#6
   assert.equal(validateCrawlUrl("http://example.com\u3002\u3002/").ok, false);
 });
 
+test("validateCrawlUrl returns the host without UTS-46 ignored codepoints (#652)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG domain-to-ASCII deletes the UTS-46 "ignored"
+  // codepoints (U+00AD, U+034F, U+180E, U+200B, U+FEFF, U+2060-...) from
+  // the host, so a spelling carrying one returns the host with the
+  // codepoint deleted — root dot, port and userinfo preserved.
+  const cases: Array<[string, string]> = [
+    ["http://exa\u200bmple.com/", "http://example.com/"],
+    ["http://exa\u00admple.com/", "http://example.com/"],
+    ["http://exa\u180emple.com/", "http://example.com/"],
+    ["http://exa\u2060mple.com/", "http://example.com/"],
+    ["http://exa\ufeffmple.com/", "http://example.com/"],
+    ["http://example.com\u200b/", "http://example.com/"],
+    ["http://exa\u200bmple.com./", "http://example.com./"],
+    ["http://example.com.\u200b/", "http://example.com./"],
+    ["http://exa\u200bmple.com:8080/path?q=1#frag", "http://example.com:8080/path?q=1#frag"],
+    ["http://user@exa\u200bmple.com/", "http://user@example.com/"],
+    ["http://8\u200b.8.8.8/", "http://8.8.8.8/"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+  assert.equal(validateCrawlUrl("http://local\u200bhost/").ok, false);
+  assert.equal(validateCrawlUrl("http://127\u200b.0.0.1/").ok, false);
+});
+
 test("validateCrawlUrl returns empty components normalized (#639)", () => {
   // The Worker's returned form is the reference the container validator
   // mirrors: "/" supplied for an empty path, the empty port's colon and

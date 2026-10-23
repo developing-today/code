@@ -236,10 +236,22 @@ def validate_crawl_url(raw):
     # spelling is returned while the Worker returns the form it
     # judged (#665). Scoped to folds landing on ASCII, measured
     # before the ignored-codepoint deletion below: IDN-internal
-    # mappings (e.g. U+0345, #596) and that deletion's return form
-    # (#652) are separate questions.
+    # mappings (e.g. U+0345, #596) are a separate question; the
+    # deletion's own return form is captured just below (#652).
     host_was_mapped = host != host_before_mapping and host.isascii()
+    host_before_ignored_deletion = host
     host = host.translate({cp: None for cp in _UTS46_IGNORED})
+    # The deletion dropped a UTS-46 "ignored" codepoint (U+00AD,
+    # U+200B, U+180E, ...) from the judged host: the return path must
+    # then rebuild from the judged host, exactly as for a
+    # percent-decoded or literal-separator host, or the raw spelling
+    # is returned while the Worker returns the form it judged — the
+    # host with the codepoint deleted (#652). (One arm is worse than
+    # a spelling divergence: U+180E cannot be IDNA-encoded at fetch
+    # time at all.) The deletion is the only change this trigger
+    # certifies — a host carrying no ignored codepoint is untouched,
+    # so ordinary IDN spellings keep their established return form.
+    has_ignored_codepoint = host != host_before_ignored_deletion
     # NFKC mapping can itself CREATE a host delimiter the earlier
     # checks never saw: _percent_decode_host refuses delimiters in
     # the decoded form, but a percent-encoded compatibility character
@@ -430,13 +442,18 @@ def validate_crawl_url(raw):
             # a literal UTS-46 separator gets the same rebuild, so
             # its root-dot and interior spellings return the ASCII
             # dotted form too instead of the fullwidth character
-            # (#660). (IP literals take the canonical-address return
-            # below instead, and WHATWG serializes those without a
-            # root dot, as here.)
+            # (#660), and a host that carried a UTS-46 ignored
+            # codepoint returns the judged host with the codepoint
+            # deleted, as the Worker returns it (#652). (IP literals
+            # take the canonical-address return below instead, and
+            # WHATWG serializes those without a root dot, as here.)
             return _url_with_encoded_components(
                 _normalize_validated_url(
                     _url_with_host(u, host + "." if has_root_dot else host, raw)
-                    if percent_decoded or has_literal_separator or host_was_mapped
+                    if percent_decoded
+                    or has_literal_separator
+                    or host_was_mapped
+                    or has_ignored_codepoint
                     else raw
                 )
             )
