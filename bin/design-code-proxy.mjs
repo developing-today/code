@@ -216,12 +216,22 @@ const dispatchWithFallback = (body, clientRes) => {
         return onFail(new Error(`HTTP ${localRes.statusCode}`));
       }
 
-      clientRes.writeHead(localRes.statusCode || 200, {
-        ...localRes.headers,
-        'Access-Control-Allow-Origin': '*'
-      });
+      // The head is written up front only for streaming. For a buffered
+      // (non-stream) response it must wait until the body has been read:
+      // the in-body quota check below can still call onFail, and onFail is
+      // a no-op once headers are sent — writing the head first made that
+      // check hang the request forever instead of falling back (#681).
+      const writeHead = () => {
+        if (!clientRes.headersSent) {
+          clientRes.writeHead(localRes.statusCode || 200, {
+            ...localRes.headers,
+            'Access-Control-Allow-Origin': '*'
+          });
+        }
+      };
 
       if (stream) {
+        writeHead();
         let buffer = '';
         localRes.on('data', chunk => {
           buffer += chunk.toString('utf-8');
@@ -258,8 +268,10 @@ const dispatchWithFallback = (body, clientRes) => {
               return onFail(new Error('Quota exceeded in JSON body'));
             }
             json.model = modelId;
+            writeHead();
             clientRes.end(JSON.stringify(json, null, 2));
           } catch (_) {
+            writeHead();
             clientRes.end(fullBody);
           }
         });
