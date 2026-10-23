@@ -2087,6 +2087,22 @@
         "type": "github"
       }
     },
+    "omasnap": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791076643,
+        "narHash": "sha256-bK2fOB8P79IBlcAAeKz7l0hOXjKzTqwApidEWWwN7HY=",
+        "owner": "tobi",
+        "repo": "omasnap",
+        "rev": "6771b19de8bcead2b17c16b49f1a8a97445dd8e3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "tobi",
+        "repo": "omasnap",
+        "type": "github"
+      }
+    },
     "omnix": {
       "inputs": {
         "devour-flake": "devour-flake",
@@ -2276,6 +2292,7 @@
         "nixpkgs-stable": "nixpkgs-stable",
         "nixpkgs-unstable": "nixpkgs-unstable",
         "nixvim": "nixvim",
+        "omasnap": "omasnap",
         "omnix": "omnix",
         "openchamber": "openchamber",
         "opencode": "opencode",
