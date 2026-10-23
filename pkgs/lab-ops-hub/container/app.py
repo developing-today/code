@@ -737,14 +737,12 @@ def _url_with_host(u, new_host, source_url=None):
     # the split parts silently drops that ";" (#655). Take the full path
     # from urlsplit (which never splits params) when the source spelling
     # is available, as the rebuild sites below do.
-    rebuild = (
-        u._replace(path=urlsplit(source_url).path, params="")
-        if source_url
-        else u
-    )
+    rebuild = u._replace(path=urlsplit(source_url).path, params="") if source_url else u
     if hostport.startswith("["):
         _, _, suffix = hostport.partition("]")
-        return rebuild._replace(netloc=f"{prefix}[{new_host}]{suffix}").geturl() + markers
+        return (
+            rebuild._replace(netloc=f"{prefix}[{new_host}]{suffix}").geturl() + markers
+        )
     if ":" in hostport:
         _, _, port = hostport.partition(":")
         return rebuild._replace(netloc=f"{prefix}{new_host}:{port}").geturl() + markers
@@ -1030,9 +1028,7 @@ def _split_userinfo(url):
     password = unquote(password)
     # Keep the full path: a geturl() rebuild from urlparse's split
     # parts drops a bare trailing ";" in the path (#655).
-    stripped = u._replace(
-        netloc=hostport, path=urlsplit(url).path, params=""
-    ).geturl()
+    stripped = u._replace(netloc=hostport, path=urlsplit(url).path, params="").geturl()
     if not username and not password:
         return stripped, None
     token = base64.b64encode(f"{username}:{password}".encode("utf-8"))
