@@ -311,9 +311,14 @@ class TestValidateCrawlUrl(unittest.TestCase):
         for url in (
             "https://[64:ff9b::808:808]/",  # NAT64 embedding 8.8.8.8
             "https://[2002:808:808::]/",  # 6to4 embedding 8.8.8.8
-            "https://[::ffff:8.8.8.8]/",  # IPv4-mapped public
         ):
             self.assertAccepted(url)
+        # IPv4-mapped public, dotted spelling: accepted, and returned
+        # in the canonical hex form the Worker serializes (#637).
+        self.assertEqual(
+            validate_crawl_url("https://[::ffff:8.8.8.8]/"),
+            "https://[::ffff:808:808]/",
+        )
 
     def test_agrees_with_worker_validator_on_ipv4_ranges(self):
         # Verdicts must match the TypeScript validator's suite case for
@@ -890,7 +895,6 @@ class TestValidateCrawlUrl(unittest.TestCase):
         for url in (
             "https://example.com/page",
             "http://8.8.8.8/",
-            "http://134744072/",  # 8.8.8.8 in integer spelling: public, allowed
             "https://[2606:4700:4700::1111]/",
             "http://example.com./",  # FQDN root-dot spelling of a public name
             "http://dead.beef/",  # hex-looking labels, non-numeric final label
@@ -899,6 +903,32 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://example.com:8080/",  # an ordinary explicit port
         ):
             self.assertAccepted(url)
+
+    def test_returns_ip_literals_in_canonical_form(self):
+        # An IP literal names the same address in many spellings; the
+        # returned URL carries the canonical form of the address that
+        # was judged — dotted quad for inet_aton IPv4 spellings,
+        # compressed lowercase for IPv6 — matching the Worker's
+        # serializer (#637). (assertAccepted pins verbatim returns, so
+        # these spellings cannot live in test_accepts_public_targets.)
+        cases = {
+            "http://134744072/": "http://8.8.8.8/",  # integer spelling
+            "http://0x8080808/": "http://8.8.8.8/",  # hex integer
+            "http://0x8.0x8.0x8.0x8/": "http://8.8.8.8/",  # hex parts
+            "http://010.0.0.010/": "http://8.0.0.8/",  # octal parts
+            "http://1.2.3/": "http://1.2.0.3/",  # short form
+            "http://1.2.256/": "http://1.2.1.0/",  # last part overflows a byte
+            "http://8.8.2056/": "http://8.8.8.8/",
+            "http://8.16777215/": "http://8.255.255.255/",
+            "http://1.2.3.04/": "http://1.2.3.4/",  # leading-zero part
+            "http://[2001:4860:4860:0000:0000:0000:0000:8888]/": (
+                "http://[2001:4860:4860::8888]/"
+            ),
+            # Userinfo and port survive the host substitution.
+            "http://user:pass@134744072:8080/x": "http://user:pass@8.8.8.8:8080/x",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
 
     def test_percent_encodes_non_ascii_outside_the_host(self):
         # WHATWG percent-encodes non-ASCII characters in the userinfo,
