@@ -56,6 +56,22 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # is judged and returned exactly as before.
         self.assertAccepted("http://example.com/%5c@127.0.0.1/")
 
+    def test_backslash_in_query_and_fragment_is_data(self):
+        # #620: the #577 replacement is structural only up to the first
+        # "?" or "#" — WHATWG keeps a backslash in the query/fragment
+        # verbatim, and the Worker fetches it that way.
+        v = app.validate_crawl_url
+        self.assertEqual(v(r"http://example.com/?q=a\b"), r"http://example.com/?q=a\b")
+        self.assertEqual(v(r"http://example.com/#a\b"), r"http://example.com/#a\b")
+        self.assertEqual(
+            v(r"https://example.com/?q=a\b\c#x\y"), r"https://example.com/?q=a\b\c#x\y"
+        )
+        # Control: a path backslash still normalizes, and an authority
+        # backslash before a query still ends the authority (#577).
+        self.assertEqual(v(r"http://example.com/a\b"), "http://example.com/a/b")
+        with self.assertRaises(ValueError):
+            v(r"http://127.0.0.1\@example.com/?q=a\b")
+
     def test_redirect_handler_refuses_backslash_loopback_target(self):
         # Redirect targets are validated by this validator alone
         # (#577): a Location spelling whose WHATWG host is loopback
