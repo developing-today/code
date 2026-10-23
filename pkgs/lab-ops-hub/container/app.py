@@ -226,8 +226,19 @@ def validate_crawl_url(raw):
     # there, the return path rebuilds from the mapped host exactly
     # as it does for a percent-decoded host.
     has_literal_separator = any(c in "\u3002\uff0e\uff61" for c in host)
+    host_before_mapping = host
     host = unicodedata.normalize("NFKC", host).lower()
     host = host.translate({0x3002: ".", 0xFF0E: ".", 0xFF61: "."})
+    # The NFKC mapping folded the host to a different ASCII spelling
+    # (a fullwidth or other compatibility spelling of an ASCII name):
+    # the return path must then rebuild from the mapped host, exactly
+    # as for a percent-decoded or literal-separator host, or the raw
+    # spelling is returned while the Worker returns the form it
+    # judged (#665). Scoped to folds landing on ASCII, measured
+    # before the ignored-codepoint deletion below: IDN-internal
+    # mappings (e.g. U+0345, #596) and that deletion's return form
+    # (#652) are separate questions.
+    host_was_mapped = host != host_before_mapping and host.isascii()
     host = host.translate({cp: None for cp in _UTS46_IGNORED})
     # NFKC mapping can itself CREATE a host delimiter the earlier
     # checks never saw: _percent_decode_host refuses delimiters in
@@ -425,7 +436,7 @@ def validate_crawl_url(raw):
             return _url_with_encoded_components(
                 _normalize_validated_url(
                     _url_with_host(u, host + "." if has_root_dot else host, raw)
-                    if percent_decoded or has_literal_separator
+                    if percent_decoded or has_literal_separator or host_was_mapped
                     else raw
                 )
             )
