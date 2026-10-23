@@ -629,7 +629,11 @@ class TestValidateCrawlUrl(unittest.TestCase):
             self.assertRefused(url)
         # Controls: mapped spellings of public names stay crawlable.
         self.assertAccepted("http://ｅｘａｍｐｌｅ.com/")
-        self.assertAccepted("http://münchen。de/")
+        # The U-label spelling is kept, but its literal separator
+        # now returns as "." (#660), not the fullwidth character.
+        self.assertEqual(
+            validate_crawl_url("http://münchen。de/"), "http://münchen.de/"
+        )
 
     def test_refuses_idna_disallowed_unicode_hosts(self):
         # UTS-46/IDNA disallows these codepoints in a host label, and
@@ -1192,6 +1196,63 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused("http://localhost./")
         self.assertRefused("http://example.com../")
         self.assertRefused("http://example.com%2e%2e/")
+
+    def test_returns_the_ascii_dot_for_literal_separator_spellings(self):
+        # PR #657 fixed the percent-encoded root-dot spellings, but
+        # the literal UTS-46 separator spellings (U+3002, U+FF0E,
+        # U+FF61) still came back with the fullwidth character in
+        # them: judging translated them to "." but the non-percent
+        # return path returned the raw spelling verbatim, so the
+        # literal and percent spellings of the same host character
+        # recorded two different URLs and the literal form disagreed
+        # with the Worker (#660). The return now rebuilds from the
+        # mapped host whenever the raw host carried a literal
+        # separator, for interior separators as well as the root dot.
+        cases = {
+            # Root dot, one per separator character.
+            "http://example.com\u3002/": "http://example.com./",
+            "http://example.com\uff0e/": "http://example.com./",
+            "http://example.com\uff61/": "http://example.com./",
+            "http://example.com\u3002": "http://example.com./",
+            "http://example.com\u3002/path": "http://example.com./path",
+            "http://sub.example.com\uff61/": "http://sub.example.com./",
+            "http://example.com\u3002:8080/path": "http://example.com.:8080/path",
+            "http://example.com\u3002:80/": "http://example.com./",
+            "http://user@example.com\uff61/": "http://user@example.com./",
+            "http://example.com\u3002?#": "http://example.com./?#",
+            "http://example.com\u3002/path?#frag": ("http://example.com./path?#frag"),
+            # Interior separators map to "." too.
+            "http://example\u3002com/": "http://example.com/",
+            "http://example\uff0ecom/path": "http://example.com/path",
+            "http://sub\u3002example\u3002com/": "http://sub.example.com/",
+            # An IDN host keeps its U-label spelling; only the
+            # separator changes (#659 covers the A-label form).
+            "http://m\u00fcnchen\u3002de/": "http://m\u00fcnchen.de/",
+            # IP literals serialize without a root dot in WHATWG,
+            # as before — separator spellings agree there already.
+            "http://8.8.8.8\u3002/": "http://8.8.8.8/",
+            "http://8\u30028\u30028\u30028/": "http://8.8.8.8/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Verdicts are unchanged: dotted spellings of blocked
+        # targets stay refused, and a second separator is still an
+        # empty label, in every separator spelling.
+        self.assertRefused("http://localhost\u3002/")
+        self.assertRefused("http://localhost\uff61/")
+        self.assertRefused("http://127.0.0.1\u3002/")
+        self.assertRefused("http://example.com\u3002\u3002/")
+        self.assertRefused("http://example.com\uff0e\uff0e/")
+        # Redirect targets inherit the fix: the handler fetches the
+        # validated (dotted) form of a raw Location carrying one.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://example.org\u3002/path"
+        )
+        self.assertEqual(followed.full_url, "http://example.org./path")
 
     def test_returns_empty_password_userinfo_without_the_colon(self):
         # WHATWG serialises userinfo from the parsed username/password:

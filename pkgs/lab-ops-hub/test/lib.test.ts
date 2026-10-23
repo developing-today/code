@@ -104,6 +104,31 @@ test("validateCrawlUrl returns the root dot for both dot spellings (#647)", () =
   assert.equal(validateCrawlUrl("http://example.com%2e%2e/").ok, false);
 });
 
+test("validateCrawlUrl returns the ASCII dot for literal separator spellings (#660)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG host parsing maps the literal UTS-46 separators
+  // (U+3002, U+FF0E, U+FF61) to ".", so literal spellings return the
+  // same dotted URL as their percent-encoded spellings — root dot and
+  // interior separators alike. (IP literals serialise without a root dot.)
+  const cases: Array<[string, string]> = [
+    ["http://example.com\u3002/", "http://example.com./"],
+    ["http://example.com\uff0e/", "http://example.com./"],
+    ["http://example.com\uff61/", "http://example.com./"],
+    ["http://example.com\u3002:8080/", "http://example.com.:8080/"],
+    ["http://user@example.com\uff61/", "http://user@example.com./"],
+    ["http://example\u3002com/", "http://example.com/"],
+    ["http://example\uff0ecom/path", "http://example.com/path"],
+    ["http://8\u30028\u30028\u30028/", "http://8.8.8.8/"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+  assert.equal(validateCrawlUrl("http://localhost\u3002/").ok, false);
+  assert.equal(validateCrawlUrl("http://example.com\u3002\u3002/").ok, false);
+});
+
 test("validateCrawlUrl returns empty components normalized (#639)", () => {
   // The Worker's returned form is the reference the container validator
   // mirrors: "/" supplied for an empty path, the empty port's colon and

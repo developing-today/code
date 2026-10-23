@@ -216,6 +216,16 @@ def validate_crawl_url(raw):
         raise ValueError(
             f"refusing to crawl host with a character that maps to a label separator {host!r}"
         )
+    # Remember whether the (possibly percent-decoded) host carried a
+    # literal UTS-46 label separator: the mapping below translates it
+    # to ".", but the non-percent return path further down returns
+    # `raw` verbatim, so a literal spelling came back with the
+    # fullwidth character still in it while its percent-encoded
+    # spelling (and the Worker) returned the ASCII dotted form
+    # (#660 — the #647 remainder for literal spellings). When it was
+    # there, the return path rebuilds from the mapped host exactly
+    # as it does for a percent-decoded host.
+    has_literal_separator = any(c in "\u3002\uff0e\uff61" for c in host)
     host = unicodedata.normalize("NFKC", host).lower()
     host = host.translate({0x3002: ".", 0xFF0E: ".", 0xFF61: "."})
     host = host.translate({cp: None for cp in _UTS46_IGNORED})
@@ -405,13 +415,17 @@ def validate_crawl_url(raw):
             # The returned form is WHATWG-normalized (#633). The root
             # dot judging stripped is re-attached, so the percent-
             # encoded spelling returns the same dotted form as the
-            # literal spelling and the Worker (#647). (IP literals
-            # take the canonical-address return below instead, and
-            # WHATWG serializes those without a root dot, as here.)
+            # literal spelling and the Worker (#647). A host carrying
+            # a literal UTS-46 separator gets the same rebuild, so
+            # its root-dot and interior spellings return the ASCII
+            # dotted form too instead of the fullwidth character
+            # (#660). (IP literals take the canonical-address return
+            # below instead, and WHATWG serializes those without a
+            # root dot, as here.)
             return _url_with_encoded_components(
                 _normalize_validated_url(
                     _url_with_host(u, host + "." if has_root_dot else host, raw)
-                    if percent_decoded
+                    if percent_decoded or has_literal_separator
                     else raw
                 )
             )
