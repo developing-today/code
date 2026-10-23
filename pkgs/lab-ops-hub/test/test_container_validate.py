@@ -1063,6 +1063,36 @@ class TestValidateCrawlUrl(unittest.TestCase):
         )
         self.assertEqual(followed.full_url, "http://example.org/")
 
+    def test_returns_empty_password_userinfo_without_the_colon(self):
+        # WHATWG serialises userinfo from the parsed username/password:
+        # the ":" separator appears only when the password is non-empty,
+        # and the whole "@" drops when both are empty. The container
+        # round-tripped the raw userinfo string, so "user:@" came back
+        # as "user:@" and ":@" as ":@" while the Worker returns "user@"
+        # and no userinfo at all (#651) — #639 dropped the bare "@" but
+        # missed the colon-bearing spellings, which are non-empty raw
+        # strings. Fetch behaviour already agreed (_split_userinfo
+        # treats ":@" as carrying no credentials); only the recorded
+        # URL diverged.
+        cases = {
+            "http://user:@example.com/": "http://user@example.com/",
+            "http://:@example.com/": "http://example.com/",
+            "http://:@example.com:80/": "http://example.com/",
+            "http://user:@example.com:8080/a": "http://user@example.com:8080/a",
+            "http://:@8.8.8.8/": "http://8.8.8.8/",
+            # Controls: a non-empty password keeps its separator, and
+            # a ":" inside the password is data, encoded as %3A.
+            "http://:pass@example.com/": "http://:pass@example.com/",
+            "http://::@example.com/": "http://:%3A@example.com/",
+            "http://user::@example.com/": "http://user:%3A@example.com/",
+            "http://user:pass@example.com/": "http://user:pass@example.com/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Blocked targets in these spellings stay refused.
+        self.assertRefused("http://:@127.0.0.1/")
+        self.assertRefused("http://user:@localhost/")
+
     def test_percent_encodes_non_ascii_outside_the_host(self):
         # WHATWG percent-encodes non-ASCII characters in the userinfo,
         # path, query and fragment as UTF-8; urlparse hands them through
