@@ -109,8 +109,17 @@ def validate_crawl_url(raw):
     # host the Worker's parser names. Only a raw backslash is
     # structural — a percent-encoded %5C is data and is untouched, as
     # are non-http(s) spellings (the scheme check below refuses them).
+    # The backslash is structural only up to the first "?" or "#": in
+    # the query and fragment WHATWG keeps it as data, so replacing it
+    # there would fetch a different query than the Worker fetches for
+    # the same validated target (#620).
     if "\\" in raw and re.match(r"(?i)https?:", raw):
-        raw = raw.replace("\\", "/")
+        cut = len(raw)
+        for delim in "?#":
+            i = raw.find(delim)
+            if i != -1:
+                cut = min(cut, i)
+        raw = raw[:cut].replace("\\", "/") + raw[cut:]
     # WHATWG consumes the whole delimiter run after a special scheme's
     # colon — 0, 1, 3 or more slashes name the same host as exactly 2 —
     # while urlparse only sees a netloc behind exactly "//", so the
