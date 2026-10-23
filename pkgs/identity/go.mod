@@ -1,6 +1,6 @@
 module github.com/developing-today/code/src/identity
 
-go 1.22
+go 1.24
 
 require (
 	github.com/a-h/templ v0.2.598
@@ -73,7 +73,7 @@ require (
 	github.com/jacobsa/crypto v0.0.0-20190317225127-9f44e2d11115 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
-	github.com/klauspost/compress v1.17.7 // indirect
+	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/libsql/sqlite-antlr4-parser v0.0.0-20230802215326-5cb5bb604475 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect

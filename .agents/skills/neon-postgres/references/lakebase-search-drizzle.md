@@ -73,16 +73,9 @@ export const documents = pgTable(
     title: text("title").notNull(),
     body: text("body").notNull(),
     embedding: vector("embedding", { dimensions: 1536 }),
-    bodyTsv: tsvector("body_tsv").generatedAlwaysAs(
-      sql`to_tsvector('english', "body")`,
-    ),
+    bodyTsv: tsvector("body_tsv").generatedAlwaysAs(sql`to_tsvector('english', "body")`),
   },
-  (table) => [
-    index("documents_embedding_ann").using(
-      "lakebase_ann",
-      table.embedding.op("vector_cosine_ops"),
-    ),
-  ],
+  (table) => [index("documents_embedding_ann").using("lakebase_ann", table.embedding.op("vector_cosine_ops"))],
 );
 ```
 
@@ -117,11 +110,7 @@ import { documents } from "./schema";
 // queryEmbedding: number[] from the same model used for stored documents
 const distance = cosineDistance(documents.embedding, queryEmbedding);
 
-const rows = await db
-  .select({ id: documents.id, title: documents.title, distance })
-  .from(documents)
-  .orderBy(distance)
-  .limit(k);
+const rows = await db.select({ id: documents.id, title: documents.title, distance }).from(documents).orderBy(distance).limit(k);
 ```
 
 BM25 has no Drizzle helper: `<@>` and `to_bm25query` require raw SQL. Reference the generated column by its `body_tsv` name. Bind user input as parameters through the `sql` template:
@@ -158,11 +147,7 @@ const rows = await db.transaction(async (tx) => {
   // Keep probes at 'auto' unless an IVF `lists` layout exists: a numeric value must
   // match the `lists` shape or it errors ("need 0 probes ..."). See vector-search.md.
   await tx.execute(sql`SET LOCAL lakebase_ann.probes = 'auto'`);
-  return tx
-    .select({ id: documents.id, title: documents.title, distance })
-    .from(documents)
-    .orderBy(distance)
-    .limit(k);
+  return tx.select({ id: documents.id, title: documents.title, distance }).from(documents).orderBy(distance).limit(k);
 });
 ```
 

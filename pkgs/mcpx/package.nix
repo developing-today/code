@@ -87,6 +87,13 @@ buildGo127Module {
   # so a new one is tested by default, minus checkExclude below. Each entry in
   # checkExclude needs a comment on the line above it saying why it cannot run
   # in the sandbox; internal/buildcheck enforces both.
+  # The exact `go test -timeout 30m $pkgs` line in the checkPhase below is
+  # load-bearing downstream (#418): dezren39/nix's flake.nix rewrites that
+  # line to add its darwin takeover/handoff -skip list. That rewrite now
+  # fails loudly there (a throw plus the mcpx-darwin-skip flake check and a
+  # CI eval step) when the line stops matching, but changing the line here
+  # still requires updating the pattern in dezren39/nix's flake.nix in the
+  # same change set, or its next mcpx-src pin bump will fail evaluation.
   doCheck = true;
   # The runner and e2e suites spawn real scripts, so they get the same runtimes
   # the wrapper pins.

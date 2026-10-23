@@ -45,47 +45,47 @@ INTERACTIVE=true
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --bws-token)
-      NEW_BWS_TOKEN="$2"
-      DO_UPDATE_BWS=true
-      INTERACTIVE=false
-      shift 2
-      ;;
-    --client-id)
-      NEW_BW_ID="$2"
-      DO_UPDATE_ID=true
-      INTERACTIVE=false
-      shift 2
-      ;;
-    --client-secret)
-      NEW_BW_SECRET="$2"
-      DO_UPDATE_SECRET=true
-      INTERACTIVE=false
-      shift 2
-      ;;
-    --password)
-      NEW_BW_PASS="$2"
-      DO_UPDATE_PASS=true
-      INTERACTIVE=false
-      shift 2
-      ;;
-    -h|--help)
-      echo "Usage: $0 [options]"
-      echo ""
-      echo "Options:"
-      echo "  --bws-token <token>       Bitwarden Secrets Manager access token (BWS_ACCESS_TOKEN)"
-      echo "  --client-id <id>          Bitwarden API Client ID (BW_CLIENTID)"
-      echo "  --client-secret <secret>  Bitwarden API Client Secret (BW_CLIENTSECRET)"
-      echo "  --password <password>     Bitwarden Master Password (optional)"
-      echo "  -h, --help                Show this help message"
-      echo ""
-      echo "If run without arguments, runs in interactive mode."
-      exit 0
-      ;;
-    *)
-      echo "Unknown option: $1" >&2
-      exit 1
-      ;;
+  --bws-token)
+    NEW_BWS_TOKEN="$2"
+    DO_UPDATE_BWS=true
+    INTERACTIVE=false
+    shift 2
+    ;;
+  --client-id)
+    NEW_BW_ID="$2"
+    DO_UPDATE_ID=true
+    INTERACTIVE=false
+    shift 2
+    ;;
+  --client-secret)
+    NEW_BW_SECRET="$2"
+    DO_UPDATE_SECRET=true
+    INTERACTIVE=false
+    shift 2
+    ;;
+  --password)
+    NEW_BW_PASS="$2"
+    DO_UPDATE_PASS=true
+    INTERACTIVE=false
+    shift 2
+    ;;
+  -h | --help)
+    echo "Usage: $0 [options]"
+    echo ""
+    echo "Options:"
+    echo "  --bws-token <token>       Bitwarden Secrets Manager access token (BWS_ACCESS_TOKEN)"
+    echo "  --client-id <id>          Bitwarden API Client ID (BW_CLIENTID)"
+    echo "  --client-secret <secret>  Bitwarden API Client Secret (BW_CLIENTSECRET)"
+    echo "  --password <password>     Bitwarden Master Password (optional)"
+    echo "  -h, --help                Show this help message"
+    echo ""
+    echo "If run without arguments, runs in interactive mode."
+    exit 0
+    ;;
+  *)
+    echo "Unknown option: $1" >&2
+    exit 1
+    ;;
   esac
 done
 

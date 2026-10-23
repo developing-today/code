@@ -1,31 +1,44 @@
-# {{ID}}: {{TITLE}}
+# Decision record template
 
-- Status: preliminary | confirmed | reversed
-- Source: stated | inferred | agent-preliminary | human-confirmed
-- Date: {{TIMESTAMP}}
-- Affects: {{CONCEPTS}}
-- Reversal cost: Low | Medium | High
+One file per decision, `decisions/D001-<slug>.md` (ID from `ids`), written at S6 by the worker or decision subagent that makes it. The orchestrator does not decide disagreements; it records what the reviewer, critic and investigator conclude ([decisions](../decisions.md)). Nothing downstream promotes `agent-preliminary` to `human-confirmed`; only a human does.
+
+```markdown
+# D001: <question, short>
+
+- Status: <preliminary, confirmed or reversed>
+- Source: <stated, inferred, agent-preliminary or human-confirmed>
+- Date: <UTC>
+- Affects: <IDs: C001, C001.3, D002>
+- Reversal cost: <low, medium or high> — <what reversing would redo>
+- Decided by: <agent names, with the PR or issue URL>
 
 ## Question
 
-{{QUESTION}}
+<The question, with the facts both sides agree on.>
 
-## Options Considered
+## Options
 
-### Option A: {{OPTION_A_TITLE}}
+### A: <option>
 
-- Steelman: {{OPTION_A_STEELMAN}}
-- Downsides: {{OPTION_A_DOWNSIDES}}
+- Steelman: <the strongest case for it>
+- Against: <the strongest case against it>
 
-### Option B: {{OPTION_B_TITLE}}
+### B: <option>
 
-- Steelman: {{OPTION_B_STEELMAN}}
-- Downsides: {{OPTION_B_DOWNSIDES}}
+- Steelman: <...>
+- Against: <...>
 
-## Choice & Rationale
+## Choice
 
-{{CHOICE_AND_RATIONALE}}
+<A or B>.
 
-## Consequential Human Review Items
+## Rationale
 
-{{HUMAN_REVIEW_NOTES}}
+<Why, with evidence links. Say which best practice or expert view it follows when the evidence alone does not settle it.>
+
+## Human review
+
+<"Not needed: <why it is obvious>", or "Listed in human-review.md: <why it is a genuine toss-up>".>
+```
+
+Reversing a decision: set `Status: reversed`, add a dated line under "Choice", and find the rework with `git grep -l D001`.

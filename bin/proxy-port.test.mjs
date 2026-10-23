@@ -1,0 +1,204 @@
+// Tests for the shared proxy port parser (#483).
+// Run: node --test bin/proxy-port.test.mjs
+import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import net from 'node:net';
+import path from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { parseProxyPortValue, parseAddressPortValue } from './proxy-port.mjs';
+
+const binDir = path.dirname(fileURLToPath(import.meta.url));
+
+test('unset and empty values fall back to the default', () => {
+  assert.equal(parseProxyPortValue('X_PROXY_PORT', undefined, 18744), 18744);
+  assert.equal(parseProxyPortValue('X_PROXY_PORT', '', 18744), 18744);
+});
+
+test('valid decimal ports are accepted exactly', () => {
+  assert.equal(parseProxyPortValue('X_PROXY_PORT', '1', 18744), 1);
+  assert.equal(parseProxyPortValue('X_PROXY_PORT', '18744', 1), 18744);
+  assert.equal(parseProxyPortValue('X_PROXY_PORT', '65535', 1), 65535);
+});
+
+test('invalid values throw an error naming the env var and the value', () => {
+  const invalid = [
+    'abc',
+    '0x4a38',
+    '99999',
+    '65536',
+    '0',
+    '-1',
+    '18744.9',
+    '18744abc',
+    ' 18744',
+    '+18744'
+  ];
+  for (const raw of invalid) {
+    assert.throws(
+      () => parseProxyPortValue('CODEX_PROXY_PORT', raw, 18744),
+      (err) => {
+        assert.match(err.message, /CODEX_PROXY_PORT/);
+        assert.ok(
+          err.message.includes(`"${raw}"`),
+          `message should quote the value: ${err.message}`
+        );
+        assert.match(err.message, /integer 1-65535/);
+        return true;
+      },
+      `expected ${JSON.stringify(raw)} to be rejected`
+    );
+  }
+});
+
+test('host:port addresses are parsed strictly (#494)', () => {
+  assert.equal(parseAddressPortValue('ANTIGRAVITY_LS_ADDRESS', '127.0.0.1:18745'), 18745);
+  assert.equal(parseAddressPortValue('ANTIGRAVITY_LS_ADDRESS', 'localhost:1'), 1);
+  assert.equal(parseAddressPortValue('ANTIGRAVITY_LS_ADDRESS', '[::1]:65535'), 65535);
+  const invalid = [
+    '127.0.0.1:abc',
+    '127.0.0.1:',
+    '127.0.0.1:0',
+    '127.0.0.1:-5',
+    '127.0.0.1:99999',
+    '127.0.0.1:65536',
+    '127.0.0.1:18745abc',
+    '127.0.0.1:18745.9',
+    '127.0.0.1: 18745'
+  ];
+  for (const raw of invalid) {
+    assert.throws(
+      () => parseAddressPortValue('ANTIGRAVITY_LS_ADDRESS', raw),
+      (err) => {
+        assert.match(err.message, /ANTIGRAVITY_LS_ADDRESS/);
+        assert.ok(err.message.includes(`"${raw}"`), err.message);
+        assert.match(err.message, /integer 1-65535/);
+        return true;
+      },
+      `expected ${JSON.stringify(raw)} to be rejected`
+    );
+  }
+});
+
+test('antigravity-ls-proxy validates ANTIGRAVITY_LS_ADDRESS via the shared helper (#494)', () => {
+  const source = fs.readFileSync(path.join(binDir, 'antigravity-ls-proxy.mjs'), 'utf8');
+  assert.match(
+    source,
+    /parseAddressPortValue\('ANTIGRAVITY_LS_ADDRESS', process\.env\.ANTIGRAVITY_LS_ADDRESS\)/,
+    'antigravity-ls-proxy should validate ANTIGRAVITY_LS_ADDRESS with parseAddressPortValue'
+  );
+  assert.doesNotMatch(
+    source,
+    /parseInt\(parts/,
+    'antigravity-ls-proxy still parses ANTIGRAVITY_LS_ADDRESS with bare parseInt'
+  );
+  assert.match(source, /p >= 1 && p <= 65535/, 'candidate add() should bound ports to 1-65535');
+});
+
+const runClef = (value) =>
+  spawnSync(process.execPath, [path.join(binDir, 'clef-proxy.mjs')], {
+    env: { ...process.env, CLEF_PROXY_PORT: value },
+    encoding: 'utf8',
+    timeout: 10000
+  });
+
+test('clef-proxy exits at startup naming the var for abc / 0x… / 99999', () => {
+  for (const raw of ['abc', '0x4a38', '99999']) {
+    const result = runClef(raw);
+    assert.equal(result.status, 1, `value ${raw}: ${result.stderr}`);
+    assert.match(result.stderr, /CLEF_PROXY_PORT/);
+    assert.ok(result.stderr.includes(`"${raw}"`), result.stderr);
+    assert.doesNotMatch(result.stdout, /listening/);
+  }
+});
+
+test('clef-proxy binds exactly the requested valid port', async (t) => {
+  const probe = net.createServer();
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const port = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+
+  const child = spawn(process.execPath, [path.join(binDir, 'clef-proxy.mjs')], {
+    env: { ...process.env, CLEF_PROXY_PORT: String(port) },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  t.after(() => child.kill());
+  const listening = await new Promise((resolve, reject) => {
+    let out = '';
+    const timer = setTimeout(
+      () => reject(new Error(`no listening line: ${out}`)),
+      10000
+    );
+    child.stdout.on('data', (chunk) => {
+      out += chunk;
+      if (out.includes('listening')) {
+        clearTimeout(timer);
+        resolve(out);
+      }
+    });
+    child.on('exit', () => {
+      clearTimeout(timer);
+      reject(new Error(`proxy exited early: ${out}`));
+    });
+  });
+  assert.ok(
+    listening.includes(`http://127.0.0.1:${port}`),
+    `expected the requested port in: ${listening}`
+  );
+  const res = await fetch(`http://127.0.0.1:${port}/health`);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).port, port);
+});
+
+test('all seven parse sites in the five proxies use the shared helper', () => {
+  const files = [
+    'codex-proxy.mjs',
+    'clef-proxy.mjs',
+    'agy-proxy.mjs',
+    'antigravity-ls-proxy.mjs',
+    'design-code-proxy.mjs'
+  ];
+  let sites = 0;
+  for (const file of files) {
+    const source = fs.readFileSync(path.join(binDir, file), 'utf8');
+    assert.match(
+      source,
+      /import \{[^}]*\bparseProxyPort\b[^}]*\} from '\.\/proxy-port\.mjs';/,
+      `${file} should import the shared helper`
+    );
+    assert.doesNotMatch(
+      source,
+      /parseInt\(process\.env\.[A-Z_]*PROXY_PORT/,
+      `${file} still parses a proxy port with bare parseInt`
+    );
+    sites += source.match(/parseProxyPort\('[A-Z_]+_PROXY_PORT', \d+\)/g).length;
+  }
+  assert.equal(sites, 7);
+});
+
+test('home-manager launches the proxies from the bin directory', () => {
+  // default.nix used to interpolate each script as a single store file
+  // (${../../bin/<name>.mjs}); a sibling import like ./proxy-port.mjs
+  // cannot resolve from there. The directory form must stay.
+  const nix = fs.readFileSync(
+    path.join(binDir, '..', 'home', 'common', 'default.nix'),
+    'utf8'
+  );
+  for (const file of [
+    'codex-proxy.mjs',
+    'clef-proxy.mjs',
+    'agy-proxy.mjs',
+    'antigravity-ls-proxy.mjs',
+    'design-code-proxy.mjs'
+  ]) {
+    assert.ok(
+      nix.includes('${../../bin}/' + file),
+      `default.nix should launch ${file} via the bin directory`
+    );
+    assert.ok(
+      !nix.includes('${../../bin/' + file + '}'),
+      `default.nix still launches ${file} as a single store file`
+    );
+  }
+});

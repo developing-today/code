@@ -3,8 +3,9 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { parseProxyPort } from './proxy-port.mjs';
 
-const PORT = parseInt(process.env.CLEF_PROXY_PORT || '18742', 10);
+const PORT = parseProxyPort('CLEF_PROXY_PORT', 18742);
 const HOST = process.env.CLEF_PROXY_HOST || '127.0.0.1';
 
 // Publish the bound endpoint so other tools can find this proxy without

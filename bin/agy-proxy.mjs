@@ -5,8 +5,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { parseProxyPort } from './proxy-port.mjs';
 
-const PORT = parseInt(process.env.AGY_PROXY_PORT || '18743', 10);
+const PORT = parseProxyPort('AGY_PROXY_PORT', 18743);
 const HOST = process.env.AGY_PROXY_HOST || '127.0.0.1';
 
 // Publish the bound endpoint so other tools can find this proxy without
