@@ -34,6 +34,25 @@ test("validateCrawlUrl percent-encodes non-ASCII outside the host (#615)", () =>
   }
 });
 
+test("validateCrawlUrl percent-encodes C0 controls, space and DEL outside the host (#614)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG percent-encodes C0 controls, space and DEL inside
+  // the path/query/fragment/userinfo, and trims leading and trailing
+  // C0-or-space from the whole input.
+  const cases: Array<[string, string]> = [
+    ["http://example.com/pa\x00th", "http://example.com/pa%00th"],
+    ["http://example.com/pa th", "http://example.com/pa%20th"],
+    ["http://example.com/?q=a\x7fb", "http://example.com/?q=a%7Fb"],
+    ["\x00http://example.com/", "http://example.com/"],
+    ["http://example.com/\x00", "http://example.com/"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+});
+
 test("validateCrawlUrl refuses non-http schemes and junk", () => {
   assert.equal(validateCrawlUrl("ftp://example.com/").ok, false);
   assert.equal(validateCrawlUrl("file:///etc/passwd").ok, false);

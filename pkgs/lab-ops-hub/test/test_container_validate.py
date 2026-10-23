@@ -911,6 +911,62 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertAccepted("http://example.com/caf%C3%A9")
         self.assertAccepted("http://example.com/?q=caf%C3%A9")
 
+    def test_percent_encodes_c0_space_and_del_outside_the_host(self):
+        # PR #612 stripped tab/LF/CR, but the rest of the C0 range,
+        # space and DEL were returned verbatim outside the host, and
+        # http.client then raises InvalidURL on a URL both validators
+        # accepted (#614). WHATWG percent-encodes those characters
+        # inside the path/query/fragment/userinfo and trims leading
+        # and trailing C0-or-space from the whole input; the returned
+        # URL does the same, so it is the URL the fetcher can fetch.
+        cases = {
+            "http://example.com/pa\x00th": "http://example.com/pa%00th",
+            "http://example.com/pa\x01th": "http://example.com/pa%01th",
+            "http://example.com/pa th": "http://example.com/pa%20th",
+            "http://example.com/pa\x7fth": "http://example.com/pa%7Fth",
+            "http://example.com/?q=a\x00b": "http://example.com/?q=a%00b",
+            "http://example.com/?q=a\x7fb": "http://example.com/?q=a%7Fb",
+            "http://example.com/x#a\x00b": "http://example.com/x#a%00b",
+            "http://user\x00name@example.com/": ("http://user%00name@example.com/"),
+            "http://example.com/pa\x00?q=1": "http://example.com/pa%00?q=1",
+            # Leading/trailing C0-or-space is trimmed, not encoded:
+            # the trailing NUL never becomes part of the path.
+            "\x00http://example.com/": "http://example.com/",
+            "\x01 http://example.com/": "http://example.com/",
+            "http://example.com/\x00": "http://example.com/",
+            "http://example.com/pa ": "http://example.com/pa",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # No accepted spelling comes back carrying a raw control,
+        # space or DEL anywhere in the returned URL.
+        for raw in cases:
+            returned = validate_crawl_url(raw)
+            self.assertFalse(
+                any(ord(c) <= 0x20 or ord(c) == 0x7F for c in returned), raw
+            )
+        # Already-encoded spellings pass through byte-identical, and
+        # verdicts are unchanged: blocked hosts wrapped in these
+        # characters, and controls inside the host, stay refused.
+        self.assertAccepted("http://example.com/pa%00th")
+        self.assertRefused("\x01http://127.0.0.1/")
+        self.assertRefused("http://127.0.0.1/pa th")
+        self.assertRefused("http://exa\x00mple.com/")
+        self.assertRefused("http://exam ple.com/")
+
+    def test_redirect_handler_follows_the_c0_encoded_target(self):
+        # Redirect targets are validated raw (#614, following #529):
+        # the handler must fetch the percent-encoded form of a target
+        # whose path carries a raw control or space.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://example.org/pa th\x00"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/pa%20th")
+
 
 class TestFetchCrawl(unittest.TestCase):
     # _fetch_crawl fetches an already-validated URL (validation is
@@ -1024,6 +1080,19 @@ class TestFetchCrawl(unittest.TestCase):
             f"http://127.0.0.1:{self.port}/café?q=café"
         )
         self.assertEqual(url, f"http://127.0.0.1:{self.port}/caf%C3%A9?q=caf%C3%A9")
+        status, raw = app._fetch_crawl(url)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Missing Thing", raw)
+
+    def test_fetches_percent_encoded_c0_targets(self):
+        # #614: the form validate_crawl_url returns for a path/query
+        # carrying a raw C0 control or space is fetchable end to end
+        # (the raw spelling raises InvalidURL inside http.client
+        # before any request).
+        url = app._url_with_encoded_components(
+            f"http://127.0.0.1:{self.port}/pa\x00th?q=a b\x7f"
+        )
+        self.assertEqual(url, f"http://127.0.0.1:{self.port}/pa%00th?q=a%20b%7F")
         status, raw = app._fetch_crawl(url)
         self.assertEqual(status, 200)
         self.assertIn(b"Missing Thing", raw)
