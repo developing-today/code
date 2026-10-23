@@ -894,10 +894,15 @@ def _encode_url_component(text, extra=""):
 def _encode_userinfo(userinfo):
     # The first ":" is the username/password separator and stays raw;
     # a ":" inside the password is data and WHATWG encodes it (%3A),
-    # as it does the rest of the userinfo set (#618).
+    # as it does the rest of the userinfo set (#618). The separator is
+    # only emitted when the password is non-empty: WHATWG serialises
+    # userinfo from the parsed username/password, so "user:@" comes
+    # back as "user@" and ":@" as no userinfo at all (#651) — #639
+    # dropped the bare "@" but the colon-bearing spellings survived
+    # because ":" and "user:" are non-empty raw strings.
     username, sep, password = userinfo.partition(":")
     encoded = _encode_url_component(username, _USERINFO_EXTRA)
-    if sep:
+    if sep and password:
         encoded += ":" + _encode_url_component(password, _USERINFO_EXTRA + ":")
     return encoded
 
@@ -926,8 +931,11 @@ def _url_with_encoded_components(url):
         # An empty userinfo serializes away in WHATWG — the "@" is
         # dropped with it (#639); _normalize_validated_url already
         # drops it on the validate path, this keeps the helper
-        # consistent when called on its own.
-        netloc = f"{_encode_userinfo(userinfo)}@{hostport}" if userinfo else hostport
+        # consistent when called on its own. The decision keys on the
+        # *encoded* userinfo, not the raw one: ":" encodes to ""
+        # (both components empty, #651), so its "@" drops too.
+        encoded_userinfo = _encode_userinfo(userinfo)
+        netloc = f"{encoded_userinfo}@{hostport}" if encoded_userinfo else hostport
     return u._replace(
         netloc=netloc,
         path=_encode_url_component(u.path, _PATH_EXTRA),
