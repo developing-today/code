@@ -1226,12 +1226,11 @@ in
       # PATH = "$HOME/bin:$PATH";
       NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
       NIXPKGS_ALLOW_UNFREE = "1";
-      # OpenCode feature flags (Drew, 2026-10-20): both web-search backends
-      # (Exa + Parallel) so the websearch tool works with any provider, and
-      # the interesting experimental features. OPENCODE_EXPERIMENTAL is the
-      # umbrella (code mode keys off it). NATIVE_LLM deliberately not set.
-      OPENCODE_ENABLE_EXA = "1";
-      OPENCODE_ENABLE_PARALLEL = "1";
+      # OpenCode feature flags (Drew, 2026-10-20): the interesting
+      # experimental features. OPENCODE_EXPERIMENTAL is the umbrella
+      # (code mode keys off it). NATIVE_LLM deliberately not set.
+      # (OPENCODE_ENABLE_EXA / OPENCODE_ENABLE_PARALLEL removed 2026-10-23:
+      # nothing in opencode reads them — see opencode #105.)
       OPENCODE_ENABLE_EXPERIMENTAL_MODELS = "1";
       OPENCODE_EXPERIMENTAL = "1";
       OPENCODE_EXPERIMENTAL_PARALLEL = "1";
@@ -1249,7 +1248,6 @@ in
       CODEX_PROXY_PORT = toString codexProxyPort;
       ANTIGRAVITY_LS_PROXY_PORT = toString antigravityLsProxyPort;
       DESIGN_CODE_PROXY_PORT = toString designCodeProxyPort;
-      OPENCODE_EXPERIMENTAL_ICON_DISCOVERY = "1";
       OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
       # File watcher off by default (Drew, 2026-10-20): the working trees
       # are giant, and watching costs more than the live-external-edit
