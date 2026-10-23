@@ -1,1 +1,0 @@
-C:/home/user/code/shell.nix

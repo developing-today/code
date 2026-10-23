@@ -1,0 +1,68 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: &namespace testing-privileged
+resources:
+  - gatewayclass.yaml
+helmCharts:
+  - name: apisix
+    repo: https://charts.apiseven.com
+    version: 2.x.x
+    releaseName: apisix
+    namespace: *namespace
+    includeCRDs: true
+    valuesInline:
+      dashboard:
+        enabled: true
+      apisix:
+        enabled: true
+        admin:
+          allow:
+            ipList:
+              - 0.0.0.0/0
+      gateway:
+        enabled: true
+        instance_name: *namespace
+        type: LoadBalancer
+        annotations:
+          metallb.universe.tf/address-pool: first-pool
+        ports:
+          - port: 80
+            targetPort: 9080
+            protocol: TCP
+            name: http
+        externalTrafficPolicy: Local
+      ingress-controller:
+        enabled: true
+        config:
+          gateway:
+            enabled: true
+            instance_name: *namespace
+            gateway_class_name: apisix
+            controller_name: "gateway.apisix.apache.org/gateway-controller"
+          kubernetes:
+            enable_gateway_api: true
+            ingress_publish_service: "testing-privileged/apisix-gateway"
+          apisix:
+            adminAPIVersion: v3
+            serviceNamespace: *namespace
+            serviceName: apisix-admin
+patches:
+  - patch: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: apisix-gateway
+        namespace: testing-privileged
+      spec:
+        type: LoadBalancer
+    target:
+      kind: Service
+      name: apisix-gateway
+  # https://github.com/argoproj-labs/argocd-autopilot/issues/631
+  # https://github.com/apache/apisix-helm-chart/issues/531
+  # https://github.com/apache/apisix-helm-chart/pull/797
+  # ignoreDifferences:
+  #   - group: apiextensions.k8s.io
+  #     kind: CustomResourceDefinition
+  #     jqPathExpressions:
+  #       - '.spec.versions[].additionalPrinterColumns[]'

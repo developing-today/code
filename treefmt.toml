@@ -1,32 +1,52 @@
 [formatter]
 
+# Exclude pkgs/id/ — it has its own treefmt/formatter
+[global]
+excludes = [
+  "pkgs/id/**",               # has its own treefmt/formatter
+  "pkgs/dht/**",              # WIP package with syntax errors
+  ".opencode/**",             # managed by opencode, may have permission issues
+  "**/package-lock.json",     # npm-generated; biome ignores it by default, so passing it in fails the run
+  "pkgs/mcpx/docs/parity.md", # generated; TestParityDocumentIsCurrent compares it byte-for-byte with the generator, so prettier's table padding can never be applied
+  "pkgs/mcpx/docs/story.md",  # quotes AGENTS.md verbatim; TestStoryDocumentIsCurrent compares the quoted lines byte-for-byte with AGENTS.md, whose *emphasis* prettier would rewrite to _emphasis_
+]
+
 # [formatter.<name>]
 # command = "<formatter-command>"
 # options = [“<formatter-option-1>”...]
-[formatter.alejandra]
-command = "alejandra"
+#[formatter.alejandra]
+#command = "alejandra"
+#includes = ["*.nix"]
+[formatter.nixfmt]
+command = "nixfmt"
 includes = ["*.nix"]
+
+[formatter.statix]
+command = "bash"
+options = ["-c", "for f in \"$@\"; do statix fix -- \"$f\"; done", "_"]
+includes = ["*.nix"]
+
+#[formatter.deadnix]
+# Kept as manual tool only — auto-edit risks removing intentional unused bindings
+# Run `deadnix` to check, `deadnix --edit` to fix
+#command = "deadnix"
+#options = ["--edit"]
+#includes = ["*.nix"]
 
 # todo make options etc
 #[formatter.flake-checker]
 #command = "nix run github:DeterminateSystems/flake-checker"
 #includes = ["flake.lock"]
+
+[formatter.biome]
+command = "biome"
+includes = ["*.js", "*.jsx", "*.ts", "*.tsx", "*.css", "*.json", "*.graphql"]
+options = ["format", "--write"]
+
 [formatter.prettier]
 command = "prettier"
-includes = [
-  "*.css",
-  "*.html",
-  "*.js",
-  "*.json",
-  "*.jsx",
-  "*.md",
-  "*.mdx",
-  "*.scss",
-  "*.ts",
-  "*.yaml",
-  "*.toml"
-]
-options = ["--plugin", "prettier-plugin-toml", "--write"]
+includes = ["*.html", "*.md", "*.mdx", "*.scss", "*.yaml", "*.yml"]
+options = ["--write"]
 
 [formatter.shfmt]
 command = "shfmt"
@@ -35,12 +55,13 @@ options = ["-i", "2", "-s", "-w"]
 
 [formatter.rustfmt]
 command = "rustfmt"
-options = ["--edition", "2021"]
+options = ["--edition", "2024"]
 includes = ["*.rs"]
 
-[formatter.shellcheck]
-command = "shellcheck"
-includes = ["*.sh"]
+[formatter.taplo]
+command = "taplo"
+options = ["fmt"]
+includes = ["*.toml"]
 
 [formatter.ruby]
 command = "rufo"
@@ -48,7 +69,8 @@ options = ["-x"]
 includes = ["*.rb"]
 
 [formatter.python]
-command = "black"
+command = "ruff"
+options = ["format"]
 includes = ["*.py"]
 
 [formatter.elm]
@@ -82,3 +104,5 @@ excludes = ["examples/haskell/"]
 #command = "terraform"
 #options = ["fmt"]
 #includes = ["*.tf"]
+
+# packer?

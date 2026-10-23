@@ -1,0 +1,11 @@
+{
+  "appName": "namespace",
+  "userGivenName": "namespace",
+  "destNamespace": "testing",
+  "destServer": "https://kubernetes.default.svc",
+  "srcPath": "apps/namespace/overlays/testing",
+  "srcRepoURL": "https://github.com/developing-today/code.git",
+  "srcTargetRevision": "",
+  "labels": null,
+  "annotations": null
+}
