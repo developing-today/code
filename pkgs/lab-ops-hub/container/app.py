@@ -737,7 +737,6 @@ def _url_with_host(u, new_host, source_url=None):
     # the caller passes the source spelling its markers are re-attached
     # here — otherwise this geturl() rebuild would drop them before
     # the normalizer downstream ever sees them.
-    markers = _empty_query_fragment_markers(source_url) if source_url else ""
     netloc = u.netloc
     if "@" in netloc:
         userinfo, _, hostport = netloc.rpartition("@")
@@ -752,13 +751,15 @@ def _url_with_host(u, new_host, source_url=None):
     rebuild = u._replace(path=urlsplit(source_url).path, params="") if source_url else u
     if hostport.startswith("["):
         _, _, suffix = hostport.partition("]")
-        return (
-            rebuild._replace(netloc=f"{prefix}[{new_host}]{suffix}").geturl() + markers
-        )
-    if ":" in hostport:
+        rebuilt = rebuild._replace(netloc=f"{prefix}[{new_host}]{suffix}").geturl()
+    elif ":" in hostport:
         _, _, port = hostport.partition(":")
-        return rebuild._replace(netloc=f"{prefix}{new_host}:{port}").geturl() + markers
-    return rebuild._replace(netloc=prefix + new_host).geturl() + markers
+        rebuilt = rebuild._replace(netloc=f"{prefix}{new_host}:{port}").geturl()
+    else:
+        rebuilt = rebuild._replace(netloc=prefix + new_host).geturl()
+    if source_url:
+        rebuilt = _attach_empty_query_fragment_markers(rebuilt, source_url)
+    return rebuilt
 
 
 _ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
@@ -806,8 +807,8 @@ def _empty_query_fragment_markers(url):
     # "http://example.com/path?" and "http://example.com/path" to the
     # same parts, and geturl() drops the marker. WHATWG keeps it — the
     # query/fragment is present but empty — and the Worker returns it
-    # (#639), so the markers are computed from the spelling as a suffix
-    # and re-attached after each geturl() rebuild. A "?" after the "#"
+    # (#639), so the markers are computed from the spelling and
+    # re-attached after each geturl() rebuild. A "?" after the "#"
     # is fragment data, not a query marker, and a marker is only owed
     # when the parsed component is empty (a non-empty one is rebuilt
     # by geturl() itself).
@@ -818,6 +819,34 @@ def _empty_query_fragment_markers(url):
     if not u.fragment and "#" in url:
         markers += "#"
     return markers
+
+
+def _attach_empty_query_fragment_markers(rebuilt, source_url):
+    # Re-attach the empty "?" / "#" markers (#639) to a geturl()
+    # rebuild in their WHATWG positions, not as a plain suffix: when
+    # the query is empty but the fragment is non-empty, geturl()
+    # already ends the rebuilt URL with "#frag", so suffixing "?"
+    # put it after the fragment — "path?#frag" came back as
+    # "path#frag?", a different URL whose fragment is corrupted and
+    # whose empty query is absent (#654). The empty-query marker
+    # belongs before the "#" that introduces the fragment; the
+    # empty-fragment marker, whose fragment is empty by definition,
+    # is a suffix.
+    u = urlparse(source_url)
+    query_marker = not u.query and "?" in source_url.partition("#")[0]
+    fragment_marker = not u.fragment and "#" in source_url
+    if not query_marker and not fragment_marker:
+        return rebuilt
+    result = rebuilt
+    if query_marker:
+        idx = result.find("#")
+        if idx != -1:
+            result = result[:idx] + "?" + result[idx:]
+        else:
+            result += "?"
+    if fragment_marker:
+        result += "#"
+    return result
 
 
 def _normalize_validated_url(url):
@@ -880,11 +909,14 @@ def _normalize_validated_url(url):
         # the path "/" in WHATWG ("http://example.com" is
         # "http://example.com/") (#639).
         resolved_path = "/"
-    return u._replace(
-        netloc=f"{prefix}{host_norm}{port_norm}",
-        path=resolved_path,
-        params="",
-    ).geturl() + _empty_query_fragment_markers(url)
+    return _attach_empty_query_fragment_markers(
+        u._replace(
+            netloc=f"{prefix}{host_norm}{port_norm}",
+            path=resolved_path,
+            params="",
+        ).geturl(),
+        url,
+    )
 
 
 # WHATWG's per-component percent-encode sets for the ASCII punctuation
@@ -967,13 +999,16 @@ def _url_with_encoded_components(url):
     # urlparse's split parts lose a bare trailing ";" — #655). The
     # params tail was encoded with the same _PATH_EXTRA set, so one
     # pass over the whole path is equivalent for non-empty params.
-    return u._replace(
-        netloc=netloc,
-        path=_encode_url_component(urlsplit(url).path, _PATH_EXTRA),
-        params="",
-        query=_encode_url_component(u.query, _QUERY_EXTRA),
-        fragment=_encode_url_component(u.fragment, _FRAGMENT_EXTRA),
-    ).geturl() + _empty_query_fragment_markers(url)
+    return _attach_empty_query_fragment_markers(
+        u._replace(
+            netloc=netloc,
+            path=_encode_url_component(urlsplit(url).path, _PATH_EXTRA),
+            params="",
+            query=_encode_url_component(u.query, _QUERY_EXTRA),
+            fragment=_encode_url_component(u.fragment, _FRAGMENT_EXTRA),
+        ).geturl(),
+        url,
+    )
 
 
 # Backwards-compatible alias: the #615 name for the same helper.
@@ -1039,8 +1074,13 @@ def _split_userinfo(url):
     username = unquote(username)
     password = unquote(password)
     # Keep the full path: a geturl() rebuild from urlparse's split
-    # parts drops a bare trailing ";" in the path (#655).
-    stripped = u._replace(netloc=hostport, path=urlsplit(url).path, params="").geturl()
+    # parts drops a bare trailing ";" in the path (#655). The rebuild
+    # also drops the empty "?" / "#" markers, so re-attach them in
+    # their WHATWG positions (#639, #654).
+    stripped = _attach_empty_query_fragment_markers(
+        u._replace(netloc=hostport, path=urlsplit(url).path, params="").geturl(),
+        url,
+    )
     if not username and not password:
         return stripped, None
     token = base64.b64encode(f"{username}:{password}".encode("utf-8"))

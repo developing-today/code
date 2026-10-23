@@ -1103,6 +1103,57 @@ class TestValidateCrawlUrl(unittest.TestCase):
         )
         self.assertEqual(followed.full_url, "http://example.org/")
 
+    def test_returns_empty_query_marker_before_a_nonempty_fragment(self):
+        # #639's marker re-attachment appended the markers as a suffix
+        # after geturl(), so an empty query in front of a non-empty
+        # fragment came back after it: "path?#frag" returned as
+        # "path#frag?" — a different URL (fragment corrupted, empty
+        # query absent) than the Worker returns (#654). The "?"
+        # belongs before the "#", at every rebuild site.
+        cases = {
+            "http://example.com/path?#frag": "http://example.com/path?#frag",
+            "http://example.com?#frag": "http://example.com/?#frag",
+            "http://example.com/a?#b?c": "http://example.com/a?#b?c",
+            "http://example.com/path?#frag?x": "http://example.com/path?#frag?x",
+            # Through the percent-decoded-host and canonical-IP
+            # rebuilds (_url_with_host), and with userinfo / a
+            # non-empty fragment that itself needs encoding.
+            "http://%65xample.com/path?#frag": "http://example.com/path?#frag",
+            "http://8%2e8%2e8%2e8/path?#frag": "http://8.8.8.8/path?#frag",
+            "http://user@example.com/path?#frag": (
+                "http://user@example.com/path?#frag"
+            ),
+            "http://example.com/path?#café": "http://example.com/path?#caf%C3%A9",
+            # Controls: the #639 cases stay correct — both markers
+            # empty, empty fragment only, non-empty query, and a "?"
+            # inside the fragment staying data.
+            "http://example.com/path?#": "http://example.com/path?#",
+            "http://example.com/path#": "http://example.com/path#",
+            "http://example.com/path?x#": "http://example.com/path?x#",
+            "http://example.com/path#frag?notquery": (
+                "http://example.com/path#frag?notquery"
+            ),
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # The fetcher's userinfo strip rebuilds the URL too: it must
+        # keep the marker in front of the fragment (#654).
+        stripped, _ = app._split_userinfo("http://user@example.com/path?#frag")
+        self.assertEqual(stripped, "http://example.com/path?#frag")
+        # Verdicts are unchanged: blocked targets stay refused.
+        self.assertRefused("http://127.0.0.1/path?#frag")
+        self.assertRefused("http://localhost/path?#frag")
+        # Redirect targets inherit the fix: the handler fetches the
+        # validated form of a raw Location carrying "?#frag".
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://example.org/path?#frag"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/path?#frag")
+
     def test_returns_the_root_dot_for_percent_encoded_spellings(self):
         # The container stripped the DNS root dot before judging and
         # rebuilt the returned URL from the stripped host, so the

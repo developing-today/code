@@ -120,6 +120,12 @@ test("validateCrawlUrl returns empty components normalized (#639)", () => {
     ["http://example.com?", "http://example.com/?"],
     ["http://example.com/path?#", "http://example.com/path?#"],
     ["http://user@example.com", "http://user@example.com/"],
+    // Empty query in front of a non-empty fragment: the "?" stays
+    // before the "#" (#654 — the container's suffix re-attachment
+    // returned "path#frag?" for these spellings).
+    ["http://example.com/path?#frag", "http://example.com/path?#frag"],
+    ["http://example.com?#frag", "http://example.com/?#frag"],
+    ["http://example.com/a?#b?c", "http://example.com/a?#b?c"],
   ];
   for (const [raw, expected] of cases) {
     const r = validateCrawlUrl(raw);
