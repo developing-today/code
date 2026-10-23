@@ -1893,7 +1893,10 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity CLI (via agy)",
       "options": {
-        "baseURL": "http://127.0.0.1:18743/v1",
+        // Port comes from AGY_PROXY_PORT (set by home config from the
+        // same single definition the agy-proxy service binds) — never
+        // hardcode a port here; see the openai-codex provider note.
+        "baseURL": "http://127.0.0.1:{env:AGY_PROXY_PORT:-18743}/v1",
         "apiKey": "agy-local"
       },
       "models": {
@@ -1975,7 +1978,11 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity Language Server (Direct gRPC/ConnectRPC)",
       "options": {
-        "baseURL": "http://127.0.0.1:18745/v1",
+        // Port comes from ANTIGRAVITY_LS_PROXY_PORT (set by home config
+        // from the same single definition the antigravity-ls-proxy
+        // service binds) — never hardcode a port here; see the
+        // openai-codex provider note.
+        "baseURL": "http://127.0.0.1:{env:ANTIGRAVITY_LS_PROXY_PORT:-18745}/v1",
         "apiKey": "antigravity-local"
       },
       "models": {
@@ -2711,7 +2718,11 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "OpenAI Codex CLI (via codex)",
       "options": {
-        "baseURL": "http://127.0.0.1:18744/v1",
+        // Port comes from CODEX_PROXY_PORT (set by home config from the
+        // same single definition the codex-proxy service binds) — never
+        // hardcode a port here; a hardcoded one silently breaks on any
+        // device where the proxy isn't on that exact port.
+        "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
         "apiKey": "codex-local"
       },
       "models": {
@@ -3081,7 +3092,7 @@
             "npm": "@ai-sdk/openai-compatible",
             "name": "ChatGPT (via Codex)",
             "options": {
-                "baseURL": "http://127.0.0.1:18744/v1",
+                "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
                 "apiKey": "codex-local"
             },
             "models": {
@@ -3383,7 +3394,7 @@
             "npm": "@ai-sdk/openai-compatible",
             "name": "Design Code",
             "options": {
-                "baseURL": "http://127.0.0.1:18746/v1",
+                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
                 "apiKey": "design-local"
             },
             "models": {
@@ -3470,7 +3481,7 @@
             "npm": "@ai-sdk/openai-compatible",
             "name": "Code Design",
             "options": {
-                "baseURL": "http://127.0.0.1:18746/v1",
+                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
                 "apiKey": "design-local"
             },
             "models": {
@@ -3557,7 +3568,7 @@
             "npm": "@ai-sdk/openai-compatible",
             "name": "Open Design",
             "options": {
-                "baseURL": "http://127.0.0.1:18746/v1",
+                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
                 "apiKey": "design-local"
             },
             "models": {
@@ -3644,7 +3655,7 @@
             "npm": "@ai-sdk/openai-compatible",
             "name": "OpenDesign",
             "options": {
-                "baseURL": "http://127.0.0.1:18746/v1",
+                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
                 "apiKey": "design-local"
             },
             "models": {
