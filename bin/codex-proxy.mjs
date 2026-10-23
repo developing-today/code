@@ -333,6 +333,8 @@ const server = http.createServer((req, res) => {
       let fullContent = '';
       let promptTokens = Math.max(1, Math.ceil(prompt.length / 4));
       let completionTokens = 0;
+      let stderrTail = '';
+      let spawnError = null;
 
       const processJsonLine = (line) => {
         const trimmed = line.trim();
@@ -387,6 +389,7 @@ const server = http.createServer((req, res) => {
 
       child.stderr.on('data', chunk => {
         const msg = chunk.toString('utf-8');
+        stderrTail = (stderrTail + msg).slice(-2000);
         if (msg.trim().length > 0) {
           console.warn(`[codex-proxy stderr] ${msg.trim()}`);
         }
@@ -399,6 +402,39 @@ const server = http.createServer((req, res) => {
         }
 
         if (res.writableEnded) return;
+
+        // Failure is judged by the child's exit: a non-zero code or a
+        // killing signal means the run failed, however much content was
+        // already produced (#676). Partial content must not mask a
+        // failure — it used to be reported as a successful 'stop'
+        // carrying the truncated text (or an empty 200 when nothing was
+        // produced at all).
+        if (code !== 0) {
+          const stderrLine = stderrTail.trim().split('\n').pop();
+          const fallback = spawnError
+            ? spawnError.message
+            : signal
+              ? `codex exec terminated by signal ${signal}`
+              : `codex exec exited with code ${code}`;
+          const detail = (stderrLine || fallback).trim();
+          const errorBody = { error: { message: `Codex execution failed: ${detail}` } };
+          if (stream) {
+            // The 200 + text/event-stream headers are already on the
+            // wire, so frame the error as an SSE event and close the
+            // stream with [DONE] (mirrors muse-proxy #670).
+            if (!res.writableEnded) {
+              res.write(`data: ${JSON.stringify(errorBody)}\n\n`);
+              res.write('data: [DONE]\n\n');
+            }
+            res.end();
+            return;
+          }
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+          }
+          res.end(JSON.stringify(errorBody));
+          return;
+        }
 
         if (stream) {
           if (completionTokens === 0 && fullContent.length > 0) {
@@ -454,6 +490,7 @@ const server = http.createServer((req, res) => {
 
       child.on('error', err => {
         console.error(`[codex-proxy child error] ${err.message}`);
+        spawnError = err;
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { message: `Codex execution error: ${err.message}` } }));
