@@ -464,7 +464,7 @@ const server = http.createServer((req, res) => {
               stderrBuffer += chunk.toString();
             });
 
-            child.on('close', code => {
+            child.on('close', (code, signal) => {
               if (responseEnded) return;
 
               // Fallback retry if resuming failed without output
@@ -478,6 +478,28 @@ const server = http.createServer((req, res) => {
 
               if (lineBuffer.trim()) {
                 processJsonLine(lineBuffer.trim());
+              }
+
+              // Failure is judged by the child's exit: a non-zero code or
+              // a killing signal means the run failed, however much content
+              // was already produced (#678). Partial output must not mask
+              // a failure — it used to be reported as a successful 'stop'
+              // carrying the truncated text (or an empty 200 when nothing
+              // was produced at all), and stderrBuffer was never read.
+              if (code !== 0) {
+                const stderrLine = stderrBuffer.trim().split('\n').pop();
+                const fallback = signal
+                  ? `agy process terminated by signal ${signal}`
+                  : `agy process exited with code ${code}`;
+                const detail = (stderrLine || fallback).trim();
+                const errorBody = { error: { message: `agy execution failed: ${detail}` } };
+                // The 200 + text/event-stream headers are already on the
+                // wire, so frame the error as an SSE event and close the
+                // stream with [DONE] (mirrors muse-proxy #670).
+                res.write(`data: ${JSON.stringify(errorBody)}\n\n`);
+                res.write('data: [DONE]\n\n');
+                res.end();
+                return;
               }
 
               const finishChunk = {
@@ -530,7 +552,7 @@ const server = http.createServer((req, res) => {
             child.stdout.on('data', chunk => { stdoutBuffer += chunk.toString(); });
             child.stderr.on('data', chunk => { stderrBuffer += chunk.toString(); });
 
-            child.on('close', code => {
+            child.on('close', (code, signal) => {
               if (res.writableEnded) return;
 
               let responseText = '';
@@ -550,8 +572,13 @@ const server = http.createServer((req, res) => {
                 recordConversationId(detectedConvId);
               }
 
-              if (code !== 0 && !responseText) {
-                if (allowRetry && targetConvId) {
+              // Failure is judged by the child's exit, not by whether it
+              // produced output (#678): a run that fails after a partial
+              // response must not be reported as a successful 'stop'
+              // carrying the truncated text. The resume retry stays
+              // gated on empty output, as before.
+              if (code !== 0) {
+                if (!responseText && allowRetry && targetConvId) {
                   console.log(`Resuming conversation ${targetConvId} failed (code ${code}), retrying as fresh conversation...`);
                   executeJson(null, formatPrompt(body.messages), false);
                   return;
@@ -561,6 +588,7 @@ const server = http.createServer((req, res) => {
                 res.end(JSON.stringify({
                   error: 'agy process exited with non-zero code',
                   code,
+                  ...(signal ? { signal } : {}),
                   stderr: stderrBuffer.trim()
                 }));
                 return;
