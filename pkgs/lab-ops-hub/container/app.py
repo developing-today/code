@@ -20,7 +20,7 @@ import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlsplit
 
 # Crawl-target policy (#441): the Worker validates before dispatching,
 # and this service re-validates independently (defence in depth — it is
@@ -732,13 +732,21 @@ def _url_with_host(u, new_host, source_url=None):
         prefix = userinfo + "@"
     else:
         prefix, hostport = "", netloc
+    # urlparse splits the last segment's ";params" tail off the path and
+    # a bare trailing ";" leaves params empty, so a geturl() rebuild from
+    # the split parts silently drops that ";" (#655). Take the full path
+    # from urlsplit (which never splits params) when the source spelling
+    # is available, as the rebuild sites below do.
+    rebuild = u._replace(path=urlsplit(source_url).path, params="") if source_url else u
     if hostport.startswith("["):
         _, _, suffix = hostport.partition("]")
-        return u._replace(netloc=f"{prefix}[{new_host}]{suffix}").geturl() + markers
+        return (
+            rebuild._replace(netloc=f"{prefix}[{new_host}]{suffix}").geturl() + markers
+        )
     if ":" in hostport:
         _, _, port = hostport.partition(":")
-        return u._replace(netloc=f"{prefix}{new_host}:{port}").geturl() + markers
-    return u._replace(netloc=prefix + new_host).geturl() + markers
+        return rebuild._replace(netloc=f"{prefix}{new_host}:{port}").geturl() + markers
+    return rebuild._replace(netloc=prefix + new_host).geturl() + markers
 
 
 _ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
@@ -813,10 +821,11 @@ def _normalize_validated_url(url):
     # the Worker byte for byte). Only ASCII case folds in the
     # host: the IDN spelling itself is deliberately kept, as before
     # (judged in mapped form, fetched via IDNA — #615); urlparse has
-    # already lowercased the scheme. The path's ";params" tail is
-    # rejoined before resolving: urlparse splits it off the last
+    # already lowercased the scheme. The path is taken whole (see
+    # below): urlparse splits the ";params" tail off the last
     # segment, but WHATWG treats ";..." as part of that segment, so
-    # a trailing "..;foo" is data, not a double-dot segment.
+    # a trailing "..;foo" — or a bare "..;" — is data, not a
+    # double-dot segment.
     u = urlparse(url)
     netloc = u.netloc
     if "@" in netloc:
@@ -846,7 +855,13 @@ def _normalize_validated_url(url):
                 port_norm = f":{port}"
         else:
             port_norm = f":{port_span}"
-    full_path = u.path + (f";{u.params}" if u.params else "")
+    # Take the full path from urlsplit, which never splits the
+    # ";params" tail: urlparse hands "..;foo" back as path "/.." +
+    # params "foo" (rejoinable), but a bare trailing ";" ("..;",
+    # "%2e;") leaves params empty and the ";" is unrecoverable from
+    # the split parts — rejoining only non-empty params dropped it and
+    # the segment was then resolved as a dot segment (#655).
+    full_path = urlsplit(url).path
     resolved_path = _resolve_dot_segments(full_path)
     if not resolved_path:
         # A special-scheme URL with an empty path serializes with
@@ -936,10 +951,14 @@ def _url_with_encoded_components(url):
         # (both components empty, #651), so its "@" drops too.
         encoded_userinfo = _encode_userinfo(userinfo)
         netloc = f"{encoded_userinfo}@{hostport}" if encoded_userinfo else hostport
+    # Encode the full path (urlsplit never splits the ";params" tail;
+    # urlparse's split parts lose a bare trailing ";" — #655). The
+    # params tail was encoded with the same _PATH_EXTRA set, so one
+    # pass over the whole path is equivalent for non-empty params.
     return u._replace(
         netloc=netloc,
-        path=_encode_url_component(u.path, _PATH_EXTRA),
-        params=_encode_url_component(u.params, _PATH_EXTRA),
+        path=_encode_url_component(urlsplit(url).path, _PATH_EXTRA),
+        params="",
         query=_encode_url_component(u.query, _QUERY_EXTRA),
         fragment=_encode_url_component(u.fragment, _FRAGMENT_EXTRA),
     ).geturl() + _empty_query_fragment_markers(url)
@@ -1007,7 +1026,9 @@ def _split_userinfo(url):
     username, _, password = userinfo.partition(":")
     username = unquote(username)
     password = unquote(password)
-    stripped = u._replace(netloc=hostport).geturl()
+    # Keep the full path: a geturl() rebuild from urlparse's split
+    # parts drops a bare trailing ";" in the path (#655).
+    stripped = u._replace(netloc=hostport, path=urlsplit(url).path, params="").geturl()
     if not username and not password:
         return stripped, None
     token = base64.b64encode(f"{username}:{password}".encode("utf-8"))
