@@ -400,7 +400,7 @@ def validate_crawl_url(raw):
             # The returned form is WHATWG-normalized (#633).
             return _url_with_encoded_components(
                 _normalize_validated_url(
-                    _url_with_host(u, host) if percent_decoded else raw
+                    _url_with_host(u, host, raw) if percent_decoded else raw
                 )
             )
     embedded = _embedded_ipv4(ip)
@@ -453,7 +453,7 @@ def validate_crawl_url(raw):
         _canonical_ipv6(ip) if isinstance(ip, ipaddress.IPv6Address) else str(ip)
     )
     return _url_with_encoded_components(
-        _normalize_validated_url(_url_with_host(u, canonical))
+        _normalize_validated_url(_url_with_host(u, canonical, raw))
     )
 
 
@@ -716,11 +716,16 @@ def _canonical_ipv6(ip):
     return f"{head}::{tail}"
 
 
-def _url_with_host(u, new_host):
+def _url_with_host(u, new_host, source_url=None):
     # Rebuild a parsed URL with new_host in place of the netloc's host,
     # preserving userinfo, port, path, query and fragment. Used for
     # percent-decoded hosts (#529): the fetcher must connect to the
-    # decoded host that was judged, not the raw spelling.
+    # decoded host that was judged, not the raw spelling. The parsed
+    # parts cannot represent an empty "?" / "#" marker (#639), so when
+    # the caller passes the source spelling its markers are re-attached
+    # here — otherwise this geturl() rebuild would drop them before
+    # the normalizer downstream ever sees them.
+    markers = _empty_query_fragment_markers(source_url) if source_url else ""
     netloc = u.netloc
     if "@" in netloc:
         userinfo, _, hostport = netloc.rpartition("@")
@@ -729,11 +734,11 @@ def _url_with_host(u, new_host):
         prefix, hostport = "", netloc
     if hostport.startswith("["):
         _, _, suffix = hostport.partition("]")
-        return u._replace(netloc=f"{prefix}[{new_host}]{suffix}").geturl()
+        return u._replace(netloc=f"{prefix}[{new_host}]{suffix}").geturl() + markers
     if ":" in hostport:
         _, _, port = hostport.partition(":")
-        return u._replace(netloc=f"{prefix}{new_host}:{port}").geturl()
-    return u._replace(netloc=prefix + new_host).geturl()
+        return u._replace(netloc=f"{prefix}{new_host}:{port}").geturl() + markers
+    return u._replace(netloc=prefix + new_host).geturl() + markers
 
 
 _ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
@@ -776,13 +781,36 @@ def _resolve_dot_segments(path):
     return "/".join(out)
 
 
+def _empty_query_fragment_markers(url):
+    # urlparse cannot represent an empty query or fragment: it parses
+    # "http://example.com/path?" and "http://example.com/path" to the
+    # same parts, and geturl() drops the marker. WHATWG keeps it — the
+    # query/fragment is present but empty — and the Worker returns it
+    # (#639), so the markers are computed from the spelling as a suffix
+    # and re-attached after each geturl() rebuild. A "?" after the "#"
+    # is fragment data, not a query marker, and a marker is only owed
+    # when the parsed component is empty (a non-empty one is rebuilt
+    # by geturl() itself).
+    u = urlparse(url)
+    markers = ""
+    if not u.query and "?" in url.partition("#")[0]:
+        markers += "?"
+    if not u.fragment and "#" in url:
+        markers += "#"
+    return markers
+
+
 def _normalize_validated_url(url):
     # Return a validated URL in the WHATWG-normalized form the Worker
     # returns (#633), so both crawlers record — and fetch — the same
     # URL for the same target: dot segments in the path resolved,
     # the host lowercased, and the port canonicalized (the scheme's
     # default port dropped, leading zeros on any other port stripped,
-    # an empty port's colon dropped). Only ASCII case folds in the
+    # an empty port's colon dropped). The empty components are
+    # normalized the same way (#639): an empty path becomes "/", an
+    # empty userinfo's "@" is dropped, and empty "?" / "#" markers
+    # are kept (the decision on those markers: preserve them, matching
+    # the Worker byte for byte). Only ASCII case folds in the
     # host: the IDN spelling itself is deliberately kept, as before
     # (judged in mapped form, fetched via IDNA — #615); urlparse has
     # already lowercased the scheme. The path's ";params" tail is
@@ -793,7 +821,7 @@ def _normalize_validated_url(url):
     netloc = u.netloc
     if "@" in netloc:
         userinfo, _, hostport = netloc.rpartition("@")
-        prefix = userinfo + "@"
+        prefix = userinfo + "@" if userinfo else ""
     else:
         prefix, hostport = "", netloc
     if hostport.startswith("["):
@@ -819,11 +847,17 @@ def _normalize_validated_url(url):
         else:
             port_norm = f":{port_span}"
     full_path = u.path + (f";{u.params}" if u.params else "")
+    resolved_path = _resolve_dot_segments(full_path)
+    if not resolved_path:
+        # A special-scheme URL with an empty path serializes with
+        # the path "/" in WHATWG ("http://example.com" is
+        # "http://example.com/") (#639).
+        resolved_path = "/"
     return u._replace(
         netloc=f"{prefix}{host_norm}{port_norm}",
-        path=_resolve_dot_segments(full_path),
+        path=resolved_path,
         params="",
-    ).geturl()
+    ).geturl() + _empty_query_fragment_markers(url)
 
 
 # WHATWG's per-component percent-encode sets for the ASCII punctuation
@@ -889,14 +923,18 @@ def _url_with_encoded_components(url):
     netloc = u.netloc
     if "@" in netloc:
         userinfo, _, hostport = netloc.rpartition("@")
-        netloc = f"{_encode_userinfo(userinfo)}@{hostport}"
+        # An empty userinfo serializes away in WHATWG — the "@" is
+        # dropped with it (#639); _normalize_validated_url already
+        # drops it on the validate path, this keeps the helper
+        # consistent when called on its own.
+        netloc = f"{_encode_userinfo(userinfo)}@{hostport}" if userinfo else hostport
     return u._replace(
         netloc=netloc,
         path=_encode_url_component(u.path, _PATH_EXTRA),
         params=_encode_url_component(u.params, _PATH_EXTRA),
         query=_encode_url_component(u.query, _QUERY_EXTRA),
         fragment=_encode_url_component(u.fragment, _FRAGMENT_EXTRA),
-    ).geturl()
+    ).geturl() + _empty_query_fragment_markers(url)
 
 
 # Backwards-compatible alias: the #615 name for the same helper.

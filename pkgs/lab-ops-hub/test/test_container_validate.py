@@ -1002,6 +1002,67 @@ class TestValidateCrawlUrl(unittest.TestCase):
         )
         self.assertEqual(followed.full_url, "http://example.org/b")
 
+    def test_returns_empty_components_normalized(self):
+        # The container returned an empty path, an empty port and an
+        # empty userinfo verbatim while the Worker returns the
+        # WHATWG-normalized form, so the two crawlers recorded
+        # different URLs for the same target (#639). The returned URL
+        # now supplies "/" for an empty path and drops the empty
+        # userinfo's "@" (the empty port's colon is dropped by the
+        # #633 port canonicalization). Decision on the empty "?" / "#"
+        # markers urlparse cannot represent: preserve them, matching
+        # the Worker byte for byte — the query/fragment is present
+        # but empty. Verdicts are unchanged.
+        cases = {
+            "http://example.com": "http://example.com/",
+            "https://example.com": "https://example.com/",
+            "http://example.com:8080": "http://example.com:8080/",
+            "http://example.com:80": "http://example.com/",
+            "http://example.com:/path": "http://example.com/path",
+            "http://@example.com/": "http://example.com/",
+            "http://@example.com": "http://example.com/",
+            "http://@example.com/path?x#": "http://example.com/path?x#",
+            "http://example.com/path?": "http://example.com/path?",
+            "http://example.com/path#": "http://example.com/path#",
+            "http://example.com?": "http://example.com/?",
+            "http://example.com/path?#": "http://example.com/path?#",
+            "http://example.com#frag?notquery": ("http://example.com/#frag?notquery"),
+            "http://8.8.8.8": "http://8.8.8.8/",
+            "http://134744072": "http://8.8.8.8/",
+            "http://[2001:4860:4860::8888]": "http://[2001:4860:4860::8888]/",
+            "http://user@example.com": "http://user@example.com/",
+            "http://example.com/a/../b": "http://example.com/b",
+            # The markers survive the host-substitution rebuilds too:
+            # percent-decoded hosts and canonical IP literals are
+            # rebuilt with geturl() before normalization (#639).
+            "http://%65xample.com/path?": "http://example.com/path?",
+            "http://%65xample.com?": "http://example.com/?",
+            "http://8%2e8%2e8%2e8/path#": "http://8.8.8.8/path#",
+            "http://8%2e8%2e8%2e8?#": "http://8.8.8.8/?#",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Non-empty userinfo, query and fragment pass through
+        # byte-identical; a "?" inside the query or fragment is data.
+        self.assertAccepted("http://user:pass@example.com/path?q=1#frag")
+        self.assertAccepted("http://example.com/pa?th#fr?ag")
+        # Blocked targets in these spellings are refused by the
+        # ordinary checks, for the right reason.
+        self.assertRefused("http://@127.0.0.1/")
+        self.assertRefused("http://127.0.0.1")
+        self.assertRefused("http://@localhost/")
+        # Redirect targets inherit the normalization (#639): the
+        # handler validates the raw Location and fetches the form
+        # validate_crawl_url returns.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://EXAMPLE.org"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/")
+
     def test_percent_encodes_non_ascii_outside_the_host(self):
         # WHATWG percent-encodes non-ASCII characters in the userinfo,
         # path, query and fragment as UTF-8; urlparse hands them through
