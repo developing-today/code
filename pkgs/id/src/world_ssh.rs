@@ -44,6 +44,12 @@ const REFUSED_SHELL_DELAY: Duration = Duration::from_secs(1);
 const PROMPT: &str = "id> ";
 /// Longest line the explorer keeps; the rest of a longer line is dropped.
 const MAX_LINE: usize = 1024;
+/// Enter the alternate screen buffer, so a game's repaints stay out of scrollback.
+const ALT_SCREEN_ENTER: &str = "\x1b[?1049h";
+/// Leave the alternate screen buffer and restore the screen the user came from.
+const ALT_SCREEN_LEAVE: &str = "\x1b[?1049l";
+/// Input bytes dropped before the session tells the viewer about it.
+const INPUT_DROP_NOTICE_BYTES: usize = 1024;
 
 /// Serve SSH connections until the listener fails.
 pub async fn serve(
@@ -114,6 +120,7 @@ impl Server for SshServer {
             login: None,
             input: None,
             viewport: None,
+            dropped_input: 0,
         }
     }
 }
@@ -140,6 +147,8 @@ struct SshClient {
     login: Option<Login>,
     input: Option<mpsc::Sender<SshInputFrame>>,
     viewport: Option<(u32, u32)>,
+    /// Bytes the input queue refused; handed to the shell so the drop is visible.
+    dropped_input: usize,
 }
 
 enum SshInputFrame {
@@ -306,6 +315,11 @@ impl Handler for SshClient {
         }
         let first = join_frame(login);
         session.channel_success(channel)?;
+        let alt_screen = if !login.command_mode {
+            Some(ALT_SCREEN_ENTER.to_owned())
+        } else {
+            None
+        };
 
         let (input, frames) = mpsc::channel(INPUT_QUEUE);
         let first_resize = self.viewport.take();
@@ -324,6 +338,10 @@ impl Handler for SshClient {
             first_resize,
             capability: login.capability.clone(),
             mode,
+            alt_screen,
+            pending_notice: None,
+            last_error: None,
+            dropped_input: self.dropped_input,
             lines: WorldLineBuffer::default(),
             commands: VecDeque::new(),
             records_prefix: None,
@@ -335,6 +353,7 @@ impl Handler for SshClient {
             if io.errored {
                 tokio::time::sleep(REFUSED_SHELL_DELAY).await;
             }
+            io.leave_alt_screen().await;
             let _ = io.handle.close(channel).await;
         });
         Ok(())
@@ -354,7 +373,15 @@ impl Handler for SshClient {
         if let Err(error) = input.try_send(SshInputFrame::Bytes(data.to_vec())) {
             match error {
                 mpsc::error::TrySendError::Full(_) => {
-                    tracing::debug!("world ssh input queue full; dropping input");
+                    // The handler shares the loop that flushes output, so it must
+                    // not wait for queue space. Count the loss instead and let the
+                    // shell tell the viewer once, instead of dropping silently.
+                    self.dropped_input += data.len();
+                    tracing::warn!(
+                        "world ssh input queue full; dropped {} bytes ({} total)",
+                        data.len(),
+                        self.dropped_input
+                    );
                 }
                 mpsc::error::TrySendError::Closed(_) => self.input = None,
             }
@@ -400,11 +427,50 @@ struct SshIo {
     first_resize: Option<(u32, u32)>,
     capability: String,
     mode: ShellMode,
+    /// Set while the terminal is inside the alternate screen buffer (raw sessions).
+    alt_screen: Option<String>,
+    /// Text to write before the next server frame, once.
+    pending_notice: Option<String>,
+    /// The last error message, re-sent after leaving the alternate screen.
+    last_error: Option<String>,
+    /// Bytes the input queue refused, handed over when the shell opened.
+    dropped_input: usize,
     lines: WorldLineBuffer,
     commands: VecDeque<WorldCommand>,
     /// `Some(prefix)` while draining records pages from a `/records` command.
     records_prefix: Option<Option<String>>,
     errored: bool,
+}
+
+/// The notice shown to a viewer after `bytes` input bytes were refused. Empty
+/// when nothing was dropped.
+fn dropped_input_notice(bytes: usize) -> Option<String> {
+    (bytes > 0).then(|| {
+        format!("\r\n[-- input dropped: {bytes} bytes refused by the SSH input queue --]\r\n")
+    })
+}
+
+impl SshIo {
+    /// Tell the viewer that input was dropped, before the next frame.
+    fn note_dropped_input(&mut self) {
+        if let Some(notice) = dropped_input_notice(self.dropped_input) {
+            self.dropped_input = 0;
+            self.pending_notice = Some(notice);
+        }
+    }
+
+    /// Leave the alternate screen and re-send the last error, which the
+    /// alternate screen may have overwritten.
+    async fn leave_alt_screen(&mut self) {
+        let Some(sequence) = self.alt_screen.take() else {
+            return;
+        };
+        let text = match self.last_error.take() {
+            Some(error) => format!("{sequence}\r\n{error}\r\n"),
+            None => sequence,
+        };
+        let _ = self.handle.data(self.channel, text).await;
+    }
 }
 
 impl SessionIo for SshIo {
@@ -523,6 +589,12 @@ impl SessionIo for SshIo {
     }
 
     async fn send(&mut self, frame: String) -> bool {
+        self.note_dropped_input();
+        if let Some(notice) = self.pending_notice.take() {
+            if self.handle.data(self.channel, notice).await.is_err() {
+                return false;
+            }
+        }
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) else {
             return true;
         };
@@ -570,7 +642,8 @@ impl SessionIo for SshIo {
                 self.errored = true;
                 self.records_prefix = None;
                 let message = value["message"].as_str().unwrap_or("error");
-                format!("\r\n{}\r\n", terminal_text(message))
+                self.last_error = Some(format!("\r\n{}\r\n", terminal_text(message)));
+                self.last_error.clone().unwrap_or_default()
             }
             Some("records") => {
                 let records = value["records"].as_object();
@@ -1513,6 +1586,78 @@ mod tests {
     fn lobby_hub() -> WorldHub {
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         WorldHub::single(WorldService::new(world, Some("admin".to_owned())))
+    }
+
+    #[tokio::test]
+    async fn a_raw_shell_enters_and_leaves_the_alternate_screen() {
+        let (port, server) = start(lobby_hub()).await;
+        let session = connect(port, &"0".repeat(64)).await;
+        let mut channel = shell(&session).await;
+
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !bytes
+                .windows(ALT_SCREEN_ENTER.len())
+                .any(|window| window == ALT_SCREEN_ENTER.as_bytes())
+            {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the alternate screen to open");
+
+        drop(channel);
+        drop(session);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_command_shell_stays_on_the_primary_screen() {
+        let hub = lobby_hub();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-cmd-alt".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start(hub).await;
+        let session = connect_as(port, "cmd:", &capability).await;
+        let mut channel = shell(&session).await;
+        let mut text = String::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while text.len() < 32 {
+                if let Some(ChannelMsg::Data { data }) = channel.wait().await {
+                    text.push_str(&String::from_utf8_lossy(&data));
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the command prompt");
+        assert!(
+            !text
+                .as_bytes()
+                .windows(ALT_SCREEN_ENTER.len())
+                .any(|window| window == ALT_SCREEN_ENTER.as_bytes())
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn dropped_input_notice_counts_and_quiet_zero() {
+        assert_eq!(dropped_input_notice(0), None);
+        let notice = dropped_input_notice(1024).unwrap();
+        assert!(notice.contains("1024"));
+        assert!(notice.contains("dropped"));
     }
 
     #[tokio::test]
