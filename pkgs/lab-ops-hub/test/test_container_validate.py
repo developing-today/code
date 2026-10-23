@@ -627,8 +627,11 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://localhost。/",  # -> localhost.
         ):
             self.assertRefused(url)
-        # Controls: mapped spellings of public names stay crawlable.
-        self.assertAccepted("http://ｅｘａｍｐｌｅ.com/")
+        # Controls: mapped spellings of public names stay crawlable,
+        # and return in the mapped form the Worker returns (#665).
+        self.assertEqual(
+            validate_crawl_url("http://ｅｘａｍｐｌｅ.com/"), "http://example.com/"
+        )
         # The U-label spelling is kept, but its literal separator
         # now returns as "." (#660), not the fullwidth character.
         self.assertEqual(
@@ -1232,6 +1235,23 @@ class TestValidateCrawlUrl(unittest.TestCase):
             # as before — separator spellings agree there already.
             "http://8.8.8.8\u3002/": "http://8.8.8.8/",
             "http://8\u30028\u30028\u30028/": "http://8.8.8.8/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+
+    def test_returns_the_mapped_host_for_compatibility_spellings(self):
+        # Judging NFKC-maps the host (app.py: fullwidth/compatibility
+        # characters fold to their ordinary forms), but the return
+        # path rebuilt from the mapped host only for percent-decoded
+        # and literal-separator spellings, so a fullwidth spelling
+        # came back verbatim while the Worker returns the mapped
+        # form it judged (#665). The return now rebuilds whenever
+        # the mapping changed the host spelling.
+        cases = {
+            "http://\uff45\uff58\uff41\uff4d\uff50\uff4c\uff45.com/": "http://example.com/",
+            "http://\uff25\uff38\uff21\uff2d\uff30\uff2c\uff25.com/": "http://example.com/",
+            "http://\uff47\uff50\uff54\uff12.example.com/": "http://gpt2.example.com/",
+            "http://\uff45\uff58\uff41\uff4d\uff50\uff4c\uff45.com/path": "http://example.com/path",
         }
         for raw, expected in cases.items():
             self.assertEqual(validate_crawl_url(raw), expected, raw)
