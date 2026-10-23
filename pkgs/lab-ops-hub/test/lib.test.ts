@@ -80,6 +80,30 @@ test("validateCrawlUrl returns dot segments, host case and ports normalized (#63
   }
 });
 
+test("validateCrawlUrl returns the root dot for both dot spellings (#647)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG host parsing decodes "%2e" to "." and serialises
+  // the DNS root dot back, so the literal and percent-encoded spellings
+  // return the same dotted URL. (IP literals serialise without one.)
+  const cases: Array<[string, string]> = [
+    ["http://example.com./", "http://example.com./"],
+    ["http://example.com./path", "http://example.com./path"],
+    ["http://example.com%2e/", "http://example.com./"],
+    ["http://example.com%2E/", "http://example.com./"],
+    ["http://example.com%2e/path", "http://example.com./path"],
+    ["http://sub.example.com%2e/", "http://sub.example.com./"],
+    ["http://8.8.8.8./", "http://8.8.8.8/"],
+    ["http://8.8.8.8%2e/", "http://8.8.8.8/"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+  assert.equal(validateCrawlUrl("http://localhost%2e/").ok, false);
+  assert.equal(validateCrawlUrl("http://example.com%2e%2e/").ok, false);
+});
+
 test("validateCrawlUrl returns empty components normalized (#639)", () => {
   // The Worker's returned form is the reference the container validator
   // mirrors: "/" supplied for an empty path, the empty port's colon and

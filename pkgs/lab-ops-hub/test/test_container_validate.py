@@ -1103,6 +1103,45 @@ class TestValidateCrawlUrl(unittest.TestCase):
         )
         self.assertEqual(followed.full_url, "http://example.org/")
 
+    def test_returns_the_root_dot_for_percent_encoded_spellings(self):
+        # The container stripped the DNS root dot before judging and
+        # rebuilt the returned URL from the stripped host, so the
+        # percent-encoded spelling came back without the dot while the
+        # literal spelling (returned raw) and the Worker kept it —
+        # the same target was recorded under two different URLs
+        # depending on the spelling (#647). The judged host is still
+        # the stripped one; only the returned form re-attaches the dot.
+        cases = {
+            # Literal spellings (controls: unchanged).
+            "http://example.com./": "http://example.com./",
+            "http://example.com./path": "http://example.com./path",
+            # Percent-encoded spellings now match them, and the Worker.
+            "http://example.com%2e/": "http://example.com./",
+            "http://example.com%2E/": "http://example.com./",
+            "http://example.com%2e": "http://example.com./",
+            "http://example.com%2e/path": "http://example.com./path",
+            "http://sub.example.com%2e/": "http://sub.example.com./",
+            "http://example.com%2e:8080/path": "http://example.com.:8080/path",
+            "http://user@example.com%2e/": "http://user@example.com./",
+            "http://example.com%2e?#": "http://example.com./?#",
+            # A percent-encoded U+3002 maps to the same root dot.
+            "http://example.com%E3%80%82/": "http://example.com./",
+            # IP literals serialize without a root dot in WHATWG, and
+            # both validators already agreed there — unchanged.
+            "http://8.8.8.8./": "http://8.8.8.8/",
+            "http://8.8.8.8%2e/": "http://8.8.8.8/",
+            "http://8%2e8%2e8%2e8%2e/": "http://8.8.8.8/",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Verdicts are unchanged: the dotted spellings of blocked
+        # targets stay refused, and a second dot is still an empty
+        # label, in either spelling.
+        self.assertRefused("http://localhost%2e/")
+        self.assertRefused("http://localhost./")
+        self.assertRefused("http://example.com../")
+        self.assertRefused("http://example.com%2e%2e/")
+
     def test_returns_empty_password_userinfo_without_the_colon(self):
         # WHATWG serialises userinfo from the parsed username/password:
         # the ":" separator appears only when the password is non-empty,

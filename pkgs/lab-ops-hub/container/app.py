@@ -246,8 +246,13 @@ def validate_crawl_url(raw):
     # A single trailing dot is the DNS root dot (the FQDN spelling of the
     # same host: "localhost." is "localhost", "127.0.0.1." is 127.0.0.1);
     # strip it before the checks so the dotted spelling cannot evade
-    # them, matching the Worker's validateCrawlUrl (#466).
-    if host.endswith("."):
+    # them, matching the Worker's validateCrawlUrl (#466). Remember
+    # that it was there: the percent-decoded return path below rebuilds
+    # the URL from this stripped host, and without the dot it returned
+    # a different URL than the literal-dot spelling (and the Worker)
+    # for the same target (#647).
+    has_root_dot = host.endswith(".")
+    if has_root_dot:
         host = host[:-1]
     if not host:
         raise ValueError("url has no host")
@@ -397,10 +402,17 @@ def validate_crawl_url(raw):
                 )
             # A public DNS name; literal-IP policy does not apply.
             # A percent-decoded host is fetched in its decoded form.
-            # The returned form is WHATWG-normalized (#633).
+            # The returned form is WHATWG-normalized (#633). The root
+            # dot judging stripped is re-attached, so the percent-
+            # encoded spelling returns the same dotted form as the
+            # literal spelling and the Worker (#647). (IP literals
+            # take the canonical-address return below instead, and
+            # WHATWG serializes those without a root dot, as here.)
             return _url_with_encoded_components(
                 _normalize_validated_url(
-                    _url_with_host(u, host, raw) if percent_decoded else raw
+                    _url_with_host(u, host + "." if has_root_dot else host, raw)
+                    if percent_decoded
+                    else raw
                 )
             )
     embedded = _embedded_ipv4(ip)
