@@ -166,7 +166,13 @@ export function validateCrawlUrl(raw: string): { ok: true; url: string } | { ok:
   if (!host.startsWith("[") && (host.length > 253 || host.split(".").some((label) => label.length > 63))) {
     return { ok: false, error: `refusing to crawl host with an overlong label or name ${host}` };
   }
-  if (host === "localhost" || BLOCKED_HOST_SUFFIXES.some((s) => host.endsWith(s))) {
+  // "home.arpa" needs the same equality arm as "localhost": the
+  // suffixes carry a leading dot, so the bare apex escapes them, but
+  // home.arpa is itself the RFC 8375 special-use name for the local
+  // home network (#608). The other suffixes' bare labels ("local",
+  // "internal", "lan") are ordinary single-label hostnames, not
+  // designated local names, and stay accepted.
+  if (host === "localhost" || host === "home.arpa" || BLOCKED_HOST_SUFFIXES.some((s) => host.endsWith(s))) {
     return { ok: false, error: `refusing to crawl local host ${host}` };
   }
   if (host.startsWith("[") && host.endsWith("]")) {
