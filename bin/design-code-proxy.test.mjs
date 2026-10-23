@@ -8,6 +8,8 @@
 //
 //   'quota-body'   -> HTTP 200 with {"error":{"code":429,...}} in the body
 //   'quota-status' -> HTTP 429 status
+//   'ok-length'    -> a successful chat completion with an explicit
+//                     Content-Length on the compact JSON body (#684)
 //   'ok' (default) -> a successful chat completion naming the backend
 //
 // A quota error reported in a 200 JSON body used to hang the client
@@ -46,6 +48,13 @@ const startStub = (name) => new Promise((resolve) => {
       } else if (stub.mode === 'quota-status') {
         res.writeHead(429, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { code: 429, message: `${name} quota` } }));
+      } else if (stub.mode === 'ok-length' && !bodyText.includes('"stream":true')) {
+        const compact = JSON.stringify({
+          id: 'chatcmpl-stub', object: 'chat.completion', created: 0, model: 'stub-model',
+          choices: [{ index: 0, message: { role: 'assistant', content: `hello from ${name}` }, finish_reason: 'stop' }]
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(compact) });
+        res.end(compact);
       } else if (bodyText.includes('"stream":true')) {
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         const chunk = {
@@ -161,6 +170,27 @@ test('HTTP-status 429 still falls back (control)', async (t) => {
   const body = JSON.parse(await res.text());
   assert.equal(body.choices[0].message.content, 'hello from fallback');
   assert.equal(fallback.calls, 1);
+});
+
+test('backend Content-Length does not truncate the re-serialized success body (#684)', async (t) => {
+  const { port, primary, fallback, stop } = await startProxy();
+  t.after(stop);
+  primary.mode = 'ok-length';
+  const res = await post(port);
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  // The forwarded head must describe the body actually sent: either no
+  // Content-Length (chunked) or exactly the received byte count — never
+  // the backend's shorter compact-body length.
+  const advertised = res.headers.get('content-length');
+  if (advertised !== null) {
+    assert.equal(Number(advertised), Buffer.byteLength(text));
+  }
+  const body = JSON.parse(text);
+  assert.equal(body.choices[0].message.content, 'hello from primary');
+  assert.equal(body.model, 'design-code-flash');
+  assert.equal(primary.calls, 1);
+  assert.equal(fallback.calls, 0);
 });
 
 test('streaming success is unchanged', async (t) => {
