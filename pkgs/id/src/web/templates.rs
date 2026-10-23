@@ -142,7 +142,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
     );
     html.push_str("<div class=\"flex items-center gap-2 px-3 py-2 border-b border-base-300\">");
     html.push_str("<form id=\"new-file-form\" onsubmit=\"window.idApp?.createFile?.(event); return false;\" class=\"contents\">");
-    html.push_str("<input type=\"text\" id=\"new-file-name\" name=\"name\" placeholder=\"filename.md\" required class=\"input input-bordered input-xs flex-1 bg-base-100\" />");
+    html.push_str("<input type=\"text\" id=\"new-file-name\" name=\"name\" aria-label=\"New file name\" placeholder=\"filename.md\" required class=\"input input-bordered input-xs flex-1 bg-base-100\" />");
     html.push_str(
         "<button type=\"submit\" class=\"btn btn-ghost btn-xs font-mono\">create</button>",
     );
@@ -472,8 +472,8 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("        <span class=\"font-bold text-base-content/50\">tags:</span>\n");
     html.push_str("        <span class=\"flex gap-1 flex-wrap\" id=\"editor-tag-list\"></span>\n");
     html.push_str("        <span class=\"flex items-center gap-1\" id=\"tag-add-inline\">\n");
-    html.push_str("            <input type=\"text\" id=\"tag-add-key\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"key\" />\n");
-    html.push_str("            <input type=\"text\" id=\"tag-add-value\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"value\" />\n");
+    html.push_str("            <input type=\"text\" id=\"tag-add-key\" aria-label=\"Tag key\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"key\" />\n");
+    html.push_str("            <input type=\"text\" id=\"tag-add-value\" aria-label=\"Tag value\" class=\"input input-bordered input-xs w-20 bg-base-100\" placeholder=\"value\" />\n");
     html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" aria-label=\"Add tag\" onclick=\"window.idApp?.addTagInline?.()\">+</button>\n");
     html.push_str("        </span>\n");
     html.push_str("    </div>\n");
