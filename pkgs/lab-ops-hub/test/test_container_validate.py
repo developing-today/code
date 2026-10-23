@@ -989,6 +989,46 @@ class TestValidateCrawlUrl(unittest.TestCase):
         self.assertRefused("http://LOCALHOST/a/../b")
         self.assertRefused("http://127.0.0.1:80/x")
 
+    def test_returns_bare_semicolon_dot_spelled_segments_verbatim(self):
+        # A trailing segment that is a dot spelling plus a bare ";"
+        # ("..;", ".;", "%2e;") is an ordinary segment to WHATWG —
+        # the ";" is data — and the Worker returns it unchanged.
+        # urlparse splits the last segment's ";params" tail off the
+        # path and a bare ";" leaves params empty, so the split parts
+        # lost the ";" and the segment was resolved as a dot segment:
+        # "..;" collapsed the path (popping its parent), ".;" was
+        # dropped (#655). The non-empty-params spellings ("..;foo")
+        # were already pinned above; these are their empty-params
+        # counterparts, including before "?" / "#" and on the
+        # userinfo and percent-decoded-host return paths.
+        for url in (
+            "http://example.com/..;",
+            "http://example.com/.;",
+            "http://example.com/foo/..;",
+            "http://example.com/a/.;",
+            "http://example.com/a/b/..;",
+            "http://example.com/%2e;",
+            "http://example.com/%2e%2e;",
+            "http://example.com/a/%2E;",
+            "http://example.com/..;?q",
+            "http://example.com/..;#f",
+            "http://example.com/..;?",
+            "http://user@example.com/..;",
+            "http://8.8.8.8/..;",
+        ):
+            self.assertAccepted(url)
+        # The percent-decoded-host return path rebuilds the URL with
+        # the decoded host (#529): the bare-";" segment survives that
+        # rebuild too.
+        self.assertEqual(
+            validate_crawl_url("http://%65xample.com/..;"),
+            "http://example.com/..;",
+        )
+        # The fetcher's userinfo strip rebuilds the URL too: the
+        # stripped form keeps the bare-";" segment.
+        stripped, _ = app._split_userinfo("http://user@example.com/foo/..;")
+        self.assertEqual(stripped, "http://example.com/foo/..;")
+
     def test_redirect_handler_follows_the_normalized_target(self):
         # Redirect targets inherit the normalization (#633): the
         # handler validates the raw Location and fetches the form
