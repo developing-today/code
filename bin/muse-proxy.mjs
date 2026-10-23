@@ -18,12 +18,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseProxyPort } from './proxy-port.mjs';
 
 // Default port 18747: 18746 is claimed by design-code-proxy
 // (DESIGN_CODE_PROXY_PORT) in this repo's config, so muse-proxy takes the
 // next port in the family range (cf. clef 18742, agy 18743, codex 18744,
 // antigravity-ls 18745, design-code 18746).
-const PORT = parseInt(process.env.MUSE_PROXY_PORT || '18747', 10);
+const PORT = parseProxyPort('MUSE_PROXY_PORT', 18747);
 const HOST = process.env.MUSE_PROXY_HOST || '127.0.0.1';
 
 const EGRESS_PROXY = 'http://hatch-egress-proxy:3128';
