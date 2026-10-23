@@ -436,10 +436,17 @@ def validate_crawl_url(raw):
         raise ValueError(f"refusing to crawl non-public address {host}")
     elif not ip.is_global:
         raise ValueError(f"refusing to crawl non-public address {host}")
-    # A percent-decoded host is fetched in its decoded form (#529).
-    return _url_with_encoded_components(
-        _url_with_host(u, host) if percent_decoded else raw
-    )
+    # Return the judged address in its canonical form (#637): an IP
+    # literal names the same address in many spellings — inet_aton
+    # IPv4 forms (1.2.3, 134744072, 0x8.0x8.0x8.0x8, 010.0.0.010) and
+    # expanded or uppercase IPv6 forms — and the Worker's serializer
+    # returns the canonical one (dotted quad; compressed lowercase
+    # IPv6), so the URL recorded and fetched here names the judged
+    # address in that same single form instead of the caller's
+    # spelling. (A percent-decoded host is likewise fetched in its
+    # decoded form, #529.) _url_with_host re-adds the brackets for
+    # an IPv6 literal.
+    return _url_with_encoded_components(_url_with_host(u, str(ip)))
 
 
 def _judge_a_label(label, host):
