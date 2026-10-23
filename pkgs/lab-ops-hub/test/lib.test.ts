@@ -53,6 +53,33 @@ test("validateCrawlUrl percent-encodes C0 controls, space and DEL outside the ho
   }
 });
 
+test("validateCrawlUrl returns dot segments, host case and ports normalized (#633)", () => {
+  // The Worker's returned form is the reference the container validator
+  // mirrors: WHATWG resolves dot segments (literal and %2e spellings),
+  // lowercases the host, and drops the scheme's default port.
+  const cases: Array<[string, string]> = [
+    ["http://example.com/a/../b", "http://example.com/b"],
+    ["http://example.com/%2e%2e/admin", "http://example.com/admin"],
+    ["http://example.com/a/%2e%2e/b", "http://example.com/b"],
+    ["http://example.com/a/.", "http://example.com/a/"],
+    ["http://example.com/a/..", "http://example.com/"],
+    ["http://example.com//%2e", "http://example.com//"],
+    ["HTTP://EXAMPLE.COM/Path", "http://example.com/Path"],
+    ["http://example.com:80/x", "http://example.com/x"],
+    ["https://example.com:443/x", "https://example.com/x"],
+    ["http://example.com:080/x", "http://example.com/x"],
+    ["http://example.com:08080/x", "http://example.com:8080/x"],
+    ["http://user:pass@EXAMPLE.com:80/", "http://user:pass@example.com/"],
+    // Data, not dot segments: double-encoded spellings stay verbatim.
+    ["http://example.com/%252e%252e/admin", "http://example.com/%252e%252e/admin"],
+  ];
+  for (const [raw, expected] of cases) {
+    const r = validateCrawlUrl(raw);
+    assert.equal(r.ok, true, raw);
+    if (r.ok) assert.equal(r.url, expected, raw);
+  }
+});
+
 test("validateCrawlUrl refuses non-http schemes and junk", () => {
   assert.equal(validateCrawlUrl("ftp://example.com/").ok, false);
   assert.equal(validateCrawlUrl("file:///etc/passwd").ok, false);
