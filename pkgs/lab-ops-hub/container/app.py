@@ -687,9 +687,11 @@ def _canonical_ipv6(ip):
     # IPv6Address is not a stable spelling of that form — newer CPython
     # renders an IPv4-mapped address's tail as a dotted quad
     # (::ffff:8.8.8.8) where the Worker returns hextets
-    # (::ffff:808:808) — so render from exploded, which is always
-    # hextets (#637).
-    pieces = [p.lstrip("0") or "0" for p in ip.exploded.split(":")]
+    # (::ffff:808:808) — and exploded carries the same dotted tail on
+    # those versions — so derive the hextets from the address integer,
+    # which no rendering change can reach (#637).
+    value = int(ip)
+    pieces = [format((value >> (16 * (7 - i))) & 0xFFFF, "x") for i in range(8)]
     best_start, best_len = -1, 0
     i = 0
     while i < 8:
