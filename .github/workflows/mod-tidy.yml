@@ -11,6 +11,18 @@ on:
       - "pkgs/graph/**"
       - ".github/workflows/mod-tidy.yml"
 
+# Push-to-main runs each get their own group (keyed by run_id), so a
+# later merge can never cancel — or displace a pending — verification
+# run for an earlier merge: every merged tree gets its own completed
+# run. Pull-request runs keep sharing a per-ref group, so a new push
+# to a PR still supersedes its stale run (#392). A conditional
+# cancel-in-progress (the mcpx-conformance pattern) would still let a
+# third rapid merge displace the second merge's pending run, so push
+# runs are keyed by run_id here, matching dezren39/nix PR #495.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -18,6 +30,7 @@ jobs:
   tidy:
     name: Go module tidy
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7

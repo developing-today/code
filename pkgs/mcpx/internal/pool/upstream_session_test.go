@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/dezren39/mcpx/internal/config"
+	"github.com/dezren39/mcpx/internal/mcpclient"
 	"github.com/dezren39/mcpx/internal/pool"
 )
 
@@ -21,7 +22,12 @@ type sessionUpstream struct {
 	live    map[string]bool
 	issued  int
 	deletes int
-	served  []string
+	// deleteAttempts and deleted record every DELETE that arrives, including
+	// ones answered 404, so a failure can tell "no DELETE arrived" apart from
+	// "a DELETE arrived for a session the upstream no longer knew" (#290).
+	deleteAttempts int
+	deleted        []string
+	served         []string
 }
 
 func newSessionUpstream(t *testing.T) *sessionUpstream {
@@ -44,6 +50,8 @@ func (u *sessionUpstream) serve(w http.ResponseWriter, r *http.Request) {
 	sid := r.Header.Get("Mcp-Session-Id")
 	switch r.Method {
 	case http.MethodDelete:
+		u.deleteAttempts++
+		u.deleted = append(u.deleted, sid)
 		if u.live[sid] {
 			delete(u.live, sid)
 			u.deletes++
@@ -161,6 +169,87 @@ func TestAnUpstreamSessionSurvivesATakeover(t *testing.T) {
 	}
 	if len(up.served) == 0 {
 		t.Fatal("no request after the takeover reached the upstream session")
+	}
+}
+
+// lifecycleCapture records pool lifecycle events of several kinds at once.
+// lifecycleEvents installs a single-kind hook, and TerminateOrphanedSession's
+// failure path (#290) is only visible in the kind the test is not asserting
+// on, so this test needs both the terminated and the orphaned events.
+func lifecycleCapture(t *testing.T, kinds ...string) func(string) []map[string]any {
+	t.Helper()
+	want := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		want[k] = true
+	}
+	var mu sync.Mutex
+	got := map[string][]map[string]any{}
+	prev := pool.Lifecycle
+	pool.Lifecycle = func(event string, attrs map[string]any) {
+		if want[event] {
+			mu.Lock()
+			got[event] = append(got[event], attrs)
+			mu.Unlock()
+		}
+	}
+	t.Cleanup(func() { pool.Lifecycle = prev })
+	return func(kind string) []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]map[string]any(nil), got[kind]...)
+	}
+}
+
+// A handed session nobody adopted is ended upstream by
+// TerminateOrphanedSession, once the predecessor has committed.
+func TestTerminateOrphanedSessionEndsTheUpstreamSession(t *testing.T) {
+	events := lifecycleCapture(t, "upstream.session.terminated", "upstream.session.orphaned")
+	up := newSessionUpstream(t)
+	old := upstreamPool(t, up.URL)
+	pingThrough(t, old, "k")
+	ph, err := old.Detach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Commit()
+	pool.TerminateOrphanedSession("remote", ph.Instances[0])
+
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if up.deletes != 1 {
+		// #290: say why termination did not land — the orphaned events carry
+		// the reason TerminateOrphanedSession reported, and the mock's
+		// attempt log separates "no DELETE arrived" from "the DELETE named
+		// a session the upstream no longer knew".
+		t.Fatalf("the orphaned session saw %d DELETE(s), want exactly 1: %d DELETE attempt(s) for sessions %v; orphaned events = %v",
+			up.deletes, up.deleteAttempts, up.deleted, events("upstream.session.orphaned"))
+	}
+	terminated := events("upstream.session.terminated")
+	if len(terminated) != 1 || terminated[0]["server"] != "remote" || terminated[0]["session"] != "sess-1" {
+		t.Fatalf("terminated events = %v, want one naming remote/sess-1; orphaned events = %v",
+			terminated, events("upstream.session.orphaned"))
+	}
+}
+
+// A session that cannot be terminated — the endpoint is already gone — is
+// reported, not dropped silently.
+func TestTerminateOrphanedSessionReportsAnUnreachableEndpoint(t *testing.T) {
+	orphaned := lifecycleEvents(t, "upstream.session.orphaned")
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := dead.URL
+	dead.Close()
+
+	pool.TerminateOrphanedSession("remote", pool.InstanceHandoff{
+		ID:   "i1",
+		HTTP: &mcpclient.HTTPHandoff{SessionID: "sess-9", Negotiated: "2025-03-26", URL: url + "/mcp"},
+	})
+
+	events := orphaned()
+	if len(events) != 1 {
+		t.Fatalf("orphaned events = %v, want one", events)
+	}
+	if events[0]["server"] != "remote" || events[0]["session"] != "sess-9" || events[0]["reason"] == "" {
+		t.Fatalf("orphaned event = %v, want server, session and a reason", events[0])
 	}
 }
 

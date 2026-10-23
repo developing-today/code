@@ -14,7 +14,7 @@ Model : {
     winner : Str,
 }
 
-program = { init, update, view, records, wants, snapshot, restore }
+program = { init, update, view, layout, records, wants, snapshot, restore }
 
 init : U64 -> Model
 init = |_seed| { board: "---------", plays: 0, winner: "" }
@@ -53,6 +53,10 @@ view = |model| {
 ## This program wants nothing from the server.
 wants : Model -> Str
 wants = |_model| "{}"
+
+## This program renders the same layout at any viewport.
+layout : Model, U64, U64 -> Str
+layout = |model, _width, _height| view(model)
 
 records : Model -> Str
 records = |model| "{\"board\":\"${model.board}\",\"plays\":${model.plays.to_str()},\"winner\":\"${model.winner}\"}"

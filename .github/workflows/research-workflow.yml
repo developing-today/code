@@ -1,0 +1,70 @@
+name: research-workflow
+
+on:
+  pull_request:
+    paths:
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - ".agents/**"
+      - "planning/**"
+      - "doc/README.md"
+      - "doc/DOCUMENTATION_PROTOCOL.md"
+      - "doc/**/main.md"
+      - "doc/**/transcript.txt"
+      - "doc/**/concepts/**"
+      - "doc/**/notes/**"
+      - "doc/**/receipts/**"
+      - "doc/**/decisions/**"
+      - "scripts/*research*workflow*.py"
+      - "scripts/tests/test_*workflow*.py"
+      - ".github/workflows/research-workflow.yml"
+  push:
+    branches: [main]
+    paths:
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - ".agents/**"
+      - "planning/**"
+      - "doc/README.md"
+      - "doc/DOCUMENTATION_PROTOCOL.md"
+      - "doc/**/main.md"
+      - "doc/**/transcript.txt"
+      - "doc/**/concepts/**"
+      - "doc/**/notes/**"
+      - "doc/**/receipts/**"
+      - "doc/**/decisions/**"
+      - "scripts/*research*workflow*.py"
+      - "scripts/tests/test_*workflow*.py"
+      - ".github/workflows/research-workflow.yml"
+
+permissions:
+  contents: read
+
+# Push-to-main runs each get their own group (keyed by run_id), so a
+# later merge can never cancel — or displace a pending — verification
+# run for an earlier merge: every merged tree gets its own completed
+# run. Pull-request runs keep sharing a per-ref group, so a new push
+# to a PR still supersedes its stale run (#392). A conditional
+# cancel-in-progress (the mcpx-conformance pattern) would still let a
+# third rapid merge displace the second merge's pending run, so push
+# runs are keyed by run_id here, matching dezren39/nix PR #495.
+concurrency:
+  group: research-workflow-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Exercise lossless intake and validation failures
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*workflow*.py' -v
+      - name: Check workflow profiles, skills, links, and actual packages
+        run: python3 scripts/research_workflow.py check --repo-root .

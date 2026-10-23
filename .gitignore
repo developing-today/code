@@ -102,6 +102,7 @@ terraform.rc
 
 *tfplan*
 .env.local
+.claude/settings.local.json
 .opencode/worktree-session-state.json
 *_ses_*.json
 ses_*.json
@@ -114,6 +115,13 @@ ses_*/*.json
 .opencode/plugin/subtask2/logs/*.log
 .opencode/worktrees/
 .iroh*
+.id-worlds/
+.identity.db
+.identity.redb
+.ssh-host-key
+events.redb
+events.redb.tmp
+groups.jsonl
 test.*
 pkgs/roc/platforms/rust-basic-cli
 codedb.snapshot
@@ -148,3 +156,7 @@ codedb.snapshot
 
 /dezren39-nix/
 /justbetter-mcp/
+/.unisonHistory
+/*.log
+.opencode/antigravity-accounts.json
+.opencode/opencode-notifier-state.json

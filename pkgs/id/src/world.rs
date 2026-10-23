@@ -27,8 +27,20 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
+/// Re-exported so `crate::world::Isolation` keeps working: the type now lives
+/// in [`crate::groups::worlds`] so the crate builds without this feature.
+pub use crate::groups::worlds::Isolation;
+
+/// Re-exported so `crate::world::unix_ms` keeps working: the function now
+/// lives in [`crate::time`] so the crate builds without this feature.
+pub(crate) use crate::time::unix_ms;
+
+/// A chat participant may send at most this many lines during the rolling window.
+const CHAT_RATE_BURST: u8 = 50;
+const CHAT_RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Bounded limits for one world.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct WorldLimits {
     /// Maximum number of active capabilities in this world.
     pub participants: usize,
@@ -51,6 +63,9 @@ pub struct WorldLimits {
     pub min_tick_ms: u64,
     /// Whether a world's policy grants a capability on its first use.
     pub grant_on_use: bool,
+    /// Capabilities the server allows any world to use. Runtime configuration,
+    /// not journaled; a world's own ceiling and grants only narrow it.
+    pub server_caps: BTreeSet<String>,
 }
 
 impl Default for WorldLimits {
@@ -65,6 +80,7 @@ impl Default for WorldLimits {
             checkpoint_every: 1000,
             min_tick_ms: 1000,
             grant_on_use: false,
+            server_caps: crate::world_caps::catalog_names(),
         }
     }
 }
@@ -82,10 +98,34 @@ impl WorldScopes {
     pub const INPUT: Self = Self(0b100);
     /// Mint capabilities with a subset of this set.
     pub const DELEGATE: Self = Self(0b1000);
+    /// Read chat lines without being able to send them. `CHAT` also reads.
+    pub const HISTORY: Self = Self(0b1_0000);
     /// Default guest permissions.
     pub const GUEST: Self = Self(Self::JOIN.0 | Self::CHAT.0 | Self::INPUT.0);
     /// Every scope.
-    pub const ALL: Self = Self(Self::GUEST.0 | Self::DELEGATE.0);
+    pub const ALL: Self = Self(Self::GUEST.0 | Self::DELEGATE.0 | Self::HISTORY.0);
+
+    /// Role presets used by `id world invite --role`. `spectator` joins and
+    /// sees the world but not the chat; `observer` also reads chat without
+    /// sending it; `player` submits input; `guest` (the default) also chats;
+    /// `delegator` additionally mints narrower capabilities for others.
+    ///
+    /// The names are stable; the mapping to scopes is part of the protocol.
+    #[must_use]
+    pub fn from_role(name: &str) -> Option<Self> {
+        match name {
+            "spectator" => Some(Self::JOIN),
+            "observer" => Some(Self(Self::JOIN.0 | Self::HISTORY.0)),
+            "player" => Some(Self(Self::JOIN.0 | Self::INPUT.0)),
+            "guest" => Some(Self::GUEST),
+            "delegator" => Some(Self(Self::GUEST.0 | Self::DELEGATE.0)),
+            _ => None,
+        }
+    }
+
+    /// The names accepted by [`Self::from_role`].
+    pub const ROLES: &'static [&'static str] =
+        &["spectator", "observer", "player", "guest", "delegator"];
 
     /// Raw scope bits, as journaled.
     #[must_use]
@@ -121,13 +161,31 @@ impl WorldScopes {
         self.0 & required.0 == required.0
     }
 
+    /// This set with the scopes it includes by implication: `CHAT` reads, so
+    /// it carries `HISTORY`. Apply it wherever sets are compared as sets.
+    #[must_use]
+    pub const fn implied(self) -> Self {
+        if self.contains(Self::CHAT) {
+            Self(self.0 | Self::HISTORY.0)
+        } else {
+            self
+        }
+    }
+
+    /// Whether a participant with this set may see chat lines.
+    #[must_use]
+    pub const fn reads_chat(self) -> bool {
+        self.0 & (Self::CHAT.0 | Self::HISTORY.0) != 0
+    }
+
     /// The scopes a delegate of this set may hold: a subset that keeps `JOIN`.
     /// `None` unless this set includes `DELEGATE` and `requested` is a subset.
+    /// A set with `CHAT` may delegate `HISTORY`, which `CHAT` includes.
     #[must_use]
     pub const fn attenuate(self, requested: Self) -> Option<Self> {
         if self.contains(Self::DELEGATE)
             && requested.contains(Self::JOIN)
-            && self.contains(requested)
+            && self.implied().contains(requested)
         {
             Some(requested)
         } else {
@@ -141,18 +199,22 @@ impl WorldScopes {
     pub fn allows_effect(self, cap: &str) -> bool {
         match cap {
             "chat.say" => self.contains(Self::CHAT),
+            // Reading chat needs only the right to read it (`CHAT` or
+            // `HISTORY`), the same rule the event stream applies.
+            "chat.history" => self.reads_chat(),
             _ => self.contains(Self::JOIN),
         }
     }
 
-    /// Scopes named on the wire (`join`, `chat`, `input`, `delegate`), or
-    /// `None` if a name is unknown.
+    /// Scopes named on the wire (`join`, `chat`, `history`, `input`,
+    /// `delegate`), or `None` if a name is unknown.
     #[must_use]
     pub fn from_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<Self> {
         names.into_iter().try_fold(Self(0), |scopes, name| {
             let bit = match name {
                 "join" => Self::JOIN,
                 "chat" => Self::CHAT,
+                "history" => Self::HISTORY,
                 "input" => Self::INPUT,
                 "delegate" => Self::DELEGATE,
                 _ => return None,
@@ -229,33 +291,41 @@ pub enum WorldEventKind {
         module_hash: String,
         /// Seed passed to the program's `init`; with the module and the
         /// inputs after this event it reproduces the program state exactly.
+        /// Journal/admin only: join projections redact it to zero (#240).
         #[serde(default)]
         seed: u64,
+        /// Server-observed origin metadata. Absent on older journal entries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provenance: Option<ModuleProvenance>,
     },
 }
 
-/// Whether a world's directory may be read from other worlds.
-///
-/// Writes never cross worlds, whatever the setting.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Isolation {
-    /// No cross-world reads or writes, in either direction.
-    #[default]
-    Isolated,
-    /// Readable from other unisolated worlds, and only from them.
-    Unisolated,
+/// How the active module artifact entered the world.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "origin", content = "build", rename_all = "snake_case")]
+pub enum ModuleProvenance {
+    /// A raw module artifact was installed; no compiler identity is asserted.
+    Artifact,
+    /// The server observed a successful source build. These hashes identify
+    /// inputs; they are not a signature or a trust attestation.
+    SourceBuild(SourceBuildProvenance),
 }
 
-impl Isolation {
-    /// The wire word: `isolated` or `unisolated`.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Isolated => "isolated",
-            Self::Unisolated => "unisolated",
-        }
-    }
+/// Bounded, deterministic metadata observed for one source compilation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceBuildProvenance {
+    /// Provenance record schema, independent of the world journal version.
+    pub schema_version: u8,
+    /// Domain-separated BLAKE3 digest of the compiler executable bytes.
+    pub compiler_blake3: String,
+    /// BLAKE3 digest of the platform tree, including relative paths.
+    pub platform_blake3: String,
+    /// BLAKE3 digest of the submitted source filenames and contents.
+    pub source_blake3: String,
+    /// Compiler target (`wasm32` or `x64musl`).
+    pub target: String,
+    /// Stable compiler arguments, excluding the temporary output path.
+    pub arguments: Vec<String>,
 }
 
 /// Which paths a world's files may name.
@@ -387,6 +457,18 @@ pub enum JournalEntry {
         /// Capability names.
         granted: Vec<String>,
     },
+    /// The world's capability ceiling, written whole on every change. Absent
+    /// means the whole catalog. Checkpoints carry it in `caps_ceiling`.
+    CapsCeiling {
+        /// Capability names the world allows.
+        ceiling: Vec<String>,
+    },
+    /// The world's requested execution profile. Limits are resolved against
+    /// the current server hard ceilings when a program instance is created.
+    ExecutionProfile {
+        /// Per-world resource requests; omitted fields inherit server limits.
+        profile: crate::world_limits::WorldExecutionProfile,
+    },
     /// The world's isolation, written whole on every change. Absent means
     /// [`Isolation::Isolated`].
     Isolation {
@@ -411,6 +493,26 @@ pub enum JournalEntry {
         /// The new setting.
         enabled: bool,
     },
+    /// A `schedule.at` request was accepted: `id` fires once, at `at_ms` (unix
+    /// milliseconds). Written before the request's result is delivered.
+    ScheduleSet {
+        /// The schedule's id, unique among pending schedules.
+        id: String,
+        /// When it fires, in unix milliseconds.
+        at_ms: u64,
+    },
+    /// A pending schedule was cancelled before it fired.
+    ScheduleCancelled {
+        /// The cancelled schedule's id.
+        id: String,
+    },
+    /// A pending schedule fired. It follows the fire's `System` entry, which
+    /// the program accepted first, so the schedule is consumed only once its
+    /// delivery is durable.
+    ScheduleFired {
+        /// The fired schedule's id.
+        id: String,
+    },
     /// The world as of `sequence`, standing in for every event up to it. Only
     /// ever written by compaction, directly after the participant entries.
     Checkpoint {
@@ -420,6 +522,20 @@ pub enum JournalEntry {
         module_hash: String,
         /// Seed the program was initialized with.
         seed: u64,
+        /// Provenance of the active module, if it was recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provenance: Option<ModuleProvenance>,
+        /// Requested resource profile. Absent in older checkpoints.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_profile: Option<crate::world_limits::WorldExecutionProfile>,
+        /// The world's capability ceiling. Absent in older checkpoints, and
+        /// when it is the whole catalog.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caps_ceiling: Option<Vec<String>>,
+        /// Pending schedules as `(id, at_ms)`. Absent when none are pending,
+        /// and it must match the `ScheduleSet` entries before it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schedules: Option<Vec<(String, u64)>>,
         /// The program's own serialization of its state.
         snapshot: String,
         /// Recent events kept for reconnect catch-up.
@@ -466,6 +582,8 @@ pub struct RestoredProgram {
     /// State to restore before replaying, if the journal was compacted behind
     /// a checkpoint; otherwise the program starts from `init(seed)`.
     pub snapshot: Option<String>,
+    /// Server-observed module origin, if this journal version recorded it.
+    pub provenance: Option<ModuleProvenance>,
 }
 
 /// A world rebuilt from its journal, before its program is re-instantiated.
@@ -478,6 +596,15 @@ pub struct RestoredWorld {
     /// Inputs committed after the install or checkpoint, in order, to replay
     /// through it.
     pub replay: Vec<WorldEvent>,
+}
+
+/// The profile requested by the world admin and when it takes effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionProfileUpdate {
+    /// Requested profile; this is not necessarily the active instance's limits.
+    pub requested: crate::world_limits::WorldExecutionProfile,
+    /// True when a program is currently running with its previously resolved limits.
+    pub applies_on_next_program_install_or_process_restart: bool,
 }
 
 /// Structured records a program publishes: key to JSON value, key-ordered.
@@ -503,6 +630,53 @@ fn presence_change(text: &str) -> Option<(u64, bool)> {
         _ => return None,
     };
     Some((value.get("participant")?.get("id")?.as_u64()?, joined))
+}
+
+/// The host event a program receives when schedule `id` fires. `late` is set
+/// only for a schedule the journal left overdue when the world reopened.
+fn schedule_fired_event(id: &str, late: bool) -> String {
+    let mut event = serde_json::json!({"cap": "schedule", "event": "fired", "id": id});
+    if late {
+        event["late"] = serde_json::Value::Bool(true);
+    }
+    event.to_string()
+}
+
+/// When the earliest pending schedule is due, as a monotonic deadline. Nothing
+/// waits while the program cannot take a fire (`deliverable` is false): a due
+/// schedule that cannot be delivered would otherwise wake the loop without end.
+fn next_schedule_wake(
+    schedules: &BTreeMap<String, u64>,
+    now_ms: u64,
+    deliverable: bool,
+) -> Option<std::time::Instant> {
+    if !deliverable {
+        return None;
+    }
+    let earliest = schedules.values().min().copied()?;
+    let wait = std::time::Duration::from_millis(earliest.saturating_sub(now_ms));
+    Some(std::time::Instant::now() + wait)
+}
+
+/// The newest `count` chat lines in `events`, oldest first, each carrying its
+/// sequence, participant id, and text. The retained-events buffer is itself
+/// bounded by the world's limits, so a request can never see unbounded history.
+fn chat_history(events: &VecDeque<WorldEvent>, count: usize) -> Vec<serde_json::Value> {
+    let mut lines: Vec<serde_json::Value> = Vec::new();
+    for event in events.iter().rev() {
+        if lines.len() >= count {
+            break;
+        }
+        if let WorldEventKind::Chat(text) = &event.kind {
+            lines.push(serde_json::json!({
+                "sequence": event.sequence,
+                "participant": event.participant_id,
+                "text": text,
+            }));
+        }
+    }
+    lines.reverse();
+    lines
 }
 
 /// Most records one world may publish.
@@ -572,6 +746,18 @@ pub trait WorldProgram: Send + 'static {
         Ok(None)
     }
 
+    /// Return this participant's presentation laid out for a `width` by
+    /// `height` viewport. Defaults to [`Self::view`]; a program that can reflow
+    /// overrides it. Rendering must not change state.
+    fn layout(
+        &mut self,
+        viewer: &Participant,
+        _width: u16,
+        _height: u16,
+    ) -> Result<Option<String>> {
+        self.view(viewer)
+    }
+
     /// Structured records projected from the program state: a JSON object
     /// mapping record keys to JSON values, or `None` if the program keeps no
     /// records. Must be a pure function of state (it is recomputed on replay).
@@ -608,6 +794,9 @@ pub struct WorldSnapshot {
     pub world_id: String,
     /// Content hash of the active program, if this world executes one.
     pub active_module_hash: Option<String>,
+    /// Provenance for the active module, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_module_provenance: Option<ModuleProvenance>,
     /// Latest committed sequence at snapshot time.
     pub current_sequence: u64,
     /// Earliest event sequence present in this snapshot, or the current
@@ -618,6 +807,39 @@ pub struct WorldSnapshot {
     pub events: Vec<WorldEvent>,
     /// Public participant list.
     pub participants: Vec<Participant>,
+}
+
+/// The one projection of an event onto a viewer holding `scopes`.
+///
+/// Every path that hands an event to a participant — the snapshot, catch-up
+/// pages and the live stream — goes through it.
+///
+/// - A chat line is `None` unless `scopes` may read chat (`CHAT` or
+///   `HISTORY`): a join-only participant sees the world, not the talk.
+/// - A `ProgramInstalled` event keeps its module hash — joiners need it to
+///   fetch the module — but its install seed is zeroed (#240), because a
+///   program whose hidden state derives from `init(seed)` must not leak that
+///   state to every participant.
+/// - Anything else is returned as is.
+///
+/// The journal, the core's retained events and the admin paths keep the real
+/// events; replay that needs the seed uses the seed the admin installed with,
+/// through the journal/admin path.
+#[must_use]
+pub fn project_event_for(scopes: WorldScopes, event: &WorldEvent) -> Option<WorldEvent> {
+    match &event.kind {
+        WorldEventKind::Chat(_) if !scopes.reads_chat() => None,
+        WorldEventKind::ProgramInstalled { .. } => {
+            // Mutate in place so every other field, including the observed
+            // build provenance, is kept as it is.
+            let mut shown = event.clone();
+            if let WorldEventKind::ProgramInstalled { seed, .. } = &mut shown.kind {
+                *seed = 0;
+            }
+            Some(shown)
+        }
+        _ => Some(event.clone()),
+    }
 }
 
 /// Limits on what a capability may do before it stops working.
@@ -650,12 +872,19 @@ struct CapabilityRecord {
 pub struct WorldCore {
     world_id: String,
     limits: WorldLimits,
+    execution_profile: crate::world_limits::WorldExecutionProfile,
     next_participant_id: u64,
     sequence: u64,
     active_module_hash: Option<String>,
+    active_module_provenance: Option<ModuleProvenance>,
     active_seed: u64,
     /// What this world's program may ask the server for.
     pub(crate) ledger: crate::world_caps::CapLedger,
+    /// This world's own capability ceiling. The ledger allows the intersection
+    /// of this and the server's `limits.server_caps`.
+    caps_ceiling: BTreeSet<String>,
+    /// Pending `schedule.at` fires: id to due time, in unix milliseconds.
+    schedules: BTreeMap<String, u64>,
     isolation: Isolation,
     cross_world_write: bool,
     cross_world_forced: bool,
@@ -664,6 +893,8 @@ pub struct WorldCore {
     /// Events committed since the journal last started from a checkpoint.
     since_checkpoint: u64,
     capabilities: HashMap<u64, CapabilityRecord>,
+    /// Recent chat timestamps, pruned to the active rolling window on each send.
+    chat_rates: HashMap<u64, VecDeque<std::time::Instant>>,
     events: VecDeque<WorldEvent>,
     directory: crate::directory::Directory,
     petnames: crate::petname::Petnames,
@@ -692,14 +923,22 @@ impl WorldCore {
             limits.snapshot_bytes > 0,
             "world snapshot limit must be nonzero"
         );
-        Ok(Self {
+        let server_caps: Vec<String> = limits.server_caps.iter().cloned().collect();
+        crate::world_caps::validate_ceiling_names(&server_caps)
+            .context("server capability ceiling")?;
+        let grant_on_use = limits.grant_on_use;
+        let mut core = Self {
             world_id,
             limits,
+            execution_profile: crate::world_limits::WorldExecutionProfile::default(),
             next_participant_id: 1,
             sequence: 0,
             active_module_hash: None,
+            active_module_provenance: None,
             active_seed: 0,
-            ledger: crate::world_caps::CapLedger::new(Default::default(), limits.grant_on_use),
+            ledger: crate::world_caps::CapLedger::new(BTreeSet::new(), grant_on_use),
+            caps_ceiling: crate::world_caps::catalog_names(),
+            schedules: BTreeMap::new(),
             isolation: Isolation::default(),
             cross_world_write: false,
             cross_world_forced: false,
@@ -707,10 +946,25 @@ impl WorldCore {
             file_write_override: false,
             since_checkpoint: 0,
             capabilities: HashMap::new(),
+            chat_rates: HashMap::new(),
             events: VecDeque::new(),
             directory: crate::directory::Directory::new(),
             petnames: crate::petname::Petnames::new(),
-        })
+        };
+        core.sync_ledger_ceiling();
+        Ok(core)
+    }
+
+    /// Recompute what the ledger may allow: the server's limit intersected with
+    /// this world's ceiling. Call whenever either one changes.
+    fn sync_ledger_ceiling(&mut self) {
+        let allowed = self
+            .limits
+            .server_caps
+            .intersection(&self.caps_ceiling)
+            .cloned()
+            .collect();
+        self.ledger.set_allowed(allowed);
     }
 
     /// Rebuild a world from its journal.
@@ -826,6 +1080,17 @@ impl WorldCore {
                     }
                     core.ledger.set_granted(granted.iter().cloned().collect());
                 }
+                JournalEntry::CapsCeiling { ceiling } => {
+                    crate::world_caps::validate_ceiling_names(&ceiling)
+                        .context("invalid capability ceiling in journal")?;
+                    core.caps_ceiling = ceiling.into_iter().collect();
+                }
+                JournalEntry::ExecutionProfile { profile } => {
+                    profile
+                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .context("invalid world execution profile in journal")?;
+                    core.execution_profile = profile;
+                }
                 JournalEntry::Isolation { isolation } => core.isolation = isolation,
                 JournalEntry::CrossWorldWrite { enabled } => {
                     core.cross_world_write = enabled;
@@ -839,6 +1104,34 @@ impl WorldCore {
                 }
                 JournalEntry::FileScope { scope } => core.file_scope = scope,
                 JournalEntry::FileWriteOverride { enabled } => core.file_write_override = enabled,
+                JournalEntry::ScheduleSet { id, at_ms } => {
+                    crate::world_caps::validate_schedule_id(&id)
+                        .context("invalid schedule id in journal")?;
+                    ensure!(
+                        !core.schedules.contains_key(&id),
+                        "journal schedules {id:?} twice"
+                    );
+                    ensure!(
+                        core.schedules.len() < crate::world_caps::MAX_PENDING_SCHEDULES,
+                        "journal holds more than {} pending schedules",
+                        crate::world_caps::MAX_PENDING_SCHEDULES
+                    );
+                    // No clock here: the due time is what the request set, and
+                    // a restore never judges it against now.
+                    core.schedules.insert(id, at_ms);
+                }
+                JournalEntry::ScheduleCancelled { id } => {
+                    ensure!(
+                        core.schedules.remove(&id).is_some(),
+                        "journal cancels schedule {id:?}, which is not pending"
+                    );
+                }
+                JournalEntry::ScheduleFired { id } => {
+                    ensure!(
+                        core.schedules.remove(&id).is_some(),
+                        "journal fires schedule {id:?}, which is not pending"
+                    );
+                }
                 JournalEntry::System { event } => {
                     ensure!(
                         event.sequence == 0 && event.participant_id == 0,
@@ -870,13 +1163,19 @@ impl WorldCore {
                         event.sequence
                     );
                     match &event.kind {
-                        WorldEventKind::ProgramInstalled { module_hash, seed } => {
+                        WorldEventKind::ProgramInstalled {
+                            module_hash,
+                            seed,
+                            provenance,
+                        } => {
                             core.active_module_hash = Some(module_hash.clone());
+                            core.active_module_provenance = provenance.clone();
                             core.active_seed = *seed;
                             program = Some(RestoredProgram {
                                 module_hash: module_hash.clone(),
                                 seed: *seed,
                                 snapshot: None,
+                                provenance: provenance.clone(),
                             });
                             replay.clear();
                         }
@@ -891,6 +1190,10 @@ impl WorldCore {
                     sequence,
                     module_hash,
                     seed,
+                    provenance,
+                    execution_profile,
+                    caps_ceiling,
+                    schedules,
                     snapshot,
                     events,
                 } => {
@@ -911,11 +1214,36 @@ impl WorldCore {
                         core.events.pop_front();
                     }
                     core.active_module_hash = Some(module_hash.clone());
+                    core.active_module_provenance = provenance.clone();
                     core.active_seed = seed;
+                    let execution_profile = execution_profile.unwrap_or_default();
+                    execution_profile
+                        .resolve(crate::world_limits::RuntimeLimits::default())
+                        .context("invalid world execution profile in checkpoint")?;
+                    core.execution_profile = execution_profile;
+                    // Absent means the whole catalog: older checkpoints and
+                    // default ceilings omit the field.
+                    core.caps_ceiling = match caps_ceiling {
+                        Some(ceiling) => {
+                            crate::world_caps::validate_ceiling_names(&ceiling)
+                                .context("invalid capability ceiling in checkpoint")?;
+                            ceiling.into_iter().collect()
+                        }
+                        None => crate::world_caps::catalog_names(),
+                    };
+                    // The writer emits one `ScheduleSet` per pending schedule
+                    // before the checkpoint, so the two must agree exactly.
+                    let listed = schedules.unwrap_or_default();
+                    let declared: BTreeMap<String, u64> = listed.iter().cloned().collect();
+                    ensure!(
+                        declared.len() == listed.len() && declared == core.schedules,
+                        "journal checkpoint's pending schedules disagree with its schedule entries"
+                    );
                     program = Some(RestoredProgram {
                         module_hash,
                         seed,
                         snapshot: Some(snapshot),
+                        provenance,
                     });
                 }
             }
@@ -934,6 +1262,7 @@ impl WorldCore {
                 },
             });
         }
+        core.sync_ledger_ceiling();
         Ok(RestoredWorld {
             core,
             program,
@@ -975,6 +1304,19 @@ impl WorldCore {
         if !granted.is_empty() {
             entries.push(JournalEntry::CapsGranted { granted });
         }
+        // The ceiling rides on the checkpoint, so compaction keeps it; the
+        // default is omitted and reads back as the whole catalog.
+        let caps_ceiling: Option<Vec<String>> = (self.caps_ceiling
+            != crate::world_caps::catalog_names())
+        .then(|| self.caps_ceiling.iter().cloned().collect());
+        if let Some(ceiling) = &caps_ceiling {
+            // An older binary cannot read a `CapsCeiling` entry and refuses the
+            // journal. Without it, the older binary would ignore the checkpoint
+            // field and restore the whole catalog, widening authority silently.
+            entries.push(JournalEntry::CapsCeiling {
+                ceiling: ceiling.clone(),
+            });
+        }
         if self.isolation != Isolation::default() {
             entries.push(JournalEntry::Isolation {
                 isolation: self.isolation,
@@ -993,10 +1335,34 @@ impl WorldCore {
         if self.file_write_override {
             entries.push(JournalEntry::FileWriteOverride { enabled: true });
         }
+        if self.execution_profile != crate::world_limits::WorldExecutionProfile::default() {
+            entries.push(JournalEntry::ExecutionProfile {
+                profile: self.execution_profile,
+            });
+        }
+        // One entry per pending schedule, before the checkpoint, mirroring the
+        // ceiling: an older binary cannot read `ScheduleSet` and refuses the
+        // journal, instead of restoring without the schedules.
+        for (id, at_ms) in &self.schedules {
+            entries.push(JournalEntry::ScheduleSet {
+                id: id.clone(),
+                at_ms: *at_ms,
+            });
+        }
+        let schedules: Option<Vec<(String, u64)>> = (!self.schedules.is_empty()).then(|| {
+            self.schedules
+                .iter()
+                .map(|(id, at_ms)| (id.clone(), *at_ms))
+                .collect()
+        });
         entries.push(JournalEntry::Checkpoint {
             sequence: self.sequence,
             module_hash,
             seed: self.active_seed,
+            provenance: self.active_module_provenance.clone(),
+            execution_profile: Some(self.execution_profile),
+            caps_ceiling,
+            schedules,
             snapshot,
             events: self.events.iter().cloned().collect(),
         });
@@ -1037,6 +1403,33 @@ impl WorldCore {
         self.commit(0, WorldEventKind::Chat(text))
     }
 
+    /// Whether a `schedule.at` for `id` may be pended, given the host clock
+    /// `now_ms`. The error says why; the program sees only `bad_args`.
+    ///
+    /// # Errors
+    ///
+    /// A malformed id, a duplicate pending id, a full schedule, or a time past
+    /// the horizon.
+    fn check_schedule(&self, id: &str, at_ms: u64, now_ms: u64) -> Result<()> {
+        crate::world_caps::validate_schedule_id(id)?;
+        ensure!(
+            !self.schedules.contains_key(id),
+            "schedule {id:?} is already pending; cancel it before scheduling it again"
+        );
+        ensure!(
+            self.schedules.len() < crate::world_caps::MAX_PENDING_SCHEDULES,
+            "world already has {} pending schedules",
+            crate::world_caps::MAX_PENDING_SCHEDULES
+        );
+        let horizon = now_ms.saturating_add(crate::world_caps::MAX_SCHEDULE_HORIZON_MS);
+        ensure!(
+            at_ms <= horizon,
+            "schedule {id:?} is more than {} days past the host clock",
+            crate::world_caps::MAX_SCHEDULE_HORIZON_DAYS
+        );
+        Ok(())
+    }
+
     /// Journal entry for an already-issued capability.
     fn issued_entry(&self, participant_id: u64) -> Option<JournalEntry> {
         self.capabilities
@@ -1065,6 +1458,12 @@ impl WorldCore {
         &self.world_id
     }
 
+    /// The per-world resource requests, independent of current server ceilings.
+    #[must_use]
+    pub const fn execution_profile(&self) -> crate::world_limits::WorldExecutionProfile {
+        self.execution_profile
+    }
+
     /// Issue a capability for a participant. Only `JOIN`-scoped capabilities
     /// count toward active participant capacity.
     pub fn issue_capability(
@@ -1090,7 +1489,7 @@ impl WorldCore {
             .account_for(credential)
             .context("invalid account credential")?;
         ensure!(
-            self.directory.ceiling(&account).contains(scopes),
+            self.directory.ceiling(&account).implied().contains(scopes),
             "this account may not hold those scopes"
         );
         self.mint(display_name, scopes, None, Some(account), bounds)
@@ -1132,7 +1531,7 @@ impl WorldCore {
             "you can only delegate to a friend"
         );
         ensure!(
-            self.directory.ceiling(friend).contains(scopes),
+            self.directory.ceiling(friend).implied().contains(scopes),
             "that friend may not hold those scopes"
         );
         self.delegate(token, scopes, bounds, display_name, Some(friend.to_owned()))
@@ -1185,9 +1584,9 @@ impl WorldCore {
         let mut scopes = WorldScopes::ALL;
         let mut current = Some(participant_id);
         while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
-            scopes = scopes.intersect(record.scopes);
+            scopes = scopes.intersect(record.scopes.implied());
             if let Some(subject) = &record.subject {
-                scopes = scopes.intersect(self.directory.ceiling(subject));
+                scopes = scopes.intersect(self.directory.ceiling(subject).implied());
             }
             let parent = record.parent.and_then(|id| self.capabilities.get(&id));
             if let Some(subject) = &record.subject
@@ -1378,7 +1777,27 @@ impl WorldCore {
         );
         let text = sanitize_chat(text);
         ensure!(!text.is_empty(), "chat message must not be empty");
-        self.commit(participant_id, WorldEventKind::Chat(text))
+        let now = std::time::Instant::now();
+        self.chat_rates.retain(|_, sent| {
+            while sent
+                .front()
+                .is_some_and(|at| now.duration_since(*at) >= CHAT_RATE_WINDOW)
+            {
+                sent.pop_front();
+            }
+            !sent.is_empty()
+        });
+        let current = self.chat_rates.get(&participant_id);
+        ensure!(
+            current.is_none_or(|sent| sent.len() < usize::from(CHAT_RATE_BURST)),
+            "chat rate exceeded; try again later"
+        );
+        let event = self.commit(participant_id, WorldEventKind::Chat(text))?;
+        self.chat_rates
+            .entry(participant_id)
+            .or_default()
+            .push_back(now);
+        Ok(event)
     }
 
     /// Commit an opaque game input after validating capability and bounds.
@@ -1422,10 +1841,30 @@ impl WorldCore {
         Ok(event)
     }
 
-    /// Return the current bounded snapshot after validating join scope.
+    /// Return the current bounded snapshot after validating join scope. Its
+    /// events are the viewer's projection: no chat without `chat` or
+    /// `history`, and no install seeds (#240).
     pub fn snapshot(&self, token: &JoinCapability) -> Result<WorldSnapshot> {
-        self.authorize(token, WorldScopes::JOIN)?;
-        Ok(self.snapshot_unchecked())
+        let participant_id = self.authorize(token, WorldScopes::JOIN)?;
+        Ok(self.snapshot_unchecked(self.viewer_scopes(participant_id)))
+    }
+
+    /// What the viewer holding `token` may see of `event`, as it is delivered
+    /// live. `Err` if the capability no longer joins (revoked, expired, or its
+    /// chain was cut), so a session can end; `Ok(None)` if the event is not
+    /// for this viewer.
+    pub fn project_for(
+        &self,
+        token: &JoinCapability,
+        event: &WorldEvent,
+    ) -> Result<Option<WorldEvent>> {
+        let participant_id = self.authorize(token, WorldScopes::JOIN)?;
+        Ok(project_event_for(self.viewer_scopes(participant_id), event))
+    }
+
+    fn viewer_scopes(&self, participant_id: u64) -> WorldScopes {
+        self.effective_scopes(participant_id)
+            .unwrap_or(WorldScopes(0))
     }
 
     fn viewer(&self, token: &JoinCapability) -> Result<Participant> {
@@ -1438,8 +1877,13 @@ impl WorldCore {
 
     /// Return retained events newer than `after_sequence`, plus the current
     /// cursor. If the cursor fell behind retention, the caller must resnapshot.
+    /// The events are the viewer's projection (see [`project_event_for`]), so
+    /// their sequences may skip withheld lines: a caller advances to
+    /// `current_sequence`, not to the last sequence it was given plus one.
+    /// Retention and `needs_snapshot` do not depend on the viewer.
     pub fn events_after(&self, token: &JoinCapability, after_sequence: u64) -> Result<EventPage> {
-        self.authorize(token, WorldScopes::JOIN)?;
+        let participant_id = self.authorize(token, WorldScopes::JOIN)?;
+        let scopes = self.viewer_scopes(participant_id);
         let oldest = self.oldest_sequence();
         let needs_snapshot = after_sequence.saturating_add(1) < oldest;
         let events = if needs_snapshot {
@@ -1448,7 +1892,7 @@ impl WorldCore {
             self.events
                 .iter()
                 .filter(|event| event.sequence > after_sequence)
-                .cloned()
+                .filter_map(|event| project_event_for(scopes, event))
                 .collect()
         };
         Ok(EventPage {
@@ -1512,7 +1956,7 @@ impl WorldCore {
             .map_or_else(|| self.sequence.saturating_add(1), |event| event.sequence)
     }
 
-    fn snapshot_unchecked(&self) -> WorldSnapshot {
+    fn snapshot_unchecked(&self, viewer: WorldScopes) -> WorldSnapshot {
         let participants = self
             .capabilities
             .values()
@@ -1521,16 +1965,23 @@ impl WorldCore {
             .collect();
         // Take the most recent events that fit the snapshot budget, newest
         // first. A snapshot is a baseline, not a complete replay: clients
-        // adopt its sequence as their cursor.
+        // adopt its sequence as their cursor. Events the viewer may not see
+        // are dropped before the budget is spent, so it counts only what the
+        // snapshot carries.
         let mut budget = self.limits.snapshot_bytes;
         let mut events: VecDeque<WorldEvent> = VecDeque::new();
-        for event in self.events.iter().rev() {
-            let size = serde_json::to_vec(event).map_or(budget, |encoded| encoded.len());
+        for event in self
+            .events
+            .iter()
+            .rev()
+            .filter_map(|event| project_event_for(viewer, event))
+        {
+            let size = serde_json::to_vec(&event).map_or(budget, |encoded| encoded.len());
             if size > budget {
                 break;
             }
             budget -= size;
-            events.push_front(event.clone());
+            events.push_front(event);
         }
         let oldest_retained_sequence = events
             .front()
@@ -1538,6 +1989,7 @@ impl WorldCore {
         WorldSnapshot {
             world_id: self.world_id.clone(),
             active_module_hash: self.active_module_hash.clone(),
+            active_module_provenance: self.active_module_provenance.clone(),
             current_sequence: self.sequence,
             oldest_retained_sequence,
             events: events.into_iter().collect(),
@@ -1617,13 +2069,25 @@ enum WorldCommand {
         sequence: u64,
         reply: oneshot::Sender<Result<EventPage>>,
     },
+    ProjectEvent {
+        token: JoinCapability,
+        event: WorldEvent,
+        reply: oneshot::Sender<Result<Option<WorldEvent>>>,
+    },
     View {
         token: JoinCapability,
+        reply: oneshot::Sender<Result<Option<String>>>,
+    },
+    ViewAt {
+        token: JoinCapability,
+        width: u16,
+        height: u16,
         reply: oneshot::Sender<Result<Option<String>>>,
     },
     InstallProgram {
         module_hash: String,
         seed: u64,
+        provenance: Option<ModuleProvenance>,
         program: Box<dyn WorldProgram>,
         reply: oneshot::Sender<Result<WorldEvent>>,
     },
@@ -1637,6 +2101,20 @@ enum WorldCommand {
         grant: Vec<String>,
         revoke: Vec<String>,
         reply: oneshot::Sender<Result<CapsReport>>,
+    },
+    /// Admin: replace the world's capability ceiling. It applies immediately.
+    SetCapsCeiling {
+        ceiling: Vec<String>,
+        reply: oneshot::Sender<Result<CapsReport>>,
+    },
+    /// Admin: durably replace this world's requested runtime profile.
+    SetExecutionProfile {
+        profile: crate::world_limits::WorldExecutionProfile,
+        reply: oneshot::Sender<Result<ExecutionProfileUpdate>>,
+    },
+    /// Read this world's requested runtime profile.
+    ExecutionProfileInfo {
+        reply: oneshot::Sender<crate::world_limits::WorldExecutionProfile>,
     },
     /// Admin: read the capability report.
     CapsInfo {
@@ -1723,6 +2201,9 @@ struct WorldActor {
     denied_subs: BTreeSet<String>,
     /// Armed tick intervals to their next fire time.
     ticks: BTreeMap<u64, std::time::Instant>,
+    /// Restored schedules already overdue when the world opened. Their first
+    /// fire is marked `late`; a cancel or fire removes the id.
+    overdue_at_open: BTreeSet<String>,
     /// The participant whose input is being processed. Requests the program
     /// makes in response are checked against that participant's scopes.
     acting: Option<u64>,
@@ -1732,9 +2213,9 @@ impl WorldActor {
     async fn run(mut self, mut receiver: mpsc::Receiver<WorldCommand>) {
         self.after_change().await;
         loop {
-            // Ticks sleep until their earliest deadline; with none armed this
-            // branch never wakes.
-            let deadline = self.ticks.values().next().copied();
+            // Ticks and schedules sleep until their earliest deadline; with
+            // neither armed this branch never wakes.
+            let deadline = self.next_deadline();
             let command = tokio::select! {
                 command = receiver.recv() => match command {
                     Some(command) => command,
@@ -1742,6 +2223,7 @@ impl WorldActor {
                 },
                 () = Self::sleep_until(deadline) => {
                     self.fire_ticks().await;
+                    self.fire_schedules().await;
                     self.after_change().await;
                     continue;
                 }
@@ -1765,6 +2247,23 @@ impl WorldActor {
             }
             None => std::future::pending().await,
         }
+    }
+
+    /// The earliest moment the loop must wake: the soonest armed tick or
+    /// pending schedule. Schedules wait only while the program can take them.
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        let deliverable = self.program_healthy && !self.storage_failed;
+        self.ticks
+            .values()
+            .min()
+            .copied()
+            .into_iter()
+            .chain(next_schedule_wake(
+                &self.core.schedules,
+                unix_ms(),
+                deliverable,
+            ))
+            .min()
     }
 
     fn check_storage(&self) -> Result<()> {
@@ -1812,13 +2311,14 @@ impl WorldActor {
     /// Deliver a host-originated event to the program: journal it first is
     /// impossible (the program must accept it for the journal to be true), so
     /// the order is update, then journal, exactly like participant input.
-    async fn deliver(&mut self, text: String) {
+    /// Returns whether the program accepted the event and it was journaled.
+    async fn deliver(&mut self, text: String) -> bool {
         if !self.program_healthy || self.storage_failed {
-            return;
+            return false;
         }
         if text.len() > crate::world_caps::MAX_EVENT_BYTES {
             tracing::error!("world event exceeds the delivery bound; dropped");
-            return;
+            return false;
         }
         let event = WorldEvent {
             sequence: 0,
@@ -1828,7 +2328,7 @@ impl WorldActor {
         if let Err(error) = self.program.update(&event) {
             self.program_healthy = false;
             tracing::error!("world program rejected a host event: {error:#}");
-            return;
+            return false;
         }
         match program_records(self.program.as_mut()) {
             Ok(records) => {
@@ -1838,13 +2338,15 @@ impl WorldActor {
             Err(error) => {
                 self.program_healthy = false;
                 tracing::error!("world program records failed: {error:#}");
-                return;
+                return false;
             }
         }
-        if self.persist(JournalEntry::System { event }).is_ok() {
+        let journaled = self.persist(JournalEntry::System { event }).is_ok();
+        if journaled {
             self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
         }
         let _ = self.view_changed.send(self.core.sequence);
+        journaled
     }
 
     /// Recompute the program's `wants` and serve the delta: new subscriptions
@@ -1970,6 +2472,38 @@ impl WorldActor {
         }
     }
 
+    /// Fire the schedules that are due, earliest first, at most
+    /// [`crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP`] per wakeup. Each
+    /// fire is delivered as a tick is, and its schedule is consumed only after
+    /// that delivery is journaled. A refused fire, or one that could not be
+    /// journaled, leaves its schedule pending, so the next run delivers it.
+    async fn fire_schedules(&mut self) {
+        let now = unix_ms();
+        let mut due: Vec<(u64, String)> = self
+            .core
+            .schedules
+            .iter()
+            .filter(|(_, at_ms)| **at_ms <= now)
+            .map(|(id, at_ms)| (*at_ms, id.clone()))
+            .collect();
+        due.sort_unstable();
+        due.truncate(crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP);
+        for (_, id) in due {
+            let late = self.overdue_at_open.contains(&id);
+            if !self.deliver(schedule_fired_event(&id, late)).await {
+                break;
+            }
+            if self
+                .persist(JournalEntry::ScheduleFired { id: id.clone() })
+                .is_err()
+            {
+                break;
+            }
+            self.core.schedules.remove(&id);
+            self.overdue_at_open.remove(&id);
+        }
+    }
+
     /// Execute one capability request. Anything the world has not granted is
     /// an error the program sees.
     fn execute(&mut self, request: &Request) -> Result<serde_json::Value, CapError> {
@@ -1997,6 +2531,20 @@ impl WorldActor {
                 "sequence": self.core.sequence,
             })),
             "chat.say" => self.execute_chat(&request.args),
+            "chat.history" => Ok(serde_json::json!({
+                "lines": chat_history(
+                    &self.core.events,
+                    request
+                        .args
+                        .get("count")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(16)
+                        .min(crate::world_caps::MAX_CHAT_HISTORY_LINES as u64) as usize,
+                ),
+            })),
+            "records.read" => self.execute_records_read(&request.args),
+            "schedule.at" => self.execute_schedule_at(&request.args),
+            "schedule.cancel" => self.execute_schedule_cancel(&request.args),
             _ => Err(CapError::Unknown),
         }
     }
@@ -2013,6 +2561,49 @@ impl WorldActor {
                 })
             })
             .collect()
+    }
+
+    /// `records.read`: a byte-bounded, prefix-scoped page of the world's
+    /// published records, key-ordered with the same exclusive `after` cursor
+    /// the session protocol uses. Follow `next_after` while it is non-empty.
+    fn execute_records_read(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let records = self.records_sender.borrow().1.clone();
+        let prefix = args.get("prefix").and_then(serde_json::Value::as_str);
+        let after = args.get("after").and_then(serde_json::Value::as_str);
+        let mut page: Vec<serde_json::Value> = Vec::new();
+        let mut used = 0usize;
+        let mut last_included: Option<String> = None;
+        let mut more = false;
+        for (key, value) in records.iter() {
+            if let Some(prefix) = prefix
+                && !key.starts_with(prefix)
+            {
+                continue;
+            }
+            if let Some(after) = after
+                && key.as_str() <= after
+            {
+                continue;
+            }
+            let size = key.len() + serde_json::to_vec(value).map_or(0, |v| v.len()) + 8;
+            if used + size > crate::world_session::MAX_RECORDS_PAGE_BYTES {
+                if page.is_empty() {
+                    return Err(CapError::BadArgs);
+                }
+                more = true;
+                break;
+            }
+            used += size;
+            last_included = Some(key.clone());
+            page.push(serde_json::json!({"key": key, "value": value}));
+        }
+        Ok(serde_json::json!({
+            "records": page,
+            "next_after": more.then_some(last_included).flatten(),
+        }))
     }
 
     /// `chat.say` commits a host chat line; its result is the new sequence.
@@ -2035,6 +2626,65 @@ impl WorldActor {
             }
             Err(_) => Err(CapError::BadArgs),
         }
+    }
+
+    /// `schedule.at`: pend one fire of `id` at `at` (unix ms). The schedule is
+    /// journaled before the result is delivered. A refused request changes
+    /// nothing but the usage count.
+    fn execute_schedule_at(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let id = args
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::BadArgs)?;
+        let at_ms = args
+            .get("at")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(CapError::BadArgs)?;
+        if let Err(error) = self.core.check_schedule(id, at_ms, unix_ms()) {
+            tracing::debug!("world {}: schedule refused: {error:#}", self.core.world_id);
+            return Err(CapError::BadArgs);
+        }
+        if self
+            .persist(JournalEntry::ScheduleSet {
+                id: id.to_owned(),
+                at_ms,
+            })
+            .is_err()
+        {
+            return Err(CapError::Failed);
+        }
+        self.core.schedules.insert(id.to_owned(), at_ms);
+        Ok(serde_json::json!({"id": id, "fires_at": at_ms}))
+    }
+
+    /// `schedule.cancel`: drop a pending schedule before it fires. `cancelled`
+    /// is false when nothing by that id is pending.
+    fn execute_schedule_cancel(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let id = args
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::BadArgs)?;
+        if crate::world_caps::validate_schedule_id(id).is_err() {
+            return Err(CapError::BadArgs);
+        }
+        if !self.core.schedules.contains_key(id) {
+            return Ok(serde_json::json!({"cancelled": false}));
+        }
+        if self
+            .persist(JournalEntry::ScheduleCancelled { id: id.to_owned() })
+            .is_err()
+        {
+            return Err(CapError::Failed);
+        }
+        self.core.schedules.remove(id);
+        self.overdue_at_open.remove(id);
+        Ok(serde_json::json!({"cancelled": true}))
     }
 
     /// A participant opened or closed a session: presence transitions deliver
@@ -2173,6 +2823,36 @@ impl WorldActor {
         Ok(self.core.policy())
     }
 
+    /// Replace the world's capability ceiling. It takes effect now: uses and
+    /// subscriptions the ceiling excludes are refused from here on. Grants are
+    /// kept, so lifting the ceiling again restores them.
+    fn set_caps_ceiling(&mut self, ceiling: Vec<String>) -> Result<CapsReport> {
+        crate::world_caps::validate_ceiling_names(&ceiling)?;
+        let ceiling: BTreeSet<String> = ceiling.into_iter().collect();
+        self.persist(JournalEntry::CapsCeiling {
+            ceiling: ceiling.iter().cloned().collect(),
+        })?;
+        self.core.caps_ceiling = ceiling;
+        self.core.sync_ledger_ceiling();
+        self.reconcile_subscriptions();
+        self.caps_report()
+    }
+
+    /// Re-check subscriptions after an authority change. An armed one that is
+    /// no longer granted is dropped and its tick disarmed. Every refused one is
+    /// dropped too, so the next pass decides it again: a refusal that still
+    /// holds is announced again, and one the change now grants is armed.
+    fn reconcile_subscriptions(&mut self) {
+        let ledger = &self.core.ledger;
+        let refused = &self.denied_subs;
+        self.active_subs
+            .retain(|sub| !refused.contains(&sub.spec()) && ledger.is_granted(sub.cap()));
+        self.denied_subs.clear();
+        let active = &self.active_subs;
+        self.ticks
+            .retain(|ms, _| active.contains(&Subscription::Tick(*ms)));
+    }
+
     /// The capability report an admin sees.
     fn caps_report(&mut self) -> Result<CapsReport> {
         let requested = match self.program.wants() {
@@ -2183,9 +2863,10 @@ impl WorldActor {
             Err(_) => Vec::new(),
         };
         let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
+        let effective: Vec<String> = self.core.ledger.effective().into_iter().collect();
         let missing: Vec<String> = requested
             .iter()
-            .filter(|cap| !granted.contains(cap) && !granted.contains(&"*".to_owned()))
+            .filter(|cap| !effective.contains(cap))
             .cloned()
             .collect();
         Ok(CapsReport {
@@ -2197,8 +2878,14 @@ impl WorldActor {
                 "grant-on-use"
             } else {
                 "deny"
-            },
-            catalog: crate::world_caps::CATALOG.to_vec(),
+            }
+            .to_owned(),
+            catalog: crate::world_caps::CATALOG
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            ceiling: self.core.caps_ceiling.iter().cloned().collect(),
+            effective,
         })
     }
 
@@ -2372,6 +3059,13 @@ impl WorldActor {
             } => {
                 let _ = reply.send(self.core.events_after(&token, sequence));
             }
+            WorldCommand::ProjectEvent {
+                token,
+                event,
+                reply,
+            } => {
+                let _ = reply.send(self.core.project_for(&token, &event));
+            }
             WorldCommand::View { token, reply } => {
                 let result = match self.core.viewer(&token) {
                     Ok(viewer) if self.program_healthy => match self.program.view(&viewer) {
@@ -2402,9 +3096,47 @@ impl WorldActor {
                 };
                 let _ = reply.send(result);
             }
+            WorldCommand::ViewAt {
+                token,
+                width,
+                height,
+                reply,
+            } => {
+                let result = match self.core.viewer(&token) {
+                    Ok(viewer) if self.program_healthy => {
+                        match self.program.layout(&viewer, width, height) {
+                            Ok(view) => {
+                                if let Some(text) = &view {
+                                    if text.len() > self.core.limits.presentation_bytes {
+                                        self.program_healthy = false;
+                                        Err(anyhow::anyhow!(
+                                            "world presentation exceeds {} bytes",
+                                            self.core.limits.presentation_bytes
+                                        ))
+                                    } else {
+                                        Ok(view)
+                                    }
+                                } else {
+                                    Ok(None)
+                                }
+                            }
+                            Err(error) => {
+                                self.program_healthy = false;
+                                Err(error.context("world program layout failed"))
+                            }
+                        }
+                    }
+                    Ok(_) => Err(anyhow::anyhow!(
+                        "world program is unavailable after a previous failure"
+                    )),
+                    Err(error) => Err(error),
+                };
+                let _ = reply.send(result);
+            }
             WorldCommand::InstallProgram {
                 module_hash,
                 seed,
+                provenance,
                 program: mut replacement,
                 reply,
             } => {
@@ -2422,7 +3154,11 @@ impl WorldActor {
                 let candidate = WorldEvent {
                     sequence: self.core.sequence.saturating_add(1),
                     participant_id: 0,
-                    kind: WorldEventKind::ProgramInstalled { module_hash, seed },
+                    kind: WorldEventKind::ProgramInstalled {
+                        module_hash,
+                        seed,
+                        provenance: provenance.clone(),
+                    },
                 };
                 let result = self
                     .persist(JournalEntry::Committed {
@@ -2434,6 +3170,7 @@ impl WorldActor {
                         if let WorldEventKind::ProgramInstalled { module_hash, .. } = &event.kind {
                             self.core.active_module_hash = Some(module_hash.clone());
                         }
+                        self.core.active_module_provenance = provenance;
                         self.core.active_seed = seed;
                         self.program = replacement;
                         self.program_healthy = true;
@@ -2469,11 +3206,29 @@ impl WorldActor {
                         granted: granted.iter().cloned().collect(),
                     })?;
                     self.core.ledger.set_granted(granted);
-                    // A grant can unblock refused subscriptions on the spot.
-                    self.denied_subs.clear();
+                    self.reconcile_subscriptions();
                     self.caps_report()
                 })();
                 let _ = reply.send(result);
+            }
+            WorldCommand::SetCapsCeiling { ceiling, reply } => {
+                let result = self.set_caps_ceiling(ceiling);
+                let _ = reply.send(result);
+            }
+            WorldCommand::SetExecutionProfile { profile, reply } => {
+                let result = self
+                    .persist(JournalEntry::ExecutionProfile { profile })
+                    .map(|()| {
+                        self.core.execution_profile = profile;
+                        ExecutionProfileUpdate {
+                            requested: profile,
+                            applies_on_next_program_install_or_process_restart: true,
+                        }
+                    });
+                let _ = reply.send(result);
+            }
+            WorldCommand::ExecutionProfileInfo { reply } => {
+                let _ = reply.send(self.core.execution_profile);
             }
             WorldCommand::SetIsolation {
                 authority,
@@ -2543,13 +3298,6 @@ impl WorldActor {
     }
 }
 
-/// Milliseconds since the Unix epoch; 0 if the clock is before it.
-pub(crate) fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
-}
-
 impl WorldHandle {
     /// Spawn a world actor on the current Tokio runtime.
     pub fn spawn(core: WorldCore) -> Self {
@@ -2586,6 +3334,14 @@ impl WorldHandle {
             }
         };
         let (records_sender, records) = watch::channel((core.sequence, Arc::new(initial)));
+        // Schedules the journal left pending that are already due fire late.
+        let now = unix_ms();
+        let overdue_at_open: BTreeSet<String> = core
+            .schedules
+            .iter()
+            .filter(|(_, at_ms)| **at_ms <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
         let actor = WorldActor {
             core,
             program,
@@ -2602,6 +3358,7 @@ impl WorldHandle {
             handled_requests: BTreeSet::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
+            overdue_at_open,
             acting: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
         };
@@ -2628,7 +3385,10 @@ impl WorldHandle {
         self.records.clone()
     }
 
-    /// Subscribe to newly committed world events.
+    /// Subscribe to newly committed world events, as the host committed them:
+    /// unprojected, with chat and the real install seed. Whatever forwards
+    /// these to a participant must first pass each through
+    /// [`WorldHandle::project_event`].
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<WorldEvent> {
         self.events.subscribe()
@@ -2678,6 +3438,52 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped caps response")?
+    }
+
+    /// Replace this world's capability ceiling. It applies immediately to new
+    /// uses and active subscriptions; it does not rewrite the grants.
+    ///
+    /// # Errors
+    ///
+    /// Fails on `*`, on unknown names, or on world storage failure.
+    pub async fn set_caps_ceiling(&self, ceiling: Vec<String>) -> Result<CapsReport> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetCapsCeiling { ceiling, reply })
+            .await
+            .ok()
+            .context("world actor is closed")?;
+        response
+            .await
+            .context("world actor dropped caps ceiling response")?
+    }
+
+    /// Persist this world's requested resource profile. The current program
+    /// instance is deliberately left untouched.
+    pub async fn set_execution_profile(
+        &self,
+        profile: crate::world_limits::WorldExecutionProfile,
+    ) -> Result<ExecutionProfileUpdate> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::SetExecutionProfile { profile, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped execution profile response")?
+    }
+
+    /// Read this world's currently requested resource profile.
+    pub async fn execution_profile(&self) -> Result<crate::world_limits::WorldExecutionProfile> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ExecutionProfileInfo { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped execution profile")
     }
 
     /// Change the world's isolation.
@@ -3015,6 +3821,29 @@ impl WorldHandle {
             .context("world actor dropped snapshot response")?
     }
 
+    /// What the holder of `token` may see of a live `event` (from
+    /// [`WorldHandle::subscribe`]): `Ok(None)` if the event is not for this
+    /// viewer, `Err` if the capability no longer joins. Judged by the
+    /// viewer's scopes at this moment.
+    pub async fn project_event(
+        &self,
+        token: JoinCapability,
+        event: WorldEvent,
+    ) -> Result<Option<WorldEvent>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ProjectEvent {
+                token,
+                event,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped projection response")?
+    }
+
     /// Catch up from an event cursor, or learn that a new snapshot is needed.
     pub async fn events_after(&self, token: JoinCapability, sequence: u64) -> Result<EventPage> {
         let (reply, response) = oneshot::channel();
@@ -3044,6 +3873,29 @@ impl WorldHandle {
             .context("world actor dropped view response")?
     }
 
+    /// Render for one viewer at a viewport. Programs that cannot reflow fall
+    /// back to their fixed view, and rendering never advances the sequence.
+    pub async fn view_at(
+        &self,
+        token: JoinCapability,
+        width: u16,
+        height: u16,
+    ) -> Result<Option<String>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ViewAt {
+                token,
+                width,
+                height,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped layout response")?
+    }
+
     /// Atomically replace the active program and sequence a host-authored
     /// module-installed event. The new program is used after this command.
     pub async fn install_program(
@@ -3052,11 +3904,24 @@ impl WorldHandle {
         seed: u64,
         program: Box<dyn WorldProgram>,
     ) -> Result<WorldEvent> {
+        self.install_program_with_provenance(module_hash, seed, None, program)
+            .await
+    }
+
+    /// As [`Self::install_program`], preserving server-observed origin metadata.
+    pub async fn install_program_with_provenance(
+        &self,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
+        program: Box<dyn WorldProgram>,
+    ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::InstallProgram {
                 module_hash,
                 seed,
+                provenance,
                 program,
                 reply,
             })
@@ -3173,6 +4038,120 @@ mod tests {
             .unwrap()
     }
 
+    fn sample_source_provenance() -> ModuleProvenance {
+        ModuleProvenance::SourceBuild(SourceBuildProvenance {
+            schema_version: 1,
+            compiler_blake3: "compiler".to_owned(),
+            platform_blake3: "platform".to_owned(),
+            source_blake3: "source".to_owned(),
+            target: "wasm32".to_owned(),
+            arguments: vec!["build".to_owned(), "main.roc".to_owned()],
+        })
+    }
+
+    #[test]
+    fn provenance_is_optional_and_old_install_events_keep_their_wire_shape() {
+        let old = serde_json::json!({
+            "sequence": 1,
+            "participant_id": 0,
+            "kind": { "kind": "program_installed", "data": { "module_hash": "h", "seed": 3 } }
+        });
+        let parsed: WorldEvent = serde_json::from_value(old.clone()).unwrap();
+        assert!(matches!(
+            parsed.kind,
+            WorldEventKind::ProgramInstalled {
+                provenance: None,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), old);
+
+        let event = WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "h".to_owned(),
+                seed: 3,
+                provenance: Some(sample_source_provenance()),
+            },
+        };
+        let encoded = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            serde_json::from_value::<WorldEvent>(encoded).unwrap(),
+            event
+        );
+    }
+
+    #[test]
+    fn checkpoint_defaults_missing_provenance_and_round_trips_recorded_provenance() {
+        let old = serde_json::json!({
+            "entry": "checkpoint",
+            "sequence": 0,
+            "module_hash": "h",
+            "seed": 1,
+            "snapshot": "s",
+            "events": []
+        });
+        let parsed: JournalEntry = serde_json::from_value(old.clone()).unwrap();
+        assert!(matches!(
+            parsed,
+            JournalEntry::Checkpoint {
+                provenance: None,
+                execution_profile: None,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(parsed).unwrap(), old);
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                serde_json::from_value(old).unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            restored.core.execution_profile(),
+            crate::world_limits::WorldExecutionProfile::default()
+        );
+    }
+
+    #[test]
+    fn execution_profile_survives_checkpoint_compaction_and_restore() {
+        let profile = crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(1234),
+            native_cpu_seconds: Some(3),
+            ..Default::default()
+        };
+        let mut core = world(8);
+        core.execution_profile = profile;
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.execution_profile(), profile);
+    }
+
+    #[test]
+    fn recorded_provenance_survives_checkpoint_compaction_and_restore() {
+        let provenance = sample_source_provenance();
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.active_module_provenance = Some(provenance.clone());
+        core.active_seed = 7;
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.active_module_provenance,
+            Some(provenance.clone())
+        );
+        assert_eq!(restored.program.unwrap().provenance, Some(provenance));
+    }
+
     /// A program driven by numeric inputs: each input switches its `wants`
     /// script, and every host event is recorded. Request ids embed the input
     /// count, so re-sending an input asks again.
@@ -3225,6 +4204,13 @@ mod tests {
                     }],
                 }),
                 4 => serde_json::json!({"subscribe": ["time.tick:20"]}),
+                5 => serde_json::json!({
+                    "requests": [{
+                        "id": id("hist"),
+                        "cap": "chat.history",
+                        "args": {"count": 5},
+                    }],
+                }),
                 _ => serde_json::json!({}),
             };
             Ok(Some(document.to_string()))
@@ -3282,6 +4268,61 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline, "no answer recorded");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[test]
+    fn chat_history_returns_the_newest_lines_oldest_first() {
+        let mut core = world(16);
+        for (sequence, participant, text) in
+            [(1u64, 1u64, "first"), (2, 28, "second"), (3, 1, "third")]
+        {
+            core.events.push_back(WorldEvent {
+                sequence,
+                participant_id: participant,
+                kind: WorldEventKind::Chat(text.to_owned()),
+            });
+        }
+        let newest = chat_history(&core.events, 2);
+        assert_eq!(newest.len(), 2);
+        assert_eq!(newest[0]["text"], "second");
+        assert_eq!(newest[0]["sequence"], 2);
+        assert_eq!(newest[1]["text"], "third");
+        let all = chat_history(&core.events, 10);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0]["text"], "first");
+        assert_eq!(all[2]["text"], "third");
+        assert!(chat_history(&core.events, 0).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_granted_chat_history_request_is_served_over_the_ledger() {
+        let (world, token) = caps_world_sync(false).await;
+        world
+            .update_caps(
+                vec!["chat.say".to_owned(), "chat.history".to_owned()],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        // The program says one line first, then asks for the history.
+        world.input(token.clone(), b"3".to_vec()).await.unwrap();
+        world.input(token, b"5".to_vec()).await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let report = world.caps_report().await.unwrap();
+            if report
+                .usage
+                .get("chat.history")
+                .is_some_and(|use_| use_.allowed > 0)
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no history answer recorded: {report:?}"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
@@ -3713,6 +4754,236 @@ mod tests {
     }
 
     #[test]
+    fn a_caps_ceiling_replays_from_the_journal() {
+        let restored = WorldCore::restore(
+            "ceil",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "ceil".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                JournalEntry::CapsGranted {
+                    granted: vec!["time.now".to_owned(), "chat.say".to_owned()],
+                },
+                JournalEntry::CapsCeiling {
+                    ceiling: vec!["time.now".to_owned()],
+                },
+            ],
+        )
+        .unwrap();
+        assert!(restored.core.ledger.is_granted("time.now"));
+        assert!(!restored.core.ledger.is_granted("chat.say"));
+        assert!(
+            restored.core.ledger.granted().contains("chat.say"),
+            "the grant is kept"
+        );
+
+        let refused = WorldCore::restore(
+            "ceil",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "ceil".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                JournalEntry::CapsCeiling {
+                    ceiling: vec!["*".to_owned()],
+                },
+            ],
+        );
+        assert!(refused.is_err(), "a journaled ceiling may not use `*`");
+    }
+
+    #[test]
+    fn a_caps_ceiling_survives_checkpoint_compaction_and_restore() {
+        let mut core = world(8);
+        core.caps_ceiling = BTreeSet::from(["time.now".to_owned()]);
+        core.sync_ledger_ceiling();
+        core.ledger
+            .set_granted(BTreeSet::from(["chat.say".to_owned()]));
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::Checkpoint { caps_ceiling: Some(ceiling), .. }
+                if ceiling == &vec!["time.now".to_owned()]
+        )));
+        // The entry is what makes an older binary fail loudly on this journal.
+        assert!(entries.iter().any(|entry| matches!(
+            entry,
+            JournalEntry::CapsCeiling { ceiling } if ceiling == &vec!["time.now".to_owned()]
+        )));
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.ledger.allowed(),
+            &BTreeSet::from(["time.now".to_owned()])
+        );
+        assert!(!restored.core.ledger.is_granted("chat.say"));
+    }
+
+    #[test]
+    fn a_default_ceiling_is_not_written_and_old_journals_allow_the_whole_catalog() {
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(entries.iter().all(|entry| !matches!(
+            entry,
+            JournalEntry::Checkpoint {
+                caps_ceiling: Some(_),
+                ..
+            }
+        )));
+        let old = serde_json::json!({
+            "entry": "checkpoint",
+            "sequence": 0,
+            "module_hash": "h",
+            "seed": 1,
+            "snapshot": "s",
+            "events": []
+        });
+        let restored = WorldCore::restore(
+            "test-world",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "test-world".to_owned(),
+                    version: JOURNAL_VERSION,
+                },
+                serde_json::from_value(old).unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            restored.core.ledger.allowed(),
+            &crate::world_caps::catalog_names()
+        );
+    }
+
+    #[test]
+    fn the_server_ceiling_is_runtime_config_and_bounds_a_restored_grant() {
+        let entries = [
+            JournalEntry::Created {
+                world_id: "server".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::CapsGranted {
+                granted: vec!["time.now".to_owned(), "chat.say".to_owned()],
+            },
+        ];
+        let lower = WorldLimits {
+            server_caps: BTreeSet::from(["time.now".to_owned()]),
+            ..WorldLimits::default()
+        };
+        let restored = WorldCore::restore("server", lower, entries.clone()).unwrap();
+        assert!(restored.core.ledger.is_granted("time.now"));
+        assert!(!restored.core.ledger.is_granted("chat.say"));
+        assert!(restored.core.ledger.granted().contains("chat.say"));
+
+        // Nothing about the server ceiling was journaled, so the default
+        // server restores the grant.
+        let restored = WorldCore::restore("server", WorldLimits::default(), entries).unwrap();
+        assert!(restored.core.ledger.is_granted("chat.say"));
+    }
+
+    #[test]
+    fn a_server_ceiling_naming_a_wildcard_is_refused() {
+        let limits = WorldLimits {
+            server_caps: BTreeSet::from(["*".to_owned()]),
+            ..WorldLimits::default()
+        };
+        assert!(WorldCore::new("w", limits).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_ceiling_change_denies_a_use_that_a_prior_grant_allowed() {
+        let core = WorldCore::new("ceiling", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        world
+            .update_caps(vec!["chat.say".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        world.input(token.clone(), b"3".to_vec()).await.unwrap();
+        let usage = world.caps_report().await.unwrap().usage["chat.say"];
+        assert_eq!((usage.allowed, usage.denied), (1, 0));
+
+        let report = world
+            .set_caps_ceiling(vec!["time.now".to_owned()])
+            .await
+            .unwrap();
+        assert_eq!(report.ceiling, vec!["time.now".to_owned()]);
+        assert!(
+            report.granted.contains(&"chat.say".to_owned()),
+            "the grant is kept"
+        );
+        assert!(!report.effective.contains(&"chat.say".to_owned()));
+        world.input(token, b"3".to_vec()).await.unwrap();
+        let usage = world.caps_report().await.unwrap().usage["chat.say"];
+        assert_eq!((usage.allowed, usage.denied), (1, 1));
+
+        assert!(world.set_caps_ceiling(vec!["*".to_owned()]).await.is_err());
+        assert!(
+            world
+                .set_caps_ceiling(vec!["time.nwo".to_owned()])
+                .await
+                .is_err()
+        );
+        world.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn lowering_the_ceiling_stops_an_active_subscription_and_reports_it_refused() {
+        let core = WorldCore::new("ceiling-ticks", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        world
+            .update_caps(vec!["time.tick".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        world.presence(1, true).await;
+        let mut views = world.watch_views();
+        // Script 4 subscribes to `time.tick:20`, which arms it while someone is present.
+        world.input(token, b"4".to_vec()).await.unwrap();
+        views.borrow_and_update();
+        tokio::time::timeout(std::time::Duration::from_secs(2), views.changed())
+            .await
+            .expect("no tick arrived while the ceiling allowed it")
+            .unwrap();
+
+        world
+            .set_caps_ceiling(vec!["time.now".to_owned()])
+            .await
+            .unwrap();
+        let report = world.caps_report().await.unwrap();
+        assert!(
+            report
+                .usage
+                .get("time.tick")
+                .is_some_and(|usage| usage.denied > 0),
+            "{report:?}"
+        );
+        assert!(!report.effective.contains(&"time.tick".to_owned()));
+        // The refusal reached the program before this report; no tick follows.
+        views.borrow_and_update();
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert!(
+            views.has_changed().is_ok_and(|changed| !changed),
+            "ticks kept firing after the ceiling dropped them"
+        );
+
+        // Lifting the ceiling admits the refused subscription again.
+        let full: Vec<String> = crate::world_caps::catalog_names().into_iter().collect();
+        world.set_caps_ceiling(full).await.unwrap();
+        views.borrow_and_update();
+        tokio::time::timeout(std::time::Duration::from_secs(2), views.changed())
+            .await
+            .expect("ticks did not resume once the ceiling allowed them")
+            .unwrap();
+        world.shutdown().await.unwrap();
+    }
+
+    #[test]
     fn capability_scopes_isolate_actions() {
         let mut core = world(8);
         let (_, token) = join(&mut core, "Guest");
@@ -3725,6 +4996,17 @@ mod tests {
         assert!(core.snapshot(&join_only).is_ok());
         assert!(core.chat(&join_only, "no").is_err());
         assert!(core.input(&join_only, b"no").is_err());
+    }
+
+    #[test]
+    fn chat_is_rate_limited_per_participant_within_a_ten_second_window() {
+        let mut core = world(64);
+        let (_, token) = join(&mut core, "Guest");
+        for index in 0..CHAT_RATE_BURST {
+            core.chat(&token, &format!("message {index}")).unwrap();
+        }
+        assert!(core.chat(&token, "one too many").is_err());
+        assert_eq!(core.current_sequence(), u64::from(CHAT_RATE_BURST));
     }
 
     fn in_an_hour() -> u64 {
@@ -4127,6 +5409,43 @@ mod tests {
     }
 
     #[test]
+    fn role_presets_grant_and_withhold_the_expected_effects() {
+        let spectator = WorldScopes::from_role("spectator").unwrap();
+        assert!(spectator.allows_effect("time.now"));
+        assert!(!spectator.allows_effect("chat.say"));
+        assert!(!spectator.allows_effect("chat.history"));
+        assert!(!spectator.reads_chat());
+        assert!(spectator.attenuate(WorldScopes::INPUT).is_none());
+
+        // An observer reads chat, through the stream and `chat.history`
+        // alike, and still cannot send it or act.
+        let observer = WorldScopes::from_role("observer").unwrap();
+        assert!(observer.reads_chat());
+        assert!(observer.allows_effect("chat.history"));
+        assert!(!observer.allows_effect("chat.say"));
+        assert!(!observer.contains(WorldScopes::INPUT));
+
+        let player = WorldScopes::from_role("player").unwrap();
+        assert!(player.contains(WorldScopes::INPUT));
+        assert!(!player.contains(WorldScopes::CHAT));
+        assert!(!player.contains(WorldScopes::DELEGATE));
+
+        let guest = WorldScopes::from_role("guest").unwrap();
+        assert_eq!(guest, WorldScopes::GUEST);
+        assert!(guest.allows_effect("chat.say"));
+
+        let delegator = WorldScopes::from_role("delegator").unwrap();
+        assert!(delegator.contains(WorldScopes::DELEGATE));
+        assert!(delegator.attenuate(WorldScopes::JOIN).is_some());
+
+        assert_eq!(WorldScopes::from_role("builder"), None);
+        assert_eq!(
+            WorldScopes::ROLES,
+            &["spectator", "observer", "player", "guest", "delegator"]
+        );
+    }
+
+    #[test]
     fn attenuation_only_narrows_and_needs_delegate() {
         let join = WorldScopes::JOIN;
         let delegator = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
@@ -4155,8 +5474,10 @@ mod tests {
         );
         assert_eq!(WorldScopes::from_names(["join", "telepathy"]), None);
         assert!(WorldScopes::GUEST.allows_effect("chat.say"));
+        assert!(WorldScopes::GUEST.allows_effect("chat.history"));
         let spectator = WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::INPUT.bits());
         assert!(!spectator.allows_effect("chat.say"));
+        assert!(!spectator.allows_effect("chat.history"));
         assert!(spectator.allows_effect("time.now"));
     }
 
@@ -4337,6 +5658,385 @@ mod tests {
     }
 
     #[test]
+    fn join_projections_redact_the_install_seed_but_the_journal_keeps_it() {
+        // Issue #240: the install seed was serialized to every joiner via
+        // `events_after` and the snapshot. The journal (and the admin paths
+        // fed from it) must keep the real seed; join projections must not.
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "test-world".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::Committed {
+                event: WorldEvent {
+                    sequence: 1,
+                    participant_id: 0,
+                    kind: WorldEventKind::ProgramInstalled {
+                        module_hash: "ab".repeat(32),
+                        seed: 424_242,
+                        provenance: None,
+                    },
+                },
+            },
+        ];
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.program.as_ref().map(|program| program.seed),
+            Some(424_242),
+            "the journal restore path keeps the real seed for the admin"
+        );
+        let mut core = restored.core;
+        assert_eq!(core.active_seed, 424_242, "the core keeps the real seed");
+        let (_, token) = join(&mut core, "Ada");
+        let page = core.events_after(&token, 0).unwrap();
+        assert_eq!(page.events.len(), 1);
+        assert!(
+            matches!(
+                &page.events[0].kind,
+                WorldEventKind::ProgramInstalled { module_hash, seed, .. }
+                    if module_hash == &"ab".repeat(32) && *seed == 0
+            ),
+            "events_after must keep the module hash but redact the seed: {:?}",
+            page.events[0].kind
+        );
+        assert!(
+            !format!("{page:?}").contains("424242"),
+            "events_after leaked the install seed"
+        );
+        let snapshot = core.snapshot(&token).unwrap();
+        assert_eq!(snapshot.events.len(), 1);
+        assert!(
+            !serde_json::to_string(&snapshot).unwrap().contains("424242"),
+            "the snapshot leaked the install seed"
+        );
+    }
+
+    fn scoped(core: &mut WorldCore, name: &str, names: &[&str]) -> JoinCapability {
+        let scopes = WorldScopes::from_names(names.iter().copied()).unwrap();
+        core.issue_capability(name, scopes, CapabilityBounds::default())
+            .unwrap()
+            .1
+    }
+
+    fn chat_texts(events: &[WorldEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                WorldEventKind::Chat(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Chat line, input, chat line, input: sequences 1..=4.
+    fn talk(core: &mut WorldCore, speaker: &JoinCapability) {
+        core.chat(speaker, "one").unwrap();
+        core.input(speaker, b"a").unwrap();
+        core.chat(speaker, "two").unwrap();
+        core.input(speaker, b"b").unwrap();
+    }
+
+    #[test]
+    fn chat_visibility_follows_the_viewers_scopes() {
+        let mut core = world(16);
+        let (_, speaker) = join(&mut core, "Ada");
+        let watcher = scoped(&mut core, "watch", &["join"]);
+        let reader = scoped(&mut core, "read", &["join", "history"]);
+        talk(&mut core, &speaker);
+
+        let sequences = |events: &[WorldEvent]| -> Vec<u64> {
+            events.iter().map(|event| event.sequence).collect()
+        };
+        for (token, sees_chat) in [(&speaker, true), (&reader, true), (&watcher, false)] {
+            let page = core.events_after(token, 0).unwrap();
+            let snapshot = core.snapshot(token).unwrap();
+            for events in [&page.events, &snapshot.events] {
+                let (lines, kept): (Vec<&str>, Vec<u64>) = if sees_chat {
+                    (vec!["one", "two"], vec![1, 2, 3, 4])
+                } else {
+                    (Vec::new(), vec![2, 4])
+                };
+                assert_eq!(chat_texts(events), lines);
+                assert_eq!(sequences(events), kept, "non-chat events are kept");
+            }
+        }
+    }
+
+    #[test]
+    fn chat_visibility_history_reads_without_sending() {
+        let mut core = world(16);
+        let (_, speaker) = join(&mut core, "Ada");
+        let reader = scoped(&mut core, "read", &["join", "history"]);
+        core.chat(&speaker, "hello").unwrap();
+        assert!(core.chat(&reader, "hi").is_err(), "history does not send");
+        assert!(core.input(&reader, b"a").is_err());
+        assert_eq!(
+            chat_texts(&core.events_after(&reader, 0).unwrap().events),
+            ["hello"]
+        );
+        assert_eq!(core.current_sequence(), 1, "a refused line commits nothing");
+    }
+
+    #[test]
+    fn chat_visibility_cursors_advance_across_gaps() {
+        let mut core = world(16);
+        let (_, speaker) = join(&mut core, "Ada");
+        let watcher = scoped(&mut core, "watch", &["join"]);
+        core.chat(&speaker, "one").unwrap();
+        core.chat(&speaker, "two").unwrap();
+
+        // Only chat so far: nothing to show, yet the cursor moves to the end
+        // and retention is judged on the world, not the viewer.
+        let page = core.events_after(&watcher, 0).unwrap();
+        assert!(page.events.is_empty());
+        assert!(!page.needs_snapshot);
+        assert_eq!(page.current_sequence, 2);
+        assert_eq!(page.oldest_retained_sequence, 1);
+        let again = core.events_after(&watcher, page.current_sequence).unwrap();
+        assert!(again.events.is_empty() && !again.needs_snapshot);
+
+        core.chat(&speaker, "three").unwrap();
+        core.input(&speaker, b"a").unwrap();
+        let page = core.events_after(&watcher, page.current_sequence).unwrap();
+        assert_eq!(
+            page.events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+            [4]
+        );
+        // Resuming from the last sequence it was given, across the gap, misses
+        // nothing and repeats nothing.
+        let last = page.events[0].sequence;
+        core.input(&speaker, b"b").unwrap();
+        let page = core.events_after(&watcher, last).unwrap();
+        assert_eq!(
+            page.events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+            [5]
+        );
+    }
+
+    #[test]
+    fn chat_visibility_retention_does_not_depend_on_the_viewer() {
+        let mut core = world(3);
+        let (_, speaker) = join(&mut core, "Ada");
+        let watcher = scoped(&mut core, "watch", &["join"]);
+        for line in ["one", "two", "three", "four"] {
+            core.chat(&speaker, line).unwrap();
+        }
+        // Sequences 1..=4 committed; 2..=4 retained, all of them chat.
+        let page = core.events_after(&watcher, 0).unwrap();
+        assert!(page.needs_snapshot, "the cursor fell behind retention");
+        assert_eq!(page.oldest_retained_sequence, 2);
+        let snapshot = core.snapshot(&watcher).unwrap();
+        assert!(snapshot.events.is_empty());
+        assert_eq!(snapshot.current_sequence, 4);
+        assert_eq!(snapshot.oldest_retained_sequence, 5, "carries no events");
+    }
+
+    #[test]
+    fn chat_visibility_the_snapshot_budget_counts_only_what_it_carries() {
+        let mut core = WorldCore::new(
+            "budget",
+            WorldLimits {
+                snapshot_bytes: 400,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap();
+        let (_, speaker) = join(&mut core, "Ada");
+        let watcher = scoped(&mut core, "watch", &["join"]);
+        core.input(&speaker, b"a").unwrap();
+        core.input(&speaker, b"b").unwrap();
+        for _ in 0..20 {
+            core.chat(&speaker, &"x".repeat(100)).unwrap();
+        }
+        let guest = core.snapshot(&speaker).unwrap();
+        assert!(
+            guest.events.len() < 22
+                && guest
+                    .events
+                    .iter()
+                    .all(|e| matches!(e.kind, WorldEventKind::Chat(_))),
+            "chat fills the budget for a viewer who sees it"
+        );
+        let snapshot = core.snapshot(&watcher).unwrap();
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .map(|e| e.sequence)
+                .collect::<Vec<_>>(),
+            [1, 2],
+            "withheld chat spends none of the budget"
+        );
+        assert_eq!(snapshot.oldest_retained_sequence, 1);
+    }
+
+    #[test]
+    fn chat_visibility_the_install_seed_stays_secret_for_every_scope() {
+        let event = WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "ab".repeat(32),
+                seed: 424_242,
+                provenance: None,
+            },
+        };
+        for scopes in [WorldScopes::JOIN, WorldScopes::GUEST, WorldScopes::ALL] {
+            let shown = project_event_for(scopes, &event).unwrap();
+            assert_eq!(
+                shown.kind,
+                WorldEventKind::ProgramInstalled {
+                    module_hash: "ab".repeat(32),
+                    seed: 0,
+                    provenance: None,
+                }
+            );
+        }
+        let chat = WorldEvent {
+            sequence: 2,
+            participant_id: 1,
+            kind: WorldEventKind::Chat("hi".to_owned()),
+        };
+        assert_eq!(project_event_for(WorldScopes::JOIN, &chat), None);
+        assert_eq!(
+            project_event_for(WorldScopes::CHAT, &chat),
+            Some(chat.clone())
+        );
+        assert_eq!(project_event_for(WorldScopes::HISTORY, &chat), Some(chat));
+    }
+
+    #[tokio::test]
+    async fn chat_visibility_the_live_stream_is_projected_per_viewer() {
+        let core = world(16);
+        let world = WorldHandle::spawn(core);
+        let (_, guest) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        let (_, watcher) = world.issue("watch", WorldScopes::JOIN).await.unwrap();
+        let mut live = world.subscribe();
+
+        world.chat(guest.clone(), "secret").await.unwrap();
+        world
+            .install_program(
+                "cd".repeat(32),
+                424_242,
+                Box::new(Counter {
+                    count: 0,
+                    bad: false,
+                }),
+            )
+            .await
+            .unwrap();
+
+        let chat = live.recv().await.unwrap();
+        let install = live.recv().await.unwrap();
+        // The raw stream is the host's: it carries the line and the real seed.
+        assert_eq!(chat_texts(std::slice::from_ref(&chat)), ["secret"]);
+        assert!(matches!(
+            install.kind,
+            WorldEventKind::ProgramInstalled { seed: 424_242, .. }
+        ));
+
+        // What a participant may be sent is the projection.
+        assert_eq!(
+            world
+                .project_event(watcher.clone(), chat.clone())
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            world
+                .project_event(guest.clone(), chat.clone())
+                .await
+                .unwrap(),
+            Some(chat)
+        );
+        for token in [&guest, &watcher] {
+            let shown = world
+                .project_event(token.clone(), install.clone())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(shown.kind, WorldEventKind::ProgramInstalled { seed: 0, .. }),
+                "{shown:?}"
+            );
+        }
+        // A revoked participant is an error, so its session ends.
+        let (revoked, gone) = world.issue("gone", WorldScopes::JOIN).await.unwrap();
+        assert!(world.revoke(revoked.id).await.unwrap());
+        assert!(world.project_event(gone, install).await.is_err());
+    }
+
+    #[test]
+    fn chat_visibility_scope_names_attenuation_and_chains() {
+        assert_eq!(
+            WorldScopes::from_names(["history"]),
+            Some(WorldScopes::HISTORY)
+        );
+        assert_eq!(WorldScopes::HISTORY.bits(), 0b1_0000);
+        assert_eq!(WorldScopes::from_names(["join", "telepathy"]), None);
+        assert_eq!(WorldScopes::from_bits(0b1_0000), Some(WorldScopes::HISTORY));
+        assert_eq!(WorldScopes::from_bits(0b10_0000), None);
+
+        let join_history = WorldScopes::JOIN.union(WorldScopes::HISTORY);
+        let chat_delegator = WorldScopes::GUEST.union(WorldScopes::DELEGATE);
+        let history_delegator = join_history.union(WorldScopes::DELEGATE);
+        // A reader delegates what it holds and no more; chat includes history.
+        assert_eq!(
+            history_delegator.attenuate(join_history),
+            Some(join_history)
+        );
+        assert_eq!(
+            history_delegator.attenuate(WorldScopes::JOIN),
+            Some(WorldScopes::JOIN)
+        );
+        assert!(history_delegator.attenuate(WorldScopes::GUEST).is_none());
+        assert!(
+            history_delegator
+                .attenuate(WorldScopes::JOIN.union(WorldScopes::CHAT))
+                .is_none(),
+            "reading does not include sending"
+        );
+        assert_eq!(chat_delegator.attenuate(join_history), Some(join_history));
+        assert!(
+            WorldScopes::GUEST.attenuate(join_history).is_none(),
+            "no delegate"
+        );
+        assert!(WorldScopes::GUEST.reads_chat() && join_history.reads_chat());
+        assert!(!WorldScopes::JOIN.union(WorldScopes::INPUT).reads_chat());
+        assert!(WorldScopes::ALL.contains(WorldScopes::HISTORY));
+    }
+
+    #[test]
+    fn chat_visibility_a_guest_can_hand_out_a_read_only_link() {
+        let mut core = world(16);
+        let owner = scoped(&mut core, "owner", &["join", "chat", "input", "delegate"]);
+        let (_, reader) = core
+            .attenuate(
+                &owner,
+                WorldScopes::JOIN.union(WorldScopes::HISTORY),
+                CapabilityBounds::default(),
+                "reader",
+            )
+            .unwrap();
+        let (_, watcher) = core
+            .attenuate(
+                &owner,
+                WorldScopes::JOIN,
+                CapabilityBounds::default(),
+                "watch",
+            )
+            .unwrap();
+        core.chat(&owner, "hello").unwrap();
+        assert_eq!(
+            chat_texts(&core.snapshot(&reader).unwrap().events),
+            ["hello"]
+        );
+        assert!(chat_texts(&core.snapshot(&watcher).unwrap().events).is_empty());
+        assert!(core.chat(&reader, "hi").is_err());
+    }
+
+    #[test]
     fn snapshots_do_not_include_capability_secret() {
         let mut core = world(8);
         let (participant, token) = join(&mut core, "Ada");
@@ -4384,6 +6084,105 @@ mod tests {
             } else {
                 format!("{{\"count\":{}}}", self.count)
             }))
+        }
+    }
+
+    #[tokio::test]
+    async fn records_read_returns_a_bounded_prefix_scoped_page() {
+        struct ReaderProgram {
+            asks: u64,
+            read_key: String,
+        }
+        impl WorldProgram for ReaderProgram {
+            fn update(&mut self, event: &WorldEvent) -> Result<()> {
+                match &event.kind {
+                    WorldEventKind::Input(bytes) => {
+                        if bytes.as_slice() == b"read" {
+                            self.asks += 1;
+                        }
+                    }
+                    WorldEventKind::System { event } => {
+                        let value: serde_json::Value =
+                            serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                        if value["cap"] == "result"
+                            && let Some(key) = value["value"]["records"][0]["key"].as_str()
+                        {
+                            self.read_key = key.to_owned();
+                        }
+                    }
+                    WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                }
+                Ok(())
+            }
+
+            fn records(&mut self) -> Result<Option<String>> {
+                Ok(Some(
+                    serde_json::json!({
+                        "count": self.asks,
+                        "read": self.read_key,
+                    })
+                    .to_string(),
+                ))
+            }
+
+            fn wants(&mut self) -> Result<Option<String>> {
+                if self.asks == 0 {
+                    return Ok(Some("{}".to_owned()));
+                }
+                Ok(Some(
+                    serde_json::json!({
+                        "requests": [{
+                            "id": format!("read-{}", self.asks),
+                            "cap": "records.read",
+                            "args": {"prefix": "co", "after": ""},
+                        }],
+                    })
+                    .to_string(),
+                ))
+            }
+        }
+
+        let world = WorldHandle::spawn_with_program(
+            world(16),
+            Box::new(ReaderProgram {
+                asks: 0,
+                read_key: String::new(),
+            }),
+        );
+        let (_, ann) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+
+        // Ungranted: the request is refused and counted.
+        world.input(ann.clone(), b"read".to_vec()).await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let report = world.caps_report().await.unwrap();
+            if report
+                .usage
+                .get("records.read")
+                .is_some_and(|use_| use_.denied > 0)
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no refusal recorded");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        // Granted: the program reads its own published `count` record.
+        world
+            .update_caps(vec!["records.read".to_owned()], Vec::new())
+            .await
+            .unwrap();
+        world.input(ann, b"read".to_vec()).await.unwrap();
+        loop {
+            let record = world.records().1["read"].as_str().unwrap_or("").to_owned();
+            if record == "count" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the program never read its record: {record:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 
@@ -4593,6 +6392,31 @@ mod account_tests {
         core.directory_mut()
             .accept_friend(b_credential, a, &world, 2)
             .unwrap();
+    }
+
+    #[test]
+    fn a_ceiling_that_allows_chat_allows_reading_it() {
+        let mut core = core();
+        let (_, ann_credential) = account(&mut core, "Ann");
+        let (_, guest) = core
+            .issue_for_account(
+                &ann_credential,
+                WorldScopes::GUEST,
+                CapabilityBounds::default(),
+                "Ann",
+            )
+            .unwrap();
+        let (_, reader) = core
+            .issue_for_account(
+                &ann_credential,
+                WorldScopes::JOIN.union(WorldScopes::HISTORY),
+                CapabilityBounds::default(),
+                "Ann reads",
+            )
+            .unwrap();
+        core.chat(&guest, "hello").unwrap();
+        assert_eq!(core.snapshot(&reader).unwrap().events.len(), 1);
+        assert!(core.chat(&reader, "hi").is_err());
     }
 
     #[test]
@@ -5111,5 +6935,662 @@ mod isolation_tests {
             let restored = WorldCore::restore("share", WorldLimits::default(), entries).unwrap();
             assert_eq!(restored.core.policy(), core.policy());
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod schedule_tests {
+    use super::*;
+
+    fn world(retained_events: usize) -> WorldCore {
+        WorldCore::new(
+            "test-world",
+            WorldLimits {
+                retained_events,
+                ..WorldLimits::default()
+            },
+        )
+        .unwrap()
+    }
+
+    /// A program for the schedule tests. Each input is a request document, and
+    /// the program asks for its requests until each one's result arrives. Its
+    /// records carry every schedule fire and every result, so a test reads them
+    /// through `WorldHandle::records`.
+    #[derive(Default)]
+    struct Scheduler {
+        requests: Vec<serde_json::Value>,
+        answered: BTreeSet<String>,
+        results: BTreeMap<String, serde_json::Value>,
+        fires: Vec<serde_json::Value>,
+        refuse_fires: bool,
+    }
+
+    impl WorldProgram for Scheduler {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            match &event.kind {
+                WorldEventKind::Input(bytes) => {
+                    let document: serde_json::Value = serde_json::from_slice(bytes)?;
+                    self.requests = document["requests"].as_array().cloned().unwrap_or_default();
+                }
+                WorldEventKind::System { event: text } => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+                        return Ok(());
+                    };
+                    match value["cap"].as_str() {
+                        Some("result") => {
+                            if let Some(id) = value["id"].as_str() {
+                                self.answered.insert(id.to_owned());
+                                self.results.insert(id.to_owned(), value.clone());
+                            }
+                        }
+                        Some("schedule") => {
+                            if self.refuse_fires {
+                                bail!("this program refuses schedule fires");
+                            }
+                            self.fires.push(value.clone());
+                        }
+                        _ => {}
+                    }
+                }
+                WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let pending: Vec<&serde_json::Value> = self
+                .requests
+                .iter()
+                .filter(|request| {
+                    !request["id"]
+                        .as_str()
+                        .is_some_and(|id| self.answered.contains(id))
+                })
+                .collect();
+            Ok(Some(
+                serde_json::json!({"v": 1, "requests": pending}).to_string(),
+            ))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"fired": self.fires, "results": self.results}).to_string(),
+            ))
+        }
+    }
+
+    /// A journal kept in memory, so a test can restore from what was written.
+    #[derive(Clone, Default)]
+    struct Recorded(Arc<std::sync::Mutex<Vec<JournalEntry>>>);
+
+    impl Recorded {
+        /// A journal that starts with the header a real world writes first.
+        fn for_world(world_id: &str) -> Self {
+            let journal = Self::default();
+            journal.0.lock().unwrap().push(JournalEntry::Created {
+                world_id: world_id.to_owned(),
+                version: JOURNAL_VERSION,
+            });
+            journal
+        }
+
+        fn entries(&self) -> Vec<JournalEntry> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl WorldJournal for Recorded {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            self.0.lock().unwrap().push(entry.clone());
+            Ok(())
+        }
+    }
+
+    /// A journaled world running a `Scheduler`, with one participant and the
+    /// given grants.
+    async fn scheduling_world(
+        id: &str,
+        grants: &[&str],
+        refuse_fires: bool,
+    ) -> (WorldHandle, JoinCapability, Recorded) {
+        let journal = Recorded::for_world(id);
+        let core = WorldCore::new(id, WorldLimits::default()).unwrap();
+        let program = Scheduler {
+            refuse_fires,
+            ..Scheduler::default()
+        };
+        let world =
+            WorldHandle::spawn_durable(core, Box::new(program), Some(Box::new(journal.clone())));
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        if !grants.is_empty() {
+            world
+                .update_caps(
+                    grants.iter().map(|grant| (*grant).to_owned()).collect(),
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+        }
+        (world, token, journal)
+    }
+
+    /// Send one request document to the program as a participant's input.
+    async fn ask(world: &WorldHandle, token: &JoinCapability, document: serde_json::Value) {
+        world
+            .input(token.clone(), document.to_string().into_bytes())
+            .await
+            .unwrap();
+    }
+
+    /// The schedule fire events the program has received so far.
+    fn schedule_fires(world: &WorldHandle) -> Vec<serde_json::Value> {
+        world
+            .records()
+            .1
+            .get("fired")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The result event the program received for request `id`, if any.
+    fn schedule_result(world: &WorldHandle, id: &str) -> Option<serde_json::Value> {
+        world
+            .records()
+            .1
+            .get("results")
+            .and_then(|results| results.get(id))
+            .cloned()
+    }
+
+    /// Poll until `ready` holds, failing after three seconds.
+    async fn eventually(what: &str, mut ready: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !ready() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[test]
+    fn schedule_bounds_refuse_each_violation_with_a_reason() {
+        let now = 1_000_000_000_000u64;
+        let horizon = crate::world_caps::MAX_SCHEDULE_HORIZON_MS;
+        let mut core = world(8);
+        assert!(core.check_schedule("ok", now, now).is_ok());
+        assert!(core.check_schedule(&"x".repeat(64), now, now).is_ok());
+        let long = "x".repeat(65);
+        for bad in ["", "tab\there", long.as_str()] {
+            let error = core.check_schedule(bad, now, now).unwrap_err();
+            assert!(error.to_string().contains("schedule id"), "{error}");
+        }
+
+        core.schedules.insert("taken".to_owned(), now + 5);
+        let error = core.check_schedule("taken", now + 9, now).unwrap_err();
+        assert!(error.to_string().contains("already pending"), "{error}");
+        assert_eq!(
+            core.schedules["taken"],
+            now + 5,
+            "a duplicate overwrites nothing"
+        );
+
+        assert!(core.check_schedule("edge", now + horizon, now).is_ok());
+        let error = core
+            .check_schedule("far", now + horizon + 1, now)
+            .unwrap_err();
+        assert!(error.to_string().contains("days past"), "{error}");
+        assert!(core.check_schedule("past", 0, now).is_ok());
+
+        let mut full = world(8);
+        for index in 0..crate::world_caps::MAX_PENDING_SCHEDULES - 1 {
+            full.schedules.insert(format!("s{index}"), now);
+        }
+        assert!(full.check_schedule("last", now, now).is_ok());
+        full.schedules.insert("last".to_owned(), now);
+        let error = full.check_schedule("one-more", now, now).unwrap_err();
+        assert!(error.to_string().contains("pending schedules"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_schedule_is_refused_and_counted() {
+        let (world, token, journal) = scheduling_world("sched-refused", &[], false).await;
+        ask(
+            &world,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "s1", "cap": "schedule.at", "args": {"id": "nap", "at": unix_ms() + 60_000}},
+            ]}),
+        )
+        .await;
+        eventually("the refusal", || schedule_result(&world, "s1").is_some()).await;
+        assert_eq!(
+            schedule_result(&world, "s1").unwrap()["error"],
+            "cap_denied"
+        );
+        let report = world.caps_report().await.unwrap();
+        assert!(report.usage["schedule.at"].denied > 0, "{report:?}");
+        world.shutdown().await.unwrap();
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::ScheduleSet { .. })),
+            "a refused request pends nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_due_schedule_fires_once_and_the_program_receives_it() {
+        let (world, token, journal) = scheduling_world("sched-fire", &["schedule.at"], false).await;
+        ask(
+            &world,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "s1", "cap": "schedule.at", "args": {"id": "now", "at": unix_ms()}},
+            ]}),
+        )
+        .await;
+        eventually("the fire", || !schedule_fires(&world).is_empty()).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let fires = schedule_fires(&world);
+        assert_eq!(fires.len(), 1, "{fires:?}");
+        assert_eq!(fires[0]["id"], "now");
+        assert!(
+            fires[0].get("late").is_none(),
+            "a fire in this run is not late"
+        );
+        world.shutdown().await.unwrap();
+
+        let entries = journal.entries();
+        let fire = WorldEventKind::System {
+            event: schedule_fired_event("now", false),
+        };
+        let delivered = entries
+            .iter()
+            .position(|entry| matches!(entry, JournalEntry::System { event } if event.kind == fire))
+            .expect("the fire is journaled as delivered");
+        let consumed = entries
+            .iter()
+            .position(|entry| matches!(entry, JournalEntry::ScheduleFired { id } if id == "now"))
+            .expect("the schedule is consumed");
+        assert!(delivered < consumed, "the delivery is journaled first");
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::ScheduleFired { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_schedule_never_fires_and_an_unknown_id_says_false() {
+        let (world, token, _journal) =
+            scheduling_world("sched-cancel", &["schedule.at", "schedule.cancel"], false).await;
+        let at = unix_ms();
+        // One pass: the cancel runs before any timer can fire the schedule.
+        ask(
+            &world,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "s1", "cap": "schedule.at", "args": {"id": "soon", "at": at}},
+                {"id": "c1", "cap": "schedule.cancel", "args": {"id": "soon"}},
+                {"id": "c2", "cap": "schedule.cancel", "args": {"id": "ghost"}},
+            ]}),
+        )
+        .await;
+        eventually("the cancel results", || {
+            schedule_result(&world, "c2").is_some()
+        })
+        .await;
+        assert_eq!(
+            schedule_result(&world, "s1").unwrap()["value"]["fires_at"],
+            at
+        );
+        assert_eq!(
+            schedule_result(&world, "c1").unwrap()["value"]["cancelled"],
+            true
+        );
+        assert_eq!(
+            schedule_result(&world, "c2").unwrap()["value"]["cancelled"],
+            false
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            schedule_fires(&world).is_empty(),
+            "a cancelled schedule must not fire"
+        );
+        world.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn refused_schedule_requests_pend_nothing() {
+        let (world, token, journal) =
+            scheduling_world("sched-bad", &["schedule.at", "schedule.cancel"], false).await;
+        let later = unix_ms() + 3_600_000;
+        let far = unix_ms() + crate::world_caps::MAX_SCHEDULE_HORIZON_MS + 60_000;
+        let long_id = "x".repeat(65);
+        ask(
+            &world,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "ok", "cap": "schedule.at", "args": {"id": "kept", "at": later}},
+                {"id": "empty", "cap": "schedule.at", "args": {"id": "", "at": later}},
+                {"id": "long", "cap": "schedule.at", "args": {"id": long_id, "at": later}},
+                {"id": "far", "cap": "schedule.at", "args": {"id": "far", "at": far}},
+                {"id": "dup", "cap": "schedule.at", "args": {"id": "kept", "at": later}},
+                {"id": "missing", "cap": "schedule.at", "args": {"id": "nothing"}},
+                {"id": "text", "cap": "schedule.at", "args": {"id": "t", "at": "soon"}},
+                {"id": "bad-cancel", "cap": "schedule.cancel", "args": {"id": "a\nb"}},
+            ]}),
+        )
+        .await;
+        eventually("the last result", || {
+            schedule_result(&world, "bad-cancel").is_some()
+        })
+        .await;
+        assert_eq!(schedule_result(&world, "ok").unwrap()["ok"], true);
+        for id in [
+            "empty",
+            "long",
+            "far",
+            "dup",
+            "missing",
+            "text",
+            "bad-cancel",
+        ] {
+            assert_eq!(
+                schedule_result(&world, id).unwrap()["error"],
+                "bad_args",
+                "{id}"
+            );
+        }
+        world.shutdown().await.unwrap();
+        let pended: Vec<String> = journal
+            .entries()
+            .into_iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::ScheduleSet { id, .. } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pended, ["kept"], "only the accepted request is journaled");
+    }
+
+    #[tokio::test]
+    async fn a_fire_the_program_refuses_stays_pending_in_the_journal() {
+        let (world, token, journal) =
+            scheduling_world("sched-refuse", &["schedule.at"], true).await;
+        ask(
+            &world,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "s1", "cap": "schedule.at", "args": {"id": "stuck", "at": unix_ms()}},
+            ]}),
+        )
+        .await;
+        eventually("the request result", || {
+            schedule_result(&world, "s1").is_some()
+        })
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // The program is unavailable now, but the actor still answers.
+        assert!(world.caps_report().await.is_ok());
+        world.shutdown().await.unwrap();
+
+        let entries = journal.entries();
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, JournalEntry::ScheduleFired { .. })),
+            "a refused fire is not consumed"
+        );
+        let journaled_fire = entries.iter().any(|entry| match entry {
+            JournalEntry::System { event } => matches!(
+                &event.kind,
+                WorldEventKind::System { event } if event.contains("\"schedule\"")
+            ),
+            _ => false,
+        });
+        assert!(!journaled_fire, "a refused fire is not journaled");
+        let restored = WorldCore::restore("sched-refuse", WorldLimits::default(), entries).unwrap();
+        assert!(
+            restored.core.schedules.contains_key("stuck"),
+            "the next run delivers it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_schedule_overdue_at_restart_fires_late_on_the_first_wakeup() {
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "sched-late".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::ScheduleSet {
+                id: "overdue".to_owned(),
+                at_ms: unix_ms() - 5_000,
+            },
+        ];
+        let restored = WorldCore::restore("sched-late", WorldLimits::default(), entries).unwrap();
+        let journal = Recorded::default();
+        let world = WorldHandle::spawn_durable(
+            restored.core,
+            Box::new(Scheduler::default()),
+            Some(Box::new(journal.clone())),
+        );
+        eventually("the late fire", || !schedule_fires(&world).is_empty()).await;
+        let fires = schedule_fires(&world);
+        assert_eq!(fires.len(), 1, "{fires:?}");
+        assert_eq!(fires[0]["id"], "overdue");
+        assert_eq!(fires[0]["late"], true);
+        world.shutdown().await.unwrap();
+        assert!(
+            journal.entries().iter().any(
+                |entry| matches!(entry, JournalEntry::ScheduleFired { id } if id == "overdue")
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pending_schedule_survives_a_restart_and_fires_on_time() {
+        let at_ms = unix_ms() + 700;
+        let entries = vec![
+            JournalEntry::Created {
+                world_id: "sched-later".to_owned(),
+                version: JOURNAL_VERSION,
+            },
+            JournalEntry::ScheduleSet {
+                id: "later".to_owned(),
+                at_ms,
+            },
+        ];
+        let restored = WorldCore::restore("sched-later", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.schedules.get("later"), Some(&at_ms));
+        let world = WorldHandle::spawn_durable(restored.core, Box::new(Scheduler::default()), None);
+        assert!(schedule_fires(&world).is_empty(), "not due yet");
+        eventually("the scheduled fire", || !schedule_fires(&world).is_empty()).await;
+        let fires = schedule_fires(&world);
+        assert_eq!(fires[0]["id"], "later");
+        assert!(fires[0].get("late").is_none(), "it was not overdue at open");
+        world.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replay_reproduces_the_pending_and_fired_sets() {
+        let (world, token, journal) =
+            scheduling_world("sched-replay", &["schedule.at", "schedule.cancel"], false).await;
+        ask(
+            &world,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "s1", "cap": "schedule.at", "args": {"id": "keep", "at": unix_ms() + 3_600_000}},
+                {"id": "s2", "cap": "schedule.at", "args": {"id": "now", "at": unix_ms()}},
+                {"id": "s3", "cap": "schedule.at", "args": {"id": "gone", "at": unix_ms() + 3_600_000}},
+                {"id": "c3", "cap": "schedule.cancel", "args": {"id": "gone"}},
+            ]}),
+        )
+        .await;
+        eventually("the fire and the cancel", || {
+            !schedule_fires(&world).is_empty() && schedule_result(&world, "c3").is_some()
+        })
+        .await;
+        let live_fired: Vec<String> = schedule_fires(&world)
+            .iter()
+            .filter_map(|fire| fire["id"].as_str().map(str::to_owned))
+            .collect();
+        world.shutdown().await.unwrap();
+
+        let restored =
+            WorldCore::restore("sched-replay", WorldLimits::default(), journal.entries()).unwrap();
+        let pending: Vec<String> = restored.core.schedules.keys().cloned().collect();
+        assert_eq!(pending, ["keep"]);
+        let replayed_fired: Vec<String> = restored
+            .replay
+            .iter()
+            .filter_map(|event| match &event.kind {
+                WorldEventKind::System { event } => {
+                    serde_json::from_str::<serde_json::Value>(event)
+                        .ok()
+                        .filter(|value| value["cap"] == "schedule")
+                        .and_then(|value| value["id"].as_str().map(str::to_owned))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(live_fired, ["now"]);
+        assert_eq!(replayed_fired, live_fired);
+    }
+
+    #[test]
+    fn a_checkpoint_keeps_pending_schedules_and_writes_their_entries() {
+        let now = unix_ms();
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.schedules.insert("a".to_owned(), now + 100);
+        core.schedules.insert("b".to_owned(), now + 200);
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        for (id, at_ms) in [("a", now + 100), ("b", now + 200)] {
+            let set = JournalEntry::ScheduleSet {
+                id: id.to_owned(),
+                at_ms,
+            };
+            assert!(
+                entries.contains(&set),
+                "a compacted journal keeps the schedule {id}"
+            );
+        }
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.schedules, core.schedules);
+    }
+
+    #[test]
+    fn a_checkpoint_that_disagrees_with_its_schedule_entries_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        let set = || JournalEntry::ScheduleSet {
+            id: "a".to_owned(),
+            at_ms: 5,
+        };
+        let checkpoint = |schedules: Option<Vec<(String, u64)>>| JournalEntry::Checkpoint {
+            sequence: 0,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules,
+            snapshot: "s".to_owned(),
+            events: Vec::new(),
+        };
+        let agreed = [header(), set(), checkpoint(Some(vec![("a".to_owned(), 5)]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), agreed).is_ok());
+        let omitted = [header(), set(), checkpoint(None)];
+        assert!(WorldCore::restore("w", WorldLimits::default(), omitted).is_err());
+        let unwritten = [header(), checkpoint(Some(vec![("a".to_owned(), 5)]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), unwritten).is_err());
+        let duplicated = [
+            header(),
+            set(),
+            checkpoint(Some(vec![("a".to_owned(), 5), ("a".to_owned(), 5)])),
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), duplicated).is_err());
+    }
+
+    #[test]
+    fn a_schedule_entry_must_refer_to_a_pending_schedule() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION,
+        };
+        let fired = [header(), JournalEntry::ScheduleFired { id: "x".to_owned() }];
+        assert!(WorldCore::restore("w", WorldLimits::default(), fired).is_err());
+        let cancelled = [
+            header(),
+            JournalEntry::ScheduleCancelled { id: "x".to_owned() },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), cancelled).is_err());
+        let twice = [
+            header(),
+            JournalEntry::ScheduleSet {
+                id: "x".to_owned(),
+                at_ms: 1,
+            },
+            JournalEntry::ScheduleSet {
+                id: "x".to_owned(),
+                at_ms: 2,
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), twice).is_err());
+        let malformed = [
+            header(),
+            JournalEntry::ScheduleSet {
+                id: "a\nb".to_owned(),
+                at_ms: 1,
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), malformed).is_err());
+    }
+
+    #[test]
+    fn schedules_wake_the_loop_only_while_the_program_can_take_them() {
+        let mut schedules = BTreeMap::new();
+        schedules.insert("a".to_owned(), 2_000u64);
+        assert!(next_schedule_wake(&schedules, 1_000, true).is_some());
+        assert!(
+            next_schedule_wake(&schedules, 3_000, true).is_some(),
+            "an overdue schedule wakes the loop now"
+        );
+        assert!(
+            next_schedule_wake(&schedules, 3_000, false).is_none(),
+            "a program that refuses fires never wakes the loop for one"
+        );
+        assert!(next_schedule_wake(&BTreeMap::new(), 1_000, true).is_none());
+    }
+
+    #[test]
+    fn schedule_entries_keep_their_journal_tags() {
+        let set = serde_json::to_value(JournalEntry::ScheduleSet {
+            id: "a".to_owned(),
+            at_ms: 7,
+        })
+        .unwrap();
+        assert_eq!(
+            set,
+            serde_json::json!({"entry": "schedule_set", "id": "a", "at_ms": 7})
+        );
+        let cancelled =
+            serde_json::to_value(JournalEntry::ScheduleCancelled { id: "a".to_owned() }).unwrap();
+        assert_eq!(cancelled["entry"], "schedule_cancelled");
+        let fired =
+            serde_json::to_value(JournalEntry::ScheduleFired { id: "a".to_owned() }).unwrap();
+        assert_eq!(fired["entry"], "schedule_fired");
     }
 }

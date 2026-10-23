@@ -68,8 +68,8 @@ fi
 
 # Drop the snapshot if it is identical to the previous one. `latest` is a
 # symlink, so exclude it when looking for the prior directory.
-PREV="$(find "$ROOT" -mindepth 1 -maxdepth 1 -type d -not -name "$STAMP" -printf '%f\n' \
-  | sort | tail -n1 || true)"
+PREV="$(find "$ROOT" -mindepth 1 -maxdepth 1 -type d -not -name "$STAMP" -printf '%f\n' |
+  sort | tail -n1 || true)"
 
 if [ -n "$PREV" ] && diff -rq "$ROOT/$PREV" "$DEST" >/dev/null 2>&1; then
   rm -rf "$DEST"

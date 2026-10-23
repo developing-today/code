@@ -159,6 +159,7 @@ async fn main() -> Result<()> {
             no_default_topic,
             replace_defaults,
             no_mdns,
+            dht,
             iroh_port,
             bind,
             web_token,
@@ -179,9 +180,11 @@ async fn main() -> Result<()> {
             world_boot_window_secs,
             world_caps,
             world_cap_policy,
+            world_allowed_caps,
             roc_bin,
             roc_platform,
             world_native,
+            world_source_only,
             world_runtime,
             allow_node,
             open_writes,
@@ -199,6 +202,7 @@ async fn main() -> Result<()> {
                 no_default_topic,
                 replace_defaults,
                 no_mdns,
+                dht,
                 iroh_port,
                 bind,
                 web_token,
@@ -219,9 +223,11 @@ async fn main() -> Result<()> {
                 world_boot_window_secs,
                 world_caps,
                 world_cap_policy,
+                world_allowed_caps,
                 roc_bin,
                 roc_platform,
                 world_native,
+                world_source_only,
                 world_runtime,
                 allow_node,
                 open_writes,
@@ -276,7 +282,7 @@ async fn main() -> Result<()> {
             id::commands::cmd_claim(cli.event_store, json, command).await
         }
         #[cfg(feature = "world")]
-        Some(Command::World(world_cmd)) => id::commands::cmd_world(world_cmd).await,
+        Some(Command::World(world_cmd)) => id::commands::cmd_world(*world_cmd).await,
         #[cfg(not(feature = "world"))]
         Some(Command::World(_)) => anyhow::bail!("this build has no world support"),
         Some(Command::MigrateTags) => cmd_migrate_tags().await,

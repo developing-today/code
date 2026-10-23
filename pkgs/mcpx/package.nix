@@ -29,12 +29,7 @@ buildGo127Module {
       let
         base = baseNameOf path;
       in
-      !(
-        base == "bin"
-        || base == "result"
-        || lib.hasPrefix "result-" base
-        || base == "mcpx-client.ts"
-      );
+      !(base == "bin" || base == "result" || lib.hasPrefix "result-" base || base == "mcpx-client.ts");
   };
 
   # Five direct Go dependencies.
@@ -92,6 +87,13 @@ buildGo127Module {
   # so a new one is tested by default, minus checkExclude below. Each entry in
   # checkExclude needs a comment on the line above it saying why it cannot run
   # in the sandbox; internal/buildcheck enforces both.
+  # The exact `go test -timeout 30m $pkgs` line in the checkPhase below is
+  # load-bearing downstream (#418): dezren39/nix's flake.nix rewrites that
+  # line to add its darwin takeover/handoff -skip list. That rewrite now
+  # fails loudly there (a throw plus the mcpx-darwin-skip flake check and a
+  # CI eval step) when the line stops matching, but changing the line here
+  # still requires updating the pattern in dezren39/nix's flake.nix in the
+  # same change set, or its next mcpx-src pin bump will fail evaluation.
   doCheck = true;
   # The runner and e2e suites spawn real scripts, so they get the same runtimes
   # the wrapper pins.
@@ -114,9 +116,17 @@ buildGo127Module {
       export HOME=$TMPDIR/home MCPX_STATE_DIR=$TMPDIR/state MCPX_CACHE_DIR=$TMPDIR/cache
       mkdir -p "$HOME"
       pkgs=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... \
-        | grep -vxF -e "" ${lib.concatMapStringsSep " " (p: "-e github.com/dezren39/mcpx/${p}") checkExclude})
+        | grep -vxF -e "" ${
+          lib.concatMapStringsSep " " (p: "-e github.com/dezren39/mcpx/${p}") checkExclude
+        })
       echo "testing $(echo "$pkgs" | wc -l) packages: $pkgs"
-      go test $pkgs
+      # Go's default per-package timeout is 10m. On a 2-CPU machine the
+      # internal/e2e package was still making progress when that cap killed
+      # it, which failed the whole mcpx build and blocked the packages that
+      # depend on it (dezren39/nix#510). The timeout is per package, so one
+      # explicit 30m budget covers e2e without sharding the suite; the
+      # other packages finish far under it.
+      go test -timeout 30m $pkgs
       runHook postCheck
     '';
 

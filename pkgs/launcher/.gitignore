@@ -7,3 +7,5 @@ badger
 **/badger/
 
 dist/
+
+/launcher

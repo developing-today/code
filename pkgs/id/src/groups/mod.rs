@@ -18,6 +18,7 @@ pub mod fold;
 pub mod friendship;
 pub mod log;
 pub mod policy;
+pub mod warnings;
 pub mod worlds;
 
 mod delegation;
@@ -30,11 +31,17 @@ use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 
 pub use delegation::Grant;
-pub use fold::{FoldError, GroupView, Outcome, Projection, Refusal, fold};
+pub use fold::{DeviceGrant, FoldError, GroupView, Outcome, Projection, Refusal, fold};
 pub use friendship::{Pair, friendship_id};
 pub use policy::{
     Delegation, History, Join, OnMemberRemoved, Policy, Removal, RoleRules, Scheme, Template,
 };
+
+/// The kind of a `device.add` event (P8.3).
+pub const DEVICE_ADD_KIND: &str = "device.add";
+
+/// The kind of a `device.revoke` event (P8.3).
+pub const DEVICE_REVOKE_KIND: &str = "device.revoke";
 
 /// A grant of a scope from the event's author to another account (design §7.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +122,27 @@ pub enum Body {
         /// The grant's event ID.
         #[serde(with = "log::wire::hash")]
         grant: Hash,
+    },
+    /// Authorizes or revokes a device on behalf of the account (P8.3).
+    Device(DeviceOp),
+}
+
+/// What a device operation does (P8.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeviceOp {
+    /// Authorizes a device key to act on behalf of the account with the given scope.
+    Add {
+        /// The device key.
+        #[serde(with = "log::wire::key")]
+        device: Key,
+        /// The maximum scope the device may exercise.
+        scope: Role,
+    },
+    /// Revokes a device's authorization to act on behalf of the account.
+    Revoke {
+        /// The device key.
+        #[serde(with = "log::wire::key")]
+        device: Key,
     },
 }
 

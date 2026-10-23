@@ -8,7 +8,7 @@
 #   . lib/bitwarden-env.sh
 
 is_sourced() {
-  [[ "${BASH_SOURCE[0]}" != "${0}" ]]
+  [[ ${BASH_SOURCE[0]} != "${0}" ]]
 }
 
 if ! is_sourced; then

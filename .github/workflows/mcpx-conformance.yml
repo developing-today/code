@@ -45,7 +45,7 @@ env:
   #
   # 2024-11-05: mcpx serves it; the conformance suite has never tested it.
   SPEC_PARITY_ALLOW_ONLY_MCPX: '["2024-11-05"]'
-  SPEC_PARITY_ALLOW_ONLY_SUITE: '[]'
+  SPEC_PARITY_ALLOW_ONLY_SUITE: "[]"
   # The suite commit these results are measured against. Bump deliberately: a new suite commit can
   # add checks, which moves every number.
   CONFORMANCE_REPO: modelcontextprotocol/conformance
@@ -345,11 +345,12 @@ jobs:
     needs: leg
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
           sparse-checkout: pkgs/mcpx/scripts
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v7
         with:
           pattern: counts-*
           path: counts

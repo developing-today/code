@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Paths resolves the on-disk locations mcpx uses.
@@ -176,10 +178,20 @@ func privateRuntimeDir() (string, error) {
 // places stay separate.
 //
 // "Different places" means different files, not different spellings of one.
-// Each path is resolved through symlinks first: /tmp is a symlink to
-// /private/tmp on macOS, and a process whose $PWD holds the unresolved form
-// -- a shell, an editor, the opencode plugin -- otherwise computed a second
-// key for the same file, reported no daemon running, and started another.
+// Each path's *directory* is resolved through symlinks first: /tmp is a
+// symlink to /private/tmp on macOS, and a process whose $PWD holds the
+// unresolved form -- a shell, an editor, the opencode plugin -- otherwise
+// computed a second key for the same file, reported no daemon running, and
+// started another.
+//
+// The file's own link is deliberately NOT resolved (#368). A nix or
+// home-manager config is a symlink whose target is content-addressed, so
+// resolving it made the key follow the target: every content change moved
+// the socket, the running daemon became unreachable, and the CLI started a
+// second one, which the first then fought over the new socket name. The
+// path the user names -- directory resolved, file name as given -- is the
+// stable identity; content changes behind the link are the content
+// fingerprint's and the watch stamp's job, not the key's.
 //
 // The *contents* used to be in the key as well, so that editing a config got
 // a fresh daemon rather than a stale one. That stopped being a good trade the
@@ -193,13 +205,21 @@ func privateRuntimeDir() (string, error) {
 //
 // So the key is the file set, and staleness is handled where it belongs: the
 // daemon notices its files changed and re-reads them.
+// keyPath is the identity a config path contributes to a fingerprint: its
+// directory resolved through symlinks, its file name as given. See
+// FingerprintConfig for why the file's own link is not resolved.
+func keyPath(p string) string {
+	dir := filepath.Dir(p)
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	return filepath.Join(dir, filepath.Base(p))
+}
+
 func FingerprintConfig(paths []string) string {
 	h := sha256.New()
 	for _, p := range paths {
-		if real, err := filepath.EvalSymlinks(p); err == nil {
-			p = real
-		}
-		h.Write([]byte(p))
+		h.Write([]byte(keyPath(p)))
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
@@ -208,14 +228,14 @@ func FingerprintConfig(paths []string) string {
 // ContentFingerprint hashes what the config files currently say.
 //
 // Not the daemon key -- that is the file set -- but the thing the daemon
-// compares against to notice somebody edited one behind its back.
+// compares against to notice somebody edited one behind its back. The path
+// hashed is the same keyPath the daemon key uses, so re-pointing a config
+// symlink at identical content is not a content change, while different
+// content behind the same link is.
 func ContentFingerprint(paths []string) string {
 	h := sha256.New()
 	for _, p := range paths {
-		if real, err := filepath.EvalSymlinks(p); err == nil {
-			p = real
-		}
-		h.Write([]byte(p))
+		h.Write([]byte(keyPath(p)))
 		h.Write([]byte{0})
 		if b, err := os.ReadFile(p); err == nil {
 			h.Write(b)
@@ -223,6 +243,136 @@ func ContentFingerprint(paths []string) string {
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+// DefaultStateDir is the state directory a daemon uses when nobody asked
+// for another one: XDG_STATE_HOME/mcpx, or ~/.local/state/mcpx. It ignores
+// MCPX_STATE_DIR and paths.state on purpose -- it is the one location every
+// invocation can compute, which is what makes it usable as the place custom
+// state directories mirror their daemon records into (#278).
+func DefaultStateDir() string {
+	home, _ := os.UserHomeDir()
+	return firstNonEmpty(
+		envJoin("XDG_STATE_HOME", "mcpx"),
+		filepath.Join(home, ".local", "state", "mcpx"),
+	)
+}
+
+// envStateDir is the state directory MCPX_STATE_DIR names, or "" when it
+// is not set. ResolvePaths honours it before the XDG location, so a daemon
+// whose state directory is this one is a default daemon -- the plain
+// invocation's daemon -- not a custom-state one (#305).
+func envStateDir() string {
+	return os.Getenv("MCPX_STATE_DIR")
+}
+
+// DaemonSearchDirs is where `mcpx daemons` looks for daemon records: the
+// caller's own state directory, plus the default one. A daemon started
+// with its own state directory mirrors its record into the default
+// directory (see WriteInfo), so the second entry is what makes the listing
+// cover the whole machine rather than only the caller's directory.
+//
+// The MCPX_STATE_DIR directory is searched too (#305): it is where a plain
+// invocation's daemon lives when the variable is set, and a caller whose
+// own state came from a config file or a flag would otherwise never see
+// that daemon, mirror or no mirror.
+func DaemonSearchDirs(primary string) []string {
+	out := []string{primary}
+	for _, d := range []string{DefaultStateDir(), envStateDir()} {
+		if d == "" {
+			continue
+		}
+		seen := false
+		for _, have := range out {
+			if have == d {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// ProcessAlive reports whether pid names a process that still exists.
+// Signal 0 probes without delivering anything; EPERM means the process is
+// there but owned by somebody else, which is still alive.
+func ProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = proc.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// PruneStale removes this state directory's daemon records whose process
+// is gone, and returns what it removed. A daemon that exits cleanly
+// removes its own record; one that is killed or crashes cannot, and
+// without pruning its record is listed forever (#278). Records with no
+// PID recorded are kept: there is nothing to check them against.
+func (p Paths) PruneStale() []Info {
+	entries, err := os.ReadDir(p.State)
+	if err != nil {
+		return nil
+	}
+	var out []Info
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "daemon") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		path := filepath.Join(p.State, name)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var i Info
+		if json.Unmarshal(b, &i) != nil || i.PID == 0 || ProcessAlive(i.PID) {
+			continue
+		}
+		if err := os.Remove(path); err == nil {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// mirrorInfoPath is where a daemon in a custom state directory also
+// publishes its record: the default state directory, under a name keyed
+// by its own directory so two custom directories cannot collide and a
+// custom record cannot shadow the default directory's own daemon for the
+// same configuration. Empty when this directory is the default one --
+// the XDG location, or the MCPX_STATE_DIR location a plain invocation
+// resolves to (#305). Mirroring the env-default daemon would leak a
+// sandboxed daemon's record into the real default directory, where a
+// non-sandboxed listing could see it and stop it.
+func (p Paths) mirrorInfoPath() string {
+	def := DefaultStateDir()
+	if def == "" || p.State == "" || p.State == def || p.Info == "" {
+		return ""
+	}
+	if env := envStateDir(); env != "" && p.State == env {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(p.State))
+	return filepath.Join(def, "daemon-x"+hex.EncodeToString(sum[:])[:12]+"-"+filepath.Base(p.Info))
+}
+
+// RemoveInfo removes the daemon record, including its mirror in the
+// default state directory when there is one.
+func (p Paths) RemoveInfo() {
+	if p.Info != "" {
+		_ = os.Remove(p.Info)
+	}
+	if m := p.mirrorInfoPath(); m != "" {
+		_ = os.Remove(m)
+	}
 }
 
 // ListDaemons returns the info records of every daemon in this state dir.
@@ -281,6 +431,13 @@ type Info struct {
 }
 
 // WriteInfo publishes the daemon record atomically.
+//
+// A daemon in a custom state directory also mirrors the record into the
+// default state directory (#278): `mcpx daemons` promises every daemon on
+// the machine, and a listing that only reads the caller's own directory
+// can never see it. The mirror is best-effort -- the primary record is
+// authoritative, and a daemon must not fail to start because a listing
+// convenience could not be written.
 func (p Paths) WriteInfo(i Info) error {
 	b, err := json.MarshalIndent(i, "", "  ")
 	if err != nil {
@@ -290,7 +447,18 @@ func (p Paths) WriteInfo(i Info) error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, p.Info)
+	if err := os.Rename(tmp, p.Info); err != nil {
+		return err
+	}
+	if m := p.mirrorInfoPath(); m != "" {
+		if err := os.MkdirAll(filepath.Dir(m), 0o700); err == nil {
+			mtmp := m + ".tmp"
+			if os.WriteFile(mtmp, b, 0o600) == nil {
+				_ = os.Rename(mtmp, m)
+			}
+		}
+	}
+	return nil
 }
 
 // ReadInfo loads the daemon record, if any.

@@ -1,4 +1,4 @@
-module database
+module github.com/developing-today/code/src/database
 
 go 1.21.3
 

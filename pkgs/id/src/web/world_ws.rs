@@ -646,7 +646,7 @@ mod tests {
     }
 
     fn signed_directory_request(key: &SigningKey, nonce: &str, body: &str) -> Request<Body> {
-        let at = crate::world::unix_ms();
+        let at = crate::time::unix_ms();
         let signed = sign_request(
             key,
             "POST",
@@ -750,7 +750,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "id-mail-http-{}-{}",
             std::process::id(),
-            crate::world::unix_ms()
+            crate::time::unix_ms()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let service = WorldService::new(lobby(), None).with_mail(std::sync::Arc::new(
@@ -1138,6 +1138,114 @@ mod tests {
             .unwrap();
         assert_eq!(next_frame(&mut player).await.unwrap()["type"], "event");
         assert_eq!(next_frame(&mut player).await.unwrap()["data"], "count=1");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn browser_websocket_can_compile_install_and_run_roc_sources() {
+        use iroh_blobs::store::mem::MemStore;
+        use std::path::PathBuf;
+
+        let roc_bin = std::env::var("ID_ROC_BIN").ok().or_else(|| {
+            std::process::Command::new("roc")
+                .arg("version")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|_| "roc".to_owned())
+        });
+        let Some(roc_bin) = roc_bin else {
+            eprintln!("skipping: no Roc compiler available (set ID_ROC_BIN or install roc)");
+            return;
+        };
+        let platform_dir =
+            PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/roc-world"));
+        if !platform_dir.join("targets/wasm32/host.wasm").is_file() {
+            eprintln!(
+                "skipping: Roc world platform assets unavailable (run examples/roc-world/build-host.sh)"
+            );
+            return;
+        }
+        let compiler = crate::world_compile::Compiler::new(platform_dir, roc_bin).unwrap();
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/roc-counter/main.roc"
+        ))
+        .unwrap();
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let blobs: iroh_blobs::api::Store = MemStore::new().into();
+        let service = WorldService::new(world.clone(), Some("admin".to_owned()))
+            .with_blob_store(blobs.clone())
+            .with_compiler(compiler)
+            .with_source_only(true);
+        let addr = serve(world_routes().with_state(WorldWebState {
+            hub: Some(WorldHub::single(service)),
+            cookie_secure: false,
+        }))
+        .await;
+        let (mut uploader, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/world"))
+            .await
+            .unwrap();
+        uploader
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "type": "compile",
+                    "admin_token": "admin",
+                    "files": [{ "name": "main.roc", "content": source }],
+                    "seed": 99,
+                    "native": false,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let compiled = next_frame(&mut uploader).await.unwrap();
+        assert_eq!(compiled["type"], "compiled", "{compiled}");
+        let hash: iroh_blobs::Hash = compiled["module_hash"].as_str().unwrap().parse().unwrap();
+        assert!(blobs.blobs().has(hash).await.unwrap());
+
+        let (_, capability) = world
+            .issue("browser".to_owned(), crate::world::WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let mut player = connect(addr, join(&capability, None)).await;
+        assert_eq!(next_frame(&mut player).await.unwrap()["type"], "snapshot");
+        assert_eq!(next_frame(&mut player).await.unwrap()["data"], "count=0");
+        player
+            .send(ClientMessage::Text(
+                r#"{"type":"input","data_hex":"696e63"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(next_frame(&mut player).await.unwrap()["type"], "event");
+        assert_eq!(next_frame(&mut player).await.unwrap()["data"], "count=1");
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn browser_websocket_rejects_roc_compile_without_admin_auth() {
+        let addr = serve(app(Some(lobby()), Some("admin"))).await;
+        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/world"))
+            .await
+            .unwrap();
+        client
+            .send(ClientMessage::Text(
+                serde_json::json!({
+                    "type": "compile",
+                    "admin_token": "wrong",
+                    "files": [{ "name": "main.roc", "content": "app [main!] { pf: platform \"x\" }" }],
+                    "seed": 1,
+                    "native": false,
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let denied = next_frame(&mut client).await.unwrap();
+        assert_eq!(denied["type"], "error");
+        assert_eq!(denied["message"], "compile denied");
     }
 
     #[tokio::test]

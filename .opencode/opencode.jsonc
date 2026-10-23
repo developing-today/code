@@ -1,6 +1,9 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": true,
+  "disabled_providers": [
+    "antigravity-agy"
+  ],
   "default": "claude-code/claude-haiku-5-5",
   "provider": {
     "claude-code": {
@@ -445,6 +448,30 @@
           "limit": {
             "context": 256000,
             "output": 256000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        "@cf/deepseek-ai/deepseek-v4.1-flash-1017": {
+          "name": "Deepseek V4.1 Flash 1017",
+          "limit": {
+            "context": 1048576,
+            "output": 1048576
           },
           "variants": {
             "low": {
@@ -1840,6 +1867,25 @@
               }
             }
           }
+        },
+        "gemini-4-argon": {
+          "name": "Gemini 4 Argon",
+          "limit": {
+            "context": 1048576,
+            "output": 32768
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
         }
       }
     },
@@ -1847,7 +1893,10 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity CLI (via agy)",
       "options": {
-        "baseURL": "http://127.0.0.1:18743/v1",
+        // Port comes from AGY_PROXY_PORT (set by home config from the
+        // same single definition the agy-proxy service binds) — never
+        // hardcode a port here; see the openai-codex provider note.
+        "baseURL": "http://127.0.0.1:{env:AGY_PROXY_PORT:-18743}/v1",
         "apiKey": "agy-local"
       },
       "models": {
@@ -1922,14 +1971,18 @@
             "context": 1000000,
             "output": 64000
           }
-        },
+        }
       }
     },
     "antigravity-ls": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity Language Server (Direct gRPC/ConnectRPC)",
       "options": {
-        "baseURL": "http://127.0.0.1:18745/v1",
+        // Port comes from ANTIGRAVITY_LS_PROXY_PORT (set by home config
+        // from the same single definition the antigravity-ls-proxy
+        // service binds) — never hardcode a port here; see the
+        // openai-codex provider note.
+        "baseURL": "http://127.0.0.1:{env:ANTIGRAVITY_LS_PROXY_PORT:-18745}/v1",
         "apiKey": "antigravity-local"
       },
       "models": {
@@ -2004,7 +2057,7 @@
             "context": 1000000,
             "output": 64000
           }
-        },
+        }
       }
     },
     "openai": {
@@ -2665,7 +2718,11 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "OpenAI Codex CLI (via codex)",
       "options": {
-        "baseURL": "http://127.0.0.1:18744/v1",
+        // Port comes from CODEX_PROXY_PORT (set by home config from the
+        // same single definition the codex-proxy service binds) — never
+        // hardcode a port here; a hardcoded one silently breaks on any
+        // device where the proxy isn't on that exact port.
+        "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
         "apiKey": "codex-local"
       },
       "models": {
@@ -3030,32 +3087,1130 @@
           }
         }
       }
-    }
+    },
+        "chatgpt": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "ChatGPT (via Codex)",
+            "options": {
+                "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
+                "apiKey": "codex-local"
+            },
+            "models": {
+                "gpt-6.1-sol": {
+                    "name": "GPT-6.1 Sol (ChatGPT)",
+                    "variants": {
+                        "low": {
+                            "options": {
+                                "reasoning_effort": "low"
+                            }
+                        },
+                        "medium": {
+                            "options": {
+                                "reasoning_effort": "medium"
+                            }
+                        },
+                        "high": {
+                            "options": {
+                                "reasoning_effort": "high"
+                            }
+                        },
+                        "xhigh": {
+                            "options": {
+                                "reasoning_effort": "xhigh"
+                            }
+                        },
+                        "max": {
+                            "options": {
+                                "reasoning_effort": "max"
+                            }
+                        },
+                        "ultra": {
+                            "options": {
+                                "reasoning_effort": "ultra"
+                            }
+                        }
+                    },
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "gpt-6-astra": {
+                    "name": "GPT-6 Astra (ChatGPT)",
+                    "variants": {
+                        "low": {
+                            "options": {
+                                "reasoning_effort": "low"
+                            }
+                        },
+                        "medium": {
+                            "options": {
+                                "reasoning_effort": "medium"
+                            }
+                        },
+                        "high": {
+                            "options": {
+                                "reasoning_effort": "high"
+                            }
+                        },
+                        "xhigh": {
+                            "options": {
+                                "reasoning_effort": "xhigh"
+                            }
+                        },
+                        "max": {
+                            "options": {
+                                "reasoning_effort": "max"
+                            }
+                        },
+                        "ultra": {
+                            "options": {
+                                "reasoning_effort": "ultra"
+                            }
+                        }
+                    },
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "gpt-6-sol": {
+                    "name": "GPT-6 Sol (ChatGPT)",
+                    "variants": {
+                        "low": {
+                            "options": {
+                                "reasoning_effort": "low"
+                            }
+                        },
+                        "medium": {
+                            "options": {
+                                "reasoning_effort": "medium"
+                            }
+                        },
+                        "high": {
+                            "options": {
+                                "reasoning_effort": "high"
+                            }
+                        },
+                        "xhigh": {
+                            "options": {
+                                "reasoning_effort": "xhigh"
+                            }
+                        },
+                        "max": {
+                            "options": {
+                                "reasoning_effort": "max"
+                            }
+                        },
+                        "ultra": {
+                            "options": {
+                                "reasoning_effort": "ultra"
+                            }
+                        }
+                    },
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "gpt-6-luna": {
+                    "name": "GPT-6 Luna (ChatGPT)",
+                    "variants": {
+                        "low": {
+                            "options": {
+                                "reasoning_effort": "low"
+                            }
+                        },
+                        "medium": {
+                            "options": {
+                                "reasoning_effort": "medium"
+                            }
+                        },
+                        "high": {
+                            "options": {
+                                "reasoning_effort": "high"
+                            }
+                        },
+                        "xhigh": {
+                            "options": {
+                                "reasoning_effort": "xhigh"
+                            }
+                        },
+                        "max": {
+                            "options": {
+                                "reasoning_effort": "max"
+                            }
+                        }
+                    },
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "gpt-5.6-sol": {
+                    "name": "GPT-5.6 Sol (ChatGPT)",
+                    "variants": {
+                        "low": {
+                            "options": {
+                                "reasoning_effort": "low"
+                            }
+                        },
+                        "medium": {
+                            "options": {
+                                "reasoning_effort": "medium"
+                            }
+                        },
+                        "high": {
+                            "options": {
+                                "reasoning_effort": "high"
+                            }
+                        },
+                        "xhigh": {
+                            "options": {
+                                "reasoning_effort": "xhigh"
+                            }
+                        },
+                        "max": {
+                            "options": {
+                                "reasoning_effort": "max"
+                            }
+                        },
+                        "ultra": {
+                            "options": {
+                                "reasoning_effort": "ultra"
+                            }
+                        }
+                    },
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "gpt-5.6-terra": {
+                    "name": "GPT-5.6 Terra (ChatGPT)",
+                    "variants": {
+                        "low": {
+                            "options": {
+                                "reasoning_effort": "low"
+                            }
+                        },
+                        "medium": {
+                            "options": {
+                                "reasoning_effort": "medium"
+                            }
+                        },
+                        "high": {
+                            "options": {
+                                "reasoning_effort": "high"
+                            }
+                        },
+                        "xhigh": {
+                            "options": {
+                                "reasoning_effort": "xhigh"
+                            }
+                        },
+                        "max": {
+                            "options": {
+                                "reasoning_effort": "max"
+                            }
+                        },
+                        "ultra": {
+                            "options": {
+                                "reasoning_effort": "ultra"
+                            }
+                        }
+                    },
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "gpt-5.6-luna": {
+                    "name": "GPT-5.6 Luna (ChatGPT)",
+                    "variants": {
+                        "low": {
+                            "options": {
+                                "reasoning_effort": "low"
+                            }
+                        },
+                        "medium": {
+                            "options": {
+                                "reasoning_effort": "medium"
+                            }
+                        },
+                        "high": {
+                            "options": {
+                                "reasoning_effort": "high"
+                            }
+                        },
+                        "xhigh": {
+                            "options": {
+                                "reasoning_effort": "xhigh"
+                            }
+                        },
+                        "max": {
+                            "options": {
+                                "reasoning_effort": "max"
+                            }
+                        }
+                    },
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "gpt-5.5": {
+                    "name": "GPT-5.5 (ChatGPT)",
+                    "variants": {
+                        "low": {
+                            "options": {
+                                "reasoning_effort": "low"
+                            }
+                        },
+                        "medium": {
+                            "options": {
+                                "reasoning_effort": "medium"
+                            }
+                        },
+                        "high": {
+                            "options": {
+                                "reasoning_effort": "high"
+                            }
+                        },
+                        "xhigh": {
+                            "options": {
+                                "reasoning_effort": "xhigh"
+                            }
+                        }
+                    },
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                }
+            }
+        },
+        "design-code": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Design Code",
+            "options": {
+                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
+                "apiKey": "design-local"
+            },
+            "models": {
+                "claude-haiku-5.5": {
+                    "name": "Claude Haiku 5.5 (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "gpt-6-luna": {
+                    "name": "GPT-6 Luna (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "gpt-6.1-sol": {
+                    "name": "GPT-6.1 Sol (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "deepseek-v4.1-flash": {
+                    "name": "DeepSeek V4.1 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "glm-5.3-flash": {
+                    "name": "GLM 5.3 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "glm-5.3-flashx": {
+                    "name": "GLM 5.3 FlashX (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "mimo-v2.6-flash": {
+                    "name": "MIMO v2.6 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "mimo-v2.6-pro": {
+                    "name": "MIMO v2.6 Pro (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "design-code-pro": {
+                    "name": "Design Code Pro",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "design-code-flash": {
+                    "name": "Design Code Flash",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "open-design-pro": {
+                    "name": "Open Design Pro",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                }
+            }
+        },
+        "code-design": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Code Design",
+            "options": {
+                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
+                "apiKey": "design-local"
+            },
+            "models": {
+                "claude-haiku-5.5": {
+                    "name": "Claude Haiku 5.5 (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "gpt-6-luna": {
+                    "name": "GPT-6 Luna (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "gpt-6.1-sol": {
+                    "name": "GPT-6.1 Sol (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "deepseek-v4.1-flash": {
+                    "name": "DeepSeek V4.1 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "glm-5.3-flash": {
+                    "name": "GLM 5.3 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "glm-5.3-flashx": {
+                    "name": "GLM 5.3 FlashX (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "mimo-v2.6-flash": {
+                    "name": "MIMO v2.6 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "mimo-v2.6-pro": {
+                    "name": "MIMO v2.6 Pro (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "design-code-pro": {
+                    "name": "Design Code Pro",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "design-code-flash": {
+                    "name": "Design Code Flash",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "open-design-pro": {
+                    "name": "Open Design Pro",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                }
+            }
+        },
+        "open-design": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Open Design",
+            "options": {
+                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
+                "apiKey": "design-local"
+            },
+            "models": {
+                "claude-haiku-5.5": {
+                    "name": "Claude Haiku 5.5 (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "gpt-6-luna": {
+                    "name": "GPT-6 Luna (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "gpt-6.1-sol": {
+                    "name": "GPT-6.1 Sol (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "deepseek-v4.1-flash": {
+                    "name": "DeepSeek V4.1 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "glm-5.3-flash": {
+                    "name": "GLM 5.3 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "glm-5.3-flashx": {
+                    "name": "GLM 5.3 FlashX (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "mimo-v2.6-flash": {
+                    "name": "MIMO v2.6 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "mimo-v2.6-pro": {
+                    "name": "MIMO v2.6 Pro (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "design-code-pro": {
+                    "name": "Design Code Pro",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "design-code-flash": {
+                    "name": "Design Code Flash",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "open-design-pro": {
+                    "name": "Open Design Pro",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                }
+            }
+        },
+        "opendesign": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "OpenDesign",
+            "options": {
+                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
+                "apiKey": "design-local"
+            },
+            "models": {
+                "claude-haiku-5.5": {
+                    "name": "Claude Haiku 5.5 (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "gpt-6-luna": {
+                    "name": "GPT-6 Luna (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "gpt-6.1-sol": {
+                    "name": "GPT-6.1 Sol (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                },
+                "deepseek-v4.1-flash": {
+                    "name": "DeepSeek V4.1 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "glm-5.3-flash": {
+                    "name": "GLM 5.3 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "glm-5.3-flashx": {
+                    "name": "GLM 5.3 FlashX (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "mimo-v2.6-flash": {
+                    "name": "MIMO v2.6 Flash (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "mimo-v2.6-pro": {
+                    "name": "MIMO v2.6 Pro (Design Code)",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "design-code-pro": {
+                    "name": "Design Code Pro",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "design-code-flash": {
+                    "name": "Design Code Flash",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 64000
+                    }
+                },
+                "open-design-pro": {
+                    "name": "Open Design Pro",
+                    "limit": {
+                        "context": 1000000,
+                        "output": 128000
+                    }
+                }
+            }
+        }
   },
   "agent": {
     "build": {
-      "mode": "all"
+      "mode": "all",
+      "permissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "external_directory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_notify",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_memory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_web",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "subagent",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "skill",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "webfetch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "patch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "grep",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "glob",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
+    },
+    "classifier-complex": {
+      "model": "claude-code/claude-haiku-5-5",
+      "mode": "primary",
+      "request": {
+        "body": {
+          "temperature": 0
+        }
+      },
+      "permissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_notify",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_memory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_web",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "external_directory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "subagent",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "skill",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "webfetch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "patch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "grep",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "glob",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
+    },
+    "classifier": {
+      "model": "claude-code/claude-haiku-5-5",
+      "mode": "primary",
+      "request": {
+        "body": {
+          "temperature": 0
+        }
+      },
+      "permissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "glob",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "grep",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "patch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "webfetch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "skill",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "subagent",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "external_directory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_notify",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_memory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_web",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
+    },
+    "reasoner": {
+      "model": "claude-code/claude-haiku-5-5",
+      "mode": "primary",
+      "request": {
+        "body": {
+          "temperature": 0
+        }
+      },
+      "permissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_notify",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_memory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_web",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "external_directory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "subagent",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "skill",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "patch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "grep",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "glob",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
+    },
+    "coder": {
+      "model": "claude-code/claude-haiku-5-5",
+      "mode": "primary",
+      "request": {
+        "body": {
+          "temperature": 0.2
+        }
+      },
+      "permissions": [
+        {
+          "action": "*",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_notify",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_memory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber_web",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "openchamber",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "external_directory",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "subagent",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "question",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "skill",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "websearch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "webfetch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "patch",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "grep",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "glob",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "read",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+        },
+        {
+          "action": "shell",
+          "resource": "*",
+          "effect": "allow"
+        }
+      ]
     },
     "compaction": {
       "threshold": 0.5
-    },
-    "coder": {
-      "model": "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-flash-0731",
-      "temperature": 0.2
-    },
-    "reasoner": {
-      "model": "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-pro-0813",
-      "temperature": 0
-    },
-    "classifier": {
-      "model": "cloudflare-gateway/@cf/cloudflare/clef-flash",
-      "temperature": 0,
-      "maxTokens": 256
-    },
-    "classifier-complex": {
-      "model": "cloudflare-gateway/@cf/cloudflare/clef",
-      "temperature": 0,
-      "maxTokens": 512
     }
   },
   "instructions": [

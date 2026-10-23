@@ -88,6 +88,15 @@ export fn plaza_view(model: usize) usize {
 
 /// Structured records projected from the model: a JSON object the host
 /// stores and replicates. Shares the `plaza_out_len` output slot with view.
+/// Render at a connection's viewport; the program decides its own layout.
+export fn plaza_layout(model: usize, width: u64, height: u64) usize {
+    ensure();
+    last_out.decref(&roc_host);
+    abi.increfBox(@ptrFromInt(model), 1);
+    last_out = abi.roc_layout(@ptrFromInt(model), width, height);
+    return @intFromPtr(last_out.asSlice().ptr);
+}
+
 export fn plaza_records(model: usize) usize {
     ensure();
     last_out.decref(&roc_host);

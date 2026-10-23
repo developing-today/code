@@ -1,11 +1,81 @@
 #!/usr/bin/env node
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { parseProxyPort } from './proxy-port.mjs';
 
-const PORT = parseInt(process.env.CODEX_PROXY_PORT || '18744', 10);
+const PORT = parseProxyPort('CODEX_PROXY_PORT', 18744);
 const HOST = process.env.CODEX_PROXY_HOST || '127.0.0.1';
+
+// Publish the bound endpoint so other tools can find this proxy without
+// knowing its port in advance: $XDG_STATE_HOME/<name>/endpoint.json
+// (default ~/.local/state/<name>/endpoint.json), written on listen,
+// removed on exit.
+const publishEndpoint = () => {
+  try {
+    const stateHome =
+      process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+    const dir = path.join(stateHome, 'codex-proxy');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'endpoint.json');
+    fs.writeFileSync(
+      `${file}.tmp`,
+      JSON.stringify({ host: HOST, port: PORT, pid: process.pid, url: `http://${HOST}:${PORT}` }) + '\n',
+    );
+    fs.renameSync(`${file}.tmp`, file);
+    const cleanup = () => {
+      try {
+        fs.unlinkSync(file);
+      } catch {}
+    };
+    process.on('exit', cleanup);
+    process.on('SIGTERM', () => {
+      cleanup();
+      process.exit(0);
+    });
+    process.on('SIGINT', () => {
+      cleanup();
+      process.exit(0);
+    });
+  } catch {}
+};
+
+// Synchronize freshly refreshed ChatGPT OAuth tokens from Codex to OpenCode SQLite DB
+const syncCodexTokensToOpenCode = () => {
+  try {
+    const codexAuthPath = `${process.env.HOME}/.codex/auth.json`;
+    const dbPath = `${process.env.HOME}/.local/share/opencode/opencode.db`;
+    if (!fs.existsSync(codexAuthPath) || !fs.existsSync(dbPath)) return;
+
+    const codexAuth = JSON.parse(fs.readFileSync(codexAuthPath, 'utf-8'));
+    const tokens = codexAuth.tokens;
+    if (!tokens || !tokens.access_token) return;
+
+    const script = `import sqlite3, json, time
+conn = sqlite3.connect('${dbPath}')
+c = conn.cursor()
+c.execute('SELECT id, value FROM credential WHERE integration_id="openai"')
+for row in c.fetchall():
+    val = json.loads(row[1])
+    if val.get('type') == 'oauth':
+        val['access'] = ${JSON.stringify(tokens.access_token)}
+        if ${JSON.stringify(tokens.refresh_token || '')}:
+            val['refresh'] = ${JSON.stringify(tokens.refresh_token || '')}
+        if ${JSON.stringify(tokens.account_id || '')}:
+            val['metadata'] = val.get('metadata') or {}
+            val['metadata']['accountID'] = ${JSON.stringify(tokens.account_id || '')}
+        val['expires'] = int(time.time() * 1000) + 30 * 86400 * 1000
+        c.execute('UPDATE credential SET value = ?, time_updated = ? WHERE id = ?', (json.dumps(val), int(time.time() * 1000), row[0]))
+conn.commit()
+`;
+    execSync(`python3 -c ${JSON.stringify(script)}`, { stdio: 'ignore' });
+  } catch (err) {
+    // Non-fatal background sync
+  }
+};
 
 const MODELS = [
   { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol (codex)', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'medium' },
@@ -37,7 +107,9 @@ const findCodexBinary = () => {
 const CODEX_BIN = findCodexBinary();
 
 const resolveModelAndEffort = (requestedModel, requestedEffort) => {
-  let modelStr = (requestedModel || 'gpt-5.6-luna').toLowerCase().trim();
+  let rawModel = (requestedModel || 'gpt-6.1-sol').trim();
+  // Strip any provider prefix before '/' (e.g. 'openai-codex/', 'codex/', 'openai/', 'chatgpt/')
+  let modelStr = rawModel.replace(/^.*\//, '').toLowerCase().trim();
   let effort = requestedEffort ? requestedEffort.toLowerCase().trim() : null;
 
   // Check if model string ends with effort suffix
@@ -52,7 +124,7 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
 
   // Find base model config
   const modelConfig = MODELS.find(m => m.id === modelStr || m.id.replace(/-/g, '') === modelStr.replace(/-/g, ''))
-    || MODELS[6]; // default to gpt-5.6-luna
+    || MODELS[0]; // default to gpt-6.1-sol
 
   // Resolve effort
   if (!effort || !modelConfig.efforts.includes(effort)) {
@@ -68,10 +140,8 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
 
 const formatPrompt = (messages) => {
   if (!Array.isArray(messages) || messages.length === 0) return '';
-  if (messages.length === 1 && messages[0].role === 'user') {
-    return typeof messages[0].content === 'string'
-      ? messages[0].content
-      : JSON.stringify(messages[0].content);
+  if (messages.length === 1 && messages[0].role === 'user' && typeof messages[0].content === 'string') {
+    return messages[0].content;
   }
 
   const parts = [];
@@ -87,15 +157,24 @@ const formatPrompt = (messages) => {
 
   if (convoMessages.length > 0) {
     const convoText = convoMessages.map(m => {
-      const role = m.role === 'assistant' ? 'Assistant' : (m.role === 'user' ? 'User' : m.role);
+      let role = m.role === 'assistant' ? 'Assistant' : (m.role === 'user' ? 'User' : m.role);
       let text = '';
       if (typeof m.content === 'string') {
         text = m.content;
       } else if (Array.isArray(m.content)) {
         text = m.content.map(c => c.text || JSON.stringify(c)).join('\n');
-      } else {
+      } else if (m.content) {
         text = JSON.stringify(m.content);
       }
+
+      if (m.tool_calls && Array.isArray(m.tool_calls)) {
+        const tcStr = m.tool_calls.map(tc => `[Tool Call: ${tc.function?.name || 'function'}(${tc.function?.arguments || ''})]`).join('\n');
+        text = text ? `${text}\n${tcStr}` : tcStr;
+      }
+      if (m.role === 'tool') {
+        role = `Tool Result (${m.tool_call_id || 'result'})`;
+      }
+
       return `${role}: ${text}`;
     }).join('\n\n');
     parts.push(convoText);
@@ -105,6 +184,15 @@ const formatPrompt = (messages) => {
 };
 
 const server = http.createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   const url = new URL(req.url, `http://${req.headers.host || HOST}`);
   const pathname = url.pathname.replace(/\/+$/, '') || '/';
 
@@ -191,7 +279,7 @@ const server = http.createServer((req, res) => {
         '--ephemeral',
         '--skip-git-repo-check',
         '--dangerously-bypass-approvals-and-sandbox',
-        '--disable', 'code_mode_host',
+        '--disable', 'shell_tool',
         '--color', 'never',
         '-m', baseModel,
         '-c', `model_reasoning_effort="${effort}"`,
@@ -199,6 +287,9 @@ const server = http.createServer((req, res) => {
         '-c', 'model_auto_compact_token_limit=950000',
         '-'
       ];
+
+      // Refresh OpenCode tokens in background
+      syncCodexTokensToOpenCode();
 
       console.log(`[codex-proxy] Spawning: ${CODEX_BIN} ${args.join(' ')}`);
 
@@ -378,6 +469,9 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  publishEndpoint();
   console.log(`[codex-proxy] OpenAI-compatible bridge listening on http://${HOST}:${PORT}`);
   console.log(`[codex-proxy] Resolved codex binary: ${CODEX_BIN}`);
+  syncCodexTokensToOpenCode();
+  setInterval(syncCodexTokensToOpenCode, 5 * 60 * 1000);
 });

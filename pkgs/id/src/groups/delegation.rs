@@ -59,7 +59,7 @@ pub(super) struct Removal {
 }
 
 /// The account a removal event removes, if the event is one.
-const fn removed_member(event: &Event) -> Option<Key> {
+pub(super) const fn removed_member(event: &Event) -> Option<Key> {
     match &event.body {
         Body::Member(MemberOp::Remove { member, .. }) => Some(*member),
         _ => None,
@@ -90,9 +90,13 @@ impl Engine {
         delegate: Delegate,
         target: Option<&str>,
     ) -> Result<Judged, FoldError> {
-        let group = match self.acting_in(event) {
+        let group = match self.acting_in(event, by_id) {
             Ok(group) => group,
             Err(refusal) => return Ok(Err(refusal)),
+        };
+        let (author, author_role) = match self.effective_author(by_id, group, event) {
+            Some(res) => res,
+            None => return Ok(Err(Refusal::NotActive)),
         };
         if delegate.scope == Role::Admin {
             return Ok(Err(Refusal::BadScope));
@@ -100,20 +104,16 @@ impl Engine {
         if target.is_some_and(|world| world.is_empty() || delegate.scope > Role::Write) {
             return Ok(Err(Refusal::NotCrossable));
         }
-        if delegate.grantee == event.author {
+        if delegate.grantee == author || delegate.grantee == event.author {
             return Ok(Err(Refusal::BadGrantee));
         }
-        if !self.holds(group, event.author, delegate.scope, &event.after)? {
+        if author_role < delegate.scope {
             return Ok(Err(Refusal::Attenuated));
         }
-        if !self.authorized(
-            by_id,
-            group,
-            event.author,
-            delegate.scope,
-            &event.after,
-            true,
-        )? {
+        if !self.holds(group, author, delegate.scope, &event.after)? {
+            return Ok(Err(Refusal::Attenuated));
+        }
+        if !self.authorized(by_id, group, author, delegate.scope, &event.after, true)? {
             return Ok(Err(Refusal::NoChain));
         }
         Ok(Ok(Decision {
@@ -134,9 +134,13 @@ impl Engine {
         event: &Event,
         grant: Hash,
     ) -> Result<Judged, FoldError> {
-        let group = match self.acting_in(event) {
+        let group = match self.acting_in(event, by_id) {
             Ok(group) => group,
             Err(refusal) => return Ok(Err(refusal)),
+        };
+        let (author, author_role) = match self.effective_author(by_id, group, event) {
+            Some(res) => res,
+            None => return Ok(Err(Refusal::NotActive)),
         };
         let seen = causal_past(by_id, &event.after);
         let known = self
@@ -147,17 +151,13 @@ impl Engine {
         if !known {
             return Ok(Err(Refusal::UnknownGrant));
         }
-        if !self.holds(group, event.author, Role::Manage, &event.after)? {
+        if author_role < Role::Manage {
             return Ok(Err(Refusal::NotManager));
         }
-        if !self.authorized(
-            by_id,
-            group,
-            event.author,
-            Role::Manage,
-            &event.after,
-            false,
-        )? {
+        if !self.holds(group, author, Role::Manage, &event.after)? {
+            return Ok(Err(Refusal::NotManager));
+        }
+        if !self.authorized(by_id, group, author, Role::Manage, &event.after, false)? {
             return Ok(Err(Refusal::NoChain));
         }
         Ok(Ok(Decision {
@@ -176,15 +176,19 @@ impl Engine {
         op: MemberOp,
         decision: Decision,
     ) -> Result<Judged, FoldError> {
+        let author = match self.effective_author(by_id, decision.group, event) {
+            Some((a, _)) => a,
+            None => event.author,
+        };
         if let MemberOp::Remove { member, .. } = op
-            && member == event.author
+            && member == author
         {
             return Ok(Ok(decision));
         }
         let manages = self.authorized(
             by_id,
             decision.group,
-            event.author,
+            author,
             Role::Manage,
             &event.after,
             false,
@@ -234,6 +238,15 @@ impl Engine {
         if !self.groups.contains_key(&group) {
             return Ok(false);
         }
+        let actor = match self.authorized_device_account(by_id, group, actor, after) {
+            Some((account, device_scope)) => {
+                if device_scope < scope {
+                    return Ok(false);
+                }
+                account
+            }
+            None => actor,
+        };
         let roots = self.membership.managers_at_position(after, group)?;
         if roots.contains(&actor) {
             return Ok(true);
@@ -258,7 +271,7 @@ impl Engine {
     }
 
     /// Whether `who` holds `scope` in `group` at the causal position `after`, by membership.
-    fn holds(
+    pub(super) fn holds(
         &mut self,
         group: Hash,
         who: Key,
