@@ -64,7 +64,7 @@ p2panda-sync = { path = "vendor/p2panda-sync" }
 # Group membership and the auth DAG (P2.1). The `serde` feature (P2.3) serializes group actions,
 # which the event store keeps with each group operation. `test_utils` is not enabled: it turns on
 # test-only behaviour in p2panda-core, so the test types come from our own tests.
-p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", features = ["serde"] }
+p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = ["serde"] }
 # DataScheme group encryption (P4.1, src/encryption/). `data_scheme` is on because the adapter is the
 # scheme. `test_utils` and `message_scheme` stay off: the adapter brings its own orderer and membership.
 p2panda-encryption = { path = "vendor/p2panda-encryption", default-features = false, features = ["data_scheme"] }
