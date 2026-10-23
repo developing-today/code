@@ -151,13 +151,14 @@ test('clef-proxy binds exactly the requested valid port', async (t) => {
   assert.equal((await res.json()).port, port);
 });
 
-test('all seven parse sites in the five proxies use the shared helper', () => {
+test('all eight parse sites in the six proxies use the shared helper', () => {
   const files = [
     'codex-proxy.mjs',
     'clef-proxy.mjs',
     'agy-proxy.mjs',
     'antigravity-ls-proxy.mjs',
-    'design-code-proxy.mjs'
+    'design-code-proxy.mjs',
+    'muse-proxy.mjs'
   ];
   let sites = 0;
   for (const file of files) {
@@ -174,7 +175,7 @@ test('all seven parse sites in the five proxies use the shared helper', () => {
     );
     sites += source.match(/parseProxyPort\('[A-Z_]+_PROXY_PORT', \d+\)/g).length;
   }
-  assert.equal(sites, 7);
+  assert.equal(sites, 8);
 });
 
 test('home-manager launches the proxies from the bin directory', () => {
