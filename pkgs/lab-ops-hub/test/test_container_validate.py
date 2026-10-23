@@ -56,6 +56,22 @@ class TestValidateCrawlUrl(unittest.TestCase):
         # is judged and returned exactly as before.
         self.assertAccepted("http://example.com/%5c@127.0.0.1/")
 
+    def test_backslash_in_query_and_fragment_is_data(self):
+        # #620: the #577 replacement is structural only up to the first
+        # "?" or "#" — WHATWG keeps a backslash in the query/fragment
+        # verbatim, and the Worker fetches it that way.
+        v = app.validate_crawl_url
+        self.assertEqual(v(r"http://example.com/?q=a\b"), r"http://example.com/?q=a\b")
+        self.assertEqual(v(r"http://example.com/#a\b"), r"http://example.com/#a\b")
+        self.assertEqual(
+            v(r"https://example.com/?q=a\b\c#x\y"), r"https://example.com/?q=a\b\c#x\y"
+        )
+        # Control: a path backslash still normalizes, and an authority
+        # backslash before a query still ends the authority (#577).
+        self.assertEqual(v(r"http://example.com/a\b"), "http://example.com/a/b")
+        with self.assertRaises(ValueError):
+            v(r"http://127.0.0.1\@example.com/?q=a\b")
+
     def test_redirect_handler_refuses_backslash_loopback_target(self):
         # Redirect targets are validated by this validator alone
         # (#577): a Location spelling whose WHATWG host is loopback
@@ -120,6 +136,67 @@ class TestValidateCrawlUrl(unittest.TestCase):
                 req, None, 302, "Found", {}, "http:///127.0.0.1/admin"
             )
 
+    def test_tab_cr_lf_are_stripped_before_judging_like_whatwg(self):
+        # WHATWG removes every ASCII tab, LF and CR from the input
+        # before parsing — even inside the scheme spelling — and the
+        # URL it produces carries none. urlparse handed them through
+        # verbatim, so accepted URLs were returned (and fetched) with
+        # control characters in the host: the fetched host was never
+        # the judged host (#611). The stripped spelling is now judged
+        # and returned, matching the Worker.
+        T, N, R = chr(9), chr(10), chr(13)
+        for raw, expected in (
+            (f"http://exa{T}mple.com/", "http://example.com/"),
+            (f"http://exa{N}mple.com/", "http://example.com/"),
+            (f"http://exa{R}mple.com/", "http://example.com/"),
+            (f"http://example.com{T}.evil.com/", "http://example.com.evil.com/"),
+            (f"http://example.com{R}{N}.evil.com/", "http://example.com.evil.com/"),
+            (f"http://example.com/pa{T}th", "http://example.com/path"),
+            (f"ht{T}tp://example.com/", "http://example.com/"),
+        ):
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Blocked hosts split by tab/CR/LF are refused by the ordinary
+        # checks on the stripped spelling, for the right reason.
+        for url in (
+            f"http://127{T}.0.0.1/",
+            f"http://192.168{N}.0.1/",
+            f"http://local{R}host/",
+        ):
+            with self.assertRaises(ValueError, msg=url):
+                validate_crawl_url(url)
+
+    def test_tab_split_slash_run_authority_spellings(self):
+        # WHATWG strips tab/LF/CR before parsing, so a control
+        # character inside the delimiter run after the scheme colon
+        # does not split the run: the #586 slash-run collapse must
+        # judge the stripped spelling, not the raw one (#589). The
+        # behaviour arrived with the #611 strip (app.py removes
+        # tab/CR/LF before the collapse); this test pins the
+        # slash-run spellings #589 names so a reordering of those
+        # two steps cannot silently reopen the divergence.
+        T, N, R = chr(9), chr(10), chr(13)
+        for raw, expected in (
+            (f"http:{T}/example.com/x", "http://example.com/x"),
+            (f"http:{N}//example.com/x", "http://example.com/x"),
+            (f"http:{R}//example.com/x", "http://example.com/x"),
+            (f"http:/{T}/example.com/x", "http://example.com/x"),
+            (f"http:/{N}/example.com/x", "http://example.com/x"),
+            (f"http:/{R}{N}/example.com/x", "http://example.com/x"),
+            (f"https:{T}/example.com/", "https://example.com/"),
+        ):
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Blocked targets in tab-split slash-run spellings are
+        # refused for the right reason (non-public / local), not
+        # as hostless URLs.
+        for url in (
+            f"https:/{T}/127.0.0.1/",
+            f"http:{T}//127.0.0.1/x",
+            f"http:{T}//localhost/x",
+        ):
+            with self.assertRaises(ValueError, msg=url) as cm:
+                validate_crawl_url(url)
+            self.assertNotIn("no host", str(cm.exception), url)
+
     def test_refuses_non_http_schemes_and_local_names(self):
         for url in (
             "ftp://example.com/",
@@ -128,6 +205,12 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://printer.local/",
             "http://nas.internal/",
             "http://localhost./",
+            # The bare home.arpa apex is itself the RFC 8375 local
+            # name — the dotted suffix alone misses it (#608).
+            "http://home.arpa/",
+            "http://home.arpa./",
+            "http://HOME.ARPA/",
+            "http://router.home.arpa/",
         ):
             self.assertRefused(url)
 
@@ -582,12 +665,16 @@ class TestValidateCrawlUrl(unittest.TestCase):
             self.assertAccepted("http://exam" + ch + "ple.com/")
 
     def test_refuses_arabic_indic_digit_hosts(self):
-        # WHATWG's domain-to-ASCII rejects any host containing an
-        # Arabic-Indic digit (U+0660-U+0669) — even one digit in a
-        # mixed label — while urlparse passes the spelling through and
-        # the ASCII-only numeric checks cannot read it as an address,
-        # so the old code certified the hosts below as public DNS
-        # names and fetched their punycode forms (#574).
+        # WHATWG's domain-to-ASCII rejects an Arabic-Indic digit
+        # (U+0660-U+0669) outside a right-to-left label — even one
+        # digit in a mixed LTR label — while urlparse passes the
+        # spelling through and the ASCII-only numeric checks cannot
+        # read it as an address, so the old code certified the hosts
+        # below as public DNS names and fetched their punycode forms
+        # (#574). Every spelling below is outside an RTL label, so
+        # _judge_idna_label's AN rule refuses them all; the RTL
+        # spellings the Worker accepts are pinned in the #605 test
+        # below.
         self.assertRefused("http://١٢٧.٠.٠.١/")  # 127.0.0.1, Arabic-Indic digits
         self.assertRefused("http://١٢٣.com/")
         self.assertRefused("http://example١٢٣.com/")
@@ -644,6 +731,50 @@ class TestValidateCrawlUrl(unittest.TestCase):
             "http://xn--fsq.com/",  # 例.com
         ):
             self.assertAccepted(url)
+
+    def test_accepts_arabic_indic_digits_inside_rtl_labels(self):
+        # The Arabic-Indic digits are bidi class AN: inside a genuine
+        # RTL label they are valid, and the Worker's WHATWG parser
+        # accepts them — but #574's blanket forbidden-character range
+        # refused every host containing one, in raw and A-label form
+        # alike, overriding _judge_idna_label's contextual AN rule
+        # (#595) in the one context where the digit is valid (#605).
+        # The Extended Arabic-Indic control (U+06F1) was already
+        # accepted in the same shape.
+        self.assertAccepted("http://\u0627\u0661.com/")  # Arabic + ١
+        self.assertAccepted("http://\u0645\u0631\u062d\u0628\u0627\u0661.com/")
+        self.assertAccepted("http://\u05d0\u0661.com/")  # Hebrew + ١
+        self.assertAccepted("http://\u0627\u0661\u0627.com/")  # AN mid-label
+        self.assertAccepted("http://\u0627\u0660.com/")
+        # Their A-label spellings are accepted too.
+        self.assertAccepted("http://xn--mgb0j.com/")  # ا١.com
+        self.assertAccepted("http://xn--mgbbop3hzh.com/")  # مرحبا١.com
+        self.assertAccepted("http://xn--4db40a.com/")  # א١.com
+        # Guards: the AN context rules still refuse an AN+EN mix
+        # inside an RTL label and an RTL label that does not start
+        # with an R/AL character (both also refused by the Worker).
+        self.assertRefused("http://\u05d0\u06611.com/")
+        self.assertRefused("http://\u0661\u0627.com/")
+
+    def test_judges_u0345_by_its_uts46_mapping(self):
+        # UTS-46 maps U+0345 (combining Greek ypogegrammeni) to
+        # U+03B9 (ι, bidi class L), but NFKC leaves it unchanged, so
+        # the container judged it as a combining mark (bidi NSM) —
+        # legal mid-label anywhere — while the Worker judges the
+        # mapped letter: inside an RTL label the mapped form is
+        # R + L + R, a bidi violation (#596).
+        self.assertRefused("http://\u05d0\u0345\u05d0.com/")
+        self.assertRefused("http://\u05d0\u0345.com/")
+        # The A-label spelling of the first host is refused too.
+        self.assertRefused("http://xn--jua51kba.com/")
+        # Controls: in LTR/Greek contexts the mapped letter is an
+        # ordinary character and the hosts stay accepted.
+        self.assertAccepted("http://ex\u0345ample.com/")
+        self.assertAccepted("http://\u03b1\u0345.com/")
+        # Pin: at label start the mapping closes the former
+        # leading-mark over-refusal — U+0345 maps to a letter, so
+        # the label starts with one, matching the Worker (#596).
+        self.assertAccepted("http://\u0345abc.com/")
 
     def test_refuses_idna_invalid_hosts(self):
         # A label can punycode-encode without being a valid IDNA
@@ -769,6 +900,89 @@ class TestValidateCrawlUrl(unittest.TestCase):
         ):
             self.assertAccepted(url)
 
+    def test_percent_encodes_non_ascii_outside_the_host(self):
+        # WHATWG percent-encodes non-ASCII characters in the userinfo,
+        # path, query and fragment as UTF-8; urlparse hands them through
+        # verbatim, and http.client then raises UnicodeEncodeError on
+        # the returned URL before any request is sent — a target both
+        # validators accepted 502s in the container (#615). The returned
+        # URL carries the encoded form; the host keeps its spelling
+        # (judged in mapped form, fetched via IDNA) and existing %XX
+        # sequences are not double-encoded.
+        cases = {
+            "http://example.com/café": "http://example.com/caf%C3%A9",
+            "http://example.com/日本語": (
+                "http://example.com/%E6%97%A5%E6%9C%AC%E8%AA%9E"
+            ),
+            "http://example.com/?q=café": "http://example.com/?q=caf%C3%A9",
+            "http://example.com/?q=\U0001f600": ("http://example.com/?q=%F0%9F%98%80"),
+            "http://example.com/x#café": "http://example.com/x#caf%C3%A9",
+            "http://user:café@example.com/": ("http://user:caf%C3%A9@example.com/"),
+            "http://café@example.com/": "http://caf%C3%A9@example.com/",
+            "http://münchen.de/café": "http://münchen.de/caf%C3%A9",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # Already-encoded spellings pass through byte-identical.
+        self.assertAccepted("http://example.com/caf%C3%A9")
+        self.assertAccepted("http://example.com/?q=caf%C3%A9")
+
+    def test_percent_encodes_c0_space_and_del_outside_the_host(self):
+        # PR #612 stripped tab/LF/CR, but the rest of the C0 range,
+        # space and DEL were returned verbatim outside the host, and
+        # http.client then raises InvalidURL on a URL both validators
+        # accepted (#614). WHATWG percent-encodes those characters
+        # inside the path/query/fragment/userinfo and trims leading
+        # and trailing C0-or-space from the whole input; the returned
+        # URL does the same, so it is the URL the fetcher can fetch.
+        cases = {
+            "http://example.com/pa\x00th": "http://example.com/pa%00th",
+            "http://example.com/pa\x01th": "http://example.com/pa%01th",
+            "http://example.com/pa th": "http://example.com/pa%20th",
+            "http://example.com/pa\x7fth": "http://example.com/pa%7Fth",
+            "http://example.com/?q=a\x00b": "http://example.com/?q=a%00b",
+            "http://example.com/?q=a\x7fb": "http://example.com/?q=a%7Fb",
+            "http://example.com/x#a\x00b": "http://example.com/x#a%00b",
+            "http://user\x00name@example.com/": ("http://user%00name@example.com/"),
+            "http://example.com/pa\x00?q=1": "http://example.com/pa%00?q=1",
+            # Leading/trailing C0-or-space is trimmed, not encoded:
+            # the trailing NUL never becomes part of the path.
+            "\x00http://example.com/": "http://example.com/",
+            "\x01 http://example.com/": "http://example.com/",
+            "http://example.com/\x00": "http://example.com/",
+            "http://example.com/pa ": "http://example.com/pa",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(validate_crawl_url(raw), expected, raw)
+        # No accepted spelling comes back carrying a raw control,
+        # space or DEL anywhere in the returned URL.
+        for raw in cases:
+            returned = validate_crawl_url(raw)
+            self.assertFalse(
+                any(ord(c) <= 0x20 or ord(c) == 0x7F for c in returned), raw
+            )
+        # Already-encoded spellings pass through byte-identical, and
+        # verdicts are unchanged: blocked hosts wrapped in these
+        # characters, and controls inside the host, stay refused.
+        self.assertAccepted("http://example.com/pa%00th")
+        self.assertRefused("\x01http://127.0.0.1/")
+        self.assertRefused("http://127.0.0.1/pa th")
+        self.assertRefused("http://exa\x00mple.com/")
+        self.assertRefused("http://exam ple.com/")
+
+    def test_redirect_handler_follows_the_c0_encoded_target(self):
+        # Redirect targets are validated raw (#614, following #529):
+        # the handler must fetch the percent-encoded form of a target
+        # whose path carries a raw control or space.
+        import urllib.request
+
+        handler = app._ValidatingRedirectHandler()
+        req = urllib.request.Request("http://example.com/")
+        followed = handler.redirect_request(
+            req, None, 302, "Found", {}, "http://example.org/pa th\x00"
+        )
+        self.assertEqual(followed.full_url, "http://example.org/pa%20th")
+
 
 class TestFetchCrawl(unittest.TestCase):
     # _fetch_crawl fetches an already-validated URL (validation is
@@ -873,6 +1087,70 @@ class TestFetchCrawl(unittest.TestCase):
             status, raw = self.fetch("/hop10")
             self.assertEqual(status, 200)
             self.assertIn(b"Missing Thing", raw)
+
+    def test_fetches_percent_encoded_non_ascii_targets(self):
+        # #615: the form validate_crawl_url returns for a non-ASCII
+        # path/query is fetchable end to end (the raw spelling raises
+        # UnicodeEncodeError inside http.client before any request).
+        url = app._url_with_encoded_non_ascii(
+            f"http://127.0.0.1:{self.port}/café?q=café"
+        )
+        self.assertEqual(url, f"http://127.0.0.1:{self.port}/caf%C3%A9?q=caf%C3%A9")
+        status, raw = app._fetch_crawl(url)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Missing Thing", raw)
+
+    def test_fetches_percent_encoded_c0_targets(self):
+        # #614: the form validate_crawl_url returns for a path/query
+        # carrying a raw C0 control or space is fetchable end to end
+        # (the raw spelling raises InvalidURL inside http.client
+        # before any request).
+        url = app._url_with_encoded_components(
+            f"http://127.0.0.1:{self.port}/pa\x00th?q=a b\x7f"
+        )
+        self.assertEqual(url, f"http://127.0.0.1:{self.port}/pa%00th?q=a%20b%7F")
+        status, raw = app._fetch_crawl(url)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Missing Thing", raw)
+
+    def test_ascii_punctuation_percent_encoded_per_component(self):
+        # #618: WHATWG's per-component percent-encode sets for ASCII
+        # punctuation — the container returned these verbatim while the
+        # Worker fetches the encoded form. Path set is the widest of
+        # path/query/fragment; the query set must NOT gain the path
+        # extras (a raw backtick in a query is what the Worker fetches).
+        v = app.validate_crawl_url
+        self.assertEqual(
+            v('http://example.com/a"b<c>d'), "http://example.com/a%22b%3Cc%3Ed"
+        )
+        self.assertEqual(
+            v("http://example.com/a^b`c{d}e"), "http://example.com/a%5Eb%60c%7Bd%7De"
+        )
+        self.assertEqual(
+            v('http://example.com/?q=a"b<c>d'), "http://example.com/?q=a%22b%3Cc%3Ed"
+        )
+        self.assertEqual(
+            v("http://example.com/?q=a^b`c{d}e"), "http://example.com/?q=a^b`c{d}e"
+        )
+        self.assertEqual(
+            v('http://example.com/#a"b<c>d`e'), "http://example.com/#a%22b%3Cc%3Ed%60e"
+        )
+        self.assertEqual(v("http://example.com/#a^b{c}"), "http://example.com/#a^b{c}")
+        # Userinfo: the separator colon stays, a password colon and the
+        # rest of the userinfo set encode.
+        self.assertEqual(v('http://us"er@example.com/'), "http://us%22er@example.com/")
+        self.assertEqual(
+            v("http://user:pa:ss@example.com/"), "http://user:pa%3Ass@example.com/"
+        )
+        self.assertEqual(v("http://us;er@example.com/"), "http://us%3Ber@example.com/")
+        # Query also encodes the apostrophe (WHATWG special-query set),
+        # and userinfo brackets are data, not an IPv6 literal.
+        self.assertEqual(v("http://example.com/?q=a'b"), "http://example.com/?q=a%27b")
+        self.assertEqual(
+            v("http://a[b]c@example.com/"), "http://a%5Bb%5Dc@example.com/"
+        )
+        # Existing escapes are never double-encoded.
+        self.assertEqual(v("http://example.com/a%22b"), "http://example.com/a%22b")
 
     def test_transport_failure_still_raises(self):
         import urllib.error
