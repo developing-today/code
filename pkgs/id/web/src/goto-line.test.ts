@@ -320,7 +320,7 @@ describe("dialog input interaction", () => {
 describe("go-to-line across textblocks (#745)", () => {
   /** Create a view from a pre-built doc node (any schema). */
   function createViewFromDoc(
-    schema: typeof rawSchema,
+    schema: typeof rawSchema | typeof richSchema,
     doc: ReturnType<typeof rawSchema.node>,
   ): {
     view: EditorView;
