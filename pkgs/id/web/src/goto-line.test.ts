@@ -254,6 +254,32 @@ describe("dialog input interaction", () => {
     expect(posAfter).toBe(8);
   });
 
+  it.each([
+    ["0", "zero"],
+    ["-3", "negative"],
+    ["2.9", "fractional"],
+    ["999", "out of range"],
+    ["", "empty"],
+  ])("Enter with %s (%s) does not move the cursor and keeps the dialog open", (value) => {
+    const { view, container } = createViewWithGotoLine("first\nsecond\nthird");
+    views.push(view);
+    containers.push(container);
+
+    triggerGotoLine(view);
+
+    const dialog = container.querySelector(".goto-line-dialog") as HTMLElement;
+    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    input.value = value;
+    const posBefore = view.state.selection.from;
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+    // #712: invalid input must not be silently reinterpreted (0 -> line 1,
+    // 2.9 -> line 2) or swallowed (999) — no move, dialog stays open.
+    expect(view.state.selection.from).toBe(posBefore);
+    expect(dialog.style.display).not.toBe("none");
+  });
+
   it("Enter with line 1 moves cursor to position 0", () => {
     const { view, container } = createViewWithGotoLine("first\nsecond");
     views.push(view);

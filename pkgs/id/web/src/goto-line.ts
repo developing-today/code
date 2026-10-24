@@ -85,18 +85,29 @@ function openGotoLine(view: EditorView): void {
       dialogInput.addEventListener("keydown", (e: KeyboardEvent) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          const line = parseInt(dialogInput?.value ?? "", 10);
-          if (!Number.isNaN(line) && activeView) {
-            const pos = getLineStartPos(activeView, line);
-            if (pos !== null) {
-              const tr = activeView.state.tr.setSelection(TextSelection.create(activeView.state.doc, pos));
-              activeView.dispatch(tr);
-              activeView.focus();
-              // Scroll the cursor into view
-              const scrollTr = activeView.state.tr.scrollIntoView();
-              activeView.dispatch(scrollTr);
-            }
+          // Strict validation (#712): the value must be a whole line number
+          // inside the document. Bare parseInt would treat 0/negatives as
+          // line 1 and truncate fractions (2.9 -> 2); out-of-range values
+          // used to close the dialog silently with no jump and no feedback.
+          // Invalid input keeps the dialog open with the text selected so
+          // the user can correct it; the cursor does not move.
+          const raw = (dialogInput?.value ?? "").trim();
+          const line = Number(raw);
+          const lineCount = activeView ? getLineCount(activeView) : 0;
+          const pos =
+            activeView && raw !== "" && Number.isInteger(line) && line >= 1 && line <= lineCount
+              ? getLineStartPos(activeView, line)
+              : null;
+          if (pos === null || !activeView) {
+            dialogInput?.select();
+            return;
           }
+          const tr = activeView.state.tr.setSelection(TextSelection.create(activeView.state.doc, pos));
+          activeView.dispatch(tr);
+          activeView.focus();
+          // Scroll the cursor into view
+          const scrollTr = activeView.state.tr.scrollIntoView();
+          activeView.dispatch(scrollTr);
           closeGotoLine();
         } else if (e.key === "Escape") {
           e.preventDefault();
