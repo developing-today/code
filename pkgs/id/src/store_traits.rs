@@ -628,7 +628,10 @@ mod tests {
     async fn test_an_empty_store_has_no_log_for_any_author() {
         let (_dir, store) = open();
         let who = author_of(&key(1));
-        assert_eq!(store.get_latest_entry_tx(&who, &ChainLog).await.unwrap(), None);
+        assert_eq!(
+            store.get_latest_entry_tx(&who, &ChainLog).await.unwrap(),
+            None
+        );
         assert_eq!(
             store.get_log_heights(&who, &[ChainLog]).await.unwrap(),
             None
@@ -897,7 +900,10 @@ mod tests {
         let topic = group(6);
         // `get_latest_entry_tx` is the real read path now (no transaction permit on redb), so it
         // serves the empty store as `None`, not an error.
-        assert_eq!(store.get_latest_entry_tx(&who, &ChainLog).await.unwrap(), None);
+        assert_eq!(
+            store.get_latest_entry_tx(&who, &ChainLog).await.unwrap(),
+            None
+        );
         assert!(matches!(
             store.prune_entries_tx(&who, &ChainLog, &0).await,
             Err(TraitStoreError::Unsupported(_))
