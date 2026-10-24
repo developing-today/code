@@ -21,6 +21,26 @@ const binDir = path.dirname(fileURLToPath(import.meta.url));
 
 const STUB = `#!/bin/sh
 prompt="$(cat)"
+resume=0
+for a in "$@"; do [ "$a" = "resume" ] && resume=1; done
+{
+  echo "ARGS:$*"
+  echo "RESUME:$resume"
+  echo "PROMPT:$prompt"
+  echo "==="
+} >> "$HOME/invocations.log"
+if [ "$resume" = "1" ]; then
+  case "$prompt" in
+    *RESUMEFAIL*)
+      echo "stub codex: session not found" >&2
+      exit 3 ;;
+    *)
+      printf '%s\\n' '{"type":"thread.started","thread_id":"stub-session-1"}'
+      printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"resumed answer"}}'
+      printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":3}}'
+      exit 0 ;;
+  esac
+fi
 case "$prompt" in
   *FAILME*)
     echo "stub codex: auth expired" >&2
@@ -39,6 +59,7 @@ case "$prompt" in
   *SIGKILLME*)
     kill -9 $$ ;;
   *)
+    printf '%s\\n' '{"type":"thread.started","thread_id":"stub-session-1"}'
     printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Hello world"}}'
     printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":3}}'
     exit 0 ;;
@@ -54,17 +75,18 @@ const freePort = () => new Promise((resolve, reject) => {
   });
 });
 
-const startProxy = async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-proxy-test-'));
+const startProxy = async (reuse) => {
+  const tmp = reuse ? reuse.tmp : fs.mkdtempSync(path.join(os.tmpdir(), 'codex-proxy-test-'));
   const home = path.join(tmp, 'home');
   fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
   fs.writeFileSync(path.join(home, '.local', 'bin', 'codex'), STUB, { mode: 0o755 });
+  const stateHome = path.join(tmp, 'state');
   const port = await freePort();
   const child = spawn(process.execPath, [path.join(binDir, 'codex-proxy.mjs')], {
     env: {
       ...process.env,
       HOME: home,
-      XDG_STATE_HOME: path.join(tmp, 'state'),
+      XDG_STATE_HOME: stateHome,
       CODEX_PROXY_PORT: String(port)
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -81,7 +103,7 @@ const startProxy = async () => {
     if (Date.now() > deadline) throw new Error(`proxy did not start:\n${log}`);
     await new Promise(r => setTimeout(r, 50));
   }
-  return { port, stop: () => child.kill('SIGKILL') };
+  return { port, tmp, home, stateHome, stop: () => child.kill('SIGKILL') };
 };
 
 const post = (port, body) => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
@@ -160,4 +182,122 @@ test('empty-stderr fallback names the killing signal, not code null (#676)', asy
   const { port, stop } = await startProxy();
   t.after(stop);
   await assertFailure(port, 'SIGKILLME', /Codex execution failed: codex exec terminated by signal SIGKILL/);
+});
+
+const readInvocations = (home) => {
+  const raw = fs.readFileSync(path.join(home, 'invocations.log'), 'utf-8');
+  return raw
+    .split('===\n')
+    .filter(s => s.trim())
+    .map(block => {
+      const resume = /RESUME:(\d)/.exec(block);
+      const prompt = /PROMPT:([\s\S]*)$/.exec(block);
+      return { resume: resume && resume[1] === '1', prompt: prompt ? prompt[1] : '' };
+    });
+};
+
+const TURN1 = [{ role: 'user', content: 'alpha first question' }];
+const TURN2 = [
+  { role: 'user', content: 'alpha first question' },
+  { role: 'assistant', content: 'Hello world' },
+  { role: 'user', content: 'beta second question' }
+];
+
+test('second turn resumes the warm session with only the new tail (#480)', async (t) => {
+  const { port, home, stateHome, stop } = await startProxy();
+  t.after(stop);
+
+  const r1 = await post(port, { messages: TURN1 });
+  assert.equal(r1.status, 200);
+  assert.equal(JSON.parse(await r1.text()).choices[0].message.content, 'Hello world');
+
+  // The captured session id is persisted next to endpoint.json.
+  const saved = JSON.parse(
+    fs.readFileSync(path.join(stateHome, 'codex-proxy', 'sessions.json'), 'utf-8')
+  );
+  const entries = Object.values(saved);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].sessionId, 'stub-session-1');
+  assert.equal(entries[0].fedCount, 1);
+
+  const r2 = await post(port, { messages: TURN2 });
+  assert.equal(r2.status, 200);
+  assert.equal(JSON.parse(await r2.text()).choices[0].message.content, 'resumed answer');
+
+  const invocations = readInvocations(home);
+  assert.equal(invocations.length, 2);
+  assert.equal(invocations[0].resume, false);
+  assert.equal(invocations[1].resume, true, 'second turn must use exec resume');
+  assert.match(invocations[1].prompt, /beta second question/);
+  assert.doesNotMatch(invocations[1].prompt, /alpha first question/);
+});
+
+test('resume failure falls back to a full-history run and still answers (#480)', async (t) => {
+  const { port, home, stop } = await startProxy();
+  t.after(stop);
+
+  const r1 = await post(port, { messages: TURN1 });
+  assert.equal(r1.status, 200);
+  await r1.text();
+
+  const turn2Fail = [
+    { role: 'user', content: 'alpha first question' },
+    { role: 'assistant', content: 'Hello world' },
+    { role: 'user', content: 'please RESUMEFAIL now' }
+  ];
+  const r2 = await post(port, { messages: turn2Fail });
+  assert.equal(r2.status, 200, 'a failed resume must not fail the request');
+  assert.equal(JSON.parse(await r2.text()).choices[0].message.content, 'Hello world');
+
+  const invocations = readInvocations(home);
+  assert.equal(invocations.length, 3, 'expected fresh, resume, then full fallback');
+  assert.equal(invocations[1].resume, true);
+  assert.equal(invocations[2].resume, false);
+  assert.match(invocations[2].prompt, /alpha first question/, 'fallback must feed the full history');
+  assert.match(invocations[2].prompt, /RESUMEFAIL/);
+});
+
+test('changed system prompt does not resume; full run instead (#480)', async (t) => {
+  const { port, home, stop } = await startProxy();
+  t.after(stop);
+
+  const t1 = [
+    { role: 'system', content: 'be terse' },
+    { role: 'user', content: 'alpha first question' }
+  ];
+  const r1 = await post(port, { messages: t1 });
+  assert.equal(r1.status, 200);
+  await r1.text();
+
+  const t2 = [
+    { role: 'system', content: 'be verbose' },
+    { role: 'user', content: 'alpha first question' },
+    { role: 'assistant', content: 'Hello world' },
+    { role: 'user', content: 'beta second question' }
+  ];
+  const r2 = await post(port, { messages: t2 });
+  assert.equal(r2.status, 200);
+  assert.equal(JSON.parse(await r2.text()).choices[0].message.content, 'Hello world');
+
+  const invocations = readInvocations(home);
+  assert.equal(invocations.length, 2);
+  assert.equal(invocations[1].resume, false, 'system change must bypass resume');
+});
+
+test('session map survives a proxy restart via sessions.json (#480)', async (t) => {
+  const first = await startProxy();
+  const r1 = await post(first.port, { messages: TURN1 });
+  assert.equal(r1.status, 200);
+  await r1.text();
+  first.stop();
+
+  const second = await startProxy(first);
+  t.after(second.stop);
+  const r2 = await post(second.port, { messages: TURN2 });
+  assert.equal(r2.status, 200);
+  assert.equal(JSON.parse(await r2.text()).choices[0].message.content, 'resumed answer');
+
+  const invocations = readInvocations(first.home);
+  assert.equal(invocations.length, 2);
+  assert.equal(invocations[1].resume, true, 'restarted proxy must still resume');
 });
