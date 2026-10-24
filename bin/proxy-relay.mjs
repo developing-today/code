@@ -10,11 +10,14 @@
 //
 // The relay is a raw TCP forwarder: accept on loopback, CONNECT through
 // the tunnel proxy to the target, then pipe bytes. HTTP, SSE and
-// websockets all pass through untouched. Targets are tried in order —
-// canonical port first, then the A/B alternate — so a laptop-side
-// cutover (which flips the proxy between P and P+1000) is transparent
-// here: the first target that accepts a CONNECT wins, and the winner
-// is remembered until it fails.
+// websockets all pass through untouched. Targets are tried in order:
+// the first target that accepts a CONNECT wins, and the winner is
+// remembered until it fails. NOTE (measured 2026-10-24): this VM's
+// tunnel only reaches the canonical fleet ports — CONNECTs to the
+// +1000 alternates are refused proxy-side in ~0.1-0.5s even when a
+// service is live there, so the sandbox config lists canonical
+// targets only; a laptop proxy sitting on its alternate port is
+// unreachable from the sandbox until its next roll flips it home.
 //
 // Env:
 //   RELAY_LISTEN_PORT   (required) loopback port to listen on
@@ -131,16 +134,51 @@ const tryTargets = async (ports) => {
   throw lastErr || new Error('no target reachable');
 };
 
+// The supervisor health-checks the port this relay listens on; that
+// check must measure the RELAY (is the forwarder up?), not the laptop
+// backend — otherwise a backend outage makes the supervisor kill and
+// respawn a perfectly good relay forever, and a laptop-side A/B flip
+// (which the sandbox tunnel cannot follow — the tunnel only reaches
+// the canonical fleet ports; the +1000 alternates are refused) would
+// take the local listener down with it. So GET /health is answered
+// locally; everything else is forwarded untouched.
+const LOCAL_HEALTH = (reqLine) => /^GET \/health(\?\S*)? HTTP\//.test(reqLine);
+
 const server = net.createServer((client) => {
   client.on('error', () => client.destroy());
-  const order = [preferred, ...TARGET_PORTS.filter((p) => p !== preferred)];
-  tryTargets(order)
-    .then((upstream) => {
-      upstream.on('error', () => { client.destroy(); upstream.destroy(); });
-      client.pipe(upstream);
-      upstream.pipe(client);
-    })
-    .catch(() => client.destroy());
+  // Peek at the first request line before connecting upstream.
+  let buf = Buffer.alloc(0);
+  const onData = (chunk) => {
+    buf = Buffer.concat([buf, chunk]);
+    const headEnd = buf.indexOf('\r\n');
+    if (headEnd === -1 && buf.length < 8192) return;
+    client.removeListener('data', onData);
+    const firstLine = buf.slice(0, headEnd === -1 ? buf.length : headEnd).toString('latin1');
+    if (LOCAL_HEALTH(firstLine)) {
+      client.end(
+        'HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\n\r\n' +
+        JSON.stringify({
+          status: 'ok',
+          service: NAME,
+          relay: true,
+          listenPort: LISTEN_PORT,
+          target: `${TARGET_HOST}:${TARGET_PORTS.join('|')}`,
+          preferredTarget: preferred,
+        })
+      );
+      return;
+    }
+    const order = [preferred, ...TARGET_PORTS.filter((p) => p !== preferred)];
+    tryTargets(order)
+      .then((upstream) => {
+        upstream.on('error', () => { client.destroy(); upstream.destroy(); });
+        upstream.write(buf);
+        client.pipe(upstream);
+        upstream.pipe(client);
+      })
+      .catch(() => client.destroy());
+  };
+  client.on('data', onData);
 });
 
 server.listen(LISTEN_PORT, LISTEN_HOST, () => {
