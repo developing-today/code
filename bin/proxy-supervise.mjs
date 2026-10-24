@@ -434,7 +434,9 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
     // alternate; 'inplace' restarts where it is.
     let targetPort;
     if (proxy.strategy === 'inplace') targetPort = proxy.canonicalPort;
-    else if (proxy.strategy === 'swap') targetPort = altPort;
+    // 'swap' validates on the alternate only when replacing a live
+    // instance; a cold start goes straight to canonical.
+    else if (proxy.strategy === 'swap') targetPort = current?.live ? altPort : proxy.canonicalPort;
     else targetPort = current?.live ? otherPort(proxy, current.port) : proxy.canonicalPort;
 
     if (proxy.strategy === 'inplace' && current?.live) {
@@ -474,7 +476,7 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
     const startedAt = new Date().toISOString();
     const newCurrent = { port: targetPort, hash, pid: newPid, startedAt };
 
-    if (proxy.strategy === 'swap') {
+    if (proxy.strategy === 'swap' && targetPort !== proxy.canonicalPort) {
       // Candidate validated on the alternate port. Stop it and the old
       // instance, then start the same build on the canonical port.
       await stopInstance(newPid, cfg.drainSeconds);
