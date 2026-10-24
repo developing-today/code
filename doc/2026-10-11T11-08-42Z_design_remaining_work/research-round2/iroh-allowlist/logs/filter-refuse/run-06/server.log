@@ -1,0 +1,3 @@
+2026-10-11T17:24:16.552286Z  INFO harness: bound role="server" event="ready" mode=Filter id=8a88e3dd74 port=54062 direct=["10.200.0.1:54062", "10.200.0.2:54062", "127.0.0.1:54062"]
+2026-10-11T17:24:16.577366Z  INFO harness: first Initial packet; no EndpointId is known yet role="server" event="incoming" remote=Ip(127.0.0.1:52870) alpns=["n30/allowlist/0"]
+2026-10-11T17:24:16.577430Z  INFO harness: Incoming::refuse() role="server" event="refused_before_handshake"

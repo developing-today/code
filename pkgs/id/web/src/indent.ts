@@ -12,6 +12,27 @@ import type { Command, Plugin } from "prosemirror-state";
 const INDENT = "  "; // 2 spaces
 
 /**
+ * Line starts (ascending, first is the block start) that a selection
+ * overlaps: the line containing `from` through the line containing `to`.
+ * A selection ending exactly at a line start does not overlap that line
+ * (the standard editor rule), unless the selection is empty.
+ */
+export function selectedLineStarts(lineStarts: number[], from: number, to: number): number[] {
+  const lineContaining = (pos: number): number => {
+    let found = lineStarts[0];
+    for (const lineStart of lineStarts) {
+      if (lineStart > pos) break;
+      found = lineStart;
+    }
+    return found;
+  };
+  const endPos = to > from && lineStarts.includes(to) ? to - 1 : to;
+  const first = lineContaining(from);
+  const last = lineContaining(endPos);
+  return lineStarts.filter((lineStart) => lineStart >= first && lineStart <= last);
+}
+
+/**
  * Insert indentation at cursor, or indent all selected lines.
  */
 export const indentCommand: Command = (state, dispatch) => {
@@ -52,14 +73,9 @@ export const indentCommand: Command = (state, dispatch) => {
     }
 
     // Only indent lines that overlap with the selection
-    for (const lineStart of lineStarts) {
-      if (lineStart >= from || lineStart === blockStart) {
-        // Check this line is within selection
-        if (lineStart <= to + offset) {
-          tr = tr.insertText(INDENT, lineStart + offset);
-          offset += INDENT.length;
-        }
-      }
+    for (const lineStart of selectedLineStarts(lineStarts, from, to)) {
+      tr = tr.insertText(INDENT, lineStart + offset);
+      offset += INDENT.length;
     }
 
     dispatch(tr);
@@ -104,7 +120,7 @@ export const dedentCommand: Command = (state, dispatch) => {
               ls <= from &&
               (lineStarts.indexOf(ls) === lineStarts.length - 1 || lineStarts[lineStarts.indexOf(ls) + 1] > from),
           )
-        : lineStarts.filter((ls) => ls <= to);
+        : selectedLineStarts(lineStarts, from, to);
 
     for (const lineStart of linesToDedent) {
       const adjustedPos = lineStart + offset;

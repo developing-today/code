@@ -58,7 +58,6 @@
 //! ```
 
 use anyhow::{Context, Result, bail};
-use iroh::endpoint::{Endpoint, RelayMode, presets};
 use iroh_base::EndpointId;
 use iroh_blobs::{ALPN as BLOBS_ALPN, Hash};
 
@@ -105,7 +104,8 @@ pub async fn cmd_gethash(hash_str: &str, output: &str) -> Result<()> {
 
         let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
 
-        let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
+        let blobs_conn =
+            crate::connectivity::connect(&endpoint, endpoint_addr.clone(), BLOBS_ALPN).await?;
         store_handle
             .remote()
             .fetch(blobs_conn.clone(), hash)
@@ -157,7 +157,8 @@ pub async fn cmd_get_local(name: &str, output: &str) -> Result<()> {
 
         let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
 
-        let meta_conn = endpoint.connect(endpoint_addr.clone(), META_ALPN).await?;
+        let meta_conn =
+            crate::connectivity::connect(&endpoint, endpoint_addr.clone(), META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::Get {
             filename: name.to_owned(),
@@ -180,7 +181,8 @@ pub async fn cmd_get_local(name: &str, output: &str) -> Result<()> {
             }
         };
 
-        let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
+        let blobs_conn =
+            crate::connectivity::connect(&endpoint, endpoint_addr.clone(), BLOBS_ALPN).await?;
         store_handle
             .remote()
             .fetch(blobs_conn.clone(), hash)
@@ -250,7 +252,8 @@ pub async fn cmd_get_one(
             let store = open_store(true).await?;
             let store_handle = store.as_store();
             let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
-            let blobs_conn = endpoint.connect(endpoint_addr.clone(), BLOBS_ALPN).await?;
+            let blobs_conn =
+                crate::connectivity::connect(&endpoint, endpoint_addr.clone(), BLOBS_ALPN).await?;
 
             match store_handle.remote().fetch(blobs_conn.clone(), hash).await {
                 Ok(_) => {
@@ -319,13 +322,14 @@ pub async fn cmd_get_one_remote(
     let store_handle = store.as_store();
 
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
-    if no_relay {
-        builder = builder.relay_mode(RelayMode::Disabled);
-    }
-    let endpoint = builder.bind().await?;
+    let endpoint = crate::connectivity::public_builder(
+        crate::connectivity::RelayPolicy::from_no_relay(no_relay),
+    )
+    .secret_key(client_key)
+    .bind()
+    .await?;
 
-    let meta_conn = endpoint.connect(server_node_id, META_ALPN).await?;
+    let meta_conn = crate::connectivity::connect(&endpoint, server_node_id, META_ALPN).await?;
     let (mut send, mut recv) = meta_conn.open_bi().await?;
     let req = postcard::to_allocvec(&MetaRequest::Get {
         filename: name.to_owned(),
@@ -348,7 +352,7 @@ pub async fn cmd_get_one_remote(
         }
     };
 
-    let blobs_conn = endpoint.connect(server_node_id, BLOBS_ALPN).await?;
+    let blobs_conn = crate::connectivity::connect(&endpoint, server_node_id, BLOBS_ALPN).await?;
     store_handle
         .remote()
         .fetch(blobs_conn.clone(), hash)

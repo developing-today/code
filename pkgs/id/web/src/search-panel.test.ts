@@ -278,3 +278,25 @@ describe("search panel integration", () => {
     expect(panels.length).toBe(1);
   });
 });
+
+// ── Editor recreation (#718) ───────────────────────────────────────
+
+describe("search panel across editor recreation", () => {
+  it("Ctrl+F in a recreated editor shows a panel in the new container without destroySearchPanel()", () => {
+    const first = createViewWithSearch();
+    triggerSearchKey(first.view, "f");
+    expect(first.container.querySelector(".search-panel")).not.toBeNull();
+
+    // Production teardown (main.ts disconnect) destroys only the view —
+    // it never calls destroySearchPanel(). Mirror that exactly.
+    first.view.destroy();
+    first.container.remove();
+
+    const second = createViewWithSearch();
+    activeView = second.view;
+    activeContainer = second.container;
+    triggerSearchKey(second.view, "f");
+    expect(second.container.querySelector(".search-panel")).not.toBeNull();
+    expect(second.container.querySelector("#search-input")).not.toBeNull();
+  });
+});

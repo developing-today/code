@@ -1,0 +1,4 @@
+publisher: 1 relay(s), policy RelayAndIp, mainline(bootstrap=1, publish=true)
+publisher's own address: 1 relay, 2 direct
+record: 1 relay URL(s), 2 direct address(es) (values withheld)
+RESULT policy: PASS

@@ -324,6 +324,28 @@ describe("detectLanguage", () => {
   });
 
   // ==========================================================================
+  // Special-name stem vs known extension (#721)
+  // ==========================================================================
+
+  describe("special-name stem vs known extension", () => {
+    it("lets a known extension win over a special-name stem", () => {
+      expect(detectLanguage("justfile.rs")).toBe("rust");
+      expect(detectLanguage("makefile.md")).toBe("markdown");
+      expect(detectLanguage("dockerfile.py")).toBe("python");
+      expect(detectLanguage("gemfile.json")).toBe("json");
+      expect(detectLanguage("vagrantfile.toml")).toBe("toml");
+      expect(detectLanguage("cmakelists.rs")).toBe("rust");
+      expect(detectLanguage("rakefile.ts")).toBe("typescript");
+    });
+
+    it("keeps the special name when the extension is unknown", () => {
+      expect(detectLanguage("Dockerfile.dev")).toBe("dockerfile");
+      expect(detectLanguage("CMakeLists.txt")).toBe("cmake");
+      expect(detectLanguage("Makefile.bak")).toBe("makefile");
+    });
+  });
+
+  // ==========================================================================
   // Dotfiles
   // ==========================================================================
 

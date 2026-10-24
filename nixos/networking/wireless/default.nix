@@ -36,6 +36,12 @@
       '';
     };
   };
-  sops.templates.wireless-secrets.content = host.wireless-secrets-template config;
+  sops.templates.wireless-secrets = {
+    content = host.wireless-secrets-template config;
+    # wpa_supplicant runs as its own user and must be able to read this at boot.
+    owner = "wpa_supplicant";
+    group = "wpa_supplicant";
+    mode = "0400";
+  };
   users.groups.network = { }; # Ensure group exists this would be for users that aren't root or sudoers or doassers or whatever
 }

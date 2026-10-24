@@ -1,0 +1,18 @@
+{
+  "families": {
+    "gemini-flash": "^gemini-(\\d+(?:\\.\\d+)?)-flash$",
+    "claude-opus": "^claude-opus-(\\d+(?:-\\d+)?)$",
+    "claude-sonnet": "^claude-sonnet-(\\d+(?:-\\d+)?)$",
+    "claude-haiku": "^claude-haiku-(\\d+(?:-\\d+)?)$"
+  },
+  "providers": {
+    "antigravity-agy": {
+      "keep": ["gemini-flash", "claude-opus", "claude-sonnet", "claude-haiku"],
+      "exclude": []
+    },
+    "antigravity-ls": {
+      "keep": ["gemini-flash", "claude-opus", "claude-sonnet", "claude-haiku"],
+      "exclude": []
+    }
+  }
+}

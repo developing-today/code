@@ -14,7 +14,9 @@ let
   # Read flake.lock to get exact versions
   flakeLock = builtins.fromJSON (builtins.readFile ./flake.lock);
 
-  # Extract locked versions from flake.lock
+  # Extract locked versions from flake.lock. nixpkgs is aliased to
+  # nixpkgs-unstable in flake.nix, so both shells use the same tree as the
+  # system and the id sub-flake.
   nixpkgsLock = flakeLock.nodes.nixpkgs-unstable.locked;
   rustOverlayLock = flakeLock.nodes.id-rust-overlay.locked;
 
@@ -32,6 +34,12 @@ let
 
   pkgs = import nixpkgs {
     overlays = [ (import rustOverlay) ];
+    # nix-common.nix includes the Android SDK (androidenv is unfree and gated
+    # on license acceptance); see nixos/nixpkgs/default.nix for the system copy.
+    config = {
+      allowUnfree = true;
+      android_sdk.accept_license = true;
+    };
   };
 
   # Import shared configuration (defines rustToolchain, fmtBins, nativeBuildInputs, etc.)

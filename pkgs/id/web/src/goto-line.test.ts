@@ -134,6 +134,19 @@ describe("go-to-line command", () => {
     expect(handled).toBe(true);
   });
 
+  it("associates its label with the line input", () => {
+    const { view, container } = createViewWithGotoLine("line1\nline2");
+    views.push(view);
+    containers.push(container);
+
+    triggerGotoLine(view);
+
+    const label = container.querySelector<HTMLLabelElement>(".goto-line-label");
+    const input = container.querySelector<HTMLInputElement>("#goto-line-input");
+    expect(label?.htmlFor).toBe("goto-line-input");
+    expect(input?.labels?.[0]).toBe(label);
+  });
+
   it("creates a .goto-line-dialog element in the container", () => {
     const { view, container } = createViewWithGotoLine("line1\nline2\nline3");
     views.push(view);
@@ -254,6 +267,32 @@ describe("dialog input interaction", () => {
     expect(posAfter).toBe(8);
   });
 
+  it.each([
+    ["0", "zero"],
+    ["-3", "negative"],
+    ["2.9", "fractional"],
+    ["999", "out of range"],
+    ["", "empty"],
+  ])("Enter with %s (%s) does not move the cursor and keeps the dialog open", (value) => {
+    const { view, container } = createViewWithGotoLine("first\nsecond\nthird");
+    views.push(view);
+    containers.push(container);
+
+    triggerGotoLine(view);
+
+    const dialog = container.querySelector(".goto-line-dialog") as HTMLElement;
+    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    input.value = value;
+    const posBefore = view.state.selection.from;
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+    // #712: invalid input must not be silently reinterpreted (0 -> line 1,
+    // 2.9 -> line 2) or swallowed (999) — no move, dialog stays open.
+    expect(view.state.selection.from).toBe(posBefore);
+    expect(dialog.style.display).not.toBe("none");
+  });
+
   it("Enter with line 1 moves cursor to position 0", () => {
     const { view, container } = createViewWithGotoLine("first\nsecond");
     views.push(view);
@@ -275,5 +314,27 @@ describe("dialog input interaction", () => {
     const posAfter = view.state.selection.from;
     // Position 0 gets resolved to the nearest valid cursor position (pos 2 inside code_block)
     expect(posAfter).toBeLessThanOrEqual(2);
+  });
+});
+
+// ── Editor recreation (#718) ───────────────────────────────────────
+
+describe("goto-line dialog across editor recreation", () => {
+  it("Ctrl+G in a recreated editor shows a dialog in the new container without destroyGotoLineDialog()", () => {
+    const first = createViewWithGotoLine("first\nsecond");
+    triggerGotoLine(first.view);
+    expect(first.container.querySelector(".goto-line-dialog")).not.toBeNull();
+
+    // Production teardown (main.ts disconnect) destroys only the view —
+    // it never calls destroyGotoLineDialog(). Mirror that exactly.
+    first.view.destroy();
+    first.container.remove();
+
+    const second = createViewWithGotoLine("first\nsecond");
+    views.push(second.view);
+    containers.push(second.container);
+    triggerGotoLine(second.view);
+    expect(second.container.querySelector(".goto-line-dialog")).not.toBeNull();
+    expect(second.container.querySelector(".goto-line-input")).not.toBeNull();
   });
 });

@@ -147,6 +147,35 @@
               "namepath": "id::root::fmt",
               "shebang": false
             },
+            "id-mail-deploy": {
+              "attributes": [{ "group": "mail" }],
+              "body": [["nix run .#id-mail-deploy -- ", [["variable", "args"]]]],
+              "dependencies": [],
+              "doc": "Deploy the mail Worker via the nix flake app (extra args go to deploy.mjs, e.g. --dry-run)",
+              "name": "id-mail-deploy",
+              "parameters": [
+                {
+                  "default": null,
+                  "export": false,
+                  "flag": false,
+                  "help": null,
+                  "kind": "star",
+                  "long": null,
+                  "max": null,
+                  "min": null,
+                  "multiple": false,
+                  "name": "args",
+                  "pattern": null,
+                  "short": null,
+                  "value": null
+                }
+              ],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::id-mail-deploy",
+              "shebang": false
+            },
             "just-recipes": {
               "attributes": [{ "group": "deps" }],
               "body": [
@@ -189,57 +218,44 @@
               "namepath": "id::root::lockfiles",
               "shebang": false
             },
-            "lootbox-kill": {
+            "mcpx-daemon": {
               "attributes": [{ "group": "util" }],
-              "body": [
-                ["#!/usr/bin/env bash"],
-                ["set -euo pipefail"],
-                ["pid=$(ss -tlnp 2>/dev/null | grep ':9420 ' | grep -oP 'pid=\\K[0-9]+' || true)"],
-                ["if [ -n \"$pid\" ]; then"],
-                ["    kill \"$pid\""],
-                ["    echo \"Killed lootbox server (PID $pid)\""],
-                ["else"],
-                ["    echo \"No lootbox server running on port 9420\""],
-                ["fi"]
-              ],
+              "body": [["mcpx daemon run"]],
               "dependencies": [],
-              "doc": "Kill running lootbox server",
-              "name": "lootbox-kill",
+              "doc": "Start mcpx daemon",
+              "name": "mcpx-daemon",
               "parameters": [],
               "priors": 0,
               "private": false,
               "quiet": false,
-              "namepath": "id::root::lootbox-kill",
-              "shebang": true
+              "namepath": "id::root::mcpx-daemon",
+              "shebang": false
             },
-            "lootbox-server": {
+            "mcpx-status": {
               "attributes": [{ "group": "util" }],
-              "body": [
-                ["#!/usr/bin/env bash"],
-                ["set -euo pipefail"],
-                ["if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then"],
-                ["    echo \"Lootbox server already running on port 9420\""],
-                ["else"],
-                ["    echo \"Starting lootbox server...\""],
-                ["    nohup lootbox server --port 9420 &>/dev/null &"],
-                ["    disown"],
-                ["    sleep 1"],
-                ["    if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then"],
-                ["        echo \"Lootbox server started on port 9420\""],
-                ["    else"],
-                ["        echo \"Lootbox server may still be starting up...\""],
-                ["    fi"],
-                ["fi"]
-              ],
+              "body": [["mcpx status"]],
               "dependencies": [],
-              "doc": "Start lootbox server (if not already running)",
-              "name": "lootbox-server",
+              "doc": "Check mcpx daemon status",
+              "name": "mcpx-status",
               "parameters": [],
               "priors": 0,
               "private": false,
               "quiet": false,
-              "namepath": "id::root::lootbox-server",
-              "shebang": true
+              "namepath": "id::root::mcpx-status",
+              "shebang": false
+            },
+            "mcpx-stop": {
+              "attributes": [{ "group": "util" }],
+              "body": [["mcpx stop"]],
+              "dependencies": [],
+              "doc": "Stop running mcpx daemon",
+              "name": "mcpx-stop",
+              "parameters": [],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::mcpx-stop",
+              "shebang": false
             },
             "stage-docs": {
               "attributes": [{ "group": "docs" }],
@@ -366,6 +382,19 @@
               "namepath": "id::root::strip-whitespace",
               "shebang": true
             },
+            "switch": {
+              "attributes": [{ "group": "nixos" }],
+              "body": [["./s"]],
+              "dependencies": [],
+              "doc": "Rebuild and switch NixOS configuration",
+              "name": "switch",
+              "parameters": [],
+              "priors": 0,
+              "private": false,
+              "quiet": false,
+              "namepath": "id::root::switch",
+              "shebang": false
+            },
             "treefmt": {
               "attributes": [{ "group": "format" }],
               "body": [
@@ -491,25 +520,6 @@
               "quiet": false,
               "namepath": "id::root::update-inputs-all",
               "shebang": false
-            },
-            "update-lootbox": {
-              "attributes": [{ "group": "util" }],
-              "body": [
-                ["#!/usr/bin/env bash"],
-                ["set -euo pipefail"],
-                ["echo \"Updating lootbox...\""],
-                ["curl -fsSL https://raw.githubusercontent.com/jx-codes/lootbox/main/install.sh | bash"],
-                ["echo \"lootbox updated to $(lootbox --version)\""]
-              ],
-              "dependencies": [],
-              "doc": "Reinstall/update lootbox binary from latest source",
-              "name": "update-lootbox",
-              "parameters": [],
-              "priors": 0,
-              "private": false,
-              "quiet": false,
-              "namepath": "id::root::update-lootbox",
-              "shebang": true
             },
             "update-nixpkgs": {
               "attributes": [{ "group": "nixpkgs" }],
@@ -677,7 +687,6 @@
         "nix-check": { "attributes": [], "name": "nix-check", "target": "test-nix" },
         "release-force": { "attributes": [], "name": "release-force", "target": "release-web-force" },
         "test-cargo": { "attributes": [], "name": "test-cargo", "target": "test-rust" },
-        "test-full": { "attributes": [], "name": "test-full", "target": "test-nix" },
         "test-int": { "attributes": [], "name": "test-int", "target": "test-integration" },
         "test-lib": { "attributes": [], "name": "test-lib", "target": "test-unit" },
         "treefmt-uncached": { "attributes": [], "name": "treefmt-uncached", "target": "treefmt-no-cache" },
@@ -2198,6 +2207,26 @@
           "namepath": "id::test-e2e-report",
           "shebang": false
         },
+        "test-full": {
+          "attributes": [{ "group": "test" }],
+          "body": [
+            ["cargo test --all-features --no-fail-fast"],
+            ["cargo test --all-features --test regression_replay"],
+            [
+              "PROPTEST_CASES=\"${PROPTEST_CASES:-4096}\" ID_TUPLE_FUZZ_CASES=\"${ID_TUPLE_FUZZ_CASES:-20000}\" cargo test --all-features --test tuple_properties"
+            ],
+            ["@echo \"✓ Full Rust test run passed\""]
+          ],
+          "dependencies": [],
+          "doc": "Full Rust run: the complete suite, then the regression replay and the tuple property tests at a higher case count",
+          "name": "test-full",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::test-full",
+          "shebang": false
+        },
         "test-int-sandbox": {
           "attributes": [{ "group": "test" }],
           "body": [["cargo test --all-features --test cli_integration -- --skip serve_tests"]],
@@ -3052,6 +3081,35 @@
       "namepath": "fmt",
       "shebang": false
     },
+    "id-mail-deploy": {
+      "attributes": [{ "group": "mail" }],
+      "body": [["nix run .#id-mail-deploy -- ", [["variable", "args"]]]],
+      "dependencies": [],
+      "doc": "Deploy the mail Worker via the nix flake app (extra args go to deploy.mjs, e.g. --dry-run)",
+      "name": "id-mail-deploy",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "id-mail-deploy",
+      "shebang": false
+    },
     "just-recipes": {
       "attributes": [{ "group": "deps" }],
       "body": [
@@ -3094,57 +3152,44 @@
       "namepath": "lockfiles",
       "shebang": false
     },
-    "lootbox-kill": {
+    "mcpx-daemon": {
       "attributes": [{ "group": "util" }],
-      "body": [
-        ["#!/usr/bin/env bash"],
-        ["set -euo pipefail"],
-        ["pid=$(ss -tlnp 2>/dev/null | grep ':9420 ' | grep -oP 'pid=\\K[0-9]+' || true)"],
-        ["if [ -n \"$pid\" ]; then"],
-        ["    kill \"$pid\""],
-        ["    echo \"Killed lootbox server (PID $pid)\""],
-        ["else"],
-        ["    echo \"No lootbox server running on port 9420\""],
-        ["fi"]
-      ],
+      "body": [["mcpx daemon run"]],
       "dependencies": [],
-      "doc": "Kill running lootbox server",
-      "name": "lootbox-kill",
+      "doc": "Start mcpx daemon",
+      "name": "mcpx-daemon",
       "parameters": [],
       "priors": 0,
       "private": false,
       "quiet": false,
-      "namepath": "lootbox-kill",
-      "shebang": true
+      "namepath": "mcpx-daemon",
+      "shebang": false
     },
-    "lootbox-server": {
+    "mcpx-status": {
       "attributes": [{ "group": "util" }],
-      "body": [
-        ["#!/usr/bin/env bash"],
-        ["set -euo pipefail"],
-        ["if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then"],
-        ["    echo \"Lootbox server already running on port 9420\""],
-        ["else"],
-        ["    echo \"Starting lootbox server...\""],
-        ["    nohup lootbox server --port 9420 &>/dev/null &"],
-        ["    disown"],
-        ["    sleep 1"],
-        ["    if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then"],
-        ["        echo \"Lootbox server started on port 9420\""],
-        ["    else"],
-        ["        echo \"Lootbox server may still be starting up...\""],
-        ["    fi"],
-        ["fi"]
-      ],
+      "body": [["mcpx status"]],
       "dependencies": [],
-      "doc": "Start lootbox server (if not already running)",
-      "name": "lootbox-server",
+      "doc": "Check mcpx daemon status",
+      "name": "mcpx-status",
       "parameters": [],
       "priors": 0,
       "private": false,
       "quiet": false,
-      "namepath": "lootbox-server",
-      "shebang": true
+      "namepath": "mcpx-status",
+      "shebang": false
+    },
+    "mcpx-stop": {
+      "attributes": [{ "group": "util" }],
+      "body": [["mcpx stop"]],
+      "dependencies": [],
+      "doc": "Stop running mcpx daemon",
+      "name": "mcpx-stop",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "mcpx-stop",
+      "shebang": false
     },
     "stage-docs": {
       "attributes": [{ "group": "docs" }],
@@ -3271,6 +3316,19 @@
       "namepath": "strip-whitespace",
       "shebang": true
     },
+    "switch": {
+      "attributes": [{ "group": "nixos" }],
+      "body": [["./s"]],
+      "dependencies": [],
+      "doc": "Rebuild and switch NixOS configuration",
+      "name": "switch",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "switch",
+      "shebang": false
+    },
     "treefmt": {
       "attributes": [{ "group": "format" }],
       "body": [
@@ -3393,25 +3451,6 @@
       "quiet": false,
       "namepath": "update-inputs-all",
       "shebang": false
-    },
-    "update-lootbox": {
-      "attributes": [{ "group": "util" }],
-      "body": [
-        ["#!/usr/bin/env bash"],
-        ["set -euo pipefail"],
-        ["echo \"Updating lootbox...\""],
-        ["curl -fsSL https://raw.githubusercontent.com/jx-codes/lootbox/main/install.sh | bash"],
-        ["echo \"lootbox updated to $(lootbox --version)\""]
-      ],
-      "dependencies": [],
-      "doc": "Reinstall/update lootbox binary from latest source",
-      "name": "update-lootbox",
-      "parameters": [],
-      "priors": 0,
-      "private": false,
-      "quiet": false,
-      "namepath": "update-lootbox",
-      "shebang": true
     },
     "update-nixpkgs": {
       "attributes": [{ "group": "nixpkgs" }],

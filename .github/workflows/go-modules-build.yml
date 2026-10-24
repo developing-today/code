@@ -1,0 +1,100 @@
+name: go modules build
+
+# Build verification for the small pkgs/{chat,database,graph,import,
+# launcher,tea} Go modules (#342).
+#
+# Nothing built these five modules in CI at all, so a change breaking any
+# of them would rot silently — the exact failure that hit pkgs/map (#338)
+# and pkgs/identity (#340) before each got its own build workflow. They
+# compile and vet clean today; this workflow keeps them that way. One
+# matrix job per module so a failure names the module.
+#
+# Its first run immediately earned its keep: pkgs/database failed on its
+# own Go 1.21.3 with "ambiguous import: found package database in
+# multiple modules" — its go.mod was the bare `module database`, whose
+# root import path collides with the stdlib database tree (newer Go
+# accepts it, which hid the break). This PR also renames that module to
+# github.com/developing-today/code/src/database, matching chat/tea.
+#
+# pkgs/graph was deliberately excluded while its build failure was #166;
+# it joined the matrix once #166 was fixed (keygen v0.5.1, the same fix
+# as pkgs/map in #338). pkgs/map and pkgs/identity keep their dedicated
+# workflows (identity needs build tags).
+#
+# Each job also verifies the module is tidy (#347): build/vet pass on an
+# untidy module, and mod-tidy.yml only watches pkgs/graph — pkgs/import
+# had drifted (lib/pq recorded indirect though directly imported, stale
+# pgx/cockroach indirects) with nothing noticing.
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/chat/**"
+      - "pkgs/database/**"
+      - "pkgs/graph/**"
+      - "pkgs/import/**"
+      - "pkgs/launcher/**"
+      - "pkgs/tea/**"
+      - ".github/workflows/go-modules-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/chat/**"
+      - "pkgs/database/**"
+      - "pkgs/graph/**"
+      - "pkgs/import/**"
+      - "pkgs/launcher/**"
+      - "pkgs/tea/**"
+      - ".github/workflows/go-modules-build.yml"
+
+permissions:
+  contents: read
+
+# Push-to-main runs each get their own group (keyed by run_id), so a
+# later merge can never cancel — or displace a pending — verification
+# run for an earlier merge: every merged tree gets its own completed
+# run. Pull-request runs keep sharing a per-ref group, so a new push
+# to a PR still supersedes its stale run (#392). A conditional
+# cancel-in-progress (the mcpx-conformance pattern) would still let a
+# third rapid merge displace the second merge's pending run, so push
+# runs are keyed by run_id here, matching dezren39/nix PR #495.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: go build (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [chat, database, graph, import, launcher, tea]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/${{ matrix.module }}/go.mod
+          cache-dependency-path: pkgs/${{ matrix.module }}/go.sum
+
+      - name: Verify go.mod and go.sum are tidy
+        working-directory: pkgs/${{ matrix.module }}
+        run: |
+          go mod tidy
+          if [[ -n "$(git status --short -- go.mod go.sum)" ]]; then
+            echo "go mod tidy changed go.mod or go.sum; commit the tidy changes."
+            git diff -- go.mod go.sum
+            exit 1
+          fi
+
+      - name: Build
+        working-directory: pkgs/${{ matrix.module }}
+        run: go build ./...
+
+      - name: Vet
+        working-directory: pkgs/${{ matrix.module }}
+        run: go vet ./...

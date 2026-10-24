@@ -6,11 +6,15 @@
       allowBroken = true;
       allowUnfree = true;
       allowUnfreePredicate = _: true;
+      # Android SDK (pkgs.androidenv) is unfree and gates its derivation on
+      # license acceptance; without this, evaluating the SDK throws. Set here
+      # rather than via nixpkgs.config because this module assigns nixpkgs.pkgs
+      # directly, which makes nixpkgs.config a no-op.
+      android_sdk.accept_license = true;
       permittedInsecurePackages = [
         "olm-3.2.16"
         "electron"
         "qtwebkit-5.212.0-alpha4"
-        "openclaw-2026.6.33"
       ];
     };
     overlays = [

@@ -15,6 +15,7 @@ import {
   findNext,
   findPrev,
   getSearchState,
+  getMatchHighlights,
   replaceAll,
   replaceNext,
   SearchQuery,
@@ -54,15 +55,9 @@ function countMatches(view: EditorView): number {
   const ss = getSearchState(view.state);
   if (!ss || !ss.query.valid) return 0;
 
-  let count = 0;
-  let result = ss.query.findNext(view.state, 0);
-  const seen = new Set<number>();
-  while (result && !seen.has(result.from)) {
-    seen.add(result.from);
-    count++;
-    result = ss.query.findNext(view.state, result.to);
-  }
-  return count;
+  // ⚡ Bolt optimization: Use pre-computed DecorationSet instead of
+  // O(N) iterative document traversal. Speeds up large document searches.
+  return getMatchHighlights(view.state).find().length;
 }
 
 /** Update match count label. */
@@ -105,16 +100,16 @@ function createPanel(container: HTMLElement): HTMLElement {
   panel.innerHTML = `
     <div class="search-panel-row">
       <input type="text" id="search-input" class="search-field" placeholder="Find…" aria-label="Find text" autocomplete="off" spellcheck="false" />
-      <span class="search-match-count" id="search-match-count"></span>
-      <button class="search-btn" id="search-prev" title="Previous (Shift+Enter)" aria-label="Previous match">&#x25B2;</button>
-      <button class="search-btn" id="search-next" title="Next (Enter)" aria-label="Next match">&#x25BC;</button>
+      <span class="search-match-count" id="search-match-count" aria-live="polite"></span>
+      <button class="search-btn" id="search-prev" title="Previous (Shift+Enter)" aria-label="Find previous">&#x25B2;</button>
+      <button class="search-btn" id="search-next" title="Next (Enter)" aria-label="Find next">&#x25BC;</button>
       <label class="search-toggle" title="Case sensitive">
         <input type="checkbox" id="search-case" aria-label="Match case" /><span>Aa</span>
       </label>
       <label class="search-toggle" title="Regular expression">
         <input type="checkbox" id="search-regex" aria-label="Use regular expression" /><span>.*</span>
       </label>
-      <button class="search-btn search-close" id="search-close" title="Close (Escape)" aria-label="Close search panel">&times;</button>
+      <button class="search-btn search-close" id="search-close" title="Close (Escape)" aria-label="Close search">&times;</button>
     </div>
     <div class="search-panel-row search-replace-row" id="search-replace-row" style="display:none">
       <input type="text" id="replace-input" class="search-field" placeholder="Replace…" aria-label="Replace with" autocomplete="off" spellcheck="false" />
@@ -202,6 +197,15 @@ function setupPanelEvents(): void {
 function openPanel(view: EditorView, showReplace: boolean): void {
   const container = view.dom.parentElement;
   if (!container) return;
+
+  // The panel is a module singleton bound to one view and container. When
+  // the editor is recreated (disconnect / open another file) the old panel
+  // is detached with the old container and its handlers still point at the
+  // destroyed view — and no production code calls destroySearchPanel() on
+  // teardown. Rebind instead of "opening" a detached node (#718).
+  if (panelState.panelEl && (panelState.view !== view || panelState.panelEl.parentElement !== container)) {
+    destroySearchPanel();
+  }
 
   if (!panelState.panelEl) {
     panelState.panelEl = createPanel(container);

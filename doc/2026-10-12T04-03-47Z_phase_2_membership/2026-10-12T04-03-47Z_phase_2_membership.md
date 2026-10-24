@@ -1,0 +1,52 @@
+# Phase 2: membership, auth frontier, and delegation
+
+- Plan: [phased plan](../../2026-10-11T11-08-42Z_design_remaining_work/plan-phases.md), section 7.
+- Start commit: `8bea0731` (phase-1 head at the start of Phase 2; Phase 1 was still in its final fix, see its record).
+- Base branch: `phase-2`. Track branches: `p2-auth` (P2.1, P2.2), `p2-friend` (P2.4), `p2-caps` (P2.6); `p2-voiding` (P2.3) and `p2-delegation` (P2.5) after the auth track; P2.7 and P2.8 at the end.
+- Phase 1 fixes still in flight (p1-liveness) are merged into this branch when they land.
+
+## Steps
+
+| Step                               | Status | Commits                                                                                  | Tests added                                                                    | Notes                                                                              |
+| ---------------------------------- | ------ | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| P2.1 Auth-frontier mapping         | done   | 862401c9                                                                                 | 25 unit, 16 scenario (S2 in every order), 3 property                           | p2panda-auth 0.7.1 at rev 3e84cac, no test_utils                                   |
+| P2.2 Admission gate                | done   | 236dcbc7                                                                                 | gate outcomes, group-absent regression                                         |                                                                                    |
+| P2.3 Authority-based voiding       | done   | 88574505, 21d00659, 16cddd77, 24038780, 4e308e8a, d5ec3828, e1b9571b, df4e8413, 4da53d46 | 12 scenarios, property over arrival orders, production-path tests, codec tests | group actions reach production ingest; create takeover refused; late body attaches |
+| P2.4 Groups, templates, friendship | done   | 7d5b84bd, 3e0d4bb3, b3315bfa (superseded pair model), 6503f94b (config)                  | groups 34 to 50 tests, friendship template, property at 256 cases              | pair module replaced by the group template (owner decision)                        |
+| P2.5 Delegation modes              | done   | 0970ee94, 6ed7ddb3                                                                       | 17 mode tests, attenuation, chain search, veto, S2 table                       | managers are roots at their position (design 7.2)                                  |
+| P2.6 World capabilities            | done   | 965b749b, 4b5787a0, 3974cb29, 6cd014e5                                                   | no-count delegation, host limits, partition counts, content kept               | uses refused explicitly; wire target (chain checks) is Phase 3 in the design       |
+| P2.7 Cross-world reconciliation    | done   | 24984c96, 23445bff                                                                       | 9 tests, 256-case property                                                     | crossings carry Write at most; isolation markers apply to crossings out            |
+| P2.8 Property and mutation checks  | done   | c5f197d1 to 5d6b578a (review)                                                            | five planted bugs, all caught                                                  |                                                                                    |
+| P2.9 Server config                 | done   | 6503f94b, 10385cc4                                                                       | 34 config tests                                                                | creation limits, provisioning by key, config keys, primary alias stored            |
+
+## Decisions
+
+- Voiding is authority-based: a dependent is voided only when its author lost authority at the dependency's point (decision 1).
+- Transfer on removal is derived from the signed removal (decision 2).
+- Use-count bounds on world capabilities are dropped; enforcement stays local (decision 3). Content on removal is kept (decision 4).
+
+## Open questions
+
+- Group identity. A group's ID is the BLAKE3 hash of its create event (design §5.5). p2panda-auth needs one `Author` type for members and groups, so the membership code uses `AuthId`: a key or a group hash. Confirm before P2.3 depends on it.
+- Nested groups. The frontier covers the target group only. A `GroupMember::Group` in an action names another group's state, and its frontier is not included.
+- A refusal rebuilds the auth graph from the accepted operations (`process` consumes its state on error). That is O(accepted) per refusal. Measure before scaling.
+- The gate computes `state_at(dependencies)` per operation, so it is O(state) each time. Not measured.
+- The layer is not wired into the event store yet, and it has no expiry for held events. Both belong to the store integration.
+- Refused events with no manager at their dependencies are walked through, not given a placeholder. Descendants depend on whatever sits below them.
+
+## Changes to the plan
+
+- P2.4 re-scoped to the group model (owner, 2026-10-12): the friendship pair module is superseded.
+- P2.9 added (server config and aliases as tags).
+- P2.5 and P2.6 run in parallel with P2.3 where they did not share files; P2.6 wire target is Phase 3 in the design.
+
+## Review notes and regression tests
+
+- P2.1: the raw `after` stalls with `MissingDependencies` (`raw_after_as_dependencies_stalls_with_missing_dependencies`). The literal mapping panics (`literal_mapping_with_no_auth_dependency_does_not_apply`). A root dependency voids a valid add (`root_dependency_voids_a_valid_add`). An unknown dependency is an error (`unknown_dependency_is_an_error_not_a_panic`, and `unknown_after_is_an_error_not_a_root` in the index).
+- P2.2: an event naming an undecided hash is held, not treated as a root (`an_event_naming_an_undecided_hash_is_held_until_it_arrives`). A group absent at its dependencies is refused without the crate's panic (`an_operation_for_a_group_absent_at_its_dependencies_is_refused_without_a_panic`). A refused event leaves a placeholder that its descendants apply (`a_refused_event_leaves_a_placeholder_so_descendants_apply`).
+- Found while writing P2.2, in the test rather than the code: the frontier of an event is taken over its `after`, so a group operation named directly is its own candidate. The minimality test was corrected to query X2's and R's `after`.
+
+## End
+
+- Full test result on the head: `cargo test --all-features --no-fail-fast` exit 0 (lib 1257, cli, production and voiding suites).
+- Not verified: the Nix build (vendored p2panda-sync, p2panda git dependency) is not run.

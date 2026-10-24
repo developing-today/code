@@ -102,6 +102,7 @@ terraform.rc
 
 *tfplan*
 .env.local
+.claude/settings.local.json
 .opencode/worktree-session-state.json
 *_ses_*.json
 ses_*.json
@@ -114,6 +115,13 @@ ses_*/*.json
 .opencode/plugin/subtask2/logs/*.log
 .opencode/worktrees/
 .iroh*
+.id-worlds/
+.identity.db
+.identity.redb
+.ssh-host-key
+events.redb
+events.redb.tmp
+groups.jsonl
 test.*
 pkgs/roc/platforms/rust-basic-cli
 codedb.snapshot
@@ -144,36 +152,11 @@ codedb.snapshot
 !doc/hardware/**/tags
 !doc/hardware/**/result*
 !doc/hardware/**/test.*
+.opencode/service-prod.json
 
-# hardware-doc is a separate repository (developing-today/hardware-doc), cloned to
-# <repo-parent>/hardware-doc by scripts/hardware-doc-init.sh. Its ~440 MB of content is
-# NOT committed here - that would make every clone of this repo ~6.5x larger.
-#
-# The symlink doc/hardware IS tracked (as ../../hardware-doc), so a fresh clone gets a
-# working link for the standard sibling layout without running anything.
-#
-# This entry is therefore inert for the tracked symlink itself - .gitignore does not
-# apply to already-tracked paths. It exists to stop the symlink's *contents* being
-# added if someone replaces the link with a real directory.
-#
-# hardware-doc-init.sh may retarget the link (worktrees resolve ../.. to the wrong
-# parent) and then marks it --skip-worktree, which is what actually suppresses the
-# local modification. To undo that: git update-index --no-skip-worktree doc/hardware
-doc/hardware/*
-
-# Convenience symlinks chaining to the bulk-artifact archive (see AGENTS.md).
-# These entries stop the archive's CONTENTS being committed here if a link is ever
-# replaced by a real directory; they do not affect the tracked symlinks themselves.
-archive/*
-doc/archive/*
-scratch/*
-doc/scratch/*
+/dezren39-nix/
+/justbetter-mcp/
+/.unisonHistory
+/*.log
+.opencode/antigravity-accounts.json
 .opencode/opencode-notifier-state.json
-/.opencode/opencode-notifier-state.json
-
-# .opencode/plugin/shell-strategy is a third-party plugin checked out in place
-# (https://github.com/JRedeker/opencode-shell-strategy, branch trunk). It was
-# previously recorded as a bare gitlink with no .gitmodules, so clones got an
-# empty directory and no way to populate it. Untracked instead - clone it
-# yourself if you want the plugin.
-.opencode/plugin/shell-strategy/

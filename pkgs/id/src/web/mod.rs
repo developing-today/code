@@ -47,11 +47,15 @@
 mod assets;
 mod collab;
 mod content_mode;
+mod explore;
+mod home;
 mod identity;
 mod markdown;
 mod routes;
+mod security;
 mod tags_ws;
 mod templates;
+pub mod world_ws;
 
 pub use content_mode::{ContentMode, MediaType, detect_mode, detect_mode_with_content};
 pub use markdown::{
@@ -72,7 +76,10 @@ use crate::tags::TagStore;
 pub use assets::static_handler;
 pub use collab::CollabState;
 pub use identity::IdentityStore;
+#[doc(hidden)]
+pub use identity::crash_gate;
 pub use routes::create_router;
+pub use security::WebSecurity;
 pub use templates::{AssetUrls, render_page};
 
 /// Default save rate limit cooldown period.
@@ -109,7 +116,9 @@ impl SaveRateLimiter {
         if let Some(last) = map.get(name) {
             let elapsed = last.elapsed();
             if elapsed < self.cooldown {
-                return Err(self.cooldown - elapsed);
+                // checked_sub is Some exactly because elapsed < cooldown;
+                // ZERO is the unreachable fallback (no time remaining).
+                return Err(self.cooldown.checked_sub(elapsed).unwrap_or(Duration::ZERO));
             }
         }
         Ok(())
@@ -144,6 +153,12 @@ pub struct AppState {
     pub save_limiter: SaveRateLimiter,
     /// Client identity store for persistent client sessions.
     pub identity: IdentityStore,
+    /// Node-signed event log used to publish durable document revisions.
+    pub(crate) local_events: Arc<Mutex<crate::local_events::LocalEvents>>,
+    /// Optional hosted world (and its invite secret) for the WebSocket bridge.
+    pub world: Option<crate::world_hub::WorldHub>,
+    /// Mark the directory explorer's session cookies `Secure`.
+    pub cookie_secure: bool,
 }
 
 impl std::fmt::Debug for AppState {
@@ -157,6 +172,9 @@ impl std::fmt::Debug for AppState {
             .field("tag_store", &"<TagStore>")
             .field("save_limiter", &self.save_limiter)
             .field("identity", &self.identity)
+            .field("local_events", &"<LocalEvents>")
+            .field("world", &self.world)
+            .field("cookie_secure", &self.cookie_secure)
             .finish()
     }
 }
@@ -164,8 +182,8 @@ impl std::fmt::Debug for AppState {
 impl AppState {
     /// Create a new application state with persistent identity storage.
     ///
-    /// Opens an encrypted `SQLite` database for identity persistence using
-    /// a key derived from the node's iroh secret key.
+    /// Opens the encrypted identity store (a redb file) for identity persistence
+    /// using a key derived from the node's iroh secret key.
     pub async fn new(
         store: Store,
         peers: Option<PeerDiscovery>,
@@ -174,6 +192,12 @@ impl AppState {
         secret_key: [u8; 32],
         identity_db_path: std::path::PathBuf,
     ) -> anyhow::Result<Self> {
+        let events_dir = identity_db_path.with_file_name(crate::local_events::DIR_NAME);
+        let local_events = Arc::new(Mutex::new(crate::local_events::LocalEvents::open(
+            &events_dir,
+            p2panda_core::SigningKey::from_bytes(&secret_key),
+        )?));
+
         Ok(Self {
             store,
             collab: Arc::new(CollabState::new()),
@@ -183,6 +207,9 @@ impl AppState {
             tag_store,
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
             identity: IdentityStore::new(secret_key, identity_db_path).await?,
+            local_events,
+            world: None,
+            cookie_secure: false,
         })
     }
 }
@@ -243,6 +270,8 @@ fn load_asset_urls() -> AssetUrls {
 /// * `peers` - Optional peer discovery table for the `/peers` page
 /// * `node_id` - This node's public ID (hex-encoded)
 /// * `tag_store` - The tag metadata store (α/Ω namespace pairs)
+/// * `security` - Host allow-list, origin check and optional token (see
+///   [`WebSecurity`]); applied to every request
 ///
 /// # Returns
 ///
@@ -254,8 +283,11 @@ pub async fn web_router(
     tag_store: Arc<TagStore>,
     secret_key: [u8; 32],
     identity_db_path: std::path::PathBuf,
+    security: WebSecurity,
+    world: Option<crate::world_hub::WorldHub>,
+    cookie_secure: bool,
 ) -> anyhow::Result<Router> {
-    let state = AppState::new(
+    let mut state = AppState::new(
         store,
         peers,
         node_id,
@@ -264,7 +296,18 @@ pub async fn web_router(
         identity_db_path,
     )
     .await?;
-    Ok(create_router(state))
+    state.world = world;
+    state.cookie_secure = cookie_secure;
+    let security = WebSecurity {
+        cookie_secure,
+        ..security
+    };
+    Ok(
+        create_router(state).layer(axum::middleware::from_fn_with_state(
+            Arc::new(security),
+            security::guard,
+        )),
+    )
 }
 
 #[cfg(test)]
