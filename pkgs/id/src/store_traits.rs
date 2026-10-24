@@ -358,24 +358,15 @@ impl LogStore<AnyOperation, VerifyingKey, ChainLog, SeqNum, Hash> for SharedEven
     type Error = TraitStoreError;
 
     /// The newest applied entry. The log id is ignored: an author has one log.
-    fn get_latest_entry(
+    ///
+    /// The `_tx` name is the upstream `LogStore` requirement; this redb store has no separate
+    /// transaction permit, so the read is served directly by `latest_entry`.
+    fn get_latest_entry_tx(
         &self,
         author: &VerifyingKey,
         _log_id: &ChainLog,
     ) -> impl Future<Output = Result<Option<AnyOperation>, TraitStoreError>> {
         ready(self.latest_entry(author))
-    }
-
-    /// Not implemented. The SQLite store reads this inside a transaction permit, and this store
-    /// has no permits. [`SharedEventStore::ingest`] is the atomic write path.
-    fn get_latest_entry_tx(
-        &self,
-        _author: &VerifyingKey,
-        _log_id: &ChainLog,
-    ) -> impl Future<Output = Result<Option<AnyOperation>, TraitStoreError>> {
-        ready(Err(TraitStoreError::Unsupported(
-            "transaction permits are not implemented; ingest is the atomic write path",
-        )))
     }
 
     /// The applied height of each requested log. `None` when no log was requested, or when the
@@ -416,7 +407,7 @@ impl LogStore<AnyOperation, VerifyingKey, ChainLog, SeqNum, Hash> for SharedEven
 
     /// Not implemented. Pruning has an open design question: whether it removes whole events or
     /// only their bodies (task 10).
-    fn prune_entries(
+    fn prune_entries_tx(
         &self,
         _author: &VerifyingKey,
         _log_id: &ChainLog,
@@ -433,7 +424,7 @@ impl TopicStore<Hash, VerifyingKey, ChainLog> for SharedEventStore {
 
     /// Not implemented. A topic's membership is each event's group, which ingest writes, so there
     /// is no association table to add to.
-    fn associate(
+    fn associate_tx(
         &self,
         _topic: &Hash,
         _author: &VerifyingKey,
@@ -444,8 +435,8 @@ impl TopicStore<Hash, VerifyingKey, ChainLog> for SharedEventStore {
         )))
     }
 
-    /// Not implemented, for the same reason as `associate`.
-    fn remove(
+    /// Not implemented, for the same reason as `associate_tx`.
+    fn remove_tx(
         &self,
         _topic: &Hash,
         _author: &VerifyingKey,
@@ -637,7 +628,7 @@ mod tests {
     async fn test_an_empty_store_has_no_log_for_any_author() {
         let (_dir, store) = open();
         let who = author_of(&key(1));
-        assert_eq!(store.get_latest_entry(&who, &ChainLog).await.unwrap(), None);
+        assert_eq!(store.get_latest_entry_tx(&who, &ChainLog).await.unwrap(), None);
         assert_eq!(
             store.get_log_heights(&who, &[ChainLog]).await.unwrap(),
             None
@@ -665,7 +656,7 @@ mod tests {
         ingest_all(&store, &bob_events);
 
         let latest = store
-            .get_latest_entry(&who_alice, &ChainLog)
+            .get_latest_entry_tx(&who_alice, &ChainLog)
             .await
             .unwrap()
             .expect("alice has an entry");
@@ -863,7 +854,7 @@ mod tests {
 
         // Only seq 0 is applied. Seq 1 and seq 2 are stored, but they are not part of the log.
         let latest = store
-            .get_latest_entry(&who, &ChainLog)
+            .get_latest_entry_tx(&who, &ChainLog)
             .await
             .unwrap()
             .expect("seq 0 is applied");
@@ -904,20 +895,19 @@ mod tests {
         let (_dir, store) = open();
         let who = author_of(&key(12));
         let topic = group(6);
+        // `get_latest_entry_tx` is the real read path now (no transaction permit on redb), so it
+        // serves the empty store as `None`, not an error.
+        assert_eq!(store.get_latest_entry_tx(&who, &ChainLog).await.unwrap(), None);
         assert!(matches!(
-            store.get_latest_entry_tx(&who, &ChainLog).await,
+            store.prune_entries_tx(&who, &ChainLog, &0).await,
             Err(TraitStoreError::Unsupported(_))
         ));
         assert!(matches!(
-            store.prune_entries(&who, &ChainLog, &0).await,
+            store.associate_tx(&topic, &who, &ChainLog).await,
             Err(TraitStoreError::Unsupported(_))
         ));
         assert!(matches!(
-            store.associate(&topic, &who, &ChainLog).await,
-            Err(TraitStoreError::Unsupported(_))
-        ));
-        assert!(matches!(
-            store.remove(&topic, &who, &ChainLog).await,
+            store.remove_tx(&topic, &who, &ChainLog).await,
             Err(TraitStoreError::Unsupported(_))
         ));
         assert!(matches!(

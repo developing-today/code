@@ -35,7 +35,7 @@ hkdf = "0.12.4"
 hpke-rs = "0.7.0"
 hpke-rs-crypto = "0.7.0"
 hpke-rs-rust-crypto = "0.7.0"
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false }
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
 rand_chacha = { version = "0.9.0", features = ["os_rng"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11.19"

@@ -30,16 +30,16 @@ test_utils = [
   "p2panda-store/test_utils",
 ]
 
-# Vendored from p2panda rev 3e84cac. See ../README.md for the changes.
+# Vendored from p2panda rev da80c05. See ../README.md for the changes.
 # Every `workspace = true` below is resolved to the root's value, since this copy is outside that workspace.
 [dependencies]
 futures-channel = "0.3.32"
 futures-util = { version = "0.3.32", default-features = true, features = ["sink"] }
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = true }
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = true }
 # Changed from the upstream line `p2panda-store = { workspace = true, default-features = true }`.
 # The upstream default is `sqlite`, which pulls in sqlx. Our traits do not need it.
-p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false }
-p2panda-stream = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", optional = true, default-features = false, features = ["ingest"] }
+p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
+p2panda-stream = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", optional = true, default-features = false, features = ["ingest"] }
 pin-project-lite = "0.2.16"
 rand = { version = "0.10.1", optional = true }
 serde = "1.0.228"
