@@ -8,6 +8,17 @@ import { parseProxyPort } from './proxy-port.mjs';
 const PORT = parseProxyPort('CLEF_PROXY_PORT', 18742);
 const HOST = process.env.CLEF_PROXY_HOST || '127.0.0.1';
 
+// Warm connections (#480): upstream calls go through fetch, whose bundled
+// undici global dispatcher already pools and reuses keep-alive connections
+// to the gateway — there is no per-request handshake to remove. A raw
+// https.Agent swap was tried and reverted: https.request bypasses the
+// HTTP(S)_PROXY environment (NODE_USE_ENV_PROXY applies to fetch only), so
+// on hosts whose egress goes through a proxy the swap broke upstream calls
+// outright (TLS to a plain-HTTP proxy port) — a behavior change, not a
+// warm-up. Node does not expose undici as an importable module, so the
+// dispatcher's pool settings are not configurable from here; the default
+// pool is the keep-alive layer for this proxy.
+
 // Publish the bound endpoint so other tools can find this proxy without
 // knowing its port in advance: $XDG_STATE_HOME/<name>/endpoint.json
 // (default ~/.local/state/<name>/endpoint.json), written on listen,
@@ -41,12 +52,20 @@ const publishEndpoint = () => {
   } catch {}
 };
 
+// Config files were re-read from disk on every request (#480). Cache the
+// contents and re-read only when the file's mtime changes, so a rotated
+// token is still picked up without a restart but the hot path does a
+// single stat instead of up to three full reads.
+const configFileCache = new Map();
 const readConfigFileSync = (filename, fallback = '') => {
   try {
     const fullPath = path.join(os.homedir(), '.config', 'cloudflare', filename);
-    if (fs.existsSync(fullPath)) {
-      return fs.readFileSync(fullPath, 'utf8').trim();
-    }
+    const { mtimeMs } = fs.statSync(fullPath);
+    const cached = configFileCache.get(filename);
+    if (cached && cached.mtimeMs === mtimeMs) return cached.value;
+    const value = fs.readFileSync(fullPath, 'utf8').trim();
+    configFileCache.set(filename, { mtimeMs, value });
+    return value;
   } catch {}
   return fallback;
 };
