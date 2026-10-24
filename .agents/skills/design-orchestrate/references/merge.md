@@ -4,7 +4,7 @@ Read before merging any worker PR. `implementation-orchestrate` uses the same ga
 
 ## Gate
 
-Merge a PR only when every line below holds. Record the outputs in `root.md` as one `merge` line, for example `root <UTC> merge: #612 wf/docs-pipeline/C001.3-s6 sha=<s> gate=ok ancestor=ok`.
+Merge a PR only when every line below holds. Record the outputs in `root.md` as one `merge` line, for example `root <UTC> merge: #612 research/docs-pipeline/s6-c001.3 sha=<s> gate=ok ancestor=ok`.
 
 ```sh
 b=<branch>; n=<PR number>; s=<SHA from the worker's final message>

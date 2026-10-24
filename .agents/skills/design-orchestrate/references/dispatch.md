@@ -5,7 +5,7 @@ Read before dispatching the first worker. `implementation-orchestrate` uses the 
 ## Names, branches and worktrees
 
 - **Worker name.** `<role>-<issue number>-<4 hex>`, for example `designer-512-a3f9` or `builder-640-0c1e`. Names are unique for the whole run. A restarted worker keeps its name and adds `-r<n>`.
-- **Branch.** `wf/<package-slug>/<item or step>-<stage>`, for example `wf/docs-pipeline/C001.3-s6` or `wf/docs-pipeline/C001-step-1.2.1-s8`. If the issue names a branch, use that one. A restart uses the same branch. Follow-up work after a merge uses `<branch>-2`, because a merged branch is dead.
+- **Branch.** `research/<slug>/s<stage>-<unit>`, with `<slug>` the package slug and the unit in lowercase, for example `research/docs-pipeline/s6-c001.3` for a facet or `research/docs-pipeline/s8-c001.4-step-3` for a plan step ([vocabulary.md](/planning/workflow/vocabulary.md#identifiers)). If the issue names a branch, use that one. A restart uses the same branch. Follow-up work after a merge uses `<branch>-2`, because a merged branch is dead.
 - **Worktree.** `<worktree_root>/<branch with / replaced by ->`. A restart reuses the same worktree, so local commits survive.
 - **Base.** Always a fresh `origin/<trunk>` at dispatch. The worker checks that its first `HEAD` equals `git rev-parse origin/<trunk>` after a fetch. A worktree created many commits behind makes its evidence worthless.
 
@@ -78,7 +78,7 @@ Run once per watch round. It lists branches of this package that have commits ah
 
 ```sh
 git fetch -q origin
-git for-each-ref --format='%(refname:short)' "refs/remotes/origin/wf/<package-slug>/" | while read -r ref; do
+git for-each-ref --format='%(refname:short)' "refs/remotes/origin/research/<slug>/" | while read -r ref; do
   b=${ref#origin/}
   ahead=$(git rev-list --count "origin/<trunk>..$ref")
   pr=$(gh pr list --repo <repo> --head "$b" --state all --json number -q '.[0].number')
