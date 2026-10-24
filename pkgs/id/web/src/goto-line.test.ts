@@ -303,3 +303,25 @@ describe("dialog input interaction", () => {
     expect(posAfter).toBeLessThanOrEqual(2);
   });
 });
+
+// ── Editor recreation (#718) ───────────────────────────────────────
+
+describe("goto-line dialog across editor recreation", () => {
+  it("Ctrl+G in a recreated editor shows a dialog in the new container without destroyGotoLineDialog()", () => {
+    const first = createViewWithGotoLine("first\nsecond");
+    triggerGotoLine(first.view);
+    expect(first.container.querySelector(".goto-line-dialog")).not.toBeNull();
+
+    // Production teardown (main.ts disconnect) destroys only the view —
+    // it never calls destroyGotoLineDialog(). Mirror that exactly.
+    first.view.destroy();
+    first.container.remove();
+
+    const second = createViewWithGotoLine("first\nsecond");
+    views.push(second.view);
+    containers.push(second.container);
+    triggerGotoLine(second.view);
+    expect(second.container.querySelector(".goto-line-dialog")).not.toBeNull();
+    expect(second.container.querySelector(".goto-line-input")).not.toBeNull();
+  });
+});

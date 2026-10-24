@@ -77,6 +77,15 @@ function openGotoLine(view: EditorView): void {
   const container = view.dom.parentElement;
   if (!container) return;
 
+  // The dialog is a module singleton attached to one container. When the
+  // editor is recreated (disconnect / open another file) the old dialog is
+  // detached with the old container — and no production code calls
+  // destroyGotoLineDialog() on teardown. Rebind instead of "opening" a
+  // detached node (#718).
+  if (dialogEl && dialogEl.parentElement !== container) {
+    destroyGotoLineDialog();
+  }
+
   if (!dialogEl) {
     dialogEl = createDialog(container);
     dialogInput = dialogEl.querySelector("#goto-line-input");
