@@ -250,8 +250,9 @@ impl WorldActor {
 
     /// The earliest moment the loop must wake: the soonest armed tick or
     /// pending schedule. Schedules wait only while the program can take them.
-    fn next_deadline(&self) -> Option<std::time::Instant> {
+    pub(crate) fn next_deadline(&self) -> Option<std::time::Instant> {
         let deliverable = self.program_healthy && !self.storage_failed;
+        let clock = self.core.clock();
         self.ticks
             .values()
             .min()
@@ -259,7 +260,8 @@ impl WorldActor {
             .into_iter()
             .chain(next_schedule_wake(
                 &self.core.schedules,
-                unix_ms(),
+                clock.now_ms(),
+                clock.now_instant(),
                 deliverable,
             ))
             .min()
@@ -352,7 +354,7 @@ impl WorldActor {
     /// (armed or refused), new requests (executed, result delivered). Passes
     /// repeat while the program reacts to delivered results, so a chain of
     /// asks settles inside one change.
-    async fn after_change(&mut self) {
+    pub(crate) async fn after_change(&mut self) {
         for _ in 0..64 {
             if !self.program_healthy || self.storage_failed {
                 break;
@@ -445,14 +447,14 @@ impl WorldActor {
         {
             self.ticks.insert(
                 *ms,
-                std::time::Instant::now() + std::time::Duration::from_millis(*ms),
+                self.core.clock().now_instant() + std::time::Duration::from_millis(*ms),
             );
         }
     }
 
     /// Deliver one tick event per due interval and re-arm.
-    async fn fire_ticks(&mut self) {
-        let now = std::time::Instant::now();
+    pub(crate) async fn fire_ticks(&mut self) {
+        let now = self.core.clock().now_instant();
         let due: Vec<u64> = self
             .ticks
             .iter()
@@ -465,7 +467,9 @@ impl WorldActor {
             let event = serde_json::json!({
                 "cap": "time.tick",
                 "interval": ms,
-                "now": unix_ms(),
+                // The tick's "now" reads the injected clock too, so a manual
+                // clock drives the payload as well as the deadline.
+                "now": self.core.clock().now_ms(),
             });
             self.deliver(event.to_string()).await;
         }
@@ -476,8 +480,8 @@ impl WorldActor {
     /// fire is delivered as a tick is, and its schedule is consumed only after
     /// that delivery is journaled. A refused fire, or one that could not be
     /// journaled, leaves its schedule pending, so the next run delivers it.
-    async fn fire_schedules(&mut self) {
-        let now = unix_ms();
+    pub(crate) async fn fire_schedules(&mut self) {
+        let now = self.core.clock().now_ms();
         let mut due: Vec<(u64, String)> = self
             .core
             .schedules
@@ -642,7 +646,10 @@ impl WorldActor {
             .get("at")
             .and_then(serde_json::Value::as_u64)
             .ok_or(CapError::bad_args())?;
-        if let Err(error) = self.core.check_schedule(id, at_ms, unix_ms()) {
+        if let Err(error) = self
+            .core
+            .check_schedule(id, at_ms, self.core.clock().now_ms())
+        {
             tracing::debug!("world {}: schedule refused: {error:#}", self.core.world_id);
             return Err(CapError::bad_args_with(format!("{error:#}")));
         }
@@ -714,7 +721,7 @@ impl WorldActor {
                 .collect();
             for ms in intervals {
                 self.ticks.entry(ms).or_insert_with(|| {
-                    std::time::Instant::now() + std::time::Duration::from_millis(ms)
+                    self.core.clock().now_instant() + std::time::Duration::from_millis(ms)
                 });
             }
         }
@@ -888,7 +895,7 @@ impl WorldActor {
         })
     }
 
-    async fn handle(&mut self, command: WorldCommand) {
+    pub(crate) async fn handle(&mut self, command: WorldCommand) {
         match command {
             WorldCommand::Issue {
                 name,
@@ -1293,6 +1300,59 @@ impl WorldActor {
                 tracing::warn!("world checkpoint skipped: {error:#}");
                 self.compaction_off = true;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+impl WorldActor {
+    /// Assemble an actor without spawning its run loop, for tests that drive
+    /// [`WorldActor::handle`], [`WorldActor::after_change`], [`WorldActor::fire_ticks`]
+    /// and [`WorldActor::fire_schedules`] directly against a [`ManualClock`].
+    pub(crate) fn for_test(
+        core: WorldCore,
+        mut program: Box<dyn WorldProgram>,
+        journal: Option<Box<dyn WorldJournal>>,
+    ) -> Self {
+        let (events, _) = broadcast::channel(256);
+        let (revocations, _) = broadcast::channel(256);
+        let (view_changed, _) = watch::channel(core.sequence);
+        let mut program_healthy = true;
+        let initial = match program_records(program.as_mut()) {
+            Ok(records) => records.unwrap_or_default(),
+            Err(_) => {
+                program_healthy = false;
+                Records::new()
+            }
+        };
+        let (records_sender, _) = watch::channel((core.sequence, Arc::new(initial)));
+        // Schedules already due when the world opened fire late, judged by the
+        // injected clock so a manual clock controls this too.
+        let overdue_at_open: BTreeSet<String> = core
+            .schedules
+            .iter()
+            .filter(|(_, at_ms)| **at_ms <= core.clock().now_ms())
+            .map(|(id, _)| id.clone())
+            .collect();
+        Self {
+            core,
+            program,
+            journal,
+            storage_failed: false,
+            program_healthy,
+            compaction_off: false,
+            event_sender: events,
+            revocation_sender: revocations,
+            records_sender,
+            view_changed,
+            presence: HashMap::new(),
+            active_subs: BTreeSet::new(),
+            handled_requests: BTreeSet::new(),
+            denied_subs: BTreeSet::new(),
+            ticks: BTreeMap::new(),
+            overdue_at_open,
+            acting: None,
+            auth: crate::directory_auth::DirectoryAuth::default(),
         }
     }
 }

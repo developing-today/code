@@ -2,12 +2,17 @@ use super::*;
 
 use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::Arc;
 
 /// Mutable world state. Keep it behind one actor/mutex so event sequencing is serialized.
 #[derive(Debug)]
 pub struct WorldCore {
     pub(crate) world_id: String,
     pub(crate) limits: WorldLimits,
+    /// The clock every time decision reads: schedules, ticks, expiries and
+    /// the chat rate window. [`SystemClock`] by default; tests inject a
+    /// [`ManualClock`] through [`WorldCore::new_with_clock`].
+    pub(crate) clock: Arc<dyn Clock>,
     pub(crate) execution_profile: crate::world_limits::WorldExecutionProfile,
     pub(crate) next_participant_id: u64,
     pub(crate) sequence: u64,
@@ -37,8 +42,17 @@ pub struct WorldCore {
 }
 
 impl WorldCore {
-    /// Create an empty in-memory world.
+    /// Create an empty in-memory world on the real [`SystemClock`].
     pub fn new(world_id: impl Into<String>, limits: WorldLimits) -> Result<Self> {
+        Self::new_with_clock(world_id, limits, Arc::new(SystemClock))
+    }
+
+    /// Create an empty in-memory world that reads the time from `clock`.
+    pub fn new_with_clock(
+        world_id: impl Into<String>,
+        limits: WorldLimits,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Self> {
         let world_id = world_id.into();
         ensure!(!world_id.trim().is_empty(), "world ID must not be empty");
         ensure!(
@@ -66,6 +80,7 @@ impl WorldCore {
         let mut core = Self {
             world_id,
             limits,
+            clock,
             execution_profile: crate::world_limits::WorldExecutionProfile::default(),
             next_participant_id: 1,
             sequence: 0,
@@ -89,6 +104,11 @@ impl WorldCore {
         };
         core.sync_ledger_ceiling();
         Ok(core)
+    }
+
+    /// The clock every time decision reads.
+    pub(crate) fn clock(&self) -> &dyn Clock {
+        &*self.clock
     }
 
     /// Recompute what the ledger may allow: the server's limit intersected with
@@ -694,7 +714,7 @@ impl WorldCore {
             .context("this capability may not delegate those scopes")?;
         if let Some(expires_at) = bounds.expires_at {
             ensure!(
-                expires_at > unix_ms(),
+                expires_at > self.clock().now_ms(),
                 "delegated expiry must be in the future"
             );
             ensure!(
@@ -753,7 +773,7 @@ impl WorldCore {
     }
 
     pub(crate) fn ensure_not_expired(&self, participant_id: u64) -> Result<()> {
-        let now = unix_ms();
+        let now = self.clock().now_ms();
         let mut current = Some(participant_id);
         while let Some(record) = current.and_then(|id| self.capabilities.get(&id)) {
             ensure!(
@@ -913,7 +933,7 @@ impl WorldCore {
         );
         let text = sanitize_chat(text);
         ensure!(!text.is_empty(), "chat message must not be empty");
-        let now = std::time::Instant::now();
+        let now = self.clock().now_instant();
         self.chat_rates.retain(|_, sent| {
             while sent
                 .front()

@@ -31,6 +31,7 @@ pub use crate::groups::worlds::Isolation;
 /// lives in [`crate::time`] so the crate builds without this feature.
 pub(crate) use crate::time::unix_ms;
 mod actor;
+mod clock;
 mod core;
 mod handle;
 mod util;
@@ -39,6 +40,7 @@ mod util;
 mod tests;
 
 pub(crate) use actor::{WorldActor, WorldCommand};
+pub use clock::{Clock, ManualClock, SystemClock};
 pub use core::WorldCore;
 pub use handle::WorldHandle;
 pub use util::{EventPage, hex_encode, publish_records};
@@ -656,9 +658,14 @@ pub(crate) fn schedule_fired_event(id: &str, late: bool) -> String {
 /// When the earliest pending schedule is due, as a monotonic deadline. Nothing
 /// waits while the program cannot take a fire (`deliverable` is false): a due
 /// schedule that cannot be delivered would otherwise wake the loop without end.
+///
+/// The deadline is anchored to `now_instant` (the injected clock's monotonic
+/// face), so a manual clock advancing `now_ms` past a schedule also advances
+/// this deadline.
 pub(crate) fn next_schedule_wake(
     schedules: &BTreeMap<String, u64>,
     now_ms: u64,
+    now_instant: std::time::Instant,
     deliverable: bool,
 ) -> Option<std::time::Instant> {
     if !deliverable {
@@ -666,7 +673,7 @@ pub(crate) fn next_schedule_wake(
     }
     let earliest = schedules.values().min().copied()?;
     let wait = std::time::Duration::from_millis(earliest.saturating_sub(now_ms));
-    Some(std::time::Instant::now() + wait)
+    Some(now_instant + wait)
 }
 
 /// The newest `count` chat lines in `events`, oldest first, each carrying its
