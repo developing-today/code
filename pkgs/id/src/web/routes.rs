@@ -1297,9 +1297,17 @@ async fn new_file_handler(
 
 /// Whether a multipart error is the request-body length limit firing
 /// (as opposed to malformed multipart data).
+///
+/// This must classify via `MultipartError::status()`, NOT by matching on
+/// the error's `Display`: in axum 0.8, `MultipartError`'s `Display` is the
+/// constant string "Error parsing `multipart/form-data` request" for every
+/// error, so a substring match can never fire (#751). axum derives the
+/// status from the underlying multer error and returns
+/// `413 PAYLOAD_TOO_LARGE` exactly for the length-limit cases
+/// (`FieldSizeExceeded` / `StreamSizeExceeded` / a wrapped
+/// `LengthLimitError`).
 fn is_body_limit_error(err: &axum::extract::multipart::MultipartError) -> bool {
-    let msg = err.to_string().to_lowercase();
-    msg.contains("length limit") || msg.contains("body limit") || msg.contains("exceeded")
+    err.status() == StatusCode::PAYLOAD_TOO_LARGE
 }
 
 /// The clear `413` response for an upload that exceeds the size limits.
@@ -2125,6 +2133,139 @@ mod save_publication_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod upload_router_tests {
+    use std::sync::Arc;
+
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+    use tower::ServiceExt as _;
+
+    use super::*;
+    use crate::tags::TagStore;
+
+    const BOUNDARY: &str = "----id-upload-test-boundary";
+
+    async fn router() -> (Router, tempfile::TempDir, Endpoint, Docs) {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "upload-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let state = AppState::new(
+            store,
+            None,
+            "upload-test".to_owned(),
+            tags,
+            [9; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        (create_router(state), dir, endpoint, docs)
+    }
+
+    fn multipart_body(file_bytes: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; \
+                 filename=\"photo.png\"\r\nContent-Type: image/png\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(file_bytes);
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        body
+    }
+
+    async fn upload(router: Router, body: Vec<u8>) -> (StatusCode, String) {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/upload")
+                    .header(
+                        "content-type",
+                        format!("multipart/form-data; boundary={BOUNDARY}"),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    // #751: a body over UPLOAD_BODY_LIMIT must surface as the clear 413,
+    // not a generic 400. On PR #747's original code this returned 400,
+    // because is_body_limit_error substring-matched MultipartError's
+    // constant Display and could never fire.
+    #[tokio::test]
+    async fn upload_over_body_limit_returns_clear_413() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let file = vec![b'x'; UPLOAD_BODY_LIMIT];
+        let (status, body) = upload(router, multipart_body(&file)).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "body: {body}");
+        assert!(body.contains("Image too large"), "body: {body}");
+    }
+
+    // #716/#751: a file of exactly MAX_IMAGE_SIZE (plus its multipart
+    // envelope) fits the route body limit and uploads successfully.
+    #[tokio::test]
+    async fn upload_exactly_max_image_size_succeeds() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let file = vec![b'y'; MAX_IMAGE_SIZE];
+        let (status, body) = upload(router, multipart_body(&file)).await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert!(body.contains("\"name\":\"photo.png\""), "body: {body}");
+    }
+
+    // #716: a file over MAX_IMAGE_SIZE but under the route body limit gets
+    // the explicit per-file 413 from upload_handler's length check.
+    #[tokio::test]
+    async fn upload_over_max_image_size_under_body_limit_returns_413() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let file = vec![b'z'; MAX_IMAGE_SIZE + 1024];
+        let (status, body) = upload(router, multipart_body(&file)).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "body: {body}");
+        assert!(body.contains("Image too large"), "body: {body}");
+        assert!(
+            body.contains("exceeds the maximum image size"),
+            "body: {body}"
+        );
+    }
+
+    // Non-size multipart errors still return 400 as before (#751).
+    #[tokio::test]
+    async fn upload_malformed_multipart_returns_400() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let (status, _body) = upload(router, b"garbage without any boundary".to_vec()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 }
 
