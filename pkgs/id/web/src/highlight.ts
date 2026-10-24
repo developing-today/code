@@ -117,9 +117,12 @@ const FILENAME_TO_LANG: Record<string, string> = {
  * Detect the Shiki language identifier from a filename.
  *
  * Priority:
- * 1. Special filename match (case-insensitive, ignoring extension)
- * 2. Extension match from EXT_TO_LANG map
- * 3. undefined (no highlighting)
+ * 1. Dotfile match (.gitignore, .env, .editorconfig, ...)
+ * 2. Extension match from EXT_TO_LANG map — a known extension wins over a
+ *    special-name stem ("justfile.rs" is Rust, not a Justfile)
+ * 3. Special filename match (case-insensitive), only when the extension is
+ *    absent or unknown ("Dockerfile", "Dockerfile.dev", "CMakeLists.txt")
+ * 4. undefined (no highlighting)
  *
  * @param filename - The filename (may include path components)
  * @returns Shiki language identifier, or undefined if unknown
@@ -127,21 +130,7 @@ const FILENAME_TO_LANG: Record<string, string> = {
 export function detectLanguage(filename: string): string | undefined {
   // Extract basename (handle paths)
   const basename = filename.split("/").pop() ?? filename;
-
-  // Check special filenames (case-insensitive, without extension)
   const basenameLower = basename.toLowerCase();
-  const nameWithoutExt = basenameLower.includes(".")
-    ? basenameLower.slice(0, basenameLower.lastIndexOf("."))
-    : basenameLower;
-
-  // Try full basename first (e.g., "Dockerfile.dev" → still a Dockerfile)
-  if (FILENAME_TO_LANG[nameWithoutExt]) {
-    return FILENAME_TO_LANG[nameWithoutExt];
-  }
-  // Try full basename without extension check (e.g., "Dockerfile" with no ext)
-  if (FILENAME_TO_LANG[basenameLower]) {
-    return FILENAME_TO_LANG[basenameLower];
-  }
 
   // Dotfiles: .gitignore, .env, .editorconfig, .prettierrc, .eslintrc
   if (basenameLower.startsWith(".")) {
@@ -153,11 +142,29 @@ export function detectLanguage(filename: string): string | undefined {
     if (dotName === "prettierrc" || dotName === "eslintrc") return "json";
   }
 
-  // Extract extension
+  // A known extension wins over a special-name stem:
+  // "makefile.md" is Markdown documentation, not a Makefile.
   const ext = basename.includes(".") ? basename.split(".").pop()?.toLowerCase() : undefined;
-  if (!ext) return undefined;
+  if (ext && EXT_TO_LANG[ext]) {
+    return EXT_TO_LANG[ext];
+  }
 
-  return EXT_TO_LANG[ext];
+  // Check special filenames (case-insensitive, without extension).
+  // Only reached when the extension is absent or unknown, so
+  // "Dockerfile.dev" is still a Dockerfile and "CMakeLists.txt" is CMake.
+  const nameWithoutExt = basenameLower.includes(".")
+    ? basenameLower.slice(0, basenameLower.lastIndexOf("."))
+    : basenameLower;
+
+  if (FILENAME_TO_LANG[nameWithoutExt]) {
+    return FILENAME_TO_LANG[nameWithoutExt];
+  }
+  // Full basename (e.g., "Dockerfile" with no ext)
+  if (FILENAME_TO_LANG[basenameLower]) {
+    return FILENAME_TO_LANG[basenameLower];
+  }
+
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
