@@ -749,8 +749,10 @@ pub(crate) fn program_records(program: &mut dyn WorldProgram) -> Result<Option<R
 ///
 /// Implementations execute inside the actor's serial command loop. They must
 /// not perform network or filesystem I/O. An error from `update` rejects the
-/// candidate input before it is committed to the event log. The Wasmtime
-/// implementation poisons its guest instance on traps.
+/// candidate input before it is committed to the event log. An error from
+/// `view` or `layout` does not poison the world: the host renders an error
+/// screen naming the failing call, keeps the program's state, and retries on
+/// the next event (see F11.17).
 pub trait WorldProgram: Send + 'static {
     /// Apply an opaque participant input. Chat is managed by the host and is
     /// not passed to the game program.

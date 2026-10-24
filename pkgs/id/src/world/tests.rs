@@ -2378,6 +2378,63 @@ mod tests {
                 .is_empty()
         );
     }
+
+    /// A program whose `view` traps exactly once, then recovers. Used to prove
+    /// a trapping view does not poison the world (F11.17).
+    #[derive(Default)]
+    struct TrapsOnce {
+        calls: u64,
+    }
+
+    impl WorldProgram for TrapsOnce {
+        fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+            self.calls += 1;
+            if self.calls == 1 {
+                anyhow::bail!("boom on the first view");
+            }
+            Ok(Some("recovered view".to_owned()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trapping_view_degrades_to_an_error_and_recovers_on_the_next_event() {
+        let mut core = WorldCore::new("trap", WorldLimits::default()).unwrap();
+        let (_, token) = join(&mut core, "ann");
+        let mut actor = WorldActor::for_test(core, Box::new(TrapsOnce::default()), None);
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::View {
+                token: token.clone(),
+                reply,
+            })
+            .await;
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Err(e) if e.to_string().contains("view failed")),
+            "the trap is reported as a view failure: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "a trapping view must not poison the world"
+        );
+        assert_eq!(actor.view_failures, 1, "the trap is counted");
+
+        // The next event retries the view and recovers, no reinstall needed.
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::View {
+                token: token.clone(),
+                reply,
+            })
+            .await;
+        let second = rx.await.unwrap();
+        assert!(
+            matches!(&second, Ok(Some(text)) if text == "recovered view"),
+            "the next view recovers: {second:?}"
+        );
+        assert_eq!(actor.view_failures, 1, "only the one trap is counted");
+    }
 }
 
 #[cfg(test)]
