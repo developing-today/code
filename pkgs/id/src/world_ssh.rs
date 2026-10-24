@@ -636,8 +636,31 @@ impl SessionIo for SshIo {
                             );
                         }
                         WorldCommand::Help => {
-                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
+                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /stats, /logs, /caps, /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
                             if self.handle.data(self.channel, help).await.is_err() {
+                                return Inbound::Closed;
+                            }
+                        }
+                        WorldCommand::Stats => {
+                            return Inbound::Text(
+                                json!({ "type": "info", "capability": self.capability })
+                                    .to_string(),
+                            );
+                        }
+                        WorldCommand::Caps => {
+                            return Inbound::Text(
+                                json!({ "type": "caps", "capability": self.capability })
+                                    .to_string(),
+                            );
+                        }
+                        WorldCommand::Logs => {
+                            let text = "event tailing is not available in command mode; join in raw mode (no `cmd:` prefix) to see events live, or use `id world logs`\r\nworld> ";
+                            if self
+                                .handle
+                                .data(self.channel, terminal_text(text))
+                                .await
+                                .is_err()
+                            {
                                 return Inbound::Closed;
                             }
                         }
@@ -760,6 +783,19 @@ impl SessionIo for SshIo {
                     format!("\r\n{}", terminal_text(&text))
                 }
             }
+            Some("caps") => {
+                let report = value
+                    .get("report")
+                    .map(serde_json::to_string_pretty)
+                    .transpose()
+                    .unwrap_or_default()
+                    .unwrap_or_else(|| "caps report unavailable".to_owned());
+                format!("\r\n{report}\r\nworld> ")
+            }
+            Some("module_info") => {
+                let info = serde_json::to_string_pretty(&value).unwrap_or_default();
+                format!("\r\n{info}\r\nworld> ")
+            }
             _ => return true,
         };
         self.handle.data(self.channel, text).await.is_ok()
@@ -790,59 +826,29 @@ enum WorldCommand {
         prefix: Option<String>,
     },
     Document(String),
+    Stats,
+    Logs,
+    Caps,
     Help,
     Message(String),
     Quit,
 }
 
 fn world_command(line: &str) -> Option<WorldCommand> {
-    if line.is_empty() {
-        return None;
-    }
-    if line == "/help" {
-        return Some(WorldCommand::Help);
-    }
-    if line == "/quit" {
-        return Some(WorldCommand::Quit);
-    }
-    if line == "/records" || line.starts_with("/records ") {
-        let Some(prefix) = line.strip_prefix("/records") else {
-            return Some(WorldCommand::Message("usage: /records [prefix]".to_owned()));
-        };
-        let prefix = prefix.trim();
-        return Some(WorldCommand::Records {
-            prefix: (!prefix.is_empty()).then(|| prefix.to_owned()),
-        });
-    }
-    if line == "/documents" || line.starts_with("/documents ") {
-        let Some(prefix) = line.strip_prefix("/documents") else {
-            return Some(WorldCommand::Message(
-                "usage: /documents [prefix]".to_owned(),
-            ));
-        };
-        let prefix = prefix.trim();
-        return Some(WorldCommand::Documents {
-            prefix: (!prefix.is_empty()).then(|| prefix.to_owned()),
-        });
-    }
-    if let Some(name) = line.strip_prefix("/document ") {
-        if !name.is_empty() && name == name.trim() {
-            return Some(WorldCommand::Document(name.to_owned()));
-        }
-        return Some(WorldCommand::Message("usage: /document <name>".to_owned()));
-    }
-    if let Some(hex) = line.strip_prefix("/input ") {
-        if !hex.is_empty() && hex.len() % 2 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Some(WorldCommand::Input(hex.to_ascii_lowercase()));
-        }
-        return Some(WorldCommand::Message("usage: /input <hex>".to_owned()));
-    }
-    if line.starts_with('/') {
-        return Some(WorldCommand::Message(
-            "unknown command; type /help".to_owned(),
-        ));
-    }
-    Some(WorldCommand::Chat(line.to_owned()))
+    use crate::world_line::{WorldLine, parse_line};
+    Some(match parse_line(line)? {
+        WorldLine::Chat(text) => WorldCommand::Chat(text),
+        WorldLine::Input(hex) => WorldCommand::Input(hex),
+        WorldLine::Records { prefix } => WorldCommand::Records { prefix },
+        WorldLine::Documents { prefix } => WorldCommand::Documents { prefix },
+        WorldLine::Document(name) => WorldCommand::Document(name),
+        WorldLine::Stats => WorldCommand::Stats,
+        WorldLine::Logs { .. } => WorldCommand::Logs,
+        WorldLine::Caps => WorldCommand::Caps,
+        WorldLine::Help => WorldCommand::Help,
+        WorldLine::Quit => WorldCommand::Quit,
+        WorldLine::Message(message) => WorldCommand::Message(message),
+    })
 }
 
 #[derive(Default)]
@@ -2058,6 +2064,10 @@ mod tests {
         );
         assert_eq!(world_command("/help"), Some(WorldCommand::Help));
         assert_eq!(world_command("/quit"), Some(WorldCommand::Quit));
+        assert_eq!(world_command("/stats"), Some(WorldCommand::Stats));
+        assert_eq!(world_command("/caps"), Some(WorldCommand::Caps));
+        assert_eq!(world_command("/logs"), Some(WorldCommand::Logs));
+        assert_eq!(world_command("/logs 5"), Some(WorldCommand::Logs));
         assert_eq!(
             world_command("/input nope"),
             Some(WorldCommand::Message("usage: /input <hex>".into()))
