@@ -53,7 +53,17 @@ function xtermColor(index: number): string | null {
   return `#${gray.toString(16).padStart(2, "0").repeat(3)}`;
 }
 
-/** Render a validated cell grid as text-only DOM nodes; return false on invalid wire data. */
+const isEastAsianWide =
+  /[\u1100-\u115F\u2329\u232A\u2E80-\u303E\u3040-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA960-\uA97F\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE19\uFE30-\uFE6F\uFF01-\uFF60\uFFE0-\uFFE6]/;
+
+const segmenter =
+  typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter("en", { granularity: "grapheme" }) : null;
+
+/**
+ * Render a validated cell grid as text-only DOM nodes; return false on invalid wire data.
+ * Width measurement attempts to match Rust's unicode-width semantics (ASCII = 1, CJK/wide = 2)
+ * using a regex for wide characters and Intl.Segmenter for grapheme boundaries.
+ */
 export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): boolean {
   if (
     surface?.kind !== "screen" ||
@@ -104,6 +114,7 @@ export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): b
     const x = index % surface.width;
     const y = Math.floor(index / surface.width);
     if (cell.columns === 0) {
+      if (x === 0 || cell.symbol !== "") return false;
       const previous = surface.cells[index - 1];
       if (
         previous?.columns !== 2 ||
@@ -116,6 +127,13 @@ export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): b
       continue;
     }
     if (cell.columns !== 1 && cell.columns !== 2) return false;
+
+    const graphemes = segmenter ? Array.from(segmenter.segment(cell.symbol)) : Array.from(cell.symbol);
+    if (graphemes.length !== 1) return false;
+
+    const terminalWidth = isEastAsianWide.test(cell.symbol) ? 2 : 1;
+    if (terminalWidth !== cell.columns) return false;
+
     if (cell.columns === 2) {
       const continuation = surface.cells[index + 1];
       if (
@@ -124,7 +142,8 @@ export function renderWorldSurface(root: HTMLElement, surface: ScreenSurface): b
         continuation.columns !== 0 ||
         continuation.fg !== cell.fg ||
         continuation.bg !== cell.bg ||
-        continuation.bold !== cell.bold
+        continuation.bold !== cell.bold ||
+        continuation.symbol !== ""
       ) {
         return false;
       }

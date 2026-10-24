@@ -46,4 +46,42 @@ describe("world screen presenter", () => {
     expect(renderWorldSurface(root, makeScreen([{ symbol: "界", fg: 0, bg: 0, bold: false, columns: 2 }]))).toBe(false);
     expect(root.textContent).toBe("safe legacy view");
   });
+
+  it("refuses grapheme count violations and mismatched symbol widths", () => {
+    const root = document.createElement("div");
+    // wide glyph in 1 column
+    expect(renderWorldSurface(root, makeScreen([{ symbol: "界", fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
+
+    // narrow glyph in 2 columns
+    const screenNarrowInWide: ScreenSurface = {
+      kind: "screen",
+      version: 1,
+      width: 2,
+      height: 1,
+      cells: [
+        { symbol: "x", fg: 0, bg: 0, bold: false, columns: 2 },
+        { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
+      ],
+    };
+    expect(renderWorldSurface(root, screenNarrowInWide)).toBe(false);
+
+    // narrow glyph in 2 columns (also with non-empty continuation)
+    const screenNarrowNonEmptyContinuation: ScreenSurface = {
+      kind: "screen",
+      version: 1,
+      width: 2,
+      height: 1,
+      cells: [
+        { symbol: "x", fg: 0, bg: 0, bold: false, columns: 2 },
+        { symbol: "Z", fg: 0, bg: 0, bold: false, columns: 0 },
+      ],
+    };
+    expect(renderWorldSurface(root, screenNarrowNonEmptyContinuation)).toBe(false);
+
+    // two graphemes in one cell
+    expect(renderWorldSurface(root, makeScreen([{ symbol: "ab", fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
+
+    // zero graphemes in one cell
+    expect(renderWorldSurface(root, makeScreen([{ symbol: "", fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
+  });
 });
