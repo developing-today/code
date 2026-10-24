@@ -753,7 +753,9 @@ async fn apply_steps(
             ApplyStep::SetCeiling { ceiling } => {
                 // `None` means "no ceiling": restore the whole catalog.
                 let names = ceiling.clone().unwrap_or_else(|| {
-                    crate::world_caps::catalog_names().into_iter().collect::<Vec<_>>()
+                    crate::world_caps::catalog_names()
+                        .into_iter()
+                        .collect::<Vec<_>>()
                 });
                 client.set_caps_ceiling(admin_token, &names).await?;
             }

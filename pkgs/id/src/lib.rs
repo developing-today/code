@@ -230,9 +230,9 @@ pub mod world_fixture;
 pub mod world_hub;
 #[cfg(feature = "world")]
 pub mod world_limits;
+pub(crate) mod world_line;
 #[cfg(feature = "world")]
 pub mod world_manifest;
-pub(crate) mod world_line;
 #[cfg(feature = "world")]
 pub mod world_native;
 #[cfg(feature = "world")]
