@@ -1,0 +1,141 @@
+{
+  "columns": [
+    { "id": "Title", "type": "Text" },
+    { "choices": ["PM stack", "Basement cluster", "Cloud program", "Repo fleet"], "id": "Area", "type": "Choice" },
+    { "choices": ["Idea", "Planned", "In progress", "Blocked", "Done"], "id": "Status", "type": "Choice" },
+    { "id": "Horizon", "type": "Text" },
+    { "id": "Source", "type": "Text" },
+    { "id": "Notes", "type": "Text" }
+  ],
+  "rows": [
+    {
+      "Area": "PM stack",
+      "Horizon": "2026-10-24",
+      "Notes": "Kaneo 2.47.0 on the laptop, GitHub App developing.today installed on developing-today/code only, 105 issues imported, two-way sync verified end-to-end.",
+      "Source": "https://github.com/developing-today/code/pull/752",
+      "Status": "Done",
+      "Title": "PM stack Phase 1 — Kaneo execution board (code repo)"
+    },
+    {
+      "Area": "PM stack",
+      "Horizon": "Q4 2026",
+      "Notes": "Dispatch layer trial on developing-today/code with manual merge only; Pad planning layer seeded; Grist chosen over Baserow and seeded with this table.",
+      "Source": "doc/2026-10-24T11-05-38Z_design_project-management-stack/ (developing-today/code)",
+      "Status": "In progress",
+      "Title": "PM stack Phase 2 — ready-for-agent, Pad, roadmap table layer"
+    },
+    {
+      "Area": "PM stack",
+      "Horizon": "Q4 2026",
+      "Notes": "One Kaneo project per repo (upstream one-repo-per-project limit); install the developing.today app per repo.",
+      "Source": "doc/2026-10-24T11-05-38Z_design_project-management-stack/ (developing-today/code)",
+      "Status": "Planned",
+      "Title": "PM stack — connect opencode, openchamber, nix as Kaneo projects"
+    },
+    {
+      "Area": "PM stack",
+      "Horizon": "Q1 2027",
+      "Notes": "Webhook-fed projector joining GitHub issue ↔ Kaneo task ↔ Pad item ↔ roadmap row by ID. Never a source of truth.",
+      "Source": "doc/2026-10-24T11-05-38Z_design_project-management-stack/ (developing-today/code)",
+      "Status": "Planned",
+      "Title": "PM stack — projector + link registry (Turso)"
+    },
+    {
+      "Area": "PM stack",
+      "Horizon": "Q1 2027",
+      "Notes": "Scoped at the end of Phase 2, built next phase. Read-mostly and disposable: if it rots, every layer underneath still works standalone.",
+      "Source": "doc/2026-10-24T11-05-38Z_design_project-management-stack/ (developing-today/code)",
+      "Status": "Planned",
+      "Title": "PM stack — aggregator UI (cross-repo WIP board + roadmap view)"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Unscheduled",
+      "Notes": "Start with the best/most-identical Threadripper machines; everything declarative and bootstrappable. No HashiCorp.",
+      "Source": "https://github.com/dezren39/nix/issues/501",
+      "Status": "Planned",
+      "Title": "Basement cluster — 3–5 node Talos + Cozystack via TALM"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Q4 2026",
+      "Notes": "Every machine's BIOS/BMC versions and settings verified identical on core machines; SMART/firmware baseline exists for NVMe, not yet for the 8 boxed HDDs.",
+      "Source": "https://github.com/dezren39/nix/issues/502",
+      "Status": "In progress",
+      "Title": "Hardware inventory + firmware/BMC audit"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Unscheduled",
+      "Notes": "3 hosts × 4 × 16 TB RAID 10 for RustFS cold buckets; NVMe stripe×mirror (RAID 100); 3-machine DRBD replication so data loss needs the same failure on 2 machines.",
+      "Source": "Cluster idea register, 2026-10-20",
+      "Status": "Planned",
+      "Title": "Storage tiers — HDD RAID 10, NVMe RAID 100, DRBD/LINSTOR replication"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Unscheduled",
+      "Notes": "Declared in the cluster config from first boot; FluxCD runs the ID app first.",
+      "Source": "Cluster idea register, 2026-10-20",
+      "Status": "Planned",
+      "Title": "Cluster day-one services — CNPG Postgres, cloudflared, Tailscale, NATS, RustFS, FluxCD"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Unscheduled",
+      "Notes": "Shelf PCs as CI offload and as LINSTOR/DRBD tie-breaker witnesses (a Raspberry Pi is the alternative witness).",
+      "Source": "Cluster idea register, addendum 2026-10-21",
+      "Status": "Idea",
+      "Title": "Spare PCs — compile/test runners and quorum witnesses"
+    },
+    {
+      "Area": "Basement cluster",
+      "Horizon": "Unscheduled",
+      "Notes": "Explicitly a side project of a side project for now; noted so it is not lost.",
+      "Source": "Cluster idea register, addendum 2026-10-20",
+      "Status": "Idea",
+      "Title": "ESP32 wing — sensors + LoRa for the ID project"
+    },
+    {
+      "Area": "Cloud program",
+      "Horizon": "Q4 2026",
+      "Notes": "Account provisioning stuck (Oracle ticket CPCOE-29381; home region US East/Ashburn confirmed). Then: Ampere A1 + 2× E2.1.Micro, PAYG upgrade with quota + budget guardrails first.",
+      "Source": "https://github.com/dezren39/nix/issues/507",
+      "Status": "Blocked",
+      "Title": "OCI Always Free — run the technical maximum"
+    },
+    {
+      "Area": "Repo fleet",
+      "Horizon": "Ongoing",
+      "Notes": "109 open issues+PRs at 2026-10-24. Hosts the id project and this PM stack's definitions; sweep fleet keeps it healthy.",
+      "Source": "https://github.com/developing-today/code",
+      "Status": "In progress",
+      "Title": "Repo fleet — developing-today/code"
+    },
+    {
+      "Area": "Repo fleet",
+      "Horizon": "Ongoing",
+      "Notes": "27 open issues+PRs at 2026-10-24. The fleet's OpenCode 2 fork; Actions outage tracked in its issue #365.",
+      "Source": "https://github.com/developing-today/opencode",
+      "Status": "In progress",
+      "Title": "Repo fleet — developing-today/opencode"
+    },
+    {
+      "Area": "Repo fleet",
+      "Horizon": "Ongoing",
+      "Notes": "66 open issues+PRs at 2026-10-24. Embeds the fork's OpenCode 2.",
+      "Source": "https://github.com/developing-today/openchamber",
+      "Status": "In progress",
+      "Title": "Repo fleet — developing-today/openchamber"
+    },
+    {
+      "Area": "Repo fleet",
+      "Horizon": "Ongoing",
+      "Notes": "201 open issues+PRs at 2026-10-24. Fleet configuration; cluster design issues #501–#508 live here.",
+      "Source": "https://github.com/dezren39/nix",
+      "Status": "In progress",
+      "Title": "Repo fleet — dezren39/nix"
+    }
+  ],
+  "table": "Roadmap"
+}
