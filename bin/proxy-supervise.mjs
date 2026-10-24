@@ -498,6 +498,10 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
     if (proxy.strategy === 'inplace' && current?.live) {
       await stopInstance(current.pid, cfg.drainSeconds, cfg, current.unit);
       current = null;
+      // The health snapshot predates the stop; re-probe or the
+      // occupied check below aborts on the ghost of the instance we
+      // just stopped (observed live on the sandbox relays).
+      health[targetPort] = await checkHealth(proxy, targetPort, 1500);
     }
     // A leftover occupant on the target port that is our recorded
     // previous instance gets stopped; anything else aborts the roll.
