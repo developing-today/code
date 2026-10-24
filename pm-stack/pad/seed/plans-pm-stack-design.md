@@ -24,15 +24,15 @@ are SOPS-encrypted in the repo and mirrored to Bitwarden +
 
 Each layer has exactly one source of truth; nothing competes.
 
-| Layer           | Tool              | Owns                                          |
-| --------------- | ----------------- | --------------------------------------------- |
-| Code work       | GitHub            | Issues, PRs, comments, reviews across repos   |
-| Execution board | Kaneo (MIT)       | Per-repo task boards, two-way GitHub sync     |
-| Dispatch        | ready-for-agent   | Turning a labelled issue into an agent run+PR |
-| Planning        | Pad (Apache-2.0)  | Plans, conventions, playbooks, ideas          |
-| Tables          | Grist or Baserow  | Roadmap, idea register, inventories, trackers |
-| Glue            | ours (code repo)  | Link registry + projections (never a SoT)     |
-| Aggregator UI   | ours (code repo)  | Cross-repo WIP board + roadmap timeline      |
+| Layer           | Tool             | Owns                                          |
+| --------------- | ---------------- | --------------------------------------------- |
+| Code work       | GitHub           | Issues, PRs, comments, reviews across repos   |
+| Execution board | Kaneo (MIT)      | Per-repo task boards, two-way GitHub sync     |
+| Dispatch        | ready-for-agent  | Turning a labelled issue into an agent run+PR |
+| Planning        | Pad (Apache-2.0) | Plans, conventions, playbooks, ideas          |
+| Tables          | Grist or Baserow | Roadmap, idea register, inventories, trackers |
+| Glue            | ours (code repo) | Link registry + projections (never a SoT)     |
+| Aggregator UI   | ours (code repo) | Cross-repo WIP board + roadmap timeline       |
 
 Licenses verified from source 2026-10-24: Kaneo MIT;
 ready-for-agent MIT; Pad Apache-2.0; Grist Apache-2.0; Baserow
