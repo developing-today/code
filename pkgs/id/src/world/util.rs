@@ -26,6 +26,7 @@ pub(crate) fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
     bool::from(left.ct_eq(right))
 }
 
+/// Lower-case hex encoding of a byte slice, two characters per byte.
 pub fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -36,6 +37,7 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     encoded
 }
 
+/// Publish a new records snapshot through the watch channel when it differs.
 pub fn publish_records(
     sender: &watch::Sender<(u64, Arc<Records>)>,
     sequence: u64,

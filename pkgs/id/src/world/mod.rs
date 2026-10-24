@@ -16,16 +16,12 @@
 //! invite or an account grant), by counting actions in its own journal. Those
 //! counts are local to the hosting node and need not converge across partitions.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
 use anyhow::{Context, Result, bail, ensure};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 /// Re-exported so `crate::world::Isolation` keeps working: the type now lives
 /// in [`crate::groups::worlds`] so the crate builds without this feature.

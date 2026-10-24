@@ -1,22 +1,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use iroh_blobs::{
-    BlobFormat, Hash,
-    api::{Store, TempTag, blobs::AddBytesOptions},
-};
+use iroh_blobs::api::{Store, TempTag};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::directory_auth::Signed;
-use crate::frames::MAX_FRAME_BYTES;
 use crate::world::{
-    Authority, CapabilityBounds, FileScope, Isolation, WorldEvent, WorldHandle, WorldPolicy,
-    WorldSnapshot,
+    CapabilityBounds, FileScope, Isolation, WorldEvent, WorldHandle, WorldPolicy, WorldSnapshot,
 };
 use crate::world_compile::Compiler;
-use crate::world_hub::{WorldInfo, WorldLease};
+use crate::world_hub::WorldInfo;
 
+/// Largest Wasm world module that may be installed (16 MiB).
 pub const MAX_WORLD_MODULE_BYTES: usize = 16 * 1024 * 1024;
 
 /// Largest raw upload chunk; hex + JSON framing remains below [`MAX_FRAME_BYTES`].

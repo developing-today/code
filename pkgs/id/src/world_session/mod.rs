@@ -15,28 +15,26 @@
 //! is (an Iroh node ID); that never grants world authority.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context as _;
 use iroh_blobs::{
     BlobFormat, Hash,
-    api::{Store, TempTag, blobs::AddBytesOptions},
+    api::{Store, blobs::AddBytesOptions},
 };
-use rand::RngExt as _;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
 
 use crate::directory_auth::Signed;
 use crate::time::unix_ms;
 use crate::world::{
-    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, WorldEvent,
-    WorldHandle, WorldPolicy, WorldScopes, WorldSnapshot,
+    Authority, CapabilityBounds, FileScope, Isolation, JoinCapability, Participant, WorldHandle,
+    WorldPolicy, WorldScopes,
 };
 use crate::world_compile::Compiler;
 #[cfg(feature = "sandbox")]
 use crate::world_compile::{COMPILE_TIMEOUT, CompileSpec};
-use crate::world_hub::{WorldHub, WorldInfo, WorldLease};
+use crate::world_hub::{WorldHub, WorldLease};
 
 /// Re-exported so `crate::world_session::MAX_FRAME_BYTES` keeps working: the
 /// limit now lives in [`crate::frames`] so the crate builds without the
@@ -49,7 +47,7 @@ mod tests;
 mod types;
 
 pub(crate) use types::{
-    CAPS_CEILING_NOTICE, ClientFrame, CompileFile, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
+    CAPS_CEILING_NOTICE, ClientFrame, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
     MAX_CONCURRENT_MODULE_UPLOADS, ServerFrame, invite_bounds,
 };
 pub use types::{

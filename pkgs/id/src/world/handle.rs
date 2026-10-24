@@ -17,7 +17,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
-use crate::world_caps::{CapsReport, Decision};
+use crate::world_caps::CapsReport;
 
 impl WorldHandle {
     /// Spawn a world actor on the current Tokio runtime.

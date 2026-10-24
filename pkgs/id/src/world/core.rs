@@ -1,14 +1,7 @@
 use super::*;
 
+use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::time::Instant;
-
-use anyhow::{Context, Result, bail, ensure};
-use rand::RngExt as _;
-use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq as _;
-
-use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
 
 /// Mutable world state. Keep it behind one actor/mutex so event sequencing is serialized.
 #[derive(Debug)]

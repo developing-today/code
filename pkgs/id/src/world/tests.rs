@@ -1,6 +1,7 @@
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 use crate::world::*;
+use std::sync::Arc;
 
 mod tests {
     use super::*;
