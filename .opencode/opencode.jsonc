@@ -1886,6 +1886,25 @@
               }
             }
           }
+        },
+        "gemini-pro-latest": {
+          "name": "Gemini Pro Latest",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "thinkingLevel": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "thinkingLevel": "high"
+              }
+            }
+          }
         }
       }
     },
@@ -1893,10 +1912,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity CLI (via agy)",
       "options": {
-        // Port comes from AGY_PROXY_PORT (set by home config from the
-        // same single definition the agy-proxy service binds) — never
-        // hardcode a port here; see the openai-codex provider note.
-        "baseURL": "http://127.0.0.1:{env:AGY_PROXY_PORT:-18743}/v1",
+        "baseURL": "http://127.0.0.1:18743/v1",
         "apiKey": "agy-local"
       },
       "models": {
@@ -1971,6 +1987,83 @@
             "context": 1000000,
             "output": 64000
           }
+        },
+        "gemini-2.5-flash": {
+          "name": "Gemini 3.5 Flash Lite (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-thinking": {
+          "name": "Gemini 3.5 Flash Lite (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-pro": {
+          "name": "Gemini 2.5 Pro (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3-flash": {
+          "name": "Gemini 3 Flash (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-image": {
+          "name": "Gemini 3.1 Flash Image (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash-tiered": {
+          "name": "gemini-3.8-flash-tiered (agy)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gpt-oss-120b": {
+          "name": "GPT-OSS 120B (agy)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          },
+          "variants": {
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            }
+          }
         }
       }
     },
@@ -1978,11 +2071,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity Language Server (Direct gRPC/ConnectRPC)",
       "options": {
-        // Port comes from ANTIGRAVITY_LS_PROXY_PORT (set by home config
-        // from the same single definition the antigravity-ls-proxy
-        // service binds) — never hardcode a port here; see the
-        // openai-codex provider note.
-        "baseURL": "http://127.0.0.1:{env:ANTIGRAVITY_LS_PROXY_PORT:-18745}/v1",
+        "baseURL": "http://127.0.0.1:18745/v1",
         "apiKey": "antigravity-local"
       },
       "models": {
@@ -2056,6 +2145,83 @@
           "limit": {
             "context": 1000000,
             "output": 64000
+          }
+        },
+        "gemini-2.5-flash": {
+          "name": "Gemini 3.5 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-flash-thinking": {
+          "name": "Gemini 3.5 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-2.5-pro": {
+          "name": "Gemini 2.5 Pro (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3-flash": {
+          "name": "Gemini 3 Flash (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-image": {
+          "name": "Gemini 3.1 Flash Image (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.1-flash-lite": {
+          "name": "Gemini 3.1 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-3.8-flash-tiered": {
+          "name": "gemini-3.8-flash-tiered (Direct LS)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gpt-oss-120b": {
+          "name": "GPT-OSS 120B (Direct LS)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          },
+          "variants": {
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            }
           }
         }
       }
@@ -2718,11 +2884,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "OpenAI Codex CLI (via codex)",
       "options": {
-        // Port comes from CODEX_PROXY_PORT (set by home config from the
-        // same single definition the codex-proxy service binds) — never
-        // hardcode a port here; a hardcoded one silently breaks on any
-        // device where the proxy isn't on that exact port.
-        "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
+        "baseURL": "http://127.0.0.1:18744/v1",
         "apiKey": "codex-local"
       },
       "models": {
@@ -3088,656 +3250,759 @@
         }
       }
     },
-        "chatgpt": {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "ChatGPT (via Codex)",
-            "options": {
-                "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
-                "apiKey": "codex-local"
+    "chatgpt": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "ChatGPT (via Codex)",
+      "options": {
+        "baseURL": "http://127.0.0.1:18744/v1",
+        "apiKey": "codex-local"
+      },
+      "models": {
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol (ChatGPT)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
             },
-            "models": {
-                "gpt-6.1-sol": {
-                    "name": "GPT-6.1 Sol (ChatGPT)",
-                    "variants": {
-                        "low": {
-                            "options": {
-                                "reasoning_effort": "low"
-                            }
-                        },
-                        "medium": {
-                            "options": {
-                                "reasoning_effort": "medium"
-                            }
-                        },
-                        "high": {
-                            "options": {
-                                "reasoning_effort": "high"
-                            }
-                        },
-                        "xhigh": {
-                            "options": {
-                                "reasoning_effort": "xhigh"
-                            }
-                        },
-                        "max": {
-                            "options": {
-                                "reasoning_effort": "max"
-                            }
-                        },
-                        "ultra": {
-                            "options": {
-                                "reasoning_effort": "ultra"
-                            }
-                        }
-                    },
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "gpt-6-astra": {
-                    "name": "GPT-6 Astra (ChatGPT)",
-                    "variants": {
-                        "low": {
-                            "options": {
-                                "reasoning_effort": "low"
-                            }
-                        },
-                        "medium": {
-                            "options": {
-                                "reasoning_effort": "medium"
-                            }
-                        },
-                        "high": {
-                            "options": {
-                                "reasoning_effort": "high"
-                            }
-                        },
-                        "xhigh": {
-                            "options": {
-                                "reasoning_effort": "xhigh"
-                            }
-                        },
-                        "max": {
-                            "options": {
-                                "reasoning_effort": "max"
-                            }
-                        },
-                        "ultra": {
-                            "options": {
-                                "reasoning_effort": "ultra"
-                            }
-                        }
-                    },
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "gpt-6-sol": {
-                    "name": "GPT-6 Sol (ChatGPT)",
-                    "variants": {
-                        "low": {
-                            "options": {
-                                "reasoning_effort": "low"
-                            }
-                        },
-                        "medium": {
-                            "options": {
-                                "reasoning_effort": "medium"
-                            }
-                        },
-                        "high": {
-                            "options": {
-                                "reasoning_effort": "high"
-                            }
-                        },
-                        "xhigh": {
-                            "options": {
-                                "reasoning_effort": "xhigh"
-                            }
-                        },
-                        "max": {
-                            "options": {
-                                "reasoning_effort": "max"
-                            }
-                        },
-                        "ultra": {
-                            "options": {
-                                "reasoning_effort": "ultra"
-                            }
-                        }
-                    },
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "gpt-6-luna": {
-                    "name": "GPT-6 Luna (ChatGPT)",
-                    "variants": {
-                        "low": {
-                            "options": {
-                                "reasoning_effort": "low"
-                            }
-                        },
-                        "medium": {
-                            "options": {
-                                "reasoning_effort": "medium"
-                            }
-                        },
-                        "high": {
-                            "options": {
-                                "reasoning_effort": "high"
-                            }
-                        },
-                        "xhigh": {
-                            "options": {
-                                "reasoning_effort": "xhigh"
-                            }
-                        },
-                        "max": {
-                            "options": {
-                                "reasoning_effort": "max"
-                            }
-                        }
-                    },
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "gpt-5.6-sol": {
-                    "name": "GPT-5.6 Sol (ChatGPT)",
-                    "variants": {
-                        "low": {
-                            "options": {
-                                "reasoning_effort": "low"
-                            }
-                        },
-                        "medium": {
-                            "options": {
-                                "reasoning_effort": "medium"
-                            }
-                        },
-                        "high": {
-                            "options": {
-                                "reasoning_effort": "high"
-                            }
-                        },
-                        "xhigh": {
-                            "options": {
-                                "reasoning_effort": "xhigh"
-                            }
-                        },
-                        "max": {
-                            "options": {
-                                "reasoning_effort": "max"
-                            }
-                        },
-                        "ultra": {
-                            "options": {
-                                "reasoning_effort": "ultra"
-                            }
-                        }
-                    },
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "gpt-5.6-terra": {
-                    "name": "GPT-5.6 Terra (ChatGPT)",
-                    "variants": {
-                        "low": {
-                            "options": {
-                                "reasoning_effort": "low"
-                            }
-                        },
-                        "medium": {
-                            "options": {
-                                "reasoning_effort": "medium"
-                            }
-                        },
-                        "high": {
-                            "options": {
-                                "reasoning_effort": "high"
-                            }
-                        },
-                        "xhigh": {
-                            "options": {
-                                "reasoning_effort": "xhigh"
-                            }
-                        },
-                        "max": {
-                            "options": {
-                                "reasoning_effort": "max"
-                            }
-                        },
-                        "ultra": {
-                            "options": {
-                                "reasoning_effort": "ultra"
-                            }
-                        }
-                    },
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "gpt-5.6-luna": {
-                    "name": "GPT-5.6 Luna (ChatGPT)",
-                    "variants": {
-                        "low": {
-                            "options": {
-                                "reasoning_effort": "low"
-                            }
-                        },
-                        "medium": {
-                            "options": {
-                                "reasoning_effort": "medium"
-                            }
-                        },
-                        "high": {
-                            "options": {
-                                "reasoning_effort": "high"
-                            }
-                        },
-                        "xhigh": {
-                            "options": {
-                                "reasoning_effort": "xhigh"
-                            }
-                        },
-                        "max": {
-                            "options": {
-                                "reasoning_effort": "max"
-                            }
-                        }
-                    },
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "gpt-5.5": {
-                    "name": "GPT-5.5 (ChatGPT)",
-                    "variants": {
-                        "low": {
-                            "options": {
-                                "reasoning_effort": "low"
-                            }
-                        },
-                        "medium": {
-                            "options": {
-                                "reasoning_effort": "medium"
-                            }
-                        },
-                        "high": {
-                            "options": {
-                                "reasoning_effort": "high"
-                            }
-                        },
-                        "xhigh": {
-                            "options": {
-                                "reasoning_effort": "xhigh"
-                            }
-                        }
-                    },
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                }
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
             }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
         },
-        "design-code": {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "Design Code",
-            "options": {
-                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-                "apiKey": "design-local"
+        "gpt-6-astra": {
+          "name": "GPT-6 Astra (ChatGPT)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
             },
-            "models": {
-                "claude-haiku-5.5": {
-                    "name": "Claude Haiku 5.5 (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "gpt-6-luna": {
-                    "name": "GPT-6 Luna (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "gpt-6.1-sol": {
-                    "name": "GPT-6.1 Sol (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "deepseek-v4.1-flash": {
-                    "name": "DeepSeek V4.1 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "glm-5.3-flash": {
-                    "name": "GLM 5.3 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "glm-5.3-flashx": {
-                    "name": "GLM 5.3 FlashX (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "mimo-v2.6-flash": {
-                    "name": "MIMO v2.6 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "mimo-v2.6-pro": {
-                    "name": "MIMO v2.6 Pro (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "design-code-pro": {
-                    "name": "Design Code Pro",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "design-code-flash": {
-                    "name": "Design Code Flash",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "open-design-pro": {
-                    "name": "Open Design Pro",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                }
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
             }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
         },
-        "code-design": {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "Code Design",
-            "options": {
-                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-                "apiKey": "design-local"
+        "gpt-6-sol": {
+          "name": "GPT-6 Sol (ChatGPT)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
             },
-            "models": {
-                "claude-haiku-5.5": {
-                    "name": "Claude Haiku 5.5 (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "gpt-6-luna": {
-                    "name": "GPT-6 Luna (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "gpt-6.1-sol": {
-                    "name": "GPT-6.1 Sol (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "deepseek-v4.1-flash": {
-                    "name": "DeepSeek V4.1 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "glm-5.3-flash": {
-                    "name": "GLM 5.3 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "glm-5.3-flashx": {
-                    "name": "GLM 5.3 FlashX (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "mimo-v2.6-flash": {
-                    "name": "MIMO v2.6 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "mimo-v2.6-pro": {
-                    "name": "MIMO v2.6 Pro (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "design-code-pro": {
-                    "name": "Design Code Pro",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "design-code-flash": {
-                    "name": "Design Code Flash",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "open-design-pro": {
-                    "name": "Open Design Pro",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                }
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
             }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
         },
-        "open-design": {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "Open Design",
-            "options": {
-                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-                "apiKey": "design-local"
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna (ChatGPT)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
             },
-            "models": {
-                "claude-haiku-5.5": {
-                    "name": "Claude Haiku 5.5 (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "gpt-6-luna": {
-                    "name": "GPT-6 Luna (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "gpt-6.1-sol": {
-                    "name": "GPT-6.1 Sol (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "deepseek-v4.1-flash": {
-                    "name": "DeepSeek V4.1 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "glm-5.3-flash": {
-                    "name": "GLM 5.3 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "glm-5.3-flashx": {
-                    "name": "GLM 5.3 FlashX (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "mimo-v2.6-flash": {
-                    "name": "MIMO v2.6 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "mimo-v2.6-pro": {
-                    "name": "MIMO v2.6 Pro (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "design-code-pro": {
-                    "name": "Design Code Pro",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "design-code-flash": {
-                    "name": "Design Code Flash",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "open-design-pro": {
-                    "name": "Open Design Pro",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                }
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
             }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
         },
-        "opendesign": {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "OpenDesign",
-            "options": {
-                "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-                "apiKey": "design-local"
+        "gpt-5.6-sol": {
+          "name": "GPT-5.6 Sol (ChatGPT)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
             },
-            "models": {
-                "claude-haiku-5.5": {
-                    "name": "Claude Haiku 5.5 (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "gpt-6-luna": {
-                    "name": "GPT-6 Luna (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "gpt-6.1-sol": {
-                    "name": "GPT-6.1 Sol (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                },
-                "deepseek-v4.1-flash": {
-                    "name": "DeepSeek V4.1 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "glm-5.3-flash": {
-                    "name": "GLM 5.3 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "glm-5.3-flashx": {
-                    "name": "GLM 5.3 FlashX (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "mimo-v2.6-flash": {
-                    "name": "MIMO v2.6 Flash (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "mimo-v2.6-pro": {
-                    "name": "MIMO v2.6 Pro (Design Code)",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "design-code-pro": {
-                    "name": "Design Code Pro",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "design-code-flash": {
-                    "name": "Design Code Flash",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 64000
-                    }
-                },
-                "open-design-pro": {
-                    "name": "Open Design Pro",
-                    "limit": {
-                        "context": 1000000,
-                        "output": 128000
-                    }
-                }
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
             }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-terra": {
+          "name": "GPT-5.6 Terra (ChatGPT)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-5.6-luna": {
+          "name": "GPT-5.6 Luna (ChatGPT)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-5.5": {
+          "name": "GPT-5.5 (ChatGPT)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
         }
+      }
+    },
+    "design-code": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Design Code",
+      "options": {
+        "baseURL": "http://127.0.0.1:18746/v1",
+        "apiKey": "design-local"
+      },
+      "models": {
+        "claude-haiku-5.5": {
+          "name": "Claude Haiku 5.5 (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "deepseek-v4.1-flash": {
+          "name": "DeepSeek V4.1 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "glm-5.3-flash": {
+          "name": "GLM 5.3 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "glm-5.3-flashx": {
+          "name": "GLM 5.3 FlashX (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "mimo-v2.6-flash": {
+          "name": "MIMO v2.6 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "mimo-v2.6-pro": {
+          "name": "MIMO v2.6 Pro (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "design-code-pro": {
+          "name": "Design Code Pro",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "design-code-flash": {
+          "name": "Design Code Flash",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "open-design-pro": {
+          "name": "Open Design Pro",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        }
+      }
+    },
+    "code-design": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Code Design",
+      "options": {
+        "baseURL": "http://127.0.0.1:18746/v1",
+        "apiKey": "design-local"
+      },
+      "models": {
+        "claude-haiku-5.5": {
+          "name": "Claude Haiku 5.5 (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "deepseek-v4.1-flash": {
+          "name": "DeepSeek V4.1 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "glm-5.3-flash": {
+          "name": "GLM 5.3 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "glm-5.3-flashx": {
+          "name": "GLM 5.3 FlashX (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "mimo-v2.6-flash": {
+          "name": "MIMO v2.6 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "mimo-v2.6-pro": {
+          "name": "MIMO v2.6 Pro (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "design-code-pro": {
+          "name": "Design Code Pro",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "design-code-flash": {
+          "name": "Design Code Flash",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "open-design-pro": {
+          "name": "Open Design Pro",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        }
+      }
+    },
+    "open-design": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Open Design",
+      "options": {
+        "baseURL": "http://127.0.0.1:18746/v1",
+        "apiKey": "design-local"
+      },
+      "models": {
+        "claude-haiku-5.5": {
+          "name": "Claude Haiku 5.5 (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "deepseek-v4.1-flash": {
+          "name": "DeepSeek V4.1 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "glm-5.3-flash": {
+          "name": "GLM 5.3 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "glm-5.3-flashx": {
+          "name": "GLM 5.3 FlashX (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "mimo-v2.6-flash": {
+          "name": "MIMO v2.6 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "mimo-v2.6-pro": {
+          "name": "MIMO v2.6 Pro (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "design-code-pro": {
+          "name": "Design Code Pro",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "design-code-flash": {
+          "name": "Design Code Flash",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "open-design-pro": {
+          "name": "Open Design Pro",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        }
+      }
+    },
+    "opendesign": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OpenDesign",
+      "options": {
+        "baseURL": "http://127.0.0.1:18746/v1",
+        "apiKey": "design-local"
+      },
+      "models": {
+        "claude-haiku-5.5": {
+          "name": "Claude Haiku 5.5 (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "deepseek-v4.1-flash": {
+          "name": "DeepSeek V4.1 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "glm-5.3-flash": {
+          "name": "GLM 5.3 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "glm-5.3-flashx": {
+          "name": "GLM 5.3 FlashX (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "mimo-v2.6-flash": {
+          "name": "MIMO v2.6 Flash (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "mimo-v2.6-pro": {
+          "name": "MIMO v2.6 Pro (Design Code)",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "design-code-pro": {
+          "name": "Design Code Pro",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "design-code-flash": {
+          "name": "Design Code Flash",
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "open-design-pro": {
+          "name": "Open Design Pro",
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        }
+      }
+    },
+    "deepseek": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "DeepSeek Official API",
+      "options": {
+        "baseURL": "https://api.deepseek.com/v1"
+      },
+      "models": {
+        "deepseek-chat": {
+          "name": "DeepSeek V4.1 Flash (Chat)",
+          "limit": {
+            "context": 1048576,
+            "output": 393216
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
+        },
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro",
+          "limit": {
+            "context": 1048576,
+            "output": 393216
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          }
+        }
+      }
+    },
+    "openrouter": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OpenRouter (Free Tier)",
+      "options": {
+        "baseURL": "https://openrouter.ai/api/v1"
+      },
+      "models": {
+        "minimax/minimax-m3.1-flash:free": {
+          "name": "MiniMax M3.1 Flash (Free)",
+          "limit": {
+            "context": 204800,
+            "output": 131072
+          }
+        },
+        "poolside/laguna-s-2.1:free": {
+          "name": "Poolside Laguna S 2.1 (Free)",
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          }
+        }
+      }
+    },
+    "groq": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Groq (Free Cloud)",
+      "options": {
+        "baseURL": "https://api.groq.com/openai/v1"
+      },
+      "models": {
+        "qwen/qwen3.8-27b": {
+          "name": "Qwen 3.8 27B (Groq)",
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        },
+        "openai/gpt-oss-120b": {
+          "name": "GPT-OSS 120B (Groq)",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        }
+      }
+    }
   },
   "agent": {
     "build": {
@@ -4251,6 +4516,39 @@
         ],
         "autonomy": "rules",
         "selection": "ordered"
+      },
+      "fast": {
+        "targets": [
+          "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-flash-0731#low",
+          "deepseek/deepseek-chat#low",
+          "groq/qwen/qwen3.8-27b"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "deep": {
+        "targets": [
+          "deepseek/deepseek-v4-pro#max",
+          "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-pro-0813#high"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "free": {
+        "targets": [
+          "openrouter/minimax/minimax-m3.1-flash:free",
+          "openrouter/poolside/laguna-s-2.1:free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "balanced": {
+        "targets": [
+          "deepseek/deepseek-chat#high",
+          "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-flash-0731#medium"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
       }
     }
   }
