@@ -113,15 +113,41 @@ impl WorldScopes {
     pub const DELEGATE: Self = Self(0b1000);
     /// Read chat lines without being able to send them. `CHAT` also reads.
     pub const HISTORY: Self = Self(0b1_0000);
+    /// Install and upgrade the world's program. Carries no capability,
+    /// network, file or process authority: only the install path reads it.
+    pub const BUILDER: Self = Self(0b10_0000);
+    /// Revoke participants. Carries no capability, network, file or process
+    /// authority: only the revoke path reads it.
+    pub const MODERATOR: Self = Self(0b100_0000);
     /// Default guest permissions.
     pub const GUEST: Self = Self(Self::JOIN.0 | Self::CHAT.0 | Self::INPUT.0);
-    /// Every scope.
+    /// Every participant scope. The admin authority bits `BUILDER` and
+    /// `MODERATOR` are deliberately excluded: they are issued only by the
+    /// admin, never implied by a ceiling or handed out by a delegator.
     pub const ALL: Self = Self(Self::GUEST.0 | Self::DELEGATE.0 | Self::HISTORY.0);
+    /// Every bit the type recognizes, including the admin authority bits.
+    /// [`Self::from_bits`] accepts these so a journaled builder or moderator
+    /// capability round-trips, without widening [`Self::ALL`].
+    const ALL_BITS: u8 = Self::ALL.0 | Self::BUILDER.0 | Self::MODERATOR.0;
+
+    /// Whether this set includes the builder authority (install modules).
+    #[must_use]
+    pub const fn is_builder(self) -> bool {
+        self.contains(Self::BUILDER)
+    }
+
+    /// Whether this set includes the moderator authority (revoke participants).
+    #[must_use]
+    pub const fn is_moderator(self) -> bool {
+        self.contains(Self::MODERATOR)
+    }
 
     /// Role presets used by `id world invite --role`. `spectator` joins and
     /// sees the world but not the chat; `observer` also reads chat without
     /// sending it; `player` submits input; `guest` (the default) also chats;
-    /// `delegator` additionally mints narrower capabilities for others.
+    /// `delegator` additionally mints narrower capabilities for others;
+    /// `builder` additionally installs modules; `moderator` additionally
+    /// revokes participants.
     ///
     /// The names are stable; the mapping to scopes is part of the protocol.
     #[must_use]
@@ -132,13 +158,22 @@ impl WorldScopes {
             "player" => Some(Self(Self::JOIN.0 | Self::INPUT.0)),
             "guest" => Some(Self::GUEST),
             "delegator" => Some(Self(Self::GUEST.0 | Self::DELEGATE.0)),
+            "builder" => Some(Self(Self::GUEST.0 | Self::BUILDER.0)),
+            "moderator" => Some(Self(Self::GUEST.0 | Self::MODERATOR.0)),
             _ => None,
         }
     }
 
     /// The names accepted by [`Self::from_role`].
-    pub const ROLES: &'static [&'static str] =
-        &["spectator", "observer", "player", "guest", "delegator"];
+    pub const ROLES: &'static [&'static str] = &[
+        "spectator",
+        "observer",
+        "player",
+        "guest",
+        "delegator",
+        "builder",
+        "moderator",
+    ];
 
     /// Raw scope bits, as journaled.
     #[must_use]
@@ -146,10 +181,11 @@ impl WorldScopes {
         self.0
     }
 
-    /// Scopes from raw bits; `None` if any bit names no scope.
+    /// Scopes from raw bits; `None` if any bit names no scope. The admin
+    /// authority bits round-trip here even though they are outside [`Self::ALL`].
     #[must_use]
     pub const fn from_bits(bits: u8) -> Option<Self> {
-        if bits & !Self::ALL.0 == 0 {
+        if bits & !Self::ALL_BITS == 0 {
             Some(Self(bits))
         } else {
             None
@@ -220,7 +256,7 @@ impl WorldScopes {
     }
 
     /// Scopes named on the wire (`join`, `chat`, `history`, `input`,
-    /// `delegate`), or `None` if a name is unknown.
+    /// `delegate`, `builder`, `moderator`), or `None` if a name is unknown.
     #[must_use]
     pub fn from_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<Self> {
         names.into_iter().try_fold(Self(0), |scopes, name| {
@@ -230,6 +266,8 @@ impl WorldScopes {
                 "history" => Self::HISTORY,
                 "input" => Self::INPUT,
                 "delegate" => Self::DELEGATE,
+                "builder" => Self::BUILDER,
+                "moderator" => Self::MODERATOR,
                 _ => return None,
             };
             Some(Self(scopes.0 | bit.0))
@@ -452,6 +490,21 @@ pub enum JournalEntry {
     Revoked {
         /// Participant whose capability was revoked.
         participant_id: u64,
+        /// The moderator participant who revoked it, when the revoke came
+        /// from a moderator scope rather than the admin. `None` means admin.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        by: Option<u64>,
+    },
+    /// A builder-scoped participant installed a program. Journal-only: it is
+    /// the audit record for the builder authority, written alongside the
+    /// `ProgramInstalled` event that carries the install itself.
+    BuilderInstalled {
+        /// The builder participant who installed the program.
+        by: u64,
+        /// The hash of the installed module.
+        module_hash: String,
+        /// The seed the program was installed with.
+        seed: u64,
     },
     /// A sequenced event was committed.
     Committed {

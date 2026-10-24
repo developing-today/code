@@ -1399,7 +1399,7 @@ pub enum WorldCommand {
         /// Role preset: spectator sees the world but not the chat, observer
         /// also reads chat, player also inputs, guest also chats, delegator
         /// may also mint narrower capabilities. Defaults to guest.
-        #[arg(long, value_parser = ["spectator", "observer", "player", "guest", "delegator"])]
+        #[arg(long, value_parser = ["spectator", "observer", "player", "guest", "delegator", "builder", "moderator"])]
         role: Option<String>,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
@@ -3964,7 +3964,7 @@ mod tests {
                 "--name",
                 "ann",
                 "--role",
-                "builder",
+                "telepath",
             ])
             .is_err(),
             "an unknown role must be refused by the parser"

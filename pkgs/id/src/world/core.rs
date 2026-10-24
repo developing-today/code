@@ -221,7 +221,7 @@ impl WorldCore {
                         },
                     );
                 }
-                JournalEntry::Revoked { participant_id } => {
+                JournalEntry::Revoked { participant_id, .. } => {
                     ensure!(
                         !core.revoke_tree(participant_id).is_empty(),
                         "journal revokes unknown or revoked participant {participant_id}"
@@ -288,6 +288,10 @@ impl WorldCore {
                         "journal fires schedule {id:?}, which is not pending"
                     );
                 }
+                // Audit-only: the install is carried by the `Committed`
+                // `ProgramInstalled` event; this entry records who ordered it
+                // and changes no restored state.
+                JournalEntry::BuilderInstalled { .. } => {}
                 JournalEntry::System { event } => {
                     ensure!(
                         event.sequence == 0 && event.participant_id == 0,
@@ -453,7 +457,10 @@ impl WorldCore {
                 .get(&id)
                 .is_some_and(|record| record.revoked)
             {
-                entries.push(JournalEntry::Revoked { participant_id: id });
+                entries.push(JournalEntry::Revoked {
+                    participant_id: id,
+                    by: None,
+                });
             }
         }
         let granted: Vec<String> = self.ledger.granted().iter().cloned().collect();

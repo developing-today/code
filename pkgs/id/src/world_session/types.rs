@@ -104,8 +104,8 @@ pub(crate) enum ClientFrame {
         expires_in_secs: Option<u64>,
         /// Committed actions the invite may take; absent means no limit.
         uses: Option<u32>,
-        /// Role preset (`spectator`, `observer`, `player`, `guest`, `delegator`); absent
-        /// means `guest`.
+        /// Role preset (`spectator`, `observer`, `player`, `guest`, `delegator`,
+        /// `builder`, `moderator`); absent means `guest`.
         #[serde(default)]
         role: Option<String>,
     },

@@ -1511,10 +1511,21 @@ mod tests {
         assert!(delegator.contains(WorldScopes::DELEGATE));
         assert!(delegator.attenuate(WorldScopes::JOIN).is_some());
 
-        assert_eq!(WorldScopes::from_role("builder"), None);
+        let builder = WorldScopes::from_role("builder").unwrap();
+        assert!(builder.is_builder());
+        let moderator = WorldScopes::from_role("moderator").unwrap();
+        assert!(moderator.is_moderator());
         assert_eq!(
             WorldScopes::ROLES,
-            &["spectator", "observer", "player", "guest", "delegator"]
+            &[
+                "spectator",
+                "observer",
+                "player",
+                "guest",
+                "delegator",
+                "builder",
+                "moderator"
+            ]
         );
     }
 
@@ -2049,7 +2060,11 @@ mod tests {
         assert_eq!(WorldScopes::HISTORY.bits(), 0b1_0000);
         assert_eq!(WorldScopes::from_names(["join", "telepathy"]), None);
         assert_eq!(WorldScopes::from_bits(0b1_0000), Some(WorldScopes::HISTORY));
-        assert_eq!(WorldScopes::from_bits(0b10_0000), None);
+        assert_eq!(
+            WorldScopes::from_bits(0b10_0000),
+            Some(WorldScopes::BUILDER)
+        );
+        assert_eq!(WorldScopes::from_bits(0b1000_0000), None);
 
         let join_history = WorldScopes::JOIN.union(WorldScopes::HISTORY);
         let chat_delegator = WorldScopes::GUEST.union(WorldScopes::DELEGATE);

@@ -18,11 +18,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use rand::RngExt as _;
 use iroh_blobs::{
     BlobFormat, Hash,
     api::{Store, blobs::AddBytesOptions},
 };
+use rand::RngExt as _;
 use serde::Serialize;
 use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast};
@@ -977,7 +977,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             Some(None) => {
                 let _ = send_error(
                     io,
-                    "unknown invite role; use spectator, observer, player, guest, or delegator",
+                    "unknown invite role; use spectator, observer, player, guest, delegator, builder, or moderator",
                 )
                 .await;
             }

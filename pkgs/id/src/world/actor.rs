@@ -43,6 +43,9 @@ pub(crate) enum WorldCommand {
     },
     Revoke {
         participant_id: u64,
+        /// The moderator participant who ordered the revoke, for the audit
+        /// journal. `None` means the admin revoked.
+        by: Option<u64>,
         reply: oneshot::Sender<bool>,
     },
     ParticipantId {
@@ -87,6 +90,9 @@ pub(crate) enum WorldCommand {
         module_hash: String,
         seed: u64,
         provenance: Option<ModuleProvenance>,
+        /// The builder participant who ordered the install, for the audit
+        /// journal. `None` means the admin installed.
+        installed_by: Option<u64>,
         program: Box<dyn WorldProgram>,
         reply: oneshot::Sender<Result<WorldEvent>>,
     },
@@ -978,6 +984,7 @@ impl WorldActor {
             }
             WorldCommand::Revoke {
                 participant_id,
+                by,
                 reply,
             } => {
                 // Revocation takes effect in memory even if storage failed:
@@ -985,7 +992,7 @@ impl WorldActor {
                 let revoked = self.core.revoke_tree(participant_id);
                 let was_active = !revoked.is_empty();
                 if was_active {
-                    let _ = self.persist(JournalEntry::Revoked { participant_id });
+                    let _ = self.persist(JournalEntry::Revoked { participant_id, by });
                     for id in revoked {
                         let _ = self.revocation_sender.send(id);
                     }
@@ -1153,6 +1160,7 @@ impl WorldActor {
                 module_hash,
                 seed,
                 provenance,
+                installed_by,
                 program: mut replacement,
                 reply,
             } => {
@@ -1171,7 +1179,7 @@ impl WorldActor {
                     sequence: self.core.sequence.saturating_add(1),
                     participant_id: 0,
                     kind: WorldEventKind::ProgramInstalled {
-                        module_hash,
+                        module_hash: module_hash.clone(),
                         seed,
                         provenance: provenance.clone(),
                     },
@@ -1179,6 +1187,18 @@ impl WorldActor {
                 let result = self
                     .persist(JournalEntry::Committed {
                         event: candidate.clone(),
+                    })
+                    .and_then(|()| {
+                        // The builder authority leaves a journal-only audit
+                        // record, alongside the install event.
+                        if let Some(by) = installed_by {
+                            return self.persist(JournalEntry::BuilderInstalled {
+                                by,
+                                module_hash: module_hash.clone(),
+                                seed,
+                            });
+                        }
+                        Ok(())
                     })
                     .and_then(|()| self.core.commit_prepared(candidate));
                 let result = match result {
