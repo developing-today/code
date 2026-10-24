@@ -1,0 +1,60 @@
+# Project-management stack — Phase 1: Kaneo + PostgreSQL.
+#
+# Pinned to the Kaneo release we run; bump the tag deliberately (see
+# README.md "Updating"). Based on Kaneo's official compose
+# (github.com/usekaneo/kaneo compose.yml + docs "Install with Docker
+# Compose"), with two local changes:
+#   - the Kaneo image tag is pinned here instead of following :latest;
+#   - the web port binds to host loopback only — public access arrives
+#     through the Cloudflare Tunnel (see README.md), never directly.
+#
+# All configuration comes from ./.env, which deploy.sh renders from
+# ../secrets/pm-stack.sops.yaml. Never hand-edit .env on a host and
+# never commit it.
+services:
+  postgres:
+    image: postgres:16-alpine
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kaneo}
+      POSTGRES_DB: ${POSTGRES_DB:-kaneo}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD-SHELL", 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kaneo:
+    image: ghcr.io/usekaneo/kaneo:2.47.0
+    ports:
+      - "127.0.0.1:5173:5173"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-Y",
+          "off",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:5173/api/health",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+volumes:
+  postgres_data:

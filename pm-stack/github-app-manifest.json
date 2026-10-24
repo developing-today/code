@@ -1,0 +1,10 @@
+{
+  "_comment": "GitHub App manifest for the 'developing-today kaneo' app. Used with GitHub's app-manifest flow: POST this JSON as the 'manifest' form field to https://github.com/organizations/developing-today/settings/apps/new (signed in as an org owner). GitHub redirects to redirect_url with a temporary ?code=; exchange it once with POST https://api.github.com/app-manifests/{code}/conversions to receive the App ID, slug, PEM private key and webhook secret, which then go into secrets/pm-stack.sops.yaml (and Bitwarden/1Password). If the name is taken, append a suffix and update GITHUB_APP_NAME to the resulting slug. The webhook secret and private key returned by the conversion are the ones Kaneo must use — do not invent your own.",
+  "default_events": ["issues", "issue_comment", "pull_request", "push"],
+  "default_permissions": { "contents": "read", "issues": "write", "metadata": "read", "pull_requests": "read" },
+  "hook_attributes": { "active": true, "url": "https://kaneo.security.cab/api/github-integration/webhook" },
+  "name": "developing-today kaneo",
+  "public": false,
+  "redirect_url": "https://kaneo.security.cab/",
+  "url": "https://kaneo.security.cab"
+}

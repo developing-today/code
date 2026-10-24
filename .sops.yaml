@@ -11,6 +11,14 @@ creation_rules:
       - age:
           - *laptop-framework
           - *claude-sandbox
+  # secrets/pm-stack.sops.yaml is encrypted to BOTH recipients: the laptop
+  # runs the stack (pm-stack/deploy.sh decrypts there) and the sandbox
+  # manages it. Same first-match caveat as the opendesign rule above.
+  - path_regex: secrets/pm-stack\.sops\.yaml$
+    key_groups:
+      - age:
+          - *laptop-framework
+          - *claude-sandbox
   - age: *laptop-framework
 # todo: common vs per-host vs per-user
 # separate keys for other hosts, don't share allow all hosts to decrypt certain secrets
