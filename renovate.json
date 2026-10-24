@@ -1,4 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:base"]
+  "extends": [
+    "config:base"
+  ],
+  "packageRules": [
+    {
+      "groupName": "p2panda",
+      "groupSlug": "p2panda",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchPackagePatterns": [
+        "^p2panda-"
+      ]
+    }
+  ]
 }
