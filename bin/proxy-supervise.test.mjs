@@ -27,8 +27,19 @@ import {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = (marker) => `
+import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 const port = Number(process.env.FAKE_PROXY_PORT);
+// Mimic the fleet proxies: publish a minimal endpoint.json on listen
+// and UNLINK it on graceful exit (codex-proxy.mjs does exactly this —
+// it is why the supervisor must rewrite the record after a roll).
+const ep = process.env.FAKE_ENDPOINT;
+if (ep) {
+  fs.mkdirSync(path.dirname(ep), { recursive: true });
+  fs.writeFileSync(ep, JSON.stringify({ host: '127.0.0.1', port, pid: process.pid, url: 'http://127.0.0.1:' + port }));
+  process.on('SIGTERM', () => { try { fs.unlinkSync(ep); } catch {} process.exit(0); });
+}
 http.createServer((req, res) => {
   if (req.url === '/health') { res.writeHead(200, {'content-type':'application/json'}); res.end(JSON.stringify({status:'ok', marker:${JSON.stringify(marker)}})); }
   else { res.writeHead(404); res.end(); }
@@ -75,7 +86,7 @@ const makeWorld = async (t, { strategy = 'ab', script = FAKE('v1') } = {}) => {
       command: [process.execPath, scriptPath],
       portEnv: 'FAKE_PROXY_PORT',
       hashFiles: [scriptPath],
-      env: {},
+      env: { FAKE_ENDPOINT: path.join(endpointDir, 'fake-proxy', 'endpoint.json') },
     }],
   }));
   const cfg = loadConfig(configPath);
@@ -166,6 +177,7 @@ test('hash change rolls A/B: new port serves, old drained, endpoint flipped', as
   const ep = JSON.parse(fs.readFileSync(path.join(w.endpointDir, 'fake-proxy', 'endpoint.json'), 'utf8'));
   assert.equal(ep.port, w.altPort);
   assert.equal(ep.previousPort, w.canonicalPort);
+  assert.ok(ep.hash, 'endpoint record survives the roll in extended shape (old instance unlinks it on exit; supervisor rewrites)');
   // And back again on the next change (roles of the ports swap).
   fs.writeFileSync(w.scriptPath, FAKE('v3'));
   const r3 = await w.run();

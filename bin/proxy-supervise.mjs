@@ -511,6 +511,11 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
       }
       if (current?.live && current.pid !== newPid) {
         await stopInstance(current.pid, cfg.drainSeconds);
+        // The fleet proxies unlink endpoint.json on graceful exit; the
+        // old instance's shutdown therefore deletes the record the new
+        // instance (and this cutover) just published. Rewrite it now
+        // that the old instance is gone.
+        writeEndpoint(cfg, proxy, { ...newCurrent, previousPort });
       }
       writeJsonAtomic(stateFile(cfg, proxy.name), { current: newCurrent });
     }
