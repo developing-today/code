@@ -40,7 +40,7 @@
   home-manager.users.user = {
     home.packages = [ pkgs.kdePackages.krdp ];
 
-    systemd.user.services.app-org.kde.krdpserver = {
+    systemd.user.services."app-org.kde.krdpserver" = {
       Unit = {
         Description = "KRDP Server";
         After = [
