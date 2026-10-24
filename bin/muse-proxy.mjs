@@ -164,6 +164,107 @@ const childEnv = () => {
 };
 
 // ---------------------------------------------------------------------------
+// CLI flag capability probe
+// ---------------------------------------------------------------------------
+// The muse CLI's flag surface differs between releases the fleet runs side
+// by side (verified 2026-10-24: 1.4.2 advertises neither serve
+// --disable-request-user-input nor exec --disable-reminders; 1.4.13
+// advertises both), and an unknown option kills the child before it can
+// serve anything. Rather than keying off version strings, probe the
+// resolved binary's own `serve --help` / `exec --help` once at startup and
+// pass only the flags it advertises. If a probe fails (or its output names
+// no flags at all), optional flags are omitted — they are behavioural
+// niceties — while core flags are still passed: a degraded proxy beats a
+// dead one.
+const CLI_FLAG_PLAN = {
+  serve: [
+    { flag: '--provider' },
+    { flag: '--disable-request-user-input', optional: true }
+  ],
+  exec: [
+    { flag: '--json' },
+    { flag: '--prompt-file' },
+    { flag: '--model' },
+    { flag: '--reasoning-effort' },
+    { flag: '--disable-reminders', optional: true },
+    { flag: '--user-input-auto-resolve' },
+    { flag: '--approval-mode' }
+  ]
+};
+const cliCaps = { serve: null, exec: null };
+const cliDropped = { serve: [], exec: [] };
+let cliCapsPromise = null;
+
+const flagSupported = (subcommand, flag, optional) => {
+  const caps = cliCaps[subcommand];
+  if (caps) return caps.has(flag);
+  return !optional; // probe unavailable: keep core flags, omit optional ones
+};
+
+const probeCliFlags = (subcommand) => new Promise((resolve) => {
+  let out = '';
+  let child;
+  try {
+    child = spawn(MUSE_BIN, [subcommand, '--help'], {
+      env: childEnv(),
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+  } catch {
+    resolve(null);
+    return;
+  }
+  const timer = setTimeout(() => {
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+  }, 10000);
+  child.stdout.on('data', c => { out += c.toString('utf-8'); });
+  child.stderr.on('data', c => { out += c.toString('utf-8'); });
+  child.on('error', () => { clearTimeout(timer); resolve(null); });
+  child.on('close', () => {
+    clearTimeout(timer);
+    const flags = new Set(out.match(/--[a-z][a-z0-9-]*/g) || []);
+    resolve(flags.size > 0 ? flags : null);
+  });
+});
+
+// Probe once, lazily; every caller awaits the same promise. Never rejects.
+const ensureCliCaps = () => {
+  if (!cliCapsPromise) {
+    cliCapsPromise = (async () => {
+      const [serve, exec] = await Promise.all([probeCliFlags('serve'), probeCliFlags('exec')]);
+      cliCaps.serve = serve;
+      cliCaps.exec = exec;
+      for (const sub of ['serve', 'exec']) {
+        cliDropped[sub] = CLI_FLAG_PLAN[sub]
+          .filter(p => !flagSupported(sub, p.flag, p.optional))
+          .map(p => p.flag);
+        if (cliCaps[sub]) {
+          console.log(`[muse-proxy] CLI probe: ${sub} advertises ${cliCaps[sub].size} flags` +
+            (cliDropped[sub].length ? `; omitting unsupported: ${cliDropped[sub].join(', ')}` : '; all planned flags supported'));
+        } else {
+          console.warn(`[muse-proxy] CLI probe: ${sub} --help unusable; omitting optional flags: ${cliDropped[sub].join(', ') || '(none)'}`);
+        }
+      }
+      return cliCaps;
+    })();
+  }
+  return cliCapsPromise;
+};
+
+// Build an argv from parts: plain strings pass through untouched;
+// {flag, value?, optional?} entries are included only when the resolved
+// CLI advertises the flag (see the probe above).
+const buildCliArgs = (subcommand, parts) => {
+  const args = [];
+  for (const part of parts) {
+    if (typeof part === 'string') { args.push(part); continue; }
+    if (!flagSupported(subcommand, part.flag, part.optional)) continue;
+    args.push(part.flag);
+    if (part.value !== undefined) args.push(String(part.value));
+  }
+  return args;
+};
+
+// ---------------------------------------------------------------------------
 // Warm sessions (#480): one persistent `muse serve` (MSP over stdio) host
 // ---------------------------------------------------------------------------
 // The exec path above pays a fresh CLI spawn (+ ~26k tokens of session
@@ -320,7 +421,12 @@ const warmHost = {
   },
 
   async _start() {
-    const args = ['serve', '--provider', 'meta', '--disable-request-user-input'];
+    await ensureCliCaps();
+    const args = buildCliArgs('serve', [
+      'serve',
+      { flag: '--provider', value: 'meta' },
+      { flag: '--disable-request-user-input', optional: true }
+    ]);
     console.log(`[muse-proxy warm] Spawning serve host: ${MUSE_BIN} ${args.join(' ')}`);
     const child = spawn(MUSE_BIN, args, {
       cwd: WORKDIR,
@@ -758,6 +864,11 @@ const server = http.createServer((req, res) => {
         hostGen: warmHost.gen,
         hostUp: Boolean(warmHost.child),
         sessions: warmStore.map.size
+      },
+      cliFlags: {
+        serveProbed: cliCaps.serve !== null,
+        execProbed: cliCaps.exec !== null,
+        dropped: { serve: cliDropped.serve, exec: cliDropped.exec }
       }
     }, null, 2));
     return;
@@ -847,17 +958,19 @@ const server = http.createServer((req, res) => {
       const promptFile = path.join(WORKDIR, `prompt-${crypto.randomUUID()}.txt`);
       fs.writeFileSync(promptFile, prompt, 'utf-8');
 
-      // Spawn arguments for muse exec
-      const args = [
+      // Spawn arguments for muse exec (only the flags the resolved CLI
+      // advertises — see the capability probe)
+      await ensureCliCaps();
+      const args = buildCliArgs('exec', [
         'exec',
-        '--json',
-        '--prompt-file', promptFile,
-        '--model', baseModel,
-        '--reasoning-effort', effort,
-        '--disable-reminders',
-        '--user-input-auto-resolve',
-        '--approval-mode', 'never'
-      ];
+        { flag: '--json' },
+        { flag: '--prompt-file', value: promptFile },
+        { flag: '--model', value: baseModel },
+        { flag: '--reasoning-effort', value: effort },
+        { flag: '--disable-reminders', optional: true },
+        { flag: '--user-input-auto-resolve' },
+        { flag: '--approval-mode', value: 'never' }
+      ]);
 
       console.log(`[muse-proxy] Spawning: ${MUSE_BIN} ${args.join(' ')}`);
 
@@ -1141,6 +1254,8 @@ const publishEndpoint = () => {
 
 server.listen(PORT, HOST, () => {
   publishEndpoint();
+  // Warm the CLI capability probe so the first request does not pay for it.
+  ensureCliCaps().catch(() => {});
   console.log(`[muse-proxy] OpenAI-compatible bridge listening on http://${HOST}:${PORT}`);
   console.log(`[muse-proxy] Resolved muse binary: ${MUSE_BIN}`);
   console.log(`[muse-proxy] Workdir: ${WORKDIR}`);

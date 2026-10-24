@@ -1,6 +1,8 @@
 // Tests for muse-proxy's streaming/terminal-text reconciliation (#484)
 // and its warm serve/MSP session path (#480). The exec-path tests pin
 // MUSE_PROXY_WARM=0; the warm tests drive a stub `muse serve` host.
+// The flag-probe tests drive the stub's canned --help surfaces
+// (1.4.2-shaped by default, 1.4.13-shaped with STUB_HELP_ALL_FLAGS=1).
 // Run: node --test bin/muse-proxy.test.mjs
 //
 // The proxy spawns one `muse exec --json` child per request. These tests
@@ -25,6 +27,31 @@ const STUB = `#!/usr/bin/env node
 // the warm-path tests, logging session/turn traffic to $STUB_LOG.
 const fs = require('fs');
 const args = process.argv.slice(2);
+if (process.env.STUB_LOG) fs.appendFileSync(process.env.STUB_LOG, 'ARGV ' + args.join(' ') + '\\n');
+if (args.includes('--help')) {
+  // Canned --help for the proxy's flag-capability probe. By default the
+  // stub advertises the 1.4.2-shaped surface (no serve
+  // --disable-request-user-input, no exec --disable-reminders);
+  // STUB_HELP_ALL_FLAGS=1 advertises the 1.4.13-shaped surface instead.
+  const all = process.env.STUB_HELP_ALL_FLAGS === '1';
+  if (args[0] === 'serve') {
+    console.log('Usage: muse serve [--provider <PROVIDER>] [--model <MODEL>] [OPTIONS]');
+    console.log('      --provider <PROVIDER>');
+    console.log('      --model <MODEL>');
+    console.log('      --no-session-log');
+    if (all) console.log('      --disable-request-user-input');
+  } else {
+    console.log('Usage: muse exec [OPTIONS] [PROMPT]');
+    console.log('      --json');
+    console.log('      --prompt-file <PATH>');
+    console.log('      --model <ID>');
+    console.log('      --reasoning-effort <EFFORT>');
+    if (all) console.log('      --disable-reminders');
+    console.log('      --user-input-auto-resolve');
+    console.log('      --approval-mode <MODE>');
+  }
+  process.exit(0);
+}
 if (args[0] === 'serve') {
   if (process.env.STUB_SERVE_FAIL === '1') process.exit(3);
   const log = (line) => { if (process.env.STUB_LOG) fs.appendFileSync(process.env.STUB_LOG, line + '\\n'); };
@@ -340,4 +367,83 @@ test('warm serve failure falls back to the exec path (#480)', async (t) => {
   t.after(stop);
   const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
   assert.equal(plain.choices[0].message.content, 'Hello world', 'exec stub answer proves the fallback ran');
+});
+
+// --- CLI flag capability probe -------------------------------------------
+// The fleet runs muse CLIs with different flag surfaces side by side
+// (1.4.2 advertises neither serve --disable-request-user-input nor exec
+// --disable-reminders; 1.4.13 advertises both). The proxy probes the
+// resolved binary's --help once at startup and must pass only the flags
+// it advertises — an unknown option kills the child outright.
+
+const argvLines = (logFile, sub) => fs.readFileSync(logFile, 'utf-8')
+  .split('\n')
+  .filter(l => l.startsWith(`ARGV ${sub} `) && !l.includes('--help'));
+
+const waitForProbe = async (port) => {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    const health = await res.json();
+    if (health.cliFlags && health.cliFlags.serveProbed && health.cliFlags.execProbed) return health;
+    if (Date.now() > deadline) throw new Error('CLI flag probe did not complete');
+    await new Promise(r => setTimeout(r, 25));
+  }
+};
+
+test('flag probe: 1.4.2-shaped help — exec omits --disable-reminders, health reports the drops', async (t) => {
+  const { port, stop, logFile } = await startProxy();
+  t.after(stop);
+  const health = await waitForProbe(port);
+  assert.deepEqual(health.cliFlags.dropped.exec, ['--disable-reminders']);
+  assert.deepEqual(health.cliFlags.dropped.serve, ['--disable-request-user-input']);
+
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world');
+  const execArgv = argvLines(logFile, 'exec');
+  assert.equal(execArgv.length, 1);
+  assert.ok(execArgv[0].includes('--json'), 'core flags are still passed');
+  assert.ok(execArgv[0].includes('--approval-mode never'), 'core flags are still passed');
+  assert.ok(!execArgv[0].includes('--disable-reminders'), 'unadvertised flag must be omitted');
+});
+
+test('flag probe: 1.4.13-shaped help — exec passes --disable-reminders', async (t) => {
+  const { port, stop, logFile } = await startProxy({ STUB_HELP_ALL_FLAGS: '1' });
+  t.after(stop);
+  const health = await waitForProbe(port);
+  assert.deepEqual(health.cliFlags.dropped.exec, []);
+  assert.deepEqual(health.cliFlags.dropped.serve, []);
+
+  const plain = JSON.parse(await chat(port, { messages: [{ role: 'user', content: 'hi' }] }));
+  assert.equal(plain.choices[0].message.content, 'Hello world');
+  const execArgv = argvLines(logFile, 'exec');
+  assert.equal(execArgv.length, 1);
+  assert.ok(execArgv[0].includes('--disable-reminders'), 'advertised flag must be passed');
+});
+
+test('flag probe: 1.4.2-shaped help — warm serve spawn omits --disable-request-user-input', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_WARM: '1' });
+  t.after(stop);
+  const plain = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [{ role: 'user', content: 'alpha one' }]
+  }));
+  assert.equal(plain.choices[0].message.content, 'RE:alpha one', 'warm path still answers');
+  const serveArgv = argvLines(logFile, 'serve');
+  assert.equal(serveArgv.length, 1);
+  assert.ok(serveArgv[0].includes('--provider meta'), 'core flags are still passed');
+  assert.ok(!serveArgv[0].includes('--disable-request-user-input'), 'unadvertised flag must be omitted');
+});
+
+test('flag probe: 1.4.13-shaped help — warm serve spawn passes --disable-request-user-input', async (t) => {
+  const { port, stop, logFile } = await startProxy({ MUSE_PROXY_WARM: '1', STUB_HELP_ALL_FLAGS: '1' });
+  t.after(stop);
+  const plain = JSON.parse(await chat(port, {
+    model: 'muse-spark-1.3',
+    messages: [{ role: 'user', content: 'alpha one' }]
+  }));
+  assert.equal(plain.choices[0].message.content, 'RE:alpha one');
+  const serveArgv = argvLines(logFile, 'serve');
+  assert.equal(serveArgv.length, 1);
+  assert.ok(serveArgv[0].includes('--disable-request-user-input'), 'advertised flag must be passed');
 });
