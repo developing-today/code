@@ -370,6 +370,7 @@ impl Handler for SshClient {
             lines: WorldLineBuffer::default(),
             commands: VecDeque::new(),
             records_prefix: None,
+            records_drained: 0,
             errored: false,
         };
         let hub = self.hub.clone();
@@ -469,6 +470,9 @@ struct SshIo {
     commands: VecDeque<WorldCommand>,
     /// `Some(prefix)` while draining records pages from a `/records` command.
     records_prefix: Option<Option<String>>,
+    /// Cumulative bytes already rendered for the current `/records` drain, so a
+    /// large world's records are bounded across pages, not just per page.
+    records_drained: usize,
     errored: bool,
 }
 
@@ -581,6 +585,7 @@ impl SessionIo for SshIo {
                         }
                         WorldCommand::Records { prefix } => {
                             self.records_prefix = Some(prefix.clone());
+                            self.records_drained = 0;
                             return Inbound::Text(
                                 json!({
                                     "type": "records", "capability": self.capability,
@@ -727,13 +732,33 @@ impl SessionIo for SshIo {
                 let sequence = value["sequence"].as_u64().unwrap_or_default();
                 let after = value["next_after"].as_str().map(str::to_owned);
                 let text = render_records_value(records, sequence, after.as_deref());
-                if let (Some(prefix), Some(after)) = (self.records_prefix.clone(), after) {
-                    self.commands
-                        .push_back(WorldCommand::RecordsContinue { prefix, after });
+                // Bound the whole drain, not just each page: a world with many
+                // records would otherwise keep fetching pages without limit.
+                self.records_drained = self.records_drained.saturating_add(text.len());
+                let next = match (&self.records_prefix, after.as_deref()) {
+                    (Some(prefix), Some(_)) if self.records_drained < MAX_RECORDS_TOTAL_BYTES => {
+                        Some(prefix.clone())
+                    }
+                    _ => None,
+                };
+                let truncated = after.is_some() && self.records_drained >= MAX_RECORDS_TOTAL_BYTES;
+                if let Some(prefix) = next {
+                    self.commands.push_back(WorldCommand::RecordsContinue {
+                        prefix,
+                        after: after.expect("a next page has an after cursor"),
+                    });
                 } else {
                     self.records_prefix = None;
                 }
-                format!("\r\n{}", terminal_text(&text))
+                if truncated {
+                    format!(
+                        "\r\n{}\r\n{}",
+                        terminal_text(&text),
+                        terminal_text("[records truncated: too much output]\n")
+                    )
+                } else {
+                    format!("\r\n{}", terminal_text(&text))
+                }
             }
             _ => return true,
         };
@@ -743,6 +768,9 @@ impl SessionIo for SshIo {
 
 const MAX_WORLD_TERMINAL_LINE: usize = 1024;
 const MAX_RECORDS_TERMINAL_BYTES: usize = 384 * 1024;
+/// Total rendered bytes a single `/records` drain may produce across all its
+/// pages. Each page is additionally bounded by [`MAX_RECORDS_TERMINAL_BYTES`].
+const MAX_RECORDS_TOTAL_BYTES: usize = 1024 * 1024;
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 const MAX_DOCUMENT_LIST_BYTES: usize = 32 * 1024;
 const MAX_DOCUMENT_LIST_ITEMS: usize = 512;
@@ -2066,6 +2094,38 @@ mod tests {
         assert!(text.contains("\"b\" = \"line\\nvalue\""));
         assert!(text.contains("more records; fetching next page"));
         assert!(text.len() <= MAX_RECORDS_TERMINAL_BYTES);
+    }
+
+    /// The `/records` drain is bounded in total, not just per page: the per-page
+    /// cap is [`MAX_RECORDS_TERMINAL_BYTES`], but a world with many records must
+    /// also stop after [`MAX_RECORDS_TOTAL_BYTES`] across pages.
+    #[test]
+    fn the_records_drain_is_bounded_in_total_as_well_as_per_page() {
+        // A single page is truncated at the per-page cap, so a page never
+        // exceeds it...
+        let one_page = render_records(&records_of(4096), 1, None);
+        assert!(
+            one_page.len() <= MAX_RECORDS_TERMINAL_BYTES + 64,
+            "one page stays under the per-page cap: {}",
+            one_page.len()
+        );
+        // ...and the whole drain has a larger, but still finite, total cap, so
+        // a many-page world stops instead of streaming without bound.
+        assert!(
+            MAX_RECORDS_TOTAL_BYTES > MAX_RECORDS_TERMINAL_BYTES,
+            "the total cap must exceed the per-page cap"
+        );
+        assert!(
+            MAX_RECORDS_TOTAL_BYTES < usize::MAX / 4,
+            "the total cap must be finite"
+        );
+    }
+
+    #[cfg(test)]
+    fn records_of(count: usize) -> crate::world::Records {
+        (0..count)
+            .map(|i| (format!("key-{i:04}"), serde_json::json!({"n": i})))
+            .collect()
     }
 
     async fn put_document(store: &iroh_blobs::api::Store, name: &str, bytes: Vec<u8>) {

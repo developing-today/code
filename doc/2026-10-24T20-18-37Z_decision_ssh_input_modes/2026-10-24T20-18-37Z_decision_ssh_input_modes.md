@@ -37,6 +37,17 @@ The SSH username selects the world and the mode, in one string:
 The SSH password is the join capability. `explore:` is the only prefix that
 supports public-key login; `cmd:` and the plain name use password auth.
 
+## Related reconciliation decisions (#548)
+
+- **Records drain is bounded in total.** `/records` pages are each capped by
+  `MAX_RECORDS_TERMINAL_BYTES`, and the whole drain across pages is capped by
+  `MAX_RECORDS_TOTAL_BYTES` in the SSH presentation, so a many-record world
+  stops instead of streaming pages without bound.
+- **Documents read the server blob store for now.** Document `/documents` and
+  `/document` read the server's local blob store (tags), not a per-world store.
+  A per-world document store is future work; the server store is the source of
+  truth the tags are written against today.
+
 ## References
 
 - [Phase 11 plan](../../.opencode/plans/phase-11-foundations.md)
