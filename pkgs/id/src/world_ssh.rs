@@ -4,6 +4,16 @@
 //! password is the join capability. Keystrokes become `input` frames and each
 //! `view` frame repaints the terminal, so an ordinary `ssh` client can play any
 //! world that presents a view.
+//!
+//! ## Input modes
+//!
+//! Raw keystrokes are the default. Prefixing the username with `cmd:` enters
+//! command (line) mode, where each line is parsed as a command instead of
+//! forwarded as an input keystroke: `/help`, `/quit`, `/input <hex>`,
+//! `/records [prefix]`, `/documents [prefix]` and `/document <name>` (see
+//! [`world_command`]). Prefixing the username with `explore:` enters a
+//! read-only explore session, the only mode that supports public-key login.
+//! See the SSH input-modes decision record.
 
 use std::{
     collections::VecDeque,
