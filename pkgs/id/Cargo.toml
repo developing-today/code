@@ -56,15 +56,15 @@ iroh-tickets = "1"
 iroh-blobs = "0.103"
 iroh-docs = "0.101"
 iroh-gossip = { version = "0.101", features = ["net"] }
-p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c" }
+p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 # Store traits only. The default features would pull in SQLite (explainers section 14).
-p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false }
+p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
 # LogSync. A vendored copy whose store dependency has no SQLite default (vendor/README.md).
 p2panda-sync = { path = "vendor/p2panda-sync" }
 # Group membership and the auth DAG (P2.1). The `serde` feature (P2.3) serializes group actions,
 # which the event store keeps with each group operation. `test_utils` is not enabled: it turns on
 # test-only behaviour in p2panda-core, so the test types come from our own tests.
-p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", features = [
+p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [
   "serde",
 ] }
 # DataScheme group encryption (P4.1, src/encryption/). `data_scheme` is on because the adapter is the
