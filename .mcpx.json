@@ -47,8 +47,8 @@
       "args": ["-y", "@ask-llm/antigravity-mcp"]
     },
     "desktop-commander": {
-      "command": "npx",
-      "args": ["-y", "@wonderwhy-er/desktop-commander"]
+      "command": "/home/user/.local/bin/desktop-commander",
+      "args": []
     },
     "sequential-thinking": {
       "command": "npx",
