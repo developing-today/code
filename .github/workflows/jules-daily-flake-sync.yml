@@ -73,5 +73,5 @@ jobs:
 
             ### 4. PULL REQUEST & MERGE
             - If updates or improvements are present:
-              - Open a clear Pull Request documenting the bumped input hashes, commit logs, and any configuration enhancements made.
-              - If all Nix evaluations and checks succeed and the PR is conflict-free, proceed to merge into `main`.
+              - Open a clear Pull Request documenting the bumped input hashes, commit logs, and any configuration enhancements made. Keep every related update in this one PR — never split dependency or input bumps into one PR per item.
+              - Merge into `main` only when you are reasonably certain it is correct: all Nix evaluations and checks succeed, the PR is conflict-free, and the changes are limited to the intended bumps and fixes. Merging is permitted, never required — when any of that is uncertain, leave the PR open and explain what a human should check.
