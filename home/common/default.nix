@@ -484,7 +484,8 @@ in
         "CLEF_PROXY_HOST=127.0.0.1"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install.WantedBy: the proxy-supervisor (below) owns the proxy
+    # processes. These per-proxy units remain for manual one-off starts.
   };
 
   # Antigravity CLI (agy) Local Proxy Bridge
@@ -529,7 +530,7 @@ in
         "CODEX_PROXY_HOST=127.0.0.1"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install.WantedBy: owned by the proxy-supervisor (below).
   };
 
   systemd.user.services.antigravity-ls-proxy = {
@@ -553,7 +554,7 @@ in
         "ANTIGRAVITY_LS_BIN=${antigravity-hub}/share/antigravity/resources/bin/language_server"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install.WantedBy: owned by the proxy-supervisor (below).
   };
 
   systemd.user.services.design-code-proxy = {
@@ -584,7 +585,126 @@ in
         "DESIGN_CODE_PROXY_HOST=127.0.0.1"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install.WantedBy: owned by the proxy-supervisor (below).
+  };
+
+  # Fleet proxy supervisor (bin/proxy-supervise.mjs): hash-keyed A/B
+  # rolls for the proxies above. Drew's rule (2026-10-24): a rebuild +
+  # switch must not kill a running proxy unless the artifact that
+  # would run actually changed — and then the roll is graceful (new
+  # build on the alternate port, health-checked, endpoint record
+  # flips, old instance drained). The supervisor therefore owns the
+  # proxy processes; this unit only runs the reconcile, and it invokes
+  # the supervisor from the CHECKOUT path so this unit's definition
+  # does not change when proxy code does.
+  systemd.user.services.proxy-supervisor = {
+    Unit = {
+      Description = "Fleet proxy supervisor (hash-keyed A/B reconcile)";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      Type = "oneshot";
+      ExecStart = toString (
+        pkgs.writeShellScript "proxy-supervisor-run" ''
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/proxy-supervise.mjs" --config "$HOME/.config/proxy-supervisor/config.json"
+        ''
+      );
+      Environment = [
+        # Interpolated into the supervisor config ($ANTIGRAVITY_LS_BIN);
+        # it is part of the LS proxy's artifact hash, so a hub rebuild
+        # rolls that proxy gracefully instead of stranding it.
+        "ANTIGRAVITY_LS_BIN=${antigravity-hub}/share/antigravity/resources/bin/language_server"
+      ];
+    };
+  };
+
+  systemd.user.timers.proxy-supervisor = {
+    Unit = {
+      Description = "Reconcile fleet proxies every 2 minutes";
+    };
+    Timer = {
+      OnBootSec = "1min";
+      OnUnitActiveSec = "2min";
+    };
+    Install.WantedBy = [ "timers.target" ];
+  };
+
+  # The supervisor's machine config. "~" and "$VAR" in paths/values are
+  # expanded by the supervisor itself.
+  xdg.configFile."proxy-supervisor/config.json".text = builtins.toJSON {
+    stateDir = "~/.local/state/proxy-supervisor";
+    endpointDir = "~/.local/state";
+    systemdRun = "user";
+    drainSeconds = 5;
+    healthTimeoutSeconds = 60;
+    proxies = [
+      {
+        name = "clef-proxy";
+        canonicalPort = clefProxyPort;
+        portEnv = "CLEF_PROXY_PORT";
+        command = [ "/run/current-system/sw/bin/node" "~/code/bin/clef-proxy.mjs" ];
+        env = { CLEF_PROXY_HOST = "127.0.0.1"; };
+        hashFiles = [ "~/code/bin/clef-proxy.mjs" "~/code/bin/proxy-port.mjs" ];
+      }
+      {
+        name = "agy-proxy";
+        canonicalPort = agyProxyPort;
+        portEnv = "AGY_PROXY_PORT";
+        command = [ "/run/current-system/sw/bin/node" "~/code/bin/agy-proxy.mjs" ];
+        env = {
+          AGY_PROXY_HOST = "127.0.0.1";
+          PATH = "/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:/usr/bin:/bin";
+        };
+        hashFiles = [ "~/code/bin/agy-proxy.mjs" "~/code/bin/proxy-port.mjs" ];
+      }
+      {
+        name = "codex-proxy";
+        canonicalPort = codexProxyPort;
+        portEnv = "CODEX_PROXY_PORT";
+        command = [ "/run/current-system/sw/bin/node" "~/code/bin/codex-proxy.mjs" ];
+        env = {
+          CODEX_PROXY_HOST = "127.0.0.1";
+          PATH = "/run/current-system/sw/bin:$HOME/.local/bin:/usr/bin:/bin";
+        };
+        hashFiles = [
+          "~/code/bin/codex-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+          # Build stamp: a content change here stands in for "the
+          # artifact changed" (used by the A/B demo; harmless in
+          # production — a missing file hashes as a constant).
+          "~/.local/state/proxy-supervisor/codex-proxy.build-stamp"
+        ];
+      }
+      {
+        name = "antigravity-ls-proxy";
+        canonicalPort = antigravityLsProxyPort;
+        portEnv = "ANTIGRAVITY_LS_PROXY_PORT";
+        command = [ "/run/current-system/sw/bin/node" "~/code/bin/antigravity-ls-proxy.mjs" ];
+        env = {
+          ANTIGRAVITY_LS_PROXY_HOST = "127.0.0.1";
+          ANTIGRAVITY_LS_BIN = "$ANTIGRAVITY_LS_BIN";
+          PATH = "/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:/usr/bin:/bin";
+        };
+        hashEnv = [ "ANTIGRAVITY_LS_BIN" ];
+        hashFiles = [ "~/code/bin/antigravity-ls-proxy.mjs" "~/code/bin/proxy-port.mjs" ];
+      }
+      {
+        name = "design-code-proxy";
+        canonicalPort = designCodeProxyPort;
+        portEnv = "DESIGN_CODE_PROXY_PORT";
+        command = [ "/run/current-system/sw/bin/node" "~/code/bin/design-code-proxy.mjs" ];
+        env = {
+          DESIGN_CODE_PROXY_HOST = "127.0.0.1";
+          PATH = "/run/current-system/sw/bin:$HOME/.local/bin:/usr/bin:/bin";
+        };
+        hashFiles = [ "~/code/bin/design-code-proxy.mjs" "~/code/bin/proxy-port.mjs" ];
+        backends = [
+          { name = "codex-proxy"; env = "CODEX_PROXY_PORT"; }
+          { name = "antigravity-ls-proxy"; env = "ANTIGRAVITY_LS_PROXY_PORT"; }
+        ];
+      }
+    ];
   };
 
   systemd.user.services.sync-models = {
