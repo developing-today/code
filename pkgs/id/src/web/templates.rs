@@ -310,7 +310,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             let _ = write!(
                 html,
                 "<li class=\"file-item flex items-center gap-2 px-3 py-1.5 border-b border-base-300 hover:bg-base-200 text-xs{}\" data-kind=\"{}\" data-name=\"{}\">\
-                    <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" data-name=\"{}\" />\
+                    <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" aria-label=\"Select file {}\" data-name=\"{}\" />\
                     <span class=\"text-primary/50\">[F]</span>\
                     <a class=\"font-bold hover:text-primary truncate\" href=\"{}\" data-nav>{}</a>\
                     {}{}{}{}\
@@ -318,6 +318,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 </li>",
                 deleted_class,
                 kind_attr,
+                name_escaped,
                 name_escaped,
                 name_escaped,
                 href,
@@ -1100,6 +1101,7 @@ mod tests {
         let html = render_file_list(&page);
         assert!(html.contains("test.txt"));
         assert!(html.contains("abc123def456"));
+        assert!(html.contains("aria-label=\"Select file test.txt\""));
     }
 
     #[test]
