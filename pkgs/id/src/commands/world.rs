@@ -5,6 +5,7 @@
 //! presentation can consume the same stream a browser would.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use iroh::{
@@ -392,6 +393,95 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             Ok(())
         }
         WorldCommand::New { dir, name } => scaffold_world(&dir, &name),
+        WorldCommand::Doctor {
+            roc_bin,
+            platform,
+            journal,
+            json,
+        } => {
+            let platform_dir = platform
+                .or_else(|| std::env::var("ID_ROC_PLATFORM").ok().map(PathBuf::from))
+                .or_else(|| {
+                    [
+                        PathBuf::from("examples/roc-world"),
+                        PathBuf::from("../examples/roc-world"),
+                    ]
+                    .into_iter()
+                    .find(|dir| dir.is_dir())
+                });
+            let inputs = crate::world_doctor::DoctorInputs {
+                roc_bin,
+                roc_resolved: None,
+                platform_dir,
+                caps_ceiling: None,
+                profile: None,
+                journal,
+                now_ms: Some(crate::time::unix_ms()),
+            };
+            let report = crate::world_doctor::run(&inputs);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", report.render_text());
+            }
+            if report.healthy() {
+                Ok(())
+            } else {
+                bail!("world doctor found {} problem(s)", report.findings.len());
+            }
+        }
+        WorldCommand::Diff {
+            node,
+            file,
+            capability,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let manifest = parse_manifest_file(&file)?;
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let state = current_world_state(&mut client, &capability).await?;
+            client.close();
+            endpoint.close().await;
+            print!("{}", crate::world_manifest::diff(&manifest, &state));
+            Ok(())
+        }
+        WorldCommand::Apply {
+            node,
+            file,
+            admin_token,
+            capability,
+            dry_run,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let manifest = parse_manifest_file(&file)?;
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let state = current_world_state(&mut client, &capability).await?;
+            let steps = crate::world_manifest::plan(&manifest, &state);
+            if steps.is_empty() {
+                println!("no drift");
+            } else {
+                println!(
+                    "{}",
+                    steps
+                        .iter()
+                        .map(crate::world_manifest::ApplyStep::kind)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                if !dry_run {
+                    apply_steps(&mut client, &admin_token, &capability, &steps).await?;
+                    println!("applied {} step(s)", steps.len());
+                } else {
+                    println!("dry run: nothing changed");
+                }
+            }
+            client.close();
+            endpoint.close().await;
+            Ok(())
+        }
         #[cfg(feature = "sandbox")]
         WorldCommand::Measure {
             module,
@@ -582,6 +672,107 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             result
         }
     }
+}
+
+/// Parse a `world.toml` file into a validated manifest.
+fn parse_manifest_file(file: &std::path::Path) -> Result<crate::world_manifest::WorldManifest> {
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("read world manifest {}", file.display()))?;
+    crate::world_manifest::parse(&text)
+}
+
+/// Fetch the current world state the manifest is compared against: the active
+/// module hash, the grants, the ceiling and the execution profile. Schedules
+/// and the install seed are not exposed over the wire yet, so they read as
+/// empty here.
+async fn current_world_state(
+    client: &mut WorldClient,
+    capability: &str,
+) -> Result<crate::world_manifest::WorldState> {
+    let info = client.info_details(capability).await?;
+    let caps: crate::world_caps::CapsReport =
+        serde_json::from_value(client.caps(capability).await?)
+            .context("host returned a malformed capability report")?;
+    let profile: crate::world_limits::WorldExecutionProfile =
+        serde_json::from_value(client.execution_profile(None, Some(capability)).await?)
+            .context("host returned a malformed execution profile")?;
+    // The report carries the world's own ceiling as a list; an unrestricted
+    // ceiling is the whole catalog, which we fold back to "no ceiling".
+    let ceiling = if caps.ceiling
+        == crate::world_caps::catalog_names()
+            .into_iter()
+            .collect::<Vec<_>>()
+    {
+        None
+    } else {
+        Some(caps.ceiling.clone())
+    };
+    Ok(crate::world_manifest::WorldState {
+        module_hash: info.active_module_hash,
+        seed: 0,
+        grants: caps.granted,
+        ceiling,
+        profile,
+        schedules: std::collections::BTreeMap::new(),
+    })
+}
+
+/// Apply the reconciliation steps that the existing admin operations cover:
+/// grants, ceiling and profile. Module and schedule steps are reported, not
+/// applied, until their apply paths are wired.
+async fn apply_steps(
+    client: &mut WorldClient,
+    admin_token: &str,
+    capability: &str,
+    steps: &[crate::world_manifest::ApplyStep],
+) -> Result<()> {
+    use crate::world_manifest::ApplyStep;
+    for step in steps {
+        match step {
+            ApplyStep::SetGrants { grants } => {
+                let current: crate::world_caps::CapsReport =
+                    serde_json::from_value(client.caps(capability).await?)
+                        .context("host returned a malformed capability report")?;
+                let to_revoke: Vec<String> = current
+                    .granted
+                    .iter()
+                    .filter(|name| !grants.contains(name))
+                    .cloned()
+                    .collect();
+                let to_grant: Vec<String> = grants
+                    .iter()
+                    .filter(|name| !current.granted.contains(name))
+                    .cloned()
+                    .collect();
+                if !to_grant.is_empty() || !to_revoke.is_empty() {
+                    client
+                        .update_caps(admin_token, &to_grant, &to_revoke)
+                        .await?;
+                }
+            }
+            ApplyStep::SetCeiling { ceiling } => {
+                // `None` means "no ceiling": restore the whole catalog.
+                let names = ceiling.clone().unwrap_or_else(|| {
+                    crate::world_caps::catalog_names()
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                });
+                client.set_caps_ceiling(admin_token, &names).await?;
+            }
+            ApplyStep::SetProfile { profile } => {
+                client.set_execution_profile(admin_token, *profile).await?;
+            }
+            ApplyStep::InstallModule { .. }
+            | ApplyStep::ScheduleAt { .. }
+            | ApplyStep::CancelSchedule { .. } => {
+                eprintln!(
+                    "note: {} is reported but not applied here; use `id world install`/`compile` for modules",
+                    step.kind()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Record a world to a fixture: the file at `out`, or standard output.
