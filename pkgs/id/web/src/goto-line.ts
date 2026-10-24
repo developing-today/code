@@ -65,7 +65,7 @@ function createDialog(container: HTMLElement): HTMLElement {
   const dialog = document.createElement("div");
   dialog.className = "goto-line-dialog";
   dialog.innerHTML = `
-    <label class="goto-line-label">Go to Line:</label>
+    <label class="goto-line-label" for="goto-line-input">Go to Line:</label>
     <input type="number" min="1" class="goto-line-input" id="goto-line-input" placeholder="Line #" autocomplete="off" />
   `;
   container.prepend(dialog);

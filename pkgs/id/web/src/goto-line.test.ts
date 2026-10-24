@@ -134,6 +134,19 @@ describe("go-to-line command", () => {
     expect(handled).toBe(true);
   });
 
+  it("associates its label with the line input", () => {
+    const { view, container } = createViewWithGotoLine("line1\nline2");
+    views.push(view);
+    containers.push(container);
+
+    triggerGotoLine(view);
+
+    const label = container.querySelector<HTMLLabelElement>(".goto-line-label");
+    const input = container.querySelector<HTMLInputElement>("#goto-line-input");
+    expect(label?.htmlFor).toBe("goto-line-input");
+    expect(input?.labels?.[0]).toBe(label);
+  });
+
   it("creates a .goto-line-dialog element in the container", () => {
     const { view, container } = createViewWithGotoLine("line1\nline2\nline3");
     views.push(view);
