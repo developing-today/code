@@ -403,9 +403,9 @@
           nix-fmt-check = pkgs.stdenv.mkDerivation {
             name = "id-nix-fmt-check";
             src = ./.;
-            nativeBuildInputs = [ pkgs.nixfmt-rfc-style ];
+            nativeBuildInputs = [ pkgs.nixfmt ];
             buildPhase = ''
-              find . -name '*.nix' -not -path './web/bun.nix' -not -path './e2e/bun.nix' | xargs nixfmt-rfc-style --check
+              find . -name '*.nix' -not -path './web/bun.nix' -not -path './e2e/bun.nix' | xargs nixfmt --check
             '';
             installPhase = ''
               mkdir -p $out

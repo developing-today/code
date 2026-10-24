@@ -22,94 +22,92 @@
   name = "id-playwright-e2e";
 
   # ── Server nodes: each runs two isolated id service instances ────────────
-  nodes = {
-    chromium_server =
-      { ... }:
-      {
-        imports = [ ../id-module.nix ];
+  nodes.chromium_server =
+    { ... }:
+    {
+      imports = [ ../id-module.nix ];
 
-        services.id = {
-          package = idPackage;
-          instances.primary = {
-            enable = true;
-            web = true;
-            port = 4173;
-            ephemeral = true;
-            noRelay = true;
-            noGossip = true;
-            noMdns = true;
-            openFirewall = true;
-          };
-          instances.secondary = {
-            enable = true;
-            web = true;
-            port = 4175;
-            ephemeral = true;
-            noRelay = true;
-            noGossip = true;
-            noMdns = true;
-            openFirewall = true;
-          };
+      services.id = {
+        package = idPackage;
+        instances.primary = {
+          enable = true;
+          web = true;
+          port = 4173;
+          ephemeral = true;
+          noRelay = true;
+          noGossip = true;
+          noMdns = true;
+          openFirewall = true;
+        };
+        instances.secondary = {
+          enable = true;
+          web = true;
+          port = 4175;
+          ephemeral = true;
+          noRelay = true;
+          noGossip = true;
+          noMdns = true;
+          openFirewall = true;
         };
       };
+    };
 
-    firefox_server =
-      { ... }:
-      {
-        imports = [ ../id-module.nix ];
+  nodes.firefox_server =
+    { ... }:
+    {
+      imports = [ ../id-module.nix ];
 
-        services.id = {
-          package = idPackage;
-          instances.primary = {
-            enable = true;
-            web = true;
-            port = 4174;
-            ephemeral = true;
-            noRelay = true;
-            noGossip = true;
-            noMdns = true;
-            openFirewall = true;
-          };
-          instances.secondary = {
-            enable = true;
-            web = true;
-            port = 4176;
-            ephemeral = true;
-            noRelay = true;
-            noGossip = true;
-            noMdns = true;
-            openFirewall = true;
-          };
+      services.id = {
+        package = idPackage;
+        instances.primary = {
+          enable = true;
+          web = true;
+          port = 4174;
+          ephemeral = true;
+          noRelay = true;
+          noGossip = true;
+          noMdns = true;
+          openFirewall = true;
+        };
+        instances.secondary = {
+          enable = true;
+          web = true;
+          port = 4176;
+          ephemeral = true;
+          noRelay = true;
+          noGossip = true;
+          noMdns = true;
+          openFirewall = true;
         };
       };
+    };
 
-    # ── Client nodes: Playwright + browser, tests run here ──────────────────
-    chromium_client =
-      { pkgs, ... }:
-      {
-        environment.systemPackages = [
-          pkgs.nodejs
-          pkgs.curl
-        ];
+  # ── Client nodes: Playwright + browser, tests run here ──────────────────
+  nodes.chromium_client =
+    { pkgs, ... }:
+    {
+      environment.systemPackages = [
+        pkgs.nodejs
+        pkgs.curl
+      ];
 
-        # Chromium needs resources for rendering
-        virtualisation.memorySize = 4096;
-        virtualisation.cores = 2;
-      };
+      # Chromium needs resources for rendering
+      virtualisation.memorySize = 4096;
+      virtualisation.cores = 2;
+    };
 
-    firefox_client =
-      { pkgs, ... }:
-      {
-        environment.systemPackages = [
-          pkgs.nodejs
-          pkgs.curl
-        ];
+  nodes.firefox_client =
+    { pkgs, ... }:
+    {
+      environment.systemPackages = [
+        pkgs.nodejs
+        pkgs.curl
+      ];
 
-        # Firefox needs resources for rendering
-        virtualisation.memorySize = 4096;
-        virtualisation.cores = 2;
-      };
-  };
+      # Firefox needs resources for rendering
+      virtualisation.memorySize = 4096;
+      virtualisation.cores = 2;
+    };
 
   globalTimeout = 1200; # 20 minutes — doubled: 4 Playwright runs instead of 2
 
