@@ -10,6 +10,7 @@
 // partial output.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -66,6 +67,123 @@ case "$prompt" in
 esac
 `;
 
+
+// ---------------------------------------------------------------------------
+// Fake app-server daemon (#480): a real WebSocket-over-Unix-socket server
+// speaking just enough of the codex app-server protocol for the proxy's
+// transport tests — initialize, thread/start, thread/resume, turn/start,
+// agentMessage deltas, token usage, turn/completed. Behaviour is keyed on
+// markers in the turn text, mirroring the exec stub.
+// ---------------------------------------------------------------------------
+const wsServerFrame = (text) => {
+  const data = Buffer.from(text);
+  let header;
+  if (data.length < 126) {
+    header = Buffer.from([0x81, data.length]);
+  } else {
+    header = Buffer.alloc(4);
+    header[0] = 0x81; header[1] = 126; header.writeUInt16BE(data.length, 2);
+  }
+  return Buffer.concat([header, data]);
+};
+
+const createFakeAppServer = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-as-test-'));
+  const socketPath = path.join(dir, 'app-server-control.sock');
+  const requests = [];
+  const sockets = new Set();
+  const server = net.createServer((sock) => {
+    sockets.add(sock);
+    sock.on('close', () => sockets.delete(sock));
+    let buf = Buffer.alloc(0);
+    let headersDone = false;
+    let frags = [];
+    const sendObj = (obj) => sock.write(wsServerFrame(JSON.stringify(obj)));
+    const handle = (msg) => {
+      if (msg.method === 'initialize') {
+        requests.push({ method: 'initialize' });
+        sendObj({ id: msg.id, result: { userAgent: 'stub-app-server', codexHome: dir, platformFamily: 'unix', platformOs: 'linux' } });
+      } else if (msg.method === 'initialized') {
+        requests.push({ method: 'initialized' });
+      } else if (msg.method === 'thread/start') {
+        requests.push({ method: 'thread/start', params: msg.params });
+        sendObj({ id: msg.id, result: { thread: { id: 'stub-thread-1' }, model: 'gpt-5.6-luna' } });
+      } else if (msg.method === 'thread/resume') {
+        requests.push({ method: 'thread/resume', params: msg.params });
+        sendObj({ id: msg.id, result: { thread: { id: msg.params.threadId } } });
+      } else if (msg.method === 'turn/start') {
+        const text = msg.params.input.map(i => i.text || '').join('\n');
+        requests.push({ method: 'turn/start', params: msg.params, text });
+        if (text.includes('ASRPCFAIL')) {
+          sendObj({ id: msg.id, error: { code: -32000, message: 'stub app-server: rpc exploded' } });
+          return;
+        }
+        sendObj({ id: msg.id, result: { turn: { id: 'stub-turn-1' } } });
+        if (text.includes('ASKILL')) {
+          // Daemon dies mid-turn: destroy the connection with no completion.
+          setTimeout(() => { for (const s2 of sockets) s2.destroy(); }, 20);
+          return;
+        }
+        const tid = msg.params.threadId;
+        if (text.includes('ASFAIL')) {
+          sendObj({ method: 'turn/completed', params: { threadId: tid, turn: { id: 'stub-turn-1', status: 'failed', error: { message: 'stub app-server: turn exploded' } } } });
+          return;
+        }
+        sendObj({ method: 'item/agentMessage/delta', params: { threadId: tid, turnId: 'stub-turn-1', itemId: 'item-1', delta: 'app-' } });
+        sendObj({ method: 'item/agentMessage/delta', params: { threadId: tid, turnId: 'stub-turn-1', itemId: 'item-1', delta: 'server answer' } });
+        sendObj({ method: 'thread/tokenUsage/updated', params: { threadId: tid, turnId: 'stub-turn-1', tokenUsage: { last: { inputTokens: 42, outputTokens: 5 }, total: { inputTokens: 42, outputTokens: 5 } } } });
+        sendObj({ method: 'turn/completed', params: { threadId: tid, turn: { id: 'stub-turn-1', status: 'completed' } } });
+      }
+    };
+    sock.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      if (!headersDone) {
+        const idx = buf.indexOf('\r\n\r\n');
+        if (idx === -1) return;
+        const head = buf.subarray(0, idx).toString('utf-8');
+        buf = buf.subarray(idx + 4);
+        const key = /Sec-WebSocket-Key: (\S+)/i.exec(head)[1];
+        const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+        sock.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+        headersDone = true;
+      }
+      for (;;) {
+        if (buf.length < 2) return;
+        const fin = (buf[0] & 0x80) !== 0;
+        const opcode = buf[0] & 0x0f;
+        let len = buf[1] & 0x7f;
+        let off = 2;
+        if (len === 126) { if (buf.length < 4) return; len = buf.readUInt16BE(2); off = 4; }
+        else if (len === 127) { if (buf.length < 10) return; len = Number(buf.readBigUInt64BE(2)); off = 10; }
+        const masked = (buf[1] & 0x80) !== 0;
+        const mask = masked ? buf.subarray(off, off + 4) : null;
+        if (masked) off += 4;
+        if (buf.length < off + len) return;
+        let payload = buf.subarray(off, off + len);
+        buf = buf.subarray(off + len);
+        if (masked) {
+          payload = Buffer.from(payload);
+          for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4];
+        }
+        if (opcode === 0x8) { sock.end(); return; }
+        if (opcode === 0x9 || opcode === 0xA) continue;
+        frags.push(payload);
+        if (!fin) continue;
+        const text = Buffer.concat(frags).toString('utf-8');
+        frags = [];
+        try { handle(JSON.parse(text)); } catch { /* ignore */ }
+      }
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(socketPath, () => resolve({
+      socketPath,
+      requests,
+      close: () => { for (const s2 of sockets) s2.destroy(); server.close(); }
+    }));
+  });
+};
+
 const freePort = () => new Promise((resolve, reject) => {
   const srv = net.createServer();
   srv.once('error', reject);
@@ -75,7 +193,7 @@ const freePort = () => new Promise((resolve, reject) => {
   });
 });
 
-const startProxy = async (reuse) => {
+const startProxy = async (reuse, extraEnv = {}) => {
   const tmp = reuse ? reuse.tmp : fs.mkdtempSync(path.join(os.tmpdir(), 'codex-proxy-test-'));
   const home = path.join(tmp, 'home');
   fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
@@ -87,7 +205,8 @@ const startProxy = async (reuse) => {
       ...process.env,
       HOME: home,
       XDG_STATE_HOME: stateHome,
-      CODEX_PROXY_PORT: String(port)
+      CODEX_PROXY_PORT: String(port),
+      ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -300,4 +419,129 @@ test('session map survives a proxy restart via sessions.json (#480)', async (t) 
   const invocations = readInvocations(first.home);
   assert.equal(invocations.length, 2);
   assert.equal(invocations[1].resume, true, 'restarted proxy must still resume');
+});
+
+const AS_ENV = (fake) => ({
+  CODEX_PROXY_TRANSPORT: 'app-server',
+  CODEX_APP_SERVER_SOCKET: fake.socketPath
+});
+
+test('app-server transport: two turns on one daemon thread, tail only on turn 2 (#480)', async (t) => {
+  const fake = await createFakeAppServer();
+  t.after(fake.close);
+  const { port, stateHome, stop } = await startProxy(null, AS_ENV(fake));
+  t.after(stop);
+
+  const r1 = await post(port, { messages: TURN1 });
+  assert.equal(r1.status, 200);
+  const b1 = JSON.parse(await r1.text());
+  assert.equal(b1.choices[0].message.content, 'app-server answer');
+  assert.equal(b1.usage.prompt_tokens, 42, 'usage must map from thread/tokenUsage/updated last.inputTokens');
+  assert.equal(b1.usage.completion_tokens, 5);
+
+  const saved = JSON.parse(
+    fs.readFileSync(path.join(stateHome, 'codex-proxy', 'sessions.json'), 'utf-8')
+  );
+  assert.equal(Object.values(saved)[0].threadId, 'stub-thread-1');
+
+  const r2 = await post(port, { messages: TURN2 });
+  assert.equal(r2.status, 200);
+  assert.equal(JSON.parse(await r2.text()).choices[0].message.content, 'app-server answer');
+
+  const starts = fake.requests.filter(r => r.method === 'thread/start');
+  const turns = fake.requests.filter(r => r.method === 'turn/start');
+  assert.equal(starts.length, 1, 'one daemon thread per conversation');
+  assert.equal(turns.length, 2);
+  assert.match(turns[0].text, /alpha first question/);
+  assert.match(turns[1].text, /beta second question/);
+  assert.doesNotMatch(turns[1].text, /alpha first question/, 'keyed turn must send only the new tail');
+});
+
+test('app-server transport: deltas stream as SSE chunks (#480)', async (t) => {
+  const fake = await createFakeAppServer();
+  t.after(fake.close);
+  const { port, stop } = await startProxy(null, AS_ENV(fake));
+  t.after(stop);
+  const res = await post(port, { messages: TURN1, stream: true });
+  assert.equal(res.status, 200);
+  const sse = await res.text();
+  assert.match(sse, /app-/);
+  assert.match(sse, /server answer/);
+  assert.match(sse, /"prompt_tokens":42/);
+  assert.ok(sse.trimEnd().endsWith('data: [DONE]'));
+});
+
+test('app-server thread is resumed after a proxy restart via sessions.json (#480)', async (t) => {
+  const fake = await createFakeAppServer();
+  t.after(fake.close);
+  const first = await startProxy(null, AS_ENV(fake));
+  const r1 = await post(first.port, { messages: TURN1 });
+  assert.equal(r1.status, 200);
+  await r1.text();
+  first.stop();
+
+  const second = await startProxy(first, AS_ENV(fake));
+  t.after(second.stop);
+  const r2 = await post(second.port, { messages: TURN2 });
+  assert.equal(r2.status, 200);
+  assert.equal(JSON.parse(await r2.text()).choices[0].message.content, 'app-server answer');
+  const resumes = fake.requests.filter(r => r.method === 'thread/resume');
+  assert.equal(resumes.length, 1, 'restarted proxy must thread/resume the persisted thread');
+  assert.equal(resumes[0].params.threadId, 'stub-thread-1');
+  assert.equal(fake.requests.filter(r => r.method === 'thread/start').length, 1);
+});
+
+test('app-server turn failure falls back to exec and still answers (#480)', async (t) => {
+  const fake = await createFakeAppServer();
+  t.after(fake.close);
+  const { port, stop } = await startProxy(null, AS_ENV(fake));
+  t.after(stop);
+  const res = await post(port, { messages: [{ role: 'user', content: 'please ASFAIL now' }] });
+  assert.equal(res.status, 200, 'a failed app-server turn must not fail the request');
+  assert.equal(JSON.parse(await res.text()).choices[0].message.content, 'Hello world');
+});
+
+test('app-server RPC failure falls back to exec and still answers (#480)', async (t) => {
+  const fake = await createFakeAppServer();
+  t.after(fake.close);
+  const { port, stop } = await startProxy(null, AS_ENV(fake));
+  t.after(stop);
+  const res = await post(port, { messages: [{ role: 'user', content: 'please ASRPCFAIL now' }] });
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(await res.text()).choices[0].message.content, 'Hello world');
+});
+
+test('daemon death mid-turn falls back to exec and still answers (#480)', async (t) => {
+  const fake = await createFakeAppServer();
+  t.after(fake.close);
+  const { port, stop } = await startProxy(null, AS_ENV(fake));
+  t.after(stop);
+  const res = await post(port, { messages: [{ role: 'user', content: 'please ASKILL now' }] });
+  assert.equal(res.status, 200, 'daemon death mid-turn must not fail the request');
+  assert.equal(JSON.parse(await res.text()).choices[0].message.content, 'Hello world');
+});
+
+test('unreachable app-server socket falls back to exec and still answers (#480)', async (t) => {
+  const { port, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'app-server',
+    CODEX_APP_SERVER_SOCKET: '/nonexistent/codex-proxy-test/app-server.sock'
+  });
+  t.after(stop);
+  const res = await post(port, { messages: TURN1 });
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(await res.text()).choices[0].message.content, 'Hello world');
+});
+
+test('CODEX_PROXY_TRANSPORT=exec-resume bypasses the app-server entirely (#480)', async (t) => {
+  const fake = await createFakeAppServer();
+  t.after(fake.close);
+  const { port, stop } = await startProxy(null, {
+    CODEX_PROXY_TRANSPORT: 'exec-resume',
+    CODEX_APP_SERVER_SOCKET: fake.socketPath
+  });
+  t.after(stop);
+  const res = await post(port, { messages: TURN1 });
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(await res.text()).choices[0].message.content, 'Hello world');
+  assert.equal(fake.requests.length, 0, 'exec-resume transport must not touch the daemon');
 });
