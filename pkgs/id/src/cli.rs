@@ -1651,6 +1651,27 @@ pub enum WorldCommand {
         #[arg(long, default_value = "world")]
         name: String,
     },
+    /// Diagnose a broken world setup and print the fix for each problem.
+    ///
+    /// Checks the Roc toolchain, the platform build, the capability ceiling,
+    /// the execution profile, the journal format and the clock. Exits nonzero
+    /// when any check fails. `--json` prints one machine-readable report.
+    Doctor {
+        /// Roc compiler binary to check (default: $`ID_ROC_BIN`, then the
+        /// pinned nightly, then `roc` on PATH).
+        #[arg(long, env = "ID_ROC_BIN")]
+        roc_bin: Option<String>,
+        /// World platform directory to check (default: $`ID_ROC_PLATFORM` or
+        /// ./examples/roc-world).
+        #[arg(long, env = "ID_ROC_PLATFORM")]
+        platform: Option<PathBuf>,
+        /// World journal (`journal.jsonl`) to check for format errors.
+        #[arg(long, value_name = "FILE")]
+        journal: Option<PathBuf>,
+        /// Print one JSON object instead of text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Measure a compiled `.wasm` world program's fuel use, offline.
     ///
     /// Compiles the module with the default limits, runs `view`, then

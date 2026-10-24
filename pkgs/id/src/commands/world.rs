@@ -5,6 +5,7 @@
 //! presentation can consume the same stream a browser would.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use iroh::{
@@ -392,6 +393,43 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             Ok(())
         }
         WorldCommand::New { dir, name } => scaffold_world(&dir, &name),
+        WorldCommand::Doctor {
+            roc_bin,
+            platform,
+            journal,
+            json,
+        } => {
+            let platform_dir = platform
+                .or_else(|| std::env::var("ID_ROC_PLATFORM").ok().map(PathBuf::from))
+                .or_else(|| {
+                    [
+                        PathBuf::from("examples/roc-world"),
+                        PathBuf::from("../examples/roc-world"),
+                    ]
+                    .into_iter()
+                    .find(|dir| dir.is_dir())
+                });
+            let inputs = crate::world_doctor::DoctorInputs {
+                roc_bin,
+                roc_resolved: None,
+                platform_dir,
+                caps_ceiling: None,
+                profile: None,
+                journal,
+                now_ms: Some(crate::time::unix_ms()),
+            };
+            let report = crate::world_doctor::run(&inputs);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", report.render_text());
+            }
+            if report.healthy() {
+                Ok(())
+            } else {
+                bail!("world doctor found {} problem(s)", report.findings.len());
+            }
+        }
         #[cfg(feature = "sandbox")]
         WorldCommand::Measure {
             module,

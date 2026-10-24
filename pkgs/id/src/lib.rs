@@ -223,11 +223,15 @@ pub mod world_caps;
 #[cfg(feature = "world")]
 pub mod world_compile;
 #[cfg(feature = "world")]
+pub mod world_doctor;
+#[cfg(feature = "world")]
 pub mod world_fixture;
 #[cfg(feature = "world")]
 pub mod world_hub;
 #[cfg(feature = "world")]
 pub mod world_limits;
+#[cfg(feature = "world")]
+pub mod world_manifest;
 #[cfg(feature = "world")]
 pub mod world_native;
 #[cfg(feature = "world")]
