@@ -27,6 +27,31 @@ use crate::fileops::{FileOpError, FileOps};
 /// Default number of files per page.
 const DEFAULT_PER_PAGE: usize = 50;
 
+/// Maximum size of a single uploaded image file, in bytes.
+///
+/// This is the *file* limit the web UI advertises and enforces client-side
+/// (`MAX_IMAGE_SIZE` in `web/src/image-upload.ts`) — the two constants must
+/// stay equal. It is NOT the request-body limit for the upload route: a
+/// multipart body carrying a file of exactly this size is larger than the
+/// file itself (boundary, part headers, filename), so the route's body
+/// limit must exceed it by [`UPLOAD_MULTIPART_ALLOWANCE`] or a max-size
+/// image the UI accepted is rejected by the server (#716).
+pub(crate) const MAX_IMAGE_SIZE: usize = 10 * 1024 * 1024;
+
+/// Headroom the `/api/upload` body limit grants above [`MAX_IMAGE_SIZE`]
+/// for the multipart envelope (boundary lines, `Content-Disposition` with
+/// the filename, part `Content-Type`, closing boundary). Measured overhead
+/// for a typical filename is ~170 bytes and grows only with filename
+/// length, so 1 MiB is generous without meaningfully weakening the bound.
+pub(crate) const UPLOAD_MULTIPART_ALLOWANCE: usize = 1024 * 1024;
+
+/// Request-body limit for `/api/upload` only: a max-size image file plus
+/// its multipart envelope. Every other route keeps [`DEFAULT_BODY_LIMIT`].
+pub(crate) const UPLOAD_BODY_LIMIT: usize = MAX_IMAGE_SIZE + UPLOAD_MULTIPART_ALLOWANCE;
+
+/// Request-body limit for the router as a whole (all non-upload routes).
+pub(crate) const DEFAULT_BODY_LIMIT: usize = 10 * 1024 * 1024;
+
 /// Image MIME types allowed for upload.
 const ALLOWED_IMAGE_TYPES: &[&str] = &[
     "image/png",
@@ -232,8 +257,13 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/delete", post(delete_handler))
         .route("/api/restore", post(restore_handler))
         .route("/api/hard-delete", post(hard_delete_handler))
-        // Image upload API
-        .route("/api/upload", post(upload_handler))
+        // Image upload API — route-scoped body limit so a file of exactly
+        // MAX_IMAGE_SIZE plus its multipart envelope fits (#716); the
+        // route layer overrides the router-wide limit below for this route.
+        .route(
+            "/api/upload",
+            post(upload_handler).layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
+        )
         // Image listing API
         .route("/api/images", get(images_list_handler))
         // Tag REST API
@@ -262,7 +292,7 @@ pub fn create_router(state: AppState) -> Router {
                 cookie_secure: state.cookie_secure,
             }),
         )
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state)
 }
 
@@ -1265,6 +1295,24 @@ async fn new_file_handler(
     .into_response()
 }
 
+/// Whether a multipart error is the request-body length limit firing
+/// (as opposed to malformed multipart data).
+fn is_body_limit_error(err: &axum::extract::multipart::MultipartError) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("length limit") || msg.contains("body limit") || msg.contains("exceeded")
+}
+
+/// The clear `413` response for an upload that exceeds the size limits.
+fn image_too_large_response() -> Response {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        format!(
+            "Image too large: the upload exceeds the maximum image size of {MAX_IMAGE_SIZE} bytes (10 MiB)"
+        ),
+    )
+        .into_response()
+}
+
 /// Upload an image file via multipart form data.
 ///
 /// Accepts a single file field, validates the MIME type against allowed
@@ -1278,6 +1326,9 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
         }
         Err(err) => {
             tracing::error!("[routes] Failed to read multipart field: {}", err);
+            if is_body_limit_error(&err) {
+                return image_too_large_response();
+            }
             return (
                 StatusCode::BAD_REQUEST,
                 format!("Invalid multipart data: {err}"),
@@ -1317,9 +1368,27 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
         Ok(bytes) => bytes,
         Err(err) => {
             tracing::error!("[routes] Failed to read upload bytes: {}", err);
+            if is_body_limit_error(&err) {
+                return image_too_large_response();
+            }
             return (StatusCode::BAD_REQUEST, "Failed to read file data").into_response();
         }
     };
+
+    // The route body limit leaves room for the multipart envelope, so the
+    // file itself must be checked against the advertised file limit here —
+    // with a clear size error, not a generic multipart/body failure (#716).
+    if data.len() > MAX_IMAGE_SIZE {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "Image too large: {} bytes exceeds the maximum image size of {} bytes (10 MiB)",
+                data.len(),
+                MAX_IMAGE_SIZE
+            ),
+        )
+            .into_response();
+    }
 
     if data.is_empty() {
         return (StatusCode::BAD_REQUEST, "Uploaded file is empty").into_response();
@@ -2403,6 +2472,35 @@ mod tests {
         assert!(json.contains("\"hash\":\"abc123def456\""));
         assert!(json.contains("\"name\":\"photo.png\""));
         assert!(json.contains("\"url\":\"/blob/abc123def456?filename=photo.png\""));
+    }
+
+    #[test]
+    fn test_upload_body_limit_fits_max_image_plus_multipart_overhead() {
+        // #716: the client's MAX_IMAGE_SIZE (web/src/image-upload.ts, pinned
+        // at the same value by image-upload.test.ts) is a *file* limit, while
+        // the server body limit counts the whole multipart request. The
+        // upload route's body limit must fit a max-size file plus the
+        // multipart envelope — including a long filename — or the largest
+        // image the UI accepts is rejected by the server.
+        assert_eq!(MAX_IMAGE_SIZE, 10 * 1024 * 1024);
+        // Multipart overhead for a 255-byte filename, mirroring the measured
+        // ~170 bytes for a short name (issue #716): two boundary lines, the
+        // Content-Disposition header carrying the filename, the part
+        // Content-Type header, and CRLF separators.
+        let long_filename = "a".repeat(251) + ".png";
+        let overhead = 70 + 70 // boundary lines (incl. closing)
+            + "Content-Disposition: form-data; name=\"file\"; filename=\"\"".len()
+            + long_filename.len()
+            + "Content-Type: image/png".len()
+            + 8; // CRLFs
+        assert!(
+            UPLOAD_BODY_LIMIT >= MAX_IMAGE_SIZE + overhead,
+            "upload body limit {UPLOAD_BODY_LIMIT} must fit a {MAX_IMAGE_SIZE}-byte file \
+             plus {overhead} bytes of multipart overhead"
+        );
+        // …while the router-wide limit for the other routes stays at 10 MiB.
+        assert_eq!(DEFAULT_BODY_LIMIT, 10 * 1024 * 1024);
+        assert!(UPLOAD_BODY_LIMIT > DEFAULT_BODY_LIMIT);
     }
 
     #[test]
