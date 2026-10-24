@@ -5,7 +5,16 @@
 //! `view` frame repaints the terminal, so an ordinary `ssh` client can play any
 //! world that presents a view.
 
-use std::{collections::VecDeque, fmt::Write as _, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    fmt::Write as _,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use futures_lite::StreamExt;
 use russh::{
@@ -120,7 +129,7 @@ impl Server for SshServer {
             login: None,
             input: None,
             viewport: None,
-            dropped_input: 0,
+            dropped_input: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -147,8 +156,11 @@ struct SshClient {
     login: Option<Login>,
     input: Option<mpsc::Sender<SshInputFrame>>,
     viewport: Option<(u32, u32)>,
-    /// Bytes the input queue refused; handed to the shell so the drop is visible.
-    dropped_input: usize,
+    /// Bytes the input queue refused, shared with the shell so the drop is
+    /// visible. The handler counts drops for the life of the connection,
+    /// including after the shell opens, so the counter must be shared, not
+    /// copied, when the shell is constructed.
+    dropped_input: Arc<AtomicUsize>,
 }
 
 enum SshInputFrame {
@@ -315,11 +327,7 @@ impl Handler for SshClient {
         }
         let first = join_frame(login);
         session.channel_success(channel)?;
-        let alt_screen = if !login.command_mode {
-            Some(ALT_SCREEN_ENTER.to_owned())
-        } else {
-            None
-        };
+        let alt_screen = !login.command_mode;
 
         let (input, frames) = mpsc::channel(INPUT_QUEUE);
         let first_resize = self.viewport.take();
@@ -339,9 +347,9 @@ impl Handler for SshClient {
             capability: login.capability.clone(),
             mode,
             alt_screen,
-            pending_notice: None,
+            alt_screen_entered: false,
             last_error: None,
-            dropped_input: self.dropped_input,
+            dropped_input: Arc::clone(&self.dropped_input),
             lines: WorldLineBuffer::default(),
             commands: VecDeque::new(),
             records_prefix: None,
@@ -349,6 +357,7 @@ impl Handler for SshClient {
         };
         let hub = self.hub.clone();
         tokio::spawn(async move {
+            io.enter_alt_screen().await;
             run_session(&hub, &mut io).await;
             if io.errored {
                 tokio::time::sleep(REFUSED_SHELL_DELAY).await;
@@ -374,13 +383,14 @@ impl Handler for SshClient {
             match error {
                 mpsc::error::TrySendError::Full(_) => {
                     // The handler shares the loop that flushes output, so it must
-                    // not wait for queue space. Count the loss instead and let the
-                    // shell tell the viewer once, instead of dropping silently.
-                    self.dropped_input += data.len();
+                    // not wait for queue space. Count the loss on the counter
+                    // shared with the shell instead, and let the shell tell the
+                    // viewer once, instead of dropping silently.
+                    let total = record_dropped_input(&self.dropped_input, data.len());
                     tracing::warn!(
                         "world ssh input queue full; dropped {} bytes ({} total)",
                         data.len(),
-                        self.dropped_input
+                        total
                     );
                 }
                 mpsc::error::TrySendError::Closed(_) => self.input = None,
@@ -427,14 +437,17 @@ struct SshIo {
     first_resize: Option<(u32, u32)>,
     capability: String,
     mode: ShellMode,
-    /// Set while the terminal is inside the alternate screen buffer (raw sessions).
-    alt_screen: Option<String>,
-    /// Text to write before the next server frame, once.
-    pending_notice: Option<String>,
+    /// Whether this session uses the alternate screen buffer (raw sessions only;
+    /// command mode never emits either sequence).
+    alt_screen: bool,
+    /// Whether the enter sequence has actually been written to the channel.
+    alt_screen_entered: bool,
     /// The last error message, re-sent after leaving the alternate screen.
     last_error: Option<String>,
-    /// Bytes the input queue refused, handed over when the shell opened.
-    dropped_input: usize,
+    /// Bytes the input queue refused, shared with the russh handler: drops
+    /// counted after the shell opens are exactly the ones this session must
+    /// report, so the shell reads the live counter, not a snapshot.
+    dropped_input: Arc<AtomicUsize>,
     lines: WorldLineBuffer,
     commands: VecDeque<WorldCommand>,
     /// `Some(prefix)` while draining records pages from a `/records` command.
@@ -442,32 +455,62 @@ struct SshIo {
     errored: bool,
 }
 
-/// The notice shown to a viewer after `bytes` input bytes were refused. Empty
-/// when nothing was dropped.
+/// The notice shown to a viewer once [`INPUT_DROP_NOTICE_BYTES`] input bytes
+/// were refused. Empty below that threshold, so a drop here and there stays
+/// quiet and only a sustained loss is reported.
 fn dropped_input_notice(bytes: usize) -> Option<String> {
-    (bytes > 0).then(|| {
+    (bytes >= INPUT_DROP_NOTICE_BYTES).then(|| {
         format!("\r\n[-- input dropped: {bytes} bytes refused by the SSH input queue --]\r\n")
     })
 }
 
+/// Count bytes the input queue refused on the counter shared between the
+/// russh handler and the session I/O; returns the new total.
+fn record_dropped_input(counter: &AtomicUsize, bytes: usize) -> usize {
+    counter.fetch_add(bytes, Ordering::Relaxed) + bytes
+}
+
+/// Claim the pending dropped-input notice, if the shared counter has reached
+/// [`INPUT_DROP_NOTICE_BYTES`]. Claiming subtracts only the observed bytes,
+/// so drops counted while the notice is being handed to the viewer stay
+/// counted for the next one. If the notice cannot be delivered, the caller
+/// adds the claimed bytes back with `fetch_add`, so claimed drops are reset
+/// only once the notice has actually reached the viewer: they are neither
+/// double-counted nor lost between frames.
+fn claim_dropped_input_notice(counter: &AtomicUsize) -> Option<(usize, String)> {
+    let bytes = counter.load(Ordering::Relaxed);
+    let notice = dropped_input_notice(bytes)?;
+    counter.fetch_sub(bytes, Ordering::Relaxed);
+    Some((bytes, notice))
+}
+
 impl SshIo {
-    /// Tell the viewer that input was dropped, before the next frame.
-    fn note_dropped_input(&mut self) {
-        if let Some(notice) = dropped_input_notice(self.dropped_input) {
-            self.dropped_input = 0;
-            self.pending_notice = Some(notice);
+    /// Enter the alternate screen before the first session frame, so a raw
+    /// session's repaints never land in the viewer's scrollback.
+    async fn enter_alt_screen(&mut self) {
+        if !self.alt_screen || self.alt_screen_entered {
+            return;
+        }
+        if self
+            .handle
+            .data(self.channel, ALT_SCREEN_ENTER)
+            .await
+            .is_ok()
+        {
+            self.alt_screen_entered = true;
         }
     }
 
-    /// Leave the alternate screen and re-send the last error, which the
-    /// alternate screen may have overwritten.
+    /// Leave the alternate screen and re-send the last error after the leave
+    /// sequence, so a refused join stays readable in the restored scrollback.
     async fn leave_alt_screen(&mut self) {
-        let Some(sequence) = self.alt_screen.take() else {
+        if !self.alt_screen_entered {
             return;
-        };
+        }
+        self.alt_screen_entered = false;
         let text = match self.last_error.take() {
-            Some(error) => format!("{sequence}\r\n{error}\r\n"),
-            None => sequence,
+            Some(error) => format!("{ALT_SCREEN_LEAVE}\r\n{error}\r\n"),
+            None => ALT_SCREEN_LEAVE.to_owned(),
         };
         let _ = self.handle.data(self.channel, text).await;
     }
@@ -589,9 +632,13 @@ impl SessionIo for SshIo {
     }
 
     async fn send(&mut self, frame: String) -> bool {
-        self.note_dropped_input();
-        if let Some(notice) = self.pending_notice.take() {
+        // Tell the viewer about dropped input before the frame it delayed.
+        // The count is claimed from the shared counter first; if the notice
+        // itself cannot be written, the claim is restored so the drops stay
+        // counted instead of vanishing with the undelivered notice.
+        if let Some((bytes, notice)) = claim_dropped_input_notice(&self.dropped_input) {
             if self.handle.data(self.channel, notice).await.is_err() {
+                self.dropped_input.fetch_add(bytes, Ordering::Relaxed);
                 return false;
             }
         }
@@ -1588,18 +1635,44 @@ mod tests {
         WorldHub::single(WorldService::new(world, Some("admin".to_owned())))
     }
 
+    fn sequence_count(bytes: &[u8], sequence: &str) -> usize {
+        bytes
+            .windows(sequence.len())
+            .filter(|window| *window == sequence.as_bytes())
+            .count()
+    }
+
+    fn sequence_position(bytes: &[u8], sequence: &str) -> Option<usize> {
+        bytes
+            .windows(sequence.len())
+            .position(|window| window == sequence.as_bytes())
+    }
+
     #[tokio::test]
     async fn a_raw_shell_enters_and_leaves_the_alternate_screen() {
-        let (port, server) = start(lobby_hub()).await;
-        let session = connect(port, &"0".repeat(64)).await;
+        let hub = lobby_hub();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-raw-alt".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
         let mut channel = shell(&session).await;
 
+        // The enter sequence must be the very first bytes on the channel:
+        // a live, accepted session enters the alternate screen before its
+        // first frame, not at teardown.
         let mut bytes = Vec::new();
         tokio::time::timeout(Duration::from_secs(10), async {
-            while !bytes
-                .windows(ALT_SCREEN_ENTER.len())
-                .any(|window| window == ALT_SCREEN_ENTER.as_bytes())
-            {
+            while sequence_count(&bytes, ALT_SCREEN_ENTER) == 0 {
                 match channel.wait().await {
                     Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
                     Some(_) => {}
@@ -1609,9 +1682,61 @@ mod tests {
         })
         .await
         .expect("timed out waiting for the alternate screen to open");
+        assert_eq!(
+            sequence_position(&bytes, ALT_SCREEN_ENTER),
+            Some(0),
+            "enter sequence was not the first output: {bytes:?}"
+        );
+        assert_eq!(sequence_count(&bytes, ALT_SCREEN_LEAVE), 0);
 
         drop(channel);
         drop(session);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_refused_raw_shell_leaves_the_alternate_screen_and_repeats_its_error() {
+        let (port, server) = start(lobby_hub()).await;
+        let session = connect(port, &"0".repeat(64)).await;
+        let mut channel = shell(&session).await;
+
+        // A refused join ends the session server-side: the server writes the
+        // leave sequence and closes the channel, so read until the close.
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the refused shell to close");
+
+        assert_eq!(
+            sequence_position(&bytes, ALT_SCREEN_ENTER),
+            Some(0),
+            "enter sequence was not the first output: {bytes:?}"
+        );
+        assert_eq!(
+            sequence_count(&bytes, ALT_SCREEN_ENTER),
+            1,
+            "enter sequence must be written exactly once: {bytes:?}"
+        );
+        assert_eq!(
+            sequence_count(&bytes, ALT_SCREEN_LEAVE),
+            1,
+            "leave sequence must be written exactly once: {bytes:?}"
+        );
+        let leave_at = sequence_position(&bytes, ALT_SCREEN_LEAVE).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        let error_after_leave = text.rfind("join denied").expect("join error missing");
+        assert!(
+            error_after_leave > leave_at,
+            "the last error must be re-sent after the leave sequence: {text:?}"
+        );
         server.abort();
     }
 
@@ -1649,15 +1774,59 @@ mod tests {
                 .windows(ALT_SCREEN_ENTER.len())
                 .any(|window| window == ALT_SCREEN_ENTER.as_bytes())
         );
+        assert!(
+            !text
+                .as_bytes()
+                .windows(ALT_SCREEN_LEAVE.len())
+                .any(|window| window == ALT_SCREEN_LEAVE.as_bytes())
+        );
         server.abort();
     }
 
     #[test]
     fn dropped_input_notice_counts_and_quiet_zero() {
         assert_eq!(dropped_input_notice(0), None);
-        let notice = dropped_input_notice(1024).unwrap();
+        // Below the threshold the viewer is not told yet: the drops stay
+        // counted until they add up to a sustained loss.
+        assert_eq!(dropped_input_notice(INPUT_DROP_NOTICE_BYTES - 1), None);
+        let notice = dropped_input_notice(INPUT_DROP_NOTICE_BYTES).unwrap();
         assert!(notice.contains("1024"));
         assert!(notice.contains("dropped"));
+    }
+
+    #[test]
+    fn dropped_input_notice_follows_the_shared_counter() {
+        // Drive the counter exactly the way the russh handler does when the
+        // queue refuses input mid-session: the shell must see those drops,
+        // not the zero snapshot a copy taken at shell-open would hold.
+        let counter = AtomicUsize::new(0);
+        record_dropped_input(&counter, 600);
+        assert_eq!(claim_dropped_input_notice(&counter), None);
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            600,
+            "a below-threshold claim must leave the drops counted"
+        );
+        record_dropped_input(&counter, 600);
+        let (bytes, notice) = claim_dropped_input_notice(&counter).unwrap();
+        assert_eq!(bytes, 1200);
+        assert!(notice.contains("1200"));
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+        // The claim was the reset: nothing is reported twice.
+        assert_eq!(claim_dropped_input_notice(&counter), None);
+        // Drops counted after a claim are reported on their own.
+        record_dropped_input(&counter, INPUT_DROP_NOTICE_BYTES);
+        let (bytes, _) = claim_dropped_input_notice(&counter).unwrap();
+        assert_eq!(bytes, INPUT_DROP_NOTICE_BYTES);
+        // A notice that cannot be handed to the viewer restores its claim
+        // (the send path adds the bytes back), so the same drops are
+        // reported by the next successful claim instead of being lost.
+        record_dropped_input(&counter, INPUT_DROP_NOTICE_BYTES);
+        let (bytes, _) = claim_dropped_input_notice(&counter).unwrap();
+        counter.fetch_add(bytes, Ordering::Relaxed);
+        let (restored, _) = claim_dropped_input_notice(&counter).unwrap();
+        assert_eq!(restored, INPUT_DROP_NOTICE_BYTES);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
