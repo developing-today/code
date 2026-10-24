@@ -593,59 +593,133 @@ mod tests {
         );
     }
 
+    /// A program that only counts `time.tick` deliveries and publishes the count.
+    #[derive(Debug, Default)]
+    struct TickCounter {
+        ticks: u64,
+    }
+
+    impl WorldProgram for TickCounter {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                let value: serde_json::Value =
+                    serde_json::from_str(event).unwrap_or(serde_json::Value::Null);
+                if value["cap"] == "time.tick" {
+                    self.ticks += 1;
+                }
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"v": 1, "subscribe": ["time.tick:20"]}).to_string(),
+            ))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(serde_json::json!({"ticks": self.ticks}).to_string()))
+        }
+    }
+
+    /// The number of ticks a [`TickCounter`] actor has delivered, via its records.
+    fn tick_count(actor: &WorldActor) -> u64 {
+        actor
+            .records_sender
+            .borrow()
+            .1
+            .get("ticks")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    }
+
     #[tokio::test]
     async fn subscribed_ticks_arrive_only_while_someone_is_present() {
-        let (world, token) = caps_world_sync(false).await;
-        world
-            .update_caps(vec!["time.tick".to_owned()], Vec::new())
-            .await
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
+        let mut core =
+            WorldCore::new_with_clock("ticks", WorldLimits::default(), clock.clone()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["time.tick".to_owned()]));
+        let (_, _token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap();
-        world.input(token, b"4".to_vec()).await.unwrap();
-        world.presence(1, true).await;
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        world.presence(1, false).await;
-        // Let any in-flight tick settle, then confirm the world goes quiet.
-        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
-        let quiet = {
-            let mut views = world.watch_views();
-            views.borrow_and_update();
-            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
-            views.has_changed().is_ok_and(|changed| !changed)
-        };
-        assert!(quiet, "ticks kept firing with nobody present");
-        world.shutdown().await.unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(TickCounter::default()), None);
+
+        // The subscription is known but not armed while nobody is present.
+        actor.after_change().await;
+        assert!(actor.ticks.is_empty(), "no tick while nobody is present");
+
+        // A presence transition arms the tick.
+        actor
+            .handle(WorldCommand::Presence {
+                participant: 1,
+                joined: true,
+            })
+            .await;
+        assert!(actor.ticks.contains_key(&20), "the tick armed on presence");
+
+        clock.advance(20);
+        actor.fire_ticks().await;
+        assert_eq!(tick_count(&actor), 1, "the tick fired while present");
+
+        // The last participant leaving disarms the tick for good.
+        actor
+            .handle(WorldCommand::Presence {
+                participant: 1,
+                joined: false,
+            })
+            .await;
+        assert!(actor.ticks.is_empty(), "the tick disarmed on leave");
+        clock.advance(20);
+        actor.fire_ticks().await;
+        assert_eq!(
+            tick_count(&actor),
+            1,
+            "ticks kept firing with nobody present"
+        );
     }
 
     #[tokio::test]
     async fn ticks_follow_the_world_grant_not_a_participant_capability() {
-        let core = WorldCore::new("ticks", WorldLimits::default()).unwrap();
-        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
+        let mut core =
+            WorldCore::new_with_clock("ticks", WorldLimits::default(), clock.clone()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["time.tick".to_owned()]));
         let owner_scopes = WorldScopes(WorldScopes::GUEST.bits() | WorldScopes::DELEGATE.bits());
-        let (_, owner) = world.issue("ann", owner_scopes).await.unwrap();
+        let (_, owner) = core
+            .issue_capability("ann", owner_scopes, CapabilityBounds::default())
+            .unwrap();
         let short_lived = CapabilityBounds {
-            expires_at: Some(unix_ms() + 150),
+            expires_at: Some(150),
             uses: None,
         };
-        let (_, short) = world
-            .attenuate(owner.clone(), WorldScopes::GUEST, short_lived, "bo")
-            .await
+        let (_, short) = core
+            .attenuate(&owner, WorldScopes::GUEST, short_lived, "bo")
             .unwrap();
-        world
-            .update_caps(vec!["time.tick".to_owned()], Vec::new())
-            .await
-            .unwrap();
-        world.input(owner, b"4".to_vec()).await.unwrap();
-        world.presence(1, true).await;
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        assert!(world.chat(short, "late").await.is_err());
-        let mut views = world.watch_views();
-        views.borrow_and_update();
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let mut actor = WorldActor::for_test(core, Box::new(TickCounter::default()), None);
+
+        actor.after_change().await;
+        actor
+            .handle(WorldCommand::Presence {
+                participant: 1,
+                joined: true,
+            })
+            .await;
+        // The short-lived delegation expires before the tick fires.
+        clock.advance(150);
         assert!(
-            views.has_changed().is_ok_and(|changed| changed),
-            "ticks stopped when a participant's capability expired"
+            actor.core.chat(&short, "late").is_err(),
+            "the delegation expired"
         );
-        world.shutdown().await.unwrap();
+        // The world's tick grant still drives the tick while the owner is
+        // present: a tick is not tied to a participant's capability.
+        actor.fire_ticks().await;
+        assert_eq!(
+            tick_count(&actor),
+            1,
+            "the tick follows the world grant, not a capability"
+        );
     }
 
     #[derive(Debug, Default)]
@@ -678,41 +752,38 @@ mod tests {
 
     #[tokio::test]
     async fn ticks_speak_for_the_world_not_for_a_present_participant() {
-        let core = WorldCore::new("tick-attribution", WorldLimits::default()).unwrap();
-        let world = WorldHandle::spawn_with_program(core, Box::new(TickSay::default()));
-        world
-            .update_caps(
-                vec!["time.tick".to_owned(), "chat.say".to_owned()],
-                Vec::new(),
-            )
-            .await
-            .unwrap();
-        let (spectator, _) = world
-            .issue(
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
+        let mut core =
+            WorldCore::new_with_clock("tick-attribution", WorldLimits::default(), clock.clone())
+                .unwrap();
+        core.ledger.set_granted(BTreeSet::from([
+            "time.tick".to_owned(),
+            "chat.say".to_owned(),
+        ]));
+        let (spectator, _) = core
+            .issue_capability(
                 "spectator",
                 WorldScopes(WorldScopes::JOIN.bits() | WorldScopes::INPUT.bits()),
+                CapabilityBounds::default(),
             )
-            .await
             .unwrap();
-        world.presence(spectator.id, true).await;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            let usage = world
-                .caps_report()
-                .await
-                .unwrap()
-                .usage
-                .get("chat.say")
-                .copied()
-                .unwrap_or_default();
-            if usage.allowed > 0 {
-                assert_eq!(usage.denied, 0, "a tick was refused for a participant");
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline, "no tick ever spoke");
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        world.shutdown().await.unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(TickSay::default()), None);
+
+        actor.after_change().await;
+        actor
+            .handle(WorldCommand::Presence {
+                participant: spectator.id,
+                joined: true,
+            })
+            .await;
+        clock.advance(20);
+        actor.fire_ticks().await;
+        // The tick's follow-up request runs on the next change, with no acting
+        // participant, so the world's grant decides it — not the spectator's scopes.
+        actor.after_change().await;
+        let usage = actor.core.ledger.usage()["chat.say"];
+        assert_eq!(usage.allowed, 1, "the tick spoke for the world");
+        assert_eq!(usage.denied, 0, "a tick was refused for a participant");
     }
 
     #[tokio::test]
@@ -918,53 +989,71 @@ mod tests {
 
     #[tokio::test]
     async fn lowering_the_ceiling_stops_an_active_subscription_and_reports_it_refused() {
-        let core = WorldCore::new("ceiling-ticks", WorldLimits::default()).unwrap();
-        let world = WorldHandle::spawn_with_program(core, Box::new(Mock::new()));
-        world
-            .update_caps(vec!["time.tick".to_owned()], Vec::new())
-            .await
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(0));
+        let mut core =
+            WorldCore::new_with_clock("ceiling-ticks", WorldLimits::default(), clock.clone())
+                .unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["time.tick".to_owned()]));
+        let (_, _token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
             .unwrap();
-        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
-        world.presence(1, true).await;
-        let mut views = world.watch_views();
-        // Script 4 subscribes to `time.tick:20`, which arms it while someone is present.
-        world.input(token, b"4".to_vec()).await.unwrap();
-        views.borrow_and_update();
-        tokio::time::timeout(std::time::Duration::from_secs(2), views.changed())
-            .await
-            .expect("no tick arrived while the ceiling allowed it")
-            .unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(TickCounter::default()), None);
 
-        world
-            .set_caps_ceiling(vec!["time.now".to_owned()])
-            .await
-            .unwrap();
-        let report = world.caps_report().await.unwrap();
-        assert!(
-            report
-                .usage
-                .get("time.tick")
-                .is_some_and(|usage| usage.denied > 0),
-            "{report:?}"
+        actor.after_change().await;
+        actor
+            .handle(WorldCommand::Presence {
+                participant: 1,
+                joined: true,
+            })
+            .await;
+        clock.advance(20);
+        actor.fire_ticks().await;
+        assert_eq!(
+            tick_count(&actor),
+            1,
+            "the tick arrived while the ceiling allowed it"
         );
-        assert!(!report.effective.contains(&"time.tick".to_owned()));
-        // The refusal reached the program before this report; no tick follows.
-        views.borrow_and_update();
-        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-        assert!(
-            views.has_changed().is_ok_and(|changed| !changed),
+
+        // Lowering the ceiling drops the subscription and reports it refused.
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling {
+                ceiling: vec!["time.now".to_owned()],
+                reply,
+            })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        actor.after_change().await;
+        assert!(actor.core.ledger.usage()["time.tick"].denied > 0);
+        assert!(!actor.core.ledger.effective().contains("time.tick"));
+        // No tick follows while the ceiling excludes it.
+        clock.advance(20);
+        actor.fire_ticks().await;
+        assert_eq!(
+            tick_count(&actor),
+            1,
             "ticks kept firing after the ceiling dropped them"
         );
 
         // Lifting the ceiling admits the refused subscription again.
         let full: Vec<String> = crate::world_caps::catalog_names().into_iter().collect();
-        world.set_caps_ceiling(full).await.unwrap();
-        views.borrow_and_update();
-        tokio::time::timeout(std::time::Duration::from_secs(2), views.changed())
-            .await
-            .expect("ticks did not resume once the ceiling allowed them")
-            .unwrap();
-        world.shutdown().await.unwrap();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling {
+                ceiling: full,
+                reply,
+            })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        actor.after_change().await;
+        clock.advance(20);
+        actor.fire_ticks().await;
+        assert_eq!(
+            tick_count(&actor),
+            2,
+            "ticks did not resume once the ceiling allowed them"
+        );
     }
 
     #[test]
@@ -3035,47 +3124,59 @@ mod schedule_tests {
         }
     }
 
-    /// A journaled world running a `Scheduler`, with one participant and the
-    /// given grants.
-    async fn scheduling_world(
+    /// The manual clock's start time, in unix milliseconds.
+    const EPOCH_MS: u64 = 1_000_000_000_000;
+
+    /// A journaled actor running a `Scheduler` on a manual clock, with one
+    /// participant and the given grants. Nothing is spawned: the test drives
+    /// [`WorldActor::handle`], [`WorldActor::after_change`] and
+    /// [`WorldActor::fire_schedules`] directly, advancing the clock by hand.
+    fn scheduling_actor(
         id: &str,
         grants: &[&str],
         refuse_fires: bool,
-    ) -> (WorldHandle, JoinCapability, Recorded) {
+    ) -> (WorldActor, Arc<ManualClock>, JoinCapability, Recorded) {
         let journal = Recorded::for_world(id);
-        let core = WorldCore::new(id, WorldLimits::default()).unwrap();
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core =
+            WorldCore::new_with_clock(id, WorldLimits::default(), clock.clone()).unwrap();
+        core.ledger
+            .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
+        let (_, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
         let program = Scheduler {
             refuse_fires,
             ..Scheduler::default()
         };
-        let world =
-            WorldHandle::spawn_durable(core, Box::new(program), Some(Box::new(journal.clone())));
-        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
-        if !grants.is_empty() {
-            world
-                .update_caps(
-                    grants.iter().map(|grant| (*grant).to_owned()).collect(),
-                    Vec::new(),
-                )
-                .await
-                .unwrap();
-        }
-        (world, token, journal)
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (actor, clock, token, journal)
     }
 
-    /// Send one request document to the program as a participant's input.
-    async fn ask(world: &WorldHandle, token: &JoinCapability, document: serde_json::Value) {
-        world
-            .input(token.clone(), document.to_string().into_bytes())
-            .await
-            .unwrap();
+    /// Drive one input document through the actor exactly as its run loop
+    /// would: handle, settle the program's wants, then clear `acting`.
+    async fn ask(actor: &mut WorldActor, token: &JoinCapability, document: serde_json::Value) {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::Input {
+                token: token.clone(),
+                input: document.to_string().into_bytes(),
+                reply,
+            })
+            .await;
+        actor.after_change().await;
+        actor.acting = None;
+        let _ = response.await.unwrap().unwrap();
+    }
+
+    /// The records the program last published.
+    fn records(actor: &WorldActor) -> Arc<Records> {
+        actor.records_sender.borrow().1.clone()
     }
 
     /// The schedule fire events the program has received so far.
-    fn schedule_fires(world: &WorldHandle) -> Vec<serde_json::Value> {
-        world
-            .records()
-            .1
+    fn schedule_fires(actor: &WorldActor) -> Vec<serde_json::Value> {
+        records(actor)
             .get("fired")
             .and_then(serde_json::Value::as_array)
             .cloned()
@@ -3083,25 +3184,11 @@ mod schedule_tests {
     }
 
     /// The result event the program received for request `id`, if any.
-    fn schedule_result(world: &WorldHandle, id: &str) -> Option<serde_json::Value> {
-        world
-            .records()
-            .1
+    fn schedule_result(actor: &WorldActor, id: &str) -> Option<serde_json::Value> {
+        records(actor)
             .get("results")
             .and_then(|results| results.get(id))
             .cloned()
-    }
-
-    /// Poll until `ready` holds, failing after three seconds.
-    async fn eventually(what: &str, mut ready: impl FnMut() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while !ready() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for {what}"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
     }
 
     #[test]
@@ -3145,23 +3232,24 @@ mod schedule_tests {
 
     #[tokio::test]
     async fn an_ungranted_schedule_is_refused_and_counted() {
-        let (world, token, journal) = scheduling_world("sched-refused", &[], false).await;
+        let (mut actor, _clock, token, journal) = scheduling_actor("sched-refused", &[], false);
         ask(
-            &world,
+            &mut actor,
             &token,
             serde_json::json!({"requests": [
-                {"id": "s1", "cap": "schedule.at", "args": {"id": "nap", "at": unix_ms() + 60_000}},
+                {"id": "s1", "cap": "schedule.at", "args": {"id": "nap", "at": EPOCH_MS + 60_000}},
             ]}),
         )
         .await;
-        eventually("the refusal", || schedule_result(&world, "s1").is_some()).await;
         assert_eq!(
-            schedule_result(&world, "s1").unwrap()["error"],
+            schedule_result(&actor, "s1").unwrap()["error"],
             "cap_denied"
         );
-        let report = world.caps_report().await.unwrap();
-        assert!(report.usage["schedule.at"].denied > 0, "{report:?}");
-        world.shutdown().await.unwrap();
+        assert!(
+            actor.core.ledger.usage()["schedule.at"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
         assert!(
             journal
                 .entries()
@@ -3173,25 +3261,31 @@ mod schedule_tests {
 
     #[tokio::test]
     async fn a_due_schedule_fires_once_and_the_program_receives_it() {
-        let (world, token, journal) = scheduling_world("sched-fire", &["schedule.at"], false).await;
+        let (mut actor, clock, token, journal) =
+            scheduling_actor("sched-fire", &["schedule.at"], false);
         ask(
-            &world,
+            &mut actor,
             &token,
             serde_json::json!({"requests": [
-                {"id": "s1", "cap": "schedule.at", "args": {"id": "now", "at": unix_ms()}},
+                {"id": "s1", "cap": "schedule.at", "args": {"id": "now", "at": EPOCH_MS + 1}},
             ]}),
         )
         .await;
-        eventually("the fire", || !schedule_fires(&world).is_empty()).await;
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let fires = schedule_fires(&world);
+        // Not due at the epoch; only after the clock passes the due time.
+        actor.fire_schedules().await;
+        assert!(schedule_fires(&actor).is_empty(), "not due yet");
+        clock.advance(1);
+        actor.fire_schedules().await;
+        let fires = schedule_fires(&actor);
         assert_eq!(fires.len(), 1, "{fires:?}");
         assert_eq!(fires[0]["id"], "now");
         assert!(
             fires[0].get("late").is_none(),
             "a fire in this run is not late"
         );
-        world.shutdown().await.unwrap();
+        // A second wakeup fires nothing: the schedule was consumed.
+        actor.fire_schedules().await;
+        assert_eq!(schedule_fires(&actor).len(), 1);
 
         let entries = journal.entries();
         let fire = WorldEventKind::System {
@@ -3217,12 +3311,12 @@ mod schedule_tests {
 
     #[tokio::test]
     async fn a_cancelled_schedule_never_fires_and_an_unknown_id_says_false() {
-        let (world, token, _journal) =
-            scheduling_world("sched-cancel", &["schedule.at", "schedule.cancel"], false).await;
-        let at = unix_ms();
-        // One pass: the cancel runs before any timer can fire the schedule.
+        let (mut actor, clock, token, _journal) =
+            scheduling_actor("sched-cancel", &["schedule.at", "schedule.cancel"], false);
+        let at = EPOCH_MS;
+        // One pass: the cancel runs before any fire can fire the schedule.
         ask(
-            &world,
+            &mut actor,
             &token,
             serde_json::json!({"requests": [
                 {"id": "s1", "cap": "schedule.at", "args": {"id": "soon", "at": at}},
@@ -3231,39 +3325,35 @@ mod schedule_tests {
             ]}),
         )
         .await;
-        eventually("the cancel results", || {
-            schedule_result(&world, "c2").is_some()
-        })
-        .await;
         assert_eq!(
-            schedule_result(&world, "s1").unwrap()["value"]["fires_at"],
+            schedule_result(&actor, "s1").unwrap()["value"]["fires_at"],
             at
         );
         assert_eq!(
-            schedule_result(&world, "c1").unwrap()["value"]["cancelled"],
+            schedule_result(&actor, "c1").unwrap()["value"]["cancelled"],
             true
         );
         assert_eq!(
-            schedule_result(&world, "c2").unwrap()["value"]["cancelled"],
+            schedule_result(&actor, "c2").unwrap()["value"]["cancelled"],
             false
         );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        clock.advance(10_000);
+        actor.fire_schedules().await;
         assert!(
-            schedule_fires(&world).is_empty(),
+            schedule_fires(&actor).is_empty(),
             "a cancelled schedule must not fire"
         );
-        world.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn refused_schedule_requests_pend_nothing() {
-        let (world, token, journal) =
-            scheduling_world("sched-bad", &["schedule.at", "schedule.cancel"], false).await;
-        let later = unix_ms() + 3_600_000;
-        let far = unix_ms() + crate::world_caps::MAX_SCHEDULE_HORIZON_MS + 60_000;
+        let (mut actor, _clock, token, journal) =
+            scheduling_actor("sched-bad", &["schedule.at", "schedule.cancel"], false);
+        let later = EPOCH_MS + 3_600_000;
+        let far = EPOCH_MS + crate::world_caps::MAX_SCHEDULE_HORIZON_MS + 60_000;
         let long_id = "x".repeat(65);
         ask(
-            &world,
+            &mut actor,
             &token,
             serde_json::json!({"requests": [
                 {"id": "ok", "cap": "schedule.at", "args": {"id": "kept", "at": later}},
@@ -3277,11 +3367,7 @@ mod schedule_tests {
             ]}),
         )
         .await;
-        eventually("the last result", || {
-            schedule_result(&world, "bad-cancel").is_some()
-        })
-        .await;
-        assert_eq!(schedule_result(&world, "ok").unwrap()["ok"], true);
+        assert_eq!(schedule_result(&actor, "ok").unwrap()["ok"], true);
         for id in [
             "empty",
             "long",
@@ -3292,12 +3378,11 @@ mod schedule_tests {
             "bad-cancel",
         ] {
             assert_eq!(
-                schedule_result(&world, id).unwrap()["error"],
+                schedule_result(&actor, id).unwrap()["error"],
                 "bad_args",
                 "{id}"
             );
         }
-        world.shutdown().await.unwrap();
         let pended: Vec<String> = journal
             .entries()
             .into_iter()
@@ -3311,24 +3396,21 @@ mod schedule_tests {
 
     #[tokio::test]
     async fn a_fire_the_program_refuses_stays_pending_in_the_journal() {
-        let (world, token, journal) =
-            scheduling_world("sched-refuse", &["schedule.at"], true).await;
+        let (mut actor, clock, token, journal) =
+            scheduling_actor("sched-refuse", &["schedule.at"], true);
         ask(
-            &world,
+            &mut actor,
             &token,
             serde_json::json!({"requests": [
-                {"id": "s1", "cap": "schedule.at", "args": {"id": "stuck", "at": unix_ms()}},
+                {"id": "s1", "cap": "schedule.at", "args": {"id": "stuck", "at": EPOCH_MS}},
             ]}),
         )
         .await;
-        eventually("the request result", || {
-            schedule_result(&world, "s1").is_some()
-        })
-        .await;
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        // The program is unavailable now, but the actor still answers.
-        assert!(world.caps_report().await.is_ok());
-        world.shutdown().await.unwrap();
+        assert!(schedule_result(&actor, "s1").is_some());
+        clock.advance(1);
+        actor.fire_schedules().await;
+        // The program is unavailable now, but the actor still holds the state.
+        assert!(!actor.program_healthy);
 
         let entries = journal.entries();
         assert!(
@@ -3361,22 +3443,24 @@ mod schedule_tests {
             },
             JournalEntry::ScheduleSet {
                 id: "overdue".to_owned(),
-                at_ms: unix_ms() - 5_000,
+                at_ms: EPOCH_MS - 5_000,
             },
         ];
         let restored = WorldCore::restore("sched-late", WorldLimits::default(), entries).unwrap();
         let journal = Recorded::default();
-        let world = WorldHandle::spawn_durable(
-            restored.core,
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core = restored.core;
+        core.clock = clock.clone();
+        let mut actor = WorldActor::for_test(
+            core,
             Box::new(Scheduler::default()),
             Some(Box::new(journal.clone())),
         );
-        eventually("the late fire", || !schedule_fires(&world).is_empty()).await;
-        let fires = schedule_fires(&world);
+        actor.fire_schedules().await;
+        let fires = schedule_fires(&actor);
         assert_eq!(fires.len(), 1, "{fires:?}");
         assert_eq!(fires[0]["id"], "overdue");
         assert_eq!(fires[0]["late"], true);
-        world.shutdown().await.unwrap();
         assert!(
             journal.entries().iter().any(
                 |entry| matches!(entry, JournalEntry::ScheduleFired { id } if id == "overdue")
@@ -3386,7 +3470,7 @@ mod schedule_tests {
 
     #[tokio::test]
     async fn a_pending_schedule_survives_a_restart_and_fires_on_time() {
-        let at_ms = unix_ms() + 700;
+        let at_ms = EPOCH_MS + 700;
         let entries = vec![
             JournalEntry::Created {
                 world_id: "sched-later".to_owned(),
@@ -3399,39 +3483,40 @@ mod schedule_tests {
         ];
         let restored = WorldCore::restore("sched-later", WorldLimits::default(), entries).unwrap();
         assert_eq!(restored.core.schedules.get("later"), Some(&at_ms));
-        let world = WorldHandle::spawn_durable(restored.core, Box::new(Scheduler::default()), None);
-        assert!(schedule_fires(&world).is_empty(), "not due yet");
-        eventually("the scheduled fire", || !schedule_fires(&world).is_empty()).await;
-        let fires = schedule_fires(&world);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core = restored.core;
+        core.clock = clock.clone();
+        let mut actor = WorldActor::for_test(core, Box::new(Scheduler::default()), None);
+        actor.fire_schedules().await;
+        assert!(schedule_fires(&actor).is_empty(), "not due yet");
+        clock.advance(700);
+        actor.fire_schedules().await;
+        let fires = schedule_fires(&actor);
         assert_eq!(fires[0]["id"], "later");
         assert!(fires[0].get("late").is_none(), "it was not overdue at open");
-        world.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn replay_reproduces_the_pending_and_fired_sets() {
-        let (world, token, journal) =
-            scheduling_world("sched-replay", &["schedule.at", "schedule.cancel"], false).await;
+        let (mut actor, clock, token, journal) =
+            scheduling_actor("sched-replay", &["schedule.at", "schedule.cancel"], false);
         ask(
-            &world,
+            &mut actor,
             &token,
             serde_json::json!({"requests": [
-                {"id": "s1", "cap": "schedule.at", "args": {"id": "keep", "at": unix_ms() + 3_600_000}},
-                {"id": "s2", "cap": "schedule.at", "args": {"id": "now", "at": unix_ms()}},
-                {"id": "s3", "cap": "schedule.at", "args": {"id": "gone", "at": unix_ms() + 3_600_000}},
+                {"id": "s1", "cap": "schedule.at", "args": {"id": "keep", "at": EPOCH_MS + 3_600_000}},
+                {"id": "s2", "cap": "schedule.at", "args": {"id": "now", "at": EPOCH_MS}},
+                {"id": "s3", "cap": "schedule.at", "args": {"id": "gone", "at": EPOCH_MS + 3_600_000}},
                 {"id": "c3", "cap": "schedule.cancel", "args": {"id": "gone"}},
             ]}),
         )
         .await;
-        eventually("the fire and the cancel", || {
-            !schedule_fires(&world).is_empty() && schedule_result(&world, "c3").is_some()
-        })
-        .await;
-        let live_fired: Vec<String> = schedule_fires(&world)
+        clock.advance(1);
+        actor.fire_schedules().await;
+        let live_fired: Vec<String> = schedule_fires(&actor)
             .iter()
             .filter_map(|fire| fire["id"].as_str().map(str::to_owned))
             .collect();
-        world.shutdown().await.unwrap();
 
         let restored =
             WorldCore::restore("sched-replay", WorldLimits::default(), journal.entries()).unwrap();
@@ -3550,16 +3635,17 @@ mod schedule_tests {
     fn schedules_wake_the_loop_only_while_the_program_can_take_them() {
         let mut schedules = BTreeMap::new();
         schedules.insert("a".to_owned(), 2_000u64);
-        assert!(next_schedule_wake(&schedules, 1_000, true).is_some());
+        let now = std::time::Instant::now();
+        assert!(next_schedule_wake(&schedules, 1_000, now, true).is_some());
         assert!(
-            next_schedule_wake(&schedules, 3_000, true).is_some(),
+            next_schedule_wake(&schedules, 3_000, now, true).is_some(),
             "an overdue schedule wakes the loop now"
         );
         assert!(
-            next_schedule_wake(&schedules, 3_000, false).is_none(),
+            next_schedule_wake(&schedules, 3_000, now, false).is_none(),
             "a program that refuses fires never wakes the loop for one"
         );
-        assert!(next_schedule_wake(&BTreeMap::new(), 1_000, true).is_none());
+        assert!(next_schedule_wake(&BTreeMap::new(), 1_000, now, true).is_none());
     }
 
     #[test]
@@ -3579,5 +3665,41 @@ mod schedule_tests {
         let fired =
             serde_json::to_value(JournalEntry::ScheduleFired { id: "a".to_owned() }).unwrap();
         assert_eq!(fired["entry"], "schedule_fired");
+    }
+
+    /// `schedule.at` returns the reason a schedule was refused, not a bare
+    /// `bad_args`: the program (and any operator reading the result) can see
+    /// why, on the wire.
+    #[tokio::test]
+    async fn a_refused_schedule_carries_its_reason_on_the_wire() {
+        let (mut actor, _clock, token, _journal) =
+            scheduling_actor("sched-reason", &["schedule.at"], false);
+        // First request is accepted; the second, reusing the id, is refused by
+        // `check_schedule` with a specific reason.
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "ok", "cap": "schedule.at", "args": {"id": "nap", "at": EPOCH_MS + 60_000}},
+            ]}),
+        )
+        .await;
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "dup", "cap": "schedule.at", "args": {"id": "nap", "at": EPOCH_MS + 120_000}},
+            ]}),
+        )
+        .await;
+        let result = schedule_result(&actor, "dup").unwrap();
+        assert_eq!(result["error"], "bad_args");
+        let reason = result["reason"]
+            .as_str()
+            .expect("a reason is carried on the wire");
+        assert!(
+            reason.contains("already pending"),
+            "unexpected reason: {reason}"
+        );
     }
 }

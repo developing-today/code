@@ -232,6 +232,7 @@ pub mod world_hub;
 pub mod world_limits;
 #[cfg(feature = "world")]
 pub mod world_manifest;
+pub(crate) mod world_line;
 #[cfg(feature = "world")]
 pub mod world_native;
 #[cfg(feature = "world")]

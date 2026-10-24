@@ -56,7 +56,7 @@ impl WorldHandle {
         };
         let (records_sender, records) = watch::channel((core.sequence, Arc::new(initial)));
         // Schedules the journal left pending that are already due fire late.
-        let now = unix_ms();
+        let now = core.clock().now_ms();
         let overdue_at_open: BTreeSet<String> = core
             .schedules
             .iter()

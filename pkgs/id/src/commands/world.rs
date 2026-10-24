@@ -654,6 +654,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             node,
             capability,
             after,
+            command_mode,
             world,
             addrs,
             no_relay,
@@ -666,7 +667,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     "after": after,
                 }))
                 .await?;
-            let result = pump(client).await;
+            let result = pump(client, command_mode).await;
             endpoint.close().await;
             result
         }
@@ -1175,7 +1176,7 @@ impl Replica {
 }
 
 /// Print server frames as JSON lines while sending stdin lines as chat.
-async fn pump(client: WorldClient) -> Result<()> {
+async fn pump(client: WorldClient, command_mode: bool) -> Result<()> {
     let (conn, mut send, mut recv) = client.into_parts();
     let mut reader = tokio::spawn(async move {
         while let Some(body) = read_frame(&mut recv).await? {
@@ -1191,11 +1192,15 @@ async fn pump(client: WorldClient) -> Result<()> {
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
-                    if line == "/quit" { break Ok(()); }
-                    let frame = match line.strip_prefix("/input ") {
-                        Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
-                        None => serde_json::json!({"type": "chat", "text": line}),
+                    let frame = if command_mode {
+                        pump_command_frame(line)?
+                    } else {
+                        match line.strip_prefix("/input ") {
+                            Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
+                            None => serde_json::json!({"type": "chat", "text": line}),
+                        }
                     };
+                    if frame.is_null() { break Ok(()); }
                     if let Err(e) = write_frame(&mut send, frame.to_string().as_bytes()).await {
                         break Err(e);
                     }
@@ -1213,10 +1218,67 @@ async fn pump(client: WorldClient) -> Result<()> {
     result
 }
 
+/// Map one parsed [`crate::world_line::WorldLine`] to the session frame it
+/// needs in the `id world join --command-mode` pump. `null` ends the pump.
+fn pump_command_frame(line: &str) -> Result<serde_json::Value> {
+    use crate::world_line::{WorldLine, parse_line};
+    let Some(action) = parse_line(line) else {
+        return Ok(serde_json::Value::Null);
+    };
+    Ok(match action {
+        WorldLine::Chat(text) => serde_json::json!({"type": "chat", "text": text}),
+        WorldLine::Input(hex) => serde_json::json!({"type": "input", "data_hex": hex}),
+        WorldLine::Records { prefix } => {
+            serde_json::json!({"type": "records", "prefix": prefix, "after": null})
+        }
+        WorldLine::Documents { prefix } => {
+            serde_json::json!({"type": "documents", "prefix": prefix})
+        }
+        WorldLine::Document(name) => serde_json::json!({"type": "document", "name": name}),
+        WorldLine::Stats => serde_json::json!({"type": "info"}),
+        WorldLine::Caps => serde_json::json!({"type": "caps"}),
+        WorldLine::Logs { .. } => serde_json::json!({"type": "logs"}),
+        WorldLine::Help => serde_json::json!({"type": "help"}),
+        WorldLine::Quit => return Ok(serde_json::Value::Null),
+        WorldLine::Message(message) => {
+            anyhow::bail!("{message}")
+        }
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::scaffold_world;
+    use super::{pump_command_frame, scaffold_world};
+
+    /// The shared line grammar maps the same line to the same action on the
+    /// join pump as it does on the SSH command mode (both call
+    /// [`crate::world_line::parse_line`]); this asserts the pump's mapping.
+    #[test]
+    fn the_pump_command_mode_maps_the_shared_grammar() {
+        assert_eq!(
+            pump_command_frame("/stats").unwrap(),
+            serde_json::json!({"type": "info"})
+        );
+        assert_eq!(
+            pump_command_frame("/caps").unwrap(),
+            serde_json::json!({"type": "caps"})
+        );
+        assert_eq!(
+            pump_command_frame("/records x").unwrap(),
+            serde_json::json!({"type": "records", "prefix": "x", "after": null})
+        );
+        assert_eq!(
+            pump_command_frame("/input 00aF").unwrap(),
+            serde_json::json!({"type": "input", "data_hex": "00af"})
+        );
+        assert_eq!(
+            pump_command_frame("hello").unwrap(),
+            serde_json::json!({"type": "chat", "text": "hello"})
+        );
+        assert!(pump_command_frame("/quit").unwrap().is_null());
+        assert!(pump_command_frame("/nope").is_err());
+    }
 
     #[test]
     fn scaffolding_writes_a_buildable_app_skeleton() {
