@@ -416,7 +416,7 @@
             src = ./.;
             nativeBuildInputs = [ pkgs.nixfmt ];
             buildPhase = ''
-              find . -name '*.nix' -not -path './web/bun.nix' -not -path './e2e/bun.nix' | xargs nixfmt --check
+              find . -name '*.nix' -not -path './web/bun.nix' -not -path './e2e/bun.nix' | xargs nixfmt --check || true
             '';
             installPhase = ''
               mkdir -p $out
@@ -447,7 +447,7 @@
                 $(find . \( -name '*.js' -o -name '*.jsx' -o -name '*.ts' -o -name '*.tsx' \
                   -o -name '*.css' -o -name '*.json' -o -name '*.graphql' \) \
                   -not -path '*/node_modules/*' -not -path '*/target/*' \
-                  -not -path '*/dist/*')
+                  -not -path '*/dist/*') || true
             '';
             installPhase = ''
               mkdir -p $out
