@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { createSyntaxHighlightPlugin, detectLanguage } from "./highlight";
+import { createSyntaxHighlightPlugin, detectLanguage, EXT_TO_LANG, FILENAME_TO_LANG, LANG_IMPORTS } from "./highlight";
 
 // ============================================================================
 // Language Detection: Extension Mapping
@@ -430,6 +430,49 @@ describe("detectLanguage", () => {
       expect(detectLanguage("package-lock.json")).toBe("json");
       expect(detectLanguage("bun.lockb")).toBeUndefined();
     });
+  });
+});
+
+// ============================================================================
+// Detection / Grammar Registry Consistency
+// ============================================================================
+
+describe("grammar registry", () => {
+  it("registers a grammar for every detected language except gitignore", () => {
+    // The detected set is derived mechanically from the same maps
+    // detectLanguage() reads, plus its dotfile-branch literals, so adding
+    // a mapping without a grammar fails here instead of silently
+    // rendering plain text. "gitignore" is the sole exception:
+    // @shikijs/langs in shiki 4.5.0 ships no gitignore grammar.
+    const detected = new Set<string>([
+      ...Object.values(EXT_TO_LANG),
+      ...Object.values(FILENAME_TO_LANG),
+      "gitignore",
+      "dotenv",
+      "properties",
+      "json",
+    ]);
+    const unregistered = [...detected].filter((lang) => lang !== "gitignore" && !(lang in LANG_IMPORTS));
+    expect(unregistered).toEqual([]);
+  });
+
+  it("registers grammars for the languages added for #749", () => {
+    for (const lang of [
+      "bat",
+      "dotenv",
+      "erlang",
+      "hcl",
+      "just",
+      "less",
+      "ocaml",
+      "properties",
+      "protobuf",
+      "sass",
+      "viml",
+      "zig",
+    ]) {
+      expect(LANG_IMPORTS[lang], lang).toBeTypeOf("function");
+    }
   });
 });
 
