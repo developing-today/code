@@ -151,7 +151,6 @@
           name = "id-e2e-runner";
           src = ./e2e;
           nativeBuildInputs = [ pkgs.bun ];
-          dontUseCmakeConfigure = true;
           buildPhase = ''
             E2E_CACHE_DIR=$(mktemp -d)
             cp -r "${e2eBunDeps}"/share/bun-cache/. "$E2E_CACHE_DIR"
@@ -172,7 +171,7 @@
             src = ./.;
             inherit buildInputs;
             nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
-          dontUseCmakeConfigure = true;
+            dontUseCmakeConfigure = true;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -338,7 +337,6 @@
             src = ./.;
             inherit buildInputs;
             nativeBuildInputs = nativeBuildInputs ++ [
-            dontUseCmakeConfigure = true;
               bun2nixPkg.hook
               # TODO: Switch back to `bunx playwright test` once Bun supports Playwright's
               # ESM config loader (.esm.preflight virtual imports). Bun's runtime doesn't handle
@@ -419,7 +417,6 @@
             name = "id-nix-fmt-check";
             src = ./.;
             nativeBuildInputs = [ pkgs.nixfmt ];
-            dontUseCmakeConfigure = true;
             buildPhase = ''
               find . -name '*.nix' -not -path './web/bun.nix' -not -path './e2e/bun.nix' | xargs nixfmt --check
             '';
@@ -432,7 +429,6 @@
             name = "id-treefmt-check";
             src = ./.;
             nativeBuildInputs = fmtBins;
-            dontUseCmakeConfigure = true;
             buildPhase = ''
               treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1 || true
             '';
@@ -447,7 +443,6 @@
             name = "id-biome-check";
             src = ./.;
             nativeBuildInputs = [ pkgs.biome ];
-            dontUseCmakeConfigure = true;
             buildPhase = ''
               biome format \
                 --files-ignore-unknown=true \
@@ -465,7 +460,6 @@
             name = "id-rustfmt-check";
             src = ./.;
             nativeBuildInputs = [ rustToolchain ];
-            dontUseCmakeConfigure = true;
             buildPhase = ''
               find . -name '*.rs' -not -path '*/target/*' \
                 -exec rustfmt --check --edition 2024 {} + \
@@ -480,7 +474,6 @@
             name = "id-statix-check";
             src = ./.;
             nativeBuildInputs = [ pkgs.statix ];
-            dontUseCmakeConfigure = true;
             buildPhase = ''
               find . -name '*.nix' -print0 | while IFS= read -r -d "" f; do
                 statix check -- "$f" || true
@@ -495,7 +488,6 @@
             name = "id-shfmt-check";
             src = ./.;
             nativeBuildInputs = [ pkgs.shfmt ];
-            dontUseCmakeConfigure = true;
             buildPhase = ''
               find . -name '*.sh' -not -path '*/node_modules/*' \
                 -exec shfmt -d -i 2 -s {} + \
@@ -510,7 +502,6 @@
             name = "id-shellcheck-check";
             src = ./.;
             nativeBuildInputs = [ pkgs.shellcheck ];
-            dontUseCmakeConfigure = true;
             buildPhase = ''
               find . -name '*.sh' -not -path '*/node_modules/*' \
                 -exec shellcheck {} + \
@@ -525,7 +516,6 @@
             name = "id-taplo-check";
             src = ./.;
             nativeBuildInputs = [ pkgs.taplo ];
-            dontUseCmakeConfigure = true;
             buildPhase = ''
               find . -name '*.toml' -not -path '*/target/*' \
                 -exec taplo check {} + \
@@ -540,7 +530,6 @@
             name = "id-prettier-check";
             src = ./.;
             nativeBuildInputs = [ pkgs.prettier ]; # nodepackages remove 2026-04-03
-            dontUseCmakeConfigure = true;
             buildPhase = ''
               find . \( -name '*.html' -o -name '*.md' -o -name '*.mdx' \
                 -o -name '*.scss' -o -name '*.yaml' \) \
