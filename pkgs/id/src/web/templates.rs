@@ -438,7 +438,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
     // Download dropdown
     html.push_str("            <span class=\"relative\" id=\"download-dropdown\">\n");
-    html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\">dl</button>\n");
+    html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\" aria-label=\"Download\">dl</button>\n");
     html.push_str("                <span class=\"dropdown-menu\" id=\"download-menu\">\n");
     html.push_str(
         "                    <button class=\"px-3 py-1 text-xs hover:bg-base-300 cursor-pointer text-left whitespace-nowrap\" data-dl-format=\"raw\">raw</button>\n",
