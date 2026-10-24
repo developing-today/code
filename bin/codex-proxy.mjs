@@ -596,13 +596,15 @@ const server = http.createServer((req, res) => {
         '--skip-git-repo-check',
         '--dangerously-bypass-approvals-and-sandbox',
         '--disable', 'shell_tool',
-        '--color', 'never',
         '-m', baseModel,
         '-c', `model_reasoning_effort="${effort}"`,
         '-c', 'model_context_window=1000000',
         '-c', 'model_auto_compact_token_limit=950000'
       ];
-      const freshArgs = ['exec', ...commonArgs, '-'];
+      const freshArgs = ['exec', ...commonArgs, '--color', 'never', '-'];
+      // `exec resume` has no --color flag in codex-cli 0.160.0 (passing
+      // it is a usage error, exit 2 — verified on amd); the rest of the
+      // option set is shared with `exec`.
       const resumeArgs = (sessionId) => ['exec', 'resume', ...commonArgs, sessionId, '-'];
 
       // Refresh OpenCode tokens in background
