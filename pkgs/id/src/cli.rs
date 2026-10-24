@@ -1521,6 +1521,10 @@ pub enum WorldCommand {
         /// Replay events after this sequence instead of a full snapshot.
         #[arg(long)]
         after: Option<u64>,
+        /// Parse stdin as commands (`/chat`, `/records`, `/stats`, `/caps`,
+        /// `/quit`, ...) instead of sending every line as chat.
+        #[arg(long)]
+        command_mode: bool,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
         world: Option<String>,

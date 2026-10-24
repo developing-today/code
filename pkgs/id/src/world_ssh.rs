@@ -4,6 +4,16 @@
 //! password is the join capability. Keystrokes become `input` frames and each
 //! `view` frame repaints the terminal, so an ordinary `ssh` client can play any
 //! world that presents a view.
+//!
+//! ## Input modes
+//!
+//! Raw keystrokes are the default. Prefixing the username with `cmd:` enters
+//! command (line) mode, where each line is parsed as a command instead of
+//! forwarded as an input keystroke: `/help`, `/quit`, `/input <hex>`,
+//! `/records [prefix]`, `/documents [prefix]` and `/document <name>` (see
+//! [`world_command`]). Prefixing the username with `explore:` enters a
+//! read-only explore session, the only mode that supports public-key login.
+//! See the SSH input-modes decision record.
 
 use std::{
     collections::VecDeque,
@@ -360,6 +370,7 @@ impl Handler for SshClient {
             lines: WorldLineBuffer::default(),
             commands: VecDeque::new(),
             records_prefix: None,
+            records_drained: 0,
             errored: false,
         };
         let hub = self.hub.clone();
@@ -459,6 +470,9 @@ struct SshIo {
     commands: VecDeque<WorldCommand>,
     /// `Some(prefix)` while draining records pages from a `/records` command.
     records_prefix: Option<Option<String>>,
+    /// Cumulative bytes already rendered for the current `/records` drain, so a
+    /// large world's records are bounded across pages, not just per page.
+    records_drained: usize,
     errored: bool,
 }
 
@@ -571,6 +585,7 @@ impl SessionIo for SshIo {
                         }
                         WorldCommand::Records { prefix } => {
                             self.records_prefix = Some(prefix.clone());
+                            self.records_drained = 0;
                             return Inbound::Text(
                                 json!({
                                     "type": "records", "capability": self.capability,
@@ -621,8 +636,31 @@ impl SessionIo for SshIo {
                             );
                         }
                         WorldCommand::Help => {
-                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
+                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /stats, /logs, /caps, /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
                             if self.handle.data(self.channel, help).await.is_err() {
+                                return Inbound::Closed;
+                            }
+                        }
+                        WorldCommand::Stats => {
+                            return Inbound::Text(
+                                json!({ "type": "info", "capability": self.capability })
+                                    .to_string(),
+                            );
+                        }
+                        WorldCommand::Caps => {
+                            return Inbound::Text(
+                                json!({ "type": "caps", "capability": self.capability })
+                                    .to_string(),
+                            );
+                        }
+                        WorldCommand::Logs => {
+                            let text = "event tailing is not available in command mode; join in raw mode (no `cmd:` prefix) to see events live, or use `id world logs`\r\nworld> ";
+                            if self
+                                .handle
+                                .data(self.channel, terminal_text(text))
+                                .await
+                                .is_err()
+                            {
                                 return Inbound::Closed;
                             }
                         }
@@ -717,13 +755,46 @@ impl SessionIo for SshIo {
                 let sequence = value["sequence"].as_u64().unwrap_or_default();
                 let after = value["next_after"].as_str().map(str::to_owned);
                 let text = render_records_value(records, sequence, after.as_deref());
-                if let (Some(prefix), Some(after)) = (self.records_prefix.clone(), after) {
-                    self.commands
-                        .push_back(WorldCommand::RecordsContinue { prefix, after });
+                // Bound the whole drain, not just each page: a world with many
+                // records would otherwise keep fetching pages without limit.
+                self.records_drained = self.records_drained.saturating_add(text.len());
+                let next = match (&self.records_prefix, after.as_deref()) {
+                    (Some(prefix), Some(_)) if self.records_drained < MAX_RECORDS_TOTAL_BYTES => {
+                        Some(prefix.clone())
+                    }
+                    _ => None,
+                };
+                let truncated = after.is_some() && self.records_drained >= MAX_RECORDS_TOTAL_BYTES;
+                if let Some(prefix) = next {
+                    self.commands.push_back(WorldCommand::RecordsContinue {
+                        prefix,
+                        after: after.expect("a next page has an after cursor"),
+                    });
                 } else {
                     self.records_prefix = None;
                 }
-                format!("\r\n{}", terminal_text(&text))
+                if truncated {
+                    format!(
+                        "\r\n{}\r\n{}",
+                        terminal_text(&text),
+                        terminal_text("[records truncated: too much output]\n")
+                    )
+                } else {
+                    format!("\r\n{}", terminal_text(&text))
+                }
+            }
+            Some("caps") => {
+                let report = value
+                    .get("report")
+                    .map(serde_json::to_string_pretty)
+                    .transpose()
+                    .unwrap_or_default()
+                    .unwrap_or_else(|| "caps report unavailable".to_owned());
+                format!("\r\n{report}\r\nworld> ")
+            }
+            Some("module_info") => {
+                let info = serde_json::to_string_pretty(&value).unwrap_or_default();
+                format!("\r\n{info}\r\nworld> ")
             }
             _ => return true,
         };
@@ -733,6 +804,9 @@ impl SessionIo for SshIo {
 
 const MAX_WORLD_TERMINAL_LINE: usize = 1024;
 const MAX_RECORDS_TERMINAL_BYTES: usize = 384 * 1024;
+/// Total rendered bytes a single `/records` drain may produce across all its
+/// pages. Each page is additionally bounded by [`MAX_RECORDS_TERMINAL_BYTES`].
+const MAX_RECORDS_TOTAL_BYTES: usize = 1024 * 1024;
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 const MAX_DOCUMENT_LIST_BYTES: usize = 32 * 1024;
 const MAX_DOCUMENT_LIST_ITEMS: usize = 512;
@@ -752,59 +826,29 @@ enum WorldCommand {
         prefix: Option<String>,
     },
     Document(String),
+    Stats,
+    Logs,
+    Caps,
     Help,
     Message(String),
     Quit,
 }
 
 fn world_command(line: &str) -> Option<WorldCommand> {
-    if line.is_empty() {
-        return None;
-    }
-    if line == "/help" {
-        return Some(WorldCommand::Help);
-    }
-    if line == "/quit" {
-        return Some(WorldCommand::Quit);
-    }
-    if line == "/records" || line.starts_with("/records ") {
-        let Some(prefix) = line.strip_prefix("/records") else {
-            return Some(WorldCommand::Message("usage: /records [prefix]".to_owned()));
-        };
-        let prefix = prefix.trim();
-        return Some(WorldCommand::Records {
-            prefix: (!prefix.is_empty()).then(|| prefix.to_owned()),
-        });
-    }
-    if line == "/documents" || line.starts_with("/documents ") {
-        let Some(prefix) = line.strip_prefix("/documents") else {
-            return Some(WorldCommand::Message(
-                "usage: /documents [prefix]".to_owned(),
-            ));
-        };
-        let prefix = prefix.trim();
-        return Some(WorldCommand::Documents {
-            prefix: (!prefix.is_empty()).then(|| prefix.to_owned()),
-        });
-    }
-    if let Some(name) = line.strip_prefix("/document ") {
-        if !name.is_empty() && name == name.trim() {
-            return Some(WorldCommand::Document(name.to_owned()));
-        }
-        return Some(WorldCommand::Message("usage: /document <name>".to_owned()));
-    }
-    if let Some(hex) = line.strip_prefix("/input ") {
-        if !hex.is_empty() && hex.len() % 2 == 0 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Some(WorldCommand::Input(hex.to_ascii_lowercase()));
-        }
-        return Some(WorldCommand::Message("usage: /input <hex>".to_owned()));
-    }
-    if line.starts_with('/') {
-        return Some(WorldCommand::Message(
-            "unknown command; type /help".to_owned(),
-        ));
-    }
-    Some(WorldCommand::Chat(line.to_owned()))
+    use crate::world_line::{WorldLine, parse_line};
+    Some(match parse_line(line)? {
+        WorldLine::Chat(text) => WorldCommand::Chat(text),
+        WorldLine::Input(hex) => WorldCommand::Input(hex),
+        WorldLine::Records { prefix } => WorldCommand::Records { prefix },
+        WorldLine::Documents { prefix } => WorldCommand::Documents { prefix },
+        WorldLine::Document(name) => WorldCommand::Document(name),
+        WorldLine::Stats => WorldCommand::Stats,
+        WorldLine::Logs { .. } => WorldCommand::Logs,
+        WorldLine::Caps => WorldCommand::Caps,
+        WorldLine::Help => WorldCommand::Help,
+        WorldLine::Quit => WorldCommand::Quit,
+        WorldLine::Message(message) => WorldCommand::Message(message),
+    })
 }
 
 #[derive(Default)]
@@ -2020,6 +2064,10 @@ mod tests {
         );
         assert_eq!(world_command("/help"), Some(WorldCommand::Help));
         assert_eq!(world_command("/quit"), Some(WorldCommand::Quit));
+        assert_eq!(world_command("/stats"), Some(WorldCommand::Stats));
+        assert_eq!(world_command("/caps"), Some(WorldCommand::Caps));
+        assert_eq!(world_command("/logs"), Some(WorldCommand::Logs));
+        assert_eq!(world_command("/logs 5"), Some(WorldCommand::Logs));
         assert_eq!(
             world_command("/input nope"),
             Some(WorldCommand::Message("usage: /input <hex>".into()))
@@ -2056,6 +2104,38 @@ mod tests {
         assert!(text.contains("\"b\" = \"line\\nvalue\""));
         assert!(text.contains("more records; fetching next page"));
         assert!(text.len() <= MAX_RECORDS_TERMINAL_BYTES);
+    }
+
+    /// The `/records` drain is bounded in total, not just per page: the per-page
+    /// cap is [`MAX_RECORDS_TERMINAL_BYTES`], but a world with many records must
+    /// also stop after [`MAX_RECORDS_TOTAL_BYTES`] across pages.
+    #[test]
+    fn the_records_drain_is_bounded_in_total_as_well_as_per_page() {
+        // A single page is truncated at the per-page cap, so a page never
+        // exceeds it...
+        let one_page = render_records(&records_of(4096), 1, None);
+        assert!(
+            one_page.len() <= MAX_RECORDS_TERMINAL_BYTES + 64,
+            "one page stays under the per-page cap: {}",
+            one_page.len()
+        );
+        // ...and the whole drain has a larger, but still finite, total cap, so
+        // a many-page world stops instead of streaming without bound.
+        assert!(
+            MAX_RECORDS_TOTAL_BYTES > MAX_RECORDS_TERMINAL_BYTES,
+            "the total cap must exceed the per-page cap"
+        );
+        assert!(
+            MAX_RECORDS_TOTAL_BYTES < usize::MAX / 4,
+            "the total cap must be finite"
+        );
+    }
+
+    #[cfg(test)]
+    fn records_of(count: usize) -> crate::world::Records {
+        (0..count)
+            .map(|i| (format!("key-{i:04}"), serde_json::json!({"n": i})))
+            .collect()
     }
 
     async fn put_document(store: &iroh_blobs::api::Store, name: &str, bytes: Vec<u8>) {

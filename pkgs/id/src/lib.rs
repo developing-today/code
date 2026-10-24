@@ -229,6 +229,8 @@ pub mod world_hub;
 #[cfg(feature = "world")]
 pub mod world_limits;
 #[cfg(feature = "world")]
+pub(crate) mod world_line;
+#[cfg(feature = "world")]
 pub mod world_native;
 #[cfg(feature = "world")]
 pub mod world_net;
