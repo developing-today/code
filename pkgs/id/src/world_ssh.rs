@@ -315,11 +315,7 @@ impl Handler for SshClient {
         }
         let first = join_frame(login);
         session.channel_success(channel)?;
-        let alt_screen = if !login.command_mode {
-            Some(ALT_SCREEN_ENTER.to_owned())
-        } else {
-            None
-        };
+        let alt_screen = !login.command_mode;
 
         let (input, frames) = mpsc::channel(INPUT_QUEUE);
         let first_resize = self.viewport.take();
@@ -339,6 +335,7 @@ impl Handler for SshClient {
             capability: login.capability.clone(),
             mode,
             alt_screen,
+            alt_screen_entered: false,
             pending_notice: None,
             last_error: None,
             dropped_input: self.dropped_input,
@@ -349,6 +346,7 @@ impl Handler for SshClient {
         };
         let hub = self.hub.clone();
         tokio::spawn(async move {
+            io.enter_alt_screen().await;
             run_session(&hub, &mut io).await;
             if io.errored {
                 tokio::time::sleep(REFUSED_SHELL_DELAY).await;
@@ -427,8 +425,11 @@ struct SshIo {
     first_resize: Option<(u32, u32)>,
     capability: String,
     mode: ShellMode,
-    /// Set while the terminal is inside the alternate screen buffer (raw sessions).
-    alt_screen: Option<String>,
+    /// Whether this session uses the alternate screen buffer (raw sessions only;
+    /// command mode never emits either sequence).
+    alt_screen: bool,
+    /// Whether the enter sequence has actually been written to the channel.
+    alt_screen_entered: bool,
     /// Text to write before the next server frame, once.
     pending_notice: Option<String>,
     /// The last error message, re-sent after leaving the alternate screen.
@@ -459,15 +460,32 @@ impl SshIo {
         }
     }
 
-    /// Leave the alternate screen and re-send the last error, which the
-    /// alternate screen may have overwritten.
-    async fn leave_alt_screen(&mut self) {
-        let Some(sequence) = self.alt_screen.take() else {
+    /// Enter the alternate screen before the first session frame, so a raw
+    /// session's repaints never land in the viewer's scrollback.
+    async fn enter_alt_screen(&mut self) {
+        if !self.alt_screen || self.alt_screen_entered {
             return;
-        };
+        }
+        if self
+            .handle
+            .data(self.channel, ALT_SCREEN_ENTER)
+            .await
+            .is_ok()
+        {
+            self.alt_screen_entered = true;
+        }
+    }
+
+    /// Leave the alternate screen and re-send the last error after the leave
+    /// sequence, so a refused join stays readable in the restored scrollback.
+    async fn leave_alt_screen(&mut self) {
+        if !self.alt_screen_entered {
+            return;
+        }
+        self.alt_screen_entered = false;
         let text = match self.last_error.take() {
-            Some(error) => format!("{sequence}\r\n{error}\r\n"),
-            None => sequence,
+            Some(error) => format!("{ALT_SCREEN_LEAVE}\r\n{error}\r\n"),
+            None => ALT_SCREEN_LEAVE.to_owned(),
         };
         let _ = self.handle.data(self.channel, text).await;
     }
@@ -1588,18 +1606,44 @@ mod tests {
         WorldHub::single(WorldService::new(world, Some("admin".to_owned())))
     }
 
+    fn sequence_count(bytes: &[u8], sequence: &str) -> usize {
+        bytes
+            .windows(sequence.len())
+            .filter(|window| *window == sequence.as_bytes())
+            .count()
+    }
+
+    fn sequence_position(bytes: &[u8], sequence: &str) -> Option<usize> {
+        bytes
+            .windows(sequence.len())
+            .position(|window| window == sequence.as_bytes())
+    }
+
     #[tokio::test]
     async fn a_raw_shell_enters_and_leaves_the_alternate_screen() {
-        let (port, server) = start(lobby_hub()).await;
-        let session = connect(port, &"0".repeat(64)).await;
+        let hub = lobby_hub();
+        let invite = hub
+            .lease(None, Some("admin"))
+            .await
+            .unwrap()
+            .service()
+            .invite(Some("admin"), "ssh-raw-alt".to_owned(), None, None)
+            .await
+            .unwrap();
+        let capability = serde_json::to_value(invite).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (port, server) = start(hub).await;
+        let session = connect(port, &capability).await;
         let mut channel = shell(&session).await;
 
+        // The enter sequence must be the very first bytes on the channel:
+        // a live, accepted session enters the alternate screen before its
+        // first frame, not at teardown.
         let mut bytes = Vec::new();
         tokio::time::timeout(Duration::from_secs(10), async {
-            while !bytes
-                .windows(ALT_SCREEN_ENTER.len())
-                .any(|window| window == ALT_SCREEN_ENTER.as_bytes())
-            {
+            while sequence_count(&bytes, ALT_SCREEN_ENTER) == 0 {
                 match channel.wait().await {
                     Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
                     Some(_) => {}
@@ -1609,9 +1653,61 @@ mod tests {
         })
         .await
         .expect("timed out waiting for the alternate screen to open");
+        assert_eq!(
+            sequence_position(&bytes, ALT_SCREEN_ENTER),
+            Some(0),
+            "enter sequence was not the first output: {bytes:?}"
+        );
+        assert_eq!(sequence_count(&bytes, ALT_SCREEN_LEAVE), 0);
 
         drop(channel);
         drop(session);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_refused_raw_shell_leaves_the_alternate_screen_and_repeats_its_error() {
+        let (port, server) = start(lobby_hub()).await;
+        let session = connect(port, &"0".repeat(64)).await;
+        let mut channel = shell(&session).await;
+
+        // A refused join ends the session server-side: the server writes the
+        // leave sequence and closes the channel, so read until the close.
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => bytes.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the refused shell to close");
+
+        assert_eq!(
+            sequence_position(&bytes, ALT_SCREEN_ENTER),
+            Some(0),
+            "enter sequence was not the first output: {bytes:?}"
+        );
+        assert_eq!(
+            sequence_count(&bytes, ALT_SCREEN_ENTER),
+            1,
+            "enter sequence must be written exactly once: {bytes:?}"
+        );
+        assert_eq!(
+            sequence_count(&bytes, ALT_SCREEN_LEAVE),
+            1,
+            "leave sequence must be written exactly once: {bytes:?}"
+        );
+        let leave_at = sequence_position(&bytes, ALT_SCREEN_LEAVE).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        let error_after_leave = text.rfind("join denied").expect("join error missing");
+        assert!(
+            error_after_leave > leave_at,
+            "the last error must be re-sent after the leave sequence: {text:?}"
+        );
         server.abort();
     }
 
@@ -1648,6 +1744,12 @@ mod tests {
                 .as_bytes()
                 .windows(ALT_SCREEN_ENTER.len())
                 .any(|window| window == ALT_SCREEN_ENTER.as_bytes())
+        );
+        assert!(
+            !text
+                .as_bytes()
+                .windows(ALT_SCREEN_LEAVE.len())
+                .any(|window| window == ALT_SCREEN_LEAVE.as_bytes())
         );
         server.abort();
     }
