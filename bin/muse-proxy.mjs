@@ -32,7 +32,11 @@ import { parseProxyPort } from './proxy-port.mjs';
 const PORT = parseProxyPort('MUSE_PROXY_PORT', 18747);
 const HOST = process.env.MUSE_PROXY_HOST || '127.0.0.1';
 
-const EGRESS_PROXY = 'http://hatch-egress-proxy:3128';
+// Egress pinning is a sandbox requirement (the CLI reaches Meta only via
+// the unauthenticated egress proxy + CA bundle there). Fleet machines that
+// reach Meta directly set MUSE_PROXY_EGRESS to the empty string in their
+// start wrapper, which disables the pinning in childEnv() entirely.
+const EGRESS_PROXY = process.env.MUSE_PROXY_EGRESS ?? 'http://hatch-egress-proxy:3128';
 const EGRESS_CA = '/run/hatch/egress-tls/ca-bundle.pem';
 
 const PROXY_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -147,11 +151,13 @@ const formatPrompt = (messages) => {
 const childEnv = () => {
   const env = { ...process.env };
   delete env.META_API_KEY;
-  env.HTTPS_PROXY = EGRESS_PROXY;
-  env.HTTP_PROXY = EGRESS_PROXY;
-  env.https_proxy = EGRESS_PROXY;
-  env.http_proxy = EGRESS_PROXY;
-  env.SSL_CERT_FILE = EGRESS_CA;
+  if (EGRESS_PROXY) {
+    env.HTTPS_PROXY = EGRESS_PROXY;
+    env.HTTP_PROXY = EGRESS_PROXY;
+    env.https_proxy = EGRESS_PROXY;
+    env.http_proxy = EGRESS_PROXY;
+  }
+  if (EGRESS_PROXY && fs.existsSync(EGRESS_CA)) env.SSL_CERT_FILE = EGRESS_CA;
   env.NO_PROXY = [env.NO_PROXY, '127.0.0.1', 'localhost', '::1'].filter(Boolean).join(',');
   env.no_proxy = env.NO_PROXY;
   return env;
