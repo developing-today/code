@@ -46,53 +46,53 @@ AUTO_ENV=true
 # Parse arguments
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --item)
-      ITEM_QUERY="$2"
-      shift 2
-      ;;
-    --field)
-      SPECIFIC_FIELD="$2"
-      shift 2
-      ;;
-    --password)
-      SPECIFIC_FIELD="password"
-      shift 1
-      ;;
-    --username)
-      SPECIFIC_FIELD="username"
-      shift 1
-      ;;
-    --notes)
-      SPECIFIC_FIELD="notes"
-      shift 1
-      ;;
-    --all-fields)
-      ALL_FIELDS=true
-      shift 1
-      ;;
-    --bws-secret)
-      USE_BWS=true
-      BWS_SECRET_QUERY="$2"
-      shift 2
-      ;;
-    --target)
-      TARGET_FILE="$2"
-      shift 2
-      ;;
-    --key)
-      TARGET_KEY="$2"
-      shift 2
-      ;;
-    --prefix)
-      KEY_PREFIX="$2"
-      shift 2
-      ;;
-    --no-auto-env)
-      AUTO_ENV=false
-      shift 1
-      ;;
-    -h|--help)
-      cat << 'USAGE'
+  --item)
+    ITEM_QUERY="$2"
+    shift 2
+    ;;
+  --field)
+    SPECIFIC_FIELD="$2"
+    shift 2
+    ;;
+  --password)
+    SPECIFIC_FIELD="password"
+    shift 1
+    ;;
+  --username)
+    SPECIFIC_FIELD="username"
+    shift 1
+    ;;
+  --notes)
+    SPECIFIC_FIELD="notes"
+    shift 1
+    ;;
+  --all-fields)
+    ALL_FIELDS=true
+    shift 1
+    ;;
+  --bws-secret)
+    USE_BWS=true
+    BWS_SECRET_QUERY="$2"
+    shift 2
+    ;;
+  --target)
+    TARGET_FILE="$2"
+    shift 2
+    ;;
+  --key)
+    TARGET_KEY="$2"
+    shift 2
+    ;;
+  --prefix)
+    KEY_PREFIX="$2"
+    shift 2
+    ;;
+  --no-auto-env)
+    AUTO_ENV=false
+    shift 1
+    ;;
+  -h | --help)
+    cat <<'USAGE'
 Usage: ./lib/bitwarden-to-sops.sh [options]
 
 Source Options:
@@ -115,12 +115,12 @@ General Options:
 
 If run without arguments, enters interactive mode.
 USAGE
-      exit 0
-      ;;
-    *)
-      echo "Error: Unknown option $1" >&2
-      exit 1
-      ;;
+    exit 0
+    ;;
+  *)
+    echo "Error: Unknown option $1" >&2
+    exit 1
+    ;;
   esac
 done
 
@@ -143,7 +143,7 @@ sanitize_key() {
   local k="$1"
   local clean
   clean="$(echo "$k" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-zA-Z0-9_]/_/g')"
-  if [[ "$clean" =~ ^[0-9] ]]; then
+  if [[ $clean =~ ^[0-9] ]]; then
     clean="_$clean"
   fi
   echo "$clean"
@@ -152,7 +152,7 @@ sanitize_key() {
 # Resolve target path relative to REPO_ROOT if relative
 resolve_target_path() {
   local t="$1"
-  if [[ "$t" != /* ]]; then
+  if [[ $t != /* ]]; then
     t="${REPO_ROOT}/${t}"
   fi
   echo "$t"
@@ -190,7 +190,7 @@ if [ -z "$ITEM_QUERY" ] && [ -z "$BWS_SECRET_QUERY" ]; then
     echo "Available Secrets:"
     echo "$SECRETS_LIST" | jq -r 'to_entries[] | "\(.key + 1)) \(.value.key) (ID: \(.value.id))"'
     read -r -p "Select secret number or enter ID/Key: " SEC_SELECTION
-    if [[ "$SEC_SELECTION" =~ ^[0-9]+$ ]] && [ "$SEC_SELECTION" -le "$COUNT" ]; then
+    if [[ $SEC_SELECTION =~ ^[0-9]+$ ]] && [ "$SEC_SELECTION" -le "$COUNT" ]; then
       INDEX=$((SEC_SELECTION - 1))
       BWS_SECRET_QUERY="$(echo "$SECRETS_LIST" | jq -r ".[$INDEX].id")"
     else
@@ -242,13 +242,13 @@ if [ -z "$ITEM_QUERY" ] && [ -z "$BWS_SECRET_QUERY" ]; then
     FIELD_CHOICE="${FIELD_CHOICE:-1}"
 
     case "$FIELD_CHOICE" in
-      1) SPECIFIC_FIELD="password" ;;
-      2) SPECIFIC_FIELD="username" ;;
-      3) SPECIFIC_FIELD="notes" ;;
-      4) ALL_FIELDS=true ;;
-      5)
-        read -r -p "Enter custom field name: " SPECIFIC_FIELD
-        ;;
+    1) SPECIFIC_FIELD="password" ;;
+    2) SPECIFIC_FIELD="username" ;;
+    3) SPECIFIC_FIELD="notes" ;;
+    4) ALL_FIELDS=true ;;
+    5)
+      read -r -p "Enter custom field name: " SPECIFIC_FIELD
+      ;;
     esac
   fi
 
@@ -320,26 +320,26 @@ else
     fi
   else
     case "${SPECIFIC_FIELD:-password}" in
-      password)
-        VAL="$(echo "$ITEM_JSON" | jq -r '.login.password // empty')"
-        DEST_K="${TARGET_KEY:-$(sanitize_key "${ITEM_NAME}_password")}"
-        ;;
-      username)
-        VAL="$(echo "$ITEM_JSON" | jq -r '.login.username // empty')"
-        DEST_K="${TARGET_KEY:-$(sanitize_key "${ITEM_NAME}_username")}"
-        ;;
-      notes)
-        VAL="$(echo "$ITEM_JSON" | jq -r '.notes // empty')"
-        DEST_K="${TARGET_KEY:-$(sanitize_key "${ITEM_NAME}_notes")}"
-        ;;
-      *)
-        VAL="$(echo "$ITEM_JSON" | jq -r --arg f "$SPECIFIC_FIELD" '(.fields // [])[] | select(.name == $f) | .value // empty')"
-        if [ -z "$VAL" ]; then
-          echo "Error: Field '$SPECIFIC_FIELD' not found on item '$ITEM_NAME'." >&2
-          exit 1
-        fi
-        DEST_K="${TARGET_KEY:-$(sanitize_key "$SPECIFIC_FIELD")}"
-        ;;
+    password)
+      VAL="$(echo "$ITEM_JSON" | jq -r '.login.password // empty')"
+      DEST_K="${TARGET_KEY:-$(sanitize_key "${ITEM_NAME}_password")}"
+      ;;
+    username)
+      VAL="$(echo "$ITEM_JSON" | jq -r '.login.username // empty')"
+      DEST_K="${TARGET_KEY:-$(sanitize_key "${ITEM_NAME}_username")}"
+      ;;
+    notes)
+      VAL="$(echo "$ITEM_JSON" | jq -r '.notes // empty')"
+      DEST_K="${TARGET_KEY:-$(sanitize_key "${ITEM_NAME}_notes")}"
+      ;;
+    *)
+      VAL="$(echo "$ITEM_JSON" | jq -r --arg f "$SPECIFIC_FIELD" '(.fields // [])[] | select(.name == $f) | .value // empty')"
+      if [ -z "$VAL" ]; then
+        echo "Error: Field '$SPECIFIC_FIELD' not found on item '$ITEM_NAME'." >&2
+        exit 1
+      fi
+      DEST_K="${TARGET_KEY:-$(sanitize_key "$SPECIFIC_FIELD")}"
+      ;;
     esac
     [ -n "$VAL" ] && add_entry "$DEST_K" "$VAL"
   fi
@@ -365,9 +365,9 @@ if [ ! -f "$TARGET_FILE" ]; then
       json_v="$(jq -nc --arg v "$v" '$v')"
       TMP_YAML+="${k}: ${json_v}"$'\n'
     fi
-  done <<< "$PAIRS"
+  done <<<"$PAIRS"
 
-  sops -e --filename-override "$TARGET_FILE" <(echo -n "$TMP_YAML") > "$TARGET_FILE"
+  sops -e --filename-override "$TARGET_FILE" <(echo -n "$TMP_YAML") >"$TARGET_FILE"
   echo "Created and encrypted $TARGET_FILE successfully."
 
 else
@@ -378,7 +378,7 @@ else
       sops set "$TARGET_FILE" "[\"$k\"]" "$json_v"
       echo "  [✓] Updated key '$k' (${#v} chars) in $TARGET_FILE"
     fi
-  done <<< "$PAIRS"
+  done <<<"$PAIRS"
 fi
 
 echo "Done. Secret(s) pushed to SOPS: $TARGET_FILE"

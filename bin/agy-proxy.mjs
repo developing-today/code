@@ -3,9 +3,45 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { parseProxyPort } from './proxy-port.mjs';
 
-const PORT = parseInt(process.env.AGY_PROXY_PORT || '18743', 10);
+const PORT = parseProxyPort('AGY_PROXY_PORT', 18743);
 const HOST = process.env.AGY_PROXY_HOST || '127.0.0.1';
+
+// Publish the bound endpoint so other tools can find this proxy without
+// knowing its port in advance: $XDG_STATE_HOME/<name>/endpoint.json
+// (default ~/.local/state/<name>/endpoint.json), written on listen,
+// removed on exit.
+const publishEndpoint = () => {
+  try {
+    const stateHome =
+      process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+    const dir = path.join(stateHome, 'agy-proxy');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'endpoint.json');
+    fs.writeFileSync(
+      `${file}.tmp`,
+      JSON.stringify({ host: HOST, port: PORT, pid: process.pid, url: `http://${HOST}:${PORT}` }) + '\n',
+    );
+    fs.renameSync(`${file}.tmp`, file);
+    const cleanup = () => {
+      try {
+        fs.unlinkSync(file);
+      } catch {}
+    };
+    process.on('exit', cleanup);
+    process.on('SIGTERM', () => {
+      cleanup();
+      process.exit(0);
+    });
+    process.on('SIGINT', () => {
+      cleanup();
+      process.exit(0);
+    });
+  } catch {}
+};
 
 const MODELS = [
   { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (agy)', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
@@ -428,7 +464,7 @@ const server = http.createServer((req, res) => {
               stderrBuffer += chunk.toString();
             });
 
-            child.on('close', code => {
+            child.on('close', (code, signal) => {
               if (responseEnded) return;
 
               // Fallback retry if resuming failed without output
@@ -442,6 +478,28 @@ const server = http.createServer((req, res) => {
 
               if (lineBuffer.trim()) {
                 processJsonLine(lineBuffer.trim());
+              }
+
+              // Failure is judged by the child's exit: a non-zero code or
+              // a killing signal means the run failed, however much content
+              // was already produced (#678). Partial output must not mask
+              // a failure — it used to be reported as a successful 'stop'
+              // carrying the truncated text (or an empty 200 when nothing
+              // was produced at all), and stderrBuffer was never read.
+              if (code !== 0) {
+                const stderrLine = stderrBuffer.trim().split('\n').pop();
+                const fallback = signal
+                  ? `agy process terminated by signal ${signal}`
+                  : `agy process exited with code ${code}`;
+                const detail = (stderrLine || fallback).trim();
+                const errorBody = { error: { message: `agy execution failed: ${detail}` } };
+                // The 200 + text/event-stream headers are already on the
+                // wire, so frame the error as an SSE event and close the
+                // stream with [DONE] (mirrors muse-proxy #670).
+                res.write(`data: ${JSON.stringify(errorBody)}\n\n`);
+                res.write('data: [DONE]\n\n');
+                res.end();
+                return;
               }
 
               const finishChunk = {
@@ -494,7 +552,7 @@ const server = http.createServer((req, res) => {
             child.stdout.on('data', chunk => { stdoutBuffer += chunk.toString(); });
             child.stderr.on('data', chunk => { stderrBuffer += chunk.toString(); });
 
-            child.on('close', code => {
+            child.on('close', (code, signal) => {
               if (res.writableEnded) return;
 
               let responseText = '';
@@ -514,8 +572,13 @@ const server = http.createServer((req, res) => {
                 recordConversationId(detectedConvId);
               }
 
-              if (code !== 0 && !responseText) {
-                if (allowRetry && targetConvId) {
+              // Failure is judged by the child's exit, not by whether it
+              // produced output (#678): a run that fails after a partial
+              // response must not be reported as a successful 'stop'
+              // carrying the truncated text. The resume retry stays
+              // gated on empty output, as before.
+              if (code !== 0) {
+                if (!responseText && allowRetry && targetConvId) {
                   console.log(`Resuming conversation ${targetConvId} failed (code ${code}), retrying as fresh conversation...`);
                   executeJson(null, formatPrompt(body.messages), false);
                   return;
@@ -525,6 +588,7 @@ const server = http.createServer((req, res) => {
                 res.end(JSON.stringify({
                   error: 'agy process exited with non-zero code',
                   code,
+                  ...(signal ? { signal } : {}),
                   stderr: stderrBuffer.trim()
                 }));
                 return;
@@ -581,6 +645,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  publishEndpoint();
   console.log(`Antigravity agy Proxy listening on http://${HOST}:${PORT}`);
   console.log(`Endpoints:`);
   console.log(`  - GET  http://${HOST}:${PORT}/health`);

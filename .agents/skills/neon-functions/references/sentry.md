@@ -40,16 +40,9 @@ Sentry.init({
   tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 1),
   traceLifecycle: "stream",
   streamGenAiSpans: true,
-  integrations: [
-    Sentry.vercelAIIntegration({ force: true }),
-    Sentry.httpIntegration({ disableIncomingRequestSpans: true }),
-  ],
+  integrations: [Sentry.vercelAIIntegration({ force: true }), Sentry.httpIntegration({ disableIncomingRequestSpans: true })],
   release: process.env.SENTRY_RELEASE,
-  environment:
-    process.env.NEON_BRANCH &&
-    process.env.NEON_BRANCH !== process.env.PRODUCTION_BRANCH
-      ? process.env.NEON_BRANCH
-      : "production",
+  environment: process.env.NEON_BRANCH && process.env.NEON_BRANCH !== process.env.PRODUCTION_BRANCH ? process.env.NEON_BRANCH : "production",
 });
 
 process.on("SIGTERM", () => void Sentry.flush(2000));

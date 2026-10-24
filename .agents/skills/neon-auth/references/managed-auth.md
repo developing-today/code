@@ -21,11 +21,11 @@ SMS is separate: the Phone Number plugin needs an application `send.otp` webhook
 
 ## Packages
 
-| Need | Package |
-| --- | --- |
-| Auth only | `@neondatabase/auth` |
+| Need                           | Package                                |
+| ------------------------------ | -------------------------------------- |
+| Auth only                      | `@neondatabase/auth`                   |
 | Already using the combined SDK | `@neondatabase/neon-js/auth` re-export |
-| Pre-built UI | `@neondatabase/auth-ui` |
+| Pre-built UI                   | `@neondatabase/auth-ui`                |
 
 Keep an existing `SupabaseAuthAdapter()` caller on that API (`signInWithPassword`, `signInWithOAuth`). Do not mix those methods into default Better Auth examples. Password hashes do not migrate from Supabase; `updateUser()` cannot change email or password; email verification needs app UI. Guide: https://neon.com/docs/auth/migrate/from-supabase.md
 
@@ -33,12 +33,12 @@ The Managed client is Better Auth methods through Neon's wrapper. It is not inte
 
 ## Environment
 
-| Variable | Purpose |
-| --- | --- |
-| `NEON_AUTH_BASE_URL` | Branch Managed Auth URL (includes path). Next server; injected into Functions. |
+| Variable                  | Purpose                                                                                                                     |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `NEON_AUTH_BASE_URL`      | Branch Managed Auth URL (includes path). Next server; injected into Functions.                                              |
 | `NEON_AUTH_COOKIE_SECRET` | Next app secret for cached session cookies. Generate with `openssl rand -base64 32` (32+ characters). Not injected by Neon. |
-| `VITE_NEON_AUTH_URL` | Public Auth URL for Vite / TanStack browser code. Assign the actual branch URL; env pull does not create this alias. |
-| `NEON_AUTH_JWKS_URL` | Injected Functions JWKS. Verify tokens in `neon-functions`, not here. |
+| `VITE_NEON_AUTH_URL`      | Public Auth URL for Vite / TanStack browser code. Assign the actual branch URL; env pull does not create this alias.        |
+| `NEON_AUTH_JWKS_URL`      | Injected Functions JWKS. Verify tokens in `neon-functions`, not here.                                                       |
 
 `neon env pull` / `neon deploy` write Managed `NEON_AUTH_BASE_URL` and `NEON_AUTH_JWKS_URL` when Auth is declared. The cookie secret and `VITE_*` name are application config.
 

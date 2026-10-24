@@ -65,8 +65,9 @@ let
       mainProgram ? pname,
       dynamic ? false,
     }:
-    assert lib.assertMsg (system == "x86_64-linux")
-      "pkgs/latest-cli: ${pname} is a prebuilt x86_64-linux artifact; system is ${system}";
+    assert lib.assertMsg (
+      system == "x86_64-linux"
+    ) "pkgs/latest-cli: ${pname} is a prebuilt x86_64-linux artifact; system is ${system}";
     stdenvNoCC.mkDerivation {
       inherit pname version;
 
@@ -123,7 +124,12 @@ let
       '';
 
       meta = {
-        inherit description homepage license mainProgram;
+        inherit
+          description
+          homepage
+          license
+          mainProgram
+          ;
         platforms = [ "x86_64-linux" ];
         sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];
       };
@@ -322,8 +328,9 @@ in
   # The Electron desktop GUI is a separate asset (.deb/.AppImage) and is still
   # taken from nixpkgs as `t3code-desktop`.
   t3 =
-    assert lib.assertMsg (system == "x86_64-linux")
-      "pkgs/latest-cli: t3 is a prebuilt x86_64-linux artifact; system is ${system}";
+    assert lib.assertMsg (
+      system == "x86_64-linux"
+    ) "pkgs/latest-cli: t3 is a prebuilt x86_64-linux artifact; system is ${system}";
     stdenvNoCC.mkDerivation {
       pname = "t3";
       version = "0.0.45";

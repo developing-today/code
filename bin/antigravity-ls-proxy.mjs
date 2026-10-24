@@ -3,9 +3,40 @@ import http from 'node:http';
 import { spawn, execSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { parseProxyPort, parseAddressPortValue } from './proxy-port.mjs';
 
-const PORT = parseInt(process.env.ANTIGRAVITY_LS_PROXY_PORT || '18745', 10);
+const PORT = parseProxyPort('ANTIGRAVITY_LS_PROXY_PORT', 18745);
 const HOST = process.env.ANTIGRAVITY_LS_PROXY_HOST || '127.0.0.1';
+
+// Publish the bound endpoint so other tools can find this proxy without
+// knowing its port in advance: $XDG_STATE_HOME/<name>/endpoint.json
+// (default ~/.local/state/<name>/endpoint.json), written on listen,
+// removed on exit. This file already registers SIGTERM/SIGINT handlers
+// (see below, calling lsManager.cleanup() then process.exit(0)), so this
+// helper does not register duplicate signal handlers; the 'exit' cleanup
+// it registers runs on that existing exit path.
+const publishEndpoint = () => {
+  try {
+    const stateHome =
+      process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+    const dir = path.join(stateHome, 'antigravity-ls-proxy');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'endpoint.json');
+    fs.writeFileSync(
+      `${file}.tmp`,
+      JSON.stringify({ host: HOST, port: PORT, pid: process.pid, url: `http://${HOST}:${PORT}` }) + '\n',
+    );
+    fs.renameSync(`${file}.tmp`, file);
+    const cleanup = () => {
+      try {
+        fs.unlinkSync(file);
+      } catch {}
+    };
+    process.on('exit', cleanup);
+  } catch {}
+};
 
 const DEFAULT_MANAGED_HTTP_PORT = 48999;
 const DEFAULT_MANAGED_HTTPS_PORT = 48998;
@@ -56,7 +87,7 @@ const MODEL_MAP = {
   'gemini-2.5-pro': { enum: 'MODEL_GOOGLE_GEMINI_2_5_PRO', name: 'Gemini 2.5 Pro' }
 };
 
-const resolveModelEnum = (requestedModel, requestedEffort, liveModels) => {
+const resolveModelEnum = (requestedModel, requestedEffort, liveModels = {}) => {
   let modelStr = (requestedModel || 'gemini-3.8-flash').toLowerCase().trim();
   let isCascade = false;
 
@@ -65,48 +96,80 @@ const resolveModelEnum = (requestedModel, requestedEffort, liveModels) => {
     modelStr = modelStr.slice(0, -'-cascade'.length);
   }
 
-  // The language server's own catalog wins: each id it lists carries the enum
-  // it expects, including ids this file's MODEL_MAP does not know about.
-  if (liveModels[modelStr]?.model) {
-    return {
-      modelEnum: liveModels[modelStr].model,
-      displayName: liveModels[modelStr].displayName || modelStr,
-      isCascade
-    };
+  // Strip prefixes like 'antigravity-ls/', 'antigravity-agy/', 'antigravity/', 'google/'
+  for (const prefix of ['antigravity-ls/', 'antigravity-agy/', 'antigravity/', 'google/']) {
+    if (modelStr.startsWith(prefix)) {
+      modelStr = modelStr.slice(prefix.length);
+      break;
+    }
   }
 
-  // Exact match
-  if (MODEL_MAP[modelStr]?.enum) {
-    return {
-      modelEnum: MODEL_MAP[modelStr].enum,
-      displayName: MODEL_MAP[modelStr].name,
-      isCascade
-    };
+  // Candidates to test: original and dot-normalized (e.g. claude-sonnet-5.5 -> claude-sonnet-5-5)
+  const candIds = [modelStr];
+  const dotNormalized = modelStr.replace(/\./g, '-');
+  if (dotNormalized !== modelStr) candIds.push(dotNormalized);
+
+  // 1. Exact match in liveModels
+  for (const cand of candIds) {
+    if (liveModels[cand]?.model) {
+      return {
+        modelEnum: liveModels[cand].model,
+        displayName: liveModels[cand].displayName || cand,
+        isCascade
+      };
+    }
   }
 
-  // Model family with effort
-  const family = MODEL_MAP[modelStr];
-  if (family) {
-    let effort = (requestedEffort || family.default || 'medium').toLowerCase().trim();
-    if (!family[effort]) effort = family.default || Object.keys(family)[0];
-    const enumVal = family[effort];
-    return {
-      modelEnum: enumVal,
-      displayName: `${family.name} (${effort.charAt(0).toUpperCase() + effort.slice(1)})`,
-      isCascade
-    };
+  // 2. Exact match in MODEL_MAP
+  for (const cand of candIds) {
+    if (MODEL_MAP[cand]?.enum) {
+      return {
+        modelEnum: MODEL_MAP[cand].enum,
+        displayName: MODEL_MAP[cand].name,
+        isCascade
+      };
+    }
   }
 
-  // A bare family id ("gemini-3.5-flash") with no catalog entry of its own
-  // resolves to one of its effort variants, preferring medium.
-  const variant = ['medium', 'low', 'high', 'extra-low']
-    .map(eff => liveModels[`${modelStr}-${eff}`])
-    .find(v => v?.model);
-  if (variant) {
-    return { modelEnum: variant.model, displayName: variant.displayName || modelStr, isCascade };
+  // 3. Model family with effort in MODEL_MAP
+  for (const cand of candIds) {
+    const family = MODEL_MAP[cand];
+    if (family) {
+      // A family entry also carries metadata keys — `default` (an effort
+      // name) and `name` (a display name) — whose values are not model
+      // enums. Accept an effort only when it maps to an actual enum,
+      // otherwise fall back to the family's default effort (#686).
+      const isModelEnum = (v) => typeof v === 'string' && v.startsWith('MODEL_');
+      let effort = (requestedEffort || family.default || 'medium').toLowerCase().trim();
+      if (!isModelEnum(family[effort])) effort = family.default;
+      if (!isModelEnum(family[effort])) {
+        effort = Object.keys(family).find((k) => isModelEnum(family[k]));
+      }
+      const enumVal = family[effort];
+      return {
+        modelEnum: enumVal,
+        displayName: `${family.name} (${effort.charAt(0).toUpperCase() + effort.slice(1)})`,
+        isCascade
+      };
+    }
   }
 
-  // Direct pass-through if enum name
+  // 4. Try matching with effort suffix in liveModels (e.g. claude-sonnet-5-5-medium, gemini-3.8-flash-high)
+  const effortOrder = requestedEffort ? [requestedEffort.toLowerCase().trim(), 'medium', 'high', 'low', 'extra-low'] : ['medium', 'high', 'low', 'extra-low'];
+  for (const cand of candIds) {
+    for (const eff of effortOrder) {
+      const variant = liveModels[`${cand}-${eff}`];
+      if (variant?.model) {
+        return {
+          modelEnum: variant.model,
+          displayName: variant.displayName || `${cand} (${eff})`,
+          isCascade
+        };
+      }
+    }
+  }
+
+  // 5. Direct pass-through if enum name
   if (modelStr.startsWith('model_')) {
     return { modelEnum: modelStr.toUpperCase(), displayName: modelStr, isCascade };
   }
@@ -172,41 +235,64 @@ class LanguageServerManager {
   // and keeps the one that answers.
   detectRunningInstances() {
     if (process.env.ANTIGRAVITY_LS_ADDRESS && process.env.ANTIGRAVITY_CSRF_TOKEN) {
-      const parts = process.env.ANTIGRAVITY_LS_ADDRESS.split(':');
-      const port = parseInt(parts[parts.length - 1], 10);
+      const port = parseAddressPortValue('ANTIGRAVITY_LS_ADDRESS', process.env.ANTIGRAVITY_LS_ADDRESS);
       return [{ port, token: process.env.ANTIGRAVITY_CSRF_TOKEN }];
     }
 
     const candidates = [];
     const seen = new Set();
     const add = (port, token) => {
-      const key = `${port}:${token}`;
-      if (port > 0 && !seen.has(key)) {
+      const p = parseInt(port, 10);
+      const key = `${p}:${token}`;
+      if (p >= 1 && p <= 65535 && !seen.has(key)) {
         seen.add(key);
-        candidates.push({ port, token });
+        candidates.push({ port: p, token });
       }
     };
 
-    let loggedPorts = [];
+    // 1. Detect from active running processes and their listening sockets
     try {
-      const logContent = fs.readFileSync(`${process.env.HOME}/.config/Antigravity/logs/language_server.log`, 'utf-8');
-      loggedPorts = logContent.split('\n').reverse()
-        .map(l => l.match(/listening on random port at (\d+) for HTTP\b/))
-        .filter(Boolean)
-        .map(m => parseInt(m[1], 10));
-    } catch {}
-
-    try {
-      const psOutput = execSync('ps aux | grep language_server | grep -v grep', { encoding: 'utf-8' });
+      const psOutput = execSync('ps -ef | grep language_server | grep -v grep', { encoding: 'utf-8' });
       for (const line of psOutput.split('\n')) {
         if (!line.includes('language_server')) continue;
         const csrfMatch = line.match(/--csrf_token\s+([a-zA-Z0-9_-]+)/);
         if (!csrfMatch) continue;
         const token = csrfMatch[1];
 
+        const tokens = line.trim().split(/\s+/);
+        const pid = tokens[1];
+
         const portMatch = line.match(/--http_server_port\s+(\d+)/);
         if (portMatch) add(parseInt(portMatch[1], 10), token);
-        for (const port of loggedPorts) add(port, token);
+
+        if (pid) {
+          try {
+            const ssOut = execSync(`ss -tlnp 2>/dev/null | grep "pid=${pid},"`, { encoding: 'utf-8' });
+            for (const ssLine of ssOut.split('\n')) {
+              const m = ssLine.match(/(?:127\.0\.0\.1|0\.0\.0\.0|\[::\]|localhost):(\d+)/);
+              if (m) add(m[1], token);
+            }
+          } catch {}
+          try {
+            const lsofOut = execSync(`lsof -a -p ${pid} -iTCP -sTCP:LISTEN -P -n 2>/dev/null`, { encoding: 'utf-8' });
+            for (const lsofLine of lsofOut.split('\n')) {
+              const m = lsofLine.match(/:(\d+)\s+\(LISTEN\)/);
+              if (m) add(m[1], token);
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+
+    // 2. Fallback: Parse log files for logged HTTP ports
+    try {
+      const logContent = fs.readFileSync(`${process.env.HOME}/.config/Antigravity/logs/language_server.log`, 'utf-8');
+      const loggedPorts = logContent.split('\n').reverse()
+        .map(l => l.match(/listening on random port at (\d+) for HTTP\b/))
+        .filter(Boolean)
+        .map(m => parseInt(m[1], 10));
+      for (const cand of [...candidates]) {
+        for (const port of loggedPorts) add(port, cand.token);
       }
     } catch {}
 
@@ -360,9 +446,9 @@ const extractLatestUserPrompt = (messages) => {
   return formatPrompt(messages);
 };
 
-const formatPrompt = (messages) => {
+const formatPrompt = (messages, tools = []) => {
   if (!Array.isArray(messages) || messages.length === 0) return '';
-  if (messages.length === 1 && messages[0].role === 'user') {
+  if (messages.length === 1 && messages[0].role === 'user' && (!tools || tools.length === 0)) {
     return typeof messages[0].content === 'string'
       ? messages[0].content
       : JSON.stringify(messages[0].content);
@@ -379,17 +465,39 @@ const formatPrompt = (messages) => {
     parts.push(`[System Instructions]\n${sysText}`);
   }
 
+  if (Array.isArray(tools) && tools.length > 0) {
+    const toolsDesc = tools.map(t => {
+      const fn = t.function || t;
+      return `- ${fn.name}: ${fn.description || ''} (parameters: ${JSON.stringify(fn.parameters || {})})`;
+    }).join('\n');
+    parts.push(`[Available Tools]\n${toolsDesc}`);
+  }
+
   if (convoMessages.length > 0) {
     const convoText = convoMessages.map(m => {
-      const role = m.role === 'assistant' ? 'Assistant' : (m.role === 'user' ? 'User' : m.role);
+      let role = 'User';
+      if (m.role === 'assistant') role = 'Assistant';
+      else if (m.role === 'tool') role = `Tool Result (${m.name || m.tool_call_id || 'tool'})`;
+      else if (m.role === 'user') role = 'User';
+      else role = m.role;
+
       let text = '';
       if (typeof m.content === 'string') {
         text = m.content;
       } else if (Array.isArray(m.content)) {
         text = m.content.map(c => c.text || JSON.stringify(c)).join('\n');
-      } else {
+      } else if (m.content) {
         text = JSON.stringify(m.content);
       }
+
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+        const calls = m.tool_calls.map(tc => {
+          const fn = tc.function || tc;
+          return `[Calls Tool: ${fn.name} with args ${fn.arguments || '{}'}]`;
+        }).join('\n');
+        text = text ? `${text}\n${calls}` : calls;
+      }
+
       return `${role}: ${text}`;
     }).join('\n\n');
     parts.push(convoText);
@@ -439,6 +547,16 @@ const getSessionKey = (req, body) => {
 };
 
 const server = http.createServer(async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   const url = new URL(req.url, `http://${req.headers.host || HOST}`);
   const pathname = url.pathname.replace(/\/+$/, '') || '/';
 
@@ -659,7 +777,7 @@ const server = http.createServer(async (req, res) => {
 
         } else {
           // FAST DIRECT RPC MODE (GetModelResponse)
-          const prompt = formatPrompt(body.messages);
+          const prompt = formatPrompt(body.messages, body.tools);
           const resp = await lsManager.callRpc('GetModelResponse', {
             model: modelEnum,
             prompt
@@ -704,6 +822,20 @@ const server = http.createServer(async (req, res) => {
               usage: { prompt_tokens: inTokens, completion_tokens: outTokens, total_tokens: inTokens + outTokens }
             };
             res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
+
+            if (body.stream_options?.include_usage) {
+              const usageChunk = {
+                id: reqId,
+                object: 'chat.completion.chunk',
+                created,
+                model: body.model || 'gemini-3.8-flash',
+                conversation_id: activeId,
+                choices: [],
+                usage: { prompt_tokens: inTokens, completion_tokens: outTokens, total_tokens: inTokens + outTokens }
+              };
+              res.write(`data: ${JSON.stringify(usageChunk)}\n\n`);
+            }
+
             res.write('data: [DONE]\n\n');
             res.end();
           } else {
@@ -728,11 +860,31 @@ const server = http.createServer(async (req, res) => {
           }
         }
       } catch (err) {
+        let status = err.status || 500;
+        let errType = 'api_error';
+        const msg = err.message || 'Internal server error';
+
+        if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota reached')) {
+          status = 429;
+          errType = 'insufficient_quota';
+        } else if (msg.includes('Unknown model') || msg.includes('Invalid JSON') || status === 400) {
+          status = 400;
+          errType = 'invalid_request_error';
+        }
+
+        const errPayload = {
+          error: {
+            message: msg,
+            type: errType,
+            code: status
+          }
+        };
+
         if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: err.message }));
+          res.writeHead(status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(errPayload, null, 2));
         } else {
-          res.write(`data: {"error": ${JSON.stringify(err.message)}}\n\n`);
+          res.write(`data: ${JSON.stringify(errPayload)}\n\n`);
           res.write('data: [DONE]\n\n');
           res.end();
         }
@@ -746,6 +898,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  publishEndpoint();
   console.log(`Antigravity Language Server Proxy listening on http://${HOST}:${PORT}`);
   console.log(`Endpoints:`);
   console.log(`  - GET  http://${HOST}:${PORT}/health`);

@@ -3,9 +3,43 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { parseProxyPort } from './proxy-port.mjs';
 
-const PORT = parseInt(process.env.CLEF_PROXY_PORT || '18742', 10);
+const PORT = parseProxyPort('CLEF_PROXY_PORT', 18742);
 const HOST = process.env.CLEF_PROXY_HOST || '127.0.0.1';
+
+// Publish the bound endpoint so other tools can find this proxy without
+// knowing its port in advance: $XDG_STATE_HOME/<name>/endpoint.json
+// (default ~/.local/state/<name>/endpoint.json), written on listen,
+// removed on exit.
+const publishEndpoint = () => {
+  try {
+    const stateHome =
+      process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+    const dir = path.join(stateHome, 'clef-proxy');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'endpoint.json');
+    fs.writeFileSync(
+      `${file}.tmp`,
+      JSON.stringify({ host: HOST, port: PORT, pid: process.pid, url: `http://${HOST}:${PORT}` }) + '\n',
+    );
+    fs.renameSync(`${file}.tmp`, file);
+    const cleanup = () => {
+      try {
+        fs.unlinkSync(file);
+      } catch {}
+    };
+    process.on('exit', cleanup);
+    process.on('SIGTERM', () => {
+      cleanup();
+      process.exit(0);
+    });
+    process.on('SIGINT', () => {
+      cleanup();
+      process.exit(0);
+    });
+  } catch {}
+};
 
 const readConfigFileSync = (filename, fallback = '') => {
   try {
@@ -77,8 +111,24 @@ const server = http.createServer(async (req, res) => {
     });
 
     req.on('end', async () => {
+      // Parse the client body on its own: a malformed request is a 400,
+      // not a 500 from the shared upstream catch below (sibling proxies
+      // all parse separately — #690).
+      let body;
       try {
-        const body = JSON.parse(bodyText);
+        body = JSON.parse(bodyText);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Invalid JSON body: ${err.message}` }));
+        return;
+      }
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body: expected an object' }));
+        return;
+      }
+
+      try {
         const { accountId, gatewayId, token } = getCredentials(req.headers['authorization']);
 
         if (!token) {
@@ -104,9 +154,15 @@ const server = http.createServer(async (req, res) => {
           body: JSON.stringify(payload)
         });
 
-        const cfData = await cfRes.json();
+        // The gateway can answer non-JSON (e.g. an HTML error page) or a
+        // JSON null/scalar: neither is a client parse error, so keep the
+        // upstream status and report it as an upstream failure (#690).
+        let cfData = null;
+        try {
+          cfData = await cfRes.json();
+        } catch {}
 
-        if (cfRes.ok && cfData.success && cfData.result?.answers) {
+        if (cfRes.ok && cfData?.success && cfData.result?.answers) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ answers: cfData.result.answers }));
         } else {
@@ -129,6 +185,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  publishEndpoint();
   console.log(`Clef System One Proxy listening on http://${HOST}:${PORT}`);
   console.log(`Endpoint: http://${HOST}:${PORT}/v1/systemone`);
 });

@@ -9,15 +9,15 @@ A row here records intent. It does not settle a product question and it is not a
 | Project                                        | Roadmap                                                 | Current focus                                                                                            |
 | ---------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `id`, the peer-to-peer CLI and worlds platform | [id](planning/roadmaps/id.md)                           | Phase 11 foundations: a CI signal that can be trusted, visible costs, one rule for what a client may see |
-| `mcpx`, the MCP gateway and Code Mode runner   | [mcpx](planning/roadmaps/mcpx.md)                       | Becoming the only copy of the code, and daemon restarts that do not leak sessions                        |
+| `mcpx`, the MCP gateway and Code Mode runner   | [mcpx](planning/roadmaps/mcpx.md)                       | The only copy of the code; how downstream flakes consume it, and darwin takeover tests                   |
 | The NixOS flake and infra manifests            | [nixos-and-infra](planning/roadmaps/nixos-and-infra.md) | Inputs kept current by a daily job. No open work items of its own                                        |
-| Repo-wide CI and automation                    | [repo-and-ci](planning/roadmaps/repo-and-ci.md)         | Jules workflow noise, timeout caps, stale PR triage                                                      |
+| Repo-wide CI and automation                    | [repo-and-ci](planning/roadmaps/repo-and-ci.md)         | One Jules workflow, the Go build cache, and stale PR triage                                              |
 
 ## Now, across the repo
 
-1. Make CI trustworthy for `id`: the LogSync bulk test (#255), Firefox E2E isolation (#229), the out-of-disk failures (#257).
-2. Make this repo the single source for `mcpx`: how other flakes consume it (#308), the backlog that moves here (#309), the restart-path fix (#301).
-3. Quiet the automation: Jules runs that cannot act (#304), stale PRs (#310, #311).
+1. Make CI trustworthy for `id`: the LogSync bulk test (#241, PR #255), Firefox E2E isolation (#229), the out-of-disk failures (#257).
+2. Settle how other flakes consume `mcpx` from this repo, its single source (#308), and move the backlog here (#309).
+3. Quiet the automation: stale PRs (#310, #311).
 
 ## Next
 
@@ -32,19 +32,19 @@ A row here records intent. It does not settle a product question and it is not a
 
 ## Themes that cross projects
 
-| Theme                                      | Where it shows up                                                                             |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| A CI result people believe                 | `id` flakes and out-of-disk failures, Jules runs that skip, concurrency groups that drop runs |
-| One source of truth per component          | `mcpx` is vendored in `dezren39/nix` and consumed by the OpenCode and OpenChamber forks       |
-| Handing a running service to its successor | `mcpx` daemon takeover, `id` takeover of idle connections, the OpenCode `serve` handover      |
+| Theme                                      | Where it shows up                                                                                                               |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| A CI result people believe                 | `id` flakes and out-of-disk failures, Jules runs that skip, concurrency groups that drop runs                                   |
+| One source of truth per component          | `mcpx` lives only here; `dezren39/nix` builds it from a pinned input, and the OpenCode and OpenChamber forks consume the result |
+| Handing a running service to its successor | `mcpx` daemon takeover, `id` takeover of idle connections, the OpenCode `serve` handover                                        |
 
 ## Related repositories
 
-| Repository                     | Relation                                                                     |
-| ------------------------------ | ---------------------------------------------------------------------------- |
-| `dezren39/nix`                 | The macOS flake. Vendors `mcpx` today and is moving to consume it from here. |
-| `developing-today/opencode`    | OpenCode fork. Calls the `mcpx` CLI and daemon.                              |
-| `developing-today/openchamber` | OpenChamber fork, built against the fork of OpenCode.                        |
+| Repository                     | Relation                                                                                                                                 |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `dezren39/nix`                 | The macOS flake. Builds `mcpx` from here via a pinned source-only input; its vendored copy was deleted on 2026-10-19 (dezren39/nix#468). |
+| `developing-today/opencode`    | OpenCode fork. Calls the `mcpx` CLI and daemon.                                                                                          |
+| `developing-today/openchamber` | OpenChamber fork, built against the fork of OpenCode.                                                                                    |
 
 ## Done
 

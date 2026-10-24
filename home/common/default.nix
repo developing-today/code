@@ -7,6 +7,18 @@
   ...
 }:
 let
+  # Local proxy ports, each defined ONCE. Each value flows to the systemd
+  # user service that binds it, to the shell session (<NAME>_PROXY_PORT),
+  # and — for the proxies opencode talks to — into opencode.jsonc's
+  # baseURL via {env:...} substitution, so the copies can never drift
+  # apart and a new device that applies this config gets consistent ports
+  # automatically. The bin/*.mjs proxies keep the same numbers as fallback
+  # defaults when the env var is absent.
+  clefProxyPort = 18742;
+  agyProxyPort = 18743;
+  codexProxyPort = 18744;
+  antigravityLsProxyPort = 18745;
+  designCodeProxyPort = 18746;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -24,6 +36,9 @@ let
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
   # desktop-commander-remote unit below keeps the device agent online.
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
+  # Hidden-shell auth hook (1Password service account, Jules, Cloudflare).
+  # Same derivation nixos/agent-auth uses, so the BASH_ENV paths agree.
+  agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
   # mcpx MCP gateway and Code Mode execution runner.
   mcpx = pkgs.callPackage ../../pkgs/mcpx/package.nix { };
   # The environment the mcpx daemon runs with. It is set by the start wrapper
@@ -204,8 +219,8 @@ in
         # anchor = "top-right";
         # anchor = "center-right";
         anchor = "bottom-right";
-        borderRadius = 0;
-        borderSize = 0;
+        border-radius = 0;
+        border-size = 0;
         padding = "0"; # within
         margin = "0"; # "36,0,0,0"; # outside # 36? 40?
         # margin = "36,0,0,0"; # outside # 36? 40?
@@ -217,16 +232,16 @@ in
         #   max-height: 24px !important;
         #   min-height: 24px !important;
         # }
-        # maxIconSize = 256;
-        maxIconSize = 512;
-        ignoreTimeout = true;
-        defaultTimeout = 15000;
+        # max-icon-size = 256;
+        max-icon-size = 512;
+        ignore-timeout = true;
+        default-timeout = 15000;
         layer = "top";
         height = 240;
         width = 420;
         format = "<b>%s</b>\\n%b";
-        backgroundColor = "#303030FF";
-        borderColor = "#333333FF";
+        background-color = "#303030FF";
+        border-color = "#333333FF";
         # on-button-right=exec makoctl menu -n "$id" rofi -dmenu -p 'Select action: '
         # on-button-right=exec hyprctl setprop pid:$idhyprctl dispatch focuswindow
         # on-button-left=exec bash -c 'hyprctl dispatch focuswindow "pid:$1"' _ $id
@@ -325,7 +340,11 @@ in
   # Rather than fight it by hand, watch the file and normalise it back. The
   # script is idempotent and refuses to write anything it cannot re-parse.
   systemd.user.services.opencode-config-normalize = {
-    Unit.Description = "Normalise opencode config to v1 plugin/agent keys";
+    Unit = {
+      Description = "Normalise opencode config to v1 plugin/agent keys";
+      StartLimitIntervalSec = "30s";
+      StartLimitBurst = 30;
+    };
     Service = {
       Type = "oneshot";
       ExecStart = "${pkgs.writeShellScript "opencode-config-normalize" (
@@ -361,7 +380,11 @@ in
   # directory if it is byte-identical to the previous one, so the history only
   # grows on real change.
   systemd.user.services.agent-backup = {
-    Unit.Description = "Snapshot agent credentials and config to a dated directory";
+    Unit = {
+      Description = "Snapshot agent credentials and config to a dated directory";
+      StartLimitIntervalSec = "30s";
+      StartLimitBurst = 30;
+    };
     Service = {
       Type = "oneshot";
       ExecStart = "${pkgs.writeShellScript "agent-backup" (
@@ -451,40 +474,39 @@ in
     Service = {
       ExecStart = toString (
         pkgs.writeShellScript "clef-proxy-start" ''
-          exec ${pkgs.nodejs}/bin/node ${../../bin/clef-proxy.mjs}
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs
         ''
       );
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "CLEF_PROXY_PORT=18742"
+        "CLEF_PROXY_PORT=${toString clefProxyPort}"
         "CLEF_PROXY_HOST=127.0.0.1"
       ];
     };
     Install.WantedBy = [ "default.target" ];
   };
 
+  # Antigravity CLI (agy) Local Proxy Bridge
+  # Disabled per user request (too slow due to per-turn CLI spawning; replaced by antigravity-ls-proxy)
   systemd.user.services.agy-proxy = {
     Unit = {
-      Description = "Antigravity CLI (agy) Local Proxy Bridge for OpenCode";
+      Description = "Antigravity CLI (agy) Local Proxy Bridge for OpenCode (DISABLED)";
       After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
     };
     Service = {
       ExecStart = toString (
         pkgs.writeShellScript "agy-proxy-start" ''
           export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/agy-proxy.mjs}
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/agy-proxy.mjs
         ''
       );
-      Restart = "always";
-      RestartSec = 3;
+      Restart = "no";
       Environment = [
-        "AGY_PROXY_PORT=18743"
+        "AGY_PROXY_PORT=${toString agyProxyPort}"
         "AGY_PROXY_HOST=127.0.0.1"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
   };
 
   systemd.user.services.codex-proxy = {
@@ -497,13 +519,13 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "codex-proxy-start" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/codex-proxy.mjs}
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs
         ''
       );
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "CODEX_PROXY_PORT=18744"
+        "CODEX_PROXY_PORT=${toString codexProxyPort}"
         "CODEX_PROXY_HOST=127.0.0.1"
       ];
     };
@@ -520,15 +542,46 @@ in
       ExecStart = toString (
         pkgs.writeShellScript "antigravity-ls-proxy-start" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/antigravity-ls-proxy.mjs}
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/antigravity-ls-proxy.mjs
         ''
       );
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "ANTIGRAVITY_LS_PROXY_PORT=18745"
+        "ANTIGRAVITY_LS_PROXY_PORT=${toString antigravityLsProxyPort}"
         "ANTIGRAVITY_LS_PROXY_HOST=127.0.0.1"
         "ANTIGRAVITY_LS_BIN=${antigravity-hub}/share/antigravity/resources/bin/language_server"
+      ];
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  systemd.user.services.design-code-proxy = {
+    Unit = {
+      Description = "Code Design / Design Code Local Proxy Bridge for OpenCode";
+      After = [
+        "network-online.target"
+        "antigravity-ls-proxy.service"
+        "codex-proxy.service"
+      ];
+      Wants = [
+        "network-online.target"
+        "antigravity-ls-proxy.service"
+        "codex-proxy.service"
+      ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "design-code-proxy-start" ''
+          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/design-code-proxy.mjs
+        ''
+      );
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "DESIGN_CODE_PROXY_PORT=${toString designCodeProxyPort}"
+        "DESIGN_CODE_PROXY_HOST=127.0.0.1"
       ];
     };
     Install.WantedBy = [ "default.target" ];
@@ -638,10 +691,12 @@ in
     state="''${XDG_STATE_HOME:-$HOME/.local/state}/mcpx/deployed"
     key='${mcpxKey}'
     if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
-      if systemctl --user is-active --quiet mcpx.service; then
-        run ${mcpx}/bin/mcpx upgrade || run systemctl --user restart mcpx.service
-      else
-        run systemctl --user start mcpx.service
+      if ${pkgs.systemd}/bin/systemctl --user is-system-running --quiet 2>/dev/null; then
+        if ${pkgs.systemd}/bin/systemctl --user is-active --quiet mcpx.service; then
+          run ${mcpx}/bin/mcpx upgrade || run ${pkgs.systemd}/bin/systemctl --user restart mcpx.service
+        else
+          run ${pkgs.systemd}/bin/systemctl --user start mcpx.service || true
+        fi
       fi
       run mkdir -p "$(dirname "$state")"
       run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
@@ -687,15 +742,16 @@ in
         "agy-proxy.service"
         "codex-proxy.service"
         "antigravity-ls-proxy.service"
+        "design-code-proxy.service"
         "openchamber.socket"
       ];
       Wants = [
         "network-online.target"
         "mcpx.service"
         "clef-proxy.service"
-        "agy-proxy.service"
         "codex-proxy.service"
         "antigravity-ls-proxy.service"
+        "design-code-proxy.service"
       ];
       Requires = [ "openchamber.socket" ];
     };
@@ -730,19 +786,23 @@ in
     key='${deployKey "openchamber" [ openchamberStart ]}'
     link="$HOME/.local/state/openchamber/bin/opencode"
     target="${inputs.opencode.packages.${system}.opencode}/bin/opencode"
-    previous="$(readlink "$link" 2>/dev/null)"
+    previous="$(readlink "$link" 2>/dev/null || true)"
     active=0
-    systemctl --user is-active --quiet openchamber.service && active=1
+    if ${pkgs.systemd}/bin/systemctl --user is-system-running --quiet 2>/dev/null; then
+      if ${pkgs.systemd}/bin/systemctl --user is-active --quiet openchamber.service 2>/dev/null; then
+        active=1
+      fi
+    fi
     run mkdir -p "$HOME/.local/state/openchamber/bin"
     run ln -sfn "$target" "$link"
     if [ "$(cat "$state" 2>/dev/null)" != "$key" ]; then
       if [ "$active" = 1 ]; then
-        run systemctl --user restart openchamber.service
+        run ${pkgs.systemd}/bin/systemctl --user restart openchamber.service
       fi
       run mkdir -p "$(dirname "$state")"
       run sh -c 'printf "%s\n" "$1" > "$2"' _ "$key" "$state"
     elif [ "$active" = 1 ] && [ "$previous" != "$target" ]; then
-      run systemctl --user reload openchamber.service
+      run ${pkgs.systemd}/bin/systemctl --user reload openchamber.service
     fi
   '';
 
@@ -817,30 +877,36 @@ in
     };
     Install.WantedBy = [ "default.target" ];
   };
+  # environment.d: every systemd user unit (t3code, mcpx, desktop-commander, ...)
+  # and dbus-activated app gets BASH_ENV, so the `bash -c` shells they spawn
+  # load the auth hook. Backup to the pam_env copy set in nixos/agent-auth.
+  systemd.user.sessionVariables.BASH_ENV = "${agent-shell-env}/share/agent-shell-env/env.sh";
   manual.manpages.enable = true;
   programs = {
     # Secrets that must NOT end up in the Nix store. home.sessionVariables and
     # systemd Environment= both bake their values into world-readable store
-    # paths, so API keys cannot live there. Instead the key sits in a 0600 file
-    # outside the repo and is read at shell startup; only the PATH is in the
-    # store, never the value.
+    # paths, so API keys cannot live there. Instead sops-nix decrypts them to
+    # /run/secrets/agent-auth/* (nixos/agent-auth, owner user, 0400) and the
+    # agent-shell-env hook reads them at shell startup; only PATHS are in the
+    # store. Legacy 0600 files under ~/.config are still read as a fallback:
     #
-    #   ~/.config/jules/api-key   -- https://jules.google.com/settings (max 3 keys)
+    #   bws-access-token          | ~/.config/bws/access-token          -> BWS_ACCESS_TOKEN (bws login)
+    #   op-service-account-token  | ~/.config/op/service-account-token  -> OP_SERVICE_ACCOUNT_TOKEN
+    #   jules-api-key             | ~/.config/jules/api-key             -> JULES_API_KEY
+    #   cloudflare-{account-id,gateway-id,ai-inference-token} | ~/.config/cloudflare/...
     #
-    # Consumed by: the `jules` CLI (as an alternative to `jules login`, which
-    # needs a DBus secret service), and the @google/jules-mcp server wired into
-    # opencode via "mcp.jules" -> environment -> {env:JULES_API_KEY}.
+    # The hook is sourced from bashrcExtra, which home-manager places BEFORE the
+    # `[[ $- == *i* ]] || return` guard (initExtra comes after it, which is why
+    # these exports used to be invisible to hidden agent shells). Non-interactive
+    # `bash -c` shells get it through BASH_ENV instead (nixos/agent-auth +
+    # systemd.user.sessionVariables below). See pkgs/agent-shell-env/env.sh.
+    #
+    # JULES_API_KEY is consumed by the @google/jules-mcp server wired into
+    # opencode via "mcp.jules" -> environment -> {env:JULES_API_KEY}. The `jules`
+    # CLI ignores it and uses the `jules login` OAuth token in gnome-keyring.
     bash = {
-      initExtra = ''
-        if [ -r "$HOME/.config/jules/api-key" ]; then
-          export JULES_API_KEY="$(< "$HOME/.config/jules/api-key")"
-        fi
-
-        if [ -r "$HOME/.config/cloudflare/ai-inference-token" ]; then
-          export CLOUDFLARE_ACCOUNT_ID="$(< "$HOME/.config/cloudflare/account-id")"
-          export CLOUDFLARE_GATEWAY_ID="$(< "$HOME/.config/cloudflare/gateway-id")"
-          export CLOUDFLARE_API_TOKEN="$(< "$HOME/.config/cloudflare/ai-inference-token")"
-        fi
+      bashrcExtra = ''
+        . "${agent-shell-env}/share/agent-shell-env/env.sh"
       '';
     };
     # zen-browser = {
@@ -1160,6 +1226,33 @@ in
       # PATH = "$HOME/bin:$PATH";
       NIXOS_OZONE_WL = "1"; # This variable fixes electron apps in wayland
       NIXPKGS_ALLOW_UNFREE = "1";
+      # OpenCode feature flags (Drew, 2026-10-20): the interesting
+      # experimental features. OPENCODE_EXPERIMENTAL is the umbrella
+      # (code mode keys off it). NATIVE_LLM deliberately not set.
+      # (OPENCODE_ENABLE_EXA / OPENCODE_ENABLE_PARALLEL removed 2026-10-23:
+      # nothing in opencode reads them — see opencode #105.)
+      OPENCODE_ENABLE_EXPERIMENTAL_MODELS = "1";
+      OPENCODE_EXPERIMENTAL = "1";
+      OPENCODE_EXPERIMENTAL_PARALLEL = "1";
+      OPENCODE_EXPERIMENTAL_PLAN_MODE = "1";
+      OPENCODE_EXPERIMENTAL_SCOUT = "1";
+      OPENCODE_EXPERIMENTAL_WORKSPACES = "1";
+      OPENCODE_EXPERIMENTAL_LSP_TOOL = "1";
+      OPENCODE_EXPERIMENTAL_OXFMT = "1";
+      OPENCODE_EXPERIMENTAL_EXA = "1";
+      OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
+      # Single source for the local proxy ports (see the let block):
+      # opencode.jsonc reads them via {env:...} substitution.
+      CLEF_PROXY_PORT = toString clefProxyPort;
+      AGY_PROXY_PORT = toString agyProxyPort;
+      CODEX_PROXY_PORT = toString codexProxyPort;
+      ANTIGRAVITY_LS_PROXY_PORT = toString antigravityLsProxyPort;
+      DESIGN_CODE_PROXY_PORT = toString designCodeProxyPort;
+      OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
+      # File watcher off by default (Drew, 2026-10-20): the working trees
+      # are giant, and watching costs more than the live-external-edit
+      # awareness it buys. Diffs are git-computed on demand either way.
+      OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER = "1";
       # XDG_CACHE_HOME = "$HOME/.cache";
       # XDG_CONFIG_DIRS = "/etc/xdg";
       # XDG_CONFIG_HOME = "$HOME/.config";
@@ -1188,19 +1281,23 @@ in
       [
         libnotify
         (pkgs.writeShellScriptBin "clef-proxy" ''
-          exec ${pkgs.nodejs}/bin/node ${../../bin/clef-proxy.mjs} "$@"
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/clef-proxy.mjs "$@"
         '')
         (pkgs.writeShellScriptBin "agy-proxy" ''
           export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/agy-proxy.mjs} "$@"
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/agy-proxy.mjs "$@"
         '')
         (pkgs.writeShellScriptBin "codex-proxy" ''
           export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/codex-proxy.mjs} "$@"
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/codex-proxy.mjs "$@"
         '')
         (pkgs.writeShellScriptBin "antigravity-ls-proxy" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec ${pkgs.nodejs}/bin/node ${../../bin/antigravity-ls-proxy.mjs} "$@"
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/antigravity-ls-proxy.mjs "$@"
+        '')
+        (pkgs.writeShellScriptBin "design-code-proxy" ''
+          export PATH="/run/current-system/sw/bin:$HOME/.local/bin:$PATH"
+          exec ${pkgs.nodejs}/bin/node ${../../bin}/design-code-proxy.mjs "$@"
         '')
         (pkgs.writeShellScriptBin "sync-models" ''
           export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
@@ -1851,6 +1948,11 @@ in
         # nixpkgs 4.94.0 vs npm 4.147.0 -- 53 minor versions behind, the
         # largest gap in this config. See pkgs/wrangler.
         (pkgs.callPackage ../../pkgs/wrangler { })
+        # cf is Wrangler's successor (open beta 2026-09-28, not in
+        # nixpkgs). Standing direction 2026-10-20: prefer cf for
+        # Cloudflare work; wrangler stays for existing projects until
+        # migrated (`cf migrate`). See pkgs/cf.
+        (pkgs.callPackage ../../pkgs/cf { })
         wtf
         wttrbar
         xclip

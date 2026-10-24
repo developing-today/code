@@ -8,8 +8,16 @@ on:
 permissions:
   contents: read
 
+# Push-to-main runs each get their own group (keyed by run_id), so a
+# later merge can never cancel — or displace a pending — verification
+# run for an earlier merge: every merged tree gets its own completed
+# run. Pull-request runs keep sharing a per-ref group, so a new push
+# to a PR still supersedes its stale run (#392). A conditional
+# cancel-in-progress (the mcpx-conformance pattern) would still let a
+# third rapid merge displace the second merge's pending run, so push
+# runs are keyed by run_id here, matching dezren39/nix PR #495.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -21,7 +29,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: DeterminateSystems/nix-installer-action@main
+      # The proxy ports' fallback copies (bin/*.mjs script defaults and
+      # the {env:VAR:-port} defaults in .opencode/opencode.jsonc) must
+      # match the single definitions in home/common/default.nix, or a
+      # non-shell launch silently dials the wrong — or an empty — port
+      # (#434, #435). Pure bash/grep: no Nix needed.
+      - name: Check proxy port fallbacks match their definitions
+        run: .github/scripts/check-proxy-port-fallbacks.sh
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Check formatting for changed files
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -47,7 +62,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Evaluate root flake outputs
         run: |
           nix eval .#devShells.x86_64-linux.default.drvPath

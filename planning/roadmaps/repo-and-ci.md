@@ -4,15 +4,12 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 
 ## Now
 
-| Title                                  | Status      | Intent                                                                                                                                                              | Links      |
-| -------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| Jules runs only when they can act      | proposed    | The Jules workflow subscribes to every workflow completion. 44 of the last 100 runs were skipped, and they share a concurrency group with the one run that matters. | #304       |
-| One Jules workflow                     | proposed    | Three Jules workflow files become one.                                                                                                                              | #287       |
-| Timeout caps on every job              | in-progress | A hung job stops at its cap, where today it runs to the 360 minute default.                                                                                         | #293       |
-| PR gate cannot drift from the flake    | proposed    | The `id` PR gate lists flake checks by hand, so a new check gets no PR coverage.                                                                                    | #300       |
-| Cache the Go build and reuse artifacts | proposed    | Build cache by `go.sum` hash.                                                                                                                                       | #288       |
-| `nix flake check` out of disk          | proposed    | It dies intermittently with "No space left on device" in `id-test` and `id-ci`.                                                                                     | #257       |
-| Triage stale PRs                       | proposed    | Overlapping Jules drafts, old Renovate security PRs and one PR with conflicts.                                                                                      | #310, #311 |
+| Title                                  | Status   | Intent                                                                          | Links      |
+| -------------------------------------- | -------- | ------------------------------------------------------------------------------- | ---------- |
+| One Jules workflow                     | proposed | Three Jules workflow files become one.                                          | #287       |
+| Cache the Go build and reuse artifacts | proposed | Build cache by `go.sum` hash.                                                   | #288       |
+| `nix flake check` out of disk          | proposed | It dies intermittently with "No space left on device" in `id-test` and `id-ci`. | #257       |
+| Triage stale PRs                       | proposed | Overlapping Jules drafts, old Renovate security PRs and one PR with conflicts.  | #310, #311 |
 
 ## Next
 
@@ -33,5 +30,16 @@ This file covers `.github/workflows`, the Jules automation and the way pull requ
 | --------------------------------------------------- | ---------- | ------------------- |
 | Concurrency groups on CI workflows                  | 2026-10-18 | #289                |
 | Auto-assign concurrency keyed by issue or PR number | 2026-10-18 | #303                |
+| Jules runs only when they can act                   | 2026-10-18 | #304                |
+| Timeout caps on every job                           | 2026-10-19 | #293                |
+| PR gate cannot drift from the flake                 | 2026-10-18 | #318 (closes #300)  |
 | `mcpx` and `id` workflow speed-up                   | 2026-10-18 | #295                |
 | Package build check when dependencies change        | 2026-10-18 | `mcpx-nixbuild.yml` |
+| Action pins aligned to the repo-standard v7         | 2026-10-20 | #395 (closes #394)  |
+| mcpx-conformance artifact majors aligned (v7)       | 2026-10-20 | #399 (closes #398)  |
+| Last lagging action pins aligned                    | 2026-10-20 | #406 (closes #405)  |
+| mcpx workflow setup-deno/setup-bun SHA-pinned       | 2026-10-20 | #409 (closes #408)  |
+| Jules action pinned to commit SHA                   | 2026-10-20 | #424 (opencode#184) |
+| Push-to-main runs get their own concurrency group   | 2026-10-20 | #428 (closes #392)  |
+| Goreleaser workflow repaired (v2 schema)            | 2026-10-21 | #452 (closes #344)  |
+| `pkgs/graph` builds again, in go-modules-build CI   | 2026-10-21 | #446 (closes #166)  |

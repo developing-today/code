@@ -678,7 +678,11 @@ function createCursorDecorations(
         // Create a cluster-wide key that includes ALL client IDs, positions, opacities, and connection state in the cluster
         // This ensures widgets are recreated when cluster membership, positions, or dynamic states change
         const clusterKey = groupsForBar
-          .flatMap((g) => g.cursors.map((c) => `${c.clientID}@${c.head}-${c.opacity}-${c.color}-${connectionState}`))
+          .flatMap((g) =>
+            g.cursors.map(
+              (c) => `${c.clientID}@${c.head}-${c.opacity}-${c.color}-${connectionState}-${encodeURIComponent(c.name)}`,
+            ),
+          )
           .sort()
           .join("-");
 
@@ -740,7 +744,7 @@ function createCursorDecorations(
                 : createCursorLine(cursor, false, connectionState),
             {
               side: 1,
-              key: `cursor-${cursor.clientID}-${cursor.opacity}-${cursor.color}-${connectionState}`,
+              key: `cursor-${cursor.clientID}-${cursor.opacity}-${cursor.color}-${connectionState}-${encodeURIComponent(cursor.name)}`,
             },
           ),
         );

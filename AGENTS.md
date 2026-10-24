@@ -32,3 +32,28 @@ When retrieving public web content with `curl`, `wget`, Python HTTP clients, or 
   - It is acceptable to push and merge code that has been validated with targeted tests without running every single test upfront.
   - Run long test suites or CI in the background while progressing on other work in parallel. If background jobs or CI fail, double back and address failures while continuing forward.
   - Document unresolved ambiguities, design concerns, or known gaps by creating GitHub issues instead of blocking progress.
+
+## Research, design and delivery workflow
+
+Use it when a request, from one sentence to pages of voice-transcribed notes, should become researched documents, designs, plans or parallel PRs. Contracts: [`planning/workflow/`](planning/workflow/README.md). Where documents go: [`planning/DOCUMENTATION_ARCHITECTURE.md`](planning/DOCUMENTATION_ARCHITECTURE.md). Tool: `python3 -I scripts/research_workflow.py` (`check`, `status`, `ready`).
+
+Pick the skill by situation ([stages](planning/workflow/stages.md)):
+
+- Resuming, or unsure which stage a package is at: `research-workflow` (reads state, dispatches).
+- A new request to capture: `request-intake` (S0).
+- One concept: `research-prepare`, `concept-research`, then `notes-reconcile` (S1-S3).
+- Parent, fan-out or orchestration issues: `issue-handoff` (S4-S5).
+- Design, plan, build: `design-orchestrate`, `feature-plan`, `implementation-orchestrate` (S6-S8).
+
+Orchestrators do not implement: they merge, keep state and issues current, and start workers.
+
+### Parallel writers
+
+These apply whenever other agents may share the repository. Reasons and detail: [`planning/workflow/collaboration.md`](planning/workflow/collaboration.md).
+
+- **Boot:** `source /home/user/.local/share/plaza-tools/git-env.sh` (commits fail without it), then a fresh worktree from `origin/<base>`. Push the empty branch first; open the PR after the first commit.
+- **One writer per file.** Wide files (`AGENTS.md`, `doc/README.md`, indexes, a package's `main.md` and `design.md`) change only by PR from your own branch.
+- **Add-only records are new files** (notes, receipts, decisions), or one line in a union-merged `changes.md`. Never append to a shared file by hand.
+- **Never** `git stash` (all worktrees share it; use a WIP commit), force push, rebase, `git add .` (stage explicit paths), `gc`/`prune` or `sudo`. Merge commits only; merge the base in before opening or landing a PR.
+- **Final message:** branch, PR URL, last pushed SHA, what was verified and what was not.
+- **A merged branch is dead** (GitHub deletes it). Follow-up work goes on a new branch and PR.

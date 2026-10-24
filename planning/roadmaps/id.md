@@ -8,13 +8,12 @@ The next-stage record sets the order: foundations first (a CI signal that can be
 
 ## Now
 
-| Title                                   | Status      | Intent                                                                                                                  | Links                                                                                          |
-| --------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| A CI signal that can be trusted         | in-progress | The Nix check had no recorded success in 392 runs. Fix the flakes and the disk failures so a red check means something. | F11.1 to F11.4, #229, #241, #255, #257, #176, #300                                             |
-| One place decides what a client may see | in-progress | Seed, chat history and host events follow the same rule through a single projection, with a test per row.               | F11.11, #242, [chat visibility fix](../../doc/2026-10-18T04-00-00Z_fix_world_chat_visibility/) |
-| Journal format management               | planned     | A version header, a check command and a backup command, so a rollback to an older binary is safe.                       | F11.12, #227                                                                                   |
-| Cost visibility                         | in-progress | Per-call fuel is measured and guarded by budgets. Host metrics, benchmarks and bytes per frame follow.                  | F11.6 (merged in #247), F11.7, F11.8, F11.9                                                    |
-| Bring the Phase 11 plan up to date      | proposed    | Several F11 tasks merged after the plan was written.                                                                    | #312                                                                                           |
+| Title                                   | Status      | Intent                                                                                                                  | Links                                                                                                       |
+| --------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| A CI signal that can be trusted         | in-progress | The Nix check had no recorded success in 392 runs. Fix the flakes and the disk failures so a red check means something. | F11.1 to F11.4, #229, #241, #255, #257, #176, #300                                                          |
+| One place decides what a client may see | in-progress | Seed, chat history and host events follow the same rule through a single projection, with a test per row.               | F11.11 (#250, #256), #242, [chat visibility fix](../../doc/2026-10-18T04-00-00Z_fix_world_chat_visibility/) |
+| Journal format management               | planned     | A version header, a check command and a backup command, so a rollback to an older binary is safe.                       | F11.12, #227                                                                                                |
+| Cost visibility                         | in-progress | Per-call fuel is measured and guarded by budgets. Host metrics, benchmarks and bytes per frame follow.                  | F11.6 (merged in #247), F11.7, F11.8, F11.9                                                                 |
 
 ## Next
 
@@ -63,16 +62,17 @@ These are the Phase 12 tasks. The order inside the phase is in the plan.
 
 ## Done
 
-| Title                                                                          | Date       | Result                    |
-| ------------------------------------------------------------------------------ | ---------- | ------------------------- |
-| Server-scoped home discovery                                                   | 2026-10-18 | #212                      |
-| Signed document revisions on save                                              | 2026-10-18 | #210                      |
-| Replayable session fixtures                                                    | 2026-10-18 | #239                      |
-| Journaled scheduled events for worlds                                          | 2026-10-18 | #243                      |
-| Per-call guest fuel budgets                                                    | 2026-10-18 | #247                      |
-| Territory view fits eight seats                                                | 2026-10-18 | #248                      |
-| Cloudflare Workers pkarr design                                                | 2026-10-18 | #213                      |
-| Relay kit vendored, drift test                                                 | 2026-10-17 | #249 (F11.1)              |
-| Install seed redaction                                                         | 2026-10-17 | #250                      |
-| Fast PR gate, E2E and VM checks nightly                                        | 2026-10-18 | `id-e2e-nightly` workflow |
-| Phase 9 and 10 slices (portable screens, profiles, ceilings, libraries, roles) | 2026-10-16 | See the Phase 9 plan      |
+| Title                                                                          | Date       | Result                                                                                                           |
+| ------------------------------------------------------------------------------ | ---------- | ---------------------------------------------------------------------------------------------------------------- |
+| Server-scoped home discovery                                                   | 2026-10-18 | #212                                                                                                             |
+| Bring the Phase 11 plan up to date                                             | 2026-10-20 | [.opencode/plans/2026-10-20_phase-11-status.md](../../.opencode/plans/2026-10-20_phase-11-status.md) closes #312 |
+| Signed document revisions on save                                              | 2026-10-18 | #210                                                                                                             |
+| Replayable session fixtures                                                    | 2026-10-18 | #239                                                                                                             |
+| Journaled scheduled events for worlds                                          | 2026-10-18 | #243                                                                                                             |
+| Per-call guest fuel budgets                                                    | 2026-10-18 | #247                                                                                                             |
+| Territory view fits eight seats                                                | 2026-10-18 | #248                                                                                                             |
+| Cloudflare Workers pkarr design                                                | 2026-10-18 | #213                                                                                                             |
+| Relay kit vendored, drift test                                                 | 2026-10-17 | #249 (F11.1)                                                                                                     |
+| Install seed redaction                                                         | 2026-10-17 | #250                                                                                                             |
+| Fast PR gate, E2E and VM checks nightly                                        | 2026-10-18 | `id-e2e-nightly` workflow                                                                                        |
+| Phase 9 and 10 slices (portable screens, profiles, ceilings, libraries, roles) | 2026-10-16 | See the Phase 9 plan                                                                                             |

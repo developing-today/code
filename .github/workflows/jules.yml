@@ -57,10 +57,11 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-weekly-cleanup
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: google-labs-code/jules-action@v1.0.0
+      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
         with:
           jules_api_key: ${{ secrets.JULES_API_KEY }}
           include_commit_log: true
@@ -78,10 +79,11 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-issue-${{ github.event.issue.number }}
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: google-labs-code/jules-action@v1.0.0
+      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
         with:
           jules_api_key: ${{ secrets.JULES_API_KEY }}
           prompt: >-
@@ -101,10 +103,11 @@ jobs:
         github.event.workflow_run.name }}-${{
         github.event.workflow_run.head_branch }}
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: google-labs-code/jules-action@v1.0.0
+      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
         with:
           jules_api_key: ${{ secrets.JULES_API_KEY }}
           starting_branch: ${{ github.event.workflow_run.head_branch }}
@@ -124,7 +127,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: google-labs-code/jules-action@v1.0.0
+      - uses: google-labs-code/jules-action@bff7875eaa123cac6742b7cfc51005b95ba4d566 # v1.0.0
         with:
           jules_api_key: ${{ secrets.JULES_API_KEY }}
           prompt: ${{ inputs.prompt }}

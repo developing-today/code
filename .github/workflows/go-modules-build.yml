@@ -1,7 +1,7 @@
 name: go modules build
 
-# Build verification for the small pkgs/{chat,database,import,launcher,tea}
-# Go modules (#342).
+# Build verification for the small pkgs/{chat,database,graph,import,
+# launcher,tea} Go modules (#342).
 #
 # Nothing built these five modules in CI at all, so a change breaking any
 # of them would rot silently — the exact failure that hit pkgs/map (#338)
@@ -16,9 +16,10 @@ name: go modules build
 # accepts it, which hid the break). This PR also renames that module to
 # github.com/developing-today/code/src/database, matching chat/tea.
 #
-# pkgs/graph is deliberately excluded: its build failure is #166 and the
-# mod-tidy workflow already watches it. pkgs/map and pkgs/identity keep
-# their dedicated workflows (identity needs build tags).
+# pkgs/graph was deliberately excluded while its build failure was #166;
+# it joined the matrix once #166 was fixed (keygen v0.5.1, the same fix
+# as pkgs/map in #338). pkgs/map and pkgs/identity keep their dedicated
+# workflows (identity needs build tags).
 #
 # Each job also verifies the module is tidy (#347): build/vet pass on an
 # untidy module, and mod-tidy.yml only watches pkgs/graph — pkgs/import
@@ -30,6 +31,7 @@ on:
     paths:
       - "pkgs/chat/**"
       - "pkgs/database/**"
+      - "pkgs/graph/**"
       - "pkgs/import/**"
       - "pkgs/launcher/**"
       - "pkgs/tea/**"
@@ -39,6 +41,7 @@ on:
     paths:
       - "pkgs/chat/**"
       - "pkgs/database/**"
+      - "pkgs/graph/**"
       - "pkgs/import/**"
       - "pkgs/launcher/**"
       - "pkgs/tea/**"
@@ -47,8 +50,16 @@ on:
 permissions:
   contents: read
 
+# Push-to-main runs each get their own group (keyed by run_id), so a
+# later merge can never cancel — or displace a pending — verification
+# run for an earlier merge: every merged tree gets its own completed
+# run. Pull-request runs keep sharing a per-ref group, so a new push
+# to a PR still supersedes its stale run (#392). A conditional
+# cancel-in-progress (the mcpx-conformance pattern) would still let a
+# third rapid merge displace the second merge's pending run, so push
+# runs are keyed by run_id here, matching dezren39/nix PR #495.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -59,7 +70,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [chat, database, import, launcher, tea]
+        module: [chat, database, graph, import, launcher, tea]
     steps:
       - name: Checkout
         uses: actions/checkout@v7

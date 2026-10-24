@@ -2087,6 +2087,22 @@
         "type": "github"
       }
     },
+    "omasnap": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791076643,
+        "narHash": "sha256-bK2fOB8P79IBlcAAeKz7l0hOXjKzTqwApidEWWwN7HY=",
+        "owner": "tobi",
+        "repo": "omasnap",
+        "rev": "6771b19de8bcead2b17c16b49f1a8a97445dd8e3",
+        "type": "github"
+      },
+      "original": {
+        "owner": "tobi",
+        "repo": "omasnap",
+        "type": "github"
+      }
+    },
     "omnix": {
       "inputs": {
         "devour-flake": "devour-flake",
@@ -2125,11 +2141,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1792164030,
-        "narHash": "sha256-L30Pn141nxn5dXZGT3b9UD+YbHwHIrDLzbqGaATFpRU=",
+        "lastModified": 1792514276,
+        "narHash": "sha256-sgQb5Udxxe7g3Glqux3uhkD1ogIv9FxkmywC+POkNMQ=",
         "owner": "developing-today",
         "repo": "openchamber",
-        "rev": "278eb15186dc0b1cc7d153ded2a1751236a7e640",
+        "rev": "fefa0702a3ed197843d9d84cad6fd552c92cae28",
         "type": "github"
       },
       "original": {
@@ -2143,11 +2159,11 @@
         "nixpkgs": "nixpkgs_16"
       },
       "locked": {
-        "lastModified": 1792155626,
-        "narHash": "sha256-8ubsifIIK8pj9sJHJJ22y0Bg9LHoMbvPHiVfZnuSkzQ=",
+        "lastModified": 1792524610,
+        "narHash": "sha256-Ff4cQJBnKWQnNXUkwTZY9c5Q7ubaQwfEslhcSjMYzx4=",
         "owner": "developing-today",
         "repo": "opencode",
-        "rev": "cdf87c325646e2ee66cec62cf064f8426ac29438",
+        "rev": "e7baa0d1d12314968fe8d70738836cf525ca3827",
         "type": "github"
       },
       "original": {
@@ -2276,6 +2292,7 @@
         "nixpkgs-stable": "nixpkgs-stable",
         "nixpkgs-unstable": "nixpkgs-unstable",
         "nixvim": "nixvim",
+        "omasnap": "omasnap",
         "omnix": "omnix",
         "openchamber": "openchamber",
         "opencode": "opencode",

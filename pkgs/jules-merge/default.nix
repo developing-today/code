@@ -41,7 +41,11 @@ buildNpmPackage {
       fs.writeFileSync("package.json",JSON.stringify(p,null,2));'
   '';
   npmDepsHash = "sha256-KhOJSDnnLJN38RaiqM9MsoY4qOo+CGvPbv/IlJDhDxM=";
-  npmFlags = [ "--ignore-scripts" "--no-audit" "--no-fund" ];
+  npmFlags = [
+    "--ignore-scripts"
+    "--no-audit"
+    "--no-fund"
+  ];
   dontNpmBuild = true;
   meta = {
     description = "Reconcile overlapping PRs from parallel Jules agents";

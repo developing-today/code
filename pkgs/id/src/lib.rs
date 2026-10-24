@@ -642,6 +642,29 @@ mod tests {
     }
 
     #[test]
+    fn test_match_kind_case_sensitive() {
+        assert_eq!(match_kind("Hello", "hello"), None);
+        assert_eq!(match_kind("hello", "Hello"), None);
+        assert_eq!(match_kind("HELLO", "hello"), None);
+    }
+
+    #[test]
+    fn test_match_kind_ordering() {
+        // Exact < Prefix < Contains
+        assert!(MatchKind::Exact < MatchKind::Prefix);
+        assert!(MatchKind::Prefix < MatchKind::Contains);
+    }
+
+    #[test]
+    fn test_match_kind_special_chars() {
+        assert_eq!(
+            match_kind("test.file.txt", "test.file"),
+            Some(MatchKind::Prefix)
+        );
+        assert_eq!(match_kind("path/to/file", "to"), Some(MatchKind::Contains));
+    }
+
+    #[test]
     fn test_to_absolute_already_absolute() {
         let path = PathBuf::from("/absolute/path/file.txt");
         let result = to_absolute(&path).unwrap();
