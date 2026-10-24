@@ -36,6 +36,11 @@ case "$prompt" in
       echo "stub agy: resume failed" >&2
       exit 3
     fi ;;
+  *WARMFAIL*)
+    if [ -n "$conv" ]; then
+      echo "stub agy: warm resume failed" >&2
+      exit 3
+    fi ;;
   *FAILME*)
     echo "stub agy: auth expired" >&2
     exit 3 ;;
@@ -51,10 +56,18 @@ case "$prompt" in
     kill -9 $$ ;;
 esac
 if [ "$fmt" = "stream" ]; then
-  printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"Hello world"}}'
-  printf '%s\\n' '{"event":"result","result":{"usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103}}}'
+  if [ -n "$conv" ]; then
+    printf '{"event":"step_update","step_update":{"text_delta":"resumed: %s"}}\\n' "$prompt"
+  else
+    printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"Hello world"}}'
+  fi
+  printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-42","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103}}}'
 else
-  printf '%s\\n' '{"response":"Hello world","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103}}'
+  if [ -n "$conv" ]; then
+    printf '{"response":"resumed: %s","conversation_id":"%s","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103}}\\n' "$prompt" "$conv"
+  else
+    printf '%s\\n' '{"response":"Hello world","conversation_id":"stub-conv-42","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103}}'
+  fi
 fi
 exit 0
 `;
@@ -68,8 +81,8 @@ const freePort = () => new Promise((resolve, reject) => {
   });
 });
 
-const startProxy = async () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-proxy-test-'));
+const startProxy = async (sharedTmp) => {
+  const tmp = sharedTmp || fs.mkdtempSync(path.join(os.tmpdir(), 'agy-proxy-test-'));
   const home = path.join(tmp, 'home');
   fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
   fs.writeFileSync(path.join(home, '.local', 'bin', 'agy'), STUB, { mode: 0o755 });
@@ -179,6 +192,106 @@ test('signal-killed run: stream fallback names the signal, non-stream is a 502 (
   assert.equal(plainBody.signal, 'SIGKILL');
 
   await assertStreamFailure(port, 'SIGKILLME', /agy execution failed: agy process terminated by signal SIGKILL/);
+});
+
+test('warm session: continuation resumes with only the new turn (#480)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+
+  const turn1 = [{ role: 'user', content: 'warm alpha' }];
+  const r1 = await post(port, { messages: turn1 });
+  assert.equal(r1.status, 200);
+  const p1 = JSON.parse(await r1.text());
+  assert.equal(p1.choices[0].message.content, 'Hello world');
+  assert.equal(p1.conversation_id, 'stub-conv-42', 'conversation id is learned from the agy JSON output');
+
+  const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+  assert.equal(health.warmSessions, 1);
+
+  const turn2 = [...turn1,
+    { role: 'assistant', content: 'Hello world' },
+    { role: 'user', content: 'warm beta' }];
+  const r2 = await post(port, { messages: turn2 });
+  assert.equal(r2.status, 200);
+  const p2 = JSON.parse(await r2.text());
+  assert.equal(p2.choices[0].message.content, 'resumed: warm beta',
+    'resumed run receives ONLY the new user turn, not the flattened history');
+
+  const turn3 = [...turn2,
+    { role: 'assistant', content: p2.choices[0].message.content },
+    { role: 'user', content: 'warm gamma' }];
+  const r3 = await post(port, { messages: turn3, stream: true });
+  assert.equal(r3.status, 200);
+  const sse = await r3.text();
+  assert.match(sse, /resumed: warm gamma/);
+  assert.match(sse, /"finish_reason":"stop"/);
+});
+
+test('warm session: tampered history or repeated turn falls back to a fresh full run (#480)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+
+  const turn1 = [{ role: 'user', content: 'warm alpha' }];
+  const r1 = await post(port, { messages: turn1 });
+  assert.equal(r1.status, 200);
+  await r1.text();
+
+  // Same single-turn request again: message count <= fedCount, so the
+  // stored conversation must NOT be resumed.
+  const repeat = await post(port, { messages: turn1 });
+  assert.equal(repeat.status, 200);
+  assert.equal(JSON.parse(await repeat.text()).choices[0].message.content, 'Hello world');
+
+  // Assistant echo that is not the response agy produced: mismatch.
+  const tampered = [...turn1,
+    { role: 'assistant', content: 'something else entirely' },
+    { role: 'user', content: 'warm beta' }];
+  const r2 = await post(port, { messages: tampered });
+  assert.equal(r2.status, 200);
+  assert.equal(JSON.parse(await r2.text()).choices[0].message.content, 'Hello world',
+    'mismatched history must be a fresh full run, not a resume');
+});
+
+test('warm session: failed warm resume still answers via a fresh full run (#480)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+
+  const turn1 = [{ role: 'user', content: 'warm alpha' }];
+  const r1 = await post(port, { messages: turn1 });
+  assert.equal(r1.status, 200);
+  await r1.text();
+
+  const turn2 = [...turn1,
+    { role: 'assistant', content: 'Hello world' },
+    { role: 'user', content: 'please WARMFAIL now' }];
+  const r2 = await post(port, { messages: turn2 });
+  assert.equal(r2.status, 200, 'a failed resume must never fail the request');
+  assert.equal(JSON.parse(await r2.text()).choices[0].message.content, 'Hello world');
+});
+
+test('warm session: store persists across a proxy restart (#480)', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-proxy-test-'));
+  const first = await startProxy(tmp);
+  const turn1 = [{ role: 'user', content: 'warm alpha' }];
+  const r1 = await post(first.port, { messages: turn1 });
+  assert.equal(r1.status, 200);
+  await r1.text();
+  first.stop();
+  // Give the killed process a moment to release the port/state dir.
+  await new Promise(r => setTimeout(r, 200));
+  assert.ok(
+    fs.existsSync(path.join(tmp, 'state', 'agy-proxy', 'warm-sessions.json')),
+    'warm sessions are persisted next to endpoint.json');
+
+  const second = await startProxy(tmp);
+  t.after(second.stop);
+  const turn2 = [...turn1,
+    { role: 'assistant', content: 'Hello world' },
+    { role: 'user', content: 'warm beta' }];
+  const r2 = await post(second.port, { messages: turn2 });
+  assert.equal(r2.status, 200);
+  assert.equal(JSON.parse(await r2.text()).choices[0].message.content, 'resumed: warm beta',
+    'a restarted proxy still resumes the persisted conversation');
 });
 
 test('failed resume still retries once as a fresh conversation (#678)', async (t) => {

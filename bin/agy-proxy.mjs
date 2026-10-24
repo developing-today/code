@@ -10,15 +10,19 @@ import { parseProxyPort } from './proxy-port.mjs';
 const PORT = parseProxyPort('AGY_PROXY_PORT', 18743);
 const HOST = process.env.AGY_PROXY_HOST || '127.0.0.1';
 
+const stateDir = () => {
+  const stateHome =
+    process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+  return path.join(stateHome, 'agy-proxy');
+};
+
 // Publish the bound endpoint so other tools can find this proxy without
 // knowing its port in advance: $XDG_STATE_HOME/<name>/endpoint.json
 // (default ~/.local/state/<name>/endpoint.json), written on listen,
 // removed on exit.
 const publishEndpoint = () => {
   try {
-    const stateHome =
-      process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
-    const dir = path.join(stateHome, 'agy-proxy');
+    const dir = stateDir();
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'endpoint.json');
     fs.writeFileSync(
@@ -198,20 +202,8 @@ const getSessionKey = (req, body) => {
     return { key: userKey, explicit: false, conversationId: cached?.conversationId };
   }
 
-  // Multi-turn automatic session tracking
-  if (Array.isArray(body.messages) && body.messages.length > 1) {
-    const firstMsg = body.messages[0];
-    const firstContent = typeof firstMsg?.content === 'string'
-      ? firstMsg.content
-      : JSON.stringify(firstMsg?.content || '');
-    if (firstContent.length > 0) {
-      const hash = crypto.createHash('sha256').update(firstContent).digest('hex').slice(0, 16);
-      const sessionKey = `turn0:${hash}`;
-      const cached = sessionStore.get(sessionKey);
-      return { key: sessionKey, explicit: false, conversationId: cached?.conversationId };
-    }
-  }
-
+  // Automatic multi-turn tracking is handled by the warm-session store
+  // below (keyed on system + first user message + model, persisted).
   return { key: null, explicit: false, conversationId: null };
 };
 
@@ -253,6 +245,156 @@ const formatPrompt = (messages) => {
   return parts.join('\n\n');
 };
 
+// ---------------------------------------------------------------------------
+// Warm sessions (#480): reuse one `agy` conversation per logical chat
+// conversation instead of re-flattening the full history into a fresh CLI
+// process on every request.
+//
+// How the conversation id is learned (probed against agy 1.4.1):
+//   --output-format json       -> top-level {"conversation_id": "<id>", ...}
+//   --output-format stream-json-> {"event":"result","result":
+//                                  {"conversation_id": "<id>", ...}}
+// and a run is resumed with `--conversation <id> -p <new turn only>`.
+// A bogus id does NOT fail the run: the CLI prints
+// `warning: conversation "<id>" not found` on stderr and silently starts
+// a fresh conversation, so that warning is treated as a resume failure.
+//
+// Key: sha256(system prompt + first user message + resolved model).
+// Entry: { conversationId, fedCount, fedHashes, lastResponseHash,
+//          lastUsed } — fedCount/fedHashes record exactly which request
+// messages the agy conversation has already consumed, so a hit is only
+// used when the new history is a strict continuation of what was fed.
+// Persisted to warm-sessions.json next to endpoint.json; LRU 64 / 2h TTL.
+// Any resume failure falls back to a full-history fresh run.
+// ---------------------------------------------------------------------------
+const WARM_MAX_ENTRIES = 64;
+const WARM_TTL_MS = 2 * 60 * 60 * 1000;
+const warmStore = new Map();
+
+const warmFile = () => path.join(stateDir(), 'warm-sessions.json');
+
+const persistWarmStore = () => {
+  try {
+    fs.mkdirSync(stateDir(), { recursive: true });
+    const file = warmFile();
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify(Object.fromEntries(warmStore)) + '\n');
+    fs.renameSync(`${file}.tmp`, file);
+  } catch {}
+};
+
+const pruneWarmStore = () => {
+  const now = Date.now();
+  for (const [key, entry] of warmStore) {
+    if (!entry || !entry.conversationId || now - (entry.lastUsed || 0) > WARM_TTL_MS) {
+      warmStore.delete(key);
+    }
+  }
+  if (warmStore.size > WARM_MAX_ENTRIES) {
+    const entries = Array.from(warmStore.entries())
+      .sort((a, b) => (a[1].lastUsed || 0) - (b[1].lastUsed || 0));
+    for (const [key] of entries.slice(0, entries.length - WARM_MAX_ENTRIES)) {
+      warmStore.delete(key);
+    }
+  }
+};
+
+const loadWarmStore = () => {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(warmFile(), 'utf8'));
+    for (const [key, entry] of Object.entries(parsed)) {
+      if (entry && typeof entry.conversationId === 'string' && entry.conversationId) {
+        warmStore.set(key, entry);
+      }
+    }
+    pruneWarmStore();
+  } catch {}
+};
+loadWarmStore();
+
+const messageText = (m) => {
+  if (!m) return '';
+  if (typeof m.content === 'string') return m.content;
+  if (Array.isArray(m.content)) {
+    return m.content.map(c => c.text || JSON.stringify(c)).join('\n');
+  }
+  return m.content == null ? '' : JSON.stringify(m.content);
+};
+
+const hashText = (text) => crypto.createHash('sha256').update(text).digest('hex').slice(0, 32);
+const hashMessage = (m) => hashText(`${m?.role || ''}\n${messageText(m)}`);
+
+const computeWarmKey = (messages, fullName) => {
+  if (!Array.isArray(messages)) return null;
+  const firstUser = messages.find(m => m.role === 'user');
+  if (!firstUser) return null;
+  const systemText = messages
+    .filter(m => m.role === 'system')
+    .map(messageText)
+    .join('\n\n');
+  return crypto.createHash('sha256')
+    .update(JSON.stringify([systemText, messageText(firstUser), fullName]))
+    .digest('hex');
+};
+
+// Decide fresh vs resume for a request with no explicit session id.
+// Returns { key, mode: 'fresh' } or
+//         { key, mode: 'resume', entry, prompt } where prompt carries
+//         ONLY the messages the agy conversation has not seen yet.
+const planWarmRequest = (messages, fullName) => {
+  const key = computeWarmKey(messages, fullName);
+  if (!key) return { key: null, mode: 'fresh' };
+  pruneWarmStore();
+  const entry = warmStore.get(key);
+  if (!entry || !entry.conversationId) return { key, mode: 'fresh' };
+  // History must be a strict continuation of what was fed: more messages
+  // than fedCount, with an identical fed prefix.
+  if (!Array.isArray(messages) || messages.length <= entry.fedCount) return { key, mode: 'fresh' };
+  if (!Array.isArray(entry.fedHashes) || entry.fedHashes.length < entry.fedCount) return { key, mode: 'fresh' };
+  for (let i = 0; i < entry.fedCount; i++) {
+    if (hashMessage(messages[i]) !== entry.fedHashes[i]) return { key, mode: 'fresh' };
+  }
+  let idx = entry.fedCount;
+  // The assistant message the client echoes back first is the response
+  // the resumed conversation itself produced — already in its history.
+  // Verify it is that response; a tampered/different echo is a mismatch.
+  if (messages[idx]?.role === 'assistant') {
+    if (entry.lastResponseHash && hashText(messageText(messages[idx])) !== entry.lastResponseHash) {
+      return { key, mode: 'fresh' };
+    }
+    idx++;
+  }
+  const remaining = messages.slice(idx);
+  if (remaining.length === 0) return { key, mode: 'fresh' };
+  if (!remaining.some(m => m.role === 'user')) return { key, mode: 'fresh' };
+  if (remaining.some(m => m.role === 'system')) return { key, mode: 'fresh' };
+  const prompt = remaining.length === 1 && remaining[0].role === 'user'
+    ? messageText(remaining[0])
+    : formatPrompt(remaining);
+  if (!prompt.trim()) return { key, mode: 'fresh' };
+  return { key, mode: 'resume', entry, prompt };
+};
+
+const commitWarm = (key, conversationId, messages, responseText) => {
+  if (!key) return;
+  if (!conversationId) {
+    if (warmStore.delete(key)) persistWarmStore();
+    return;
+  }
+  warmStore.set(key, {
+    conversationId,
+    fedCount: messages.length,
+    fedHashes: messages.map(hashMessage),
+    lastResponseHash: responseText ? hashText(responseText) : null,
+    lastUsed: Date.now()
+  });
+  pruneWarmStore();
+  persistWarmStore();
+};
+
+const invalidateWarm = (key) => {
+  if (key && warmStore.delete(key)) persistWarmStore();
+};
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || HOST}`);
   const pathname = url.pathname.replace(/\/+$/, '') || '/';
@@ -266,7 +408,8 @@ const server = http.createServer((req, res) => {
       port: PORT,
       binary: AGY_BIN,
       defaultModel: 'gemini-3.8-flash-medium',
-      activeSessions: sessionStore.size
+      activeSessions: sessionStore.size,
+      warmSessions: warmStore.size
     }, null, 2));
     return;
   }
@@ -325,10 +468,20 @@ const server = http.createServer((req, res) => {
       const { baseModel, effort, fullName } = resolveModelAndEffort(body.model, requestedEffort);
 
       const sessionInfo = getSessionKey(req, body);
-      const isResuming = Boolean(sessionInfo.conversationId);
-      const prompt = isResuming
-        ? extractLatestUserPrompt(body.messages)
-        : formatPrompt(body.messages);
+      // Warm keying applies only when the caller did not pin a session:
+      // an explicit id or a cached `user:` session keeps the legacy
+      // latest-turn-only resume behaviour.
+      const warmPlan = (!sessionInfo.conversationId && !sessionInfo.explicit)
+        ? planWarmRequest(body.messages, fullName)
+        : { key: null, mode: 'fresh' };
+      const warmResumeId = warmPlan.mode === 'resume' ? warmPlan.entry.conversationId : null;
+      const initialConversationId = sessionInfo.conversationId || warmResumeId;
+      const isResuming = Boolean(initialConversationId);
+      const prompt = warmResumeId
+        ? warmPlan.prompt
+        : isResuming
+          ? extractLatestUserPrompt(body.messages)
+          : formatPrompt(body.messages);
 
       if (!prompt.trim()) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -369,7 +522,7 @@ const server = http.createServer((req, res) => {
       };
 
       let currentChild = null;
-      let activeConversationId = sessionInfo.conversationId || null;
+      let activeConversationId = initialConversationId || null;
 
       res.on('close', () => {
         if (!res.writableEnded && currentChild) {
@@ -410,6 +563,7 @@ const server = http.createServer((req, res) => {
           let responseEnded = false;
           let hasOutput = false;
           let stderrBuffer = '';
+          let streamedText = '';
 
           runAgy(targetConvId, promptToUse, (child) => {
             currentChild = child;
@@ -426,6 +580,7 @@ const server = http.createServer((req, res) => {
                 }
                 if (obj.event === 'step_update' && obj.step_update?.text_delta) {
                   hasOutput = true;
+                  streamedText += obj.step_update.text_delta;
                   const delta = obj.step_update.text_delta;
                   const chunk = {
                     id: reqId,
@@ -444,6 +599,9 @@ const server = http.createServer((req, res) => {
                   res.write(`data: ${JSON.stringify(chunk)}\n\n`);
                 } else if (obj.event === 'result') {
                   finalUsage = obj.result?.usage || null;
+                  if (!streamedText && typeof obj.result?.response === 'string') {
+                    streamedText = obj.result.response;
+                  }
                   if (obj.result?.conversation_id) {
                     recordConversationId(obj.result.conversation_id);
                   }
@@ -467,17 +625,33 @@ const server = http.createServer((req, res) => {
             child.on('close', (code, signal) => {
               if (responseEnded) return;
 
-              // Fallback retry if resuming failed without output
-              if (code !== 0 && !hasOutput && allowRetry && targetConvId) {
+              if (lineBuffer.trim()) {
+                processJsonLine(lineBuffer.trim());
+              }
+
+              // A resumed id the CLI does not know is silently degraded
+              // to a fresh conversation holding only the new turn (the
+              // CLI warns on stderr and carries on) — that is a resume
+              // failure even when the exit code is 0.
+              const resumeNotFound = Boolean(targetConvId)
+                && /conversation .* not found/.test(stderrBuffer);
+
+              // Fallback retry if resuming failed without output (output
+              // already on the wire cannot be unsent, so a streamed
+              // partial failure stays an error, per #678).
+              if ((code !== 0 || resumeNotFound) && !hasOutput && allowRetry && targetConvId) {
                 console.log(`Resuming conversation ${targetConvId} failed (code ${code}), retrying as fresh conversation...`);
+                invalidateWarm(warmPlan.key);
                 executeStream(null, formatPrompt(body.messages), false);
                 return;
               }
 
               responseEnded = true;
 
-              if (lineBuffer.trim()) {
-                processJsonLine(lineBuffer.trim());
+              if (resumeNotFound && targetConvId) {
+                // Streamed answer came from a degraded fresh conversation
+                // that never saw the history: do not key it as fed.
+                invalidateWarm(warmPlan.key);
               }
 
               // Failure is judged by the child's exit: a non-zero code or
@@ -500,6 +674,10 @@ const server = http.createServer((req, res) => {
                 res.write('data: [DONE]\n\n');
                 res.end();
                 return;
+              }
+
+              if (!resumeNotFound) {
+                commitWarm(warmPlan.key, activeConversationId, body.messages, streamedText);
               }
 
               const finishChunk = {
@@ -538,7 +716,7 @@ const server = http.createServer((req, res) => {
           });
         };
 
-        executeStream(sessionInfo.conversationId, prompt, Boolean(sessionInfo.conversationId));
+        executeStream(initialConversationId, prompt, Boolean(initialConversationId));
 
       } else {
         // Non-streaming JSON mode
@@ -572,27 +750,44 @@ const server = http.createServer((req, res) => {
                 recordConversationId(detectedConvId);
               }
 
+              // A resumed id the CLI does not know is silently degraded
+              // to a fresh conversation holding only the new turn (the
+              // CLI warns on stderr and carries on) — that is a resume
+              // failure even when the exit code is 0.
+              const resumeNotFound = Boolean(targetConvId)
+                && /conversation .* not found/.test(stderrBuffer);
+
               // Failure is judged by the child's exit, not by whether it
               // produced output (#678): a run that fails after a partial
               // response must not be reported as a successful 'stop'
-              // carrying the truncated text. The resume retry stays
-              // gated on empty output, as before.
-              if (code !== 0) {
-                if (!responseText && allowRetry && targetConvId) {
+              // carrying the truncated text. A failed RESUME is the one
+              // exception: nothing has been sent yet in JSON mode, so it
+              // always falls back to a full-history fresh run and still
+              // answers (#480) instead of surfacing the partial failure.
+              if (code !== 0 || resumeNotFound) {
+                if (allowRetry && targetConvId) {
                   console.log(`Resuming conversation ${targetConvId} failed (code ${code}), retrying as fresh conversation...`);
+                  invalidateWarm(warmPlan.key);
                   executeJson(null, formatPrompt(body.messages), false);
                   return;
                 }
 
-                res.writeHead(502, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({
-                  error: 'agy process exited with non-zero code',
-                  code,
-                  ...(signal ? { signal } : {}),
-                  stderr: stderrBuffer.trim()
-                }));
-                return;
+                if (code !== 0) {
+                  res.writeHead(502, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({
+                    error: 'agy process exited with non-zero code',
+                    code,
+                    ...(signal ? { signal } : {}),
+                    stderr: stderrBuffer.trim()
+                  }));
+                  return;
+                }
+                // code === 0 with an unknown resume id and no retry left
+                // cannot happen (allowRetry mirrors targetConvId); fall
+                // through and answer with what the run produced.
               }
+
+              commitWarm(warmPlan.key, activeConversationId, body.messages, responseText);
 
               res.writeHead(200, {
                 'Content-Type': 'application/json',
@@ -634,7 +829,7 @@ const server = http.createServer((req, res) => {
           });
         };
 
-        executeJson(sessionInfo.conversationId, prompt, Boolean(sessionInfo.conversationId));
+        executeJson(initialConversationId, prompt, Boolean(initialConversationId));
       }
     });
     return;
