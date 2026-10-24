@@ -49,11 +49,19 @@ render() {
     echo "POSTGRES_PASSWORD=$(get postgres_password)"
     echo "AUTH_SECRET=$(get auth_secret)"
     echo "NOTIFICATION_SECRET_ENCRYPTION_KEY=$(get notification_secret_encryption_key)"
-    # Preserve an operator-set DISABLE_REGISTRATION across re-renders.
-    if [[ -f .env ]] && grep -q '^DISABLE_REGISTRATION=true' .env; then
-      echo "DISABLE_REGISTRATION=true"
-    else
+    # Registration renders CLOSED — that is the fleet posture, and a
+    # re-render must never silently reopen it. (Incident 2026-10-24:
+    # the previous preserve-if-set logic plus a false default in
+    # .env.example dropped the closed posture on a Phase 1 re-render;
+    # see the design record's Phase 1 as-built correction.) Opening
+    # registration — only ever to bootstrap the first account — is an
+    # explicit one-render opt-out:
+    #   KANEO_OPEN_REGISTRATION=1 ./deploy.sh
+    # Re-run ./deploy.sh without the variable to close it again.
+    if [[ ${KANEO_OPEN_REGISTRATION:-} == 1 ]]; then
       echo "DISABLE_REGISTRATION=false"
+    else
+      echo "DISABLE_REGISTRATION=true"
     fi
     echo "GITHUB_APP_ID=$(get github_app_id)"
     echo "GITHUB_APP_NAME=$(get github_app_name)"

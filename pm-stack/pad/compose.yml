@@ -1,0 +1,50 @@
+# Project-management stack — Phase 2: Pad (planning layer).
+#
+# Pad (github.com/PerpetualSoftware/pad, Apache-2.0) is a single Go
+# binary + SQLite. The image is pinned by tag AND digest (the tag
+# names the release for humans; the digest is the binding pin).
+# Bump deliberately, like every other pin in this stack.
+#
+# Based on Pad's official docker-compose example, with local changes:
+#   - the web port binds to host loopback and the host's tailnet
+#     address only — no public endpoint (Pad needs no inbound
+#     webhooks; the aggregator reaches it over the tailnet);
+#   - configuration comes from ./.env, rendered by deploy.sh from
+#     ../../secrets/pm-stack.sops.yaml. Never hand-edit .env on a
+#     host and never commit it.
+services:
+  pad:
+    # Pad v0.18.1 (2026-10-18). Tag + digest pin (tag for humans,
+    # digest is the binding pin).
+    image: ghcr.io/perpetualsoftware/pad:0.18.1@sha256:45e5a63b941e7562f5e07990224f91ae8019b0185f87c06fc21ab5bec254f13e
+    ports:
+      - "127.0.0.1:7777:7777"
+      - "100.99.113.103:7777:7777"
+    env_file:
+      - .env
+    environment:
+      PAD_PORT: "7777"
+      PAD_DB: /data/pad.db
+    volumes:
+      - pad_data:/data
+    working_dir: /data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-Y",
+          "off",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:7777/api/v1/health",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  pad_data:
