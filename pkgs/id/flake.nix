@@ -410,7 +410,7 @@
             src = ./.;
             nativeBuildInputs = fmtBins;
             buildPhase = ''
-              treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1 || true
+              treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1
             '';
             installPhase = ''
               mkdir -p $out
@@ -442,8 +442,7 @@
             nativeBuildInputs = [ rustToolchain ];
             buildPhase = ''
               find . -name '*.rs' -not -path '*/target/*' \
-                -exec rustfmt --check --edition 2024 {} + \
-                || true
+                -exec rustfmt --check --edition 2024 {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -455,9 +454,17 @@
             src = ./.;
             nativeBuildInputs = [ pkgs.statix ];
             buildPhase = ''
-              find . -name '*.nix' -print0 | while IFS= read -r -d "" f; do
-                statix check -- "$f" || true
-              done
+              # Collect failures across files instead of swallowing each
+              # one: a pipe into `while` would run the loop in a subshell
+              # and lose the flag, so feed it via process substitution.
+              fail=0
+              while IFS= read -r -d "" f; do
+                statix check -- "$f" || fail=1
+              done < <(find . -name '*.nix' -print0)
+              if [ "$fail" -ne 0 ]; then
+                echo "statix-check: statix reported problems above" >&2
+                false
+              fi
             '';
             installPhase = ''
               mkdir -p $out
@@ -470,8 +477,7 @@
             nativeBuildInputs = [ pkgs.shfmt ];
             buildPhase = ''
               find . -name '*.sh' -not -path '*/node_modules/*' \
-                -exec shfmt -d -i 2 -s {} + \
-                || true
+                -exec shfmt -d -i 2 -s {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -483,9 +489,14 @@
             src = ./.;
             nativeBuildInputs = [ pkgs.shellcheck ];
             buildPhase = ''
+              # Enforced at warning severity (#702): under sandbox
+              # conditions shellcheck reports only four info findings
+              # (SC2012, `ls` glob picks in the examples' build.sh
+              # files) and no warning-or-above findings, so warnings
+              # and errors fail the gate while those info findings
+              # are worked down separately.
               find . -name '*.sh' -not -path '*/node_modules/*' \
-                -exec shellcheck {} + \
-                || true
+                -exec shellcheck --severity=warning {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -498,8 +509,7 @@
             nativeBuildInputs = [ pkgs.taplo ];
             buildPhase = ''
               find . -name '*.toml' -not -path '*/target/*' \
-                -exec taplo check {} + \
-                || true
+                -exec taplo check {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -515,8 +525,7 @@
                 -o -name '*.scss' -o -name '*.yaml' \) \
                 -not -path '*/node_modules/*' -not -path '*/target/*' \
                 -not -path '*/dist/*' \
-                -exec prettier --check {} + \
-                || true
+                -exec prettier --check {} +
             '';
             installPhase = ''
               mkdir -p $out
