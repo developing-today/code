@@ -185,6 +185,10 @@ pub(crate) struct WorldActor {
     pub(crate) journal: Option<Box<dyn WorldJournal>>,
     pub(crate) storage_failed: bool,
     pub(crate) program_healthy: bool,
+    /// Times a `view` or `layout` call trapped. Counted for `id world stats`
+    /// (F11.17): a trapping view degrades to an error screen, not a poisoned
+    /// world, so this counter is the only place the failure is recorded.
+    pub(crate) view_failures: u64,
     pub(crate) compaction_off: bool,
     pub(crate) event_sender: broadcast::Sender<WorldEvent>,
     pub(crate) revocation_sender: broadcast::Sender<u64>,
@@ -892,6 +896,7 @@ impl WorldActor {
                 .collect(),
             ceiling: self.core.caps_ceiling.iter().cloned().collect(),
             effective,
+            view_failures: self.view_failures,
         })
     }
 
@@ -1078,7 +1083,7 @@ impl WorldActor {
                         Ok(view) => {
                             if let Some(text) = &view {
                                 if text.len() > self.core.limits.presentation_bytes {
-                                    self.program_healthy = false;
+                                    self.view_failures = self.view_failures.saturating_add(1);
                                     Err(anyhow::anyhow!(
                                         "world presentation exceeds {} bytes",
                                         self.core.limits.presentation_bytes
@@ -1091,7 +1096,10 @@ impl WorldActor {
                             }
                         }
                         Err(error) => {
-                            self.program_healthy = false;
+                            // A trapping view degrades to an error screen, not
+                            // a poisoned world: keep the program healthy so the
+                            // next event retries (F11.17).
+                            self.view_failures = self.view_failures.saturating_add(1);
                             Err(error.context("world program view failed"))
                         }
                     },
@@ -1114,7 +1122,7 @@ impl WorldActor {
                             Ok(view) => {
                                 if let Some(text) = &view {
                                     if text.len() > self.core.limits.presentation_bytes {
-                                        self.program_healthy = false;
+                                        self.view_failures = self.view_failures.saturating_add(1);
                                         Err(anyhow::anyhow!(
                                             "world presentation exceeds {} bytes",
                                             self.core.limits.presentation_bytes
@@ -1127,7 +1135,9 @@ impl WorldActor {
                                 }
                             }
                             Err(error) => {
-                                self.program_healthy = false;
+                                // As with `view`, a trapping layout degrades to
+                                // an error screen and does not poison the world.
+                                self.view_failures = self.view_failures.saturating_add(1);
                                 Err(error.context("world program layout failed"))
                             }
                         }
@@ -1340,6 +1350,7 @@ impl WorldActor {
             journal,
             storage_failed: false,
             program_healthy,
+            view_failures: 0,
             compaction_off: false,
             event_sender: events,
             revocation_sender: revocations,

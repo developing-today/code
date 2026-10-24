@@ -648,6 +648,11 @@ pub struct CapsReport {
     /// ceilings.
     #[serde(default)]
     pub effective: Vec<String>,
+    /// Times a `view` or `layout` call trapped since the world opened
+    /// (F11.17). A trapping view degrades to an error screen instead of
+    /// poisoning the world, so this is the only trace of it.
+    #[serde(default)]
+    pub view_failures: u64,
 }
 
 #[cfg(test)]

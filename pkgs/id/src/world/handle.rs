@@ -69,6 +69,7 @@ impl WorldHandle {
             journal,
             storage_failed: false,
             program_healthy,
+            view_failures: 0,
             compaction_off: false,
             event_sender: events.clone(),
             revocation_sender: revocations.clone(),

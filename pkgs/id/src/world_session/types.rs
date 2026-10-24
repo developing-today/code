@@ -413,8 +413,8 @@ pub enum InstallError {
 #[derive(Debug, Deserialize)]
 #[cfg_attr(not(feature = "sandbox"), allow(dead_code))]
 pub(crate) struct CompileFile {
-    name: String,
-    content: String,
+    pub(crate) name: String,
+    pub(crate) content: String,
 }
 
 /// A world plus the secret that may mint guest capabilities for it.
