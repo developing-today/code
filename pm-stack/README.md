@@ -8,10 +8,10 @@ forks of upstream projects.
 
 ## What runs
 
-| Piece | Image | Notes |
-| --- | --- | --- |
-| Kaneo | `ghcr.io/usekaneo/kaneo:2.47.0` (pinned) | Web UI + API on container port 5173, bound to host `127.0.0.1:5173` only |
-| PostgreSQL | `postgres:16-alpine` | Kaneo's database; named volume `pm-stack_postgres_data`; never exposed on a host port |
+| Piece      | Image                                    | Notes                                                                                 |
+| ---------- | ---------------------------------------- | ------------------------------------------------------------------------------------- |
+| Kaneo      | `ghcr.io/usekaneo/kaneo:2.47.0` (pinned) | Web UI + API on container port 5173, bound to host `127.0.0.1:5173` only              |
+| PostgreSQL | `postgres:16-alpine`                     | Kaneo's database; named volume `pm-stack_postgres_data`; never exposed on a host port |
 
 Public address: **https://kaneo.security.cab** — a Cloudflare Tunnel
 (tunnel name `amd-6-pm-stack`, remotely managed) whose ingress maps

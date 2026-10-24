@@ -27,15 +27,15 @@ is ever needed. Secrets are SOPS-encrypted in this repo
 
 Each layer has exactly one source of truth; nothing competes.
 
-| Layer | Tool | Owns | Notes |
-| --- | --- | --- | --- |
-| Code work | **GitHub** | Issues, PRs, comments, reviews across all repos | The non-negotiable centre; everything else orbits it |
-| Execution board | **Kaneo** (MIT, self-hosted) | Per-repo task boards | Two-way sync with GitHub (below); one project per repo |
-| Dispatch | **ready-for-agent** (MIT) | Turning a labelled issue into an agent run + PR | The sweep fleet, productised; requires OpenCode 2 (the fleet now runs it) — later phase |
-| Planning | **Pad** (Apache-2.0) | Plans, conventions, playbooks, ideas-in-progress | Local-first, per-agent write attribution, MCP server — later phase |
-| Tables | **Grist** (Apache-2.0) or **Baserow** (core MIT) | Roadmap, idea register, inventories, trackers | Choice deliberately deferred — later phase |
-| Glue | **ours** (this repo) | The link registry + projections | Webhook-fed projector; never a source of truth |
-| Aggregator UI | **ours** (this repo) | The two views below | Read-mostly projection; disposable without data loss |
+| Layer           | Tool                                             | Owns                                             | Notes                                                                                   |
+| --------------- | ------------------------------------------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| Code work       | **GitHub**                                       | Issues, PRs, comments, reviews across all repos  | The non-negotiable centre; everything else orbits it                                    |
+| Execution board | **Kaneo** (MIT, self-hosted)                     | Per-repo task boards                             | Two-way sync with GitHub (below); one project per repo                                  |
+| Dispatch        | **ready-for-agent** (MIT)                        | Turning a labelled issue into an agent run + PR  | The sweep fleet, productised; requires OpenCode 2 (the fleet now runs it) — later phase |
+| Planning        | **Pad** (Apache-2.0)                             | Plans, conventions, playbooks, ideas-in-progress | Local-first, per-agent write attribution, MCP server — later phase                      |
+| Tables          | **Grist** (Apache-2.0) or **Baserow** (core MIT) | Roadmap, idea register, inventories, trackers    | Choice deliberately deferred — later phase                                              |
+| Glue            | **ours** (this repo)                             | The link registry + projections                  | Webhook-fed projector; never a source of truth                                          |
+| Aggregator UI   | **ours** (this repo)                             | The two views below                              | Read-mostly projection; disposable without data loss                                    |
 
 Licenses verified from source 2026-10-24: Kaneo MIT; ready-for-agent
 MIT; Pad Apache-2.0; Grist Apache-2.0; Baserow core MIT (its

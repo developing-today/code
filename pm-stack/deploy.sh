@@ -29,7 +29,7 @@ SECRETS_FILE="${PM_STACK_SECRETS:-$STACK_DIR/../secrets/pm-stack.sops.yaml}"
 export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
 
 render() {
-  if [[ ! -f "$SECRETS_FILE" ]]; then
+  if [[ ! -f $SECRETS_FILE ]]; then
     echo "secrets file not found: $SECRETS_FILE" >&2
     exit 1
   fi
@@ -59,40 +59,40 @@ render() {
     echo "GITHUB_APP_NAME=$(get github_app_name)"
     echo "GITHUB_WEBHOOK_SECRET=$(get github_webhook_secret)"
     echo "GITHUB_PRIVATE_KEY_BASE64=$(get github_private_key_base64)"
-  } > .env
+  } >.env
   chmod 600 .env
 
   # cloudflared reads TUNNEL_TOKEN from its environment; the systemd
   # unit (systemd/pm-tunnel.service) loads this file.
-  echo "TUNNEL_TOKEN=$(get cloudflare_tunnel_token)" > tunnel.env
+  echo "TUNNEL_TOKEN=$(get cloudflare_tunnel_token)" >tunnel.env
   chmod 600 tunnel.env
   echo "rendered .env and tunnel.env from $SECRETS_FILE"
 }
 
 case "${1:-deploy}" in
-  render)
-    render
-    ;;
-  restart)
-    docker compose restart
-    ;;
-  deploy)
-    render
-    docker compose pull
-    docker compose up -d --force-recreate
-    echo "waiting for kaneo health..."
-    for i in $(seq 1 30); do
-      if curl --fail --silent http://127.0.0.1:5173/api/health >/dev/null; then
-        echo "kaneo is healthy: $(curl --silent http://127.0.0.1:5173/api/health)"
-        exit 0
-      fi
-      sleep 5
-    done
-    echo "kaneo did not become healthy in time; check: docker compose logs" >&2
-    exit 1
-    ;;
-  *)
-    echo "usage: $0 [deploy|render|restart]" >&2
-    exit 2
-    ;;
+render)
+  render
+  ;;
+restart)
+  docker compose restart
+  ;;
+deploy)
+  render
+  docker compose pull
+  docker compose up -d --force-recreate
+  echo "waiting for kaneo health..."
+  for i in $(seq 1 30); do
+    if curl --fail --silent http://127.0.0.1:5173/api/health >/dev/null; then
+      echo "kaneo is healthy: $(curl --silent http://127.0.0.1:5173/api/health)"
+      exit 0
+    fi
+    sleep 5
+  done
+  echo "kaneo did not become healthy in time; check: docker compose logs" >&2
+  exit 1
+  ;;
+*)
+  echo "usage: $0 [deploy|render|restart]" >&2
+  exit 2
+  ;;
 esac
