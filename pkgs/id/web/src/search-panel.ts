@@ -198,6 +198,15 @@ function openPanel(view: EditorView, showReplace: boolean): void {
   const container = view.dom.parentElement;
   if (!container) return;
 
+  // The panel is a module singleton bound to one view and container. When
+  // the editor is recreated (disconnect / open another file) the old panel
+  // is detached with the old container and its handlers still point at the
+  // destroyed view — and no production code calls destroySearchPanel() on
+  // teardown. Rebind instead of "opening" a detached node (#718).
+  if (panelState.panelEl && (panelState.view !== view || panelState.panelEl.parentElement !== container)) {
+    destroySearchPanel();
+  }
+
   if (!panelState.panelEl) {
     panelState.panelEl = createPanel(container);
     panelState.searchInput = panelState.panelEl.querySelector("#search-input");
