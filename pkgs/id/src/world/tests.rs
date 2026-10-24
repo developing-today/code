@@ -1,8 +1,9 @@
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 use crate::world::*;
 use std::sync::Arc;
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -3769,7 +3770,7 @@ mod schedule_tests {
 /// projection. This test pins the two serialization sites in the session and
 /// the behavioural contract of the projection itself.
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod projection_guard_tests {
     use crate::world::{WorldEvent, WorldEventKind, WorldScopes, project_event_for};
 
