@@ -544,7 +544,7 @@ impl WorldActor {
             "records.read" => self.execute_records_read(&request.args),
             "schedule.at" => self.execute_schedule_at(&request.args),
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
-            _ => Err(CapError::Unknown),
+            _ => Err(CapError::unknown()),
         }
     }
 
@@ -590,7 +590,7 @@ impl WorldActor {
             let size = key.len() + serde_json::to_vec(value).map_or(0, |v| v.len()) + 8;
             if used + size > crate::world_session::MAX_RECORDS_PAGE_BYTES {
                 if page.is_empty() {
-                    return Err(CapError::BadArgs);
+                    return Err(CapError::bad_args());
                 }
                 more = true;
                 break;
@@ -608,7 +608,7 @@ impl WorldActor {
     /// `chat.say` commits a host chat line; its result is the new sequence.
     fn execute_chat(&mut self, args: &serde_json::Value) -> Result<serde_json::Value, CapError> {
         let Some(text) = args.get("text").and_then(serde_json::Value::as_str) else {
-            return Err(CapError::BadArgs);
+            return Err(CapError::bad_args());
         };
         match self.core.system_chat(text) {
             Ok(event) => {
@@ -618,12 +618,12 @@ impl WorldActor {
                     })
                     .is_err()
                 {
-                    return Err(CapError::Failed);
+                    return Err(CapError::failed());
                 }
                 let _ = self.event_sender.send(event.clone());
                 Ok(serde_json::json!({"sequence": event.sequence}))
             }
-            Err(_) => Err(CapError::BadArgs),
+            Err(_) => Err(CapError::bad_args()),
         }
     }
 
@@ -637,14 +637,14 @@ impl WorldActor {
         let id = args
             .get("id")
             .and_then(serde_json::Value::as_str)
-            .ok_or(CapError::BadArgs)?;
+            .ok_or(CapError::bad_args())?;
         let at_ms = args
             .get("at")
             .and_then(serde_json::Value::as_u64)
-            .ok_or(CapError::BadArgs)?;
+            .ok_or(CapError::bad_args())?;
         if let Err(error) = self.core.check_schedule(id, at_ms, unix_ms()) {
             tracing::debug!("world {}: schedule refused: {error:#}", self.core.world_id);
-            return Err(CapError::BadArgs);
+            return Err(CapError::bad_args_with(format!("{error:#}")));
         }
         if self
             .persist(JournalEntry::ScheduleSet {
@@ -653,7 +653,7 @@ impl WorldActor {
             })
             .is_err()
         {
-            return Err(CapError::Failed);
+            return Err(CapError::failed());
         }
         self.core.schedules.insert(id.to_owned(), at_ms);
         Ok(serde_json::json!({"id": id, "fires_at": at_ms}))
@@ -668,9 +668,9 @@ impl WorldActor {
         let id = args
             .get("id")
             .and_then(serde_json::Value::as_str)
-            .ok_or(CapError::BadArgs)?;
+            .ok_or(CapError::bad_args())?;
         if crate::world_caps::validate_schedule_id(id).is_err() {
-            return Err(CapError::BadArgs);
+            return Err(CapError::bad_args());
         }
         if !self.core.schedules.contains_key(id) {
             return Ok(serde_json::json!({"cancelled": false}));
@@ -679,7 +679,7 @@ impl WorldActor {
             .persist(JournalEntry::ScheduleCancelled { id: id.to_owned() })
             .is_err()
         {
-            return Err(CapError::Failed);
+            return Err(CapError::failed());
         }
         self.core.schedules.remove(id);
         self.overdue_at_open.remove(id);

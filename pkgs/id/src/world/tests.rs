@@ -3580,4 +3580,46 @@ mod schedule_tests {
             serde_json::to_value(JournalEntry::ScheduleFired { id: "a".to_owned() }).unwrap();
         assert_eq!(fired["entry"], "schedule_fired");
     }
+
+    /// `schedule.at` returns the reason a schedule was refused, not a bare
+    /// `bad_args`: the program (and any operator reading the result) can see
+    /// why, on the wire.
+    #[tokio::test]
+    async fn a_refused_schedule_carries_its_reason_on_the_wire() {
+        let (world, token, _journal) =
+            scheduling_world("sched-reason", &["schedule.at"], false).await;
+        // First request is accepted; the second, reusing the id, is refused by
+        // `check_schedule` with a specific reason.
+        ask(
+            &world,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "ok", "cap": "schedule.at", "args": {"id": "nap", "at": unix_ms() + 60_000}},
+            ]}),
+        )
+        .await;
+        eventually("the first schedule result", || {
+            schedule_result(&world, "ok").is_some()
+        })
+        .await;
+        ask(
+            &world,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "dup", "cap": "schedule.at", "args": {"id": "nap", "at": unix_ms() + 120_000}},
+            ]}),
+        )
+        .await;
+        eventually("the refusal", || schedule_result(&world, "dup").is_some()).await;
+        let result = schedule_result(&world, "dup").unwrap();
+        assert_eq!(result["error"], "bad_args");
+        let reason = result["reason"]
+            .as_str()
+            .expect("a reason is carried on the wire");
+        assert!(
+            reason.contains("already pending"),
+            "unexpected reason: {reason}"
+        );
+        world.shutdown().await.unwrap();
+    }
 }
