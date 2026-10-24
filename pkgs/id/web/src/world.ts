@@ -1,6 +1,7 @@
 /** Browser presentation for the server-authoritative world session. */
 
 import { terminalBytesForKey } from "./world-keyboard";
+import { parseWorldSeed } from "./world-seed";
 import { renderWorldSurface, type ScreenSurface } from "./world-surface";
 
 type WorldFrame = {
@@ -339,8 +340,8 @@ function initWorld(): void {
       setStatus("Wasm module must be between 1 byte and 16 MiB", "error");
       return;
     }
-    const seed = Number(moduleSeed.value);
-    if (!Number.isSafeInteger(seed) || seed < 0) {
+    const seed = parseWorldSeed(moduleSeed.value);
+    if (seed === null) {
       setStatus("Seed must be a non-negative safe integer", "error");
       return;
     }
@@ -461,8 +462,8 @@ function initWorld(): void {
       }
       files.push({ name: file.name, content: await file.text() });
     }
-    const seed = Number(moduleSeed.value);
-    if (!Number.isSafeInteger(seed) || seed < 0) {
+    const seed = parseWorldSeed(moduleSeed.value);
+    if (seed === null) {
       setStatus("Seed must be a non-negative safe integer", "error");
       return;
     }
