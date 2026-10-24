@@ -259,53 +259,12 @@ pub fn print_match_repl(query: &str, m: &FindMatch, format: &str) {
     }
 }
 
-/// Determines the match quality of a needle in a haystack.
+/// Re-export of the canonical [`crate::match_kind`].
 ///
-/// This is a local helper duplicating the logic from the protocol's `match_kind`
-/// for use in local command implementations without requiring protocol access.
-///
-/// # Arguments
-///
-/// * `haystack` - The string to search in
-/// * `needle` - The string to search for
-///
-/// # Returns
-///
-/// - `Some(MatchKind::Exact)` if strings are equal
-/// - `Some(MatchKind::Prefix)` if haystack starts with needle
-/// - `Some(MatchKind::Contains)` if haystack contains needle
-/// - `None` if no match
-///
-/// # Note
-///
-/// Matching is case-sensitive. Callers should lowercase both strings
-/// for case-insensitive matching.
-///
-/// # Examples
-///
-/// ```rust
-/// use id::helpers::match_kind;
-/// use id::protocol::MatchKind;
-///
-/// assert_eq!(match_kind("hello", "hello"), Some(MatchKind::Exact));
-/// assert_eq!(match_kind("hello world", "hello"), Some(MatchKind::Prefix));
-/// assert_eq!(match_kind("say hello", "hello"), Some(MatchKind::Contains));
-/// assert_eq!(match_kind("goodbye", "hello"), None);
-///
-/// // Case-sensitive
-/// assert_eq!(match_kind("Hello", "hello"), None);
-/// ```
-pub fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
-    if haystack == needle {
-        Some(MatchKind::Exact)
-    } else if haystack.starts_with(needle) {
-        Some(MatchKind::Prefix)
-    } else if haystack.contains(needle) {
-        Some(MatchKind::Contains)
-    } else {
-        None
-    }
-}
+/// The single definition lives at the crate root so the CLI, REPL and
+/// protocol find paths can never diverge; this path is kept only for
+/// backwards compatibility.
+pub use crate::match_kind;
 
 /// Parse a duration such as `45s`, `90m`, `12h` or `3d` into seconds.
 ///
@@ -415,38 +374,6 @@ mod tests {
         let (source, output) = parse_get_spec("file.txt:-");
         assert_eq!(source, "file.txt");
         assert_eq!(output, Some("-"));
-    }
-
-    #[test]
-    fn test_match_kind_exact() {
-        assert_eq!(match_kind("hello", "hello"), Some(MatchKind::Exact));
-    }
-
-    #[test]
-    fn test_match_kind_prefix() {
-        assert_eq!(match_kind("hello world", "hello"), Some(MatchKind::Prefix));
-    }
-
-    #[test]
-    fn test_match_kind_contains() {
-        assert_eq!(match_kind("say hello", "hello"), Some(MatchKind::Contains));
-    }
-
-    #[test]
-    fn test_match_kind_none() {
-        assert_eq!(match_kind("goodbye", "hello"), None);
-    }
-
-    #[test]
-    fn test_match_kind_case_sensitive() {
-        assert_eq!(match_kind("Hello", "hello"), None);
-        assert_eq!(match_kind("hello", "Hello"), None);
-    }
-
-    #[test]
-    fn test_match_kind_empty_needle() {
-        // Empty string: starts_with("") is true, so returns Prefix
-        assert_eq!(match_kind("hello", ""), Some(MatchKind::Prefix));
     }
 
     #[test]
