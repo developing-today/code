@@ -54,7 +54,7 @@
 //                            [--status] [--dry-run]
 // Exit code: 0 when every selected proxy reconciled (or was already
 // correct); 1 when any roll failed (the old instance is left running).
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -127,6 +127,10 @@ export const loadConfig = (file) => {
   const cfg = {
     stateDir: expandPath(raw.stateDir || '~/.local/state/proxy-supervisor'),
     endpointDir: expandPath(raw.endpointDir || '~/.local/state'),
+    // 'system' | 'user' | null. When set, instances are started as
+    // transient systemd units (systemd-run) — see spawnInstance for
+    // why plain detached children are not enough.
+    systemdRun: raw.systemdRun || null,
     drainSeconds: raw.drainSeconds ?? 5,
     healthTimeoutSeconds: raw.healthTimeoutSeconds ?? 45,
     lockTimeoutSeconds: raw.lockTimeoutSeconds ?? 900,
@@ -222,28 +226,82 @@ const waitHealthy = async (proxy, port, timeoutSeconds, isDead) => {
 };
 
 // ---------- instance control ----------
+//
+// Instances are started as transient systemd units (systemd-run) when
+// the config says so. A plain detached child is NOT enough: when the
+// supervisor runs as a systemd oneshot (the timer), children it spawns
+// land in the oneshot's cgroup and systemd kills them all when the
+// oneshot exits — observed live on the sandbox (the timer's first
+// reconcile started commandcode-proxy and the codex relay; both died
+// with the invocation, while shell-started instances survived). A
+// transient unit is its own cgroup and lifecycle: it survives the
+// supervisor, a daemon-reload, and a nixos switch (switch only
+// restarts units whose generated definitions changed), and stopping
+// it takes the proxy's own children (e.g. commandcode's ACP process)
+// with it. Unit name: fps-<proxy>-<port>.
 
-const spawnInstance = (cfg, proxy, env, port) => {
+const scArgs = (cfg) => (cfg.systemdRun === 'user' ? ['--user'] : []);
+const systemctl = (cfg, args) =>
+  spawnSync('systemctl', [...scArgs(cfg), ...args], { encoding: 'utf8', timeout: 30000 });
+
+const unitNameFor = (proxy, port) => `fps-${proxy.name}-${port}`;
+
+const spawnInstance = async (cfg, proxy, env, port) => {
+  const fullEnv = { ...env, [proxy.portEnv]: String(port) };
+  if (cfg.systemdRun) {
+    const unit = unitNameFor(proxy, port);
+    const setenv = Object.entries(fullEnv).flatMap(([k, v]) => [`--setenv=${k}=${v}`]);
+    const run = () =>
+      spawnSync('systemd-run', [
+        ...scArgs(cfg), `--unit=${unit}`, '--collect',
+        `--working-directory=${proxy.cwd || os.homedir()}`,
+        ...setenv, '--', ...proxy.command,
+      ], { encoding: 'utf8', timeout: 30000 });
+    let r = run();
+    if (r.status !== 0) {
+      // A previous generation's unit may linger (deactivating/failed).
+      systemctl(cfg, ['stop', unit]);
+      systemctl(cfg, ['reset-failed', unit]);
+      r = run();
+    }
+    if (r.status !== 0) {
+      return { pid: null, unit, isDead: () => true, error: (r.stderr || 'systemd-run failed').slice(0, 200) };
+    }
+    // MainPID appears asynchronously.
+    let pid = null;
+    for (let i = 0; i < 25 && !pid; i++) {
+      const out = systemctl(cfg, ['show', unit, '-p', 'MainPID', '--value']);
+      const n = Number((out.stdout || '').trim());
+      if (Number.isInteger(n) && n > 0) pid = n;
+      else await sleep(200);
+    }
+    return { pid, unit, isDead: () => !pidAlive(pid) };
+  }
   const logFile = path.join(cfg.stateDir, 'logs', `${proxy.name}-${port}.log`);
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const fd = fs.openSync(logFile, 'a');
   const child = spawn(proxy.command[0], proxy.command.slice(1), {
     cwd: proxy.cwd || os.homedir(),
-    env: { ...env, [proxy.portEnv]: String(port) },
+    env: fullEnv,
     detached: true,
     stdio: ['ignore', fd, fd],
   });
   fs.closeSync(fd);
   child.unref();
-  return child;
+  let exited = false;
+  child.on('exit', () => { exited = true; });
+  return { pid: child.pid, unit: null, isDead: () => exited || !pidAlive(child.pid) };
 };
 
-export const stopInstance = async (pid, drainSeconds) => {
+export const stopInstance = async (pid, drainSeconds, cfg = null, unit = null) => {
+  if (unit && cfg) systemctl(cfg, ['stop', unit]);
   if (!pidAlive(pid)) return 'already-dead';
-  try { process.kill(pid, 'SIGTERM'); } catch { return 'already-dead'; }
+  if (!unit) {
+    try { process.kill(pid, 'SIGTERM'); } catch { return 'already-dead'; }
+  }
   const deadline = Date.now() + drainSeconds * 1000;
   while (Date.now() < deadline) {
-    if (!pidAlive(pid)) return 'sigterm';
+    if (!pidAlive(pid)) return unit ? 'unit-stop' : 'sigterm';
     await sleep(200);
   }
   try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
@@ -254,12 +312,13 @@ export const stopInstance = async (pid, drainSeconds) => {
 
 const endpointFile = (cfg, name) => path.join(cfg.endpointDir, name, 'endpoint.json');
 
-const writeEndpoint = (cfg, proxy, { port, pid, hash, startedAt, previousPort }) => {
+const writeEndpoint = (cfg, proxy, { port, pid, hash, startedAt, previousPort, unit }) => {
   writeJsonAtomic(endpointFile(cfg, proxy.name), {
     host: proxy.host,
     port,
     url: `http://${proxy.host}:${port}`,
     pid,
+    unit: unit ?? null,
     hash,
     startedAt,
     previousPort: previousPort ?? null,
@@ -353,7 +412,7 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
       }
       // Clean up a leftover previous instance (interrupted roll).
       if (state.previous && state.previous.pid !== current.pid && pidAlive(state.previous.pid)) {
-        if (!dryRun) await stopInstance(state.previous.pid, cfg.drainSeconds);
+        if (!dryRun) await stopInstance(state.previous.pid, cfg.drainSeconds, cfg, state.previous.unit);
       }
       log(JSON.stringify(result));
       return result;
@@ -375,18 +434,15 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
         log(JSON.stringify(result));
         return result;
       }
-      await stopInstance(current.pid, cfg.drainSeconds);
-      const env2 = env;
-      const fin = spawnInstance(cfg, proxy, env2, proxy.canonicalPort);
-      let finExited = false;
-      fin.on('exit', () => { finExited = true; });
-      const okFin = await waitHealthy(proxy, proxy.canonicalPort, cfg.healthTimeoutSeconds, () => finExited);
+      await stopInstance(current.pid, cfg.drainSeconds, cfg, current.unit);
+      const fin = await spawnInstance(cfg, proxy, env, proxy.canonicalPort);
+      const okFin = await waitHealthy(proxy, proxy.canonicalPort, cfg.healthTimeoutSeconds, fin.isDead);
       if (!okFin) {
         result.action = 'swap-failed';
         log(JSON.stringify(result));
         return result;
       }
-      const home = { port: proxy.canonicalPort, hash, pid: fin.pid, startedAt: new Date().toISOString(), validatedOnPort: current.port };
+      const home = { port: proxy.canonicalPort, hash, pid: fin.pid, unit: fin.unit, startedAt: new Date().toISOString(), validatedOnPort: current.port };
       writeJsonAtomic(stateFile(cfg, proxy.name), { current: home });
       writeEndpoint(cfg, proxy, { ...home, previousPort: current.port });
       result.action = 'rolled';
@@ -440,14 +496,14 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
     else targetPort = current?.live ? otherPort(proxy, current.port) : proxy.canonicalPort;
 
     if (proxy.strategy === 'inplace' && current?.live) {
-      await stopInstance(current.pid, cfg.drainSeconds);
+      await stopInstance(current.pid, cfg.drainSeconds, cfg, current.unit);
       current = null;
     }
     // A leftover occupant on the target port that is our recorded
     // previous instance gets stopped; anything else aborts the roll.
     if (health[targetPort]?.ok) {
       if (state.previous && state.previous.port === targetPort && pidAlive(state.previous.pid)) {
-        await stopInstance(state.previous.pid, cfg.drainSeconds);
+        await stopInstance(state.previous.pid, cfg.drainSeconds, cfg, state.previous.unit);
       } else if (current?.port === targetPort && current.live) {
         // swap strategy validating while current already sits on alt:
         // fall through — spawning will fail to bind; treat as roll to canonical below.
@@ -459,34 +515,33 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
     }
 
     const previousPort = current?.live ? current.port : null;
-    const child = spawnInstance(cfg, proxy, env, targetPort);
-    const newPid = child.pid;
-    let exited = false;
-    child.on('exit', () => { exited = true; });
-    const healthy = await waitHealthy(proxy, targetPort, cfg.healthTimeoutSeconds, () => exited);
+    const inst = await spawnInstance(cfg, proxy, env, targetPort);
+    const newPid = inst.pid;
+    const healthy = newPid !== null && (await waitHealthy(proxy, targetPort, cfg.healthTimeoutSeconds, inst.isDead));
     if (!healthy) {
-      if (pidAlive(newPid)) await stopInstance(newPid, 2);
+      if (pidAlive(newPid)) await stopInstance(newPid, 2, cfg, inst.unit);
+      else if (inst.unit) systemctl(cfg, ['stop', inst.unit]);
       result.action = 'roll-failed-old-kept';
       result.port = previousPort;
+      if (inst.error) result.error = inst.error;
       writeJsonAtomic(stateFile(cfg, proxy.name), { ...state, lastError: { at: new Date().toISOString(), hash, targetPort } });
       log(JSON.stringify(result));
       return result;
     }
 
     const startedAt = new Date().toISOString();
-    const newCurrent = { port: targetPort, hash, pid: newPid, startedAt };
+    const newCurrent = { port: targetPort, hash, pid: newPid, unit: inst.unit, startedAt };
 
     if (proxy.strategy === 'swap' && targetPort !== proxy.canonicalPort) {
       // Candidate validated on the alternate port. Stop it and the old
       // instance, then start the same build on the canonical port.
-      await stopInstance(newPid, cfg.drainSeconds);
-      if (current?.live && current.pid !== newPid) await stopInstance(current.pid, cfg.drainSeconds);
-      const final = spawnInstance(cfg, proxy, env, proxy.canonicalPort);
-      let finalExited = false;
-      final.on('exit', () => { finalExited = true; });
-      const finalHealthy = await waitHealthy(proxy, proxy.canonicalPort, cfg.healthTimeoutSeconds, () => finalExited);
+      await stopInstance(newPid, cfg.drainSeconds, cfg, inst.unit);
+      if (current?.live && current.pid !== newPid) await stopInstance(current.pid, cfg.drainSeconds, cfg, current.unit);
+      const final = await spawnInstance(cfg, proxy, env, proxy.canonicalPort);
+      const finalHealthy = final.pid !== null && (await waitHealthy(proxy, proxy.canonicalPort, cfg.healthTimeoutSeconds, final.isDead));
       if (!finalHealthy) {
-        if (pidAlive(final.pid)) await stopInstance(final.pid, 2);
+        if (pidAlive(final.pid)) await stopInstance(final.pid, 2, cfg, final.unit);
+        else if (final.unit) systemctl(cfg, ['stop', final.unit]);
         result.action = 'swap-failed';
         writeJsonAtomic(stateFile(cfg, proxy.name), { ...state, lastError: { at: new Date().toISOString(), hash, targetPort: proxy.canonicalPort } });
         log(JSON.stringify(result));
@@ -494,6 +549,7 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
       }
       newCurrent.port = proxy.canonicalPort;
       newCurrent.pid = final.pid;
+      newCurrent.unit = final.unit;
       newCurrent.validatedOnPort = targetPort;
     } else {
       // Cut over first (endpoint flip), then drain the old instance.
@@ -501,7 +557,6 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
       writeEndpoint(cfg, proxy, { ...newCurrent, previousPort });
       if (proxy.wireCommand) {
         try {
-          const { spawnSync } = await import('node:child_process');
           spawnSync(proxy.wireCommand[0], proxy.wireCommand.slice(1), {
             env: { ...process.env, PROXY_NAME: proxy.name, PROXY_PORT: String(targetPort), PROXY_PREVIOUS_PORT: String(previousPort ?? '') },
             stdio: 'inherit',
@@ -512,7 +567,7 @@ export const reconcile = async (cfg, proxy, { dryRun = false, log = console.log 
         }
       }
       if (current?.live && current.pid !== newPid) {
-        await stopInstance(current.pid, cfg.drainSeconds);
+        await stopInstance(current.pid, cfg.drainSeconds, cfg, current.unit);
         // The fleet proxies unlink endpoint.json on graceful exit; the
         // old instance's shutdown therefore deletes the record the new
         // instance (and this cutover) just published. Rewrite it now

@@ -635,6 +635,7 @@ in
   xdg.configFile."proxy-supervisor/config.json".text = builtins.toJSON {
     stateDir = "~/.local/state/proxy-supervisor";
     endpointDir = "~/.local/state";
+    systemdRun = "user";
     drainSeconds = 5;
     healthTimeoutSeconds = 60;
     proxies = [
