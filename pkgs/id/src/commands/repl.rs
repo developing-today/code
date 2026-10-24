@@ -722,14 +722,14 @@ impl ReplContext {
                         let hash_str = item.hash.to_string();
                         let name_lower = name.to_lowercase();
 
-                        if let Some(kind) = Self::match_kind(&name_lower, &query_lower) {
+                        if let Some(kind) = crate::match_kind(&name_lower, &query_lower) {
                             matches.push(FindMatch {
                                 hash: item.hash,
                                 name: name.clone(),
                                 kind,
                                 is_hash_match: false,
                             });
-                        } else if let Some(kind) = Self::match_kind(&hash_str, &query_lower) {
+                        } else if let Some(kind) = crate::match_kind(&hash_str, &query_lower) {
                             matches.push(FindMatch {
                                 hash: item.hash,
                                 name,
@@ -756,28 +756,6 @@ impl ReplContext {
         };
 
         Ok(matches)
-    }
-
-    /// Determine the type of match between a haystack and needle.
-    ///
-    /// Used internally by the find operation to categorize matches.
-    ///
-    /// # Returns
-    ///
-    /// - `Some(MatchKind::Exact)` if haystack equals needle
-    /// - `Some(MatchKind::Prefix)` if haystack starts with needle
-    /// - `Some(MatchKind::Contains)` if haystack contains needle
-    /// - `None` if no match
-    fn match_kind(haystack: &str, needle: &str) -> Option<MatchKind> {
-        if haystack == needle {
-            Some(MatchKind::Exact)
-        } else if haystack.starts_with(needle) {
-            Some(MatchKind::Prefix)
-        } else if haystack.contains(needle) {
-            Some(MatchKind::Contains)
-        } else {
-            None
-        }
     }
 
     /// Set a metadata tag on a file.
