@@ -3703,3 +3703,85 @@ mod schedule_tests {
         );
     }
 }
+
+/// Structural guard for the one client projection (F11.11, #543).
+///
+/// Every path that hands a [`WorldEvent`] to a participant must go through
+/// [`project_event_for`] (or the [`WorldHandle`] methods that wrap it), so a
+/// future path cannot serialize a `WorldEvent` to a client around the
+/// projection. This test pins the two serialization sites in the session and
+/// the behavioural contract of the projection itself.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod projection_guard_tests {
+    use crate::world::{WorldEvent, WorldEventKind, WorldScopes, project_event_for};
+
+    /// The live stream and the catch-up page are the only two places a
+    /// `WorldEvent` is serialized to a client, and both go through the
+    /// projection. If a new site appears, this fails and forces a decision
+    /// about whether it, too, projects.
+    #[test]
+    fn the_session_serializes_events_only_through_the_projection() {
+        let session = include_str!("../world_session/mod.rs");
+        let sites = session.matches("ServerFrame::Event {").count();
+        assert_eq!(sites, 2, "exactly two client event serialization sites");
+        // The live stream projects before it sends.
+        assert!(
+            session.contains("world.project_event(token.clone(), event.clone())"),
+            "the live stream must project via WorldHandle::project_event"
+        );
+        // The catch-up path is `events_after`, which projects internally.
+        assert!(
+            session.contains("events_after"),
+            "the catch-up page must come from events_after (projected)"
+        );
+        // `snapshot` is the third client path and is projected too.
+        assert!(
+            session.contains("world.snapshot(token.clone())"),
+            "the snapshot must come from WorldHandle::snapshot (projected)"
+        );
+    }
+
+    /// The projection's contract: a join-only viewer neither reads chat nor
+    /// sees an install seed, and a program-install event keeps everything else.
+    #[test]
+    fn the_projection_redacts_chat_and_the_install_seed() {
+        let chat = WorldEvent {
+            sequence: 1,
+            participant_id: 1,
+            kind: WorldEventKind::Chat("hello".to_owned()),
+        };
+        assert_eq!(
+            project_event_for(WorldScopes::JOIN, &chat),
+            None,
+            "a join-only viewer does not see chat"
+        );
+        assert_eq!(
+            project_event_for(WorldScopes::CHAT, &chat),
+            Some(chat.clone()),
+            "a CHAT viewer sees chat"
+        );
+
+        let installed = WorldEvent {
+            sequence: 2,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "hash".to_owned(),
+                seed: 424_242,
+                provenance: None,
+            },
+        };
+        let shown = project_event_for(WorldScopes::GUEST, &installed)
+            .expect("a program install is visible to every participant");
+        assert_eq!(shown.sequence, 2);
+        match &shown.kind {
+            WorldEventKind::ProgramInstalled {
+                module_hash, seed, ..
+            } => {
+                assert_eq!(module_hash, "hash", "the module hash is kept");
+                assert_eq!(*seed, 0, "the install seed is redacted");
+            }
+            other => panic!("unexpected kind: {other:?}"),
+        }
+    }
+}
