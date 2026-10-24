@@ -1,0 +1,4 @@
+# Rendered by deploy.sh from ../secrets/pm-stack.sops.yaml.
+# Mode-600 plaintext secrets on the host — never commit.
+/.env
+/tunnel.env

@@ -69,7 +69,12 @@ jobs:
             Review the repository for low-risk housekeeping: dead code,
             unused dependencies, stale TODOs and obvious documentation drift.
             Open a single pull request with the changes, and explain each one.
-            Do not make behavioural changes.
+            Do not make behavioural changes. Batch every instance of the same
+            problem into that one PR — update related dependencies together,
+            never one PR per dependency. Merging is permitted but never
+            required: merge only when checks pass and you are reasonably
+            certain the PR is correct and low-risk; otherwise leave it open
+            and state your confidence and what a human should check.
 
   # Triggered by applying the `jules` label to an issue. Note this is the same
   # convention the Jules GitHub App uses natively; keep one or the other to
@@ -90,7 +95,10 @@ jobs:
             Address GitHub issue #${{ github.event.issue.number }}:
             "${{ github.event.issue.title }}".
             ${{ github.event.issue.body }}
-            Open a pull request that fixes it and reference the issue.
+            Open a pull request that fixes it. Put "Fixes #${{ github.event.issue.number }}"
+            in the pull request description so the issue closes on merge, and
+            cover any same-set instances of the problem (including related
+            dependency updates) in the same PR rather than separately.
 
   ci-failure-fix:
     if: >-
