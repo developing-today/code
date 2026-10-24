@@ -1,0 +1,32 @@
+table ip nat {
+	chain pre {
+		type nat hook prerouting priority dstnat; policy accept;
+	}
+
+	chain post {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname "wan" masquerade fully-random
+	}
+}
+table ip filt {
+	chain in {
+		type filter hook input priority filter; policy accept;
+		iifname "wan" ct state new drop
+	}
+}
+table ip nat {
+	chain pre {
+		type nat hook prerouting priority dstnat; policy accept;
+	}
+
+	chain post {
+		type nat hook postrouting priority srcnat; policy accept;
+		oifname "wan" masquerade fully-random
+	}
+}
+table ip filt {
+	chain in {
+		type filter hook input priority filter; policy accept;
+		iifname "wan" ct state new drop
+	}
+}

@@ -1,2 +1,4 @@
 secrets/sops/**.yaml diff=sopsdiffer
 nix linguist-generated=true
+doc/**/transcript.txt -text
+doc/**/changes.md merge=union

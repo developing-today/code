@@ -10,13 +10,7 @@ rec {
   lyrics = pkgs.python3Packages.callPackage ./lyrics { };
   compiz = pkgs.callPackage ./compiz { };
   hyprbars = pkgs.callPackage ./hyprbars { };
-
-  # Mojo language (prebuilt upstream wheels; unfree)
-  mojo = pkgs.callPackage ./mojo { };
-
-  # Agent harnesses not yet in nixpkgs
-  hermes-agent = pkgs.callPackage ./hermes-agent { };
-  pi-coding-agent = pkgs.callPackage ./pi-coding-agent { };
+  mcpx = pkgs.callPackage ./mcpx/package.nix { };
 
   # Personal scripts
   pass-wofi = pkgs.callPackage ./pass-wofi { };

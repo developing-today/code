@@ -1,0 +1,5 @@
+# Derived from tunnel.toml with the kit's commented [access] block turned on (scenario 5).
+http_bind_addr = "127.0.0.1:19141"
+enable_quic_addr_discovery = false
+metrics_bind_addr = "127.0.0.1:19241"
+access.shared_token = ["s11-test-token-not-secret"]

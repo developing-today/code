@@ -1,0 +1,4 @@
+[2m2026-10-11T12:30:33.106960Z[0m [32m INFO[0m [2miroh_metrics::service[0m[2m:[0m Starting metrics server on 127.0.0.1:9090
+[2m2026-10-11T12:30:33.108071Z[0m [32m INFO[0m [2miroh_relay::server::http_server[0m[2m:[0m [HTTP/WS] relay: serving on 10.0.0.1:3340
+[2m2026-10-11T12:30:33.108179Z[0m [32m INFO[0m [2miroh_relay::quic::server[0m[2m:[0m QUIC server listening on [3mbind_addr[0m[2m=[0m10.0.0.1:7842
+[2m2026-10-11T12:31:41.456866Z[0m [33m WARN[0m [1mrelay-http-serve[0m[2m:[0m[1mconn[0m[1m{[0m[3mpeer[0m[2m=[0m10.0.0.3:33701[1m}[0m[2m:[0m[1mhandler[0m[2m:[0m[1mclient-connection-actor[0m[1m{[0m[3mremote_endpoint[0m[2m=[0m8b027cdb29 [3mconnection_id[0m[2m=[0m1[1m}[0m[2m:[0m [2miroh_relay::server::client[0m[2m:[0m actor errored Stream terminated, exiting

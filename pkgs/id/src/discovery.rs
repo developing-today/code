@@ -339,7 +339,7 @@ pub const STALE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 /// use id::discovery::PeerAnnouncement;
 /// use iroh_base::SecretKey;
 ///
-/// let key = SecretKey::generate(&mut rand::rng());
+/// let key = SecretKey::generate();
 /// let announcement = PeerAnnouncement {
 ///     node_id: key.public(),
 ///     name: Some("my-server".to_string()),
@@ -527,7 +527,7 @@ impl Default for PeerDiscovery {
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::unchecked_duration_subtraction
+    clippy::unchecked_time_subtraction
 )]
 mod tests {
     use super::*;

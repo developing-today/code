@@ -1,0 +1,133 @@
+diff -ruN /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2panda-encryption/Cargo.toml serde-bytes/p2panda-encryption/Cargo.toml
+--- /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2panda-encryption/Cargo.toml	2026-10-11 02:34:03.747656545 -0500
++++ serde-bytes/p2panda-encryption/Cargo.toml	2026-10-11 07:14:22.436482253 -0500
+@@ -18,9 +18,6 @@
+ all-features = true
+ rustdoc-args = ["--cfg", "docsrs"]
+ 
+-[lints]
+-workspace = true
+-
+ [features]
+ default = ["data_scheme"]
+ data_scheme = []
+@@ -33,17 +30,17 @@
+ [dependencies]
+ chacha20poly1305 = { version = "0.10.1", features = ["alloc"], default-features = false }
+ curve25519-dalek = "4.1.3"
+-hex = { workspace = true }
++hex = "0.4.3"
+ hkdf = "0.12.4"
+ hpke-rs = "0.7.0"
+ hpke-rs-crypto = "0.7.0"
+ hpke-rs-rust-crypto = "0.7.0"
+-p2panda-core = { workspace = true }
++p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "3e84cac48bba05c6857cce2ec433862b97f8d53c", default-features = false }
+ rand_chacha = { version = "0.9.0", features = ["os_rng"] }
+-serde = { workspace = true, features = ["derive"] }
+-serde_bytes = { workspace = true }
++serde = { version = "1.0.228", features = ["derive"] }
++serde_bytes = "0.11.19"
+ sha2 = "0.10.8"
+ subtle = "2.6.1"
+-thiserror = { workspace = true }
++thiserror = "2.0.18"
+ x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+ zeroize = { version = "1.8.1", features = ["derive"] }
+diff -ruN /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2panda-encryption/src/data_scheme/dcgka.rs serde-bytes/p2panda-encryption/src/data_scheme/dcgka.rs
+--- /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2panda-encryption/src/data_scheme/dcgka.rs	2026-10-11 02:34:03.748848656 -0500
++++ serde-bytes/p2panda-encryption/src/data_scheme/dcgka.rs	2026-10-11 07:14:22.437078816 -0500
+@@ -286,7 +286,11 @@
+         added: ID,
+         direct_message: Option<DirectMessage<ID, OP, DGM>>,
+     ) -> DcgkaProcessResult<ID, OP, PKI, DGM, KMG> {
+-        y.dgm = DGM::add(y.dgm, sender, added, seq).map_err(|err| DcgkaError::DgmOperation(err))?;
++        // The joiner applies its own add in `process_welcome`, after the welcome's history.
++        if added != y.my_id {
++            y.dgm =
++                DGM::add(y.dgm, sender, added, seq).map_err(|err| DcgkaError::DgmOperation(err))?;
++        }
+ 
+         if added == y.my_id {
+             let Some(DirectMessage {
+@@ -312,7 +316,7 @@
+                 return Err(DcgkaError::NotOurDirectMessage(y.my_id, recipient));
+             }
+ 
+-            return Self::process_welcome(y, sender, ciphertext, history);
++            return Self::process_welcome(y, sender, seq, ciphertext, history);
+         }
+ 
+         Ok((y, GroupSecretOutput::None))
+@@ -323,10 +327,14 @@
+     fn process_welcome(
+         mut y: DcgkaState<ID, OP, PKI, DGM, KMG>,
+         sender: ID,
++        seq: OP,
+         ciphertext: TwoPartyMessage,
+         history: DGM::State,
+     ) -> DcgkaProcessResult<ID, OP, PKI, DGM, KMG> {
+         y.dgm = DGM::from_welcome(y.my_id, history).map_err(|err| DcgkaError::DgmOperation(err))?;
++        // The welcome's history predates this add, so the joiner applies the add itself.
++        y.dgm =
++            DGM::add(y.dgm, sender, y.my_id, seq).map_err(|err| DcgkaError::DgmOperation(err))?;
+ 
+         let (y_i, bundle) = {
+             let (y_i, plaintext) = Self::decrypt_from(y, &sender, ciphertext)?;
+diff -ruN /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2panda-encryption/src/data_scheme/group.rs serde-bytes/p2panda-encryption/src/data_scheme/group.rs
+--- /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2panda-encryption/src/data_scheme/group.rs	2026-10-11 02:34:03.749007680 -0500
++++ serde-bytes/p2panda-encryption/src/data_scheme/group.rs	2026-10-11 07:14:22.437112499 -0500
+@@ -130,6 +130,31 @@
+         Self::process_local(y, pre, None)
+     }
+ 
++    /// Adds new member to group, welcoming them with no earlier secrets.
++    ///
++    /// `add` mints no secret, and its welcome carries the adder's whole bundle. This welcome
++    /// carries an empty bundle, so the joiner learns no secret the group had before the add. The
++    /// caller must follow with `update` to rotate to a secret the joiner does learn.
++    pub fn add_from_join(
++        mut y: GroupState<ID, OP, PKI, DGM, KMG, ORD>,
++        added: ID,
++        rng: &Rng,
++    ) -> GroupResult<ORD::Message, ID, OP, PKI, DGM, KMG, ORD> {
++        if !y.is_welcomed {
++            return Err(GroupError::GroupNotYetEstablished);
++        }
++
++        if y.my_id == added {
++            return Err(GroupError::NotAddOurselves);
++        }
++
++        // Pass an empty bundle, so the welcome carries no earlier secret.
++        let (y_dcgka_i, pre) = Dcgka::add(y.dcgka, added, &SecretBundle::init(), rng)?;
++        y.dcgka = y_dcgka_i;
++
++        Self::process_local(y, pre, None)
++    }
++
+     /// Removes member from group. It is possible to remove ourselves.
+     pub fn remove(
+         mut y: GroupState<ID, OP, PKI, DGM, KMG, ORD>,
+diff -ruN /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2panda-encryption/src/two_party/two_party.rs serde-bytes/p2panda-encryption/src/two_party/two_party.rs
+--- /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2panda-encryption/src/two_party/two_party.rs	2026-10-11 02:34:03.753091242 -0500
++++ serde-bytes/p2panda-encryption/src/two_party/two_party.rs	2026-10-11 07:14:26.718117371 -0500
+@@ -241,6 +241,7 @@
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ pub struct TwoPartyPlaintext {
+     /// Secret message for the receiver.
++    #[serde(with = "serde_bytes")]
+     plaintext: Vec<u8>,
+ 
+     /// Newly generated secret for the receiver, to be used in future 2SM rounds.
+diff -ruN /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2panda-encryption/src/two_party/x3dh.rs serde-bytes/p2panda-encryption/src/two_party/x3dh.rs
+--- /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2panda-encryption/src/two_party/x3dh.rs	2026-10-11 02:34:03.753191929 -0500
++++ serde-bytes/p2panda-encryption/src/two_party/x3dh.rs	2026-10-11 07:14:27.153120068 -0500
+@@ -38,6 +38,7 @@
+     pub prekey_id: PreKeyId,
+ 
+     /// Encrypted payload for the receiver.
++    #[serde(with = "serde_bytes")]
+     pub ciphertext: Vec<u8>,
+ 
+     /// Ephemeral public key used for this session.

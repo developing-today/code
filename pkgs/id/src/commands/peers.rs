@@ -55,11 +55,8 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Result, bail};
-use iroh::{
-    address_lookup::MdnsAddressLookup,
-    endpoint::{Endpoint, RelayMode, presets},
-};
 use iroh_base::EndpointId;
+use iroh_mdns_address_lookup::MdnsAddressLookup;
 
 use crate::discovery::{PeerAnnouncement, resolve_config};
 use crate::protocol::{MetaRequest, MetaResponse};
@@ -189,7 +186,7 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
         println!("(no peers discovered)");
     } else {
         let mut peers: Vec<_> = all_peers.into_values().collect();
-        peers.sort_by(|a, b| a.node_id.to_string().cmp(&b.node_id.to_string()));
+        peers.sort_by_key(|a| a.node_id.to_string());
         for peer in peers {
             let name = peer.name.as_deref().unwrap_or("-");
             println!(
@@ -210,7 +207,7 @@ async fn query_local_peers() -> Result<Vec<PeerAnnouncement>> {
 
     let (endpoint, endpoint_addr) = create_local_client_endpoint(&serve_info).await?;
     let result = async {
-        let meta_conn = endpoint.connect(endpoint_addr, META_ALPN).await?;
+        let meta_conn = crate::connectivity::connect(&endpoint, endpoint_addr, META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
@@ -240,17 +237,17 @@ async fn query_remote_peers(
     }
     let node_id: EndpointId = node_str.parse()?;
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
-    if no_relay {
-        builder = builder.relay_mode(RelayMode::Disabled);
-    }
+    let mut builder = crate::connectivity::public_builder(
+        crate::connectivity::RelayPolicy::from_no_relay(no_relay),
+    )
+    .secret_key(client_key);
     if !no_mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder());
     }
     let endpoint = builder.bind().await?;
 
     let result = async {
-        let meta_conn = endpoint.connect(node_id, META_ALPN).await?;
+        let meta_conn = crate::connectivity::connect(&endpoint, node_id, META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::ListPeers)?;
         send.write_all(&req).await?;
@@ -358,10 +355,10 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     use iroh_gossip::net::Gossip;
 
     let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    let mut builder = Endpoint::builder(presets::N0).secret_key(client_key.clone());
-    if options.no_relay {
-        builder = builder.relay_mode(RelayMode::Disabled);
-    }
+    let mut builder = crate::connectivity::public_builder(
+        crate::connectivity::RelayPolicy::from_no_relay(options.no_relay),
+    )
+    .secret_key(client_key.clone());
     if !options.no_mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder());
     }
@@ -399,20 +396,19 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     let dtt_topic_id = TopicId::new(config.topic);
 
     let dalek_signing_key = ed25519_dalek::SigningKey::from_bytes(&client_key.to_bytes());
-    let dalek_verifying_key = dalek_signing_key.verifying_key();
 
     let record_publisher = RecordPublisher::new(
         dtt_topic_id,
-        dalek_verifying_key,
         dalek_signing_key,
         None,
         config.topic_secret,
+        distributed_topic_tracker::Config::default(),
     );
 
     let gossip_topic = gossip
         .subscribe_and_join_with_auto_discovery_no_wait(record_publisher)
         .await?;
-    let (sender, receiver) = gossip_topic.split().await?;
+    let (sender, mut receiver) = gossip_topic.split().await?;
 
     // Join bootstrap peers (defaults + CLI, already merged by resolve_config)
     let bootstrap_ids: Vec<EndpointId> = config
@@ -429,7 +425,7 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
     let mut peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
 
     let _ = tokio::time::timeout(collect_timeout, async {
-        while let Some(Ok(event)) = receiver.next().await {
+        while let Ok(event) = receiver.next().await {
             if let iroh_gossip::api::Event::Received(msg) = event
                 && let Ok(announcement) = postcard::from_bytes::<PeerAnnouncement>(&msg.content)
             {

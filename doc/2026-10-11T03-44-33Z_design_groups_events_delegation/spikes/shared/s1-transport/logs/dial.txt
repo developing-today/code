@@ -1,0 +1,10 @@
+server id: e145a7e3ee5c1d885716df6b716dcd9a342c4252c09e4af3bcec2a9cbebf8d35
+ticket: 77 chars, 1 direct address(es)
+success: reply = "echo: hello from the dialer" after 1.236613ms
+no-address case: failed after 27.363µs
+  display: No addressing information available
+  debug: No addressing information available
+Caused by:
+    No address lookup configured
+dead-address case: failed after 30.001049335s
+  display: timed out

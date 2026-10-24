@@ -74,7 +74,6 @@
 
 use anyhow::{Result, bail};
 use futures_lite::StreamExt;
-use iroh::endpoint::{Endpoint, RelayMode, presets};
 use iroh_base::EndpointId;
 
 use crate::{
@@ -890,13 +889,14 @@ pub async fn cmd_find_matches(
     if let Some(node_str) = node {
         let node_id: EndpointId = node_str.parse()?;
         let client_key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-        let mut builder = Endpoint::builder(presets::N0).secret_key(client_key);
-        if no_relay {
-            builder = builder.relay_mode(RelayMode::Disabled);
-        }
-        let endpoint = builder.bind().await?;
+        let endpoint = crate::connectivity::public_builder(
+            crate::connectivity::RelayPolicy::from_no_relay(no_relay),
+        )
+        .secret_key(client_key)
+        .bind()
+        .await?;
 
-        let meta_conn = endpoint.connect(node_id, META_ALPN).await?;
+        let meta_conn = crate::connectivity::connect(&endpoint, node_id, META_ALPN).await?;
         let (mut send, mut recv) = meta_conn.open_bi().await?;
         let req = postcard::to_allocvec(&MetaRequest::Find {
             query: query.to_owned(),

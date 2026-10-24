@@ -22,6 +22,7 @@ in
       "desktop"
       # "printing"
       "services/flatpak"
+      "services/id-mail"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -44,6 +45,17 @@ in
       "us-wi-2"
       "us-global-1"
       "us-global-2"
+    ];
+    modules = [
+      {
+        services.id-mail = {
+          transport = "worker";
+          workerUrl = "https://mail.security.cab";
+        };
+      }
+      # KRdp remote desktop for this laptop (user service + package);
+      # see the file for the one-time on-machine credential setup.
+      ./amd-krdp.nix
     ];
   };
   # amd-server = host {

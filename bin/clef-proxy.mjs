@@ -1,0 +1,191 @@
+#!/usr/bin/env node
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { parseProxyPort } from './proxy-port.mjs';
+
+const PORT = parseProxyPort('CLEF_PROXY_PORT', 18742);
+const HOST = process.env.CLEF_PROXY_HOST || '127.0.0.1';
+
+// Publish the bound endpoint so other tools can find this proxy without
+// knowing its port in advance: $XDG_STATE_HOME/<name>/endpoint.json
+// (default ~/.local/state/<name>/endpoint.json), written on listen,
+// removed on exit.
+const publishEndpoint = () => {
+  try {
+    const stateHome =
+      process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state');
+    const dir = path.join(stateHome, 'clef-proxy');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'endpoint.json');
+    fs.writeFileSync(
+      `${file}.tmp`,
+      JSON.stringify({ host: HOST, port: PORT, pid: process.pid, url: `http://${HOST}:${PORT}` }) + '\n',
+    );
+    fs.renameSync(`${file}.tmp`, file);
+    const cleanup = () => {
+      try {
+        fs.unlinkSync(file);
+      } catch {}
+    };
+    process.on('exit', cleanup);
+    process.on('SIGTERM', () => {
+      cleanup();
+      process.exit(0);
+    });
+    process.on('SIGINT', () => {
+      cleanup();
+      process.exit(0);
+    });
+  } catch {}
+};
+
+const readConfigFileSync = (filename, fallback = '') => {
+  try {
+    const fullPath = path.join(os.homedir(), '.config', 'cloudflare', filename);
+    if (fs.existsSync(fullPath)) {
+      return fs.readFileSync(fullPath, 'utf8').trim();
+    }
+  } catch {}
+  return fallback;
+};
+
+const getCredentials = (authHeader) => {
+  const accountId =
+    process.env.CLOUDFLARE_ACCOUNT_ID ||
+    readConfigFileSync('account-id', '234b866b99ce2b142d7963d8d139cbfa');
+
+  const gatewayId =
+    process.env.CLOUDFLARE_GATEWAY_ID ||
+    readConfigFileSync('gateway-id', 'opencode-gateway');
+
+  let token = '';
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7).trim();
+  }
+  if (!token) {
+    token =
+      process.env.CLOUDFLARE_API_TOKEN ||
+      readConfigFileSync('ai-inference-token');
+  }
+
+  return { accountId, gatewayId, token };
+};
+
+const resolveModel = (model) => {
+  if (!model || typeof model !== 'string') return '@cf/cloudflare/clef-flash';
+  if (model.startsWith('@cf/')) return model;
+  if (model === 'clef') return '@cf/cloudflare/clef';
+  if (model === 'clef-flash') return '@cf/cloudflare/clef-flash';
+  if (model.includes('clef')) return `@cf/cloudflare/${model}`;
+  // For generic jev models mapped to clef
+  return '@cf/cloudflare/clef-flash';
+};
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host || HOST}`);
+  const pathname = url.pathname.replace(/\/+$/, '') || '/';
+
+  if (req.method === 'GET' && (pathname === '/health' || pathname === '/' || pathname === '/v1/systemone')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      service: 'clef-systemone-proxy',
+      port: PORT,
+      defaultModel: '@cf/cloudflare/clef-flash',
+      endpoint: '/v1/systemone'
+    }, null, 2));
+    return;
+  }
+
+  if (req.method === 'POST' && (pathname === '/v1/systemone' || pathname === '/systemone' || pathname === '/')) {
+    let bodyText = '';
+    req.on('data', chunk => {
+      bodyText += chunk;
+      if (bodyText.length > 5 * 1024 * 1024) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Request body too large' }));
+        req.destroy();
+      }
+    });
+
+    req.on('end', async () => {
+      // Parse the client body on its own: a malformed request is a 400,
+      // not a 500 from the shared upstream catch below (sibling proxies
+      // all parse separately — #690).
+      let body;
+      try {
+        body = JSON.parse(bodyText);
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Invalid JSON body: ${err.message}` }));
+        return;
+      }
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body: expected an object' }));
+        return;
+      }
+
+      try {
+        const { accountId, gatewayId, token } = getCredentials(req.headers['authorization']);
+
+        if (!token) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing Cloudflare AI inference API token' }));
+          return;
+        }
+
+        const model = resolveModel(body.model);
+        const cfUrl = `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/workers-ai/run/${model}`;
+
+        const payload = {
+          state: body.state || {},
+          questions: body.questions || {}
+        };
+
+        const cfRes = await fetch(cfUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        // The gateway can answer non-JSON (e.g. an HTML error page) or a
+        // JSON null/scalar: neither is a client parse error, so keep the
+        // upstream status and report it as an upstream failure (#690).
+        let cfData = null;
+        try {
+          cfData = await cfRes.json();
+        } catch {}
+
+        if (cfRes.ok && cfData?.success && cfData.result?.answers) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ answers: cfData.result.answers }));
+        } else {
+          res.writeHead(cfRes.status >= 400 ? cfRes.status : 502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: 'Cloudflare Workers AI Clef execution failed',
+            details: cfData
+          }));
+        }
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message || 'Internal proxy error' }));
+      }
+    });
+    return;
+  }
+
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Not Found', path: pathname }));
+});
+
+server.listen(PORT, HOST, () => {
+  publishEndpoint();
+  console.log(`Clef System One Proxy listening on http://${HOST}:${PORT}`);
+  console.log(`Endpoint: http://${HOST}:${PORT}/v1/systemone`);
+});

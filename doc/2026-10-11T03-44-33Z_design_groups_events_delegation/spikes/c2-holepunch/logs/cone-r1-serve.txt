@@ -1,0 +1,7 @@
+   3175 ms online home_relays=["http://10.0.0.1:3340/"]
+   5178 ms own_ip_candidates=["10.0.0.2:4444", "192.168.1.2:4444"]
+ticket written: 100 chars
+   8882 ms serve path opened: direct 10.0.0.3:4444
+   8882 ms serve path selected: direct 10.0.0.3:4444
+  68908 ms serve path closed: relay http://10.0.0.1:3340/
+  68908 ms serve path closed: direct 10.0.0.3:4444

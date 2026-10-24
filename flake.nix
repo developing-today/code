@@ -21,6 +21,7 @@ rec {
       lib.make-clan
       lib.make-root-apps
       lib.make-id
+      lib.make-mcpx-overlay
     ];
   inputs = {
     nixgl = {
@@ -86,7 +87,11 @@ rec {
 
     # 2026-08-21: rebased fork patch (neededForBoot) onto latest master
     # neededForBoot patch applied via patches/nixpkgs/neededforboot-nixos-unstable.patch (see lib/default.nix)
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable"; # ?shallow=1";
+    # That patch only applies to nixos-unstable; it does NOT apply to the old
+    # 24.11 tree this input used to be locked to, which made applyPatches (and
+    # therefore every nixosConfiguration) fail. Aliased to nixpkgs-unstable so
+    # the two can never drift apart again.
+    nixpkgs.follows = "nixpkgs-unstable";
     nixpkgs-25.url = "github:NixOS/nixpkgs/nixos-unstable"; # ?shallow=1";
     nixpkgs-stable.url = "github:NixOS/nixpkgs"; # ?shallow=1";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable"; # channel branch: fully cached on cache.nixos.org (master is not)
@@ -232,19 +237,23 @@ rec {
       # inputs.rust-overlay.follows = "rust-overlay";
     };
     omnix.url = "github:juspay/omnix"; # ?shallow=1"; # TODO: use this?
-    # switch to flakes for hyprland, use module https://wiki.hyprland.org/Nix/Hyprland-on-NixOS/
+    # switch to flakes for hyprland, use module https://wiki.hypr.land/nix/installing-hyprland-on-nixos/
     # hypr-dynamic-cursors = {
     #   url = "github:VirtCode/hypr-dynamic-cursors"; #?shallow=1";
     #   inputs.hyprland.follows = "hyprland"; # to make sure that the plugin is built for the correct version of hyprland
     # };
-    #hyprland = {
-    #url = "git+https://github.com/hyprwm/Hyprland?submodules=1&shallow=1";
-    #url = "git+https://github.com/hyprwm/Hyprland/9958d297641b5c84dcff93f9039d80a5ad37ab00?submodules=1&shallow=1"; # v0.49.0
-    # url = "github:hyprwm/Hyprland";
-    #inputs.nixpkgs.follows = "nixpkgs"; # MESA/OpenGL HW workaround
-    #   inputs.hyprcursor.follows = "hyprcursor";
-    #  inputs.hyprlang.follows = "hyprlang";
-    #};
+    hyprland = {
+      # Tracks master. Required: hyprland removed hyprlang/.conf support
+      # (#15539, 2026-07-22), so only a master build actually requires the Lua
+      # config in config/hypr/hyprland.lua. The newest release (0.56.2, which is
+      # what nixpkgs ships) still accepts .conf.
+      url = "github:hyprwm/Hyprland";
+      # Deliberately NOT following nixpkgs. Overriding hyprland's nixpkgs input
+      # invalidates the hyprland.cachix.org cache and forces a full source build
+      # of hyprland + mesa + ffmpeg. See https://wiki.hypr.land/nix/cachix/.
+      # The old "MESA/OpenGL HW workaround" follows only applied on stable
+      # nixpkgs; we are on nixpkgs-unstable, so the mismatch does not arise.
+    };
     #  hyprcursor = {
     # url = "git+https://github.com/hyprwm/hyprcursor?submodules=1&shallow=1";
     #   url = "git+https://github.com/dezren39/hyprcursor?ref=patch-1&submodules=1&shallow=1";
@@ -259,20 +268,51 @@ rec {
     #   # follows?
     # };
     nixos-hardware.url = "github:nixos/nixos-hardware"; # ?shallow=1";
+    # OpenCode 2.x line: developing-today's fork, carrying the model-routing work; the default branch tracks it.
     opencode = {
-      url = "github:anomalyco/opencode";
-      # inputs.nixpkgs.follows = "nixpkgs-master";
+      url = "github:developing-today/opencode";
     };
-    # OMP ("Oh My Pi") coding agent harness. Upstream ships an official flake
-    # exposing packages.<system>.omp plus overlay/nixos/home-manager modules.
-    # NOTE: the npm packages named `omp` and `oh-my-pi` are unrelated squats;
-    # upstream publishes as @oh-my-pi/pi-coding-agent.
-    oh-my-pi = {
-      url = "github:can1357/oh-my-pi";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
+    # OpenChamber, built from its own flake against the opencode input above.
+    openchamber = {
+      url = "github:developing-today/openchamber";
+      inputs.opencode.follows = "opencode";
+    };
+    # Helium: privacy-focused Chromium fork by imputnet (the cobalt.tools org).
+    # Not in nixpkgs and unlikely to be soon -- seven `helium: init` PRs have been
+    # closed unmerged and the one still open (#498572) has been stalled since
+    # 2026-08. This flake tracks upstream AppImage releases and ships NixOS and
+    # home-manager modules plus browser policy support.
+    helium = {
+      url = "github:oxcl/nix-flake-helium-browser";
+    };
+    # ChatGPT desktop for Linux. OpenAI shipped an official Linux build (preview)
+    # distributed from their own APT/RPM repos under persistent.oaistatic.com
+    # (`Maintainer: OpenAI <support@openai.com>`). The nixpkgs `chatgpt` attr is
+    # still darwin-only and only unpacks the macOS .app, so it cannot be used.
+    # This flake verifies and repackages OpenAI's signed upstream Linux payload
+    # rather than reimplementing it, is MIT-licensed, and is namespaced as
+    # `codex-desktop` to avoid colliding with the official package name.
+    chatgpt-desktop = {
+      url = "github:ilysenko/codex-desktop-linux";
+    };
+    # Claude Desktop. Anthropic ships an official Linux build (beta, 2026-06-30)
+    # but ONLY as a .deb from their own APT repo -- no AppImage/tar/rpm, and no
+    # nixpkgs attr (verified: pkgs/by-name/cl/claude-desktop absent, zero code
+    # search hits). This flake repackages that official .deb; since its v3.0.0 it
+    # no longer extracts the Windows installer the way k3d3's older flake does,
+    # which is why it is preferred here (k3d3 last saw a commit 2025-11-25 and
+    # predates the official Linux release entirely).
+    # Use the -fhs output: MCP servers are near-universally npx/uvx invocations
+    # that break against a pure store path.
+    claude-desktop = {
+      url = "github:aaddrick/claude-desktop-debian";
+    };
+    omasnap = {
+      url = "github:tobi/omasnap";
+      flake = false;
     };
     # --- BEGIN id sub-flake inputs (synced from pkgs/id/flake.nix) ---
-    id-nixpkgs.follows = "nixpkgs-master";
+    id-nixpkgs.follows = "nixpkgs-unstable";
     id-systems.follows = "systems";
     id-rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -333,7 +373,13 @@ rec {
       "recursive-nix"
       "verified-fetches"
     ];
-    trusted-users = [ "root" ];
+    trusted-users = [
+      "root"
+      # Required for the cachix substituters below (incl. hyprland.cachix.org) to
+      # be honoured. Without this nix logs "ignoring the client-specified setting
+      # ... because you are not a trusted user" and silently builds from source.
+      "@wheel"
+    ];
     #       trusted-users = [ "user" ];
     use-xdg-base-directories = true;
     builders-use-substitutes = true;
@@ -341,6 +387,7 @@ rec {
       # TODO: priority order
       "https://cache.nixos.org"
       "https://yazi.cachix.org"
+      "https://hyprland.cachix.org" # required by the hyprland master flake input
       # "https://binary.cachix.org"
       # "https://nix-community.cachix.org"
       # "https://nix-gaming.cachix.org"
@@ -353,6 +400,7 @@ rec {
     trusted-substituters = [
       "https://cache.nixos.org"
       "https://yazi.cachix.org"
+      "https://hyprland.cachix.org" # required by the hyprland master flake input
       # "https://binary.cachix.org"
       # "https://nix-community.cachix.org"
       # "https://nix-gaming.cachix.org"
@@ -365,6 +413,7 @@ rec {
     trusted-public-keys = [
       "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
       "yazi.cachix.org-1:Dcdz63NZKfvUCbDGngQDAZq6kOroIrFoyO064uvLh8k="
+      "hyprland.cachix.org-1:a7pgxzMz7+chwVL3/pzj6jIBMioiJM7ypFP8PwtkuGc="
       # "binary.cachix.org-1:66/C28mr67KdifepXFqZc+iSQcLENlwPqoRQNnc3M4I="
       # "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
       # "nix-gaming.cachix.org-1:nbjlureqMbRAxR1gJ/f3hxemL9svXaZF/Ees8vCUUs4="
@@ -408,10 +457,18 @@ rec {
     # extraOptions = ''
     #   flake-registry = ""
     # '';
-    # Disabled: /nix is ext4 without `large_dir`, so /nix/store/.links has hit the
-    # 2-level htree limit (~8.7M entries, 829MB) and link() returns ENOSPC despite
-    # ~2TB free. Dedup isn't worth it at 38% disk usage. Run `nix store optimise`
-    # manually if space ever gets tight.
+    # Deliberately false. This is NOT the same knob as `nix.optimise.automatic`
+    # (the periodic timer, already commented out in nixos/nix/default.nix).
+    # `auto-optimise-store` makes the daemon hard-link EVERY store write into
+    # /nix/store/.links, and this flake's nixConfig is fed straight into
+    # nix.settings by nixos/nix/settings/default.nix, so setting it here turned
+    # it on system-wide. That drove .links to ~9M entries and exhausted the
+    # ext4 htree index, producing a flood of
+    #   cannot link "/nix/store/.links/...": No space left on device
+    # despite the filesystem having 1.9T free and 92% of inodes unused.
+    # ext4 never shrinks a directory, so after switching this off the directory
+    # must be recreated once to actually recover:
+    #   sudo rm -rf /nix/store/.links && sudo mkdir -p /nix/store/.links
     auto-optimise-store = false;
     #pure-eval = true;
     pure-eval = false; # sometimes home-manager needs to change manifest.nix ? idk i just code here

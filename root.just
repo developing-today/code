@@ -3,20 +3,6 @@ list:
   @just --list
 
 # =============================================================================
-# Nix Store Lock Diagnostics
-# =============================================================================
-
-# List processes holding/waiting on the nix store big-lock
-[group('nix-store')]
-nix-lock-check:
-    ./lib/nix-unstick.sh
-
-# Kill lock holders: default = orphans only; "all" = everything but the daemon
-[group('nix-store')]
-nix-unstick mode="":
-    ./lib/nix-unstick.sh {{ if mode == "" { "" } else { mode } }}
-
-# =============================================================================
 # Flake Input Management
 # =============================================================================
 
@@ -154,7 +140,7 @@ strip-whitespace:
     #!/usr/bin/env bash
     set -euo pipefail
     git grep -rl '[[:space:]]$' -- \
-      ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \
+      ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' ':!*/transcript.txt' \
       ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \
       ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \
       ':!*.mp4' ':!*.mkv' ':!*.avi' ':!*.mov' ':!*.wmv' ':!*.flv' ':!*.webm' \
@@ -163,6 +149,7 @@ strip-whitespace:
       ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \
       2>/dev/null | while IFS= read -r f; do
       case "$f" in
+        */transcript.txt) continue ;;
         */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;
         */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;
         */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;
@@ -182,46 +169,20 @@ fix *args: strip-whitespace lockfiles (fmt args)
 # Utilities
 # =============================================================================
 
-# Reinstall/update lootbox binary from latest source
+# Start mcpx daemon
 [group('util')]
-update-lootbox:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    echo "Updating lootbox..."
-    curl -fsSL https://raw.githubusercontent.com/jx-codes/lootbox/main/install.sh | bash
-    echo "lootbox updated to $(lootbox --version)"
+mcpx-daemon:
+    mcpx daemon run
 
-# Start lootbox server (if not already running)
+# Stop running mcpx daemon
 [group('util')]
-lootbox-server:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then
-        echo "Lootbox server already running on port 9420"
-    else
-        echo "Starting lootbox server..."
-        nohup lootbox server --port 9420 &>/dev/null &
-        disown
-        sleep 1
-        if ss -tlnp 2>/dev/null | grep -q ':9420 .*lootbox'; then
-            echo "Lootbox server started on port 9420"
-        else
-            echo "Lootbox server may still be starting up..."
-        fi
-    fi
+mcpx-stop:
+    mcpx stop
 
-# Kill running lootbox server
+# Check mcpx daemon status
 [group('util')]
-lootbox-kill:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    pid=$(ss -tlnp 2>/dev/null | grep ':9420 ' | grep -oP 'pid=\K[0-9]+' || true)
-    if [ -n "$pid" ]; then
-        kill "$pid"
-        echo "Killed lootbox server (PID $pid)"
-    else
-        echo "No lootbox server running on port 9420"
-    fi
+mcpx-status:
+    mcpx status
 
 # Recursively chown all files (including hidden) to current user:group (requires sudo)
 [group('util')]
@@ -251,3 +212,22 @@ stage-docs-dry *args:
 [group('docs')]
 stage-docs-all *args:
     ./scripts/stage-docs.sh --all {{args}}
+
+# =============================================================================
+# NixOS System
+# =============================================================================
+
+# Rebuild and switch NixOS configuration
+[group('nixos')]
+switch:
+    ./s
+
+# =============================================================================
+# Mail Worker
+# =============================================================================
+
+# Deploy the mail Worker via the nix flake app (extra args go to deploy.mjs, e.g. --dry-run)
+[group('mail')]
+id-mail-deploy *args:
+    nix run .#id-mail-deploy -- {{args}}
+

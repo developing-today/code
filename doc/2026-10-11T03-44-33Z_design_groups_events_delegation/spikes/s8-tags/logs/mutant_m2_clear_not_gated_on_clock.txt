@@ -1,0 +1,284 @@
+   Compiling s8-tags v0.0.0 (/home/user/work/spikes-next/s8-tags/mutants/m2_clear_not_gated_on_clock)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.14s
+     Running tests/props.rs (/home/user/work/spikes-next/s8-tags/mutants/target/debug/deps/props-2044cf6e193bf094)
+
+running 5 tests
+test late_duplicate_of_a_removed_add_is_dropped ... FAILED
+test concurrent_adds_survive_a_clear_that_did_not_see_them ... FAILED
+test clear_naming_unseen_dots_does_not_remove_them ... FAILED
+test join_is_commutative_associative_and_idempotent ... FAILED
+test convergence_under_partitions_and_any_delivery_order ... FAILED
+
+failures:
+
+---- late_duplicate_of_a_removed_add_is_dropped stdout ----
+
+thread 'late_duplicate_of_a_removed_add_is_dropped' (3407873) panicked at tests/props.rs:302:5:
+assertion `left == right` failed: the clear waits for the add it names
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- concurrent_adds_survive_a_clear_that_did_not_see_them stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Saving this and future failures in /home/user/work/spikes-next/s8-tags/mutants/m2_clear_not_gated_on_clock/tests/props.proptest-regressions
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file. (You may need to create it.)
+cc 8cd89d6c63862769cfd732a1acbc8561d6c3ee2a34f3e97f6d4adb6c3b4eb698
+
+thread 'concurrent_adds_survive_a_clear_that_did_not_see_them' (3407870) panicked at tests/props.rs:185:1:
+Test failed: assertion failed: `(left == right)` 
+  left: `{Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }, Dot { device: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }}`, 
+ right: `{Dot { device: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }}`: replica 3 disagrees at tests/props.rs:227.
+minimal failing input: k = 1, seed = 261960309796579012
+	successes: 1
+	local rejects: 0
+	global rejects: 0
+
+
+---- clear_naming_unseen_dots_does_not_remove_them stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Saving this and future failures in /home/user/work/spikes-next/s8-tags/mutants/m2_clear_not_gated_on_clock/tests/props.proptest-regressions
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file.
+cc 57d2a52eb0900310561132edf1c0ac794717944ed85ea61dc5d9de0ce9d48507
+
+thread 'clear_naming_unseen_dots_does_not_remove_them' (3407869) panicked at tests/props.rs:185:1:
+Test failed: assertion failed: `(left == right)` 
+  left: `{Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 2 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 3 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 4 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 5 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 6 }}`,
+ right: `{Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 4 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 5 }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 6 }}` at tests/props.rs:264.
+minimal failing input: seen = 3, unseen = 3, seed = 4086123853813234648
+	successes: 1
+	local rejects: 0
+	global rejects: 0
+
+
+---- join_is_commutative_associative_and_idempotent stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Aborting shrinking after the PROPTEST_MAX_SHRINK_ITERS environment variable or ProptestConfig.max_shrink_iters iterations (set 1200 to a large(r) value to shrink more; current configuration: 1200 iterations)
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Saving this and future failures in /home/user/work/spikes-next/s8-tags/mutants/m2_clear_not_gated_on_clock/tests/props.proptest-regressions
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file.
+cc 1ab343f084452e356f4489fdcdc53023a76f5b6aa1bd16abe21b97aa094b78d9
+
+thread 'join_is_commutative_associative_and_idempotent' (3407872) panicked at tests/props.rs:185:1:
+Test failed: replica 1 differs from the reference over its applied ops
+ state: State { live: {Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 2 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 5 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 6 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 7 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }}, vv: {[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 7, [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 1, [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 2} }
+ want:  State { live: {Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 5 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 6 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 7 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }}, vv: {[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 7, [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 1, [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 2} }.
+minimal failing input: (n, acts, seed, picks) = (
+    4,
+    [
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Sync {
+            from: 0,
+            to: 0,
+            by_state: false,
+            seed: 0,
+        },
+        Clear {
+            r: 0,
+            observed: [],
+            unseen: [],
+        },
+        Clear {
+            r: 0,
+            observed: [],
+            unseen: [],
+        },
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Sync {
+            from: 0,
+            to: 0,
+            by_state: false,
+            seed: 0,
+        },
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Clear {
+            r: 1,
+            observed: [],
+            unseen: [],
+        },
+        Set {
+            r: 2,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Sync {
+            from: 0,
+            to: 2,
+            by_state: false,
+            seed: 0,
+        },
+        Clear {
+            r: 2,
+            observed: [],
+            unseen: [
+                61,
+            ],
+        },
+        Sync {
+            from: 2,
+            to: 1,
+            by_state: false,
+            seed: 3784905738638185958,
+        },
+    ],
+    38908863383876038,
+    [
+        12697933400342647203,
+        8785925109216079577,
+        14923798916212045349,
+    ],
+)
+	successes: 18
+	local rejects: 0
+	global rejects: 0
+
+
+---- convergence_under_partitions_and_any_delivery_order stdout ----
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Aborting shrinking after the PROPTEST_MAX_SHRINK_ITERS environment variable or ProptestConfig.max_shrink_iters iterations (set 1200 to a large(r) value to shrink more; current configuration: 1200 iterations)
+proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+proptest: Saving this and future failures in /home/user/work/spikes-next/s8-tags/mutants/m2_clear_not_gated_on_clock/tests/props.proptest-regressions
+proptest: If this test was run on a CI system, you may wish to add the following line to your copy of the file.
+cc f32c1b80963eaadd43bb8e94f0da9a2f693592388c2d2253edd5a4a179ef1016
+
+thread 'convergence_under_partitions_and_any_delivery_order' (3407871) panicked at tests/props.rs:185:1:
+Test failed: replica 2 differs from the reference over its applied ops
+ state: State { live: {Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 2 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 3 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 4 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 2 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 3 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }}, vv: {[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 6, [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 4, [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 1} }
+ want:  State { live: {Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 2 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 3 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 4 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 2 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 3 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }, Dot { device: [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }}, vv: {[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 6, [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 4, [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 1} }.
+minimal failing input: (n, acts, seed) = (
+    3,
+    [
+        Set {
+            r: 1,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 1,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 0,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 2,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Set {
+            r: 1,
+            subject: 0,
+            name: 0,
+            value: 0,
+        },
+        Sync {
+            from: 1,
+            to: 0,
+            by_state: false,
+            seed: 0,
+        },
+        Clear {
+            r: 0,
+            observed: [
+                46,
+            ],
+            unseen: [],
+        },
+        Clear {
+            r: 0,
+            observed: [],
+            unseen: [],
+        },
+        Sync {
+            from: 0,
+            to: 1,
+            by_state: false,
+            seed: 0,
+        },
+        Clear {
+            r: 1,
+            observed: [],
+            unseen: [],
+        },
+        Sync {
+            from: 1,
+            to: 2,
+            by_state: false,
+            seed: 614423186955262384,
+        },
+    ],
+    8719636,
+)
+	successes: 0
+	local rejects: 0
+	global rejects: 0
+
+
+
+failures:
+    clear_naming_unseen_dots_does_not_remove_them
+    concurrent_adds_survive_a_clear_that_did_not_see_them
+    convergence_under_partitions_and_any_delivery_order
+    join_is_commutative_associative_and_idempotent
+    late_duplicate_of_a_removed_add_is_dropped
+
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
+
+error: test failed, to rerun pass `--test props`
+error: 1 target failed:
+    `--test props`

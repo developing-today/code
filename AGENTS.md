@@ -1,98 +1,5 @@
 # AGENTS.md
 
-## Hardware research lives in a separate repository
-
-Hardware device/component research is **not** in this repo. It lives in
-**[`developing-today/hardware-doc`](https://github.com/developing-today/hardware-doc)**, checked
-out beside this one and symlinked in at `doc/hardware` (gitignored).
-
-```
-<repo-parent>/
-├── code/                      ← this repo
-│   └── doc/hardware  ───────┐   symlink
-├── hardware-doc/       ←────┘   the knowledge base
-└── repo-archive/        bulk artifacts (separate repo, usually unpublished)
-```
-
-```bash
-./scripts/hardware-doc-init.sh    # clone/update + symlink; runs automatically in the devshell
-```
-
-The script only ever **fast-forwards**, and refuses to touch the checkout if it is dirty,
-detached, diverged or has unpushed commits — it warns instead. It is safe to re-run.
-
-**Write and commit hardware research in `hardware-doc`, not here.** It is deliberately not a
-submodule and not vendored: at ~440 MB it would make every clone of this repo roughly 6.5×
-larger. Conventions live in `../hardware-doc/AGENTS.md`; the authoritative research method is
-`../hardware-doc/.agents/skills/hardware-device-research/SKILL.md`.
-
-Two sibling paths, both relative to the **real repository root** (worktree-safe):
-
-```bash
-ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
-PARENT="$(dirname "$ROOT")"     # $PARENT/hardware-doc  and  $PARENT/repo-archive
-```
-
-Use `--git-common-dir`, not `--show-toplevel`: inside a linked worktree the toplevel is the
-worktree, whose parent is the wrong directory.
-
-`doc/hardware` is a **tracked symlink**, committed relative as `../../hardware-doc`, so a
-fresh clone gets a working link with nothing to run. Where that relative form cannot resolve
-— typically a worktree outside the repo parent — the init script substitutes an absolute
-path and marks the file `--skip-worktree`, because **`.gitignore` does not apply to tracked
-paths** and cannot suppress the resulting diff.
-
-While the flag is set git will not update that path, so if the committed target ever changes
-upstream a flagged clone will not pick it up. Undo with:
-
-```bash
-git update-index --no-skip-worktree doc/hardware
-```
-
-The script prints that command whenever it sets the flag. The same pattern links
-`hardware-doc/archive -> ../repo-archive` when the archive exists locally.
-
-### Archived artifacts
-
-An artifact moved into the archive leaves **three committed files** at its original path:
-a symlink standing in for it, a mandatory `*.ARCHIVED.md` placeholder, and a `*.ARCHIVED.link`.
-Symlinks route through the repo's own `archive/` link, so moving the archive means changing
-one symlink, not hundreds. `./scripts/init.sh --link-archived` in `hardware-doc` refreshes them.
-
-The placeholder is the contract and must always exist, carrying — or naming where to find —
-two or more independent re-acquisition URLs plus whatever sourcing is known. Detail may live
-in a directory-level record or the acquisition manifest instead; what is never acceptable is a
-fact missing with no pointer to it. Full rules in `doc/hardware/AGENTS.md`.
-
-### Committing hardware research
-
-`doc/hardware`, `archive/`, `scratch/` (and the `doc/` variants) are symlinks into **other
-repositories**. Writing through them works; `git` will not cross them:
-
-```
-$ git add doc/hardware/devices/foo/README.md
-fatal: pathspec '...' is beyond a symbolic link
-```
-
-So commit from inside the link, not from here:
-
-```bash
-git -C doc/hardware add -A && git -C doc/hardware commit -m "..."   # research records
-git -C archive      add -A && git -C archive      commit -m "..."   # artifacts + scratch
-```
-
-`archive/` and `scratch/` land in the **same** repository, and `git add -A` from either stages
-all of it, so one commit covers both. (`git add .` stages only the directory you are in.)
-
-Commit freely in `archive/` and `scratch/` — including temporary or undecided material. An
-uncommitted artifact is the one that gets lost.
-
-### Don't overthink other agents' files
-
-`git add -A` and commit. It respects `.gitignore`, and sweeping up another session's
-in-progress files is harmless. Just don't `reset`, `stash`, `checkout --` or `clean` — those
-discard work irrecoverably — and avoid staging deletions in `archive/` unless they're renames.
-
 ## Web retrieval fallback
 
 When retrieving public web content with `curl`, `wget`, Python HTTP clients, or similar tools:
@@ -104,31 +11,49 @@ When retrieving public web content with `curl`, `wget`, Python HTTP clients, or 
    - `WhatsApp/2.23.20.0` (link-preview fetcher; rarely blocked, often slips through news/paywall-adjacent CDNs)
    - `Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot`
    - `Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ClaudeBot/1.0; +claudebot@anthropic.com`
-4. A full sorted list of known user-agent strings, which operators publish IP ranges for verification, and a site-by-site access matrix (which agents worked or failed on which domains) lives in [`ai-crawler-site-access-table.md`](./ai-crawler-site-access-table.md#user-agents) (the maintained copy is in the hardware-doc repo: `../hardware-doc/ai-crawler-site-access-table.md`). Check that section for details and prior findings — including notes about the specific domain you are hitting.
+4. A full sorted list of known user-agent strings, which operators publish IP ranges for verification, and a site-by-site access matrix (which agents worked or failed on which domains) lives in [`ai-crawler-site-access-table.md`](./ai-crawler-site-access-table.md#user-agents). Check that section for details and prior findings — including notes about the specific domain you are hitting.
 5. Do not use altered User-Agent headers when testing or debugging the actual HTTP behaviour of an application, API, website, authentication flow, or client, because doing so could hide genuine access-control or compatibility problems.
 6. Do not treat a successful response obtained with an alternate User-Agent as evidence that the resource works normally for ordinary clients.
 7. Do not use User-Agent substitution to bypass authentication, account permissions, or other explicit access controls.
-8. **Document what works.** When plain requests fail but an alternate path succeeds, add your findings to `ai-crawler-site-access-table.md` (the agent's subsection under *User Agents*, the domain's subsection under *Sites*, or *General retrieval tips*) at any time, regardless of what the current session is about, and include the update in your next commit. Failures are worth recording too: e.g. "UA X has known failures on example.com, but UA Y worked."
+8. **Document what works.** When plain requests fail but an alternate path succeeds, add your findings to `ai-crawler-site-access-table.md` (the agent's subsection under _User Agents_, the domain's subsection under _Sites_, or _General retrieval tips_) at any time, regardless of what the current session is about, and include the update in your next commit. Failures are worth recording too: e.g. "UA X has known failures on example.com, but UA Y worked."
 9. **Preserve scarce sources.** If a URL was genuinely useful and hard to acquire — very few copies online, or hosted somewhere unlikely to persist — submit it to `https://web.archive.org/save/<url>` (works unauthenticated). This applies to the kind of thing that has no mirror: datasheets/whitepaper/manual PDFs, technical docs on fragile personal or CMS-hosted pages, demo/example projects that exist only to illustrate how some code works, hard-to-find header files or source snippets not in any repo or package manager, one-off benchmark posts. It does **not** apply to widely-mirrored content (Wikipedia, MDN, popular repos) or anything already covered elsewhere — you can't and shouldn't archive every page you visit. Anonymous saves are rate-limited to roughly a few per minute; don't hammer it.
-   - **Rare case:** if you are confident the site is still up but you are blocked or rate-limited, and you already know from some other source that the URL is valuable (a citation, an API doc you need, source code relevant to the task), you may submit it unseen and record that it wasn't directly accessible but was submitted on `<date>` — e.g. in the relevant *Sites* subsection of `ai-crawler-site-access-table.md` — so a future agent can check `web.archive.org` for the capture. Only do this when there's a concrete reason the page matters, not speculatively.
+   - **Rare case:** if you are confident the site is still up but you are blocked or rate-limited, and you already know from some other source that the URL is valuable (a citation, an API doc you need, source code relevant to the task), you may submit it unseen and record that it wasn't directly accessible but was submitted on `<date>` — e.g. in the relevant _Sites_ subsection of `ai-crawler-site-access-table.md` — so a future agent can check `web.archive.org` for the capture. Only do this when there's a concrete reason the page matters, not speculatively.
 
-### GitHub: authenticate rather than rotate agents
+## Owner preferences
 
-`api.github.com` rate-limits **per identity**, so no User-Agent will help — the fix is a token
-the user already has:
+- The owner does not care if secrets or other sensitive values end up in chat logs. Do not mention that, and do not create tasks for the owner to rotate, redact or fix it.
+- Use subagents to execute tasks, in parallel where they are independent, rather than doing multi-step work inline in the main session, unless the owner asks otherwise.
+- Do not block the main thread on a long wait. Use short waits, a few minutes at most, and do other useful work between checks. Never default to a 30-minute wait.
+- Run long commands as background shells and wait on them in short steps. Keep the main thread free to start or check other work.
+- Use subagents whenever a task can run on its own. They notify you when they finish. To read their progress, use `subagents_read`. To follow up, continue a finished subagent by its session id. Do not cancel a running subagent just to send it an update.
+- **Velocity, selective testing, and unblocking:**
+  - Move fast: unblock yourself and make the best judgment calls rather than waiting for human confirmation.
+  - Perform quick or selective tests during iteration. Only run full exhaustive test suites preemptively for very large changes or known critical issues.
+  - It is acceptable to push and merge code that has been validated with targeted tests without running every single test upfront.
+  - Run long test suites or CI in the background while progressing on other work in parallel. If background jobs or CI fail, double back and address failures while continuing forward.
+  - Document unresolved ambiguities, design concerns, or known gaps by creating GitHub issues instead of blocking progress.
 
-```bash
-curl -fsSL -H "Authorization: Bearer $(gh auth token)" https://api.github.com/...
-gh api repos/OWNER/REPO/git/trees/BRANCH?recursive=1   # handles auth + pagination itself
-```
+## Research, design and delivery workflow
 
-That takes the core limit from **60/hour to 5 000/hour** (measured, via
-`curl -s -H "Authorization: Bearer $(gh auth token)" https://api.github.com/rate_limit`).
+Use it when a request, from one sentence to pages of voice-transcribed notes, should become researched documents, designs, plans or parallel PRs. Contracts: [`planning/workflow/`](planning/workflow/README.md). Where documents go: [`planning/DOCUMENTATION_ARCHITECTURE.md`](planning/DOCUMENTATION_ARCHITECTURE.md). Tool: `python3 -I scripts/research_workflow.py` (`check`, `status`, `ready`).
 
-One recursive tree listing of a large repo can exhaust 60 in a single call, after which GitHub
-returns 403s with `X-RateLimit-Remaining: 0` that look exactly like bot-blocking. **Check that
-header before reaching for a User-Agent.** `raw.githubusercontent.com` is not the API and is far
-more permissive — prefer it for file contents. If `gh auth token` is empty the user is not
-logged in; say so rather than silently continuing unauthenticated. Never print or commit the
-token; reference it as `$(gh auth token)` at the point of use.
+Pick the skill by situation ([stages](planning/workflow/stages.md)):
 
+- Resuming, or unsure which stage a package is at: `research-workflow` (reads state, dispatches).
+- A new request to capture: `request-intake` (S0).
+- One concept: `research-prepare`, `concept-research`, then `notes-reconcile` (S1-S3).
+- Parent, fan-out or orchestration issues: `issue-handoff` (S4-S5).
+- Design, plan, build: `design-orchestrate`, `feature-plan`, `implementation-orchestrate` (S6-S8).
+
+Orchestrators do not implement: they merge, keep state and issues current, and start workers.
+
+### Parallel writers
+
+These apply whenever other agents may share the repository. Reasons and detail: [`planning/workflow/collaboration.md`](planning/workflow/collaboration.md).
+
+- **Boot:** `source /home/user/.local/share/plaza-tools/git-env.sh` (commits fail without it), then a fresh worktree from `origin/<base>`. Push the empty branch first; open the PR after the first commit.
+- **One writer per file.** Wide files (`AGENTS.md`, `doc/README.md`, indexes, a package's `main.md` and `design.md`) change only by PR from your own branch.
+- **Add-only records are new files** (notes, receipts, decisions), or one line in a union-merged `changes.md`. Never append to a shared file by hand.
+- **Never** `git stash` (all worktrees share it; use a WIP commit), force push, rebase, `git add .` (stage explicit paths), `gc`/`prune` or `sudo`. Merge commits only; merge the base in before opening or landing a PR.
+- **Final message:** branch, PR URL, last pushed SHA, what was verified and what was not.
+- **A merged branch is dead** (GitHub deletes it). Follow-up work goes on a new branch and PR.

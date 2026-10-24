@@ -2,8 +2,9 @@
   description = "id - A peer-to-peer file sharing CLI built with Iroh";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs";
-    # nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Track nixos-unstable (cached on cache.nixos.org) so the id devshell and
+    # the root devshell/system all resolve the same tree.
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     systems = {
       url = "github:nix-systems/default";
     };
@@ -59,6 +60,8 @@
           opensslEnv
           rustToolchain
           fmtBins
+          rocCompiler
+          buildWasmHost
           ;
         inherit (nixCommon) nativeBuildInputs;
 
@@ -66,7 +69,7 @@
         cargoDeps = pkgs.rustPlatform.importCargoLock {
           lockFile = ./Cargo.lock;
           outputHashes = {
-            "distributed-topic-tracker-0.2.8" = "sha256-JCRUY9Q2kcAN8x7HWcyIbcw2O9XMJcigoCHIAJwd348=";
+            "p2panda-core-0.7.1" = "sha256-t1FDJkQ6B43clPF0lD36I+Uxav0YbqJ2e/UwWUoI6fk=";
           };
         };
 
@@ -87,8 +90,11 @@
           name = "id-integration-test-runner";
           src = ./.;
           inherit buildInputs;
-          dontUseCmakeConfigure = true;
-          nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+          nativeBuildInputs = nativeBuildInputs ++ [
+            bun2nixPkg.hook
+            pkgs.rustPlatform.cargoSetupHook
+          ];
+          inherit cargoDeps;
           inherit (opensslEnv) OPENSSL_DIR;
           inherit (opensslEnv) OPENSSL_LIB_DIR;
           inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -101,6 +107,7 @@
           dontUseBunBuild = true;
           dontUseBunCheck = true;
           dontUseBunInstall = true;
+          dontUseCmakeConfigure = true;
 
           buildPhase = ''
             export HOME=$(mktemp -d)
@@ -108,21 +115,6 @@
 
             # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
             export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-            # Configure cargo to use vendored dependencies (nix sandbox has no network)
-            cat >> .cargo/config.toml << EOF
-
-            [source.crates-io]
-            replace-with = "vendored-sources"
-
-            [source."git+https://github.com/developing-today-forks/distributed-topic-tracker?branch=main"]
-            git = "https://github.com/developing-today-forks/distributed-topic-tracker"
-            branch = "main"
-            replace-with = "vendored-sources"
-
-            [source.vendored-sources]
-            directory = "${cargoDeps}"
-            EOF
 
             # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
             (cd web && bun run build)
@@ -132,7 +124,7 @@
             cargo test --all-features --test cli_integration --no-run 2>&1
           '';
           installPhase = ''
-            mkdir -p $out/bin
+            mkdir -p $out/bin $out/share/id-test
             # The test binary is in target/debug/deps/cli_integration-<hash>
             TEST_BIN=$(find target/debug/deps -name 'cli_integration-*' -executable -type f | head -1)
             if [ -z "$TEST_BIN" ]; then
@@ -140,6 +132,7 @@
               exit 1
             fi
             cp "$TEST_BIN" $out/bin/cli_integration_test
+            cp -r examples $out/share/id-test/examples
           '';
         };
 
@@ -168,10 +161,20 @@
           name: justCmd:
           pkgs.stdenv.mkDerivation {
             name = "id-${name}";
+            # Every check builds its own debug test binaries in parallel on a
+            # runner with limited disk. Full debuginfo and the incremental cache
+            # filled the disk (ENOSPC, then a linker bus error). Line tables keep
+            # file:line in panics and backtraces.
+            CARGO_INCREMENTAL = "0";
+            CARGO_PROFILE_TEST_DEBUG = "line-tables-only";
+            CARGO_PROFILE_DEV_DEBUG = "line-tables-only";
             src = ./.;
             inherit buildInputs;
-          dontUseCmakeConfigure = true;
-            nativeBuildInputs = nativeBuildInputs ++ [ bun2nixPkg.hook ];
+            nativeBuildInputs = nativeBuildInputs ++ [
+              bun2nixPkg.hook
+              pkgs.rustPlatform.cargoSetupHook
+            ];
+            inherit cargoDeps;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -184,6 +187,7 @@
             dontUseBunBuild = true;
             dontUseBunCheck = true;
             dontUseBunInstall = true;
+            dontUseCmakeConfigure = true;
 
             buildPhase = ''
               export HOME=$(mktemp -d)
@@ -192,23 +196,10 @@
               # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
               export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-              # Configure cargo to use vendored dependencies (nix sandbox has no network)
-              cat >> .cargo/config.toml << EOF
-
-              [source.crates-io]
-              replace-with = "vendored-sources"
-
-              [source."git+https://github.com/developing-today-forks/distributed-topic-tracker?branch=main"]
-              git = "https://github.com/developing-today-forks/distributed-topic-tracker"
-              branch = "main"
-              replace-with = "vendored-sources"
-
-              [source.vendored-sources]
-              directory = "${cargoDeps}"
-              EOF
-
               # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
               (cd web && bun run build)
+
+              ${buildWasmHost}
 
               just ${justCmd}
             '';
@@ -289,7 +280,6 @@
         # Development shell: nix develop
         devShells.default = pkgs.mkShell {
           inherit buildInputs;
-          dontUseCmakeConfigure = true;
           inherit nativeBuildInputs;
           inherit (nixCommon) shellHook TREEFMT_TREE_ROOT_CMD;
 
@@ -331,21 +321,23 @@
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";
           doc = mkCheck "doc" "doc";
           cargo-check = mkCheck "cargo-check" "cargo-check";
+          crash-gate = mkCheck "crash-gate" "crash-gate";
 
           # Playwright E2E tests (requires building the binary + browser binaries)
           test-e2e = pkgs.stdenv.mkDerivation {
             name = "id-test-e2e";
             src = ./.;
             inherit buildInputs;
-          dontUseCmakeConfigure = true;
             nativeBuildInputs = nativeBuildInputs ++ [
               bun2nixPkg.hook
+              pkgs.rustPlatform.cargoSetupHook
               # TODO: Switch back to `bunx playwright test` once Bun supports Playwright's
               # ESM config loader (.esm.preflight virtual imports). Bun's runtime doesn't handle
               # the Node.js-specific ESM hooks that Playwright uses for TypeScript config loading.
               # Tracking: https://github.com/oven-sh/bun/pull/28610
               pkgs.nodejs
             ];
+            inherit cargoDeps;
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
@@ -358,6 +350,7 @@
             dontUseBunBuild = true;
             dontUseBunCheck = true;
             dontUseBunInstall = true;
+            dontUseCmakeConfigure = true;
 
             buildPhase = ''
               export HOME=$(mktemp -d)
@@ -365,21 +358,6 @@
 
               # @tailwindcss/cli uses @parcel/watcher (native module) which needs libstdc++
               export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-              # Configure cargo to use vendored dependencies (nix sandbox has no network)
-              cat >> .cargo/config.toml << EOF
-
-              [source.crates-io]
-              replace-with = "vendored-sources"
-
-              [source."git+https://github.com/developing-today-forks/distributed-topic-tracker?branch=main"]
-              git = "https://github.com/developing-today-forks/distributed-topic-tracker"
-              branch = "main"
-              replace-with = "vendored-sources"
-
-              [source.vendored-sources]
-              directory = "${cargoDeps}"
-              EOF
 
               # Build web assets (bun2nix hook already installed node_modules via bunNodeModulesInstallPhase)
               (cd web && bun run build)
@@ -432,7 +410,7 @@
             src = ./.;
             nativeBuildInputs = fmtBins;
             buildPhase = ''
-              treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1 || true
+              treefmt --config-file ./treefmt.toml --tree-root "$(pwd)" --ci 2>&1
             '';
             installPhase = ''
               mkdir -p $out
@@ -464,8 +442,7 @@
             nativeBuildInputs = [ rustToolchain ];
             buildPhase = ''
               find . -name '*.rs' -not -path '*/target/*' \
-                -exec rustfmt --check --edition 2024 {} + \
-                || true
+                -exec rustfmt --check --edition 2024 {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -477,9 +454,17 @@
             src = ./.;
             nativeBuildInputs = [ pkgs.statix ];
             buildPhase = ''
-              find . -name '*.nix' -print0 | while IFS= read -r -d "" f; do
-                statix check -- "$f" || true
-              done
+              # Collect failures across files instead of swallowing each
+              # one: a pipe into `while` would run the loop in a subshell
+              # and lose the flag, so feed it via process substitution.
+              fail=0
+              while IFS= read -r -d "" f; do
+                statix check -- "$f" || fail=1
+              done < <(find . -name '*.nix' -print0)
+              if [ "$fail" -ne 0 ]; then
+                echo "statix-check: statix reported problems above" >&2
+                false
+              fi
             '';
             installPhase = ''
               mkdir -p $out
@@ -492,8 +477,7 @@
             nativeBuildInputs = [ pkgs.shfmt ];
             buildPhase = ''
               find . -name '*.sh' -not -path '*/node_modules/*' \
-                -exec shfmt -d -i 2 -s {} + \
-                || true
+                -exec shfmt -d -i 2 -s {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -505,9 +489,14 @@
             src = ./.;
             nativeBuildInputs = [ pkgs.shellcheck ];
             buildPhase = ''
+              # Enforced at warning severity (#702): under sandbox
+              # conditions shellcheck reports only four info findings
+              # (SC2012, `ls` glob picks in the examples' build.sh
+              # files) and no warning-or-above findings, so warnings
+              # and errors fail the gate while those info findings
+              # are worked down separately.
               find . -name '*.sh' -not -path '*/node_modules/*' \
-                -exec shellcheck {} + \
-                || true
+                -exec shellcheck --severity=warning {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -520,8 +509,7 @@
             nativeBuildInputs = [ pkgs.taplo ];
             buildPhase = ''
               find . -name '*.toml' -not -path '*/target/*' \
-                -exec taplo check {} + \
-                || true
+                -exec taplo check {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -537,8 +525,7 @@
                 -o -name '*.scss' -o -name '*.yaml' \) \
                 -not -path '*/node_modules/*' -not -path '*/target/*' \
                 -not -path '*/dist/*' \
-                -exec prettier --check {} + \
-                || true
+                -exec prettier --check {} +
             '';
             installPhase = ''
               mkdir -p $out
@@ -582,23 +569,29 @@
             src = ./.;
 
             # Enable the web feature (default features are empty in Cargo.toml)
-            buildFeatures = [ "web" ];
+            buildFeatures = [
+              "web"
+              "sandbox"
+              "world"
+            ];
 
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "distributed-topic-tracker-0.2.8" = "sha256-JCRUY9Q2kcAN8x7HWcyIbcw2O9XMJcigoCHIAJwd348=";
+                "p2panda-core-0.7.1" = "sha256-t1FDJkQ6B43clPF0lD36I+Uxav0YbqJ2e/UwWUoI6fk=";
               };
             };
 
             inherit buildInputs;
-          dontUseCmakeConfigure = true;
             nativeBuildInputs = [
               pkgs.pkg-config
-              rustToolchain
               pkgs.cmake
+              rustToolchain
               pkgs.bun
               bun2nixPkg.hook
+              # The tests compile roc worlds. zig is not listed: its setup hook would
+              # replace this derivation's build phase (buildWasmHost finds it by path).
+              rocCompiler
             ];
 
             # bun2nix: offline web dependency installation
@@ -608,6 +601,7 @@
             dontUseBunBuild = true;
             dontUseBunCheck = true;
             dontUseBunInstall = true;
+            dontUseCmakeConfigure = true;
 
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
@@ -620,6 +614,8 @@
               cd web
               bun run build
               cd ..
+
+              ${buildWasmHost}
             '';
 
             doCheck = true;
@@ -643,24 +639,31 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
               outputHashes = {
-                "distributed-topic-tracker-0.2.8" = "sha256-JCRUY9Q2kcAN8x7HWcyIbcw2O9XMJcigoCHIAJwd348=";
+                "p2panda-core-0.7.1" = "sha256-t1FDJkQ6B43clPF0lD36I+Uxav0YbqJ2e/UwWUoI6fk=";
               };
             };
 
             # Disable default web feature for lib-only build
             buildNoDefaultFeatures = true;
+            buildFeatures = [
+              "sandbox"
+              "world"
+            ];
+            dontUseCmakeConfigure = true;
 
             inherit buildInputs;
-          dontUseCmakeConfigure = true;
             nativeBuildInputs = [
               pkgs.pkg-config
-              rustToolchain
               pkgs.cmake
+              rustToolchain
+              rocCompiler
             ];
 
             inherit (opensslEnv) OPENSSL_DIR;
             inherit (opensslEnv) OPENSSL_LIB_DIR;
             inherit (opensslEnv) OPENSSL_INCLUDE_DIR;
+
+            preBuild = buildWasmHost;
 
             doCheck = true;
             # serve_tests require networking (bind/listen), unavailable in nix sandbox

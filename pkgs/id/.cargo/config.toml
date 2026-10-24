@@ -16,3 +16,6 @@ coverage = "llvm-cov --html --open"
 
 # Quick test - just lib tests (no integration tests)
 test-lib = "test --lib"
+
+[env]
+RUST_MIN_STACK = "8388608"

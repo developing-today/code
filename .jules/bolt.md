@@ -1,7 +1,4 @@
-## 2024-10-27 - [Avoid String.prototype.split("").reduce() in hot paths]
-**Learning:** Avoid using `split("").reduce()` for iterating over strings in hot paths like cursor color generation or hash generation. It allocates unnecessary intermediate arrays for characters and causes excessive Garbage Collection.
-**Action:** Use traditional `for` loops with `String.prototype.charCodeAt()` when calculating string hashes.
+## 2025-02-24 - [Avoid O(N) Search Highlight Traversals]
 
-## 2024-10-27 - [Avoid unnecessary Map.set operations]
-**Learning:** Repeatedly calling `Map.set()` for existing array references in iteration loops (like `Map.get() || []`) does an unnecessary hash lookup and set operation.
-**Action:** Since array references mutate in place, only use `Map.set()` when the entry didn't exist previously. Initialize and store the array, then just `push` into the existing reference in subsequent iterations.
+**Learning:** Counting match highlights in ProseMirror search by repeatedly calling `findNext` performs an O(N) document traversal per match, which becomes a severe bottleneck (e.g. 1.7s for 10k matches) when document sizes scale or searches are frequent. `prosemirror-search` already computes a `DecorationSet` internally containing all matches.
+**Action:** Always use `getMatchHighlights(view.state).find()` to retrieve search matches in O(1) time instead of iterating manually over the document with `findNext` or `findNextNoWrap`.

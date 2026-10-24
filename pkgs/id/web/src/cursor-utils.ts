@@ -103,7 +103,7 @@ export const CURSOR_COLORS = [
  * Uses a hash function to map client IDs to colors.
  */
 export function getColorForClient(clientID: string | number): string {
-  // Optimization: avoided split().reduce() to prevent intermediate array allocations
+  // A plain loop: no intermediate array of characters per call.
   const str = String(clientID);
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
