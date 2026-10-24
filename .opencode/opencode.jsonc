@@ -1912,7 +1912,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity CLI (via agy)",
       "options": {
-        "baseURL": "http://127.0.0.1:18743/v1",
+        "baseURL": "http://127.0.0.1:{env:AGY_PROXY_PORT:-18743}/v1",
         "apiKey": "agy-local"
       },
       "models": {
@@ -2071,7 +2071,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity Language Server (Direct gRPC/ConnectRPC)",
       "options": {
-        "baseURL": "http://127.0.0.1:18745/v1",
+        "baseURL": "http://127.0.0.1:{env:ANTIGRAVITY_LS_PROXY_PORT:-18745}/v1",
         "apiKey": "antigravity-local"
       },
       "models": {
@@ -2884,7 +2884,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "OpenAI Codex CLI (via codex)",
       "options": {
-        "baseURL": "http://127.0.0.1:18744/v1",
+        "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
         "apiKey": "codex-local"
       },
       "models": {
@@ -3254,7 +3254,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "ChatGPT (via Codex)",
       "options": {
-        "baseURL": "http://127.0.0.1:18744/v1",
+        "baseURL": "http://127.0.0.1:{env:CODEX_PROXY_PORT:-18744}/v1",
         "apiKey": "codex-local"
       },
       "models": {
@@ -3556,7 +3556,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Design Code",
       "options": {
-        "baseURL": "http://127.0.0.1:18746/v1",
+        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
         "apiKey": "design-local"
       },
       "models": {
@@ -3643,7 +3643,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Code Design",
       "options": {
-        "baseURL": "http://127.0.0.1:18746/v1",
+        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
         "apiKey": "design-local"
       },
       "models": {
@@ -3730,7 +3730,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Open Design",
       "options": {
-        "baseURL": "http://127.0.0.1:18746/v1",
+        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
         "apiKey": "design-local"
       },
       "models": {
@@ -3817,7 +3817,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "OpenDesign",
       "options": {
-        "baseURL": "http://127.0.0.1:18746/v1",
+        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
         "apiKey": "design-local"
       },
       "models": {
