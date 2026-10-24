@@ -164,10 +164,10 @@ pub fn render_file_list(page: &FileListPage) -> String {
          value=\"{}\" />",
         search_value
     );
-    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" /> show auto/archive</label>");
+    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" aria-label=\"Show auto/archive\" class=\"checkbox checkbox-xs\" /> show auto/archive</label>");
     let _ = write!(
         html,
-        "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",
+        "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" aria-label=\"Show deleted files\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",
         show_deleted_checked
     );
     html.push_str("</div>");
@@ -310,7 +310,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
             let _ = write!(
                 html,
                 "<li class=\"file-item flex items-center gap-2 px-3 py-1.5 border-b border-base-300 hover:bg-base-200 text-xs{}\" data-kind=\"{}\" data-name=\"{}\">\
-                    <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" data-name=\"{}\" />\
+                    <input type=\"checkbox\" class=\"file-select checkbox checkbox-xs\" aria-label=\"Select file {}\" data-name=\"{}\" />\
                     <span class=\"text-primary/50\">[F]</span>\
                     <a class=\"font-bold hover:text-primary truncate\" href=\"{}\" data-nav>{}</a>\
                     {}{}{}{}\
@@ -318,6 +318,7 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 </li>",
                 deleted_class,
                 kind_attr,
+                name_escaped,
                 name_escaped,
                 name_escaped,
                 href,

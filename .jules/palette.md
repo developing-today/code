@@ -1,0 +1,3 @@
+## 2024-05-18 - Missing ARIA labels on dynamic file selection checkboxes
+**Learning:** In dynamically generated file lists, `<input type="checkbox">` elements used for row selection often lack semantic connection to the item they select, meaning screen reader users just hear "Checkbox, unchecked" multiple times.
+**Action:** When implementing selection checkboxes in lists, always add an `aria-label` that includes the specific item's name or identifier (e.g., `aria-label="Select file filename.md"`), ensuring the accessible name provides necessary context without relying solely on visual proximity.
