@@ -322,7 +322,14 @@ impl Handler for SshClient {
             self.input = Some(input);
             let handle = session.handle();
             session.channel_success(channel)?;
-            tokio::spawn(run_explorer(explorer, handle, channel, bytes));
+            let dropped_input = Arc::clone(&self.dropped_input);
+            tokio::spawn(run_explorer(
+                explorer,
+                handle,
+                channel,
+                bytes,
+                dropped_input,
+            ));
             return Ok(());
         }
         let first = join_frame(login);
@@ -482,6 +489,19 @@ fn claim_dropped_input_notice(counter: &AtomicUsize) -> Option<(usize, String)> 
     let notice = dropped_input_notice(bytes)?;
     counter.fetch_sub(bytes, Ordering::Relaxed);
     Some((bytes, notice))
+}
+
+/// Prepend the pending dropped-input notice to the explorer's next output,
+/// claiming it from the shared counter. Returns the claimed byte count so
+/// the caller can restore it with `fetch_add` if the output write fails —
+/// the same reset-only-on-delivery rule as [`SshIo::send`]. Below the
+/// threshold the output is left untouched and the drops stay counted.
+fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Option<usize> {
+    let (bytes, notice) = claim_dropped_input_notice(counter)?;
+    let mut combined = notice.into_bytes();
+    combined.append(out);
+    *out = combined;
+    Some(bytes)
 }
 
 impl SshIo {
@@ -1150,6 +1170,7 @@ async fn run_explorer(
     handle: Handle,
     channel: ChannelId,
     mut bytes: mpsc::Receiver<SshInputFrame>,
+    dropped_input: Arc<AtomicUsize>,
 ) {
     let greeting = match explorer.act(DirectoryAction::View).await {
         Ok(outcome) => format!(
@@ -1200,12 +1221,20 @@ async fn run_explorer(
                 }
             }
         }
+        // Tell the explorer viewer about dropped input before the output
+        // it delayed, claiming the notice from the counter shared with the
+        // handler. If the write fails, restore the claim so the drops stay
+        // counted instead of vanishing with the undelivered notice.
+        let claimed = prepend_dropped_input_notice(&dropped_input, &mut out);
         if !out.is_empty()
             && handle
                 .data(channel, String::from_utf8_lossy(&out).into_owned())
                 .await
                 .is_err()
         {
+            if let Some(bytes) = claimed {
+                dropped_input.fetch_add(bytes, Ordering::Relaxed);
+            }
             break 'input;
         }
         if done {
@@ -1827,6 +1856,40 @@ mod tests {
         let (restored, _) = claim_dropped_input_notice(&counter).unwrap();
         assert_eq!(restored, INPUT_DROP_NOTICE_BYTES);
         assert_eq!(counter.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn explorer_notice_prepends_to_next_output_and_stays_quiet_below_threshold() {
+        // Drive the shared counter exactly the way the russh handler does
+        // for an explorer session whose input queue is full (#723).
+        let counter = AtomicUsize::new(0);
+        record_dropped_input(&counter, 600);
+        let mut out = b"id> ".to_vec();
+        assert_eq!(prepend_dropped_input_notice(&counter, &mut out), None);
+        assert_eq!(out, b"id> ", "below-threshold drops stay quiet");
+        assert_eq!(counter.load(Ordering::Relaxed), 600);
+
+        record_dropped_input(&counter, 600);
+        let mut out = b"id> ".to_vec();
+        let claimed = prepend_dropped_input_notice(&counter, &mut out).unwrap();
+        assert_eq!(claimed, 1200);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("[-- input dropped: 1200 bytes"), "{text}");
+        assert!(text.ends_with("id> "), "notice precedes the next output");
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        // A failed write restores the claim (run_explorer adds it back),
+        // so the same drops are prepended again rather than lost.
+        record_dropped_input(&counter, INPUT_DROP_NOTICE_BYTES);
+        let mut out = Vec::new();
+        let claimed = prepend_dropped_input_notice(&counter, &mut out).unwrap();
+        counter.fetch_add(claimed, Ordering::Relaxed);
+        let mut out = Vec::new();
+        assert_eq!(
+            prepend_dropped_input_notice(&counter, &mut out),
+            Some(INPUT_DROP_NOTICE_BYTES)
+        );
+        assert!(!out.is_empty(), "notice alone is output worth sending");
     }
 
     #[tokio::test]
