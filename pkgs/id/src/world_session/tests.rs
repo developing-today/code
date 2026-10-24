@@ -1207,7 +1207,7 @@ mod tests {
         let blobs: Store = MemStore::new().into();
         let svc = WorldService::new(world.clone(), Some("admin".to_owned()))
             .with_blob_store(blobs.clone());
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
         let hash = module_hash(wasm);
 
         let mut peer = Peer::connect(svc.clone(), SessionConfig::default());
@@ -1271,7 +1271,7 @@ mod tests {
     async fn admin_fuel_limit_applies_to_installed_programs() {
         use iroh_blobs::store::mem::MemStore;
 
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm").to_vec();
         let hash = module_hash(&wasm);
         let starved = crate::world_limits::RuntimeLimits {
             sandbox: crate::sandbox::SandboxLimits {
@@ -1321,7 +1321,7 @@ mod tests {
     async fn source_only_policy_rejects_raw_modules_but_preserves_normal_mode() {
         use iroh_blobs::store::mem::MemStore;
 
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm").to_vec();
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm").to_vec();
         let hash = module_hash(&wasm);
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let service = WorldService::new(world.clone(), Some("admin".to_owned()))
@@ -1378,7 +1378,7 @@ mod tests {
     async fn bad_module_replacement_preserves_the_active_program() {
         use iroh_blobs::store::mem::MemStore;
 
-        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm = include_bytes!("../../examples/roc-counter/counter.wasm");
         let sandbox =
             crate::sandbox::Sandbox::compile(wasm, crate::sandbox::SandboxLimits::default())
                 .unwrap();
