@@ -465,7 +465,6 @@ enum Staged {
 
 impl Staged {
     /// Whether the event is kept: stored, or held. A refused event and a fork are not.
-    #[allow(dead_code)]
     fn keeps(&self) -> bool {
         matches!(
             self,

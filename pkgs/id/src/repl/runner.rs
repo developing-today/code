@@ -386,13 +386,11 @@ async fn execute_repl_command(
             ctx.del_tag(subject, key, Some(value)).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tags" | "labels" | "links"])
-        | (None, ["tag" | "label" | "link", "list" | "ls"]) => {
+        (None, ["tags" | "labels" | "links"]) => {
             ctx.get_tags(None).await?;
             Ok(ReplAction::Continue)
         }
-        (None, ["tags" | "labels" | "links", subject])
-        | (None, ["tag" | "label" | "link", "list" | "ls", subject]) => {
+        (None, ["tags" | "labels" | "links", subject]) => {
             ctx.get_tags(Some(subject)).await?;
             Ok(ReplAction::Continue)
         }
@@ -403,6 +401,14 @@ async fn execute_repl_command(
         }
         (None, ["tag" | "label" | "link", "search" | "find"]) => {
             ctx.search_tags("").await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag" | "label" | "link", "list" | "ls"]) => {
+            ctx.get_tags(None).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["tag" | "label" | "link", "list" | "ls", subject]) => {
+            ctx.get_tags(Some(subject)).await?;
             Ok(ReplAction::Continue)
         }
         (None, ["migrate-tags" | "migrate"]) => {

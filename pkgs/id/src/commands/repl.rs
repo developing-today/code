@@ -1143,8 +1143,17 @@ impl ReplContext {
                 blobs_conn,
                 store,
                 ..
+            } => {
+                if let Some(conn) = meta_conn {
+                    conn.close(0u32.into(), b"done");
+                }
+                if let Some(conn) = blobs_conn {
+                    conn.close(0u32.into(), b"done");
+                }
+                endpoint.close().await;
+                store.shutdown().await?;
             }
-            | ReplContextInner::RemoteNode {
+            ReplContextInner::RemoteNode {
                 endpoint,
                 meta_conn,
                 blobs_conn,

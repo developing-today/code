@@ -173,13 +173,14 @@ fn evaluate_group(group: Hash, members: usize) -> (usize, Option<String>) {
     };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let mut evaluator = Evaluator::default();
     let warnings = evaluator.observe(&observation, now);
     let size_warning = warnings
         .iter()
         .filter(|w| matches!(w, Warning::Size { .. }))
-        .next_back();
+        .last();
     let churn_warning = warnings.iter().find(|w| matches!(w, Warning::Churn { .. }));
     let warning = match (size_warning, churn_warning) {
         (Some(size), Some(churn)) => Some(format!("{}; {}", size.message(), churn.message())),
