@@ -5,6 +5,7 @@ import type {
   BoardItem,
   Comment,
   GhItem,
+  OrchestrationSection,
   Provenance,
   QuotaView,
   RefKey,
@@ -25,5 +26,7 @@ export interface Source {
   quota(): Promise<QuotaView>;
   /** Raw session feed for the "needs you" view (#852), pre-classification. */
   attention(): Promise<SessionFeedEntry[]>;
+  /** The orchestration job's latest section (#899); null = not measured yet. */
+  orchestration(): Promise<OrchestrationSection | null>;
   provenance(): Provenance;
 }

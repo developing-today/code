@@ -241,3 +241,110 @@ export function refUrl(key: RefKey, kind: GhKind = "issue"): string {
   const { repo, number } = parseRef(key);
   return `https://github.com/${repo}/${kind === "pr" ? "pull" : "issues"}/${number}`;
 }
+
+// ---------------------------------------------------------------------------
+// Orchestration section (#899): the recurring orchestration job's output,
+// carried in the fleet feed and served at /api/orchestration.json. The
+// dashboard's today view (#898) consumes it: tiered needs-you items with
+// per-item reasons, a flat dependency view, and per-goal measurements.
+// The orchestrator republishes the whole section every run; an item
+// absent from the newest section has expired out.
+// ---------------------------------------------------------------------------
+
+/** Assignment/measurement horizon buckets (the #899 priority ladder). */
+export type Horizon = "today" | "tomorrow" | "next-3-days" | "longer" | "incoming";
+
+export type TierName = "needs-drew" | "needs-orchestrator";
+
+/** Where a queue item came from — same source labels as the session feed. */
+export type OrchestrationSource =
+  | "opencode-sandbox"
+  | "opencode-laptop"
+  | "jules"
+  | "claude"
+  | "backlog"
+  | "tracked"
+  | "github";
+
+/** A prerequisite: "blocked by X; X is being worked by session S". */
+export interface DependencyRef {
+  /** Human label of the prerequisite task. */
+  task: string;
+  /** "owner/repo#123" when the prerequisite is a GitHub item. */
+  ref?: RefKey;
+  status: "in-progress" | "queued" | "stalled" | "done" | "unknown";
+  /** Session working the blocker, when one is. */
+  workerSessionId?: string;
+  /** Human label for the worker, e.g. "opencode-laptop · Jules 4259…". */
+  workerLabel?: string;
+}
+
+/** One classified queue item in a needs-* tier. */
+export interface TierItem {
+  /** sessionId | "owner/repo#123" | "jules:<id>" | tracked goal id. */
+  id: string;
+  kind: "session" | "decision" | "task" | "gap";
+  title: string;
+  source: OrchestrationSource;
+  /** AttentionState for sessions; a free label otherwise. */
+  state?: string;
+  /** One line: why this item sits in this tier. */
+  reason: string;
+  /** ISO: first classified into this tier. */
+  since: string;
+  /** ISO: most recent orchestrator run that still observed the item. */
+  lastSeenAt: string;
+  ref?: RefKey;
+  sessionId?: string;
+  /** The pending question, trimmed, for question-stopped items. */
+  question?: string;
+  /** Task items: ladder bucket. */
+  horizon?: Horizon;
+  blockedBy?: DependencyRef[];
+  /** The orchestrator's recorded resolution or handoff note. */
+  recommendedAction?: string;
+}
+
+/** One task lined up under a goal, with its ladder bucket. */
+export interface LinedUpTask {
+  title: string;
+  ref?: RefKey;
+  status: "in-progress" | "queued" | "blocked" | "done-recently";
+  horizon: Horizon;
+  /** Why this bucket (due date, Drew's pick, NEXT marker, …). */
+  horizonWhy: string;
+  blockedBy?: DependencyRef[];
+}
+
+/** The orchestrator's measurement of one of Drew's top goals. */
+export interface GoalMeasurement {
+  /** Tracked/user goal id when known. */
+  goalId: string | null;
+  goal: string;
+  momentum: "moving" | "stalled" | "blocked" | "no-work-lined-up";
+  /** One line. */
+  summary: string;
+  linedUp: LinedUpTask[];
+  /** What progressed since the previous orchestrator run, as evidence lines. */
+  progressedSinceLastRun: string[];
+  stalled: { title: string; since: string; blocker?: string }[];
+  /** Findings, e.g. "goal has no tasks lined up". */
+  gaps: string[];
+}
+
+/** The whole orchestration section, as embedded in the fleet feed. */
+export interface OrchestrationSection {
+  version: 1;
+  /** ISO timestamp of the orchestrator run that produced this section. */
+  generatedAt: string;
+  /** "orch-<ISO>" — the producing run. */
+  runId: string;
+  /** Sources + run, human-readable (the section's own provenance). */
+  provenance: string;
+  tiers: { needsDrew: TierItem[]; needsOrchestrator: TierItem[] };
+  /** Flat cross-item dependency view for one-place rendering. */
+  dependencies: (DependencyRef & { taskRef?: RefKey })[];
+  goals: GoalMeasurement[];
+  /** What the producing run pushed back into motion. */
+  actions: { at: string; kind: string; target: string; summary: string }[];
+}
