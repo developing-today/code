@@ -545,6 +545,52 @@ fn collect_text<'a>(node: &'a AstNode<'a>, text: &mut String) {
     }
 }
 
+/// Escape a value for a double-quoted HTML attribute (#873): `&` first, so
+/// the entities introduced here are not themselves re-escaped, then the
+/// quote that would terminate the value, and `<`.
+fn escape_attr_value(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+}
+
+/// Decode the entities [`escape_attr_value`] can emit (plus `&gt;`/`&apos;`
+/// and numeric single-quote) in one left-to-right pass, so `&amp;quot;`
+/// decodes to the literal text `&quot;`, never to `"`.
+fn decode_attr_entities(value: &str) -> String {
+    if !value.contains('&') {
+        return value.to_owned();
+    }
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(idx) = rest.find('&') {
+        out.push_str(&rest[..idx]);
+        let tail = &rest[idx..];
+        let (decoded, len) = if let Some(t) = tail.strip_prefix("&quot;") {
+            ('"', tail.len() - t.len())
+        } else if let Some(t) = tail.strip_prefix("&amp;") {
+            ('&', tail.len() - t.len())
+        } else if let Some(t) = tail.strip_prefix("&lt;") {
+            ('<', tail.len() - t.len())
+        } else if let Some(t) = tail.strip_prefix("&gt;") {
+            ('>', tail.len() - t.len())
+        } else if let Some(t) = tail.strip_prefix("&apos;") {
+            ('\'', tail.len() - t.len())
+        } else if let Some(t) = tail.strip_prefix("&#39;") {
+            ('\'', tail.len() - t.len())
+        } else {
+            out.push('&');
+            rest = &tail[1..];
+            continue;
+        };
+        out.push(decoded);
+        rest = &tail[len..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Parse an HTML `<img>` tag and extract attributes into a `ProseMirror` image node.
 ///
 /// Returns `Some(json)` if the input looks like `<img src="..." ... />`, otherwise `None`.
@@ -554,29 +600,91 @@ fn parse_img_tag(html: &str) -> Option<Value> {
         return None;
     }
 
-    // Simple attribute extraction (no full HTML parser needed for self-closing <img>)
-    fn attr_value<'a>(html: &'a str, name: &str) -> Option<&'a str> {
-        let pattern = format!("{name}=\"");
-        let start = html.find(&pattern)? + pattern.len();
-        let end = start + html[start..].find('"')?;
-        Some(&html[start..end])
+    // Parse the tag attribute-by-attribute instead of searching substrings
+    // (#872): a substring search for `src="` also matches `data-src="`, and
+    // attribute-looking text inside an earlier quoted value (e.g. `title=`
+    // inside `alt="..."`) was extracted as a real attribute. Scanning
+    // name=value pairs left to right records whole attribute names only,
+    // and a quoted value is consumed as that attribute's value alone.
+    fn parse_attrs(html: &str) -> std::collections::HashMap<String, String> {
+        let bytes = html.as_bytes();
+        let mut pos = 4; // skip "<img"
+        let mut map = std::collections::HashMap::new();
+        while pos < bytes.len() {
+            // Skip separators between attributes (whitespace, '/' of '/>').
+            while pos < bytes.len() && (bytes[pos].is_ascii_whitespace() || bytes[pos] == b'/') {
+                pos += 1;
+            }
+            if pos >= bytes.len() || bytes[pos] == b'>' {
+                break;
+            }
+            // Attribute name: up to '=', whitespace, '/' or '>'.
+            let name_start = pos;
+            while pos < bytes.len()
+                && !bytes[pos].is_ascii_whitespace()
+                && !matches!(bytes[pos], b'=' | b'/' | b'>')
+            {
+                pos += 1;
+            }
+            if pos == name_start {
+                break;
+            }
+            let name = html[name_start..pos].to_ascii_lowercase();
+            while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+                pos += 1;
+            }
+            let mut value = String::new();
+            if pos < bytes.len() && bytes[pos] == b'=' {
+                pos += 1;
+                while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+                    pos += 1;
+                }
+                if pos < bytes.len() && matches!(bytes[pos], b'"' | b'\'') {
+                    let quote = bytes[pos];
+                    pos += 1;
+                    let value_start = pos;
+                    while pos < bytes.len() && bytes[pos] != quote {
+                        pos += 1;
+                    }
+                    value = decode_attr_entities(&html[value_start..pos]);
+                    if pos < bytes.len() {
+                        pos += 1; // closing quote
+                    }
+                } else {
+                    let value_start = pos;
+                    while pos < bytes.len()
+                        && !bytes[pos].is_ascii_whitespace()
+                        && bytes[pos] != b'>'
+                    {
+                        pos += 1;
+                    }
+                    value = decode_attr_entities(&html[value_start..pos]);
+                }
+            }
+            // First occurrence wins (HTML duplicate-attribute rule).
+            map.entry(name).or_insert(value);
+        }
+        map
     }
 
-    let src = attr_value(trimmed, "src")?; // src is required
+    let parsed = parse_attrs(trimmed);
+    let attr = |name: &str| parsed.get(name).map(String::as_str);
+
+    let src = attr("src")?; // src is required
     let mut attrs = json!({"src": src});
 
-    if let Some(alt) = attr_value(trimmed, "alt") {
+    if let Some(alt) = attr("alt") {
         attrs["alt"] = json!(alt);
     }
-    if let Some(title) = attr_value(trimmed, "title") {
+    if let Some(title) = attr("title") {
         attrs["title"] = json!(title);
     }
-    if let Some(w) = attr_value(trimmed, "width")
+    if let Some(w) = attr("width")
         && let Ok(n) = w.parse::<u64>()
     {
         attrs["width"] = json!(n);
     }
-    if let Some(h) = attr_value(trimmed, "height")
+    if let Some(h) = attr("height")
         && let Ok(n) = h.parse::<u64>()
     {
         attrs["height"] = json!(n);
@@ -733,12 +841,14 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
 
             // If image has explicit dimensions, emit as HTML <img> tag
             if width.is_some() || height.is_some() {
-                let mut tag = format!("<img src=\"{src}\"");
+                // #873: escape values — a raw `"` truncated the attribute on
+                // reparse and could inject new attributes.
+                let mut tag = format!("<img src=\"{}\"", escape_attr_value(src));
                 if !alt.is_empty() {
-                    tag.push_str(&format!(" alt=\"{alt}\""));
+                    tag.push_str(&format!(" alt=\"{}\"", escape_attr_value(alt)));
                 }
                 if !title.is_empty() {
-                    tag.push_str(&format!(" title=\"{title}\""));
+                    tag.push_str(&format!(" title=\"{}\"", escape_attr_value(title)));
                 }
                 if let Some(w) = width {
                     tag.push_str(&format!(" width=\"{w}\""));
@@ -1493,5 +1603,101 @@ mod tests {
         assert_eq!(img["attrs"]["alt"], "pic");
         assert_eq!(img["attrs"]["width"], 200);
         assert_eq!(img["attrs"]["height"], 150);
+    }
+
+    #[test]
+    fn test_img_data_prefixed_attributes_do_not_shadow_real_ones() {
+        // #872: data-src / data-width / data-alt must not shadow the real
+        // attributes, in either order.
+        let node =
+            parse_img_tag("<img data-src=\"lazy.png\" src=\"real.png\" />").expect("img parses");
+        assert_eq!(node["attrs"]["src"], "real.png");
+        let node =
+            parse_img_tag("<img src=\"real.png\" data-src=\"lazy.png\" />").expect("img parses");
+        assert_eq!(node["attrs"]["src"], "real.png");
+        let node = parse_img_tag(
+            "<img data-width=\"5\" width=\"100\" data-alt=\"decoy\" alt=\"real alt\" src=\"x.png\" />",
+        )
+        .expect("img parses");
+        assert_eq!(node["attrs"]["width"], 100);
+        assert_eq!(node["attrs"]["alt"], "real alt");
+    }
+
+    #[test]
+    fn test_img_attribute_looking_text_inside_a_value_is_not_an_attribute() {
+        // #872: `title=` inside the quoted alt value is value text, not an
+        // attribute.
+        let node =
+            parse_img_tag("<img alt=\"my title=\"quoted\" src=\"x.png\" />").expect("img parses");
+        assert_eq!(node["attrs"]["src"], "x.png");
+        assert!(node["attrs"].get("title").is_none());
+    }
+
+    #[test]
+    fn test_img_single_quoted_and_spaced_attributes_parse() {
+        // #872 secondary facet: legal spellings the substring search missed.
+        let node = parse_img_tag("<img src = 'x.png' alt = 'A' />").expect("img parses");
+        assert_eq!(node["attrs"]["src"], "x.png");
+        assert_eq!(node["attrs"]["alt"], "A");
+    }
+
+    #[test]
+    fn test_image_quoted_alt_roundtrips_through_html_emission() {
+        // #873 + #872: emission escapes, parsing decodes — the value is
+        // byte-identical after a full round trip and cannot inject a title.
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "image",
+                    "attrs": {"src": "x.png", "alt": "a \"quoted\" caption", "width": 100}
+                }]
+            }]
+        });
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert!(md.contains("&quot;"), "alt quote escaped on emission: {md}");
+        let back = markdown_to_prosemirror(&md);
+        let img = &back["content"][0]["content"][0];
+        assert_eq!(img["attrs"]["alt"], "a \"quoted\" caption");
+        assert_eq!(img["attrs"]["width"], 100);
+        assert!(img["attrs"].get("title").is_none());
+
+        // An injection-shaped alt cannot manufacture a title attribute.
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "image",
+                    "attrs": {"src": "x.png", "alt": "x\" title=\"injected", "width": 100}
+                }]
+            }]
+        });
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        let back = markdown_to_prosemirror(&md);
+        let img = &back["content"][0]["content"][0];
+        assert_eq!(img["attrs"]["alt"], "x\" title=\"injected");
+        assert!(img["attrs"].get("title").is_none());
+    }
+
+    #[test]
+    fn test_image_ampersand_roundtrips_without_double_escaping() {
+        // Convention pin: `&` emits as `&amp;` and decodes back to `&`;
+        // a literal `&quot;` in the value stays literal text.
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "image",
+                    "attrs": {"src": "x.png", "alt": "fish & chips &quot;sea&quot;", "width": 10}
+                }]
+            }]
+        });
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        let back = markdown_to_prosemirror(&md);
+        let img = &back["content"][0]["content"][0];
+        assert_eq!(img["attrs"]["alt"], "fish & chips &quot;sea&quot;");
     }
 }
