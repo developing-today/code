@@ -758,18 +758,18 @@ impl SessionIo for SshIo {
                 // Bound the whole drain, not just each page: a world with many
                 // records would otherwise keep fetching pages without limit.
                 self.records_drained = self.records_drained.saturating_add(text.len());
-                let next = match (&self.records_prefix, after.as_deref()) {
-                    (Some(prefix), Some(_)) if self.records_drained < MAX_RECORDS_TOTAL_BYTES => {
-                        Some(prefix.clone())
+                let next = match (&self.records_prefix, &after) {
+                    (Some(prefix), Some(after))
+                        if self.records_drained < MAX_RECORDS_TOTAL_BYTES =>
+                    {
+                        Some((prefix.clone(), after.clone()))
                     }
                     _ => None,
                 };
                 let truncated = after.is_some() && self.records_drained >= MAX_RECORDS_TOTAL_BYTES;
-                if let Some(prefix) = next {
-                    self.commands.push_back(WorldCommand::RecordsContinue {
-                        prefix,
-                        after: after.expect("a next page has an after cursor"),
-                    });
+                if let Some((prefix, after)) = next {
+                    self.commands
+                        .push_back(WorldCommand::RecordsContinue { prefix, after });
                 } else {
                     self.records_prefix = None;
                 }

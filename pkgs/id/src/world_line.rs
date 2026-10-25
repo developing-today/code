@@ -54,16 +54,19 @@ pub fn parse_line(line: &str) -> Option<WorldLine> {
         _ => {}
     }
     if line == "/records" || line.starts_with("/records ") {
-        let prefix = line.strip_prefix("/records").expect("matched above").trim();
+        let Some(prefix) = line.strip_prefix("/records") else {
+            return Some(WorldLine::Message("usage: /records [prefix]".to_owned()));
+        };
+        let prefix = prefix.trim();
         return Some(WorldLine::Records {
             prefix: (!prefix.is_empty()).then(|| prefix.to_owned()),
         });
     }
     if line == "/documents" || line.starts_with("/documents ") {
-        let prefix = line
-            .strip_prefix("/documents")
-            .expect("matched above")
-            .trim();
+        let Some(prefix) = line.strip_prefix("/documents") else {
+            return Some(WorldLine::Message("usage: /documents [prefix]".to_owned()));
+        };
+        let prefix = prefix.trim();
         return Some(WorldLine::Documents {
             prefix: (!prefix.is_empty()).then(|| prefix.to_owned()),
         });
