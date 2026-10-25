@@ -78,8 +78,8 @@
             f"chromium --headless --disable-gpu --no-sandbox --dump-dom "
             f"--timeout=15000 {BASE}/ 2>/dev/null"
         )
-        assert "Files" in home_dom, f"[port {port}] Home page DOM missing 'Files': {home_dom[:500]}"
-        assert "new-file-name" in home_dom, f"[port {port}] Home page missing new file form"
+        assert "<title>Home - id</title>" in home_dom, f"[port {port}] Home page DOM missing title: {home_dom[:500]}"
+        assert "Browse files" in home_dom, f"[port {port}] Home page DOM missing files link"
 
         # ── Create a file for further tests ───────────────────────────────
         create_resp = server.succeed(
@@ -93,7 +93,7 @@
         # ── Chromium renders the file in the list ─────────────────────────
         list_dom = server.succeed(
             f"chromium --headless --disable-gpu --no-sandbox --dump-dom "
-            f"--timeout=15000 {BASE}/ 2>/dev/null"
+            f"--timeout=15000 {BASE}/files 2>/dev/null"
         )
         assert "browser-test.txt" in list_dom, f"[port {port}] Created file not in rendered list"
 
@@ -138,14 +138,14 @@
     # Verify it appears in primary's DOM
     primary_dom = server.succeed(
         "chromium --headless --disable-gpu --no-sandbox --dump-dom "
-        "--timeout=15000 http://localhost:4173/ 2>/dev/null"
+        "--timeout=15000 http://localhost:4173/files 2>/dev/null"
     )
     assert "isolation-dom.txt" in primary_dom, "Isolation file missing from primary DOM"
 
     # Verify it does NOT appear in secondary's DOM
     secondary_dom = server.succeed(
         "chromium --headless --disable-gpu --no-sandbox --dump-dom "
-        "--timeout=15000 http://localhost:4174/ 2>/dev/null"
+        "--timeout=15000 http://localhost:4174/files 2>/dev/null"
     )
     assert "isolation-dom.txt" not in secondary_dom, "Isolation FAILED: file leaked to secondary instance DOM"
   '';
