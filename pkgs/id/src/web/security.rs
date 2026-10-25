@@ -11,8 +11,11 @@
 //!    attacks from web pages in the user's browser.
 //! 3. **Origin check**: a request carrying an `Origin` header (every browser
 //!    cross-origin fetch and every WebSocket handshake) must come from the same
-//!    host it is addressed to, which defeats cross-site request forgery and
-//!    cross-site WebSocket hijacking.
+//!    origin (host *and* port) it is addressed to, which defeats cross-site
+//!    request forgery and cross-site WebSocket hijacking. An origin with no
+//!    explicit port only matches a `Host` with no explicit port — there is no
+//!    scheme-default-port expansion, so `http://localhost` does not match a
+//!    request addressed to `localhost:3000`.
 //!
 //! In addition, an optional **token** ([`WebSecurity::token`]) gates the whole
 //! interface. It is accepted as the `id_token` cookie, an
@@ -81,6 +84,31 @@ fn host_only(authority: &str) -> String {
         .map_or_else(|| a.clone(), |(h, _)| h.to_owned())
 }
 
+/// Normalise a `Host`/`Origin` authority for the Origin check: lower-case
+/// the host and keep an explicit port, so authorities compare equal only
+/// when both host and port match (#814). No port is invented: an authority
+/// without a port stays port-less and therefore only matches another
+/// port-less authority. IPv6 literals are re-bracketed (`[::1]:3000`).
+fn authority_normalized(authority: &str) -> String {
+    let a = authority.trim().to_lowercase();
+    if let Some(rest) = a.strip_prefix('[') {
+        // IPv6 literal: [::1]:3000 or [::1]
+        let mut parts = rest.splitn(2, ']');
+        let host = parts.next().unwrap_or("");
+        return match parts.next().and_then(|tail| tail.strip_prefix(':')) {
+            Some(port) if !port.is_empty() => format!("[{host}]:{port}"),
+            _ => format!("[{host}]"),
+        };
+    }
+    match a
+        .rsplit_once(':')
+        .filter(|(_, port)| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+    {
+        Some((host, port)) => format!("{host}:{port}"),
+        None => a,
+    }
+}
+
 /// Authority (`host[:port]`) of an `Origin` header value such as `http://a:1`.
 fn origin_authority(origin: &str) -> Option<&str> {
     origin
@@ -135,12 +163,13 @@ pub async fn guard(
         }
     }
 
-    // 3. Origin must match the host the request is addressed to.
+    // 3. Origin must match the authority (host and port) the request is
+    // addressed to (#814: a different port is a different origin).
     if let Some(origin) = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok())
         && origin != "null"
     {
-        let same =
-            origin_authority(origin).is_some_and(|a| host_only(a) == host_only(&host_header));
+        let same = origin_authority(origin)
+            .is_some_and(|a| authority_normalized(a) == authority_normalized(&host_header));
         if !same {
             return forbidden("cross-origin request refused", StatusCode::FORBIDDEN);
         }
@@ -305,6 +334,68 @@ mod tests {
         )
         .await;
         assert_eq!(null.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn different_port_origin_is_refused() {
+        // #814: same host, different port is a different origin.
+        let r = call(
+            app(loopback()),
+            get_req("localhost:3000")
+                .header(header::ORIGIN, "http://localhost:9999")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn portless_origin_does_not_match_explicit_port_host() {
+        // #814 decision: no scheme-default-port expansion — a port-less
+        // Origin only matches a port-less Host.
+        let r = call(
+            app(loopback()),
+            get_req("localhost:3000")
+                .header(header::ORIGIN, "http://localhost")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+
+        let ok = call(
+            app(loopback()),
+            get_req("localhost")
+                .header(header::ORIGIN, "http://localhost")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn ipv6_origin_port_is_compared() {
+        let ok = call(
+            app(loopback()),
+            get_req("[::1]:3000")
+                .header(header::ORIGIN, "http://[::1]:3000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        let bad = call(
+            app(loopback()),
+            get_req("[::1]:3000")
+                .header(header::ORIGIN, "http://[::1]:9999")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad.status(), StatusCode::FORBIDDEN);
     }
 
     fn with_token() -> WebSecurity {
