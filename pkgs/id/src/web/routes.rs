@@ -1688,7 +1688,7 @@ async fn download_handler(Json(req): Json<DownloadRequest>) -> Response {
         "json" => {
             // Return PM JSON as-is
             let json_bytes = serde_json::to_vec_pretty(&req.doc).unwrap_or_default();
-            let json_name = if req.name.ends_with(".pm.json") {
+            let json_name = if req.name.to_lowercase().ends_with(".pm.json") {
                 req.name.clone()
             } else {
                 format!("{}.pm.json", req.name)
