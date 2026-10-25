@@ -32,6 +32,8 @@ proxies=(
   "CODEX_PROXY_PORT|codexProxyPort|bin/codex-proxy.mjs|yes"
   "ANTIGRAVITY_LS_PROXY_PORT|antigravityLsProxyPort|bin/antigravity-ls-proxy.mjs|yes"
   "DESIGN_CODE_PROXY_PORT|designCodeProxyPort|bin/design-code-proxy.mjs|yes"
+  "MUSE_PROXY_PORT|museProxyPort|bin/muse-proxy.mjs|yes"
+  "COMMANDCODE_PROXY_PORT|commandcodeProxyPort|bin/commandcode-proxy.mjs|yes"
 )
 
 failed=0

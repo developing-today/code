@@ -205,6 +205,8 @@ pub mod search;
 pub mod seitan;
 #[cfg(feature = "world")]
 pub mod server_config;
+#[cfg(feature = "world")]
+pub mod shell_contract;
 pub mod store;
 pub mod store_traits;
 pub mod sync_method;
