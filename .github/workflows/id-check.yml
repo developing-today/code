@@ -24,7 +24,11 @@
 # slowest single check plus setup, not the sum. A lightweight guard job runs
 # the flake-drift guard once and emits the matrix; the `check` job below
 # aggregates the matrix result and keeps the historical required status
-# name "nix flake check".
+# name "nix flake check". The integration suite itself is sharded too:
+# the old `test`/`test-web` checks each re-ran the whole cargo suite in
+# one derivation (~25 minutes); test-shard-0/1/2 split its targets three
+# ways (see the justfile's test-shard-sandbox) and, with test-unit and
+# the web checks, cover the same tests by composition.
 
 name: id
 
