@@ -4209,6 +4209,18 @@
         }
       }
     },
+    "opencode-go-personal": {
+      "instanceOf": "opencode-go",
+      "name": "OpenCode Go (Personal)"
+    },
+    "opencode-go-lab": {
+      "instanceOf": "opencode-go",
+      "name": "OpenCode Go (Lab)"
+    },
+    "opencode-go-home": {
+      "instanceOf": "opencode-go",
+      "name": "OpenCode Go (Home)"
+    },
     "commandcode": {
           "npm": "@ai-sdk/openai-compatible",
           "name": "Command Code (CLI proxy)",
