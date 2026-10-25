@@ -20,9 +20,9 @@ health gate):
 | Layer     | Piece           | Version / pin                                                    | Reach                                                                | Deployment definition |
 | --------- | --------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------- | --------------------- |
 | Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, all interfaces (loopback + tailnet + LAN)    | `ready-for-agent/`    |
-| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + tailnet `100.99.113.103:7777`; no tunnel hostname | `pad/`                |
-| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + tailnet `100.99.113.103:8484`; no tunnel hostname | `grist/`              |
-| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `100.99.113.103:4870`; no public route    | `aggregator/`         |
+| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + tailnet `amd-6.raptor-pumpkinseed.ts.net:7777`; no tunnel hostname | `pad/`                |
+| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + tailnet `amd-6.raptor-pumpkinseed.ts.net:8484`; no tunnel hostname | `grist/`              |
+| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route    | `aggregator/`         |
 
 ready-for-agent runs as a systemd **user unit** (like `pm-tunnel`)
 because upstream ships only an npm package; Pad and Grist run as

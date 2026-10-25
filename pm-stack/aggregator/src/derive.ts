@@ -311,7 +311,10 @@ export function tierEntry(e: AttentionEntry, summary?: OrchestrationSummary | nu
         };
       }
       // Routine tool permissions are the fleet's to review, not Drew's.
-    } else if (DECISION_Q.test(q)) {
+    } else if (DECISION_Q.test(q) && sourceOf(e) !== "jules") {
+      // Jules questions are the keeper's to answer (it replies with the
+      // standard proceed/feedback messages) — they never need Drew
+      // unless the orchestration job escalates them explicitly.
       return { ...e, tier: "needs-drew", drewReason: `Waiting on your decision — ${q}` };
     }
   }

@@ -100,6 +100,22 @@ describe("tiering (#898 §2)", () => {
     expect(view.drew[0].drewReason).toBe("Only Drew can do this thing.");
   });
 
+  test("Jules questions belong to the keeper, not Drew", () => {
+    const view = buildAttention(
+      [
+        entry({
+          sessionId: "4259424002214698449",
+          source: "jules",
+          awaitingQuestion: "Does this look good, and should I proceed?",
+        }),
+      ],
+      null,
+      NOW,
+    );
+    expect(view.drew).toHaveLength(0);
+    expect(view.orchestrator).toHaveLength(1);
+  });
+
   test("in-motion sessions are in neither queue", () => {
     const view = buildAttention([entry({ activeToolCalls: 2 })], null, NOW);
     expect(view.drew).toHaveLength(0);
