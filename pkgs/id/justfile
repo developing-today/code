@@ -253,6 +253,15 @@ alias test-int := test-integration
 test-int-sandbox:
     cargo test --all-features --test cli_integration -- --skip serve_tests
 
+# Run one COUNT-th slice of the integration tests (sandbox-safe:
+# excludes serve_tests requiring network) — see
+# scripts/test-shard-sandbox.sh for the sharding logic. The PR gate
+# runs 3 shards in parallel instead of the single serial test/test-web
+# pair (#869).
+[group('test')]
+test-shard-sandbox SHARD COUNT:
+    bash scripts/test-shard-sandbox.sh {{SHARD}} {{COUNT}}
+
 # Run tests with output shown
 [group('test')]
 test-verbose:
