@@ -33,6 +33,7 @@ pub struct Finding {
     /// Stable check id: `toolchain`, `platform`, `ceiling`, `profile`,
     /// `journal`, `clock`.
     pub check: String,
+    /// How bad the finding is.
     pub severity: Severity,
     /// What was observed.
     pub detail: String,
@@ -44,6 +45,7 @@ pub struct Finding {
 /// The whole `id world doctor` report.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DoctorReport {
+    /// One finding per check, in a fixed order.
     pub findings: Vec<Finding>,
 }
 

@@ -100,11 +100,22 @@ pub enum ApplyStep {
         ceiling: Option<Vec<String>>,
     },
     /// Replace the requested execution profile.
-    SetProfile { profile: WorldExecutionProfile },
+    SetProfile {
+        /// The requested bounds.
+        profile: WorldExecutionProfile,
+    },
     /// Schedule a fire.
-    ScheduleAt { id: String, at_ms: u64 },
+    ScheduleAt {
+        /// The schedule's id.
+        id: String,
+        /// When it fires, in unix milliseconds.
+        at_ms: u64,
+    },
     /// Cancel a schedule the manifest does not declare.
-    CancelSchedule { id: String },
+    CancelSchedule {
+        /// The schedule's id.
+        id: String,
+    },
 }
 
 impl ApplyStep {

@@ -28,7 +28,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail, ensure};
 
 use crate::world::{
-    JOURNAL_VERSION, JournalEntry, WorldCore, WorldHandle, WorldJournal, WorldLimits, WorldProgram,
+    JOURNAL_VERSION, JournalEntry, WorldCore, WorldEventKind, WorldHandle, WorldJournal,
+    WorldLimits, WorldProgram,
 };
 use crate::world_session::{WorldService, module_hash};
 
@@ -383,6 +384,119 @@ pub async fn open_world(
         service.adopt_module(wasm).await?;
     }
     Ok((service, report))
+}
+
+/// What a fork copies from one world into a new one (F12.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForkSpec {
+    /// The world the fork is copied from.
+    pub from_world_id: String,
+    /// The new world's id (what its journal header will say).
+    pub to_world_id: String,
+    /// Whether the fork is marked reusable as a template.
+    pub template: bool,
+}
+
+/// Read a journal's entries without opening it for append.
+fn read_journal_entries(path: &Path) -> Result<Vec<JournalEntry>> {
+    let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut entries = Vec::new();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let entry: JournalEntry = serde_json::from_slice(line)
+            .with_context(|| format!("{} is corrupt", path.display()))?;
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+/// Fork a durable world: copy the source's journal and modules into `dst_dir`
+/// under a new world id, and record the fork provenance (F12.2).
+///
+/// The copied entries reproduce the parent's state exactly — the fork replays
+/// to the parent's records at the fork point. The `Created` header is
+/// rewritten to the new id, a [`JournalEntry::Forked`] records the origin, and
+/// the module files are copied unchanged.
+///
+/// # Errors
+///
+/// A missing or corrupt source journal, a source journal that belongs to a
+/// different world, or I/O failures writing the destination.
+pub fn fork_world(src_dir: &Path, dst_dir: &Path, spec: &ForkSpec) -> Result<()> {
+    let mut entries = read_journal_entries(&src_dir.join("journal.jsonl"))?;
+    let Some(JournalEntry::Created { world_id, .. }) = entries.first() else {
+        bail!("source journal has no Created header");
+    };
+    ensure!(
+        world_id == &spec.from_world_id,
+        "source journal belongs to {world_id:?}, not {:?}",
+        spec.from_world_id
+    );
+
+    // The fork point: the latest checkpoint or program install.
+    let mut at_sequence = 0u64;
+    let mut from_module_hash: Option<String> = None;
+    for entry in &entries {
+        match entry {
+            JournalEntry::Checkpoint {
+                sequence,
+                module_hash,
+                ..
+            } => {
+                at_sequence = *sequence;
+                from_module_hash = Some(module_hash.clone());
+            }
+            JournalEntry::Committed { event } => {
+                at_sequence = event.sequence.max(at_sequence);
+                if let WorldEventKind::ProgramInstalled { module_hash, .. } = &event.kind {
+                    from_module_hash = Some(module_hash.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Rewrite the header to the new world and record the origin.
+    entries[0] = JournalEntry::Created {
+        world_id: spec.to_world_id.clone(),
+        version: JOURNAL_VERSION,
+    };
+    entries.push(JournalEntry::Forked {
+        from_world_id: spec.from_world_id.clone(),
+        from_module_hash: from_module_hash.unwrap_or_default(),
+        template: spec.template,
+        at_sequence,
+    });
+
+    // Write the destination journal, fsynced.
+    std::fs::create_dir_all(dst_dir).with_context(|| format!("create {}", dst_dir.display()))?;
+    let path = dst_dir.join("journal.jsonl");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("open {}", path.display()))?;
+    for entry in &entries {
+        file.write_all(serde_json::to_string(entry)?.as_bytes())?;
+        file.write_all(b"\n")?;
+    }
+    file.sync_all()?;
+
+    // Copy the module files, content-addressed under the same hashes.
+    let src_modules = src_dir.join("modules");
+    if src_modules.is_dir() {
+        let dst_modules = dst_dir.join("modules");
+        std::fs::create_dir_all(&dst_modules)
+            .with_context(|| format!("create {}", dst_modules.display()))?;
+        for entry in std::fs::read_dir(&src_modules)? {
+            let entry = entry?;
+            std::fs::copy(entry.path(), dst_modules.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default)]

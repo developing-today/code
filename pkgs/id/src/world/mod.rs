@@ -360,6 +360,24 @@ pub enum ModuleProvenance {
     /// The server observed a successful source build. These hashes identify
     /// inputs; they are not a signature or a trust attestation.
     SourceBuild(SourceBuildProvenance),
+    /// The module was forked from another world: the world's state and module
+    /// were copied at the fork point, with the origin recorded.
+    Fork(ForkProvenance),
+}
+
+/// Provenance recorded when one world is forked from another (F12.2). It
+/// names the source world and module so a fork can trace its origin, and
+/// whether the fork was marked reusable as a template.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForkProvenance {
+    /// Provenance record schema, independent of the world journal version.
+    pub schema_version: u8,
+    /// The world the fork was copied from.
+    pub from_world_id: String,
+    /// The content hash of the module at the fork point.
+    pub from_module_hash: String,
+    /// Whether the fork is marked reusable as a template.
+    pub template: bool,
 }
 
 /// Bounded, deterministic metadata observed for one source compilation.
@@ -505,6 +523,19 @@ pub enum JournalEntry {
         module_hash: String,
         /// The seed the program was installed with.
         seed: u64,
+    },
+    /// The world was forked from another world (F12.2). Journal-only: the
+    /// copied entries already reproduce the parent's state, and this entry
+    /// records the origin so a fork can trace its provenance.
+    Forked {
+        /// The world this one was forked from.
+        from_world_id: String,
+        /// The content hash of the module at the fork point.
+        from_module_hash: String,
+        /// Whether the fork was marked reusable as a template.
+        template: bool,
+        /// The sequence the parent had reached when the fork was taken.
+        at_sequence: u64,
     },
     /// A sequenced event was committed.
     Committed {

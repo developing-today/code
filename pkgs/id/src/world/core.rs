@@ -292,6 +292,8 @@ impl WorldCore {
                 // `ProgramInstalled` event; this entry records who ordered it
                 // and changes no restored state.
                 JournalEntry::BuilderInstalled { .. } => {}
+                // Audit-only: the copied entries already reproduce the parent.
+                JournalEntry::Forked { .. } => {}
                 JournalEntry::System { event } => {
                     ensure!(
                         event.sequence == 0 && event.participant_id == 0,
