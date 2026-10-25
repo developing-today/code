@@ -1,0 +1,21 @@
+{
+  "action": "opened",
+  "number": 754,
+  "issue": {
+    "number": 754,
+    "title": "Kaneo sync trial issue (kept closed/in-Done)",
+    "state": "open",
+    "state_reason": null,
+    "html_url": "https://github.com/developing-today/code/issues/754",
+    "url": "https://api.github.com/repos/developing-today/code/issues/754",
+    "user": { "login": "dezren39" },
+    "labels": [{ "name": "bug" }, { "name": "status:in-progress" }],
+    "assignees": [{ "login": "dezren39" }],
+    "created_at": "2026-10-25T08:00:00Z",
+    "updated_at": "2026-10-25T08:00:00Z",
+    "closed_at": null,
+    "body": "Trial issue for projector E2E."
+  },
+  "repository": { "full_name": "developing-today/code", "name": "code" },
+  "sender": { "login": "dezren39" }
+}

@@ -20,8 +20,9 @@ use serde::{Deserialize, Serialize};
 use crate::world_caps::{MAX_NAME_BYTES, validate_ceiling_names, validate_grant_names};
 use crate::world_limits::WorldExecutionProfile;
 
-/// A declarative description of a world. Empty fields are left alone by
-/// [`plan`], so a minimal manifest drifts nothing.
+/// A declarative description of a world. Fields the manifest omits are left
+/// alone by [`plan`], so a minimal manifest drifts nothing; a field that is
+/// present — even empty, like `grants = []` — is authoritative.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "snake_case")]
 pub struct WorldManifest {
@@ -34,14 +35,23 @@ pub struct WorldManifest {
     /// The deterministic seed for the program's initializer.
     pub seed: Option<u64>,
     /// Capabilities to grant. `*` grants every capability the ceiling allows.
-    pub grants: Vec<String>,
-    /// The capability ceiling. `None` means the whole catalog; an empty list
-    /// means no capability is allowed.
+    /// `None` (the field is omitted) leaves the live grants alone; `Some([])`
+    /// revokes every grant.
+    pub grants: Option<Vec<String>>,
+    /// The capability ceiling: the names in the list are the only capabilities
+    /// allowed, so an empty list allows none. `None` (the field is omitted)
+    /// leaves the live ceiling alone — a manifest that never mentions the
+    /// ceiling can never widen it. (In a [`WorldState`] and in
+    /// [`ApplyStep::SetCeiling`], `None` instead means the whole catalog.)
     pub ceiling: Option<Vec<String>>,
-    /// Requested execution profile bounds. Omitted fields inherit the server.
+    /// Requested execution profile bounds. Omitted fields inherit the server,
+    /// so the all-default profile leaves the live profile alone.
     pub profile: WorldExecutionProfile,
-    /// Pending schedules: id to fire time, in unix milliseconds.
-    pub schedules: BTreeMap<String, u64>,
+    /// Pending schedules: id to fire time, in unix milliseconds. `None` (the
+    /// field is omitted) leaves the live schedules alone; a present map is
+    /// reconciled exactly — missing ids are scheduled, undeclared ones
+    /// cancelled.
+    pub schedules: Option<BTreeMap<String, u64>>,
 }
 
 /// The relevant current state of a live world, as `id world stats` would see
@@ -152,13 +162,17 @@ impl WorldManifest {
     ///
     /// Names the first offending field.
     pub fn validate(&self) -> Result<()> {
-        validate_grant_names(&self.grants)?;
+        if let Some(grants) = &self.grants {
+            validate_grant_names(grants)?;
+        }
         if let Some(ceiling) = &self.ceiling {
             validate_ceiling_names(ceiling)?;
         }
-        for (id, at_ms) in &self.schedules {
-            crate::world_caps::validate_schedule_id(id)?;
-            ensure!(*at_ms > 0, "schedule {id:?} must fire in the future");
+        if let Some(schedules) = &self.schedules {
+            for (id, at_ms) in schedules {
+                crate::world_caps::validate_schedule_id(id)?;
+                ensure!(*at_ms > 0, "schedule {id:?} must fire in the future");
+            }
         }
         ensure!(
             self.module_hash.is_none() || self.module_source.is_none(),
@@ -204,43 +218,55 @@ pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
         });
     }
 
-    // Grants: replace when the set differs.
-    let desired_grants: std::collections::BTreeSet<String> =
-        desired.grants.iter().cloned().collect();
-    let current_grants: std::collections::BTreeSet<String> =
-        current.grants.iter().cloned().collect();
-    if desired_grants != current_grants {
-        steps.push(ApplyStep::SetGrants {
-            grants: desired.grants.clone(),
-        });
+    // Grants: an omitted field leaves the live set alone; a present one
+    // replaces it when the set differs (an empty list revokes everything).
+    if let Some(desired_grants) = &desired.grants {
+        let desired_set: std::collections::BTreeSet<String> =
+            desired_grants.iter().cloned().collect();
+        let current_set: std::collections::BTreeSet<String> =
+            current.grants.iter().cloned().collect();
+        if desired_set != current_set {
+            steps.push(ApplyStep::SetGrants {
+                grants: desired_grants.clone(),
+            });
+        }
     }
 
-    // Ceiling: replace when it differs.
-    if desired.ceiling != current.ceiling {
-        steps.push(ApplyStep::SetCeiling {
-            ceiling: desired.ceiling.clone(),
-        });
+    // Ceiling: an omitted field leaves the live ceiling alone, so a manifest
+    // that never mentions the ceiling can never widen it; a present list
+    // replaces it when it differs.
+    if let Some(ceiling) = &desired.ceiling {
+        if current.ceiling.as_deref() != Some(ceiling.as_slice()) {
+            steps.push(ApplyStep::SetCeiling {
+                ceiling: Some(ceiling.clone()),
+            });
+        }
     }
 
-    // Profile: replace when it differs.
-    if desired.profile != current.profile {
+    // Profile: the all-default profile inherits the server on every field,
+    // so it is how a manifest says nothing about the profile — leave the
+    // live profile alone. A present profile replaces when it differs.
+    if desired.profile != WorldExecutionProfile::default() && desired.profile != current.profile {
         steps.push(ApplyStep::SetProfile {
             profile: desired.profile,
         });
     }
 
-    // Schedules: add missing, cancel extra.
-    for (id, at_ms) in &desired.schedules {
-        if current.schedules.get(id) != Some(at_ms) {
-            steps.push(ApplyStep::ScheduleAt {
-                id: id.clone(),
-                at_ms: *at_ms,
-            });
+    // Schedules: an omitted field leaves the live schedules alone; a present
+    // map is reconciled exactly — add missing, cancel extra.
+    if let Some(desired_schedules) = &desired.schedules {
+        for (id, at_ms) in desired_schedules {
+            if current.schedules.get(id) != Some(at_ms) {
+                steps.push(ApplyStep::ScheduleAt {
+                    id: id.clone(),
+                    at_ms: *at_ms,
+                });
+            }
         }
-    }
-    for id in current.schedules.keys() {
-        if !desired.schedules.contains_key(id) {
-            steps.push(ApplyStep::CancelSchedule { id: id.clone() });
+        for id in current.schedules.keys() {
+            if !desired_schedules.contains_key(id) {
+                steps.push(ApplyStep::CancelSchedule { id: id.clone() });
+            }
         }
     }
 
@@ -311,6 +337,13 @@ pub fn diff(desired: &WorldManifest, current: &WorldState) -> String {
     if steps.is_empty() {
         return "no drift".to_owned();
     }
+    render_steps(&steps)
+}
+
+/// Render plan steps as drift lines. A `SetCeiling` to `None` (the whole
+/// catalog) and to `Some([])` (no capability allowed) are opposite operations
+/// and render distinctly: `[*] (whole catalog)` vs `[]`.
+fn render_steps(steps: &[ApplyStep]) -> String {
     let mut out = String::new();
     for step in steps {
         match step {
@@ -328,10 +361,12 @@ pub fn diff(desired: &WorldManifest, current: &WorldState) -> String {
             ApplyStep::SetGrants { grants } => {
                 out.push_str(&format!("~ grants [{}]\n", grants.join(", ")))
             }
-            ApplyStep::SetCeiling { ceiling } => {
-                let names = ceiling.as_deref().unwrap_or(&[]).join(", ");
-                out.push_str(&format!("~ ceiling [{names}]\n"));
-            }
+            ApplyStep::SetCeiling { ceiling } => match ceiling {
+                Some(names) => {
+                    out.push_str(&format!("~ ceiling [{}]\n", names.join(", ")));
+                }
+                None => out.push_str("~ ceiling [*] (whole catalog)\n"),
+            },
             ApplyStep::SetProfile { profile } => {
                 out.push_str(&format!("~ profile {profile:?}\n"));
             }
@@ -378,7 +413,10 @@ wasm_fuel = 5_000_000
         let manifest = parse(manifest_toml()).unwrap();
         assert_eq!(manifest.module_hash, Some("abc123".to_owned()));
         assert_eq!(manifest.seed, Some(42));
-        assert_eq!(manifest.grants, vec!["chat.say", "time.now"]);
+        assert_eq!(
+            manifest.grants,
+            Some(vec!["chat.say".to_owned(), "time.now".to_owned()])
+        );
         assert_eq!(
             manifest.ceiling,
             Some(vec![
@@ -388,7 +426,10 @@ wasm_fuel = 5_000_000
             ])
         );
         assert_eq!(manifest.profile.wasm_fuel, Some(5_000_000));
-        assert_eq!(manifest.schedules.get("round"), Some(&1_800_000_000_000));
+        assert_eq!(
+            manifest.schedules,
+            Some(BTreeMap::from([("round".to_owned(), 1_800_000_000_000)]))
+        );
         assert_eq!(round_trip(&manifest).unwrap(), manifest);
     }
 
@@ -397,21 +438,83 @@ wasm_fuel = 5_000_000
         let manifest = WorldManifest::default();
         // A default (empty) manifest leaves a default (empty) world alone.
         assert!(plan(&manifest, &WorldState::default()).is_empty());
-        // And a partially-populated world only drifts where it differs from the
-        // empty manifest: the grants and ceiling are removed.
+        // And it leaves a fully populated world alone too (#817): every field
+        // is unspecified, so nothing is revoked, widened, or cancelled.
         let state = WorldState {
             module_hash: Some("abc".to_owned()),
             seed: 7,
             grants: vec!["chat.say".to_owned()],
             ceiling: Some(vec!["chat.say".to_owned()]),
+            schedules: BTreeMap::from([("round".to_owned(), 5)]),
+            ..WorldState::default()
+        };
+        assert!(plan(&manifest, &state).is_empty());
+    }
+
+    #[test]
+    fn a_minimal_manifest_only_installs_the_module() {
+        // #817 regression: a manifest that only names a module must not drift
+        // grants, ceiling, profile, or schedules on a populated world.
+        let manifest = parse("module_hash = \"def456\"").unwrap();
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            seed: 7,
+            grants: vec!["chat.say".to_owned()],
+            ceiling: Some(vec!["chat.say".to_owned()]),
+            schedules: BTreeMap::from([("round".to_owned(), 5)]),
             ..WorldState::default()
         };
         let steps = plan(&manifest, &state);
-        assert_eq!(steps.len(), 2, "{steps:?}");
-        assert!(steps.iter().all(|s| matches!(
-            s,
-            ApplyStep::SetGrants { .. } | ApplyStep::SetCeiling { .. }
-        )));
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(matches!(steps[0], ApplyStep::InstallModule { .. }));
+    }
+
+    #[test]
+    fn an_explicitly_empty_field_is_authoritative() {
+        // #817: `grants = []` / `ceiling = []` / `schedules = {}` in the TOML
+        // are present-but-empty, which clears — unlike omitting them.
+        let manifest = parse("grants = []\nceiling = []\nschedules = {}").unwrap();
+        assert_eq!(manifest.grants, Some(Vec::new()));
+        assert_eq!(manifest.ceiling, Some(Vec::new()));
+        assert_eq!(manifest.schedules, Some(BTreeMap::new()));
+        let state = WorldState {
+            grants: vec!["chat.say".to_owned()],
+            ceiling: Some(vec!["chat.say".to_owned()]),
+            schedules: BTreeMap::from([("round".to_owned(), 5)]),
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s, ApplyStep::SetGrants { grants } if grants.is_empty())),
+            "{steps:?}"
+        );
+        assert!(
+            steps.iter().any(
+                |s| matches!(s, ApplyStep::SetCeiling { ceiling } if ceiling.as_deref() == Some(&[][..]))
+            ),
+            "{steps:?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s, ApplyStep::CancelSchedule { id } if id == "round")),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn ceiling_none_and_empty_render_distinctly() {
+        // #817: widening to the whole catalog and narrowing to nothing are
+        // opposite operations and must not render the same in `world diff`.
+        let widened = render_steps(&[ApplyStep::SetCeiling { ceiling: None }]);
+        let emptied = render_steps(&[ApplyStep::SetCeiling {
+            ceiling: Some(Vec::new()),
+        }]);
+        assert_ne!(widened, emptied);
+        assert!(widened.contains("whole catalog"), "{widened}");
+        assert!(emptied.contains("ceiling []"), "{emptied}");
     }
 
     #[test]
@@ -445,7 +548,10 @@ wasm_fuel = 5_000_000
     #[test]
     fn schedules_are_added_and_removed() {
         let manifest = WorldManifest {
-            schedules: BTreeMap::from([("keep".to_owned(), 5), ("new".to_owned(), 6)]),
+            schedules: Some(BTreeMap::from([
+                ("keep".to_owned(), 5),
+                ("new".to_owned(), 6),
+            ])),
             ..WorldManifest::default()
         };
         let state = WorldState {

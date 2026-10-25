@@ -138,11 +138,22 @@ one-time browser step because GitHub offers no API for it:
    `./deploy.sh` on the host.
 4. Install the app on the repositories to sync (GitHub → org settings →
    GitHub Apps → Install App; Phase 1: `developing-today/code` only).
+   Adding a repository to an installation cannot be done with the
+   app's own credentials — the REST endpoint needs an org owner's (or,
+   for a personal account, the account owner's) GitHub session, so
+   this step stays a browser step.
 5. In Kaneo: create/open the project → Settings → Integrations →
-   GitHub → connect `developing-today/code`, then **Import issues**.
+   GitHub → connect the repository, then **Import issues**.
    (API equivalents: `POST /api/github-integration/verify`,
    `POST /api/github-integration/project/{projectId}`,
-   `POST /api/github-integration/import-issues`.)
+   `POST /api/github-integration/import-issues`.) The projects, their
+   repositories, and their installations are registered in
+   [`kaneo-projects.json`](kaneo-projects.json); once the app is
+   installed on a repository, `./connect-repo.sh connect <slug>`
+   performs verify → connect → import (resuming until done) and
+   prints the GitHub open-issue count next to the Kaneo task, issue
+   link, and not-in-Done counts. `./connect-repo.sh status` reports
+   the same for every project without changing anything.
 
 What syncs (verified against Kaneo v2.47.0): issues ↔ tasks, comments
 (create-only; edits/deletes do not sync), open/close both ways,
@@ -289,6 +300,8 @@ pm-stack/
 ├── .env.example               # configuration shape (no real values)
 ├── deploy.sh                  # SOPS -> .env/tunnel.env, compose up, health gate
 ├── github-app-manifest.json   # one-time GitHub App registration
+├── kaneo-projects.json        # projects <-> repositories <-> installations
+├── connect-repo.sh            # status | connect <slug>: verify, link, import
 ├── systemd/
 │   └── pm-tunnel.service      # Cloudflare Tunnel connector (user unit)
 ├── pad/                       # Phase 2 planning layer (Pad 0.18.1)

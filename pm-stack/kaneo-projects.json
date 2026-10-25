@@ -1,0 +1,32 @@
+{
+  "_comment": "Kaneo projects in workspace 'Developing Today' and the GitHub repository each one syncs with (one repository per project, upstream usekaneo/kaneo#791). connect-repo.sh reads this file. installationId is the developing.today GitHub App installation that covers the repository; null means the app is not installed on it yet.",
+  "kaneoUrl": "http://127.0.0.1:5173",
+  "workspaceId": "6oQgIkST0YGrCcxrnhbHPOUCfgdD3cqE",
+  "githubAppId": 5454422,
+  "projects": [
+    {
+      "slug": "code",
+      "projectId": "pfcq432h349r20up18gttfv4",
+      "repository": "developing-today/code",
+      "installationId": 174792676
+    },
+    {
+      "slug": "opencode",
+      "projectId": "f16a7r9g54df44z055dirvr3",
+      "repository": "developing-today/opencode",
+      "installationId": null
+    },
+    {
+      "slug": "openchamber",
+      "projectId": "z5qb6tmgo5idx7o8bnv7rqyv",
+      "repository": "developing-today/openchamber",
+      "installationId": null
+    },
+    {
+      "slug": "nix",
+      "projectId": "kslqc1uhul68zaepdpcpsdml",
+      "repository": "dezren39/nix",
+      "installationId": null
+    }
+  ]
+}
