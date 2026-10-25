@@ -5,6 +5,7 @@
 //! presentation can consume the same stream a browser would.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use iroh::{
@@ -392,6 +393,95 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             Ok(())
         }
         WorldCommand::New { dir, name } => scaffold_world(&dir, &name),
+        WorldCommand::Doctor {
+            roc_bin,
+            platform,
+            journal,
+            json,
+        } => {
+            let platform_dir = platform
+                .or_else(|| std::env::var("ID_ROC_PLATFORM").ok().map(PathBuf::from))
+                .or_else(|| {
+                    [
+                        PathBuf::from("examples/roc-world"),
+                        PathBuf::from("../examples/roc-world"),
+                    ]
+                    .into_iter()
+                    .find(|dir| dir.is_dir())
+                });
+            let inputs = crate::world_doctor::DoctorInputs {
+                roc_bin,
+                roc_resolved: None,
+                platform_dir,
+                caps_ceiling: None,
+                profile: None,
+                journal,
+                now_ms: Some(crate::time::unix_ms()),
+            };
+            let report = crate::world_doctor::run(&inputs);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", report.render_text());
+            }
+            if report.healthy() {
+                Ok(())
+            } else {
+                bail!("world doctor found {} problem(s)", report.findings.len());
+            }
+        }
+        WorldCommand::Diff {
+            node,
+            file,
+            capability,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let manifest = parse_manifest_file(&file)?;
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let state = current_world_state(&mut client, &capability).await?;
+            client.close();
+            endpoint.close().await;
+            print!("{}", crate::world_manifest::diff(&manifest, &state));
+            Ok(())
+        }
+        WorldCommand::Apply {
+            node,
+            file,
+            admin_token,
+            capability,
+            dry_run,
+            world,
+            addrs,
+            no_relay,
+        } => {
+            let manifest = parse_manifest_file(&file)?;
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            let state = current_world_state(&mut client, &capability).await?;
+            let steps = crate::world_manifest::plan(&manifest, &state);
+            if steps.is_empty() {
+                println!("no drift");
+            } else {
+                println!(
+                    "{}",
+                    steps
+                        .iter()
+                        .map(crate::world_manifest::ApplyStep::kind)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                if !dry_run {
+                    apply_steps(&mut client, &admin_token, &capability, &steps).await?;
+                    println!("applied {} step(s)", steps.len());
+                } else {
+                    println!("dry run: nothing changed");
+                }
+            }
+            client.close();
+            endpoint.close().await;
+            Ok(())
+        }
         #[cfg(feature = "sandbox")]
         WorldCommand::Measure {
             module,
@@ -564,6 +654,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             node,
             capability,
             after,
+            command_mode,
             world,
             addrs,
             no_relay,
@@ -576,11 +667,112 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     "after": after,
                 }))
                 .await?;
-            let result = pump(client).await;
+            let result = pump(client, command_mode).await;
             endpoint.close().await;
             result
         }
     }
+}
+
+/// Parse a `world.toml` file into a validated manifest.
+fn parse_manifest_file(file: &std::path::Path) -> Result<crate::world_manifest::WorldManifest> {
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("read world manifest {}", file.display()))?;
+    crate::world_manifest::parse(&text)
+}
+
+/// Fetch the current world state the manifest is compared against: the active
+/// module hash, the grants, the ceiling and the execution profile. Schedules
+/// and the install seed are not exposed over the wire yet, so they read as
+/// empty here.
+async fn current_world_state(
+    client: &mut WorldClient,
+    capability: &str,
+) -> Result<crate::world_manifest::WorldState> {
+    let info = client.info_details(capability).await?;
+    let caps: crate::world_caps::CapsReport =
+        serde_json::from_value(client.caps(capability).await?)
+            .context("host returned a malformed capability report")?;
+    let profile: crate::world_limits::WorldExecutionProfile =
+        serde_json::from_value(client.execution_profile(None, Some(capability)).await?)
+            .context("host returned a malformed execution profile")?;
+    // The report carries the world's own ceiling as a list; an unrestricted
+    // ceiling is the whole catalog, which we fold back to "no ceiling".
+    let ceiling = if caps.ceiling
+        == crate::world_caps::catalog_names()
+            .into_iter()
+            .collect::<Vec<_>>()
+    {
+        None
+    } else {
+        Some(caps.ceiling.clone())
+    };
+    Ok(crate::world_manifest::WorldState {
+        module_hash: info.active_module_hash,
+        seed: 0,
+        grants: caps.granted,
+        ceiling,
+        profile,
+        schedules: std::collections::BTreeMap::new(),
+    })
+}
+
+/// Apply the reconciliation steps that the existing admin operations cover:
+/// grants, ceiling and profile. Module and schedule steps are reported, not
+/// applied, until their apply paths are wired.
+async fn apply_steps(
+    client: &mut WorldClient,
+    admin_token: &str,
+    capability: &str,
+    steps: &[crate::world_manifest::ApplyStep],
+) -> Result<()> {
+    use crate::world_manifest::ApplyStep;
+    for step in steps {
+        match step {
+            ApplyStep::SetGrants { grants } => {
+                let current: crate::world_caps::CapsReport =
+                    serde_json::from_value(client.caps(capability).await?)
+                        .context("host returned a malformed capability report")?;
+                let to_revoke: Vec<String> = current
+                    .granted
+                    .iter()
+                    .filter(|name| !grants.contains(name))
+                    .cloned()
+                    .collect();
+                let to_grant: Vec<String> = grants
+                    .iter()
+                    .filter(|name| !current.granted.contains(name))
+                    .cloned()
+                    .collect();
+                if !to_grant.is_empty() || !to_revoke.is_empty() {
+                    client
+                        .update_caps(admin_token, &to_grant, &to_revoke)
+                        .await?;
+                }
+            }
+            ApplyStep::SetCeiling { ceiling } => {
+                // `None` means "no ceiling": restore the whole catalog.
+                let names = ceiling.clone().unwrap_or_else(|| {
+                    crate::world_caps::catalog_names()
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                });
+                client.set_caps_ceiling(admin_token, &names).await?;
+            }
+            ApplyStep::SetProfile { profile } => {
+                client.set_execution_profile(admin_token, *profile).await?;
+            }
+            ApplyStep::InstallModule { .. }
+            | ApplyStep::ScheduleAt { .. }
+            | ApplyStep::CancelSchedule { .. } => {
+                eprintln!(
+                    "note: {} is reported but not applied here; use `id world install`/`compile` for modules",
+                    step.kind()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Record a world to a fixture: the file at `out`, or standard output.
@@ -986,7 +1178,7 @@ impl Replica {
 }
 
 /// Print server frames as JSON lines while sending stdin lines as chat.
-async fn pump(client: WorldClient) -> Result<()> {
+async fn pump(client: WorldClient, command_mode: bool) -> Result<()> {
     let (conn, mut send, mut recv) = client.into_parts();
     let mut reader = tokio::spawn(async move {
         while let Some(body) = read_frame(&mut recv).await? {
@@ -1002,11 +1194,15 @@ async fn pump(client: WorldClient) -> Result<()> {
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
-                    if line == "/quit" { break Ok(()); }
-                    let frame = match line.strip_prefix("/input ") {
-                        Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
-                        None => serde_json::json!({"type": "chat", "text": line}),
+                    let frame = if command_mode {
+                        pump_command_frame(line)?
+                    } else {
+                        match line.strip_prefix("/input ") {
+                            Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
+                            None => serde_json::json!({"type": "chat", "text": line}),
+                        }
                     };
+                    if frame.is_null() { break Ok(()); }
                     if let Err(e) = write_frame(&mut send, frame.to_string().as_bytes()).await {
                         break Err(e);
                     }
@@ -1024,10 +1220,67 @@ async fn pump(client: WorldClient) -> Result<()> {
     result
 }
 
+/// Map one parsed [`crate::world_line::WorldLine`] to the session frame it
+/// needs in the `id world join --command-mode` pump. `null` ends the pump.
+fn pump_command_frame(line: &str) -> Result<serde_json::Value> {
+    use crate::world_line::{WorldLine, parse_line};
+    let Some(action) = parse_line(line) else {
+        return Ok(serde_json::Value::Null);
+    };
+    Ok(match action {
+        WorldLine::Chat(text) => serde_json::json!({"type": "chat", "text": text}),
+        WorldLine::Input(hex) => serde_json::json!({"type": "input", "data_hex": hex}),
+        WorldLine::Records { prefix } => {
+            serde_json::json!({"type": "records", "prefix": prefix, "after": null})
+        }
+        WorldLine::Documents { prefix } => {
+            serde_json::json!({"type": "documents", "prefix": prefix})
+        }
+        WorldLine::Document(name) => serde_json::json!({"type": "document", "name": name}),
+        WorldLine::Stats => serde_json::json!({"type": "info"}),
+        WorldLine::Caps => serde_json::json!({"type": "caps"}),
+        WorldLine::Logs { .. } => serde_json::json!({"type": "logs"}),
+        WorldLine::Help => serde_json::json!({"type": "help"}),
+        WorldLine::Quit => return Ok(serde_json::Value::Null),
+        WorldLine::Message(message) => {
+            anyhow::bail!("{message}")
+        }
+    })
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::scaffold_world;
+    use super::{pump_command_frame, scaffold_world};
+
+    /// The shared line grammar maps the same line to the same action on the
+    /// join pump as it does on the SSH command mode (both call
+    /// [`crate::world_line::parse_line`]); this asserts the pump's mapping.
+    #[test]
+    fn the_pump_command_mode_maps_the_shared_grammar() {
+        assert_eq!(
+            pump_command_frame("/stats").unwrap(),
+            serde_json::json!({"type": "info"})
+        );
+        assert_eq!(
+            pump_command_frame("/caps").unwrap(),
+            serde_json::json!({"type": "caps"})
+        );
+        assert_eq!(
+            pump_command_frame("/records x").unwrap(),
+            serde_json::json!({"type": "records", "prefix": "x", "after": null})
+        );
+        assert_eq!(
+            pump_command_frame("/input 00aF").unwrap(),
+            serde_json::json!({"type": "input", "data_hex": "00af"})
+        );
+        assert_eq!(
+            pump_command_frame("hello").unwrap(),
+            serde_json::json!({"type": "chat", "text": "hello"})
+        );
+        assert!(pump_command_frame("/quit").unwrap().is_null());
+        assert!(pump_command_frame("/nope").is_err());
+    }
 
     #[test]
     fn scaffolding_writes_a_buildable_app_skeleton() {
