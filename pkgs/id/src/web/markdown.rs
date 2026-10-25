@@ -304,6 +304,21 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
                 attrs["title"] = json!(image.title);
             }
 
+            // #880: an image inside a link arrives here with a link mark in
+            // active_marks (the Link arm is a mark wrapper). Carry the link
+            // on the image node itself — the editor schema has no way to
+            // wrap an image node in a mark — so the href survives to save.
+            if let Some(link_mark) = active_marks.iter().find(|m| m.mark_type == "link")
+                && let Some(link_attrs) = &link_mark.attrs
+            {
+                if let Some(href) = link_attrs["href"].as_str() {
+                    attrs["linkHref"] = json!(href);
+                }
+                if let Some(link_title) = link_attrs["title"].as_str() {
+                    attrs["linkTitle"] = json!(link_title);
+                }
+            }
+
             json!({
                 "type": "image",
                 "attrs": attrs
@@ -343,16 +358,38 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
             text_node_with_marks(html, active_marks)
         }
 
-        NodeValue::Table(_table) => {
+        NodeValue::Table(table) => {
             let children = collect_block_children(node);
-            json!({
+            let mut table_json = json!({
                 "type": "table",
                 "content": if children.is_empty() {
                     vec![json!({"type": "table_row", "content": [{"type": "table_cell", "content": [{"type": "paragraph"}]}]})]
                 } else {
                     children
                 }
-            })
+            });
+            // #881: carry column alignments on the table node (absent = all
+            // None, exactly as before) so the delimiter row survives save.
+            if table
+                .alignments
+                .iter()
+                .any(|a| !matches!(a, comrak::nodes::TableAlignment::None))
+            {
+                let alignments: Vec<Value> = table
+                    .alignments
+                    .iter()
+                    .map(|a| {
+                        json!(match a {
+                            comrak::nodes::TableAlignment::Left => "left",
+                            comrak::nodes::TableAlignment::Center => "center",
+                            comrak::nodes::TableAlignment::Right => "right",
+                            comrak::nodes::TableAlignment::None => "none",
+                        })
+                    })
+                    .collect();
+                table_json["attrs"] = json!({ "alignments": alignments });
+            }
+            table_json
         }
 
         NodeValue::TableRow(is_header) => {
@@ -739,11 +776,15 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "blockquote" => NodeValue::BlockQuote,
 
         "code_block" => {
-            let content = json["content"]
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|n| n["text"].as_str())
-                .unwrap_or("");
+            // #882: editors/collab can split a code block into several text
+            // nodes; concatenate ALL of them instead of keeping only the
+            // first (which silently truncated the block on save).
+            let content = json["content"].as_array().map_or(String::new(), |arr| {
+                arr.iter()
+                    .filter_map(|n| n["text"].as_str())
+                    .collect::<String>()
+            });
+            let content = content.as_str();
             let info = json["attrs"]["params"].as_str().unwrap_or("");
 
             NodeValue::CodeBlock(Box::new(comrak::nodes::NodeCodeBlock {
@@ -812,8 +853,25 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 .and_then(|row| row["content"].as_array())
                 .map_or(0, Vec::len);
             let num_rows = rows.map_or(0, Vec::len);
+            // #881: read back the alignments convert_node stored on the
+            // table node; absent/short/unknown entries default to None.
+            let mut alignments: Vec<comrak::nodes::TableAlignment> = json["attrs"]["alignments"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .map(|a| match a.as_str() {
+                            Some("left") => comrak::nodes::TableAlignment::Left,
+                            Some("center") => comrak::nodes::TableAlignment::Center,
+                            Some("right") => comrak::nodes::TableAlignment::Right,
+                            _ => comrak::nodes::TableAlignment::None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            alignments.resize(num_columns, comrak::nodes::TableAlignment::None);
+            alignments.truncate(num_columns);
             NodeValue::Table(Box::new(comrak::nodes::NodeTable {
-                alignments: vec![comrak::nodes::TableAlignment::None; num_columns],
+                alignments,
                 num_columns,
                 num_rows,
                 num_nonempty_cells: 0,
@@ -857,6 +915,13 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                     tag.push_str(&format!(" height=\"{h}\""));
                 }
                 tag.push_str(" />");
+                // #880: a sized image cannot use [![..](..)](..) syntax;
+                // keep its link as an HTML anchor around the <img> tag.
+                if let Some(link_href) = json["attrs"]["linkHref"].as_str()
+                    && !link_href.is_empty()
+                {
+                    tag = format!("<a href=\"{}\">{tag}</a>", escape_attr_value(link_href));
+                }
                 NodeValue::HtmlInline(tag)
             } else {
                 // Standard markdown image syntax
@@ -924,6 +989,23 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     {
         let text_node = arena.alloc(AstNode::from(NodeValue::Text(alt.to_owned().into())));
         ast_node.append(text_node);
+    }
+
+    // #880: an image carrying linkHref (a linked image, see convert_node)
+    // is wrapped in a Link node so save emits [![alt](src)](href).
+    if node_type == "image"
+        && matches!(ast_node.data.borrow().value, NodeValue::Image(_))
+        && let Some(link_href) = json["attrs"]["linkHref"].as_str()
+        && !link_href.is_empty()
+    {
+        let link_node = arena.alloc(AstNode::from(NodeValue::Link(Box::new(
+            comrak::nodes::NodeLink {
+                url: link_href.to_owned(),
+                title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
+            },
+        ))));
+        link_node.append(ast_node);
+        return Ok(link_node);
     }
 
     Ok(ast_node)
@@ -1699,5 +1781,80 @@ mod tests {
         let back = markdown_to_prosemirror(&md);
         let img = &back["content"][0]["content"][0];
         assert_eq!(img["attrs"]["alt"], "fish & chips &quot;sea&quot;");
+    }
+
+    #[test]
+    fn test_linked_image_roundtrip_keeps_href() {
+        // #880: [![alt](src)](href) — the href rides on the image node as
+        // linkHref and is re-emitted as a Link wrapping the image.
+        let doc = markdown_to_prosemirror("[![alt](img.png)](https://example.com)\n");
+        let img = &doc["content"][0]["content"][0];
+        assert_eq!(img["type"], "image");
+        assert_eq!(img["attrs"]["src"], "img.png");
+        assert_eq!(img["attrs"]["linkHref"], "https://example.com");
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert!(
+            md.contains("[![alt](img.png)](https://example.com)"),
+            "linked image re-emitted with href: {md}"
+        );
+        // And the emitted form re-parses to the same linked image.
+        let back = markdown_to_prosemirror(&md);
+        assert_eq!(
+            back["content"][0]["content"][0]["attrs"]["linkHref"],
+            "https://example.com"
+        );
+        // Plain images gain no linkHref; plain text links are unchanged.
+        let doc = markdown_to_prosemirror("![alt](img.png) and [text](https://x.test)\n");
+        let content = doc["content"][0]["content"].as_array().expect("inline");
+        assert!(content[0]["attrs"].get("linkHref").is_none());
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert!(md.contains("![alt](img.png)"), "plain image: {md}");
+        assert!(md.contains("[text](https://x.test)"), "plain link: {md}");
+    }
+
+    #[test]
+    fn test_table_alignment_roundtrip() {
+        // #881: alignments ride on the table node and re-emit in the
+        // delimiter row.
+        let md_in = "| a | b | c | d |\n|:---|:---:|---:|---|\n| 1 | 2 | 3 | 4 |\n";
+        let doc = markdown_to_prosemirror(md_in);
+        let table = &doc["content"][0];
+        assert_eq!(table["type"], "table");
+        assert_eq!(
+            table["attrs"]["alignments"],
+            json!(["left", "center", "right", "none"])
+        );
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        let back = markdown_to_prosemirror(&md);
+        assert_eq!(
+            back["content"][0]["attrs"]["alignments"],
+            json!(["left", "center", "right", "none"]),
+            "alignments survive round trip via: {md}"
+        );
+        // Unaligned tables carry no alignments attr and render as before.
+        let doc = markdown_to_prosemirror("| a |\n|---|\n| 1 |\n");
+        assert!(doc["content"][0]["attrs"].get("alignments").is_none());
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert!(md.contains("| a |"), "plain table: {md}");
+    }
+
+    #[test]
+    fn test_code_block_multiple_text_nodes_all_kept() {
+        // #882: a code_block split into several text nodes must not lose
+        // every node after the first on save.
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "code_block",
+                "attrs": {"params": "rust"},
+                "content": [
+                    {"type": "text", "text": "fn a() {}\n"},
+                    {"type": "text", "text": "fn b() {}"}
+                ]
+            }]
+        });
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert!(md.contains("fn a() {}"), "first node kept: {md}");
+        assert!(md.contains("fn b() {}"), "second node kept: {md}");
     }
 }
