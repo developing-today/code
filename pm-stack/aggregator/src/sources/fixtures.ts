@@ -525,6 +525,9 @@ export function fixtureSource(): Source {
     },
     quota: async () => FIXTURE_QUOTA,
     attention: async () => FIXTURE_ATTENTION,
+    // Fixtures carry no orchestration section: "not measured" is the
+    // honest fixture state for a job that only runs live (#899).
+    orchestration: async () => null,
     provenance: () => provenance,
   };
 }

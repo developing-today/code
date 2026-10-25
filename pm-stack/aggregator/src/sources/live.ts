@@ -5,7 +5,7 @@
 // provenance strings say exactly which facet is live vs fixture-backed.
 import { readFile } from "node:fs/promises";
 import type { Config } from "../config.ts";
-import { feedAgeText, loadFeed } from "../feed.ts";
+import { feedAgeText, isOrchestrationSection, loadFeed } from "../feed.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions } from "./opencode.ts";
 import {
@@ -479,6 +479,16 @@ export function liveSource(cfg: Config): Source {
       }
       provenance.attention = "fixtures (no live attention source reachable)";
       return fix.attention();
+    },
+    async orchestration() {
+      // #899: the orchestration section rides the fleet feed, embedded
+      // by the collector from the orchestrator's own output file. The
+      // section carries its own provenance; absent = not measured yet.
+      const feed = await loadFeed(cfg.feedFile);
+      if (feed?.orchestration && isOrchestrationSection(feed.orchestration)) {
+        return feed.orchestration;
+      }
+      return null;
     },
     provenance: () => provenance,
   };

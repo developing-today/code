@@ -4,7 +4,7 @@
 // record live on the sandbox). The aggregator renders the feed as-is;
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
-import type { QuotaView, SessionFeedEntry } from "./model.ts";
+import type { OrchestrationSection, QuotaView, SessionFeedEntry } from "./model.ts";
 
 export interface FleetFeed {
   version: 1;
@@ -13,6 +13,30 @@ export interface FleetFeed {
   quota: QuotaView;
   /** Sandbox-server sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
+  /** The orchestration job's latest section (#899), when one exists. */
+  orchestration?: OrchestrationSection;
+}
+
+/**
+ * Minimal structural check for an orchestration section, shared by the
+ * collector (which embeds the orchestrator's file fail-soft) and the
+ * live source (which serves it). Absent or malformed = "not measured".
+ */
+export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
+  if (typeof v !== "object" || v === null) return false;
+  const s = v as Partial<OrchestrationSection>;
+  return (
+    s.version === 1 &&
+    typeof s.generatedAt === "string" &&
+    typeof s.runId === "string" &&
+    typeof s.tiers === "object" &&
+    s.tiers !== null &&
+    Array.isArray(s.tiers.needsDrew) &&
+    Array.isArray(s.tiers.needsOrchestrator) &&
+    Array.isArray(s.dependencies) &&
+    Array.isArray(s.goals) &&
+    Array.isArray(s.actions)
+  );
 }
 
 export function isFleetFeed(v: unknown): v is FleetFeed {
