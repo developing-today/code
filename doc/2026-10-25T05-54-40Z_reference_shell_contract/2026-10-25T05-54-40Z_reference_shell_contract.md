@@ -86,9 +86,12 @@ the phase it `opens`:
   the session (**closed**).
 - **query.** Further query frames, or `join`.
 - **install.** `install_chunk` frames, then `install_end`.
-- **joined.** The participant's live session: `chat`, `input`, `paste`,
-  `resize`, `records`, `info`, `records_ticket`, `caps`, delegation and the
-  admin capability and profile frames. Every frame keeps the session joined.
+- **joined.** From the frame after a `join`. A shell may send joined-phase
+  frames, such as its first `resize`, before the snapshot arrives: the host
+  reads them once it has answered the join. The browser does exactly this.
+  Joined-phase frames are `chat`, `input`, `paste`, `resize`, `records`,
+  `info`, `records_ticket`, `caps`, the delegation frames, and the admin
+  capability and profile frames. Every frame keeps the session joined.
 
 Before a join, an `error` reply ends the session. After a join, most errors
 are answers, and the session continues.

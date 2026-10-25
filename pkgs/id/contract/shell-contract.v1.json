@@ -26,7 +26,7 @@
     "opening": "The session's first frame. It may carry the `world` routing field; absent means the host's default world.",
     "query": "After an opening query frame: further query frames, or a join.",
     "install": "After install_begin was answered with upload_ready: chunks, then install_end.",
-    "joined": "After a join was answered with a snapshot or events. Every frame keeps the session joined."
+    "joined": "From the frame after a join. A shell may send joined-phase frames (such as its first resize) before the snapshot arrives; the host reads them once the join is answered. Every frame keeps the session joined."
   },
   "classes": {
     "event": "Becomes one committed world event: journaled, replayed, and delivered to sessions through the client projection.",
