@@ -4,11 +4,7 @@
   },
   "customizations": {
     "vscode": {
-      "extensions": [
-        "mkhl.direnv",
-        "jnoortheen.nix-ide",
-        "golang.Go"
-      ]
+      "extensions": ["mkhl.direnv", "jnoortheen.nix-ide", "golang.Go"]
     }
   },
   "features": {
