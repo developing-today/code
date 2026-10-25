@@ -23,11 +23,23 @@
     "opencode",
     "github-copilot",
     "openai-codex",
-    "chatgpt"
+    "chatgpt",
+    "openrouter",
+    "cloudflare-gateway",
+    "cloudflare-workers-ai",
+    "code-design",
+    "design-code",
+    "open-design"
   ],
   "default": "claude-code/claude-haiku-5-5",
   "provider": {
     "claude-code": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Claude Code (CLI proxy)",
+      "options": {
+        "baseURL": "http://127.0.0.1:{env:CLAUDE_CODE_PROXY_PORT:-18749}/v1",
+        "apiKey": "claude-code-local"
+      },
       "models": {
         "claude-haiku-5-5": {
           "name": "Haiku 5.5 (Claude Code)",
@@ -3930,6 +3942,10 @@
 //        }
 //      }
 //    },
+    "openai.alternate": {
+      "instanceOf": "openai",
+      "name": "OpenAI Alternate (Student - popesdrew)"
+    },
     "opendesign": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Open Design",
@@ -4517,6 +4533,45 @@
                 },
                 "xai/grok-4.7": {
                       "name": "Grok 4.7 (Command Code)"
+                },
+                "claude-haiku-5-5": {
+                      "name": "Claude Haiku 5 5 (Command Code)"
+                },
+                "google/gemini-4-argon": {
+                      "name": "Gemini 4 Argon (Command Code)"
+                },
+                "inclusionai/ling-3.1-flash": {
+                      "name": "Ling 3.1 Flash (Command Code)"
+                },
+                "meta/muse-spark-open": {
+                      "name": "Muse Spark Open (Command Code)"
+                },
+                "meta/muse-wonder-1.0": {
+                      "name": "Muse Wonder 1.0 (Command Code)"
+                },
+                "minimax/minimax-m3.1-flash": {
+                      "name": "MiniMax m3.1 Flash (Command Code)"
+                },
+                "mistral/mistral-large-4": {
+                      "name": "Mistral Large 4 (Command Code)"
+                },
+                "moonshotai/kimi-k3.1-pro": {
+                      "name": "Kimi k3.1 Pro (Command Code)"
+                },
+                "nvidia/nemotron-3.5-super-vl": {
+                      "name": "Nemotron 3.5 Super Vl (Command Code)"
+                },
+                "ornith/ornith-1.5-122b": {
+                      "name": "Ornith 1.5 122b (Command Code)"
+                },
+                "qwen/qwen3.8-max-prime": {
+                      "name": "qwen3.8 Max Prime (Command Code)"
+                },
+                "reflection/beam:free": {
+                      "name": "beam:free (Command Code)"
+                },
+                "stealth/glyph-cluster:free": {
+                      "name": "Glyph cluster:free (Command Code)"
                 }
           }
     }
@@ -4614,6 +4669,8 @@
     },
     "classifier-complex": {
       "model": "claude-code/claude-haiku-5-5",
+      "temperature": 0,
+      "maxTokens": 512,
       "mode": "primary",
       "request": {
         "body": {
@@ -4710,6 +4767,8 @@
     },
     "classifier": {
       "model": "claude-code/claude-haiku-5-5",
+      "temperature": 0,
+      "maxTokens": 256,
       "mode": "primary",
       "request": {
         "body": {
@@ -4806,6 +4865,7 @@
     },
     "reasoner": {
       "model": "claude-code/claude-haiku-5-5",
+      "temperature": 0,
       "mode": "primary",
       "request": {
         "body": {
@@ -4897,6 +4957,7 @@
     },
     "coder": {
       "model": "claude-code/claude-haiku-5-5",
+      "temperature": 0.2,
       "mode": "primary",
       "request": {
         "body": {
