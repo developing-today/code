@@ -977,7 +977,7 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
             Some(None) => {
                 let _ = send_error(
                     io,
-                    "unknown invite role; use spectator, observer, player, guest, or delegator",
+                    "unknown invite role; use spectator, observer, player, guest, delegator, builder, or moderator",
                 )
                 .await;
             }

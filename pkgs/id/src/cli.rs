@@ -1399,7 +1399,7 @@ pub enum WorldCommand {
         /// Role preset: spectator sees the world but not the chat, observer
         /// also reads chat, player also inputs, guest also chats, delegator
         /// may also mint narrower capabilities. Defaults to guest.
-        #[arg(long, value_parser = ["spectator", "observer", "player", "guest", "delegator"])]
+        #[arg(long, value_parser = ["spectator", "observer", "player", "guest", "delegator", "builder", "moderator"])]
         role: Option<String>,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
@@ -1654,6 +1654,79 @@ pub enum WorldCommand {
         /// App name used in the README and the Wasm output.
         #[arg(long, default_value = "world")]
         name: String,
+    },
+    /// Diagnose a broken world setup and print the fix for each problem.
+    ///
+    /// Checks the Roc toolchain, the platform build, the capability ceiling,
+    /// the execution profile, the journal format and the clock. Exits nonzero
+    /// when any check fails. `--json` prints one machine-readable report.
+    Doctor {
+        /// Roc compiler binary to check (default: $`ID_ROC_BIN`, then the
+        /// pinned nightly, then `roc` on PATH).
+        #[arg(long, env = "ID_ROC_BIN")]
+        roc_bin: Option<String>,
+        /// World platform directory to check (default: $`ID_ROC_PLATFORM` or
+        /// ./examples/roc-world).
+        #[arg(long, env = "ID_ROC_PLATFORM")]
+        platform: Option<PathBuf>,
+        /// World journal (`journal.jsonl`) to check for format errors.
+        #[arg(long, value_name = "FILE")]
+        journal: Option<PathBuf>,
+        /// Print one JSON object instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the drift between a `world.toml` and a live world (read-only).
+    Diff {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Path to the `world.toml` to compare against.
+        #[arg(long, value_name = "FILE")]
+        file: PathBuf,
+        /// Guest capability from `id world invite` (enough to read the world).
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Reconcile a live world to a `world.toml` (idempotent; journaled).
+    ///
+    /// Prints the plan and applies it. `--dry-run` prints the plan only. The
+    /// grants, ceiling and profile are reconciled through the existing admin
+    /// operations; a module hash or source in the manifest is reported but
+    /// installed by `id world install`/`compile` until the apply path is wired.
+    Apply {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Path to the `world.toml` to apply.
+        #[arg(long, value_name = "FILE")]
+        file: PathBuf,
+        /// Admin secret configured with `serve --world-admin-token`.
+        #[arg(long, env = "ID_WORLD_ADMIN_TOKEN", hide_env_values = true)]
+        admin_token: String,
+        /// Guest capability from `id world invite`, used to read the current
+        /// state. Required for applying (it reads before it writes).
+        #[arg(long, env = "ID_WORLD_CAPABILITY", hide_env_values = true)]
+        capability: String,
+        /// Print the plan without changing the world.
+        #[arg(long)]
+        dry_run: bool,
+        /// World on the host to use (default: the host's default world).
+        #[arg(long, env = "ID_WORLD")]
+        world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
     },
     /// Measure a compiled `.wasm` world program's fuel use, offline.
     ///
@@ -3891,7 +3964,7 @@ mod tests {
                 "--name",
                 "ann",
                 "--role",
-                "builder",
+                "telepath",
             ])
             .is_err(),
             "an unknown role must be refused by the parser"

@@ -746,7 +746,7 @@ mod tests {
             "type": "invite",
             "admin_token": "admin",
             "display_name": "spec",
-            "role": "builder",
+            "role": "telepath",
         }))
         .await;
         let message = bad.next().await.unwrap()["message"]

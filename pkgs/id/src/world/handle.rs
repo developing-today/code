@@ -486,10 +486,17 @@ impl WorldHandle {
 
     /// Revoke an active capability and everything delegated from it.
     pub async fn revoke(&self, participant_id: u64) -> Result<bool> {
+        self.revoke_by(participant_id, None).await
+    }
+
+    /// Revoke an active capability and everything delegated from it, recording
+    /// the moderator participant that ordered it for the audit journal.
+    pub async fn revoke_by(&self, participant_id: u64, by: Option<u64>) -> Result<bool> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::Revoke {
                 participant_id,
+                by,
                 reply,
             })
             .await
@@ -638,12 +645,27 @@ impl WorldHandle {
         provenance: Option<ModuleProvenance>,
         program: Box<dyn WorldProgram>,
     ) -> Result<WorldEvent> {
+        self.install_program_by(module_hash, seed, provenance, None, program)
+            .await
+    }
+
+    /// As [`Self::install_program_with_provenance`], recording the builder
+    /// participant that ordered the install for the audit journal.
+    pub async fn install_program_by(
+        &self,
+        module_hash: String,
+        seed: u64,
+        provenance: Option<ModuleProvenance>,
+        installed_by: Option<u64>,
+        program: Box<dyn WorldProgram>,
+    ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
             .send(WorldCommand::InstallProgram {
                 module_hash,
                 seed,
                 provenance,
+                installed_by,
                 program,
                 reply,
             })
