@@ -12,8 +12,10 @@ import {
   type GhItem,
   type Link,
   type Provenance,
+  type QuotaView,
   type RefKey,
   type RoadmapRow,
+  type SessionFeedEntry,
   refsInText,
   refUrl,
 } from "../model.ts";
@@ -328,6 +330,181 @@ export const FIXTURE_COMMENTS: Comment[] = [
   c("ic-8", `${NIX}#507`, "issue_comment", "dezren39", "2026-10-21T14:00:00Z", "Oracle ticket CPCOE-29381 still open."),
 ];
 
+// Quota + throughput view (#851). Illustrative values shaped to the real
+// provider/pool landscape the issue names; per-window numbers are plausible,
+// not measured — the live reader replaces them.
+export const FIXTURE_QUOTA: QuotaView = {
+  pools: [
+    {
+      id: "anthropic:claude-subscription",
+      provider: "Anthropic",
+      plan: "Claude Max",
+      state: "walled",
+      wallLiftsAt: "2026-10-25T10:30:00Z",
+      windows: [
+        { name: "5-hour", unit: "messages", limit: 45, used: 44, resetsAt: "2026-10-25T10:30:00Z", percent: 98 },
+        { name: "weekly", unit: "messages", limit: 630, used: 601, resetsAt: "2026-10-26T08:00:00Z", percent: 95 },
+      ],
+      burnTokensPerMin: 0,
+      activeSessions: [],
+    },
+    {
+      id: "opencode-go:personal",
+      provider: "OpenCode Go",
+      plan: "Personal",
+      state: "near",
+      windows: [{ name: "monthly", unit: "tokens", limit: null, used: 18_000_000, resetsAt: null, percent: 85 }],
+      burnTokensPerMin: 210,
+      activeSessions: [{ session: "ses_e8e4b5a44ffe0fnmHE0FmlGpkG", model: "deepseek-v4-pro", tokens: 3_400_000 }],
+    },
+    {
+      id: "antigravity:gemini",
+      provider: "Antigravity",
+      plan: "Google Antigravity",
+      note: "Antigravity has TWO independent pools: Gemini models, and the Claude models it supports.",
+      state: "healthy",
+      windows: [
+        { name: "daily", unit: "requests", limit: 250, used: 61, resetsAt: "2026-10-25T08:00:00Z", percent: 24 },
+      ],
+    },
+    {
+      id: "antigravity:claude",
+      provider: "Antigravity",
+      plan: "Google Antigravity",
+      note: "The Claude models Antigravity supports — a separate pool from its Gemini models.",
+      state: "healthy",
+      windows: [
+        { name: "daily", unit: "requests", limit: 100, used: 40, resetsAt: "2026-10-25T08:00:00Z", percent: 40 },
+      ],
+    },
+    {
+      id: "meta:model-api",
+      provider: "Meta Model API",
+      plan: "Muse Code High Usage",
+      note: "A token quota under the Muse Code High Usage subscription; key must be the team-attached meta.api-key-funded (the orphaned key 402s).",
+      state: "healthy",
+      windows: [
+        {
+          name: "monthly",
+          unit: "tokens",
+          limit: 50_000_000,
+          used: 9_000_000,
+          resetsAt: "2026-11-01T00:00:00Z",
+          percent: 18,
+        },
+      ],
+    },
+    {
+      id: "deepseek:api",
+      provider: "DeepSeek",
+      plan: "API balance",
+      state: "healthy",
+      windows: [{ name: "balance", unit: "usd", limit: null, used: 3.2, resetsAt: null, percent: 40 }],
+    },
+    {
+      id: "openai:chatgpt",
+      provider: "OpenAI",
+      plan: "ChatGPT (codex)",
+      note: "Last in the fleet burn order: Anthropic pools first, then other plan providers, OpenAI last.",
+      state: "healthy",
+      windows: [
+        { name: "weekly", unit: "messages", limit: 200, used: 12, resetsAt: "2026-10-27T08:00:00Z", percent: 6 },
+      ],
+    },
+  ],
+  burn: [
+    {
+      provider: "Anthropic",
+      pool: "claude-subscription",
+      from: "2026-10-25T05:30:00Z",
+      to: "2026-10-25T10:30:00Z",
+      tokens: 41_000_000,
+    },
+    {
+      provider: "OpenCode Go",
+      pool: "personal",
+      from: "2026-10-24T08:00:00Z",
+      to: "2026-10-25T08:00:00Z",
+      tokens: 18_000_000,
+    },
+  ],
+  choices: {
+    hasHeadroom: ["antigravity:claude", "antigravity:gemini", "meta:model-api", "openai:chatgpt"],
+    burnBeforeReset: ["antigravity:gemini", "antigravity:claude"],
+    doNotStart: ["anthropic:claude-subscription", "opencode-go:personal"],
+  },
+};
+
+// "Needs you" view (#852). One entry per state so the classifier's ordering
+// is exercised; values are illustrative.
+export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
+  {
+    sessionId: "ses_k_wip",
+    title: "pm wave K — aggregator UI",
+    directory: "/home/user/work/id-train/pm-aggregator-ui",
+    branch: "pm/aggregator-ui",
+    model: "deepseek-v4-pro",
+    provider: "cloudflare-gateway",
+    lastActivityAt: "2026-10-25T02:45:00Z",
+    messageCount: 41,
+    messageDelta: 3,
+    activeToolCalls: 1,
+  },
+  {
+    sessionId: "ses_h_connect",
+    title: "pm wave H — connect repos",
+    directory: "/home/user/work/id-train/pm-connect-repos",
+    branch: "pm/connect-repos",
+    model: "claude-opus-5-5",
+    provider: "claude-code",
+    lastActivityAt: "2026-10-25T02:30:00Z",
+    messageCount: 88,
+    messageDelta: 0,
+    activeToolCalls: 0,
+    awaitingQuestion: "Which repos install the developing.today app first — opencode or nix?",
+  },
+  {
+    sessionId: "ses_i_kaneo",
+    title: "pm wave I — Kaneo fork",
+    directory: "/home/user/work/kaneo-fork",
+    branch: "main",
+    model: "muse-wonder-1.0",
+    provider: "muse",
+    lastActivityAt: "2026-10-25T02:20:00Z",
+    messageCount: 19,
+    messageDelta: 0,
+    activeToolCalls: 0,
+    lastTurnError: "429 subscription quota (muse/muse-wonder-1.0)",
+  },
+  {
+    sessionId: "ses_j_proj",
+    title: "pm wave J — projector",
+    directory: "/home/user/work/id-train/pm-projector",
+    branch: "pm/projector",
+    model: "claude-opus-5-5",
+    provider: "claude-code",
+    lastActivityAt: "2026-10-25T02:10:00Z",
+    messageCount: 55,
+    messageDelta: 0,
+    activeToolCalls: 1,
+    longRunningCall: { command: "cargo build --release", startedAt: "2026-10-25T01:40:00Z" },
+  },
+  {
+    sessionId: "ses_f_phase13",
+    title: "id train F — Phase 13",
+    directory: "/home/user/work/id-train/phase-13-impl",
+    branch: "phase-13-impl",
+    model: "claude-opus-5-5",
+    provider: "claude-code",
+    lastActivityAt: "2026-10-25T01:55:00Z",
+    messageCount: 102,
+    messageDelta: 0,
+    activeToolCalls: 0,
+    repeatedErrorCount: 4,
+    lastTurnError: "claude_session_limit (retry)",
+  },
+];
+
 export function fixtureSource(): Source {
   const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
   const provenance: Provenance = {
@@ -335,6 +512,8 @@ export function fixtureSource(): Source {
     roadmap: "fixtures (Grist seed rows)",
     items: "fixtures",
     comments: "fixtures",
+    quota: "fixtures",
+    attention: "fixtures",
   };
   return {
     board: async () => FIXTURE_BOARD,
@@ -344,6 +523,8 @@ export function fixtureSource(): Source {
       const wanted = new Set(refs);
       return FIXTURE_COMMENTS.filter((x) => wanted.has(x.ref));
     },
+    quota: async () => FIXTURE_QUOTA,
+    attention: async () => FIXTURE_ATTENTION,
     provenance: () => provenance,
   };
 }

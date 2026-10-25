@@ -122,3 +122,81 @@ export function commentStream(links: Link[], comments: Comment[]): Comment[] {
 export function allRefs(itemsWithLinks: { links: Link[] }[]): RefKey[] {
   return [...new Set(itemsWithLinks.flatMap((i) => i.links.map((l) => l.ref)))];
 }
+
+// ---------------------------------------------------------------------------
+// Quota view derivations (#851).
+// ---------------------------------------------------------------------------
+
+import type { QuotaPool, QuotaWindow } from "./model.ts";
+
+/** Percent used for a window (100 when the limit is unknown). */
+export function windowPercent(w: QuotaWindow): number {
+  if (w.limit == null || w.limit <= 0) return 100;
+  return (w.used / w.limit) * 100;
+}
+
+/** Near-limit threshold, in percent. */
+export const NEAR_PCT = 85;
+
+/** A pool is walled when any window is at or over its limit. */
+export function poolState(p: QuotaPool): "healthy" | "near" | "walled" {
+  for (const w of p.windows) if (windowPercent(w) >= 100) return "walled";
+  for (const w of p.windows) if (windowPercent(w) >= NEAR_PCT) return "near";
+  return "healthy";
+}
+
+// ---------------------------------------------------------------------------
+// Attention view derivations (#852). The classification rules combine
+// server signals (status, message growth, active tool calls) with the
+// watch-cron heuristics already proven in the id-train watches.
+// ---------------------------------------------------------------------------
+
+import type { AttentionEntry, AttentionState, SessionFeedEntry } from "./model.ts";
+
+const ORDER: Record<AttentionState, number> = {
+  "stopped-for-question": 0,
+  errored: 1,
+  "needs-poke": 2,
+  "stuck-retrying": 3,
+  "stalled-on-cli": 4,
+  "in-motion": 5,
+};
+
+/** A shell call older than this is "stalled on CLI". */
+export const CLI_STALL_MS = 30 * 60_000;
+
+/** Retry-loop detection: this many consecutive identical errors. */
+export const RETRY_LOOP_THRESHOLD = 3;
+
+/**
+ * Classify one session feed entry. Ordering matters: the first rule that
+ * matches wins, so a walled-spin with a question still surfaces the question.
+ */
+export function classifyAttention(e: SessionFeedEntry, now = Date.now()): AttentionEntry {
+  let state: AttentionState = "in-motion";
+  let evidence = "Messages/tool calls progressing.";
+
+  if (e.awaitingQuestion) {
+    state = "stopped-for-question";
+    evidence = `Waiting on: ${e.awaitingQuestion}`;
+  } else if (e.lastTurnError) {
+    state = "errored";
+    evidence = `Last turn error: ${e.lastTurnError}`;
+  } else if ((e.repeatedErrorCount ?? 0) >= RETRY_LOOP_THRESHOLD) {
+    state = "stuck-retrying";
+    evidence = `${e.repeatedErrorCount} consecutive identical errors, no progress.`;
+  } else if (e.longRunningCall && Date.parse(e.longRunningCall.startedAt) + CLI_STALL_MS < now) {
+    state = "stalled-on-cli";
+    evidence = `CLI running long: ${e.longRunningCall.command ?? "unknown"} (since ${e.longRunningCall.startedAt}).`;
+  } else if (!e.lastActivityAt || e.activeToolCalls === 0) {
+    state = "needs-poke";
+    evidence = "Idle with no completion signal and no question.";
+  }
+
+  return { ...e, state, order: ORDER[state], evidence };
+}
+
+/** Sort a feed by attention (most urgent first). */
+export function attentionSorted(feed: SessionFeedEntry[], now = Date.now()): AttentionEntry[] {
+  return feed.map((e) => classifyAttention(e, now)).sort((a, b) => a.order - b.order);
+}

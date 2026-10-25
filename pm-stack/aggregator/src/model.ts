@@ -109,6 +109,110 @@ export interface Provenance {
   roadmap: string;
   items: string;
   comments: string;
+  quota: string;
+  attention: string;
+}
+
+// ---------------------------------------------------------------------------
+// Quota + throughput view (#851). Machine-first: the same shapes the API
+// returns are what the GUI renders. No code from the CCC reference design
+// (FSL-1.1-MIT) is vendored — this is the data model only.
+// ---------------------------------------------------------------------------
+
+export type QuotaState = "healthy" | "near" | "walled";
+
+/** One usage window a provider exposes (5-hour, weekly, monthly, ...). */
+export interface QuotaWindow {
+  name: string;
+  unit: "requests" | "tokens" | "usd" | "messages" | "other";
+  limit: number | null;
+  used: number;
+  /** ISO timestamp when this window resets. */
+  resetsAt: string | null;
+  /** Percent used, 0–100+, computed when `limit` is known. */
+  percent?: number;
+}
+
+/** One pool (plan + identity) with its windows and live burn. */
+export interface QuotaPool {
+  id: string;
+  provider: string;
+  plan: string;
+  /** E.g. "Antigravity has TWO pools: Gemini models, and the Claude models it supports." */
+  note?: string;
+  state: QuotaState;
+  /** Set when walled: the ISO time the wall lifts. */
+  wallLiftsAt?: string;
+  windows: QuotaWindow[];
+  /** tokens/min over the recent window, when measurable. */
+  burnTokensPerMin?: number;
+  /** Sessions currently burning this pool, with cumulative tokens. */
+  activeSessions?: { session: string; model: string; tokens: number }[];
+}
+
+/** Historical burn between resets, so headroom is projected, not observed. */
+export interface BurnSegment {
+  provider: string;
+  pool: string;
+  from: string;
+  to: string;
+  tokens: number;
+}
+
+export interface QuotaView {
+  pools: QuotaPool[];
+  burn: BurnSegment[];
+  /** Guidance for choosing the next pool (burn order + reset rules). */
+  choices: {
+    /** Pools with headroom for a new session, best first. */
+    hasHeadroom: string[];
+    /** Pools about to reset with unused headroom (burn-it-before-reset). */
+    burnBeforeReset: string[];
+    /** Pools too close to their limit to start a second session. */
+    doNotStart: string[];
+  };
+}
+
+// ---------------------------------------------------------------------------
+// "Needs you" attention view (#852). One classification per live session,
+// machine-first. Classification rules are in derive.ts, not here.
+// ---------------------------------------------------------------------------
+
+export type AttentionState =
+  | "in-motion"
+  | "stopped-for-question"
+  | "errored"
+  | "needs-poke"
+  | "stalled-on-cli"
+  | "stuck-retrying";
+
+/** The raw feed entry for one session, as the projector / watch cron emits. */
+export interface SessionFeedEntry {
+  sessionId: string;
+  title?: string;
+  directory?: string;
+  branch?: string;
+  model?: string;
+  provider?: string;
+  lastActivityAt: string | null;
+  messageCount?: number;
+  messageDelta?: number;
+  activeToolCalls?: number;
+  lastTurnError?: string | null;
+  /** A question the session is waiting on, if any. */
+  awaitingQuestion?: string | null;
+  /** Longest running shell/CLI call, with age, when one is open. */
+  longRunningCall?: { command?: string; startedAt: string } | null;
+  /** Count of consecutive identical errors (retry-loop detection). */
+  repeatedErrorCount?: number;
+  pr?: string | null;
+}
+
+/** One classified session, with the evidence for its state inline. */
+export interface AttentionEntry extends SessionFeedEntry {
+  state: AttentionState;
+  order: number; // lower = more urgent
+  evidence: string;
 }
 
 export function refKey(ref: GhRef): RefKey {
