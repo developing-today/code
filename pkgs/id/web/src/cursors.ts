@@ -598,15 +598,15 @@ function createCursorDecorations(
 
   if (view) {
     visibleCursors.forEach((cursor) => {
-        const coords = getCachedCoords(cursor.head);
-        if (coords) {
+      const coords = getCachedCoords(cursor.head);
+      if (coords) {
         // Round Y to group cursors on same visual line
         const lineY = Math.round(coords.top / LINE_THRESHOLD_PX) * LINE_THRESHOLD_PX;
 
         const existing = lineGroups.get(lineY) || [];
         existing.push(cursor);
         lineGroups.set(lineY, existing);
-        } else {
+      } else {
         // If coordsAtPos fails, put in a separate group
         const existing = lineGroups.get(-1) || [];
         existing.push(cursor);
@@ -620,13 +620,20 @@ function createCursorDecorations(
     });
   }
 
-    // Helper to get left coordinate using cached lookup
-    const getLeftCoord = view
-      ? (pos: number): number => {
-          const coords = getCachedCoords(pos);
-          return coords ? coords.left : 0;
+  // Helper to get left coordinate using cached lookup.
+  // #831: a failed lookup must THROW, not return a fictitious left of
+  // 0 — clusterOverlappingGroups is built around the throw contract
+  // (on failure it puts every group in its own cluster). Returning 0
+  // merged unrelated cursor groups into one bar at the left edge.
+  const getLeftCoord = view
+    ? (pos: number): number => {
+        const coords = getCachedCoords(pos);
+        if (!coords) {
+          throw new Error(`coordsAtPos failed for position ${pos}`);
         }
-      : null;
+        return coords.left;
+      }
+    : null;
 
   // Process each line group
   lineGroups.forEach((lineCursors) => {
@@ -640,7 +647,15 @@ function createCursorDecorations(
     if (positionGroups.length > 1) {
       console.log("[cursor-debug] positionGroups:", positionGroups.length, "clusters:", clusters.length);
       positionGroups.forEach((g, i) => {
-        const left = getLeftCoord ? getLeftCoord(g.position) : "no-view";
+        // Debug logging must never throw on a failed coord lookup (#831).
+        let left: number | string = "no-view";
+        if (getLeftCoord) {
+          try {
+            left = getLeftCoord(g.position);
+          } catch {
+            left = "unavailable";
+          }
+        }
         console.log(
           `  group[${i}]: pos=${g.position}, left=${left}, cursors=${g.cursors.map((c) => c.clientID).join(",")}`,
         );
