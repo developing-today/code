@@ -4209,16 +4209,25 @@
         }
       }
     },
-    "opencode-go-personal": {
+    // renamed to dot-style aliases 2026-10-25 (opencode-go.personal / opencode-go.lab); dash forms kept commented per the never-delete-config rule
+    "opencode-go.personal": {
       "instanceOf": "opencode-go",
       "name": "OpenCode Go (Personal)"
     },
-    "opencode-go-lab": {
+    "opencode-go.lab": {
       "instanceOf": "opencode-go",
       "name": "OpenCode Go (Lab)"
     },
+    // "opencode-go-personal": {
+      // "instanceOf": "opencode-go",
+      // "name": "OpenCode Go (Personal)"
+    // },
+    // "opencode-go-lab": {
+      // "instanceOf": "opencode-go",
+      // "name": "OpenCode Go (Lab)"
+    // },
     // disabled 2026-10-25: Home workspace has no active Go subscription (e2e: "An active OpenCode Go subscription is required"); re-enable when subscribed
-    // "opencode-go-home": {
+    // "opencode-go.home": {
       // "instanceOf": "opencode-go",
       // "name": "OpenCode Go (Home)"
     // },
