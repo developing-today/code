@@ -1341,6 +1341,16 @@ pub enum GroupCommand {
     },
 }
 
+/// How `id world join` reaches a world host.
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorldVia {
+    /// An iroh QUIC stream to the host's node ID.
+    #[default]
+    Iroh,
+    /// An exec channel on the host's world SSH server.
+    Ssh,
+}
+
 /// The kinds of group `id group create` makes.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GroupTemplate {
@@ -1525,9 +1535,39 @@ pub enum WorldCommand {
         /// `/quit`, ...) instead of sending every line as chat.
         #[arg(long)]
         command_mode: bool,
+        /// How to reach the host: `iroh` (NODE is a node ID) or `ssh` (NODE
+        /// is `[user@]host[:port]` of the host's world SSH server, and the
+        /// frames travel over an SSH exec channel, for networks and jump
+        /// hosts that only pass SSH).
+        #[arg(long, value_enum, default_value_t = WorldVia::Iroh)]
+        via: WorldVia,
+        /// With `--via ssh`: the host key fingerprint `id serve` prints
+        /// (`SHA256:...`). Without it, the key must be in ~/.ssh/known_hosts.
+        #[arg(long, value_name = "FINGERPRINT")]
+        ssh_host_key: Option<String>,
         /// World on the host to use (default: the host's default world).
         #[arg(long, env = "ID_WORLD")]
         world: Option<String>,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
+    /// Reach a host's world SSH server through iroh, so an ordinary `ssh`
+    /// client can reach a world behind NAT: `ssh -p 2222 <world>@127.0.0.1`
+    /// (password: the guest capability). With `--stdio`, acts as an SSH
+    /// ProxyCommand instead of listening.
+    SshTunnel {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Local address to listen on (loopback only is recommended).
+        #[arg(long, value_name = "ADDR")]
+        listen: Option<String>,
+        /// Speak SSH on stdin/stdout (for `ssh -o ProxyCommand`).
+        #[arg(long, conflicts_with = "listen")]
+        stdio: bool,
         /// Direct socket address of the host (repeatable); skips discovery.
         #[arg(long = "addr")]
         addrs: Vec<SocketAddr>,
@@ -1738,6 +1778,17 @@ pub enum WorldCommand {
         /// Disable relay servers (direct connection only).
         #[arg(long)]
         no_relay: bool,
+    },
+    /// Print the versioned shell contract (the frame protocol every shell
+    /// speaks), or check a recorded session against it.
+    ///
+    /// A transcript has one JSON object per line:
+    /// `{"from": "client"|"server", "frame": {...}}`. The check prints each
+    /// violation and fails if there is any.
+    Contract {
+        /// Transcript to check (`-` reads stdin); without it, print the contract.
+        #[arg(long, value_name = "FILE")]
+        check: Option<PathBuf>,
     },
     /// Measure a compiled `.wasm` world program's fuel use, offline.
     ///

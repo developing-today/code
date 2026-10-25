@@ -44,6 +44,8 @@ use crate::world_hub::{WorldHub, WorldLease};
 pub use crate::frames::MAX_FRAME_BYTES;
 
 #[cfg(test)]
+mod contract_tests;
+#[cfg(test)]
 mod tests;
 /// Largest Wasm world module that may be installed (16 MiB).
 mod types;
@@ -1974,6 +1976,23 @@ async fn handle_client_frame<I: SessionIo>(
             }
             return true;
         }
+        // Authorized by the session's own capability, like `records`; the
+        // shell contract lists `info` in the joined phase (`/stats`).
+        ClientFrame::Info { .. } => {
+            let Ok(snapshot) = world.snapshot(token.clone()).await else {
+                return send_error(io, "join denied").await;
+            };
+            return send_json(
+                io,
+                &ServerFrame::ModuleInfo {
+                    world_id: snapshot.world_id,
+                    active_module_hash: snapshot.active_module_hash,
+                    active_module_provenance: snapshot.active_module_provenance,
+                    current_sequence: snapshot.current_sequence,
+                },
+            )
+            .await;
+        }
         ClientFrame::Caps { .. } => {
             match service.world().caps_report().await {
                 Ok(report) => {
@@ -2026,7 +2045,6 @@ async fn handle_client_frame<I: SessionIo>(
         }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
-        | ClientFrame::Info { .. }
         | ClientFrame::ListWorlds { .. }
         | ClientFrame::CreateWorld { .. }
         | ClientFrame::SetIsolation { .. }
