@@ -4141,7 +4141,7 @@
         }
       }
     },
-// DISABLED 2026-10-25 per Drew: the "muse" provider (Muse CLI subscription route) is not a pool plan — the Meta pool plan is the "meta" provider. Commented out per fleet rule, not deleted.
+// DISABLED 2026-10-25 per Drew — NEVER route sessions to the "muse" provider. It is a second, wasteful door into the SAME single Meta pool as "meta" — the Muse API High Usage plan — reached through the muse terminal program's OAuth login via muse-proxy (the proxy strips META_API_KEY so calls take the OAuth plan route, not the PAYG key route). It is NOT the assistant Muse's Power subscription (the assistant exists only in the app/website and is never a session pool) and NOT a separate pool or "muse plan allowance". The ONLY door sessions may use into the High Usage pool is the "meta" provider. Commented out per fleet rule (disable, never delete).
 //     "muse": {
 //       "npm": "@ai-sdk/openai-compatible",
 //       "name": "Muse (CLI via muse-proxy)",
