@@ -273,7 +273,10 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
 tailnet proxy route; a systemd timer on the sandbox runs it every
 ~5 minutes (`systemd/fleet-feed-collector.{service,timer}`). The
 aggregator states the feed's age in the page provenance; a stale
-feed keeps rendering.
+feed keeps rendering. `/etc/systemd/system` does not survive
+sandbox recycles, so `~/tools/init.sh` restores the units on boot
+via `scripts/install-collector-units.sh` whenever the timer is not
+active (#903).
 
 **Deployment (laptop):** `install.sh` copies the package to
 `~/pm-stack/aggregator`, renders `.env` from
