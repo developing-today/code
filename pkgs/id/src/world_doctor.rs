@@ -50,12 +50,45 @@ pub struct DoctorReport {
 }
 
 impl DoctorReport {
-    /// Whether every check passed.
+    /// Whether every check passed with no warning or failure. This is a
+    /// strict summary only; it is NOT the CLI exit condition — a `Warn`
+    /// finding ("does not stop a world from running", see [`Severity::Warn`])
+    /// must not fail `id world doctor`. Use [`DoctorReport::exit_result`]
+    /// for the exit decision.
     #[must_use]
     pub fn healthy(&self) -> bool {
         self.findings
             .iter()
             .all(|finding| finding.severity == Severity::Ok)
+    }
+
+    /// How many findings are failures (`Severity::Fail`). Warnings and
+    /// passes are not problems for exit purposes.
+    #[must_use]
+    pub fn failure_count(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == Severity::Fail)
+            .count()
+    }
+
+    /// Whether any check failed.
+    #[must_use]
+    pub fn has_failures(&self) -> bool {
+        self.failure_count() > 0
+    }
+
+    /// The CLI exit decision for a finished report: `Ok` when no check
+    /// failed (warnings included), otherwise an error naming the number of
+    /// FAILED checks — never the total number of checks run.
+    ///
+    /// # Errors
+    ///
+    /// Any finding has `Severity::Fail`.
+    pub fn exit_result(&self) -> Result<()> {
+        let failures = self.failure_count();
+        anyhow::ensure!(failures == 0, "world doctor found {failures} problem(s)");
+        Ok(())
     }
 
     /// Render the report as terminal text, one finding per line.
@@ -510,6 +543,68 @@ mod tests {
         assert!(validate_journal_file(&path).is_err());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_warn_only_report_does_not_fail_the_exit_result() {
+        // Healthy inputs, except the resolved compiler differs from the
+        // configured one — the one Warn path in check_toolchain.
+        let mut inputs = healthy_inputs();
+        let exe = std::env::current_exe().unwrap();
+        inputs.roc_bin = Some(exe.to_string_lossy().into_owned());
+        inputs.roc_resolved = Some(Ok("/some/other/roc".to_owned()));
+        let report = run(&inputs);
+        assert!(!report.healthy(), "{report:#?}");
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .filter(|finding| finding.severity == Severity::Warn)
+                .count(),
+            1,
+            "{report:#?}"
+        );
+        assert_eq!(report.failure_count(), 0);
+        assert!(!report.has_failures());
+        // The CLI-level decision the Doctor handler uses: Warn exits 0.
+        assert!(report.exit_result().is_ok(), "{report:#?}");
+    }
+
+    #[test]
+    fn a_failing_report_counts_only_the_failed_checks() {
+        // Toolchain unresolvable + no platform directory: exactly 2 Fail
+        // findings out of 6 checks.
+        let report = run(&DoctorInputs {
+            roc_resolved: Some(Err("no roc binary".to_owned())),
+            ..inputs()
+        });
+        assert_eq!(report.findings.len(), 6, "{report:#?}");
+        assert_eq!(report.failure_count(), 2, "{report:#?}");
+        let error = report.exit_result().unwrap_err().to_string();
+        assert!(error.contains("found 2 problem(s)"), "{error}");
+        assert!(!error.contains('6'), "{error}");
+    }
+
+    #[test]
+    fn a_bad_ceiling_and_a_zero_bound_profile_fail_through_run() {
+        // The values the CLI now supplies via --ceiling / --profile reach
+        // the same run() the Doctor handler calls.
+        let report = run(&DoctorInputs {
+            caps_ceiling: Some(vec!["*".to_owned()]),
+            profile: Some(WorldExecutionProfile {
+                wasm_fuel: Some(0),
+                ..WorldExecutionProfile::default()
+            }),
+            roc_resolved: Some(Err("no roc binary".to_owned())),
+            ..inputs()
+        });
+        let ceiling = &report.findings[2];
+        assert_eq!(ceiling.check, "ceiling");
+        assert_eq!(ceiling.severity, Severity::Fail, "{ceiling:#?}");
+        let profile = &report.findings[3];
+        assert_eq!(profile.check, "profile");
+        assert_eq!(profile.severity, Severity::Fail, "{profile:#?}");
+        assert!(report.exit_result().is_err());
     }
 
     #[test]
