@@ -259,11 +259,13 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 let key_esc = html_escape(key);
                 match value {
                     Some(v) => {
-                        let truncated = if v.len() > crate::tags::TAG_DISPLAY_MAX_BYTES {
-                            format!("{}…", &v[..crate::tags::TAG_DISPLAY_MAX_BYTES])
-                        } else {
-                            v.clone()
-                        };
+                        // Truncate on a char boundary: a raw &v[..256] slice
+                        // panics when byte 256 splits a multi-byte character
+                        // (#815). The CLI's helper already handles this.
+                        let truncated = crate::commands::tag::truncate_on_char_boundary(
+                            v,
+                            crate::tags::TAG_DISPLAY_MAX_BYTES,
+                        );
                         let val_esc = html_escape(&truncated);
                         let _ = write!(
                             tag_pills,
@@ -1102,6 +1104,39 @@ mod tests {
         assert!(html.contains("test.txt"));
         assert!(html.contains("abc123def456"));
         assert!(html.contains("aria-label=\"Select file test.txt\""));
+    }
+
+    #[test]
+    fn test_render_file_list_tag_value_straddling_truncation_boundary() {
+        // Regression (#815): a tag value longer than TAG_DISPLAY_MAX_BYTES
+        // whose byte-256 offset splits a multi-byte character used to panic
+        // on &v[..256]. 'é' here occupies bytes 255..257.
+        let value = format!("{}é{}", "a".repeat(255), "tail-tail-tail");
+        assert!(value.len() > crate::tags::TAG_DISPLAY_MAX_BYTES);
+        let files = vec![FileInfo {
+            name: "tagged.txt".to_owned(),
+            display_name: None,
+            hash: "abc123def456".to_owned(),
+            size: 1024,
+            kind: FileKind::Primary,
+            parent_name: None,
+            timestamp: None,
+            created_at: None,
+            modified_at: None,
+            tags: vec![("note".to_owned(), Some(value))],
+            is_deleted: false,
+        }];
+        let page = FileListPage {
+            total: files.len(),
+            files,
+            page: 1,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list(&page);
+        // Truncated on the char boundary before 'é', with the ellipsis.
+        assert!(html.contains(&format!("note: {}…", "a".repeat(255))));
     }
 
     #[test]
