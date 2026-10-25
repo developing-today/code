@@ -137,7 +137,7 @@ cmd_connect() {
     result="$(cat "$WORK/import.json")"
     case "$status" in
     200)
-      echo "import: $(json 'print(f"{d[\"imported\"]} imported, {d[\"updated\"]} updated, {d[\"skipped\"]} skipped")' <<<"$result")"
+      echo "import: $(json 'print(d["imported"], "imported,", d["updated"], "updated,", d["skipped"], "skipped")' <<<"$result")"
       break
       ;;
     202) run="$(json 'print(d["runId"])' <<<"$result")" ;;
