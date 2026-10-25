@@ -9,9 +9,10 @@
 # Cadence: ~5 min via fleet-feed-collector.timer (systemd, sandbox).
 set -euo pipefail
 
-# Systemd system services get a minimal PATH; bun lives in the image bin.
+# Systemd system services get a minimal PATH (and no HOME); bun lives
+# in the image bin.
 if ! command -v bun >/dev/null 2>&1; then
-  for d in /opt/hatch-image/bin "$HOME/tools/go/bin"; do
+  for d in /opt/hatch-image/bin "${HOME:-/nonexistent}/tools/go/bin"; do
     [ -x "$d/bun" ] && PATH="$d:$PATH" && break
   done
 fi

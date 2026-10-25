@@ -4,6 +4,10 @@ After=network.target
 
 [Service]
 Type=oneshot
+# Runs as the sandbox user: the quota sources, the OpenCode server
+# password file, and the laptop SSH key all live in that home.
+User=hatch
+Environment=HOME=/home/hatch
 # Runs from the feed clone (~hatch/git/pm-feed): collector + push over
 # the tailnet proxy route. Proxy credential from mcpx-daemon.env.
 ExecStart=/home/hatch/git/pm-feed/pm-stack/aggregator/scripts/push-fleet-feed.sh
