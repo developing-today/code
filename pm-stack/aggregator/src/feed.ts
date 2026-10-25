@@ -4,15 +4,31 @@
 // record live on the sandbox). The aggregator renders the feed as-is;
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
-import type { QuotaView, SessionFeedEntry } from "./model.ts";
+import type { JulesSummary, OrchestrationSummary, QuotaView, SessionFeedEntry } from "./model.ts";
 
 export interface FleetFeed {
   version: 1;
   /** ISO timestamp of collection on the sandbox. */
   generatedAt: string;
   quota: QuotaView;
-  /** Sandbox-server sessions, pre-classification (render classifies). */
+  /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
+  /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
+  julesSummary?: JulesSummary;
+  /** Orchestration summary from #899's job (slice 2); absent until it writes one. */
+  orchestration?: OrchestrationSummary;
+}
+
+/** Loose validation of an orchestration summary (contract on #899). */
+export function isOrchestrationSummary(v: unknown): v is OrchestrationSummary {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Partial<OrchestrationSummary>;
+  return (
+    typeof o.generatedAt === "string" &&
+    Array.isArray(o.objectives) &&
+    Array.isArray(o.momentum) &&
+    Array.isArray(o.escalations)
+  );
 }
 
 export function isFleetFeed(v: unknown): v is FleetFeed {
