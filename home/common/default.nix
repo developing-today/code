@@ -21,6 +21,7 @@ let
   designCodeProxyPort = 18746;
   museProxyPort = 18747;
   commandcodeProxyPort = 18748;
+  claudeCodeProxyPort = 18749;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -1435,6 +1436,13 @@ in
       CODEX_PROXY_PORT = toString codexProxyPort;
       ANTIGRAVITY_LS_PROXY_PORT = toString antigravityLsProxyPort;
       DESIGN_CODE_PROXY_PORT = toString designCodeProxyPort;
+      # The three below were missing: their {env:...} templates in
+      # opencode.jsonc resolved to an empty port in the OpenChamber serve
+      # (2026-10-25 audit) because the variables never reached its
+      # environment. The session list must cover every let-block port.
+      MUSE_PROXY_PORT = toString museProxyPort;
+      COMMANDCODE_PROXY_PORT = toString commandcodeProxyPort;
+      CLAUDE_CODE_PROXY_PORT = toString claudeCodeProxyPort;
       OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
       # File watcher off by default (Drew, 2026-10-20): the working trees
       # are giant, and watching costs more than the live-external-edit
