@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import http from 'node:http';
+import net from 'node:net';
 import { spawn, execSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -105,6 +106,21 @@ const findCodexBinary = () => {
 };
 
 const CODEX_BIN = findCodexBinary();
+
+// Transport selection (#480): 'app-server' (default) talks JSON-RPC to the
+// long-running codex app-server daemon over its WebSocket-over-Unix control
+// socket — no per-request CLI boot. 'exec-resume' is the previous warm
+// path (per-turn `codex exec resume`); 'exec' is the original cold path.
+// Any app-server failure before the response is committed falls back to
+// exec-resume, then exec — a request never fails because the warm route did.
+const TRANSPORT = (() => {
+  const t = (process.env.CODEX_PROXY_TRANSPORT || 'app-server').trim().toLowerCase();
+  return ['app-server', 'exec-resume', 'exec'].includes(t) ? t : 'app-server';
+})();
+
+const appServerSocketPath = () =>
+  process.env.CODEX_APP_SERVER_SOCKET ||
+  path.join(os.homedir(), '.codex', 'app-server-control', 'app-server-control.sock');
 
 const resolveModelAndEffort = (requestedModel, requestedEffort) => {
   let rawModel = (requestedModel || 'gpt-6.1-sol').trim();
@@ -225,7 +241,7 @@ const loadSessions = () => {
     for (const [key, entry] of Object.entries(raw)) {
       if (
         entry &&
-        typeof entry.sessionId === 'string' &&
+        (typeof entry.sessionId === 'string' || typeof entry.threadId === 'string') &&
         Array.isArray(entry.fedHashes) &&
         now - (entry.lastUsed || 0) <= SESSION_TTL_MS
       ) {
@@ -311,10 +327,15 @@ const planResume = (messages, fullName) => {
   return { key, entry, tailMessages };
 };
 
-const recordSession = (key, sessionId, messages) => {
-  if (!key || !sessionId) return;
+const recordSession = (key, sessionId, messages, threadId) => {
+  if (!key || (!sessionId && !threadId)) return;
+  const prev = loadSessions().get(key) || {};
   loadSessions().set(key, {
-    sessionId,
+    // An app-server thread id is a codex session id in the same rollout
+    // store, so either transport can warm the other: keep both fields
+    // pointing at the newest known id for the conversation.
+    sessionId: sessionId || threadId || prev.sessionId,
+    threadId: threadId || prev.threadId,
     fedCount: messages.length,
     fedHashes: messages.map(messageHash),
     lastUsed: Date.now()
@@ -322,8 +343,374 @@ const recordSession = (key, sessionId, messages) => {
   saveSessions();
 };
 
+const forgetThread = (key) => {
+  const entry = key && loadSessions().get(key);
+  if (entry && entry.threadId) {
+    delete entry.threadId;
+    saveSessions();
+  }
+};
+
 const forgetSession = (key) => {
   if (key && loadSessions().delete(key)) saveSessions();
+};
+
+// ---------------------------------------------------------------------------
+// App-server transport (#480): one persistent WebSocket-over-Unix-socket
+// connection to the managed codex app-server daemon
+// (~/.codex/app-server-control/app-server-control.sock, proven on the
+// laptop's daemon 0.164.0: HTTP Upgrade handshake at any path, then plain
+// JSON-RPC 2.0 in text frames; client frames must be masked). The daemon
+// owns the ChatGPT login and stays warm, so a keyed follow-up turn is a
+// single turn/start RPC — turn 2 measured 2.15s for gpt-5.6-luna against
+// ~40-55s for a per-call `codex exec resume` boot. The stdio bridge
+// (`codex app-server proxy`) was tried first and never answered an
+// initialize in 180s against this daemon; the direct socket works and
+// needs no child process at all. Node stdlib only (net + crypto).
+// ---------------------------------------------------------------------------
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+const wsAccept = (key) =>
+  crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
+
+const wsEncodeFrame = (payload, opcode = 0x1) => {
+  const data = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+  const mask = crypto.randomBytes(4);
+  let header;
+  if (data.length < 126) {
+    header = Buffer.from([0x80 | opcode, 0x80 | data.length]);
+  } else if (data.length < 65536) {
+    header = Buffer.alloc(4);
+    header[0] = 0x80 | opcode;
+    header[1] = 0x80 | 126;
+    header.writeUInt16BE(data.length, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x80 | opcode;
+    header[1] = 0x80 | 127;
+    header.writeBigUInt64BE(BigInt(data.length), 2);
+  }
+  const masked = Buffer.alloc(data.length);
+  for (let i = 0; i < data.length; i++) masked[i] = data[i] ^ mask[i % 4];
+  return Buffer.concat([header, mask, masked]);
+};
+
+class AppServerClient {
+  constructor(socketPath) {
+    this.socketPath = socketPath;
+    this.sock = null;
+    this.ready = false;
+    this.nextId = 1;
+    this.pending = new Map(); // rpc id -> {resolve, reject}
+    this.turnStates = new Map(); // threadId -> turn state
+    this.loadedThreads = new Set();
+    this.buffer = Buffer.alloc(0);
+    this.fragments = [];
+    this.handshaked = false;
+  }
+
+  connect(timeoutMs = 10000) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (err) => {
+        if (!settled) {
+          settled = true;
+          try { this.sock && this.sock.destroy(); } catch {}
+          reject(err);
+        }
+      };
+      const timer = setTimeout(() => fail(new Error('app-server connect timed out')), timeoutMs);
+      this.sock = net.createConnection(this.socketPath);
+      this.sock.on('error', (err) => {
+        if (!this.ready) fail(err);
+        else this.handleClose(err);
+      });
+      this.sock.on('close', () => this.handleClose(new Error('app-server connection closed')));
+      this.sock.on('connect', () => {
+        this.wsKey = crypto.randomBytes(16).toString('base64');
+        this.sock.write(
+          `GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${this.wsKey}\r\nSec-WebSocket-Version: 13\r\n\r\n`
+        );
+      });
+      this.sock.on('data', (chunk) => {
+        this.buffer = Buffer.concat([this.buffer, chunk]);
+        if (!this.headersDone) {
+          const idx = this.buffer.indexOf('\r\n\r\n');
+          if (idx === -1) return;
+          const head = this.buffer.subarray(0, idx).toString('utf-8');
+          this.buffer = this.buffer.subarray(idx + 4);
+          if (!/^HTTP\/1\.1 101/.test(head) || !head.includes(wsAccept(this.wsKey))) {
+            clearTimeout(timer);
+            fail(new Error(`app-server handshake refused: ${head.split('\r\n')[0]}`));
+            return;
+          }
+          this.headersDone = true;
+          this.handshaked = true;
+          // Drain any frames that arrived with the handshake response,
+          // then the initialize handshake + 'initialized' notification.
+          this.rpc('initialize', {
+            clientInfo: { name: 'codex-proxy', version: '1.0.0' },
+            capabilities: { experimentalApi: true }
+          }).then(() => {
+            this.send({ method: 'initialized' });
+            this.ready = true;
+            clearTimeout(timer);
+            settled = true;
+            resolve(this);
+          }, (err) => { clearTimeout(timer); fail(err); });
+          this.drainFrames();
+          return;
+        }
+        this.drainFrames();
+      });
+    });
+  }
+
+  handleClose(err) {
+    if (this.dead) return;
+    this.dead = true;
+    this.ready = false;
+    this.loadedThreads.clear();
+    for (const { reject } of this.pending.values()) reject(err);
+    this.pending.clear();
+    for (const st of this.turnStates.values()) st.fail(err);
+    this.turnStates.clear();
+    if (appServerClient === this) appServerClient = null;
+  }
+
+  send(obj) {
+    if (!this.sock || this.dead) throw new Error('app-server not connected');
+    this.sock.write(wsEncodeFrame(JSON.stringify(obj)));
+  }
+
+  drainFrames() {
+    for (;;) {
+      if (this.buffer.length < 2) return;
+      const b0 = this.buffer[0];
+      const b1 = this.buffer[1];
+      const fin = (b0 & 0x80) !== 0;
+      const opcode = b0 & 0x0f;
+      let len = b1 & 0x7f;
+      let off = 2;
+      if (len === 126) {
+        if (this.buffer.length < off + 2) return;
+        len = this.buffer.readUInt16BE(off); off += 2;
+      } else if (len === 127) {
+        if (this.buffer.length < off + 8) return;
+        len = Number(this.buffer.readBigUInt64BE(off)); off += 8;
+      }
+      if (b1 & 0x80) off += 4; // server frames are unmasked; skip mask if set
+      if (this.buffer.length < off + len) return;
+      const payload = this.buffer.subarray(off, off + len);
+      this.buffer = this.buffer.subarray(off + len);
+      if (opcode === 0x9) { // ping -> pong
+        try { this.sock.write(wsEncodeFrame(payload, 0xA)); } catch {}
+        continue;
+      }
+      if (opcode === 0x8) {
+        this.handleClose(new Error('app-server sent close frame'));
+        try { this.sock.destroy(); } catch {}
+        return;
+      }
+      this.fragments.push(payload);
+      if (!fin) continue;
+      const text = Buffer.concat(this.fragments).toString('utf-8');
+      this.fragments = [];
+      this.onMessage(text);
+    }
+  }
+
+  onMessage(text) {
+    let msg;
+    try { msg = JSON.parse(text); } catch { return; }
+    if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+      const p = this.pending.get(msg.id);
+      if (p) {
+        this.pending.delete(msg.id);
+        if (msg.error) p.reject(new Error(msg.error.message || `RPC error ${msg.error.code}`));
+        else p.resolve(msg.result);
+      }
+      return;
+    }
+    if (msg.id !== undefined && msg.method) {
+      // Server-initiated request (approvals, elicitations). The proxy runs
+      // threads with approvalPolicy 'never', so these should not occur;
+      // refuse politely instead of stalling the turn.
+      try {
+        this.sock.write(wsEncodeFrame(JSON.stringify({
+          id: msg.id,
+          error: { code: -32601, message: 'unsupported by codex-proxy' }
+        })));
+      } catch {}
+      return;
+    }
+    // Notification: route to the active turn on its thread.
+    const params = msg.params || {};
+    const st = params.threadId && this.turnStates.get(params.threadId);
+    if (st) st.onNotification(msg.method, params);
+  }
+
+  rpc(method, params, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+      const id = this.nextId++;
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`app-server RPC ${method} timed out`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); }
+      });
+      try {
+        this.send({ id, method, params });
+      } catch (err) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err);
+      }
+    });
+  }
+}
+
+let appServerClient = null;
+let appServerConnecting = null;
+
+const ensureAppServer = async () => {
+  if (appServerClient && appServerClient.ready) return appServerClient;
+  if (appServerConnecting) return appServerConnecting;
+  appServerConnecting = (async () => {
+    const client = new AppServerClient(appServerSocketPath());
+    await client.connect();
+    console.log(`[codex-proxy] app-server connected: ${client.socketPath}`);
+    appServerClient = client;
+    return client;
+  })().finally(() => { appServerConnecting = null; });
+  return appServerConnecting;
+};
+
+const resetAppServer = () => {
+  if (appServerClient) {
+    try { appServerClient.sock && appServerClient.sock.destroy(); } catch {}
+    appServerClient.handleClose(new Error('app-server reset'));
+    appServerClient = null;
+  }
+};
+
+// One turn on a daemon thread. Resolves (never rejects) like runCodexOnce.
+const runAppServerTurn = (client, { threadId, text, baseModel, effort, prompt, emit }) =>
+  new Promise((resolve) => {
+    let settled = false;
+    const done = (r) => { if (!settled) { settled = true; resolve(r); } };
+    const state = {
+      content: '',
+      promptTokens: Math.max(1, Math.ceil((prompt || text).length / 4)),
+      completionTokens: 0,
+      fail: (err) => {
+        client.turnStates.delete(threadId);
+        done({ ok: false, content: state.content, promptTokens: state.promptTokens, completionTokens: state.completionTokens, detail: err.message });
+      },
+      onNotification: (method, params) => {
+        if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
+          state.content += params.delta;
+          if (emit) emit(params.delta);
+        } else if (method === 'item/completed' && params.item && params.item.type === 'agentMessage') {
+          if (!state.content && typeof params.item.text === 'string') state.content = params.item.text;
+        } else if (method === 'thread/tokenUsage/updated' && params.tokenUsage && params.tokenUsage.last) {
+          if (typeof params.tokenUsage.last.inputTokens === 'number') state.promptTokens = params.tokenUsage.last.inputTokens;
+          if (typeof params.tokenUsage.last.outputTokens === 'number') state.completionTokens = params.tokenUsage.last.outputTokens;
+        } else if (method === 'turn/completed' && params.turn) {
+          client.turnStates.delete(threadId);
+          if (params.turn.status === 'failed') {
+            const detail =
+              (params.turn.error && (params.turn.error.message || params.turn.error.codexErrorInfo)) ||
+              'app-server turn failed';
+            done({ ok: false, content: state.content, promptTokens: state.promptTokens, completionTokens: state.completionTokens, detail: String(detail) });
+          } else {
+            if (state.completionTokens === 0 && state.content) {
+              state.completionTokens = Math.max(1, Math.ceil(state.content.length / 4));
+            }
+            done({ ok: true, content: state.content, promptTokens: state.promptTokens, completionTokens: state.completionTokens, detail: null });
+          }
+        }
+      }
+    };
+    client.turnStates.set(threadId, state);
+    client.rpc('turn/start', {
+      threadId,
+      input: [{ type: 'text', text }],
+      model: baseModel,
+      effort
+    }, 60000).catch((err) => state.fail(err));
+  });
+
+const threadConfig = (effort) => ({ model_reasoning_effort: effort });
+
+// A full app-server attempt for one chat request. Resolves (never rejects)
+// to a runCodexOnce-shaped result plus { threadId, key } on success.
+// Throws only for connection-level failures (caller retries once, then
+// falls back to the exec transports).
+const runAppServerOnce = async ({ messages, fullName, baseModel, effort, prompt, emit }) => {
+  const client = await ensureAppServer();
+  const plan = planResume(messages, fullName);
+
+  // Warm path: the conversation already owns a daemon thread and the
+  // request extends exactly what that thread was fed.
+  if (plan && plan.entry.threadId) {
+    const threadId = plan.entry.threadId;
+    try {
+      if (!client.loadedThreads.has(threadId)) {
+        await client.rpc('thread/resume', {
+          threadId,
+          model: baseModel,
+          cwd: '/tmp',
+          approvalPolicy: 'never',
+          sandbox: 'danger-full-access',
+          config: threadConfig(effort)
+        });
+        client.loadedThreads.add(threadId);
+      }
+    } catch (err) {
+      console.warn(`[codex-proxy] app-server thread/resume failed (${err.message}); starting a fresh thread`);
+      forgetThread(plan.key);
+      // fall through to the cold thread below
+    }
+    if (client.loadedThreads.has(threadId)) {
+      const tailText = formatPrompt(plan.tailMessages);
+      const attempt = await runAppServerTurn(client, {
+        threadId, text: tailText, baseModel, effort, prompt, emit
+      });
+      if (attempt.ok) {
+        recordSession(plan.key, plan.entry.sessionId, messages, threadId);
+        console.log(`[codex-proxy] app-server warm turn: key=${plan.key.slice(0, 8)} thread=${threadId} fed=${plan.entry.fedCount}->${messages.length}`);
+      }
+      return { ...attempt, threadId, key: plan.key };
+    }
+  }
+
+  // Cold path: a new daemon thread. System text becomes the thread's
+  // developer instructions; the rest of the history is flattened into
+  // the first turn exactly like the exec path flattens it.
+  const systemText = messages.filter(m => m.role === 'system').map(messageText).join('\n\n');
+  const nonSystem = messages.filter(m => m.role !== 'system');
+  const firstText = nonSystem.length > 0 ? formatPrompt(nonSystem) : prompt;
+  const startParams = {
+    model: baseModel,
+    cwd: '/tmp',
+    approvalPolicy: 'never',
+    sandbox: 'danger-full-access',
+    config: threadConfig(effort)
+  };
+  if (systemText) startParams.developerInstructions = systemText;
+  const started = await client.rpc('thread/start', startParams, 120000);
+  const threadId = started && started.thread && started.thread.id;
+  if (!threadId) throw new Error('app-server thread/start returned no thread id');
+  client.loadedThreads.add(threadId);
+  const attempt = await runAppServerTurn(client, {
+    threadId, text: firstText, baseModel, effort, prompt, emit
+  });
+  const key = conversationKey(messages, fullName);
+  if (attempt.ok) recordSession(key, null, messages, threadId);
+  return { ...attempt, threadId, key };
 };
 
 // Run one `codex exec` child to completion. Resolves (never rejects) to
@@ -520,6 +907,7 @@ const server = http.createServer((req, res) => {
       service: 'openai-codex-proxy',
       port: PORT,
       binary: CODEX_BIN,
+      transport: TRANSPORT,
       defaultModel: 'gpt-5.6-luna-low'
     }, null, 2));
     return;
@@ -697,10 +1085,46 @@ const server = http.createServer((req, res) => {
         });
         const onSpawn = (c) => { currentChild = c; };
 
+        // Lead transport (#480): the warm app-server daemon. Live deltas
+        // stream as they arrive; a failure before anything was emitted
+        // falls through to the exec transports below, and a connection
+        // failure gets exactly one reconnect before that fallback.
+        if (TRANSPORT === 'app-server') {
+          let emitted = false;
+          const emitLive = stream
+            ? (text) => { emitted = true; writeChunk({ content: text }); }
+            : null;
+          for (let attemptNo = 0; attemptNo < 2; attemptNo++) {
+            let attempt;
+            try {
+              attempt = await runAppServerOnce({
+                messages: body.messages, fullName, baseModel, effort, prompt, emit: emitLive
+              });
+            } catch (err) {
+              if (emitted) { sendFailure(err.message); return; }
+              console.warn(
+                `[codex-proxy] app-server attempt failed (${err.message}); ` +
+                (attemptNo === 0 ? 'reconnecting once' : 'falling back to exec transports')
+              );
+              resetAppServer();
+              continue;
+            }
+            if (attempt.ok) {
+              sendSuccess(attempt, stream && !emitted);
+              return;
+            }
+            if (emitted) { sendFailure(attempt.detail || 'app-server turn failed'); return; }
+            console.warn(
+              `[codex-proxy] app-server turn failed (${attempt.detail}); falling back to exec transports`
+            );
+            break;
+          }
+        }
+
         // Warm path (#480): resume the conversation's codex session
         // with only the new tail. Buffered, so a failed resume can fall
         // back to a full-history fresh run without duplicating text.
-        const plan = planResume(body.messages, fullName);
+        const plan = TRANSPORT === 'exec' ? null : planResume(body.messages, fullName);
         if (plan) {
           const tailPrompt = formatPrompt(plan.tailMessages);
           const attempt = await runCodexOnce({
