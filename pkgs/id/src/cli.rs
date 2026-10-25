@@ -1555,6 +1555,26 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Reach a host's world SSH server through iroh, so an ordinary `ssh`
+    /// client can reach a world behind NAT: `ssh -p 2222 <world>@127.0.0.1`
+    /// (password: the guest capability). With `--stdio`, acts as an SSH
+    /// ProxyCommand instead of listening.
+    SshTunnel {
+        /// The host's node ID (64 hex characters).
+        node: String,
+        /// Local address to listen on (loopback only is recommended).
+        #[arg(long, value_name = "ADDR")]
+        listen: Option<String>,
+        /// Speak SSH on stdin/stdout (for `ssh -o ProxyCommand`).
+        #[arg(long, conflicts_with = "listen")]
+        stdio: bool,
+        /// Direct socket address of the host (repeatable); skips discovery.
+        #[arg(long = "addr")]
+        addrs: Vec<SocketAddr>,
+        /// Disable relay servers (direct connection only).
+        #[arg(long)]
+        no_relay: bool,
+    },
     /// Compile Roc sources on the host and install the result.
     ///
     /// The host rewrites the app's `pf: platform "..."` path to its staged

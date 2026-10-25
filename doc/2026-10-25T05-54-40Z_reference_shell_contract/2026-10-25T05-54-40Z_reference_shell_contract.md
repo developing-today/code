@@ -145,6 +145,34 @@ exec channel: the capability or admin secret inside the frames is the only
 authority, as on iroh. Other exec commands, shells after an exec session,
 and oversized frame lengths are refused.
 
+## SSH over iroh (F13.3)
+
+`id serve --world-ssh-port N` also registers the `/id-ssh-tunnel/1` ALPN.
+Each bidirectional stream on it is one raw SSH connection forwarded to the
+host's own SSH server on loopback (`SshTunnelProtocol`,
+`pkgs/id/src/world_ssh.rs`). `id world ssh-tunnel <node-id>` exposes it
+locally — a loopback listener (`--listen`, default `127.0.0.1:2222`) or
+`--stdio` for `ssh -o ProxyCommand=...` — so an unmodified `ssh` client
+reaches a host behind NAT:
+
+```sh
+id world ssh-tunnel <node-id> &   # or --stdio as a ProxyCommand
+ssh -p 2222 <world>@127.0.0.1     # password: a guest capability
+```
+
+The tunnel carries bytes only and grants nothing: the peer still
+authenticates to the SSH server inside it (host key on the SSH side, peer
+ID on the iroh side), so it is not an identity bypass. Only loopback SSH
+servers are forwarded to, and streams per connection are bounded.
+Verified manually with the system OpenSSH client (raw and `cmd:` modes)
+and in tests (`ssh_reaches_the_world_through_the_iroh_tunnel`,
+`test_world_ssh_tunnel_carries_join_via_ssh`).
+
+Still open from #785: the iroh-over-SSH fallback for networks where UDP is
+denied but port 22 is open. That needs a non-QUIC iroh transport or an
+SSH-carried datagram channel, which does not exist yet; the F13.2 exec
+transport covers the join use-case there in the meantime.
+
 ## The client projection
 
 Every server frame is built from F11.11's single client projection. The

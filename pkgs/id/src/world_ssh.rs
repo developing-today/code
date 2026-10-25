@@ -80,6 +80,74 @@ const ALT_SCREEN_ENTER: &str = "\x1b[?1049h";
 const ALT_SCREEN_LEAVE: &str = "\x1b[?1049l";
 /// Input bytes dropped before the session tells the viewer about it.
 const INPUT_DROP_NOTICE_BYTES: usize = 1024;
+/// ALPN for SSH-over-iroh tunnels (F13.3): each bidirectional stream is one
+/// raw SSH connection forwarded to the host's own SSH server. The tunnel
+/// carries bytes only; SSH authentication happens inside it, unchanged.
+pub const SSH_TUNNEL_ALPN: &[u8] = b"/id-ssh-tunnel/1";
+/// Concurrent tunnelled connections one iroh connection may open.
+const MAX_TUNNEL_STREAMS: usize = 16;
+
+/// Host side of SSH-over-iroh: forwards each tunnel stream to the world SSH
+/// server on loopback. Iroh peer identity grants nothing here; the peer
+/// still has to authenticate to SSH inside the tunnel.
+#[derive(Clone, Debug)]
+pub struct SshTunnelProtocol {
+    port: Arc<std::sync::OnceLock<u16>>,
+}
+
+impl SshTunnelProtocol {
+    /// Tunnel to an SSH server already listening on `port`.
+    #[must_use]
+    pub fn with_port(port: u16) -> Self {
+        let cell = std::sync::OnceLock::new();
+        let _ = cell.set(port);
+        Self {
+            port: Arc::new(cell),
+        }
+    }
+
+    /// Tunnel whose SSH port is bound after the router starts; the returned
+    /// cell must be set once the SSH listener exists.
+    #[must_use]
+    pub fn deferred() -> (Self, Arc<std::sync::OnceLock<u16>>) {
+        let cell = Arc::new(std::sync::OnceLock::new());
+        (
+            Self {
+                port: Arc::clone(&cell),
+            },
+            cell,
+        )
+    }
+}
+
+impl iroh::protocol::ProtocolHandler for SshTunnelProtocol {
+    async fn accept(
+        &self,
+        conn: iroh::endpoint::Connection,
+    ) -> Result<(), iroh::protocol::AcceptError> {
+        let permits = Arc::new(Semaphore::new(MAX_TUNNEL_STREAMS));
+        while let Ok((send, recv)) = conn.accept_bi().await {
+            let Some(port) = self.port.get().copied() else {
+                continue;
+            };
+            let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
+                continue;
+            };
+            tokio::spawn(async move {
+                let _permit = permit;
+                let Ok(mut tcp) =
+                    tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await
+                else {
+                    return;
+                };
+                let mut stream = tokio::io::join(recv, send);
+                let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
+            });
+        }
+        Ok(())
+    }
+}
+
 /// The exec command that carries the frame protocol (shell contract
 /// transport `ssh-exec`).
 pub const WORLD_EXEC_COMMAND: &str = "id-world/1";
@@ -2382,12 +2450,17 @@ mod tests {
                 .await
                 .unwrap()
         };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let fingerprint = host_key_fingerprint(&host_key);
         let host = bind().await;
         let router = iroh::protocol::Router::builder(host.clone())
             .accept(
                 crate::world_net::WORLD_ALPN,
                 crate::world_net::WorldProtocol::new(hub.clone()),
             )
+            .accept(SSH_TUNNEL_ALPN, SshTunnelProtocol::with_port(port))
             .spawn();
         let addr = iroh::EndpointAddr::from_parts(
             host.id(),
@@ -2401,10 +2474,6 @@ mod tests {
             }),
         );
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
-        let fingerprint = host_key_fingerprint(&host_key);
         let ssh = tokio::spawn(serve_limited(
             listener,
             hub,
@@ -2642,6 +2711,67 @@ mod tests {
             texts(&reply),
             [r#"{"type":"error","message":"join denied"}"#]
         );
+        host.ssh.abort();
+    }
+
+    /// F13.3: an SSH client reaches the world SSH server through iroh only —
+    /// no TCP route to it is used after the tunnel connects.
+    #[tokio::test]
+    async fn ssh_reaches_the_world_through_the_iroh_tunnel() {
+        let host = two_transports().await;
+        let conn = crate::connectivity::connect(&host.endpoint, host.addr.clone(), SSH_TUNNEL_ALPN)
+            .await
+            .unwrap();
+        let (send, recv) = conn.open_bi().await.unwrap();
+        let stream = tokio::io::join(recv, send);
+        let config = Arc::new(client::Config::default());
+        let mut session = client::connect_stream(config, stream, TrustAll)
+            .await
+            .unwrap();
+        assert!(
+            session
+                .authenticate_password("", host.capability.as_str())
+                .await
+                .unwrap()
+                .success()
+        );
+        // Inside the tunnel the frame transport works as usual.
+        let mut channel = session.channel_open_session().await.unwrap();
+        channel.exec(true, WORLD_EXEC_COMMAND).await.unwrap();
+        assert!(matches!(
+            channel.wait().await,
+            Some(russh::ChannelMsg::Success)
+        ));
+        let join = crate::world_net::route_frame(
+            &serde_json::json!({"type": "join", "capability": host.capability, "after": null}),
+            Some("lobby"),
+        );
+        channel
+            .data(
+                crate::frames::encode_frame(join.as_bytes())
+                    .unwrap()
+                    .as_slice(),
+            )
+            .await
+            .unwrap();
+        let mut buffer = crate::frames::FrameBuffer::default();
+        let frame = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match channel.wait().await {
+                    Some(russh::ChannelMsg::Data { data }) => {
+                        buffer.push(&data);
+                        if let Some(crate::frames::Decoded::Frame(body)) = buffer.next_frame() {
+                            break String::from_utf8(body).unwrap();
+                        }
+                    }
+                    other => panic!("tunnel closed early: {other:?}"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(frame.contains("\"type\":\"snapshot\""), "{frame}");
+        conn.close(0_u32.into(), b"done");
         host.ssh.abort();
     }
 

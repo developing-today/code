@@ -34,9 +34,18 @@ async fn connect(
         bail!("`{node}` is not a node ID (expected 64 hex characters)");
     }
     let id: EndpointId = node.parse().context("parse node ID")?;
+    let endpoint = client_endpoint(addrs, no_relay).await?;
+    let addr = EndpointAddr::from_parts(id, addrs.iter().copied().map(TransportAddr::Ip));
+    let client = WorldClient::connect(&endpoint, addr)
+        .await?
+        .with_world(world);
+    Ok((endpoint, client))
+}
+
+/// A client endpoint for reaching a host: direct addresses need neither
+/// relay nor discovery, so keep it off the public network in that case.
+async fn client_endpoint(addrs: &[SocketAddr], no_relay: bool) -> Result<Endpoint> {
     let key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
-    // Direct addresses need neither relay nor discovery, so keep the client
-    // off the public network entirely in that case.
     let endpoint = if addrs.is_empty() {
         crate::connectivity::public_builder(crate::connectivity::RelayPolicy::from_no_relay(
             no_relay,
@@ -51,11 +60,7 @@ async fn connect(
             .bind()
             .await?
     };
-    let addr = EndpointAddr::from_parts(id, addrs.iter().copied().map(TransportAddr::Ip));
-    let client = WorldClient::connect(&endpoint, addr)
-        .await?
-        .with_world(world);
-    Ok((endpoint, client))
+    Ok(endpoint)
 }
 
 /// Run an `id world` subcommand.
@@ -723,6 +728,13 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 }
             }
         }
+        WorldCommand::SshTunnel {
+            node,
+            listen,
+            stdio,
+            addrs,
+            no_relay,
+        } => ssh_tunnel(&node, listen.as_deref(), stdio, &addrs, no_relay).await,
     }
 }
 
@@ -748,6 +760,78 @@ async fn join_over_ssh(
     let (_connection, stream) = connect_frames(&target, check).await?;
     let (recv, send) = tokio::io::split(stream);
     pump(recv, send, first, command_mode, capability).await
+}
+
+/// `id world ssh-tunnel`: forward a local TCP listener (or stdio, as an SSH
+/// ProxyCommand) over iroh to the host's world SSH server (F13.3). The
+/// tunnel carries SSH bytes only; the `ssh` client still authenticates to
+/// the host inside it.
+#[cfg(feature = "ssh")]
+async fn ssh_tunnel(
+    node: &str,
+    listen: Option<&str>,
+    stdio: bool,
+    addrs: &[SocketAddr],
+    no_relay: bool,
+) -> Result<()> {
+    if !is_node_id(node) {
+        bail!("`{node}` is not a node ID (expected 64 hex characters)");
+    }
+    let id: EndpointId = node.parse().context("parse node ID")?;
+    let endpoint = client_endpoint(addrs, no_relay).await?;
+    let addr = EndpointAddr::from_parts(id, addrs.iter().copied().map(TransportAddr::Ip));
+    let conn = crate::connectivity::connect(&endpoint, addr, crate::world_ssh::SSH_TUNNEL_ALPN)
+        .await
+        .context("connect ssh tunnel")?;
+    if stdio {
+        let (send, recv) = conn.open_bi().await.context("open tunnel stream")?;
+        let mut tunnel = tokio::io::join(recv, send);
+        let mut local = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
+        tokio::io::copy_bidirectional(&mut local, &mut tunnel)
+            .await
+            .context("ssh tunnel stdio")?;
+        conn.close(0_u32.into(), b"done");
+        endpoint.close().await;
+        return Ok(());
+    }
+    let listen = listen.unwrap_or("127.0.0.1:2222");
+    let listener = tokio::net::TcpListener::bind(listen)
+        .await
+        .with_context(|| format!("listen on {listen}"))?;
+    eprintln!(
+        "ssh tunnel: {} -> world host; connect with `ssh -p {} <world>@{}` (password: a guest capability)",
+        listener.local_addr()?,
+        listener.local_addr()?.port(),
+        listener.local_addr()?.ip()
+    );
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (mut tcp, _) = accepted?;
+                let conn = conn.clone();
+                tokio::spawn(async move {
+                    let Ok((send, recv)) = conn.open_bi().await else { return; };
+                    let mut tunnel = tokio::io::join(recv, send);
+                    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut tunnel).await;
+                });
+            }
+            _ = tokio::signal::ctrl_c() => break,
+        }
+    }
+    conn.close(0_u32.into(), b"done");
+    endpoint.close().await;
+    Ok(())
+}
+
+#[cfg(not(feature = "ssh"))]
+async fn ssh_tunnel(
+    _node: &str,
+    _listen: Option<&str>,
+    _stdio: bool,
+    _addrs: &[SocketAddr],
+    _no_relay: bool,
+) -> Result<()> {
+    bail!("this build of id has no SSH support (cargo feature `ssh`)")
 }
 
 #[cfg(not(feature = "ssh"))]

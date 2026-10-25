@@ -909,6 +909,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(not(feature = "world"))]
     ensure!(!world, "this build has no world support (feature `world`)");
 
+    #[cfg(all(feature = "world", feature = "ssh"))]
+    let (ssh_tunnel, ssh_tunnel_port) = crate::world_ssh::SshTunnelProtocol::deferred();
     let router_builder = Router::builder(endpoint)
         .accept(META_ALPN, meta)
         .accept(BLOBS_ALPN, blobs)
@@ -935,6 +937,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             ),
         None => router_builder,
     };
+    #[cfg(all(feature = "world", feature = "ssh"))]
+    let router_builder = router_builder.accept(crate::world_ssh::SSH_TUNNEL_ALPN, ssh_tunnel);
     let router = router_builder.spawn();
 
     if !no_gossip {
@@ -1038,6 +1042,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         (Some(port), Some(hub)) => {
             let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind, port)).await?;
             let ssh_port = listener.local_addr()?.port();
+            #[cfg(feature = "world")]
+            let _ = ssh_tunnel_port.set(ssh_port);
             let host_key =
                 crate::world_ssh::load_or_create_host_key(crate::world_ssh::SSH_HOST_KEY_FILE)
                     .await?;
@@ -1157,6 +1163,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         status!(
             "world ssh host key: {}",
             crate::world_ssh::host_key_fingerprint(&host_key)
+        );
+        status!(
+            "world ssh over iroh: `id world ssh-tunnel <node-id>` then `ssh -p 2222 <world>@127.0.0.1`"
         );
         tokio::spawn(async move {
             if let Err(e) = crate::world_ssh::serve(listener, hub, host_key, blobs).await {
