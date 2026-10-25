@@ -37,18 +37,18 @@ holds apply). Two layers:
 
 ### Per-model pools (one model, every plan provider that serves it)
 
-| Pool | Members (round-robin unless noted) |
-| --- | --- |
-| `deepseek-flash-plan` | cline-pass/deepseek-v4.1-flash, opendesign/deepseek-v4.1-flash, opendesign/deepseek-v4-flash |
-| `deepseek-flash` | ordered: `opencode-route/deepseek-flash-plan`, then deepseek/deepseek-chat (PAYG reserve); the plan group carries weight 100 (see Decisions) |
-| `deepseek-pro-plan` | cline-pass/deepseek-v4-pro, opendesign/deepseek-v4-pro |
-| `haiku-plan` | claude-code/claude-haiku-5-5, opendesign/claude-haiku-5.5 |
-| `luna-plan` | openai/gpt-6-luna, opendesign/gpt-6-luna, opencode-go.lab/gpt-5.6-luna, opencode-go.personal/gpt-5.6-luna |
-| `glm-flash-plan` | cline-pass/glm-5.3-flash, opendesign/glm-5.3-flash, opendesign/glm-5.3-flashx |
-| `gemini-flash-plan` | antigravity-ls/gemini-3.8-flash |
-| `sonnet-plan` | antigravity-ls/claude-sonnet-5-5 |
-| `opus-plan` | antigravity-ls/claude-opus-5-5 (ordered; single member) |
-| `sol-plan` | openai/gpt-6.1-sol, opencode-go.lab/gpt-5.6-sol, opencode-go.personal/gpt-5.6-sol |
+| Pool                  | Members (round-robin unless noted)                                                                                                           |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deepseek-flash-plan` | cline-pass/deepseek-v4.1-flash, opendesign/deepseek-v4.1-flash, opendesign/deepseek-v4-flash                                                 |
+| `deepseek-flash`      | ordered: `opencode-route/deepseek-flash-plan`, then deepseek/deepseek-chat (PAYG reserve); the plan group carries weight 100 (see Decisions) |
+| `deepseek-pro-plan`   | cline-pass/deepseek-v4-pro, opendesign/deepseek-v4-pro                                                                                       |
+| `haiku-plan`          | claude-code/claude-haiku-5-5, opendesign/claude-haiku-5.5                                                                                    |
+| `luna-plan`           | openai/gpt-6-luna, opendesign/gpt-6-luna, opencode-go.lab/gpt-5.6-luna, opencode-go.personal/gpt-5.6-luna                                    |
+| `glm-flash-plan`      | cline-pass/glm-5.3-flash, opendesign/glm-5.3-flash, opendesign/glm-5.3-flashx                                                                |
+| `gemini-flash-plan`   | antigravity-ls/gemini-3.8-flash                                                                                                              |
+| `sonnet-plan`         | antigravity-ls/claude-sonnet-5-5                                                                                                             |
+| `opus-plan`           | antigravity-ls/claude-opus-5-5 (ordered; single member)                                                                                      |
+| `sol-plan`            | openai/gpt-6.1-sol, opencode-go.lab/gpt-5.6-sol, opencode-go.personal/gpt-5.6-sol                                                            |
 
 Membership rules: plan routes only; a provider disabled in
 `disabled_providers` contributes nothing; a model id is listed only where
@@ -66,12 +66,12 @@ route and each leaf target's own variant remap (`defaultVariant` /
 `variants`) applies from there. There is no `effort` field in the schema;
 the variant is the mechanism.
 
-| Tier | Axes | Selection | Members |
-| --- | --- | --- | --- |
-| `scout` | routine: cheapest + fastest, smart enough | round-robin | deepseek-flash#medium, glm-flash-plan#medium, haiku-plan |
-| `workhorse` | standard: fast and smart — most tasks | round-robin | deepseek-flash#high, luna-plan#max, haiku-plan#high, meta/muse-spark-1.3 |
-| `specialist` | hard: quality first | ordered (registry family order: Claude, then OpenAI, then DeepSeek Pro) | sonnet-plan#high, luna-plan#max, sol-plan#medium, deepseek-pro-plan#high |
-| `summit` | very complex design only, deliberate | ordered | opus-plan#high, openai/gpt-6.1-sol#high, meta/muse-wonder-1.0 |
+| Tier         | Axes                                      | Selection                                                               | Members                                                                  |
+| ------------ | ----------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `scout`      | routine: cheapest + fastest, smart enough | round-robin                                                             | deepseek-flash#medium, glm-flash-plan#medium, haiku-plan                 |
+| `workhorse`  | standard: fast and smart — most tasks     | round-robin                                                             | deepseek-flash#high, luna-plan#max, haiku-plan#high, meta/muse-spark-1.3 |
+| `specialist` | hard: quality first                       | ordered (registry family order: Claude, then OpenAI, then DeepSeek Pro) | sonnet-plan#high, luna-plan#max, sol-plan#medium, deepseek-pro-plan#high |
+| `summit`     | very complex design only, deliberate      | ordered                                                                 | opus-plan#high, openai/gpt-6.1-sol#high, meta/muse-wonder-1.0            |
 
 ### Agent defaults
 
@@ -93,8 +93,8 @@ Checked against `developing-today/opencode` source, not documentation:
   `packages/schema/src/config/model-routes.ts`: a target is
   `provider/model#variant` or an object with `defaultVariant` and a
   `variants` remap (route-level variant → this target's variant).
-- **Demote-a-single-target already exists.** Round-robin is *smooth
-  weighted round robin* (equal weights are ordinary round robin), weights
+- **Demote-a-single-target already exists.** Round-robin is _smooth
+  weighted round robin_ (equal weights are ordinary round robin), weights
   rank candidates in every selection mode, and targets without a weight
   count as 1. Setting one entry in a route's `weights` — e.g.
   `{ "some/target": 0.1 }` — deprioritizes just that target; the rest keep
