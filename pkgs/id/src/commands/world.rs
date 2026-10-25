@@ -496,8 +496,17 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                         .join(", ")
                 );
                 if !dry_run {
-                    apply_steps(&mut client, &admin_token, &capability, &steps).await?;
-                    println!("applied {} step(s)", steps.len());
+                    let applied =
+                        apply_steps(&mut client, &admin_token, &capability, &steps).await?;
+                    if applied == steps.len() {
+                        println!("applied {} step(s)", applied);
+                    } else {
+                        println!(
+                            "applied {} of {} step(s); the rest were reported but not applied",
+                            applied,
+                            steps.len()
+                        );
+                    }
                 } else {
                     println!("dry run: nothing changed");
                 }
@@ -888,16 +897,31 @@ async fn current_world_state(
     })
 }
 
+/// Whether [`apply_steps`] actually applies this step today. Module and
+/// schedule steps are reported, not applied, until their apply paths are
+/// wired (#807), so they must not count toward the "applied N step(s)"
+/// summary (#818).
+fn step_is_applied(step: &crate::world_manifest::ApplyStep) -> bool {
+    use crate::world_manifest::ApplyStep;
+    matches!(
+        step,
+        ApplyStep::SetGrants { .. } | ApplyStep::SetCeiling { .. } | ApplyStep::SetProfile { .. }
+    )
+}
+
 /// Apply the reconciliation steps that the existing admin operations cover:
 /// grants, ceiling and profile. Module and schedule steps are reported, not
-/// applied, until their apply paths are wired.
+/// applied, until their apply paths are wired. Returns how many of the steps
+/// were actually applied, so the caller's summary cannot claim credit for
+/// the reported-only ones (#818).
 async fn apply_steps(
     client: &mut WorldClient,
     admin_token: &str,
     capability: &str,
     steps: &[crate::world_manifest::ApplyStep],
-) -> Result<()> {
+) -> Result<usize> {
     use crate::world_manifest::ApplyStep;
+    let applied = steps.iter().filter(|step| step_is_applied(step)).count();
     for step in steps {
         match step {
             ApplyStep::SetGrants { grants } => {
@@ -943,7 +967,7 @@ async fn apply_steps(
             }
         }
     }
-    Ok(())
+    Ok(applied)
 }
 
 /// Record a world to a fixture: the file at `out`, or standard output.
@@ -1484,7 +1508,36 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{PumpLine, check_contract, pump_command, scaffold_world};
+    use super::{PumpLine, check_contract, pump_command, scaffold_world, step_is_applied};
+
+    /// #818: only grants/ceiling/profile steps are actually applied by
+    /// `apply_steps`; module and schedule steps are reported-only until
+    /// #807 wires their apply paths, so they must not count as applied.
+    #[test]
+    fn only_grants_ceiling_and_profile_steps_count_as_applied() {
+        use crate::world_manifest::ApplyStep;
+        let steps = [
+            ApplyStep::InstallModule {
+                hash: Some("abc".to_owned()),
+                source: None,
+                seed: 0,
+            },
+            ApplyStep::SetGrants { grants: vec![] },
+            ApplyStep::SetCeiling { ceiling: None },
+            ApplyStep::SetProfile {
+                profile: crate::world_limits::WorldExecutionProfile::default(),
+            },
+            ApplyStep::ScheduleAt {
+                id: "round".to_owned(),
+                at_ms: 5,
+            },
+            ApplyStep::CancelSchedule {
+                id: "round".to_owned(),
+            },
+        ];
+        let applied = steps.iter().filter(|step| step_is_applied(step)).count();
+        assert_eq!(applied, 3);
+    }
 
     /// The shared line grammar maps the same line to the same action on the
     /// join pump as it does on the SSH command mode (both call
