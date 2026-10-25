@@ -129,9 +129,14 @@ export function allRefs(itemsWithLinks: { links: Link[] }[]): RefKey[] {
 
 import type { QuotaPool, QuotaWindow } from "./model.ts";
 
-/** Percent used for a window (100 when the limit is unknown). */
+/**
+ * Percent used for a window. When the limit is unknown but the source
+ * read carried an explicit percent (percent-only console/dashboard
+ * reads), that percent is authoritative; otherwise an unknown limit
+ * counts as fully used (a wall we cannot see past).
+ */
 export function windowPercent(w: QuotaWindow): number {
-  if (w.limit == null || w.limit <= 0) return 100;
+  if (w.limit == null || w.limit <= 0) return w.percent ?? 100;
   return (w.used / w.limit) * 100;
 }
 

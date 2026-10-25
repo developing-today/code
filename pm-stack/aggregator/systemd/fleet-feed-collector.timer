@@ -1,0 +1,10 @@
+[Unit]
+Description=Push the fleet feed to the laptop aggregator every ~5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=fleet-feed-collector.service
+
+[Install]
+WantedBy=timers.target

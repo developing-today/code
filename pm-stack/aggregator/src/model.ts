@@ -206,6 +206,9 @@ export interface SessionFeedEntry {
   /** Count of consecutive identical errors (retry-loop detection). */
   repeatedErrorCount?: number;
   pr?: string | null;
+  /** Keeper/supervision annotation for this session, when one exists
+   *  (jules-review-state.json supervision entries mentioning the id). */
+  supervisionNote?: string;
 }
 
 /** One classified session, with the evidence for its state inline. */

@@ -103,9 +103,17 @@ async function handler(req: Request): Promise<Response> {
   return json({ error: "not found", path }, 404);
 }
 
-const server = Bun.serve({
-  port: cfg.port,
-  fetch: handler,
-});
+// One server per bind address (PM_AGG_HOSTS). Deployment on the
+// laptop binds loopback + the tailnet address, like Pad/Grist — no
+// public route (Drew, 2026-10-25: public only behind a password).
+const servers = cfg.hosts.map((hostname) =>
+  Bun.serve({
+    hostname,
+    port: cfg.port,
+    fetch: handler,
+  }),
+);
 
-console.log(`aggregator listening on http://127.0.0.1:${server.port} (source: ${cfg.source})`);
+for (const server of servers) {
+  console.log(`aggregator listening on http://${server.hostname}:${server.port} (source: ${cfg.source})`);
+}

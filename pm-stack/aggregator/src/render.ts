@@ -280,7 +280,8 @@ export function renderAttention(feed: SessionFeedEntry[], provenance: Provenance
         e.lastTurnError ??
         (e.repeatedErrorCount ? `${e.repeatedErrorCount} repeated errors` : null) ??
         (e.longRunningCall ? `CLI: ${e.longRunningCall.command ?? "?"}` : null);
-      return `<tr><td><span class="badge ${esc(e.state)}">${esc(e.state)}</span></td><td><strong>${esc(e.title ?? e.sessionId)}</strong><br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")} · ${esc(e.branch ?? "—")}</span></td><td>${esc(e.model ?? "—")} / ${esc(e.provider ?? "—")}</td><td>${fmtDate(e.lastActivityAt)}</td><td>${esc(e.messageCount ?? "—")}${e.messageDelta ? ` (+${e.messageDelta})` : ""}</td><td>${esc(e.evidence)}</td></tr>`;
+      const evidence = e.supervisionNote ? `${e.evidence} Keeper: ${e.supervisionNote}` : e.evidence;
+      return `<tr><td><span class="badge ${esc(e.state)}">${esc(e.state)}</span></td><td><strong>${esc(e.title ?? e.sessionId)}</strong><br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")} · ${esc(e.branch ?? "—")}</span></td><td>${esc(e.model ?? "—")} / ${esc(e.provider ?? "—")}</td><td>${fmtDate(e.lastActivityAt)}</td><td>${esc(e.messageCount ?? "—")}${e.messageDelta ? ` (+${e.messageDelta})` : ""}</td><td>${esc(evidence)}</td></tr>`;
     })
     .join("");
   return layout(
