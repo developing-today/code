@@ -3552,267 +3552,270 @@
         }
       }
     },
-    "design-code": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Design Code",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-        "apiKey": "design-local"
-      },
-      "models": {
-        "claude-haiku-5.5": {
-          "name": "Claude Haiku 5.5 (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "gpt-6-luna": {
-          "name": "GPT-6 Luna (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-sol": {
-          "name": "GPT-6.1 Sol (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "deepseek-v4.1-flash": {
-          "name": "DeepSeek V4.1 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "glm-5.3-flash": {
-          "name": "GLM 5.3 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "glm-5.3-flashx": {
-          "name": "GLM 5.3 FlashX (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "mimo-v2.6-flash": {
-          "name": "MIMO v2.6 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "mimo-v2.6-pro": {
-          "name": "MIMO v2.6 Pro (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "design-code-pro": {
-          "name": "Design Code Pro",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "design-code-flash": {
-          "name": "Design Code Flash",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "open-design-pro": {
-          "name": "Open Design Pro",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        }
-      }
-    },
-    "code-design": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Code Design",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-        "apiKey": "design-local"
-      },
-      "models": {
-        "claude-haiku-5.5": {
-          "name": "Claude Haiku 5.5 (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "gpt-6-luna": {
-          "name": "GPT-6 Luna (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-sol": {
-          "name": "GPT-6.1 Sol (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "deepseek-v4.1-flash": {
-          "name": "DeepSeek V4.1 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "glm-5.3-flash": {
-          "name": "GLM 5.3 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "glm-5.3-flashx": {
-          "name": "GLM 5.3 FlashX (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "mimo-v2.6-flash": {
-          "name": "MIMO v2.6 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "mimo-v2.6-pro": {
-          "name": "MIMO v2.6 Pro (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "design-code-pro": {
-          "name": "Design Code Pro",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "design-code-flash": {
-          "name": "Design Code Flash",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "open-design-pro": {
-          "name": "Open Design Pro",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        }
-      }
-    },
-    "open-design": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Open Design",
-      "options": {
-        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-        "apiKey": "design-local"
-      },
-      "models": {
-        "claude-haiku-5.5": {
-          "name": "Claude Haiku 5.5 (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "gpt-6-luna": {
-          "name": "GPT-6 Luna (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-sol": {
-          "name": "GPT-6.1 Sol (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "deepseek-v4.1-flash": {
-          "name": "DeepSeek V4.1 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "glm-5.3-flash": {
-          "name": "GLM 5.3 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "glm-5.3-flashx": {
-          "name": "GLM 5.3 FlashX (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "mimo-v2.6-flash": {
-          "name": "MIMO v2.6 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "mimo-v2.6-pro": {
-          "name": "MIMO v2.6 Pro (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "design-code-pro": {
-          "name": "Design Code Pro",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "design-code-flash": {
-          "name": "Design Code Flash",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "open-design-pro": {
-          "name": "Open Design Pro",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        }
-      }
-    },
+    // NOTE (2026-10-25): design-code proxy block (one of three identical copies) - commented out per Drew; only the direct Open Design cloud provider ("opendesign") stays active. Preserved, not deleted.
+//    "design-code": {
+//      "npm": "@ai-sdk/openai-compatible",
+//      "name": "Design Code",
+//      "options": {
+//        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
+//        "apiKey": "design-local"
+//      },
+//      "models": {
+//        "claude-haiku-5.5": {
+//          "name": "Claude Haiku 5.5 (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "gpt-6-luna": {
+//          "name": "GPT-6 Luna (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        },
+//        "gpt-6.1-sol": {
+//          "name": "GPT-6.1 Sol (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        },
+//        "deepseek-v4.1-flash": {
+//          "name": "DeepSeek V4.1 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "glm-5.3-flash": {
+//          "name": "GLM 5.3 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "glm-5.3-flashx": {
+//          "name": "GLM 5.3 FlashX (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "mimo-v2.6-flash": {
+//          "name": "MIMO v2.6 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "mimo-v2.6-pro": {
+//          "name": "MIMO v2.6 Pro (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "design-code-pro": {
+//          "name": "Design Code Pro",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "design-code-flash": {
+//          "name": "Design Code Flash",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "open-design-pro": {
+//          "name": "Open Design Pro",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        }
+//      }
+//    },
+    // NOTE (2026-10-25): design-code proxy block (one of three identical copies) - commented out per Drew; only the direct Open Design cloud provider ("opendesign") stays active. Preserved, not deleted.
+//    "code-design": {
+//      "npm": "@ai-sdk/openai-compatible",
+//      "name": "Code Design",
+//      "options": {
+//        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
+//        "apiKey": "design-local"
+//      },
+//      "models": {
+//        "claude-haiku-5.5": {
+//          "name": "Claude Haiku 5.5 (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "gpt-6-luna": {
+//          "name": "GPT-6 Luna (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        },
+//        "gpt-6.1-sol": {
+//          "name": "GPT-6.1 Sol (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        },
+//        "deepseek-v4.1-flash": {
+//          "name": "DeepSeek V4.1 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "glm-5.3-flash": {
+//          "name": "GLM 5.3 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "glm-5.3-flashx": {
+//          "name": "GLM 5.3 FlashX (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "mimo-v2.6-flash": {
+//          "name": "MIMO v2.6 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "mimo-v2.6-pro": {
+//          "name": "MIMO v2.6 Pro (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "design-code-pro": {
+//          "name": "Design Code Pro",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "design-code-flash": {
+//          "name": "Design Code Flash",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "open-design-pro": {
+//          "name": "Open Design Pro",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        }
+//      }
+//    },
+    // NOTE (2026-10-25): design-code proxy block (one of three identical copies) - commented out per Drew; only the direct Open Design cloud provider ("opendesign") stays active. Preserved, not deleted.
+//    "open-design": {
+//      "npm": "@ai-sdk/openai-compatible",
+//      "name": "Open Design",
+//      "options": {
+//        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
+//        "apiKey": "design-local"
+//      },
+//      "models": {
+//        "claude-haiku-5.5": {
+//          "name": "Claude Haiku 5.5 (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "gpt-6-luna": {
+//          "name": "GPT-6 Luna (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        },
+//        "gpt-6.1-sol": {
+//          "name": "GPT-6.1 Sol (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        },
+//        "deepseek-v4.1-flash": {
+//          "name": "DeepSeek V4.1 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "glm-5.3-flash": {
+//          "name": "GLM 5.3 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "glm-5.3-flashx": {
+//          "name": "GLM 5.3 FlashX (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "mimo-v2.6-flash": {
+//          "name": "MIMO v2.6 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "mimo-v2.6-pro": {
+//          "name": "MIMO v2.6 Pro (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "design-code-pro": {
+//          "name": "Design Code Pro",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "design-code-flash": {
+//          "name": "Design Code Flash",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "open-design-pro": {
+//          "name": "Open Design Pro",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        }
+//      }
+//    },
     // NOTE (2026-10-25): the block below was keyed "opendesign" until today; renamed to
     // "design-code" to free the ID for the direct Open Design cloud block (active, further
     // below). It points at the local design-code proxy, which routes to the
