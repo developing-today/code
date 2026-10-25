@@ -13,6 +13,10 @@ export interface Config {
   hosts: string[];
   /** Fleet feed file written by scripts/collect-fleet-feed.ts (#890). */
   feedFile: string;
+  /** Dashboard comments store (#906 §2) — the aggregator's own writable data. */
+  commentsFile: string;
+  /** Durable identity-registry store (#906 §3), merged on every read. */
+  registryFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
   kaneo: {
@@ -41,6 +45,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       .map((h) => h.trim())
       .filter(Boolean),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
+    commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
+    registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
       join(homedir(), ".config", "openchamber", "managed-opencode", "state.json"),

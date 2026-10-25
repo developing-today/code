@@ -9,6 +9,7 @@ import seed from "../../../grist/seed/roadmap.json" with { type: "json" };
 import {
   type BoardItem,
   type Comment,
+  type DnsSection,
   type GhItem,
   type Link,
   type Provenance,
@@ -16,10 +17,12 @@ import {
   type RefKey,
   type RoadmapRow,
   type SessionFeedEntry,
+  type SessionRecord,
   type SourceCoverage,
   refsInText,
   refUrl,
 } from "../model.ts";
+import { recordFromSessionEntry } from "../registry.ts";
 import type { Source } from "../source.ts";
 
 const GRIST_DOC = "czYHYKgG9SHcm9CPwiKEq1"; // "Program roadmap"
@@ -558,6 +561,90 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   },
 ];
 
+// DNS register (#906 §1): real rows from #902's first-pass register
+// (2026-10-25) — one per status class, so the register page's three
+// views all render in fixture mode.
+export const FIXTURE_DNS: DnsSection = {
+  generatedAt: "2026-10-25T17:00:00Z",
+  source: "fixtures (rows from the #902 register, 2026-10-25)",
+  totalAnnualListUsd: 595.62,
+  entries: [
+    {
+      domain: "1110x.de",
+      registrar: "Porkbun",
+      dnsHost: "Porkbun",
+      renewal: "2027-02-09",
+      autoRenew: "ON",
+      priceUsd: 4.07,
+      priorYearCost: "unknown",
+      used: "No public-facing use found — Porkbun defaults only",
+      plan: "Unused — `0x111` dev-identity family (earmark inferred)",
+      review: "REVIEW — auto-renews despite no found use",
+      status: "earmarked",
+    },
+    {
+      domain: "security.cab",
+      registrar: "Porkbun",
+      dnsHost: "Cloudflare",
+      renewal: "2027-02-24",
+      autoRenew: "ON",
+      priceUsd: 29.35,
+      priorYearCost: "unknown",
+      used: "Active, recorded: kaneo.security.cab (PM board tunnel), agents.security.cab (agent-inbox email routing)",
+      plan: "Active — fleet infrastructure",
+      review: "Settled — in use",
+      status: "active",
+    },
+    {
+      domain: "grandnag.us",
+      registrar: "Porkbun",
+      dnsHost: "Porkbun",
+      renewal: "2027-02-23",
+      autoRenew: "ON",
+      priceUsd: 7.0,
+      priorYearCost: "unknown",
+      used: "No public-facing use found — Porkbun defaults only",
+      plan: "Unused — purpose unknown",
+      review: "REVIEW",
+      status: "unused",
+    },
+    {
+      domain: "drewrypope.com",
+      registrar: "Porkbun (other account)",
+      dnsHost: "Porkbun",
+      renewal: "2028-06-14",
+      autoRenew: "unknown",
+      priceUsd: 11.08,
+      priorYearCost: "unknown",
+      used: "Active, recorded: www + zettel.drewrypope.com → GitHub Pages (personal site + notes)",
+      plan: "Active",
+      review: "Settled — in use; identify which account holds it",
+      status: "active",
+    },
+  ],
+};
+
+// Identity registry fixtures (#906 §3): the attention fixtures as
+// records (with token totals on two), plus one Muse launch
+// record so the claude-code source renders in fixture mode.
+export const FIXTURE_REGISTRY: SessionRecord[] = [
+  ...FIXTURE_ATTENTION.map((e, i) =>
+    recordFromSessionEntry(e, i === 0 ? 3_412_000 : i === 2 ? 1_208_500 : undefined),
+  ),
+  {
+    id: "claude-2026-10-25-slice2-review",
+    source: "claude-code",
+    label: "Dashboard slice-2 review (main chat subagent)",
+    agentId: "claude-code",
+    agentLabel: "Muse",
+    parentId: null,
+    startedAt: "2026-10-25T14:02:00Z",
+    lastSeenAt: "2026-10-25T14:31:00Z",
+    status: "succeeded",
+    taskRefs: [`${CODE}#898`],
+  },
+];
+
 export function fixtureSource(): Source {
   const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
   const provenance: Provenance = {
@@ -568,6 +655,8 @@ export function fixtureSource(): Source {
     quota: "fixtures",
     attention: "fixtures",
     orchestration: "fixtures",
+    dns: "fixtures",
+    registry: "fixtures",
   };
   return {
     board: async () => FIXTURE_BOARD,
@@ -582,6 +671,8 @@ export function fixtureSource(): Source {
     // Fixtures carry no orchestration section: "not measured" is the
     // honest fixture state for a job that only runs live (#899).
     orchestration: async () => null,
+    dns: async () => FIXTURE_DNS,
+    registry: async () => FIXTURE_REGISTRY,
     coverage: async (): Promise<SourceCoverage[]> => [
       {
         source: "opencode-sandbox",
