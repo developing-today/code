@@ -501,6 +501,21 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             Ok(())
         }
+        WorldCommand::Contract { check: None } => {
+            print!("{}", crate::shell_contract::SHELL_CONTRACT_JSON);
+            Ok(())
+        }
+        WorldCommand::Contract { check: Some(path) } => {
+            let text = if path.as_os_str() == "-" {
+                std::io::read_to_string(std::io::stdin()).context("read transcript")?
+            } else {
+                std::fs::read_to_string(&path)
+                    .with_context(|| format!("read transcript {}", path.display()))?
+            };
+            let checked = check_contract(&text)?;
+            println!("{checked}");
+            Ok(())
+        }
         #[cfg(feature = "sandbox")]
         WorldCommand::Measure {
             module,
@@ -686,7 +701,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     "after": after,
                 }))
                 .await?;
-            let result = pump(client, command_mode).await;
+            let result = pump(client, command_mode, &capability).await;
             endpoint.close().await;
             result
         }
@@ -1197,7 +1212,8 @@ impl Replica {
 }
 
 /// Print server frames as JSON lines while sending stdin lines as chat.
-async fn pump(client: WorldClient, command_mode: bool) -> Result<()> {
+/// Notes for the user go to stderr, so stdout stays a stream of frames.
+async fn pump(client: WorldClient, command_mode: bool, capability: &str) -> Result<()> {
     let (conn, mut send, mut recv) = client.into_parts();
     let mut reader = tokio::spawn(async move {
         while let Some(body) = read_frame(&mut recv).await? {
@@ -1214,14 +1230,20 @@ async fn pump(client: WorldClient, command_mode: bool) -> Result<()> {
                     let line = line.trim();
                     if line.is_empty() { continue; }
                     let frame = if command_mode {
-                        pump_command_frame(line)?
+                        match pump_command(line, capability) {
+                            PumpLine::Send(frame) => frame,
+                            PumpLine::Say(text) => {
+                                eprintln!("{text}");
+                                continue;
+                            }
+                            PumpLine::Quit => break Ok(()),
+                        }
                     } else {
                         match line.strip_prefix("/input ") {
                             Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
                             None => serde_json::json!({"type": "chat", "text": line}),
                         }
                     };
-                    if frame.is_null() { break Ok(()); }
                     if let Err(e) = write_frame(&mut send, frame.to_string().as_bytes()).await {
                         break Err(e);
                     }
@@ -1239,66 +1261,157 @@ async fn pump(client: WorldClient, command_mode: bool) -> Result<()> {
     result
 }
 
-/// Map one parsed [`crate::world_line::WorldLine`] to the session frame it
-/// needs in the `id world join --command-mode` pump. `null` ends the pump.
-fn pump_command_frame(line: &str) -> Result<serde_json::Value> {
+/// Check a transcript against the shell contract, returning a summary.
+///
+/// # Errors
+///
+/// Fails on an unreadable transcript, or with every violation listed.
+fn check_contract(text: &str) -> Result<String> {
+    let contract = crate::shell_contract::ShellContract::embedded().map_err(anyhow::Error::msg)?;
+    let violations = crate::shell_contract::check_transcript(contract, text)?;
+    let frames = text.lines().filter(|line| !line.trim().is_empty()).count();
+    if violations.is_empty() {
+        return Ok(format!(
+            "{frames} frames conform to shell contract v{}.{}",
+            contract.version, contract.revision
+        ));
+    }
+    let listed: Vec<String> = violations.iter().map(ToString::to_string).collect();
+    bail!(
+        "{} of {frames} frames violate shell contract v{}.{}:\n{}",
+        violations.len(),
+        contract.version,
+        contract.revision,
+        listed.join("\n")
+    )
+}
+
+/// What one stdin line does in the `id world join --command-mode` pump.
+#[derive(Debug, PartialEq, Eq)]
+enum PumpLine {
+    /// Send this session frame.
+    Send(serde_json::Value),
+    /// Answer the user locally; nothing is sent.
+    Say(String),
+    /// End the session.
+    Quit,
+}
+
+const PUMP_HELP: &str = "Commands: a line is chat; /input <hex>, /records [prefix], /stats, /caps, /logs, /help, /quit. Server frames print to stdout as JSON lines.";
+
+/// Map one line of the shared grammar ([`crate::world_line`]) to what the
+/// pump does. Every frame it sends is in the shell contract's joined phase;
+/// the commands that need the host's own store (`/documents`) or that the
+/// pump already does (`/logs`) are answered locally.
+fn pump_command(line: &str, capability: &str) -> PumpLine {
     use crate::world_line::{WorldLine, parse_line};
     let Some(action) = parse_line(line) else {
-        return Ok(serde_json::Value::Null);
+        return PumpLine::Quit;
     };
-    Ok(match action {
+    PumpLine::Send(match action {
         WorldLine::Chat(text) => serde_json::json!({"type": "chat", "text": text}),
         WorldLine::Input(hex) => serde_json::json!({"type": "input", "data_hex": hex}),
-        WorldLine::Records { prefix } => {
-            serde_json::json!({"type": "records", "prefix": prefix, "after": null})
+        WorldLine::Records { prefix } => serde_json::json!({
+            "type": "records", "capability": capability, "prefix": prefix, "after": null
+        }),
+        WorldLine::Stats => serde_json::json!({"type": "info", "capability": capability}),
+        WorldLine::Caps => serde_json::json!({"type": "caps", "capability": capability}),
+        WorldLine::Documents { .. } | WorldLine::Document(_) => {
+            return PumpLine::Say(
+                "documents are read from the host's own store over SSH (`ssh cmd:<world>@host`); `id world join` has no document reader".to_owned(),
+            );
         }
-        WorldLine::Documents { prefix } => {
-            serde_json::json!({"type": "documents", "prefix": prefix})
+        WorldLine::Logs { .. } => {
+            return PumpLine::Say(
+                "events already print live here as JSON lines; use `id world logs` for a bounded tail".to_owned(),
+            );
         }
-        WorldLine::Document(name) => serde_json::json!({"type": "document", "name": name}),
-        WorldLine::Stats => serde_json::json!({"type": "info"}),
-        WorldLine::Caps => serde_json::json!({"type": "caps"}),
-        WorldLine::Logs { .. } => serde_json::json!({"type": "logs"}),
-        WorldLine::Help => serde_json::json!({"type": "help"}),
-        WorldLine::Quit => return Ok(serde_json::Value::Null),
-        WorldLine::Message(message) => {
-            anyhow::bail!("{message}")
-        }
+        WorldLine::Help => return PumpLine::Say(PUMP_HELP.to_owned()),
+        WorldLine::Quit => return PumpLine::Quit,
+        WorldLine::Message(message) => return PumpLine::Say(message),
     })
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{pump_command_frame, scaffold_world};
+    use super::{PumpLine, check_contract, pump_command, scaffold_world};
 
     /// The shared line grammar maps the same line to the same action on the
     /// join pump as it does on the SSH command mode (both call
-    /// [`crate::world_line::parse_line`]); this asserts the pump's mapping.
+    /// [`crate::world_line::parse_line`]); this asserts the pump's mapping,
+    /// and that every frame it sends is in the shell contract.
     #[test]
-    fn the_pump_command_mode_maps_the_shared_grammar() {
+    fn the_pump_command_mode_maps_the_shared_grammar_to_contract_frames() {
+        use crate::shell_contract::{Phase, ShellContract};
+        let send = |line: &str| match pump_command(line, "cap") {
+            PumpLine::Send(frame) => frame,
+            other => panic!("{line}: {other:?}"),
+        };
         assert_eq!(
-            pump_command_frame("/stats").unwrap(),
-            serde_json::json!({"type": "info"})
+            send("/stats"),
+            serde_json::json!({"type": "info", "capability": "cap"})
         );
         assert_eq!(
-            pump_command_frame("/caps").unwrap(),
-            serde_json::json!({"type": "caps"})
+            send("/caps"),
+            serde_json::json!({"type": "caps", "capability": "cap"})
         );
         assert_eq!(
-            pump_command_frame("/records x").unwrap(),
-            serde_json::json!({"type": "records", "prefix": "x", "after": null})
+            send("/records x"),
+            serde_json::json!({"type": "records", "capability": "cap", "prefix": "x", "after": null})
         );
         assert_eq!(
-            pump_command_frame("/input 00aF").unwrap(),
+            send("/input 00aF"),
             serde_json::json!({"type": "input", "data_hex": "00af"})
         );
         assert_eq!(
-            pump_command_frame("hello").unwrap(),
+            send("hello"),
             serde_json::json!({"type": "chat", "text": "hello"})
         );
-        assert!(pump_command_frame("/quit").unwrap().is_null());
-        assert!(pump_command_frame("/nope").is_err());
+        let contract = ShellContract::embedded().unwrap();
+        for line in [
+            "/stats",
+            "/caps",
+            "/records",
+            "/records x",
+            "/input 00",
+            "hi",
+        ] {
+            contract
+                .check_client_frame(&send(line), Phase::Joined)
+                .unwrap_or_else(|error| panic!("{line}: {error}"));
+        }
+        for line in ["/logs", "/help", "/documents", "/document a.md", "/nope"] {
+            assert!(
+                matches!(pump_command(line, "cap"), PumpLine::Say(_)),
+                "{line}"
+            );
+        }
+        assert_eq!(pump_command("/quit", "cap"), PumpLine::Quit);
+    }
+
+    #[test]
+    fn the_contract_check_reports_conformance_or_every_violation() {
+        let good = [
+            r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
+            r#"{"from": "server", "frame": {"type": "snapshot", "snapshot": {}}}"#,
+            r#"{"from": "client", "frame": {"type": "resize", "width": 80, "height": 24}}"#,
+        ]
+        .join("\n");
+        assert_eq!(
+            check_contract(&good).unwrap(),
+            "3 frames conform to shell contract v1.1"
+        );
+        let bad = [
+            r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
+            r#"{"from": "server", "frame": {"type": "teleport"}}"#,
+        ]
+        .join("\n");
+        let error = check_contract(&bad).unwrap_err().to_string();
+        assert!(error.starts_with("2 of 2 frames violate"), "{error}");
+        assert!(error.contains("frame 0 (client)"), "{error}");
+        assert!(error.contains("frame 1 (server)"), "{error}");
+        assert!(check_contract("{").is_err());
     }
 
     #[test]

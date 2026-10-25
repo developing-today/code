@@ -373,6 +373,41 @@ mod cli_tests {
             assert!(output.status.success(), "Help failed for {cmd}");
         }
     }
+
+    /// `id world contract` prints the shell contract and checks a recorded
+    /// session against it (F13.1).
+    #[test]
+    fn test_world_contract_prints_and_checks_transcripts() {
+        let tmp = TempDir::new().unwrap();
+        let printed = run_cmd_success_stdout(&["world", "contract"], tmp.path());
+        let contract: serde_json::Value = serde_json::from_str(&printed).unwrap();
+        assert_eq!(contract["contract"], "id-shell");
+        assert_eq!(contract["version"], 1);
+
+        std::fs::write(
+            tmp.path().join("good.jsonl"),
+            concat!(
+                r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
+                "\n",
+                r#"{"from": "client", "frame": {"type": "input", "data_hex": "00"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let checked =
+            run_cmd_success_stdout(&["world", "contract", "--check", "good.jsonl"], tmp.path());
+        assert!(checked.contains("2 frames conform"), "{checked}");
+
+        std::fs::write(
+            tmp.path().join("bad.jsonl"),
+            r#"{"from": "client", "frame": {"type": "input", "data_hex": "00"}}"#,
+        )
+        .unwrap();
+        let output = run_cmd(&["world", "contract", "--check", "bad.jsonl"], tmp.path());
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("opening phase"), "{stderr}");
+    }
 }
 
 mod put_get_tests {

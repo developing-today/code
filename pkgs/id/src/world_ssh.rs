@@ -69,6 +69,10 @@ const ALT_SCREEN_ENTER: &str = "\x1b[?1049h";
 const ALT_SCREEN_LEAVE: &str = "\x1b[?1049l";
 /// Input bytes dropped before the session tells the viewer about it.
 const INPUT_DROP_NOTICE_BYTES: usize = 1024;
+/// Widest viewport a `resize` frame may name (shell contract v1).
+const MAX_VIEWPORT_WIDTH: u32 = 500;
+/// Tallest viewport a `resize` frame may name (shell contract v1).
+const MAX_VIEWPORT_HEIGHT: u32 = 200;
 
 /// Serve SSH connections until the listener fails.
 pub async fn serve(
@@ -436,6 +440,48 @@ impl Handler for SshClient {
     }
 }
 
+/// The session frame one raw terminal event becomes: keystrokes are
+/// `input`, a window change is `resize` (shell contract, joined phase).
+fn raw_frame(input: &SshInputFrame) -> String {
+    match input {
+        SshInputFrame::Bytes(bytes) => {
+            json!({ "type": "input", "data_hex": encode_hex(bytes) }).to_string()
+        }
+        // A terminal outside the contract's viewport bounds still gets a
+        // view: it is clamped instead of refused.
+        SshInputFrame::Resize(width, height) => json!({
+            "type": "resize",
+            "width": (*width).clamp(1, MAX_VIEWPORT_WIDTH),
+            "height": (*height).clamp(1, MAX_VIEWPORT_HEIGHT),
+        })
+        .to_string(),
+    }
+}
+
+/// The session frame a command-mode line sends, or `None` for the commands
+/// the shell answers itself (`/help`, `/logs`, `/documents`, ...).
+fn command_frame(command: &WorldCommand, capability: &str) -> Option<String> {
+    let frame = match command {
+        WorldCommand::Chat(text) => json!({ "type": "chat", "text": text }),
+        WorldCommand::Input(data_hex) => json!({ "type": "input", "data_hex": data_hex }),
+        WorldCommand::Records { prefix } => json!({
+            "type": "records", "capability": capability, "prefix": prefix, "after": null
+        }),
+        WorldCommand::RecordsContinue { prefix, after } => json!({
+            "type": "records", "capability": capability, "prefix": prefix, "after": after
+        }),
+        WorldCommand::Stats => json!({ "type": "info", "capability": capability }),
+        WorldCommand::Caps => json!({ "type": "caps", "capability": capability }),
+        WorldCommand::Documents { .. }
+        | WorldCommand::Document(_)
+        | WorldCommand::Logs
+        | WorldCommand::Help
+        | WorldCommand::Message(_)
+        | WorldCommand::Quit => return None,
+    };
+    Some(frame.to_string())
+}
+
 fn join_frame(login: &Login) -> String {
     let mut join = json!({ "type": "join", "capability": login.capability });
     if let Some(world) = &login.world {
@@ -556,44 +602,25 @@ impl SessionIo for SshIo {
             return Inbound::Text(join);
         }
         if let Some((width, height)) = self.first_resize.take() {
-            return Inbound::Text(
-                json!({ "type": "resize", "width": width, "height": height }).to_string(),
-            );
+            return Inbound::Text(raw_frame(&SshInputFrame::Resize(width, height)));
         }
         match self.mode {
-            ShellMode::Raw => match self.frames.recv().await {
-                Some(SshInputFrame::Bytes(bytes)) => Inbound::Text(
-                    json!({ "type": "input", "data_hex": encode_hex(&bytes) }).to_string(),
-                ),
-                Some(SshInputFrame::Resize(width, height)) => Inbound::Text(
-                    json!({ "type": "resize", "width": width, "height": height }).to_string(),
-                ),
-                None => Inbound::Closed,
-            },
+            ShellMode::Raw => self
+                .frames
+                .recv()
+                .await
+                .map_or(Inbound::Closed, |input| Inbound::Text(raw_frame(&input))),
             ShellMode::Command => loop {
                 if let Some(command) = self.commands.pop_front() {
-                    match command {
-                        WorldCommand::Chat(text) => {
-                            return Inbound::Text(
-                                json!({ "type": "chat", "text": text }).to_string(),
-                            );
-                        }
-                        WorldCommand::Input(data_hex) => {
-                            return Inbound::Text(
-                                json!({ "type": "input", "data_hex": data_hex }).to_string(),
-                            );
-                        }
-                        WorldCommand::Records { prefix } => {
+                    if let Some(frame) = command_frame(&command, &self.capability) {
+                        if let WorldCommand::Records { prefix } = &command {
                             self.records_prefix = Some(prefix.clone());
                             self.records_drained = 0;
-                            return Inbound::Text(
-                                json!({
-                                    "type": "records", "capability": self.capability,
-                                    "prefix": prefix, "after": null
-                                })
-                                .to_string(),
-                            );
                         }
+                        return Inbound::Text(frame);
+                    }
+                    // Everything else is answered by the shell itself.
+                    match command {
                         WorldCommand::Documents { prefix } => {
                             let text =
                                 match list_public_documents(&self.blobs, prefix.as_deref()).await {
@@ -626,32 +653,11 @@ impl SessionIo for SshIo {
                                 return Inbound::Closed;
                             }
                         }
-                        WorldCommand::RecordsContinue { prefix, after } => {
-                            return Inbound::Text(
-                                json!({
-                                    "type": "records", "capability": self.capability,
-                                    "prefix": prefix, "after": after
-                                })
-                                .to_string(),
-                            );
-                        }
                         WorldCommand::Help => {
                             let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /stats, /logs, /caps, /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
                             if self.handle.data(self.channel, help).await.is_err() {
                                 return Inbound::Closed;
                             }
-                        }
-                        WorldCommand::Stats => {
-                            return Inbound::Text(
-                                json!({ "type": "info", "capability": self.capability })
-                                    .to_string(),
-                            );
-                        }
-                        WorldCommand::Caps => {
-                            return Inbound::Text(
-                                json!({ "type": "caps", "capability": self.capability })
-                                    .to_string(),
-                            );
                         }
                         WorldCommand::Logs => {
                             let text = "event tailing is not available in command mode; join in raw mode (no `cmd:` prefix) to see events live, or use `id world logs`\r\nworld> ";
@@ -671,17 +677,20 @@ impl SessionIo for SshIo {
                             }
                         }
                         WorldCommand::Quit => return Inbound::Closed,
+                        WorldCommand::Chat(_)
+                        | WorldCommand::Input(_)
+                        | WorldCommand::Records { .. }
+                        | WorldCommand::RecordsContinue { .. }
+                        | WorldCommand::Stats
+                        | WorldCommand::Caps => {}
                     }
                 }
                 match self.frames.recv().await {
                     Some(SshInputFrame::Bytes(bytes)) => {
                         self.commands.extend(self.lines.push(&bytes));
                     }
-                    Some(SshInputFrame::Resize(width, height)) => {
-                        return Inbound::Text(
-                            json!({ "type": "resize", "width": width, "height": height })
-                                .to_string(),
-                        );
+                    Some(resize @ SshInputFrame::Resize(..)) => {
+                        return Inbound::Text(raw_frame(&resize));
                     }
                     None => return Inbound::Closed,
                 }
@@ -2013,6 +2022,68 @@ mod tests {
     }
 
     #[test]
+    fn terminal_shell_frames_conform_to_the_shell_contract() {
+        use crate::shell_contract::{Phase, ShellContract};
+        let contract = ShellContract::embedded().unwrap();
+        let check = |frame: &str, phase| {
+            let value: serde_json::Value = serde_json::from_str(frame).unwrap();
+            contract
+                .check_client_frame(&value, phase)
+                .map(str::to_owned)
+                .unwrap_or_else(|error| panic!("{frame}: {error}"))
+        };
+        for (world, command_mode) in [(None, false), (Some("arena"), true)] {
+            let login = Login {
+                world: world.map(str::to_owned),
+                capability: "cap".to_owned(),
+                explore: false,
+                command_mode,
+                key: None,
+            };
+            assert_eq!(check(&join_frame(&login), Phase::Opening), "join");
+        }
+        for input in [
+            SshInputFrame::Bytes(b"\x1b[A".to_vec()),
+            SshInputFrame::Resize(80, 24),
+            SshInputFrame::Resize(0, 0),
+            SshInputFrame::Resize(4000, 1000),
+        ] {
+            check(&raw_frame(&input), Phase::Joined);
+        }
+        let mut sent = Vec::new();
+        for line in [
+            "hello",
+            "/input 00ff",
+            "/records",
+            "/records key-",
+            "/stats",
+            "/caps",
+            "/logs",
+            "/help",
+            "/documents",
+            "/document a.md",
+            "/nope",
+            "/quit",
+        ] {
+            let command = world_command(line).unwrap();
+            if let Some(frame) = command_frame(&command, "cap") {
+                sent.push(check(&frame, Phase::Joined));
+            }
+        }
+        let more = WorldCommand::RecordsContinue {
+            prefix: None,
+            after: "k".to_owned(),
+        };
+        sent.push(check(&command_frame(&more, "cap").unwrap(), Phase::Joined));
+        assert_eq!(
+            sent,
+            [
+                "chat", "input", "records", "records", "info", "caps", "records"
+            ]
+        );
+    }
+
+    #[test]
     fn terminal_text_drops_control_characters_but_keeps_lines() {
         assert_eq!(
             terminal_text("a\x1b]52;c;AAAA\x07b\r\nc\td"),
@@ -2307,6 +2378,15 @@ mod tests {
         read_until(&mut channel, &mut terminal, "count=0").await;
         channel.data(&b"/input 696e63\r"[..]).await.unwrap();
         read_until(&mut channel, &mut terminal, "count=1").await;
+        // `/stats` sends `info` from the joined session; the host answers it
+        // (it used to refuse it as "already joined").
+        channel.data(&b"/stats\r"[..]).await.unwrap();
+        read_until(&mut channel, &mut terminal, "current_sequence").await;
+        assert!(
+            !terminal.screen().contents().contains("already joined"),
+            "{}",
+            terminal.screen().contents()
+        );
         server.abort();
     }
 }

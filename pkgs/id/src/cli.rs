@@ -1739,6 +1739,17 @@ pub enum WorldCommand {
         #[arg(long)]
         no_relay: bool,
     },
+    /// Print the versioned shell contract (the frame protocol every shell
+    /// speaks), or check a recorded session against it.
+    ///
+    /// A transcript has one JSON object per line:
+    /// `{"from": "client"|"server", "frame": {...}}`. The check prints each
+    /// violation and fails if there is any.
+    Contract {
+        /// Transcript to check (`-` reads stdin); without it, print the contract.
+        #[arg(long, value_name = "FILE")]
+        check: Option<PathBuf>,
+    },
     /// Measure a compiled `.wasm` world program's fuel use, offline.
     ///
     /// Compiles the module with the default limits, runs `view`, then
