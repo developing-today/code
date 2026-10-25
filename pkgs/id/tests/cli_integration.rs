@@ -1834,6 +1834,115 @@ mod serve_tests {
         server.stop();
     }
 
+    /// `id world join --via ssh` plays the same session over an SSH exec
+    /// channel as over iroh (F13.2), trusting only the pinned host key.
+    #[cfg(feature = "ssh")]
+    #[test]
+    fn test_world_join_via_ssh_carries_the_frame_protocol() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("roc-counter/counter.wasm");
+        let ssh_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+            .to_string();
+        let mut server = ServerHandle::spawn_with_args(
+            server_dir.path(),
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-module",
+                module.to_str().unwrap(),
+                "--world-ssh-port",
+                &ssh_port,
+            ],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let pem = std::fs::read_to_string(server_dir.path().join(id::world_ssh::SSH_HOST_KEY_FILE))
+            .unwrap();
+        let key = russh::keys::PrivateKey::from_openssh(pem).unwrap();
+        let fingerprint = id::world_ssh::host_key_fingerprint(&key);
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .current_dir(client_dir.path())
+                .env("HOME", client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+        let invited = world(&[
+            "invite",
+            &node,
+            "--admin-token",
+            "adm",
+            "--name",
+            "ssh",
+            "--addr",
+            &addr,
+        ])
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+        let target = format!("127.0.0.1:{ssh_port}");
+
+        // Without a pinned key (and with an empty known_hosts) the host is refused.
+        let refused = world(&["join", &target, "--via", "ssh", "--capability", &capability])
+            .stdin(Stdio::null())
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(!refused.status.success());
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains(&fingerprint), "{stderr}");
+
+        let mut joined = world(&[
+            "join",
+            &target,
+            "--via",
+            "ssh",
+            "--ssh-host-key",
+            &fingerprint,
+            "--capability",
+            &capability,
+            "--command-mode",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map(KillOnDrop)
+        .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let first = lines.next().expect("snapshot line").unwrap();
+        assert!(first.contains("\"type\":\"snapshot\""), "{first}");
+        let view = lines.next().expect("view line").unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let event = lines.next().expect("event line").unwrap();
+        assert!(event.contains("\"type\":\"event\""), "{event}");
+        let view = lines.next().expect("view line").unwrap();
+        assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/stats\n").unwrap();
+        let info = lines.next().expect("info line").unwrap();
+        assert!(info.contains("\"type\":\"module_info\""), "{info}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+        server.stop();
+    }
+
     #[test]
     fn test_tic_tac_toe_installed_over_iroh_and_played_by_two_players() {
         let server_dir = TempDir::new().unwrap();

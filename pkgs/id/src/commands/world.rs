@@ -17,8 +17,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{
     CLIENT_KEY_FILE,
-    cli::WorldCommand,
-    frames::{read_frame, write_frame},
+    cli::{WorldCommand, WorldVia},
+    frames::{read_frame_from, write_frame_to},
     is_node_id, load_or_create_keypair,
     world_net::WorldClient,
 };
@@ -692,20 +692,73 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             world,
             addrs,
             no_relay,
+            via,
+            ssh_host_key,
         } => {
-            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
-            client
-                .send_json(&serde_json::json!({
-                    "type": "join",
-                    "capability": capability,
-                    "after": after,
-                }))
-                .await?;
-            let result = pump(client, command_mode, &capability).await;
-            endpoint.close().await;
-            result
+            let join = serde_json::json!({
+                "type": "join",
+                "capability": capability,
+                "after": after,
+            });
+            // The same routed bytes on every transport.
+            let first = crate::world_net::route_frame(&join, world.as_deref());
+            match via {
+                WorldVia::Iroh => {
+                    if ssh_host_key.is_some() {
+                        bail!("--ssh-host-key needs --via ssh");
+                    }
+                    let (endpoint, client) =
+                        connect(&node, &addrs, no_relay, world.as_deref()).await?;
+                    let (conn, send, recv) = client.into_parts();
+                    let result = pump(recv, send, &first, command_mode, &capability).await;
+                    conn.close(0_u32.into(), b"done");
+                    endpoint.close().await;
+                    result
+                }
+                WorldVia::Ssh => {
+                    if !addrs.is_empty() || no_relay {
+                        bail!("--addr and --no-relay apply to --via iroh only");
+                    }
+                    join_over_ssh(&node, ssh_host_key, &first, command_mode, &capability).await
+                }
+            }
         }
     }
+}
+
+/// `id world join --via ssh`: the frame session over an SSH exec channel.
+#[cfg(feature = "ssh")]
+async fn join_over_ssh(
+    target: &str,
+    ssh_host_key: Option<String>,
+    first: &str,
+    command_mode: bool,
+    capability: &str,
+) -> Result<()> {
+    use crate::world_ssh::{HostKeyCheck, SshTarget, connect_frames};
+    let target: SshTarget = target.parse()?;
+    let check = match ssh_host_key {
+        Some(fingerprint) => HostKeyCheck::Fingerprint(fingerprint),
+        None => {
+            let home = std::env::var_os("HOME")
+                .context("no HOME for ~/.ssh/known_hosts; pass --ssh-host-key")?;
+            HostKeyCheck::KnownHosts(PathBuf::from(home).join(".ssh").join("known_hosts"))
+        }
+    };
+    let (_connection, stream) = connect_frames(&target, check).await?;
+    let (recv, send) = tokio::io::split(stream);
+    pump(recv, send, first, command_mode, capability).await
+}
+
+#[cfg(not(feature = "ssh"))]
+async fn join_over_ssh(
+    _target: &str,
+    _ssh_host_key: Option<String>,
+    _first: &str,
+    _command_mode: bool,
+    _capability: &str,
+) -> Result<()> {
+    bail!("this build of id has no SSH support (cargo feature `ssh`)")
 }
 
 /// Parse a `world.toml` file into a validated manifest.
@@ -1213,10 +1266,23 @@ impl Replica {
 
 /// Print server frames as JSON lines while sending stdin lines as chat.
 /// Notes for the user go to stderr, so stdout stays a stream of frames.
-async fn pump(client: WorldClient, command_mode: bool, capability: &str) -> Result<()> {
-    let (conn, mut send, mut recv) = client.into_parts();
+///
+/// The transport is any byte stream carrying the length-prefixed envelope
+/// (an iroh stream or an SSH exec channel); `first` is the join frame.
+async fn pump<R, W>(
+    mut recv: R,
+    mut send: W,
+    first: &str,
+    command_mode: bool,
+    capability: &str,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    write_frame_to(&mut send, first.as_bytes()).await?;
     let mut reader = tokio::spawn(async move {
-        while let Some(body) = read_frame(&mut recv).await? {
+        while let Some(body) = read_frame_from(&mut recv).await? {
             println!("{}", String::from_utf8_lossy(&body));
         }
         anyhow::Ok(())
@@ -1244,7 +1310,7 @@ async fn pump(client: WorldClient, command_mode: bool, capability: &str) -> Resu
                             None => serde_json::json!({"type": "chat", "text": line}),
                         }
                     };
-                    if let Err(e) = write_frame(&mut send, frame.to_string().as_bytes()).await {
+                    if let Err(e) = write_frame_to(&mut send, frame.to_string().as_bytes()).await {
                         break Err(e);
                     }
                 }
@@ -1256,7 +1322,6 @@ async fn pump(client: WorldClient, command_mode: bool, capability: &str) -> Resu
             _ = tokio::signal::ctrl_c() => break Ok(()),
         }
     };
-    conn.close(0_u32.into(), b"done");
     reader.abort();
     result
 }

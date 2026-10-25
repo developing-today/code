@@ -124,6 +124,27 @@ the test demands.
 Focus is not in version 1. A focus frame is reserved for the presentation work
 (F13.4/F13.5), behind the F11.12 gate.
 
+## SSH as a transport (F13.2)
+
+`id world join --via ssh [user@]host[:port]` runs the same session over an
+SSH exec channel instead of iroh (`pkgs/id/src/world_ssh.rs`,
+`connect_frames`). The host's world SSH server accepts one exec command,
+`id-world/1`; the channel then carries the identical length-prefixed JSON
+frames as the `/id-world/1` QUIC stream (`pkgs/id/src/frames.rs`,
+`encode_frame`). Unwrapping either envelope yields the same bytes — the test
+`an_exec_channel_carries_the_same_frames_as_the_iroh_stream` drives one
+world over both transports in lockstep and compares raw frame bodies. The
+transport never touches the journal: only the `chat`/`input` frames inside
+it commit events, exactly as on iroh.
+
+Trust and authority stay separate. The client pins the SSH host key (the
+`SHA256:` fingerprint `id serve` prints, `--ssh-host-key`, or an entry in
+`~/.ssh/known_hosts`); an unknown key is refused with its fingerprint —
+there is no trust-on-first-use. The SSH login itself grants nothing on the
+exec channel: the capability or admin secret inside the frames is the only
+authority, as on iroh. Other exec commands, shells after an exec session,
+and oversized frame lengths are refused.
+
 ## The client projection
 
 Every server frame is built from F11.11's single client projection. The

@@ -14,6 +14,16 @@
 //! [`world_command`]). Prefixing the username with `explore:` enters a
 //! read-only explore session, the only mode that supports public-key login.
 //! See the SSH input-modes decision record.
+//!
+//! ## Frame transport (F13.2)
+//!
+//! An `exec` request for [`WORLD_EXEC_COMMAND`] turns the channel into a
+//! transport for the shell contract itself: the same length-prefixed JSON
+//! frames as the iroh `/id-world/1` stream, byte for byte, so
+//! `id world join --via ssh` reaches a world through jump hosts and networks
+//! that only pass SSH. The SSH login grants nothing on this channel: as on
+//! iroh, the capability or admin secret inside the frames is the only
+//! authority, and the frames route themselves with their `world` field.
 
 use std::{
     collections::VecDeque,
@@ -42,6 +52,7 @@ use crate::directory_auth::Caller;
 use crate::directory_view::{
     DirectoryAction, DirectoryOutcome, HELP, Line, parse_line, render_text,
 };
+use crate::frames::{Decoded, FrameBuffer, encode_frame};
 use crate::world::hex_encode;
 use crate::world_hub::{ResolveError, WorldHub};
 use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
@@ -69,6 +80,14 @@ const ALT_SCREEN_ENTER: &str = "\x1b[?1049h";
 const ALT_SCREEN_LEAVE: &str = "\x1b[?1049l";
 /// Input bytes dropped before the session tells the viewer about it.
 const INPUT_DROP_NOTICE_BYTES: usize = 1024;
+/// The exec command that carries the frame protocol (shell contract
+/// transport `ssh-exec`).
+pub const WORLD_EXEC_COMMAND: &str = "id-world/1";
+/// Unread frame bytes one exec channel may queue before the host ends its
+/// session. The handler must never wait for space (it shares the loop that
+/// flushes output), and dropping bytes would corrupt the framing, so a flood
+/// ends the session instead.
+const MAX_EXEC_BACKLOG: usize = 8 * crate::frames::MAX_FRAME_BYTES;
 /// Widest viewport a `resize` frame may name (shell contract v1).
 const MAX_VIEWPORT_WIDTH: u32 = 500;
 /// Tallest viewport a `resize` frame may name (shell contract v1).
@@ -144,6 +163,8 @@ impl Server for SshServer {
             input: None,
             viewport: None,
             dropped_input: Arc::new(AtomicUsize::new(0)),
+            exec: None,
+            exec_backlog: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -175,6 +196,10 @@ struct SshClient {
     /// including after the shell opens, so the counter must be shared, not
     /// copied, when the shell is constructed.
     dropped_input: Arc<AtomicUsize>,
+    /// Bytes for the frame session on an exec channel, if one runs.
+    exec: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    /// Bytes queued on `exec` and not yet read by the session.
+    exec_backlog: Arc<AtomicUsize>,
 }
 
 enum SshInputFrame {
@@ -266,10 +291,35 @@ impl Handler for SshClient {
     async fn exec_request(
         &mut self,
         channel: ChannelId,
-        _data: &[u8],
+        data: &[u8],
         session: &mut Session,
     ) -> Result<(), russh::Error> {
-        session.channel_failure(channel)
+        // The frame protocol is the only command, and one session (shell or
+        // frames) runs per connection.
+        if data != WORLD_EXEC_COMMAND.as_bytes()
+            || self.login.is_none()
+            || self.input.is_some()
+            || self.exec.is_some()
+        {
+            return session.channel_failure(channel);
+        }
+        let (exec, bytes) = mpsc::unbounded_channel();
+        self.exec = Some(exec);
+        session.channel_success(channel)?;
+        let mut io = SshFrameIo {
+            handle: session.handle(),
+            channel,
+            bytes,
+            buffer: FrameBuffer::default(),
+            backlog: Arc::clone(&self.exec_backlog),
+        };
+        let hub = self.hub.clone();
+        tokio::spawn(async move {
+            run_session(&hub, &mut io).await;
+            let _ = io.handle.eof(channel).await;
+            let _ = io.handle.close(channel).await;
+        });
+        Ok(())
     }
 
     async fn subsystem_request(
@@ -327,7 +377,11 @@ impl Handler for SshClient {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), russh::Error> {
-        let Some(login) = self.login.as_ref().filter(|_| self.input.is_none()) else {
+        let Some(login) = self
+            .login
+            .as_ref()
+            .filter(|_| self.input.is_none() && self.exec.is_none())
+        else {
             return session.channel_failure(channel);
         };
         if login.explore {
@@ -396,6 +450,16 @@ impl Handler for SshClient {
         data: &[u8],
         _session: &mut Session,
     ) -> Result<(), russh::Error> {
+        if let Some(exec) = &self.exec {
+            let queued = self.exec_backlog.fetch_add(data.len(), Ordering::Relaxed) + data.len();
+            if queued > MAX_EXEC_BACKLOG || exec.send(data.to_vec()).is_err() {
+                tracing::warn!(
+                    "world ssh exec backlog over {MAX_EXEC_BACKLOG} bytes; ending session"
+                );
+                self.exec = None;
+            }
+            return Ok(());
+        }
         let Some(input) = &self.input else {
             return Ok(());
         };
@@ -427,6 +491,7 @@ impl Handler for SshClient {
         _session: &mut Session,
     ) -> Result<(), russh::Error> {
         self.input = None;
+        self.exec = None;
         Ok(())
     }
 
@@ -436,6 +501,7 @@ impl Handler for SshClient {
         _session: &mut Session,
     ) -> Result<(), russh::Error> {
         self.input = None;
+        self.exec = None;
         Ok(())
     }
 }
@@ -488,6 +554,44 @@ fn join_frame(login: &Login) -> String {
         join["world"] = json!(world);
     }
     join.to_string()
+}
+
+/// [`SessionIo`] for the frame protocol on an exec channel: the same
+/// envelope as the iroh stream, reassembled from the channel's data packets.
+struct SshFrameIo {
+    handle: Handle,
+    channel: ChannelId,
+    bytes: mpsc::UnboundedReceiver<Vec<u8>>,
+    buffer: FrameBuffer,
+    backlog: Arc<AtomicUsize>,
+}
+
+impl SessionIo for SshFrameIo {
+    // Cancel-safe: state changes only after a chunk has been received.
+    async fn recv(&mut self) -> Inbound {
+        loop {
+            match self.buffer.next_frame() {
+                Some(Decoded::Frame(body)) => {
+                    return String::from_utf8(body).map_or(Inbound::Unsupported, Inbound::Text);
+                }
+                // As on iroh, an oversized length ends the stream unread.
+                Some(Decoded::Oversized) => return Inbound::Closed,
+                None => {}
+            }
+            let Some(chunk) = self.bytes.recv().await else {
+                return Inbound::Closed;
+            };
+            self.backlog.fetch_sub(chunk.len(), Ordering::Relaxed);
+            self.buffer.push(&chunk);
+        }
+    }
+
+    async fn send(&mut self, frame: String) -> bool {
+        match encode_frame(frame.as_bytes()) {
+            Ok(bytes) => self.handle.data(self.channel, bytes).await.is_ok(),
+            Err(_) => false,
+        }
+    }
 }
 
 /// [`SessionIo`] for one SSH shell: the join frame first, then terminal lines
@@ -809,6 +913,185 @@ impl SessionIo for SshIo {
         };
         self.handle.data(self.channel, text).await.is_ok()
     }
+}
+
+/// Where `id world join --via ssh` connects: `[user@]host[:port]` (port 22
+/// by default; an IPv6 address goes in brackets). The user is only the SSH
+/// login: on the frame channel it names no world and grants nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SshTarget {
+    /// SSH login name (`id` when absent).
+    pub user: String,
+    /// Host name or address.
+    pub host: String,
+    /// TCP port.
+    pub port: u16,
+}
+
+impl std::str::FromStr for SshTarget {
+    type Err = anyhow::Error;
+
+    fn from_str(text: &str) -> anyhow::Result<Self> {
+        let (user, rest) = text.rsplit_once('@').unwrap_or(("id", text));
+        let port = |digits: &str| {
+            digits
+                .parse::<u16>()
+                .map_err(|_| anyhow::anyhow!("`{digits}` is not a port"))
+        };
+        let (host, port) = if let Some(inner) = rest.strip_prefix('[') {
+            let Some((host, tail)) = inner.split_once(']') else {
+                anyhow::bail!("`{text}`: missing `]` after the IPv6 address");
+            };
+            match tail.strip_prefix(':') {
+                Some(digits) => (host, port(digits)?),
+                None if tail.is_empty() => (host, 22),
+                None => anyhow::bail!("`{text}`: expected `:port` after `]`"),
+            }
+        } else {
+            match rest.split_once(':') {
+                Some((host, digits)) if !digits.contains(':') => (host, port(digits)?),
+                Some(_) => anyhow::bail!("`{text}`: put an IPv6 address in brackets"),
+                None => (rest, 22),
+            }
+        };
+        anyhow::ensure!(
+            !host.is_empty() && !user.is_empty(),
+            "`{text}` is not [user@]host[:port]"
+        );
+        Ok(Self {
+            user: user.to_owned(),
+            host: host.to_owned(),
+            port,
+        })
+    }
+}
+
+/// How the SSH client decides to trust the host key. There is no
+/// trust-on-first-use: an unknown key is refused with its fingerprint.
+#[derive(Clone, Debug)]
+pub enum HostKeyCheck {
+    /// The SHA256 fingerprint `id serve` prints (`SHA256:...`).
+    Fingerprint(String),
+    /// An OpenSSH `known_hosts` file.
+    KnownHosts(std::path::PathBuf),
+}
+
+/// The client half of the host-key decision.
+#[derive(Debug)]
+pub struct HostKeyTrust {
+    host: String,
+    port: u16,
+    check: HostKeyCheck,
+    refused: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+impl russh::client::Handler for HostKeyTrust {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        key: &russh::keys::PublicKeyOrCertificate,
+    ) -> Result<bool, russh::Error> {
+        let russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } = key else {
+            self.refuse("a certificate (not supported)".to_owned());
+            return Ok(false);
+        };
+        let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
+        let trusted = match &self.check {
+            HostKeyCheck::Fingerprint(expected) => *expected == fingerprint,
+            HostKeyCheck::KnownHosts(path) => {
+                russh::keys::check_known_hosts_path(&self.host, self.port, key, path)
+                    .unwrap_or(false)
+            }
+        };
+        if !trusted {
+            self.refuse(fingerprint);
+        }
+        Ok(trusted)
+    }
+}
+
+impl HostKeyTrust {
+    fn refuse(&self, fingerprint: String) {
+        if let Ok(mut refused) = self.refused.lock() {
+            *refused = Some(fingerprint);
+        }
+    }
+}
+
+/// Keeps the SSH connection of a frame session open; dropping it disconnects.
+pub struct SshConnection {
+    _session: russh::client::Handle<HostKeyTrust>,
+}
+
+impl std::fmt::Debug for SshConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshConnection").finish_non_exhaustive()
+    }
+}
+
+/// Open a frame session over an SSH exec channel. The returned stream
+/// carries exactly the bytes an iroh `/id-world/1` stream would: use
+/// [`crate::frames::write_frame_to`] and [`crate::frames::read_frame_from`].
+///
+/// # Errors
+///
+/// Fails if the host is unreachable, its key is not trusted, or it does not
+/// offer the frame transport.
+pub async fn connect_frames(
+    target: &SshTarget,
+    check: HostKeyCheck,
+) -> anyhow::Result<(SshConnection, russh::ChannelStream<russh::client::Msg>)> {
+    use anyhow::Context as _;
+
+    let refused = Arc::new(std::sync::Mutex::new(None));
+    let trust = HostKeyTrust {
+        host: target.host.clone(),
+        port: target.port,
+        check,
+        refused: Arc::clone(&refused),
+    };
+    let config = Arc::new(russh::client::Config::default());
+    let mut session =
+        match russh::client::connect(config, (target.host.as_str(), target.port), trust).await {
+            Ok(session) => session,
+            Err(error) => {
+                if let Some(key) = refused.lock().ok().and_then(|mut refused| refused.take()) {
+                    anyhow::bail!(
+                        "the host key of {}:{} ({key}) is not trusted; compare it with the \
+                         `world ssh host key` line `id serve` prints, then pass \
+                         --ssh-host-key {key} or add the key to known_hosts",
+                        target.host,
+                        target.port
+                    );
+                }
+                return Err(error).context("connect over ssh");
+            }
+        };
+    // The login grants nothing here: the frames carry their own capability.
+    let auth = session
+        .authenticate_password(target.user.as_str(), "")
+        .await
+        .context("ssh login")?;
+    anyhow::ensure!(auth.success(), "the ssh server refused the login");
+    let mut channel = session
+        .channel_open_session()
+        .await
+        .context("open ssh channel")?;
+    channel
+        .exec(true, WORLD_EXEC_COMMAND)
+        .await
+        .context("start the frame transport")?;
+    loop {
+        match channel.wait().await {
+            Some(russh::ChannelMsg::Success) => break,
+            Some(russh::ChannelMsg::Failure) | None => anyhow::bail!(
+                "the ssh server does not offer the id world frame transport (exec {WORLD_EXEC_COMMAND})"
+            ),
+            Some(_) => {}
+        }
+    }
+    Ok((SshConnection { _session: session }, channel.into_stream()))
 }
 
 const MAX_WORLD_TERMINAL_LINE: usize = 1024;
@@ -2019,6 +2302,347 @@ mod tests {
                 .success()
         );
         server.abort();
+    }
+
+    #[test]
+    fn ssh_targets_parse_user_host_and_port() {
+        let parse = |text: &str| text.parse::<SshTarget>();
+        let target = |user: &str, host: &str, port| SshTarget {
+            user: user.to_owned(),
+            host: host.to_owned(),
+            port,
+        };
+        assert_eq!(
+            parse("example.org").unwrap(),
+            target("id", "example.org", 22)
+        );
+        assert_eq!(
+            parse("ada@example.org:2222").unwrap(),
+            target("ada", "example.org", 2222)
+        );
+        assert_eq!(parse("[::1]:2022").unwrap(), target("id", "::1", 2022));
+        assert_eq!(parse("me@[::1]").unwrap(), target("me", "::1", 22));
+        for bad in ["", "host:", "host:99999", "::1", "[::1", "@host", "[::1]x"] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_exec_command_is_the_contracts_ssh_transport() {
+        let contract = crate::shell_contract::ShellContract::embedded().unwrap();
+        assert_eq!(
+            contract.transports["ssh-exec"]["command"],
+            WORLD_EXEC_COMMAND
+        );
+        assert_eq!(
+            contract.transports["ssh-exec"]["envelope"],
+            contract.transports["iroh"]["envelope"]
+        );
+    }
+
+    /// A program whose view is the same for every viewer and every connection.
+    struct Shown;
+
+    impl crate::world::WorldProgram for Shown {
+        fn view(&mut self, _viewer: &crate::world::Participant) -> anyhow::Result<Option<String>> {
+            Ok(Some("shown".to_owned()))
+        }
+    }
+
+    /// One world served over iroh and SSH at once.
+    struct TwoTransports {
+        world: WorldHandle,
+        capability: String,
+        port: u16,
+        fingerprint: String,
+        endpoint: iroh::Endpoint,
+        addr: iroh::EndpointAddr,
+        _router: iroh::protocol::Router,
+        ssh: tokio::task::JoinHandle<std::io::Result<()>>,
+    }
+
+    async fn two_transports() -> TwoTransports {
+        use iroh::endpoint::{RelayMode, presets};
+
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        world
+            .install_program("ab".repeat(32), 5, Box::new(Shown))
+            .await
+            .unwrap();
+        let (_, token) = world
+            .issue("ada", crate::world::WorldScopes::GUEST)
+            .await
+            .unwrap();
+        let hub = WorldHub::single(WorldService::new(world.clone(), Some("admin".to_owned())));
+
+        let bind = || async {
+            iroh::Endpoint::builder(presets::Minimal)
+                .relay_mode(RelayMode::Disabled)
+                .bind()
+                .await
+                .unwrap()
+        };
+        let host = bind().await;
+        let router = iroh::protocol::Router::builder(host.clone())
+            .accept(
+                crate::world_net::WORLD_ALPN,
+                crate::world_net::WorldProtocol::new(hub.clone()),
+            )
+            .spawn();
+        let addr = iroh::EndpointAddr::from_parts(
+            host.id(),
+            host.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(SocketAddr::new(ip, a.port()))
+            }),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let host_key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let fingerprint = host_key_fingerprint(&host_key);
+        let ssh = tokio::spawn(serve_limited(
+            listener,
+            hub,
+            host_key,
+            test_store(),
+            MAX_CONNECTIONS,
+        ));
+        TwoTransports {
+            world,
+            capability: token.expose().to_owned(),
+            port,
+            fingerprint,
+            endpoint: bind().await,
+            addr,
+            _router: router,
+            ssh,
+        }
+    }
+
+    impl TwoTransports {
+        fn target(&self) -> SshTarget {
+            SshTarget {
+                user: "id".to_owned(),
+                host: "127.0.0.1".to_owned(),
+                port: self.port,
+            }
+        }
+
+        fn trust(&self) -> HostKeyCheck {
+            HostKeyCheck::Fingerprint(self.fingerprint.clone())
+        }
+    }
+
+    /// The raw frame bodies a transport delivers, read in their own task so
+    /// a test can wait for quiet without cancelling a read.
+    struct RawFrames {
+        frames: mpsc::UnboundedReceiver<Vec<u8>>,
+    }
+
+    impl RawFrames {
+        fn read<R: tokio::io::AsyncRead + Unpin + Send + 'static>(mut recv: R) -> Self {
+            let (tx, frames) = mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                while let Ok(Some(body)) = crate::frames::read_frame_from(&mut recv).await {
+                    if tx.send(body).is_err() {
+                        break;
+                    }
+                }
+            });
+            Self { frames }
+        }
+
+        /// Every frame until the host has been quiet for a moment.
+        async fn drain(&mut self) -> Vec<Vec<u8>> {
+            let mut frames = Vec::new();
+            while let Ok(Some(frame)) =
+                tokio::time::timeout(Duration::from_millis(400), self.frames.recv()).await
+            {
+                frames.push(frame);
+            }
+            frames
+        }
+    }
+
+    fn texts(frames: &[Vec<u8>]) -> Vec<String> {
+        frames
+            .iter()
+            .map(|frame| String::from_utf8_lossy(frame).into_owned())
+            .collect()
+    }
+
+    /// F13.2's exit test: one scripted session over iroh and over an SSH exec
+    /// channel, in lockstep on one world, unwraps to the same frame bytes.
+    #[tokio::test]
+    async fn an_exec_channel_carries_the_same_frames_as_the_iroh_stream() {
+        use crate::frames::{write_frame, write_frame_to};
+
+        let host = two_transports().await;
+        let iroh_client = crate::world_net::WorldClient::connect(&host.endpoint, host.addr.clone())
+            .await
+            .unwrap();
+        let (conn, mut iroh_send, iroh_recv) = iroh_client.into_parts();
+        let mut iroh_frames = RawFrames::read(iroh_recv);
+        let (_connection, stream) = connect_frames(&host.target(), host.trust()).await.unwrap();
+        let (ssh_recv, mut ssh_send) = tokio::io::split(stream);
+        let mut ssh_frames = RawFrames::read(ssh_recv);
+
+        let cap = &host.capability;
+        let join = crate::world_net::route_frame(
+            &serde_json::json!({"type": "join", "capability": cap, "after": null}),
+            Some("lobby"),
+        );
+        write_frame(&mut iroh_send, join.as_bytes()).await.unwrap();
+        let iroh_joined = iroh_frames.drain().await;
+        write_frame_to(&mut ssh_send, join.as_bytes())
+            .await
+            .unwrap();
+        let ssh_joined = ssh_frames.drain().await;
+        assert_eq!(texts(&iroh_joined), texts(&ssh_joined));
+        assert!(
+            iroh_frames.drain().await.is_empty(),
+            "a second join is invisible"
+        );
+
+        // (who sends, frame): broadcasts reach both; replies go to whoever asked.
+        let script = [
+            (
+                Some(true),
+                serde_json::json!({"type": "chat", "text": "over iroh"}),
+            ),
+            (
+                Some(false),
+                serde_json::json!({"type": "input", "data_hex": "6869"}),
+            ),
+            (None, serde_json::json!({"type": "info", "capability": cap})),
+            (
+                None,
+                serde_json::json!({"type": "records", "capability": cap}),
+            ),
+            (None, serde_json::json!({"type": "caps", "capability": cap})),
+            (
+                None,
+                serde_json::json!({"type": "resize", "width": 40, "height": 10}),
+            ),
+            (
+                None,
+                serde_json::json!({"type": "chat", "text": "\u{1}bad"}),
+            ),
+            (None, serde_json::json!({"type": "teleport"})),
+        ];
+        let mut checked = 0;
+        for (sender, frame) in script {
+            let text = frame.to_string();
+            if sender != Some(false) {
+                write_frame(&mut iroh_send, text.as_bytes()).await.unwrap();
+            }
+            if sender != Some(true) {
+                write_frame_to(&mut ssh_send, text.as_bytes())
+                    .await
+                    .unwrap();
+            }
+            let over_iroh = iroh_frames.drain().await;
+            let over_ssh = ssh_frames.drain().await;
+            assert!(!over_iroh.is_empty(), "{text}");
+            assert_eq!(over_iroh, over_ssh, "{text}: {:?}", texts(&over_iroh));
+            checked += over_iroh.len();
+        }
+        assert!(checked >= 10, "{checked}");
+        // Only the chat and the input were journaled: the frames themselves
+        // never touch it.
+        let token = crate::world::JoinCapability::from_wire(cap.clone());
+        let snapshot = host.world.snapshot(token.clone()).await.unwrap();
+        // The install, the chat, the input, and each side's sanitized chat.
+        assert_eq!(snapshot.current_sequence, 5);
+        drop(ssh_send);
+        drop(ssh_frames);
+        conn.close(0_u32.into(), b"done");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let after = host.world.snapshot(token).await.unwrap();
+        assert_eq!(after.current_sequence, snapshot.current_sequence);
+        host.ssh.abort();
+    }
+
+    #[tokio::test]
+    async fn the_exec_transport_refuses_other_commands_untrusted_keys_and_oversized_frames() {
+        let host = two_transports().await;
+
+        // An unknown key is refused, and the error names its fingerprint.
+        let Err(error) = connect_frames(
+            &host.target(),
+            HostKeyCheck::Fingerprint("SHA256:not-the-key".to_owned()),
+        )
+        .await
+        else {
+            panic!("an untrusted key was accepted");
+        };
+        let error = error.to_string();
+        assert!(error.contains(&host.fingerprint), "{error}");
+        let empty = tempfile::NamedTempFile::new().unwrap();
+        assert!(
+            connect_frames(
+                &host.target(),
+                HostKeyCheck::KnownHosts(empty.path().to_owned())
+            )
+            .await
+            .is_err()
+        );
+
+        // Any other exec command, and a second session on one connection, fail.
+        let session = connect(host.port, "").await;
+        let mut channel = session.channel_open_session().await.unwrap();
+        channel.exec(true, "sh -c id").await.unwrap();
+        assert!(matches!(
+            channel.wait().await,
+            Some(russh::ChannelMsg::Failure)
+        ));
+        let mut channel = session.channel_open_session().await.unwrap();
+        channel.exec(true, WORLD_EXEC_COMMAND).await.unwrap();
+        assert!(matches!(
+            channel.wait().await,
+            Some(russh::ChannelMsg::Success)
+        ));
+        let mut second = session.channel_open_session().await.unwrap();
+        second.exec(true, WORLD_EXEC_COMMAND).await.unwrap();
+        assert!(matches!(
+            second.wait().await,
+            Some(russh::ChannelMsg::Failure)
+        ));
+
+        // A length over the frame limit ends the session unread, as on iroh.
+        let too_long = u32::try_from(crate::frames::MAX_FRAME_BYTES + 1)
+            .unwrap()
+            .to_be_bytes();
+        channel.data(&too_long[..]).await.unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match channel.wait().await {
+                    Some(russh::ChannelMsg::Eof | russh::ChannelMsg::Close) | None => break,
+                    Some(_) => {}
+                }
+            }
+        })
+        .await;
+        assert!(ended.is_ok(), "the session did not end");
+
+        // A login grants nothing on the frame channel: a bad capability is refused.
+        let (_connection, stream) = connect_frames(&host.target(), host.trust()).await.unwrap();
+        let (recv, mut send) = tokio::io::split(stream);
+        let mut frames = RawFrames::read(recv);
+        crate::frames::write_frame_to(&mut send, br#"{"type":"join","capability":"1.forged"}"#)
+            .await
+            .unwrap();
+        let reply = frames.drain().await;
+        assert_eq!(
+            texts(&reply),
+            [r#"{"type":"error","message":"join denied"}"#]
+        );
+        host.ssh.abort();
     }
 
     #[test]
