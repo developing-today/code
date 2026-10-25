@@ -58,6 +58,9 @@ Everything defaults to **fixtures** and works with no configuration:
 | ---------------------- | ------------------------ | --------------------------------------------------------------------------------------- |
 | `PM_AGG_SOURCE`        | `fixtures`               | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet                  |
 | `PM_AGG_PORT`          | `4870`                   | HTTP port                                                                               |
+| `PM_AGG_HOSTS`         | `127.0.0.1`              | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)        |
+| `PM_AGG_FEED_FILE`     | `./fleet-feed.json`      | The fleet feed (quota + sandbox attention) written by the collector (below)             |
+| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live) |
 | `KANEO_URL`            | `http://127.0.0.1:5173`  | Kaneo base URL (board reader)                                                           |
 | `KANEO_ADMIN_EMAIL`    | —                        | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                         |
 | `KANEO_ADMIN_PASSWORD` | —                        | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                 |
@@ -78,8 +81,8 @@ printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
 | Registry links   | Projector `GET /links?subject=…`, unioned into board cards and roadmap rows  | Kaneo external links / text refs    |
 | Items (refs)     | Projector `GET /items?refs=…`                                                | fixtures                            |
 | Comments         | Projector `GET /comments?refs=…`                                             | fixtures                            |
-| Quota (#851)     | (projector concern — not yet projected)                                      | fixtures                            |
-| Attention (#852) | (projector/watch-cron concern — not yet projected)                           | fixtures                            |
+| Quota (#851)     | Fleet feed file (`fleet-feed.json`; see "The fleet feed" below)              | fixtures when no feed exists        |
+| Attention (#852) | Laptop OpenCode server live (state file, 45s cache) + sandbox via fleet feed | fixtures when neither is reachable  |
 
 The projector's wire schema is its `schema.sql` (Session J, PR #859):
 snake_case fields, `state` is only `open|closed` with `merged` as a
@@ -99,12 +102,47 @@ The footer of every page states, facet by facet, whether it is live or
 fixture-backed. When a live reader is unreachable, that facet alone
 falls back to fixtures and the footer says why.
 
+## The fleet feed (quota + sandbox attention, slice 1 — #890)
+
+The sandbox OpenCode server binds its own loopback and the quota
+sources of record live on the sandbox, so those two facets travel as
+a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
+
+- **Quota** — per-pool extractors (`src/quota-extract.ts`) over the
+  stewardship quota view's dated reads. Fail-soft by design: a pool
+  whose read pattern stops matching renders with its identity and a
+  "no current read" note — never a vanished pool, never an invented
+  number. Live per-pool burn (active sessions + their token totals)
+  is attributed from the sandbox server at collection time, and
+  model-choice guidance (`src/quota-guidance.ts`) is computed then.
+  The pool map is the corrected one from the provider-quota
+  registry: exactly one Meta pool (Muse API High Usage, `meta`
+  provider the only door); no "muse plan" pool exists.
+- **Sandbox attention** — sessions mapped by the shared OpenCode v2
+  mapper (`src/sources/opencode.ts`); keeper supervision entries
+  from `jules-review-state.json` annotate matching sessions.
+
+`scripts/push-fleet-feed.sh` pushes the feed to the laptop over the
+tailnet proxy route; a systemd timer on the sandbox runs it every
+~5 minutes (`systemd/fleet-feed-collector.{service,timer}`). The
+aggregator states the feed's age in the page provenance; a stale
+feed keeps rendering.
+
+**Deployment (laptop):** `install.sh` copies the package to
+`~/pm-stack/aggregator`, renders `.env` from
+`~/secrets/pm-stack.sops.yaml` (keys by name), installs
+`../systemd/pm-aggregator.service` as a user unit, and health-checks
+loopback + tailnet. Slice 2 (per #890) replaces the feed with
+projector-ized live per-source feeds.
+
 ## What is fixture-backed vs live
 
-- **Fixture-backed today:** quota and attention (their feeds are not
-  projected yet). The fixtures are shaped like the live readers' output
-  and sit behind the same `Source` interface (`src/source.ts`), so
-  swapping is a config change, not a code change. Roadmap fixtures are
+- **Fixture-backed today:** nothing, when the stack is up — board,
+  roadmap, items, comments, quota, and attention all read live
+  sources, each falling back to fixtures independently when its
+  source is unreachable (the fixtures are shaped like the live
+  readers' output and sit behind the same `Source` interface,
+  `src/source.ts`). Roadmap fixtures are
   the real Grist seed rows; the design record's known refs (#752, #754,
   #762, #763, nix #501–#508, opencode #365) are real; the rest are
   illustrative.
@@ -126,20 +164,18 @@ here as machine-first surfaces with a GUI over the same data.
 - **#851 quota + throughput:** the data model is `QuotaPool` /
   `QuotaWindow` / `BurnSegment` / `QuotaView` (`src/model.ts`); wall
   detection and near-limit thresholds live in `src/derive.ts`
-  (`poolState`, `NEAR_PCT = 85`). The per-source readers listed in the
-  issue (Codex, OpenCode Go, CommandCode, Cline, DeepSeek, Cloudflare
-  GraphQL, Turso, Meta, Antigravity, Open Design, GitHub billing) are a
-  **projector concern** — the aggregator renders whatever the projector
-  emits, so none of those OAuth/API credentials are needed here. No
-  estimator duplicates the OpenChamber quota picker; picker values are
-  logged, not re-estimated (standing rule 2026-10-24).
+  (`poolState`, `NEAR_PCT = 85`). Slice 1 (#890) reads quotas from
+  the fleet feed (above) rather than the projector; per-source live
+  readers (projector-ized) are slice 2. No estimator duplicates the
+  OpenChamber quota picker; picker values are logged, not
+  re-estimated (standing rule 2026-10-24).
 - **#852 needs-you:** the state taxonomy and classification rules are
   `AttentionState` + `classifyAttention`/`attentionSorted` in
   `src/derive.ts`. Ordering is stopped-for-question and errored first,
   then needs-poke / stuck-retrying / stalled-on-CLI, then in-motion;
-  every non-in-motion entry carries its evidence inline. The raw feed
-  is the projector's concern (it generalizes the id-train watch crons);
-  the aggregator classifies and renders whatever it emits.
+  every non-in-motion entry carries its evidence inline. Slice 1
+  maps the OpenCode v2 servers directly (`src/sources/opencode.ts`);
+  a projector-ized session feed is slice 2.
 
 Neither view vendors anything from the CCC reference design
 (`claude-command-center`, FSL-1.1-MIT) — only its idea of a
@@ -155,11 +191,22 @@ src/
   render.ts     pure HTML rendering of every view
   server.ts     Bun HTTP server (read-only routes)
   config.ts     env config
+  feed.ts       fleet-feed file format + loader
+  quota-extract.ts  per-pool extractors over the quota view's dated reads
+  quota-guidance.ts headroom / burn-before-reset / do-not-start derivation
   sources/
     fixtures.ts   fixture data (real Grist seed + design-record refs)
     live.ts       Kaneo/Grist/projector readers with per-facet fallback
+    opencode.ts   OpenCode v2 server -> SessionFeedEntry mapper (shared)
+scripts/
+  collect-fleet-feed.ts  sandbox collector: quota + sandbox attention -> feed
+  push-fleet-feed.sh     collect + push the feed to the laptop (~5 min timer)
+systemd/
+  fleet-feed-collector.{service,timer}  sandbox-side collector units
 test/
   render.test.ts    unit derivations + render smoke
   boot.test.ts      boots the server, serves all views from fixtures
   projector.test.ts projector wire-schema mapping + stub-server reads
+  opencode.test.ts  mapper against a stub OpenCode v2 server
+  quota.test.ts     extractors + guidance against the dated-read format
 ```

@@ -1,0 +1,9 @@
+[Unit]
+Description=Fleet feed collector for the PM aggregator (sandbox host)
+After=network.target
+
+[Service]
+Type=oneshot
+# Runs from the feed clone (~hatch/git/pm-feed): collector + push over
+# the tailnet proxy route. Proxy credential from mcpx-daemon.env.
+ExecStart=/home/hatch/git/pm-feed/pm-stack/aggregator/scripts/push-fleet-feed.sh
