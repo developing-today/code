@@ -11,11 +11,7 @@
  * a missing value. Only a finite, past timestamp is compared against the
  * interval.
  */
-export function identityNeedsRefresh(
-  refreshedAt: string | null,
-  now: number,
-  intervalMs: number,
-): boolean {
+export function identityNeedsRefresh(refreshedAt: string | null, now: number, intervalMs: number): boolean {
   if (!refreshedAt) return true;
   const parsed = Number(refreshedAt);
   if (!Number.isFinite(parsed)) return true;
