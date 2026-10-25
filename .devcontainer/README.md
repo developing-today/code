@@ -17,10 +17,20 @@ Default machine: **2-core** (GitHub Pro includes 180 core-hours/month =
 - The image (Dockerfile) is thin: Ubuntu + direnv + single-user Nix with
   flakes enabled. The repo's own flakes provide the real toolchain via
   `.envrc`, exactly as on the laptop.
-- `postCreateCommand` warms the `./src/id` dev shell, so Codespaces
-  **prebuilds** (repo Settings → Codespaces → Prebuilds, trigger: on
-  push, branch: main) snapshot a ready-to-work environment. Prebuilds run
-  on Actions minutes, which are free/unlimited for this public repo.
+- `postCreateCommand` warms the `./src/id` dev shell (Rust/web tooling)
+  and verifies the image-provided tools. Go 1.25 comes from a devcontainer
+  feature — the repo's flakes do not provide Go; on the laptop it comes
+  from home-manager.
+- **Prebuilds are NOT available for this repo** (verified 2026-10-25):
+  the repo is owned by the `developing-today` organization, repository
+  Codespaces/prebuild settings require an organization Team/Enterprise
+  plan, and the repo settings page returns 404 on the current plan.
+  Codespaces themselves bill to the personal Pro account (user
+  ownership). Until that changes, the pattern is: keep one codespace per
+  active repo, **stop it instead of deleting it** between sessions
+  (restart is fast; a fresh create pays the full image build + dev-shell
+  realization, ~27 min in the pilot's first run), and delete it when the
+  workstream ends.
 
 ## Rules of the house
 

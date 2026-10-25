@@ -4,10 +4,13 @@
     "dockerfile": "Dockerfile"
   },
   "features": {
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.25"
+    }
   },
   "remoteUser": "vscode",
-  "postCreateCommand": "bash -lc 'direnv allow . ; nix develop ./src/id --command bash -c \"go version && git --version\"'",
+  "postCreateCommand": "bash -lc 'direnv allow . ; nix develop ./src/id --command bash -c \"cargo --version && rustc --version\" ; go version ; nix --version ; git --version'",
   "customizations": {
     "vscode": {
       "extensions": [
