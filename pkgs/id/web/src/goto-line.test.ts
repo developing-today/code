@@ -4,6 +4,7 @@
  * Tests plugin creation, dialog lifecycle, and command execution.
  */
 
+import type { Node as PMNode, Schema } from "prosemirror-model";
 import { EditorState } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { afterEach, describe, expect, it } from "vitest";
@@ -320,8 +321,8 @@ describe("dialog input interaction", () => {
 describe("go-to-line across textblocks (#745)", () => {
   /** Create a view from a pre-built doc node (any schema). */
   function createViewFromDoc(
-    schema: typeof rawSchema | typeof richSchema,
-    doc: ReturnType<typeof rawSchema.node>,
+    schema: Schema,
+    doc: PMNode,
   ): {
     view: EditorView;
     container: HTMLElement;
