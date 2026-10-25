@@ -180,10 +180,7 @@ async function mapOne(
     entry.awaitingQuestion = `Form open: ${q ?? "session form awaiting input"}`;
   }
 
-  const msgs = await getJson<{ data: V2Message[] }>(
-    target,
-    `/api/session/${s.id}/message?limit=${messageLimit}`,
-  );
+  const msgs = await getJson<{ data: V2Message[] }>(target, `/api/session/${s.id}/message?limit=${messageLimit}`);
   const data = msgs?.data ?? [];
   entry.messageCount = data.length;
 
@@ -205,9 +202,7 @@ async function mapOne(
       continue;
     }
     if (m.type === "assistant") {
-      const toolErr = (m.content ?? []).find(
-        (p) => p.type === "tool" && p.state?.status === "error",
-      );
+      const toolErr = (m.content ?? []).find((p) => p.type === "tool" && p.state?.status === "error");
       const toolErrText = toolErr ? errText(toolErr.state?.error) : null;
       if (m.finish === "error" || toolErrText) {
         const text = msgError ?? toolErrText ?? "turn failed (finish=error)";

@@ -53,14 +53,18 @@ const messages: Record<string, unknown[]> = {
       type: "assistant",
       time: { created: recent },
       finish: "tool-calls",
-      content: [
-        { type: "tool", state: { status: "running", input: { command: "bun test" } } },
-      ],
+      content: [{ type: "tool", state: { status: "running", input: { command: "bun test" } } }],
     },
     { id: "m1", type: "user", time: { created: recent - 1000 }, text: "go" },
   ],
   ses_errored: [
-    { id: "m3", type: "idle", time: { created: recent }, outcome: "failed", error: { type: "unknown", message: "429 subscription quota exhausted" } },
+    {
+      id: "m3",
+      type: "idle",
+      time: { created: recent },
+      outcome: "failed",
+      error: { type: "unknown", message: "429 subscription quota exhausted" },
+    },
     { id: "m2", type: "assistant", time: { created: recent - 1000 }, finish: "error", content: [] },
     { id: "m1", type: "user", time: { created: recent - 2000 }, text: "go" },
   ],

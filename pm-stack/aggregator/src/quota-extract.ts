@@ -15,8 +15,18 @@ import { poolState } from "./derive.ts";
 import type { QuotaPool, QuotaWindow } from "./model.ts";
 
 const MONTHS: Record<string, number> = {
-  Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
-  Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+  Jan: 0,
+  Feb: 1,
+  Mar: 2,
+  Apr: 3,
+  May: 4,
+  Jun: 5,
+  Jul: 6,
+  Aug: 7,
+  Sep: 8,
+  Oct: 9,
+  Nov: 10,
+  Dec: 11,
 };
 
 /** "Oct 30" + "18:01" UTC -> ISO. Year = now's; rolls forward if past. */
@@ -97,9 +107,7 @@ const extractCodex: Extractor = (s, now) => {
   if (!pct) return null;
   const reset = first(s, /resets (\w{3}) (\d{1,2}), (\d{2}:\d{2}) UTC/i);
   return {
-    windows: [
-      pctWindow("7-day", Number(pct[1]), reset ? monthDayTime(reset[1], reset[2], reset[3], now) : null),
-    ],
+    windows: [pctWindow("7-day", Number(pct[1]), reset ? monthDayTime(reset[1], reset[2], reset[3], now) : null)],
     note: "Codex window read (the Plus/Pro chat allowances are a separate, unresolved record).",
   };
 };
@@ -173,7 +181,12 @@ const extractCommandCode: Extractor = (s, now) => {
   if (!bal) return null;
   const end = first(s, /period ends (\w{3}) (\d{1,2}), (\d{2}:\d{2}) UTC/i);
   const windows: QuotaWindow[] = [
-    usdWindow("monthly credits", Number(bal[1]), Number(bal[2]), end ? monthDayTime(end[1], end[2], end[3], now) : null),
+    usdWindow(
+      "monthly credits",
+      Number(bal[1]),
+      Number(bal[2]),
+      end ? monthDayTime(end[1], end[2], end[3], now) : null,
+    ),
   ];
   const short = first(s, /5h (\d+(?:\.\d+)?)%, weekly (\d+(?:\.\d+)?)%/i);
   if (short) {

@@ -54,20 +54,20 @@ bun test
 
 Everything defaults to **fixtures** and works with no configuration:
 
-| Env var                | Default                  | Purpose                                                                                 |
-| ---------------------- | ------------------------ | --------------------------------------------------------------------------------------- |
-| `PM_AGG_SOURCE`        | `fixtures`               | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet                  |
-| `PM_AGG_PORT`          | `4870`                   | HTTP port                                                                               |
-| `PM_AGG_HOSTS`         | `127.0.0.1`              | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)        |
-| `PM_AGG_FEED_FILE`     | `./fleet-feed.json`      | The fleet feed (quota + sandbox attention) written by the collector (below)             |
-| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live) |
-| `KANEO_URL`            | `http://127.0.0.1:5173`  | Kaneo base URL (board reader)                                                           |
-| `KANEO_ADMIN_EMAIL`    | —                        | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                         |
-| `KANEO_ADMIN_PASSWORD` | —                        | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                 |
-| `GRIST_URL`            | `http://127.0.0.1:8484`  | Grist base URL                                                                          |
-| `GRIST_API_KEY`        | —                        | Grist API key (Bitwarden `grist.api-key`)                                               |
-| `GRIST_ROADMAP_DOC`    | `czYHYKgG9SHcm9CPwiKEq1` | The `Program roadmap` document id (Phase 2 seed)                                        |
-| `PM_PROJECTOR_URL`     | `http://127.0.0.1:7801`  | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it |
+| Env var                    | Default                                             | Purpose                                                                                 |
+| -------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `PM_AGG_SOURCE`            | `fixtures`                                          | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet                  |
+| `PM_AGG_PORT`              | `4870`                                              | HTTP port                                                                               |
+| `PM_AGG_HOSTS`             | `127.0.0.1`                                         | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)        |
+| `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                 | The fleet feed (quota + sandbox attention) written by the collector (below)             |
+| `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live)                  |
+| `KANEO_URL`                | `http://127.0.0.1:5173`                             | Kaneo base URL (board reader)                                                           |
+| `KANEO_ADMIN_EMAIL`        | —                                                   | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                         |
+| `KANEO_ADMIN_PASSWORD`     | —                                                   | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                 |
+| `GRIST_URL`                | `http://127.0.0.1:8484`                             | Grist base URL                                                                          |
+| `GRIST_API_KEY`            | —                                                   | Grist API key (Bitwarden `grist.api-key`)                                               |
+| `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                            | The `Program roadmap` document id (Phase 2 seed)                                        |
+| `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                             | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).

@@ -45,7 +45,7 @@ ENV_FILE="$DST/.env"
     value="$(sops -d --extract "[\"${sops_key}\"]" "$SOPS")"
     echo "${env_name}=${value}"
   done
-} > "$ENV_FILE"
+} >"$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
 cp "$UNIT_SRC" "$UNIT_DST"

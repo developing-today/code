@@ -15,9 +15,7 @@ function maxPercent(p: QuotaPool): number {
 }
 
 function soonestReset(p: QuotaPool): number | null {
-  const times = p.windows
-    .map((w) => (w.resetsAt ? Date.parse(w.resetsAt) : NaN))
-    .filter((t) => Number.isFinite(t));
+  const times = p.windows.map((w) => (w.resetsAt ? Date.parse(w.resetsAt) : NaN)).filter((t) => Number.isFinite(t));
   return times.length ? Math.min(...times) : null;
 }
 

@@ -32,8 +32,7 @@ const HOME = homedir();
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
 const outArg = process.argv.indexOf("--out");
-const outPath =
-  outArg >= 0 ? process.argv[outArg + 1] : (process.env.FLEET_FEED_OUT ?? join(PKG, "fleet-feed.json"));
+const outPath = outArg >= 0 ? process.argv[outArg + 1] : (process.env.FLEET_FEED_OUT ?? join(PKG, "fleet-feed.json"));
 const quotaViewPath =
   process.env.QUOTA_VIEW_PATH ??
   join(

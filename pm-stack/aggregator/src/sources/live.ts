@@ -444,8 +444,7 @@ export function liveSource(cfg: Config): Source {
       // no feed exists at all.
       const feed = await loadFeed(cfg.feedFile);
       if (feed) {
-        provenance.quota =
-          `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
+        provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         return feed.quota;
       }
       provenance.quota = "fixtures (no fleet feed file yet)";
