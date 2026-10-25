@@ -608,7 +608,7 @@ fn command_frame(command: &WorldCommand, capability: &str) -> Option<String> {
         WorldCommand::Caps => json!({ "type": "caps", "capability": capability }),
         WorldCommand::Documents { .. }
         | WorldCommand::Document(_)
-        | WorldCommand::Logs
+        | WorldCommand::Logs { .. }
         | WorldCommand::Help
         | WorldCommand::Message(_)
         | WorldCommand::Quit => return None,
@@ -831,8 +831,17 @@ impl SessionIo for SshIo {
                                 return Inbound::Closed;
                             }
                         }
-                        WorldCommand::Logs => {
-                            let text = "event tailing is not available in command mode; join in raw mode (no `cmd:` prefix) to see events live, or use `id world logs`\r\nworld> ";
+                        WorldCommand::Logs { seconds } => {
+                            let window = match seconds {
+                                Some(seconds) => {
+                                    format!(" (the requested {seconds}s window is ignored here)")
+                                }
+                                None => String::new(),
+                            };
+                            let text = format!(
+                                "event tailing is not available in command mode{window}; join in raw mode (no `cmd:` prefix) to see events live, or use `id world logs`\r\nworld> "
+                            );
+                            let text = text.as_str();
                             if self
                                 .handle
                                 .data(self.channel, terminal_text(text))
@@ -1187,7 +1196,9 @@ enum WorldCommand {
     },
     Document(String),
     Stats,
-    Logs,
+    Logs {
+        seconds: Option<u64>,
+    },
     Caps,
     Help,
     Message(String),
@@ -1203,7 +1214,7 @@ fn world_command(line: &str) -> Option<WorldCommand> {
         WorldLine::Documents { prefix } => WorldCommand::Documents { prefix },
         WorldLine::Document(name) => WorldCommand::Document(name),
         WorldLine::Stats => WorldCommand::Stats,
-        WorldLine::Logs { .. } => WorldCommand::Logs,
+        WorldLine::Logs { seconds } => WorldCommand::Logs { seconds },
         WorldLine::Caps => WorldCommand::Caps,
         WorldLine::Help => WorldCommand::Help,
         WorldLine::Quit => WorldCommand::Quit,
@@ -2891,8 +2902,14 @@ mod tests {
         assert_eq!(world_command("/quit"), Some(WorldCommand::Quit));
         assert_eq!(world_command("/stats"), Some(WorldCommand::Stats));
         assert_eq!(world_command("/caps"), Some(WorldCommand::Caps));
-        assert_eq!(world_command("/logs"), Some(WorldCommand::Logs));
-        assert_eq!(world_command("/logs 5"), Some(WorldCommand::Logs));
+        assert_eq!(
+            world_command("/logs"),
+            Some(WorldCommand::Logs { seconds: None })
+        );
+        assert_eq!(
+            world_command("/logs 5"),
+            Some(WorldCommand::Logs { seconds: Some(5) })
+        );
         assert_eq!(
             world_command("/input nope"),
             Some(WorldCommand::Message("usage: /input <hex>".into()))
