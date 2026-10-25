@@ -11,11 +11,13 @@ import {
   type Comment,
   type GhItem,
   type Link,
+  type OrchestrationSummary,
   type Provenance,
   type QuotaView,
   type RefKey,
   type RoadmapRow,
   type SessionFeedEntry,
+  type SourceCoverage,
   refsInText,
   refUrl,
 } from "../model.ts";
@@ -440,6 +442,7 @@ export const FIXTURE_QUOTA: QuotaView = {
 export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   {
     sessionId: "ses_k_wip",
+    source: "opencode-laptop",
     title: "pm wave K — aggregator UI",
     directory: "/home/user/work/id-train/pm-aggregator-ui",
     branch: "pm/aggregator-ui",
@@ -451,7 +454,24 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
     activeToolCalls: 1,
   },
   {
+    // A sub-session of ses_k_wip: collapses under its parent (slice 2).
+    sessionId: "ses_k_wip_explore",
+    source: "opencode-laptop",
+    parentId: "ses_k_wip",
+    agent: "explore",
+    outcome: "interrupted",
+    title: "Explore: locate the projector schema",
+    directory: "/home/user/work/id-train/pm-aggregator-ui",
+    model: "deepseek-v4-flash",
+    provider: "opencode-go",
+    lastActivityAt: "2026-10-25T02:40:00Z",
+    messageCount: 6,
+    messageDelta: 0,
+    activeToolCalls: 0,
+  },
+  {
     sessionId: "ses_h_connect",
+    source: "opencode-laptop",
     title: "pm wave H — connect repos",
     directory: "/home/user/work/id-train/pm-connect-repos",
     branch: "pm/connect-repos",
@@ -465,6 +485,7 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   },
   {
     sessionId: "ses_i_kaneo",
+    source: "opencode-sandbox",
     title: "pm wave I — Kaneo fork",
     directory: "/home/user/work/kaneo-fork",
     branch: "main",
@@ -478,6 +499,7 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   },
   {
     sessionId: "ses_j_proj",
+    source: "opencode-laptop",
     title: "pm wave J — projector",
     directory: "/home/user/work/id-train/pm-projector",
     branch: "pm/projector",
@@ -491,6 +513,7 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   },
   {
     sessionId: "ses_f_phase13",
+    source: "opencode-sandbox",
     title: "id train F — Phase 13",
     directory: "/home/user/work/id-train/phase-13-impl",
     branch: "phase-13-impl",
@@ -503,7 +526,68 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
     repeatedErrorCount: 4,
     lastTurnError: "claude_session_limit (retry)",
   },
+  {
+    // Jules, wired via the keeper's state in slice 2.
+    sessionId: "4259424002214698449",
+    source: "jules",
+    title: "Fix #811: id phase-9: a joiner's resize (up to 500x200) can permanently…",
+    directory: "developing-today/code",
+    createdAt: "2026-10-25T12:44:14Z",
+    lastActivityAt: "2026-10-25T02:50:00Z",
+    messageCount: 0,
+    activeToolCalls: 0,
+    awaitingQuestion: "Does this look good, and should I proceed?",
+    supervisionNote: "Jules AWAITING_USER_FEEDBACK · keeper: replied",
+  },
+  {
+    // A finished one-shot probe: expires out of the view (slice 2).
+    sessionId: "ses_old_probe",
+    source: "opencode-sandbox",
+    outcome: "succeeded",
+    title: "one-shot probe: GEMINI LIVE",
+    directory: "/home/hatch/tmp/gemini-probe",
+    model: "gemini-3.8-flash",
+    provider: "google",
+    lastActivityAt: "2026-10-24T20:00:00Z",
+    messageCount: 2,
+    messageDelta: 0,
+    activeToolCalls: 0,
+  },
 ];
+
+// The orchestration summary (#899) as the collector would embed it.
+export const FIXTURE_ORCHESTRATION: OrchestrationSummary = {
+  generatedAt: "2026-10-25T02:55:00Z",
+  objectives: [
+    {
+      title: "Ship aggregator slice 2 (mobile, tiers, today view)",
+      horizon: "today",
+      status: "in progress",
+      ref: `${CODE}#898`,
+    },
+    { title: "Decide the dezren39/nix GitHub App route", horizon: "today", status: "awaiting Drew" },
+    { title: "Rotate the laptop Meta secret at the source", horizon: "3d", ref: `${CODE}#861` },
+  ],
+  momentum: [
+    {
+      project: CODE,
+      state: "moving",
+      accomplished: ["PR #892 — aggregator slice 1 merged"],
+    },
+    {
+      project: NIX,
+      state: "blocked",
+      blockedBy: "GitHub App cannot reach a personal repo until Drew picks a route",
+    },
+  ],
+  escalations: [
+    {
+      sessionId: "ses_h_connect",
+      reason: "Only Drew can pick which repo installs the developing.today app first.",
+      at: "2026-10-25T02:55:00Z",
+    },
+  ],
+};
 
 export function fixtureSource(): Source {
   const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
@@ -526,6 +610,34 @@ export function fixtureSource(): Source {
     },
     quota: async () => FIXTURE_QUOTA,
     attention: async () => FIXTURE_ATTENTION,
+    orchestration: async () => FIXTURE_ORCHESTRATION,
+    coverage: async (): Promise<SourceCoverage[]> => [
+      {
+        source: "opencode-sandbox",
+        label: "OpenCode · sandbox server",
+        wired: true,
+        detail: "fixtures",
+      },
+      {
+        source: "opencode-laptop",
+        label: "OpenCode · laptop server",
+        wired: true,
+        detail: "fixtures",
+      },
+      {
+        source: "jules",
+        label: "Jules",
+        wired: true,
+        detail: "fixtures (keeper state)",
+      },
+      {
+        source: "claude-code",
+        label: "Muse",
+        wired: false,
+        detail:
+          "Not wired — Muse subagents run inside the assistant runtime, which exposes no session registry for the aggregator to read. Gap tracked in #898.",
+      },
+    ],
     provenance: () => provenance,
   };
 }

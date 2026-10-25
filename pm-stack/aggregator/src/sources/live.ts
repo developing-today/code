@@ -5,7 +5,7 @@
 // provenance strings say exactly which facet is live vs fixture-backed.
 import { readFile } from "node:fs/promises";
 import type { Config } from "../config.ts";
-import { feedAgeText, loadFeed } from "../feed.ts";
+import { feedAgeText, loadFeed, type FleetFeed } from "../feed.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions } from "./opencode.ts";
 import {
@@ -13,11 +13,13 @@ import {
   type Comment,
   type GhItem,
   type Link,
+  type OrchestrationSummary,
   type Provenance,
   type QuotaView,
   type RefKey,
   type RoadmapRow,
   type SessionFeedEntry,
+  type SourceCoverage,
   refsInText,
   refUrl,
 } from "../model.ts";
@@ -362,6 +364,16 @@ export function liveSource(cfg: Config): Source {
     return value;
   }
 
+  // Slice-2 coverage state: what the last attention read actually saw,
+  // so the coverage note describes reality rather than config.
+  let lastFeed: FleetFeed | null = null;
+  let laptopSeen: boolean | null = null;
+  async function getFeed(): Promise<FleetFeed | null> {
+    const feed = await loadFeed(cfg.feedFile);
+    if (feed) lastFeed = feed;
+    return feed;
+  }
+
   // The laptop's OpenChamber-managed OpenCode server: port + password
   // are read from its state file at request time (the port changes
   // across restarts). Mapped sessions are cached for 45 s (#890).
@@ -373,10 +385,14 @@ export function liveSource(cfg: Config): Source {
       password?: string;
     };
     if (!state.port || !state.password) return null;
-    const mapped = await mapServerSessions({
-      baseUrl: `http://127.0.0.1:${state.port}`,
-      password: state.password,
-    });
+    const mapped = await mapServerSessions(
+      {
+        baseUrl: `http://127.0.0.1:${state.port}`,
+        password: state.password,
+      },
+      Date.now(),
+      { source: "opencode-laptop" },
+    );
     if (!mapped) return null;
     laptopCache = { value: mapped.entries, at: Date.now() };
     return mapped.entries;
@@ -443,7 +459,7 @@ export function liveSource(cfg: Config): Source {
       // on the sandbox by scripts/collect-fleet-feed.ts. A stale feed
       // keeps rendering, with its age in provenance; fixtures only when
       // no feed exists at all.
-      const feed = await loadFeed(cfg.feedFile);
+      const feed = await getFeed();
       if (feed) {
         provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         return feed.quota;
@@ -458,7 +474,7 @@ export function liveSource(cfg: Config): Source {
       const parts: string[] = [];
       const byId = new Map<string, SessionFeedEntry>();
 
-      const feed = await loadFeed(cfg.feedFile);
+      const feed = await getFeed();
       if (feed) {
         for (const e of feed.attention) byId.set(e.sessionId, e);
         parts.push(`sandbox via fleet feed (${feedAgeText(feed.generatedAt)})`);
@@ -467,10 +483,14 @@ export function liveSource(cfg: Config): Source {
       try {
         const laptop = await laptopSessions();
         if (laptop) {
+          laptopSeen = true;
           for (const e of laptop) byId.set(e.sessionId, e);
           parts.push("laptop live");
+        } else {
+          laptopSeen = false;
         }
       } catch {
+        laptopSeen = false;
         /* laptop part fails soft */
       }
 
@@ -480,6 +500,61 @@ export function liveSource(cfg: Config): Source {
       }
       provenance.attention = "fixtures (no live attention source reachable)";
       return fix.attention();
+    },
+    async orchestration(): Promise<OrchestrationSummary | null> {
+      const feed = await getFeed();
+      if (feed?.orchestration) {
+        provenance.orchestration = `live (orchestration summary · ${feedAgeText(feed.orchestration.generatedAt)} · written ${feed.orchestration.generatedAt})`;
+        return feed.orchestration;
+      }
+      provenance.orchestration = feed
+        ? "none yet — the orchestration job (#899) has not written a summary; the today view derives"
+        : "fixtures (no fleet feed file yet)";
+      return null;
+    },
+    async coverage(): Promise<SourceCoverage[]> {
+      const feed = lastFeed ?? (await getFeed());
+      const out: SourceCoverage[] = [];
+      out.push({
+        source: "opencode-sandbox",
+        label: "OpenCode · sandbox server",
+        wired: Boolean(feed),
+        detail: feed
+          ? `via fleet feed (${feedAgeText(feed.generatedAt)}, collected ${feed.generatedAt})`
+          : "no fleet feed file — sandbox sessions are not visible",
+      });
+      out.push({
+        source: "opencode-laptop",
+        label: "OpenCode · laptop server",
+        wired: laptopSeen === true,
+        detail:
+          laptopSeen === true
+            ? "live from the OpenChamber-managed server (45 s cache)"
+            : laptopSeen === false
+              ? "unreachable on the last read — laptop sessions may be missing"
+              : "not read yet this process",
+      });
+      const j = feed?.julesSummary;
+      out.push({
+        source: "jules",
+        label: "Jules",
+        wired: Boolean(j),
+        detail: j
+          ? `via the keeper's state (jules-review) · ${j.tracked} tracked now · last keeper run ${j.at ?? "unknown"}${
+              j.total != null
+                ? ` · last run totals: ${j.total} sessions — ${j.completed ?? 0} completed, ${j.failed ?? 0} failed, ${j.inProgress ?? 0} in progress, ${j.awaitingFeedback ?? 0} awaiting feedback (completed runs are pruned by the keeper)`
+                : ""
+            }`
+          : "keeper state not in the feed — Jules sessions are not visible",
+      });
+      out.push({
+        source: "claude-code",
+        label: "Muse",
+        wired: false,
+        detail:
+          "Not wired — Muse subagents run inside the assistant runtime, which exposes no session registry for the aggregator to read. Gap tracked in #898.",
+      });
+      return out;
     },
     provenance: () => provenance,
   };
