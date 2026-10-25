@@ -653,11 +653,23 @@ impl SessionIo for SshIo {
                                     .to_string(),
                             );
                         }
-                        WorldCommand::Logs => {
-                            let text = "event tailing is not available in command mode; join in raw mode (no `cmd:` prefix) to see events live, or use `id world logs`\r\nworld> ";
+                        WorldCommand::Logs { seconds } => {
+                            // #819: the grammar's optional window is carried
+                            // here instead of silently discarded; command
+                            // mode cannot tail, so say the window is ignored
+                            // rather than pretending `/logs 5` == `/logs`.
+                            let ignored = match seconds {
+                                Some(seconds) => {
+                                    format!(" (the {seconds}s window is ignored in command mode)")
+                                }
+                                None => String::new(),
+                            };
+                            let text = format!(
+                                "event tailing is not available in command mode{ignored}; join in raw mode (no `cmd:` prefix) to see events live, or use `id world logs`\r\nworld> "
+                            );
                             if self
                                 .handle
-                                .data(self.channel, terminal_text(text))
+                                .data(self.channel, terminal_text(&text))
                                 .await
                                 .is_err()
                             {
@@ -812,7 +824,7 @@ const MAX_DOCUMENT_LIST_BYTES: usize = 32 * 1024;
 const MAX_DOCUMENT_LIST_ITEMS: usize = 512;
 
 #[derive(Debug, PartialEq, Eq)]
-enum WorldCommand {
+pub(crate) enum WorldCommand {
     Chat(String),
     Input(String),
     Records {
@@ -827,14 +839,16 @@ enum WorldCommand {
     },
     Document(String),
     Stats,
-    Logs,
+    Logs {
+        seconds: Option<u64>,
+    },
     Caps,
     Help,
     Message(String),
     Quit,
 }
 
-fn world_command(line: &str) -> Option<WorldCommand> {
+pub(crate) fn world_command(line: &str) -> Option<WorldCommand> {
     use crate::world_line::{WorldLine, parse_line};
     Some(match parse_line(line)? {
         WorldLine::Chat(text) => WorldCommand::Chat(text),
@@ -843,7 +857,7 @@ fn world_command(line: &str) -> Option<WorldCommand> {
         WorldLine::Documents { prefix } => WorldCommand::Documents { prefix },
         WorldLine::Document(name) => WorldCommand::Document(name),
         WorldLine::Stats => WorldCommand::Stats,
-        WorldLine::Logs { .. } => WorldCommand::Logs,
+        WorldLine::Logs { seconds } => WorldCommand::Logs { seconds },
         WorldLine::Caps => WorldCommand::Caps,
         WorldLine::Help => WorldCommand::Help,
         WorldLine::Quit => WorldCommand::Quit,
@@ -2066,8 +2080,14 @@ mod tests {
         assert_eq!(world_command("/quit"), Some(WorldCommand::Quit));
         assert_eq!(world_command("/stats"), Some(WorldCommand::Stats));
         assert_eq!(world_command("/caps"), Some(WorldCommand::Caps));
-        assert_eq!(world_command("/logs"), Some(WorldCommand::Logs));
-        assert_eq!(world_command("/logs 5"), Some(WorldCommand::Logs));
+        assert_eq!(
+            world_command("/logs"),
+            Some(WorldCommand::Logs { seconds: None })
+        );
+        assert_eq!(
+            world_command("/logs 5"),
+            Some(WorldCommand::Logs { seconds: Some(5) })
+        );
         assert_eq!(
             world_command("/input nope"),
             Some(WorldCommand::Message("usage: /input <hex>".into()))

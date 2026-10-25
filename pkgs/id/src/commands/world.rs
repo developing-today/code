@@ -1237,17 +1237,27 @@ async fn pump(client: WorldClient, command_mode: bool) -> Result<()> {
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
-                    let frame = if command_mode {
-                        pump_command_frame(line)?
+                    let action = if command_mode {
+                        pump_command_action(line)
                     } else {
-                        match line.strip_prefix("/input ") {
+                        PumpAction::Frame(match line.strip_prefix("/input ") {
                             Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
                             None => serde_json::json!({"type": "chat", "text": line}),
-                        }
+                        })
                     };
-                    if frame.is_null() { break Ok(()); }
-                    if let Err(e) = write_frame(&mut send, frame.to_string().as_bytes()).await {
-                        break Err(e);
+                    match action {
+                        PumpAction::Frame(frame) => {
+                            if let Err(e) =
+                                write_frame(&mut send, frame.to_string().as_bytes()).await
+                            {
+                                break Err(e);
+                            }
+                        }
+                        // #819: a Message is shown and the session continues,
+                        // exactly as SSH command mode renders it — a typo
+                        // must not disconnect the user.
+                        PumpAction::Show(message) => println!("{message}"),
+                        PumpAction::End => break Ok(()),
                     }
                 }
                 None => stdin_open = false,
@@ -1263,38 +1273,58 @@ async fn pump(client: WorldClient, command_mode: bool) -> Result<()> {
     result
 }
 
-/// Map one parsed [`crate::world_line::WorldLine`] to the session frame it
-/// needs in the `id world join --command-mode` pump. `null` ends the pump.
-fn pump_command_frame(line: &str) -> Result<serde_json::Value> {
+/// What the `id world join --command-mode` pump does with one stdin line.
+#[derive(Debug, PartialEq)]
+enum PumpAction {
+    /// Send this session frame to the world.
+    Frame(serde_json::Value),
+    /// Show this message to the user and keep the session running (#819:
+    /// parity with SSH command mode, where a parse `Message` is rendered
+    /// and the session continues — it must never disconnect the user).
+    Show(String),
+    /// End the pump (`/quit`, or a line the grammar maps to nothing).
+    End,
+}
+
+/// Map one parsed [`crate::world_line::WorldLine`] to the pump action it
+/// needs in the `id world join --command-mode` pump.
+fn pump_command_action(line: &str) -> PumpAction {
     use crate::world_line::{WorldLine, parse_line};
     let Some(action) = parse_line(line) else {
-        return Ok(serde_json::Value::Null);
+        return PumpAction::End;
     };
-    Ok(match action {
-        WorldLine::Chat(text) => serde_json::json!({"type": "chat", "text": text}),
-        WorldLine::Input(hex) => serde_json::json!({"type": "input", "data_hex": hex}),
-        WorldLine::Records { prefix } => {
-            serde_json::json!({"type": "records", "prefix": prefix, "after": null})
+    match action {
+        WorldLine::Chat(text) => {
+            PumpAction::Frame(serde_json::json!({"type": "chat", "text": text}))
         }
+        WorldLine::Input(hex) => {
+            PumpAction::Frame(serde_json::json!({"type": "input", "data_hex": hex}))
+        }
+        WorldLine::Records { prefix } => PumpAction::Frame(
+            serde_json::json!({"type": "records", "prefix": prefix, "after": null}),
+        ),
         WorldLine::Documents { prefix } => {
-            serde_json::json!({"type": "documents", "prefix": prefix})
+            PumpAction::Frame(serde_json::json!({"type": "documents", "prefix": prefix}))
         }
-        WorldLine::Document(name) => serde_json::json!({"type": "document", "name": name}),
-        WorldLine::Stats => serde_json::json!({"type": "info"}),
-        WorldLine::Caps => serde_json::json!({"type": "caps"}),
-        WorldLine::Logs { .. } => serde_json::json!({"type": "logs"}),
-        WorldLine::Help => serde_json::json!({"type": "help"}),
-        WorldLine::Quit => return Ok(serde_json::Value::Null),
-        WorldLine::Message(message) => {
-            anyhow::bail!("{message}")
+        WorldLine::Document(name) => {
+            PumpAction::Frame(serde_json::json!({"type": "document", "name": name}))
         }
-    })
+        WorldLine::Stats => PumpAction::Frame(serde_json::json!({"type": "info"})),
+        WorldLine::Caps => PumpAction::Frame(serde_json::json!({"type": "caps"})),
+        // #819: carry the grammar's optional window instead of discarding it.
+        WorldLine::Logs { seconds } => {
+            PumpAction::Frame(serde_json::json!({"type": "logs", "seconds": seconds}))
+        }
+        WorldLine::Help => PumpAction::Frame(serde_json::json!({"type": "help"})),
+        WorldLine::Quit => PumpAction::End,
+        WorldLine::Message(message) => PumpAction::Show(message),
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{pump_command_frame, scaffold_world, step_is_applied};
+    use super::{PumpAction, pump_command_action, scaffold_world, step_is_applied};
 
     /// #818: only grants/ceiling/profile steps are actually applied by
     /// `apply_steps`; module and schedule steps are reported-only until
@@ -1331,27 +1361,76 @@ mod tests {
     #[test]
     fn the_pump_command_mode_maps_the_shared_grammar() {
         assert_eq!(
-            pump_command_frame("/stats").unwrap(),
-            serde_json::json!({"type": "info"})
+            pump_command_action("/stats"),
+            PumpAction::Frame(serde_json::json!({"type": "info"}))
         );
         assert_eq!(
-            pump_command_frame("/caps").unwrap(),
-            serde_json::json!({"type": "caps"})
+            pump_command_action("/caps"),
+            PumpAction::Frame(serde_json::json!({"type": "caps"}))
         );
         assert_eq!(
-            pump_command_frame("/records x").unwrap(),
-            serde_json::json!({"type": "records", "prefix": "x", "after": null})
+            pump_command_action("/records x"),
+            PumpAction::Frame(serde_json::json!({"type": "records", "prefix": "x", "after": null}))
         );
         assert_eq!(
-            pump_command_frame("/input 00aF").unwrap(),
-            serde_json::json!({"type": "input", "data_hex": "00af"})
+            pump_command_action("/input 00aF"),
+            PumpAction::Frame(serde_json::json!({"type": "input", "data_hex": "00af"}))
         );
         assert_eq!(
-            pump_command_frame("hello").unwrap(),
-            serde_json::json!({"type": "chat", "text": "hello"})
+            pump_command_action("hello"),
+            PumpAction::Frame(serde_json::json!({"type": "chat", "text": "hello"}))
         );
-        assert!(pump_command_frame("/quit").unwrap().is_null());
-        assert!(pump_command_frame("/nope").is_err());
+        assert_eq!(pump_command_action("/quit"), PumpAction::End);
+    }
+
+    /// #819 parity: a line that parses to a `Message` is shown and the pump
+    /// keeps running on both surfaces (SSH renders it and continues; the
+    /// pump used to `bail!` and disconnect the user), and the `/logs`
+    /// window is carried by both consumers instead of silently discarded.
+    #[cfg(feature = "ssh")]
+    #[test]
+    fn pump_and_ssh_mappings_agree_on_message_logs_and_quit() {
+        use crate::world_ssh::{WorldCommand, world_command};
+        // Message: shown, not an error, and a following valid line still
+        // produces its frame.
+        assert_eq!(
+            pump_command_action("/nope"),
+            PumpAction::Show("unknown command; type /help".to_owned())
+        );
+        assert_eq!(
+            world_command("/nope"),
+            Some(WorldCommand::Message(
+                "unknown command; type /help".to_owned()
+            ))
+        );
+        assert_eq!(
+            pump_command_action("/input nope"),
+            PumpAction::Show("usage: /input <hex>".to_owned())
+        );
+        assert_eq!(
+            pump_command_action("/stats"),
+            PumpAction::Frame(serde_json::json!({"type": "info"}))
+        );
+        // /logs: the seconds window reaches both consumers.
+        assert_eq!(
+            pump_command_action("/logs"),
+            PumpAction::Frame(serde_json::json!({"type": "logs", "seconds": null}))
+        );
+        assert_eq!(
+            pump_command_action("/logs 5"),
+            PumpAction::Frame(serde_json::json!({"type": "logs", "seconds": 5}))
+        );
+        assert_eq!(
+            world_command("/logs"),
+            Some(WorldCommand::Logs { seconds: None })
+        );
+        assert_eq!(
+            world_command("/logs 5"),
+            Some(WorldCommand::Logs { seconds: Some(5) })
+        );
+        // /quit ends both surfaces.
+        assert_eq!(pump_command_action("/quit"), PumpAction::End);
+        assert_eq!(world_command("/quit"), Some(WorldCommand::Quit));
     }
 
     #[test]
