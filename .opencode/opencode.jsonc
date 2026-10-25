@@ -4668,7 +4668,7 @@
       ]
     },
     "classifier-complex": {
-      "model": "claude-code/claude-haiku-5-5",
+      "model": "opencode-route/workhorse",
       "temperature": 0,
       "maxTokens": 512,
       "mode": "primary",
@@ -4766,7 +4766,7 @@
       ]
     },
     "classifier": {
-      "model": "claude-code/claude-haiku-5-5",
+      "model": "opencode-route/scout",
       "temperature": 0,
       "maxTokens": 256,
       "mode": "primary",
@@ -4864,7 +4864,7 @@
       ]
     },
     "reasoner": {
-      "model": "claude-code/claude-haiku-5-5",
+      "model": "opencode-route/specialist",
       "temperature": 0,
       "mode": "primary",
       "request": {
@@ -4956,7 +4956,7 @@
       ]
     },
     "coder": {
-      "model": "claude-code/claude-haiku-5-5",
+      "model": "opencode-route/workhorse",
       "temperature": 0.2,
       "mode": "primary",
       "request": {
@@ -5085,45 +5085,142 @@
   ],
   "experimental": {
     "model_routes": {
-      "cheap-pool": {
+      // Route pools built 2026-10-25. Design: doc/2026-10-25T21-11-31Z_design_route-pools/
+      // Per-model pools join every plan provider serving a model; tier pools nest them.
+      // Plan routes only — the one exception is the DeepSeek PAYG reserve, last in its ordered pool.
+      "deepseek-flash-plan": {
+        "name": "DeepSeek Flash - plan providers",
         "targets": [
-          "google/gemma-4-31b-it",
-          "google/gemma-4-26b-a4b-it",
-          "google/lyria-3-pro-preview",
-          "google/lyria-3-clip-preview"
-        ],
-        "autonomy": "rules",
-        "selection": "ordered"
-      },
-      "fast": {
-        "targets": [
-          "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-flash-0731#low",
-          "deepseek/deepseek-chat#low",
-          "groq/qwen/qwen3.8-27b"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "deep": {
-        "targets": [
-          "deepseek/deepseek-v4-pro#max",
-          "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-pro-0813#high"
-        ],
-        "selection": "ordered",
-        "autonomy": "rules"
-      },
-      "free": {
-        "targets": [
-          "openrouter/minimax/minimax-m3.1-flash:free",
-          "openrouter/poolside/laguna-s-2.1:free"
+          "cline-pass/deepseek-v4.1-flash",
+          "opendesign/deepseek-v4.1-flash",
+          "opendesign/deepseek-v4-flash"
         ],
         "selection": "round-robin",
         "autonomy": "rules"
       },
-      "balanced": {
+      "deepseek-flash": {
+        "name": "DeepSeek Flash - plan first, PAYG reserve last",
         "targets": [
-          "deepseek/deepseek-chat#high",
-          "cloudflare-gateway/@cf/deepseek-ai/deepseek-v4-flash-0731#medium"
+          "opencode-route/deepseek-flash-plan",
+          "deepseek/deepseek-chat"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-route/deepseek-flash-plan": 100
+        }
+      },
+      "deepseek-pro-plan": {
+        "name": "DeepSeek V4 Pro - plan providers",
+        "targets": [
+          "cline-pass/deepseek-v4-pro",
+          "opendesign/deepseek-v4-pro"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "haiku-plan": {
+        "name": "Claude Haiku - plan providers",
+        "targets": [
+          "claude-code/claude-haiku-5-5",
+          "opendesign/claude-haiku-5.5"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "luna-plan": {
+        "name": "GPT Luna - plan providers",
+        "targets": [
+          "openai/gpt-6-luna",
+          "opendesign/gpt-6-luna",
+          "opencode-go.lab/gpt-5.6-luna",
+          "opencode-go.personal/gpt-5.6-luna"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "glm-flash-plan": {
+        "name": "GLM Flash - plan providers",
+        "targets": [
+          "cline-pass/glm-5.3-flash",
+          "opendesign/glm-5.3-flash",
+          "opendesign/glm-5.3-flashx"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "gemini-flash-plan": {
+        "name": "Gemini Flash - plan providers",
+        "targets": [
+          "antigravity-ls/gemini-3.8-flash"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "sonnet-plan": {
+        "name": "Claude Sonnet - plan providers",
+        "targets": [
+          "antigravity-ls/claude-sonnet-5-5"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "opus-plan": {
+        "name": "Claude Opus - plan providers",
+        "targets": [
+          "antigravity-ls/claude-opus-5-5"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "sol-plan": {
+        "name": "GPT Sol - plan providers",
+        "targets": [
+          "openai/gpt-6.1-sol",
+          "opencode-go.lab/gpt-5.6-sol",
+          "opencode-go.personal/gpt-5.6-sol"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "scout": {
+        "name": "Scout - routine work: cheapest, fastest, smart enough",
+        "targets": [
+          "opencode-route/deepseek-flash#medium",
+          "opencode-route/glm-flash-plan#medium",
+          "opencode-route/haiku-plan"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "workhorse": {
+        "name": "Workhorse - standard work: fast and smart across plan pools",
+        "targets": [
+          "opencode-route/deepseek-flash#high",
+          "opencode-route/luna-plan#max",
+          "opencode-route/haiku-plan#high",
+          "meta/muse-spark-1.3"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "specialist": {
+        "name": "Specialist - hard work: quality first, Claude then OpenAI then DeepSeek Pro",
+        "targets": [
+          "opencode-route/sonnet-plan#high",
+          "opencode-route/luna-plan#max",
+          "opencode-route/sol-plan#medium",
+          "opencode-route/deepseek-pro-plan#high"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "summit": {
+        "name": "Summit - very complex design only, deliberate use",
+        "targets": [
+          "opencode-route/opus-plan#high",
+          "openai/gpt-6.1-sol#high",
+          "meta/muse-wonder-1.0"
         ],
         "selection": "ordered",
         "autonomy": "rules"
