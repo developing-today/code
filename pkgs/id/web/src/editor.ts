@@ -64,12 +64,18 @@ export const richSchema = new Schema({
           tag: "img[src]",
           getAttrs(dom) {
             const el = dom as HTMLImageElement;
+            // #893: a linked image arrives wrapped in an anchor
+            // (<a href="..."><img ...></a>) — read the link from the
+            // wrapping <a>, or it is dropped on parse/paste.
+            const anchor = el.closest("a");
             return {
               src: el.getAttribute("src"),
               alt: el.getAttribute("alt"),
               title: el.getAttribute("title"),
               width: el.getAttribute("width") ? Number(el.getAttribute("width")) : null,
               height: el.getAttribute("height") ? Number(el.getAttribute("height")) : null,
+              linkHref: anchor?.getAttribute("href") ?? null,
+              linkTitle: anchor?.getAttribute("title") ?? null,
             };
           },
         },

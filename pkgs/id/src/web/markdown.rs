@@ -327,9 +327,11 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
         // Unsupported nodes - pass through as best we can
         NodeValue::HtmlBlock(html) => {
-            // Check if this is an <img> tag with width/height
+            // Check if this is an <img> tag with width/height, or the
+            // combined <a><img /></a> sized linked image form (#893)
             let trimmed = html.literal.trim();
-            if let Some(img_node) = parse_img_tag(trimmed) {
+            if let Some(img_node) = parse_linked_img_tag(trimmed).or_else(|| parse_img_tag(trimmed))
+            {
                 // Wrap in paragraph since this is block-level
                 return json!({
                     "type": "paragraph",
@@ -350,8 +352,10 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
         }
 
         NodeValue::HtmlInline(html) => {
-            // Check if this is an <img> tag with width/height
-            if let Some(img_attrs) = parse_img_tag(html) {
+            // Check if this is an <img> tag with width/height, or the
+            // combined <a><img /></a> form in a single literal (#893; the
+            // split form is merged in collect_inline_children)
+            if let Some(img_attrs) = parse_linked_img_tag(html).or_else(|| parse_img_tag(html)) {
                 return img_attrs;
             }
             // Other inline HTML becomes plain text
@@ -525,11 +529,57 @@ fn collect_list_items<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
         .collect()
 }
 
+/// The literal of an `HtmlInline` node, if `node` is one.
+fn html_inline_literal<'a>(node: &'a AstNode<'a>) -> Option<String> {
+    if let NodeValue::HtmlInline(html) = &node.data.borrow().value {
+        Some(html.clone())
+    } else {
+        None
+    }
+}
+
+/// Detect the split sized-linked-image sequence at the head of `children`
+/// (#893): an `<a href="...">` `HtmlInline`, an `<img ... />` `HtmlInline`,
+/// and the closing `</a>` `HtmlInline`. Comrak splits the HTML form the
+/// save direction emits for a sized linked image into those three sibling
+/// nodes; merged here they become one image node carrying `linkHref`, and
+/// neither anchor piece falls through as literal text. The closing tag is
+/// optional in the match (consumed when present) so a missing one cannot
+/// strand the opening tag as text either. Returns the merged image node
+/// and how many siblings it consumed.
+fn linked_image_sequence<'a>(children: &[&'a AstNode<'a>]) -> Option<(Value, usize)> {
+    if children.len() < 2 {
+        return None;
+    }
+    let (href, link_title) = parse_anchor_tag(&html_inline_literal(children[0])?)?;
+    let img = parse_img_tag(&html_inline_literal(children[1])?)?;
+    let consumed = if children.len() >= 3
+        && html_inline_literal(children[2]).is_some_and(|h| h.trim() == "</a>")
+    {
+        3
+    } else {
+        2
+    };
+    Some((image_with_link(img, &href, link_title.as_deref()), consumed))
+}
+
 /// Collect inline children of a node, flattening nested mark wrappers.
 fn collect_inline_children<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Vec<Value> {
     let mut result = Vec::new();
+    let children: Vec<&AstNode<'a>> = node.children().collect();
+    let mut index = 0;
 
-    for child in node.children() {
+    while index < children.len() {
+        // #893: merge a split <a><img /></a> sequence before the pieces
+        // are converted individually (see linked_image_sequence).
+        if let Some((img, consumed)) = linked_image_sequence(&children[index..]) {
+            result.push(img);
+            index += consumed;
+            continue;
+        }
+
+        let child = children[index];
+        index += 1;
         let child_data = child.data.borrow();
 
         // Check if this is a mark wrapper (Emph, Strong, Link)
@@ -628,6 +678,74 @@ fn decode_attr_entities(value: &str) -> String {
     out
 }
 
+/// Parse the attributes of an HTML tag, starting just past its `<name`
+/// prefix (`tag_len` bytes: 4 for `<img`, 2 for `<a`).
+///
+/// Parses attribute-by-attribute instead of searching substrings (#872):
+/// a substring search for `src="` also matches `data-src="`, and
+/// attribute-looking text inside an earlier quoted value (e.g. `title=`
+/// inside `alt="..."`) was extracted as a real attribute. Scanning
+/// name=value pairs left to right records whole attribute names only, and
+/// a quoted value is consumed as that attribute's value alone. First
+/// occurrence of a name wins (HTML duplicate-attribute rule).
+fn parse_tag_attrs(html: &str, tag_len: usize) -> std::collections::HashMap<String, String> {
+    let bytes = html.as_bytes();
+    let mut pos = tag_len;
+    let mut map = std::collections::HashMap::new();
+    while pos < bytes.len() {
+        // Skip separators between attributes (whitespace, '/' of '/>').
+        while pos < bytes.len() && (bytes[pos].is_ascii_whitespace() || bytes[pos] == b'/') {
+            pos += 1;
+        }
+        if pos >= bytes.len() || bytes[pos] == b'>' {
+            break;
+        }
+        // Attribute name: up to '=', whitespace, '/' or '>'.
+        let name_start = pos;
+        while pos < bytes.len()
+            && !bytes[pos].is_ascii_whitespace()
+            && !matches!(bytes[pos], b'=' | b'/' | b'>')
+        {
+            pos += 1;
+        }
+        if pos == name_start {
+            break;
+        }
+        let name = html[name_start..pos].to_ascii_lowercase();
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        let mut value = String::new();
+        if pos < bytes.len() && bytes[pos] == b'=' {
+            pos += 1;
+            while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+                pos += 1;
+            }
+            if pos < bytes.len() && matches!(bytes[pos], b'"' | b'\'') {
+                let quote = bytes[pos];
+                pos += 1;
+                let value_start = pos;
+                while pos < bytes.len() && bytes[pos] != quote {
+                    pos += 1;
+                }
+                value = decode_attr_entities(&html[value_start..pos]);
+                if pos < bytes.len() {
+                    pos += 1; // closing quote
+                }
+            } else {
+                let value_start = pos;
+                while pos < bytes.len() && !bytes[pos].is_ascii_whitespace() && bytes[pos] != b'>' {
+                    pos += 1;
+                }
+                value = decode_attr_entities(&html[value_start..pos]);
+            }
+        }
+        // First occurrence wins (HTML duplicate-attribute rule).
+        map.entry(name).or_insert(value);
+    }
+    map
+}
+
 /// Parse an HTML `<img>` tag and extract attributes into a `ProseMirror` image node.
 ///
 /// Returns `Some(json)` if the input looks like `<img src="..." ... />`, otherwise `None`.
@@ -637,74 +755,7 @@ fn parse_img_tag(html: &str) -> Option<Value> {
         return None;
     }
 
-    // Parse the tag attribute-by-attribute instead of searching substrings
-    // (#872): a substring search for `src="` also matches `data-src="`, and
-    // attribute-looking text inside an earlier quoted value (e.g. `title=`
-    // inside `alt="..."`) was extracted as a real attribute. Scanning
-    // name=value pairs left to right records whole attribute names only,
-    // and a quoted value is consumed as that attribute's value alone.
-    fn parse_attrs(html: &str) -> std::collections::HashMap<String, String> {
-        let bytes = html.as_bytes();
-        let mut pos = 4; // skip "<img"
-        let mut map = std::collections::HashMap::new();
-        while pos < bytes.len() {
-            // Skip separators between attributes (whitespace, '/' of '/>').
-            while pos < bytes.len() && (bytes[pos].is_ascii_whitespace() || bytes[pos] == b'/') {
-                pos += 1;
-            }
-            if pos >= bytes.len() || bytes[pos] == b'>' {
-                break;
-            }
-            // Attribute name: up to '=', whitespace, '/' or '>'.
-            let name_start = pos;
-            while pos < bytes.len()
-                && !bytes[pos].is_ascii_whitespace()
-                && !matches!(bytes[pos], b'=' | b'/' | b'>')
-            {
-                pos += 1;
-            }
-            if pos == name_start {
-                break;
-            }
-            let name = html[name_start..pos].to_ascii_lowercase();
-            while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-                pos += 1;
-            }
-            let mut value = String::new();
-            if pos < bytes.len() && bytes[pos] == b'=' {
-                pos += 1;
-                while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-                    pos += 1;
-                }
-                if pos < bytes.len() && matches!(bytes[pos], b'"' | b'\'') {
-                    let quote = bytes[pos];
-                    pos += 1;
-                    let value_start = pos;
-                    while pos < bytes.len() && bytes[pos] != quote {
-                        pos += 1;
-                    }
-                    value = decode_attr_entities(&html[value_start..pos]);
-                    if pos < bytes.len() {
-                        pos += 1; // closing quote
-                    }
-                } else {
-                    let value_start = pos;
-                    while pos < bytes.len()
-                        && !bytes[pos].is_ascii_whitespace()
-                        && bytes[pos] != b'>'
-                    {
-                        pos += 1;
-                    }
-                    value = decode_attr_entities(&html[value_start..pos]);
-                }
-            }
-            // First occurrence wins (HTML duplicate-attribute rule).
-            map.entry(name).or_insert(value);
-        }
-        map
-    }
-
-    let parsed = parse_attrs(trimmed);
+    let parsed = parse_tag_attrs(trimmed, 4);
     let attr = |name: &str| parsed.get(name).map(String::as_str);
 
     let src = attr("src")?; // src is required
@@ -731,6 +782,49 @@ fn parse_img_tag(html: &str) -> Option<Value> {
         "type": "image",
         "attrs": attrs
     }))
+}
+
+/// Parse an HTML `<a ...>` opening tag, returning its `href` and optional
+/// `title`. Returns `None` for anything else, including an anchor with no
+/// (or an empty) `href`.
+fn parse_anchor_tag(html: &str) -> Option<(String, Option<String>)> {
+    let trimmed = html.trim();
+    let after_name = trimmed.as_bytes().get(2).copied()?;
+    if !trimmed.starts_with("<a") || !(after_name.is_ascii_whitespace() || after_name == b'>') {
+        return None;
+    }
+    let parsed = parse_tag_attrs(trimmed, 2);
+    let href = parsed.get("href")?;
+    if href.is_empty() {
+        return None;
+    }
+    let title = parsed.get("title").filter(|t| !t.is_empty()).cloned();
+    Some((href.clone(), title))
+}
+
+/// Attach a wrapping anchor's link to an image node (#880/#893), in the
+/// same `linkHref`/`linkTitle` attrs the markdown `Image` arm produces.
+fn image_with_link(mut img: Value, href: &str, link_title: Option<&str>) -> Value {
+    img["attrs"]["linkHref"] = json!(href);
+    if let Some(title) = link_title {
+        img["attrs"]["linkTitle"] = json!(title);
+    }
+    img
+}
+
+/// Parse the combined `<a href="..."><img ... /></a>` form (#893) — the
+/// sized linked image emission when comrak keeps it in a single literal
+/// (e.g. an `HtmlBlock`) instead of splitting it into sibling `HtmlInline`
+/// nodes (that split form is merged in `collect_inline_children`).
+fn parse_linked_img_tag(html: &str) -> Option<Value> {
+    let trimmed = html.trim();
+    let (href, link_title) = parse_anchor_tag(trimmed)?;
+    let img_start = trimmed.find("<img")?;
+    if !trimmed[..img_start].trim_end().ends_with('>') || !trimmed[img_start..].contains("</a>") {
+        return None;
+    }
+    let img = parse_img_tag(&trimmed[img_start..])?;
+    Some(image_with_link(img, &href, link_title.as_deref()))
 }
 
 /// Convert `ProseMirror` JSON document to markdown text.
@@ -917,10 +1011,18 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 tag.push_str(" />");
                 // #880: a sized image cannot use [![..](..)](..) syntax;
                 // keep its link as an HTML anchor around the <img> tag.
+                // #893: carry linkTitle too, so the parse direction's
+                // linkTitle survives the next save as well.
                 if let Some(link_href) = json["attrs"]["linkHref"].as_str()
                     && !link_href.is_empty()
                 {
-                    tag = format!("<a href=\"{}\">{tag}</a>", escape_attr_value(link_href));
+                    let mut anchor = format!("<a href=\"{}\"", escape_attr_value(link_href));
+                    if let Some(link_title) = json["attrs"]["linkTitle"].as_str()
+                        && !link_title.is_empty()
+                    {
+                        anchor.push_str(&format!(" title=\"{}\"", escape_attr_value(link_title)));
+                    }
+                    tag = format!("{anchor}>{tag}</a>");
                 }
                 NodeValue::HtmlInline(tag)
             } else {
@@ -1810,6 +1912,89 @@ mod tests {
         let md = prosemirror_to_markdown(&doc).expect("converts");
         assert!(md.contains("![alt](img.png)"), "plain image: {md}");
         assert!(md.contains("[text](https://x.test)"), "plain link: {md}");
+    }
+
+    #[test]
+    fn test_sized_linked_image_roundtrip_keeps_href() {
+        // #893: a sized linked image is emitted as
+        // <a href="..."><img ... width="..." /></a>, and that form must
+        // parse back to one image node — href, dimensions, and alt intact,
+        // with no literal <a>/</a> text nodes.
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "image",
+                    "attrs": {
+                        "src": "img.png",
+                        "alt": "alt",
+                        "width": 200,
+                        "height": 150,
+                        "linkHref": "https://example.com",
+                        "linkTitle": "Link title"
+                    }
+                }]
+            }]
+        });
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert!(
+            md.contains("<a href=\"https://example.com\""),
+            "sized linked image emitted with anchor: {md}"
+        );
+        assert!(md.contains("width=\"200\""), "width emitted: {md}");
+        assert!(md.contains("height=\"150\""), "height emitted: {md}");
+
+        // Full round trip, twice, so the re-emitted form is pinned too.
+        for back in [
+            markdown_to_prosemirror(&md),
+            markdown_to_prosemirror(
+                &prosemirror_to_markdown(&markdown_to_prosemirror(&md)).expect("converts"),
+            ),
+        ] {
+            let para_content = back["content"][0]["content"]
+                .as_array()
+                .expect("inline content");
+            assert_eq!(
+                para_content.len(),
+                1,
+                "only the image node, no literal anchor text: {back}"
+            );
+            let img = &para_content[0];
+            assert_eq!(img["type"], "image");
+            assert_eq!(img["attrs"]["src"], "img.png");
+            assert_eq!(img["attrs"]["alt"], "alt");
+            assert_eq!(img["attrs"]["width"], 200);
+            assert_eq!(img["attrs"]["height"], 150);
+            assert_eq!(img["attrs"]["linkHref"], "https://example.com");
+            assert_eq!(img["attrs"]["linkTitle"], "Link title");
+        }
+
+        // The split-inline form inside running text: comrak yields the
+        // <a>, <img>, and </a> pieces as sibling HtmlInline nodes of the
+        // paragraph, which must merge the same way.
+        let doc = markdown_to_prosemirror(
+            "before <a href=\"https://example.com\"><img src=\"img.png\" alt=\"alt\" width=\"200\" /></a> after\n",
+        );
+        let para_content = doc["content"][0]["content"]
+            .as_array()
+            .expect("inline content");
+        let img = para_content
+            .iter()
+            .find(|n| n["type"] == "image")
+            .expect("image node present");
+        assert_eq!(img["attrs"]["src"], "img.png");
+        assert_eq!(img["attrs"]["alt"], "alt");
+        assert_eq!(img["attrs"]["width"], 200);
+        assert_eq!(img["attrs"]["linkHref"], "https://example.com");
+        assert!(
+            para_content.iter().all(|n| {
+                n["text"]
+                    .as_str()
+                    .is_none_or(|t| !t.contains("<a") && !t.contains("</a>"))
+            }),
+            "no literal anchor text nodes: {doc}"
+        );
     }
 
     #[test]
