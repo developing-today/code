@@ -200,6 +200,20 @@ describe("isLightColor", () => {
     expect(isLightColor("ffffff")).toBe(true);
     expect(isLightColor("000000")).toBe(false);
   });
+
+  it("expands 3-digit shorthand hex per CSS rules", () => {
+    expect(isLightColor("#fff")).toBe(true);
+    expect(isLightColor("#ff0")).toBe(true);
+    expect(isLightColor("#000")).toBe(false);
+    expect(isLightColor("abc")).toBe(isLightColor("#aabbcc"));
+  });
+
+  it("treats malformed colors as dark instead of deciding via NaN", () => {
+    expect(isLightColor("")).toBe(false);
+    expect(isLightColor("red")).toBe(false);
+    expect(isLightColor("#gggggg")).toBe(false);
+    expect(isLightColor("#ffff")).toBe(false);
+  });
 });
 
 describe("getColorForClient", () => {
