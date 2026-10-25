@@ -1,8 +1,15 @@
 // The aggregator's HTTP server. Read-mostly: every route is a GET. Pages are
 // server-rendered HTML; /api/*.json serve the same data machine-first.
 import { loadConfig } from "./config.ts";
-import { allRefs } from "./derive.ts";
-import { renderAttention, renderBoard, renderItem, renderQuota, renderRoadmap } from "./render.ts";
+import { allRefs, buildAttention, deriveToday, type RoadmapGrain } from "./derive.ts";
+import {
+  renderAttention,
+  renderBoard,
+  renderItem,
+  renderQuota,
+  renderRoadmap,
+  renderToday,
+} from "./render.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
@@ -40,6 +47,28 @@ async function roadmapContext() {
   return { rows, items };
 }
 
+async function attentionContext() {
+  const [feed, summary, coverage] = await Promise.all([
+    source.attention(),
+    source.orchestration(),
+    source.coverage(),
+  ]);
+  return { view: buildAttention(feed, summary), coverage };
+}
+
+async function todayContext() {
+  const [{ board, items }, { rows }, { view, coverage }, quota, summary] = await Promise.all([
+    boardContext(),
+    roadmapContext(),
+    attentionContext(),
+    source.quota(),
+    source.orchestration(),
+  ]);
+  return { today: deriveToday(board, rows, items, summary), view, coverage, quota };
+}
+
+const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
+
 async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
@@ -50,9 +79,16 @@ async function handler(req: Request): Promise<Response> {
     return html(renderBoard(board, items, prov()));
   }
 
+  if (path === "/today") {
+    const { today, view, coverage, quota } = await todayContext();
+    return html(renderToday(today, view, quota, coverage, prov()));
+  }
+
   if (path === "/roadmap") {
     const { rows, items } = await roadmapContext();
-    return html(renderRoadmap(rows, items, prov()));
+    const g = url.searchParams.get("h") ?? "quarter";
+    const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
+    return html(renderRoadmap(rows, items, prov(), grain));
   }
 
   if (path === "/quota") {
@@ -60,7 +96,8 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/attention") {
-    return html(renderAttention(await source.attention(), prov()));
+    const { view, coverage } = await attentionContext();
+    return html(renderAttention(view, coverage, prov()));
   }
 
   if (path === "/api/board.json") {
@@ -75,7 +112,19 @@ async function handler(req: Request): Promise<Response> {
     return json(await source.quota());
   }
   if (path === "/api/attention.json") {
-    return json(await source.attention());
+    // Slice 2: the flat array shape stays; entries are now current-only
+    // (expired dropped) and tier-annotated (tier/drewReason/
+    // orchestratorNote, source, parentId).
+    const { view } = await attentionContext();
+    return json(view.all);
+  }
+  if (path === "/api/coverage.json") {
+    const { view, coverage } = await attentionContext();
+    return json({ coverage, expired: view.expiredCount });
+  }
+  if (path === "/api/today.json") {
+    const { today } = await todayContext();
+    return json(today);
   }
   if (path === "/api/health") {
     return json({ status: "ok", source: prov() });

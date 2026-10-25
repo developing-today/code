@@ -44,6 +44,17 @@ const sessions = [
     time: { created: old, updated: old },
     location: { directory: "/work/d" },
   },
+  {
+    id: "ses_child",
+    title: "explore child",
+    parentID: "ses_active",
+    agent: "explore",
+    model: { id: "deepseek-v4-flash", providerID: "opencode-go" },
+    tokens: { input: 3, output: 1, reasoning: 0 },
+    outcome: "interrupted",
+    time: { created: recent - 30_000, updated: recent },
+    location: { directory: "/work/a" },
+  },
 ];
 
 const messages: Record<string, unknown[]> = {
@@ -70,6 +81,7 @@ const messages: Record<string, unknown[]> = {
   ],
   ses_question: [{ id: "m1", type: "user", time: { created: recent }, text: "go" }],
   ses_stale: [{ id: "m1", type: "user", time: { created: old }, text: "go" }],
+  ses_child: [{ id: "m1", type: "user", time: { created: recent }, text: "explore" }],
 };
 
 let server: ReturnType<typeof Bun.serve>;
@@ -121,6 +133,18 @@ describe("opencode v2 mapper", () => {
 
     const question = byId.get("ses_question")!;
     expect(question.awaitingQuestion).toContain("Permission pending");
+
+    // Sub-session linkage (slice 2): parent, agent, outcome, created.
+    const child = byId.get("ses_child")!;
+    expect(child.parentId).toBe("ses_active");
+    expect(child.agent).toBe("explore");
+    expect(child.outcome).toBe("interrupted");
+    expect(child.createdAt).toBeTruthy();
+  });
+
+  test("stamps the entry source when asked", async () => {
+    const mapped = await mapServerSessions({ baseUrl, password: "x" }, NOW, { source: "opencode-laptop" });
+    expect(mapped!.entries.every((e) => e.source === "opencode-laptop")).toBe(true);
   });
 
   test("unreachable server fails soft (null)", async () => {
