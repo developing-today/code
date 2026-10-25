@@ -2106,8 +2106,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Antigravity Language Server (Direct gRPC/ConnectRPC)",
       "options": {
-        // Literal canonical port (home/common/default.nix): the {env:ANTIGRAVITY_LS_PROXY_PORT:-18745} template resolved to an EMPTY port under OpenChamber (2026-10-25 audit) and took this provider down while its proxy was healthy.
-        "baseURL": "http://127.0.0.1:18745/v1",
+        "baseURL": "http://127.0.0.1:{env:ANTIGRAVITY_LS_PROXY_PORT:-18745}/v1",
         "apiKey": "antigravity-local"
       },
       "models": {
@@ -4279,8 +4278,7 @@
           "npm": "@ai-sdk/openai-compatible",
           "name": "Command Code (CLI proxy)",
           "options": {
-                // Literal canonical port (home/common/default.nix): the {env:COMMANDCODE_PROXY_PORT:-18748} template resolved to an EMPTY port under OpenChamber (2026-10-25 audit) and took this provider down while its proxy was healthy.
-                "baseURL": "http://127.0.0.1:18748/v1",
+                "baseURL": "http://127.0.0.1:{env:COMMANDCODE_PROXY_PORT:-18748}/v1",
                 "apiKey": "commandcode-local"
           },
           "models": {
