@@ -79,7 +79,9 @@ describe("server boots from fixtures", () => {
     };
     expect(todayJson.objectives.length).toBeGreaterThan(0);
     expect(todayJson.momentum.length).toBeGreaterThan(0);
-    expect(todayJson.fromOrchestrator).toBe(true); // fixture summary exists
+    // Fixtures carry no orchestration section (#899: "not measured" is
+    // the honest fixture state), so the today view derives — labelled.
+    expect(todayJson.fromOrchestrator).toBe(false);
     const coverage = (await (await fetch(`http://127.0.0.1:${port}/api/coverage.json`)).json()) as {
       coverage: { source: string; wired: boolean }[];
       expired: number;

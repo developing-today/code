@@ -115,6 +115,12 @@ async function handler(req: Request): Promise<Response> {
     const { today } = await todayContext();
     return json(today);
   }
+  if (path === "/api/orchestration.json") {
+    // #899: the orchestration job's tiers + goal measurements. Absent
+    // means "not measured yet" — never an empty queue.
+    const section = await source.orchestration();
+    return json(section ?? { status: "absent", reason: "no orchestration run has published yet" });
+  }
   if (path === "/api/health") {
     return json({ status: "ok", source: prov() });
   }

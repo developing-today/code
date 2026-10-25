@@ -13,16 +13,19 @@
 //     attribution for the quota view.
 //   - jules-review-state.json — keeper supervision entries annotate
 //     matching sessions as evidence.
+//   - orchestration.json — the orchestration job's latest section
+//     (#899: tiers, dependencies, goal measurements), embedded as-is
+//     after a structural check; absent/malformed = section omitted.
 //
 // Usage: bun run scripts/collect-fleet-feed.ts [--out <path>]
 // Env overrides: QUOTA_VIEW_PATH, JULES_STATE_PATH, SANDBOX_OPENCODE_URL,
-// OPENCODE_SERVER_PASSWORD_FILE, ORCHESTRATION_STATE_PATH.
+// OPENCODE_SERVER_PASSWORD_FILE, ORCHESTRATION_PATH.
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isOrchestrationSummary, type FleetFeed } from "../src/feed.ts";
-import type { JulesSummary, QuotaPool, SessionFeedEntry } from "../src/model.ts";
+import { isOrchestrationSection, type FleetFeed } from "../src/feed.ts";
+import type { JulesSummary, OrchestrationSection, QuotaPool, SessionFeedEntry } from "../src/model.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
@@ -41,7 +44,7 @@ const quotaViewPath =
     "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
   );
 const julesStatePath = process.env.JULES_STATE_PATH ?? join(HIDDEN, "jules-review-state.json");
-const orchestrationStatePath = process.env.ORCHESTRATION_STATE_PATH ?? join(HIDDEN, "orchestration-state.json");
+const orchestrationPath = process.env.ORCHESTRATION_PATH ?? join(HIDDEN, "orchestration.json");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
   process.env.OPENCODE_SERVER_PASSWORD_FILE ?? join(HOME, "tools/secrets.d/opencode-server-password");
@@ -154,13 +157,18 @@ async function main(): Promise<void> {
     console.error("collector: jules-review state unreadable; no Jules sessions this run");
   }
 
-  // --- orchestration summary (slice 2, #899 -> today view) -----------------
-  let orchestration: FleetFeed["orchestration"];
+  // --- orchestration section (#899) --------------------------------------
+  let orchestration: OrchestrationSection | undefined;
   try {
-    const parsed: unknown = JSON.parse(await readFile(orchestrationStatePath, "utf8"));
-    if (isOrchestrationSummary(parsed)) orchestration = parsed;
+    const parsed: unknown = JSON.parse(await readFile(orchestrationPath, "utf8"));
+    if (isOrchestrationSection(parsed)) {
+      orchestration = parsed;
+    } else {
+      console.error("collector: orchestration.json failed its structural check; section omitted");
+    }
   } catch {
-    /* the orchestration job has not written one yet — the view derives */
+    // No orchestration file yet (the job has not run) is the normal
+    // pre-#899 state — omit the section silently.
   }
 
   const feed: FleetFeed = {
@@ -169,12 +177,13 @@ async function main(): Promise<void> {
     quota: { pools, burn: [], choices: computeChoices(pools, now.getTime()) },
     attention,
     julesSummary: jules,
-    orchestration,
+    ...(orchestration ? { orchestration } : {}),
   };
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
-    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (sandbox + jules${jules ? `, ${jules.tracked} jules tracked` : ""})${orchestration ? ", orchestration summary embedded" : ""}`,
+    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (sandbox + jules${jules ? `, ${jules.tracked} jules tracked` : ""})` +
+      (orchestration ? `, orchestration ${orchestration.runId}` : ", no orchestration section"),
   );
 }
 

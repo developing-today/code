@@ -5,7 +5,7 @@ import type {
   BoardItem,
   Comment,
   GhItem,
-  OrchestrationSummary,
+  OrchestrationSection,
   Provenance,
   QuotaView,
   RefKey,
@@ -27,8 +27,8 @@ export interface Source {
   quota(): Promise<QuotaView>;
   /** Raw session feed for the "needs you" view (#852), pre-classification. */
   attention(): Promise<SessionFeedEntry[]>;
-  /** The #899 orchestration summary when one exists (slice 2). */
-  orchestration(): Promise<OrchestrationSummary | null>;
+  /** The orchestration job's latest section (#899); null = not measured yet. */
+  orchestration(): Promise<OrchestrationSection | null>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;

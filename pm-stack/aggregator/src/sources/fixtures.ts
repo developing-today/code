@@ -11,7 +11,6 @@ import {
   type Comment,
   type GhItem,
   type Link,
-  type OrchestrationSummary,
   type Provenance,
   type QuotaView,
   type RefKey,
@@ -559,40 +558,6 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   },
 ];
 
-// The orchestration summary (#899) as the collector would embed it.
-export const FIXTURE_ORCHESTRATION: OrchestrationSummary = {
-  generatedAt: ago(0.1),
-  objectives: [
-    {
-      title: "Ship aggregator slice 2 (mobile, tiers, today view)",
-      horizon: "today",
-      status: "in progress",
-      ref: `${CODE}#898`,
-    },
-    { title: "Decide the dezren39/nix GitHub App route", horizon: "today", status: "awaiting Drew" },
-    { title: "Rotate the laptop Meta secret at the source", horizon: "3d", ref: `${CODE}#861` },
-  ],
-  momentum: [
-    {
-      project: CODE,
-      state: "moving",
-      accomplished: ["PR #892 — aggregator slice 1 merged"],
-    },
-    {
-      project: NIX,
-      state: "blocked",
-      blockedBy: "GitHub App cannot reach a personal repo until Drew picks a route",
-    },
-  ],
-  escalations: [
-    {
-      sessionId: "ses_h_connect",
-      reason: "Only Drew can pick which repo installs the developing.today app first.",
-      at: ago(0.1),
-    },
-  ],
-};
-
 export function fixtureSource(): Source {
   const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
   const provenance: Provenance = {
@@ -614,7 +579,9 @@ export function fixtureSource(): Source {
     },
     quota: async () => FIXTURE_QUOTA,
     attention: async () => FIXTURE_ATTENTION,
-    orchestration: async () => FIXTURE_ORCHESTRATION,
+    // Fixtures carry no orchestration section: "not measured" is the
+    // honest fixture state for a job that only runs live (#899).
+    orchestration: async () => null,
     coverage: async (): Promise<SourceCoverage[]> => [
       {
         source: "opencode-sandbox",

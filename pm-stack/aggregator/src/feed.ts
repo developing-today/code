@@ -4,7 +4,7 @@
 // record live on the sandbox). The aggregator renders the feed as-is;
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
-import type { JulesSummary, OrchestrationSummary, QuotaView, SessionFeedEntry } from "./model.ts";
+import type { JulesSummary, OrchestrationSection, QuotaView, SessionFeedEntry } from "./model.ts";
 
 export interface FleetFeed {
   version: 1;
@@ -15,19 +15,29 @@ export interface FleetFeed {
   attention: SessionFeedEntry[];
   /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
   julesSummary?: JulesSummary;
-  /** Orchestration summary from #899's job (slice 2); absent until it writes one. */
-  orchestration?: OrchestrationSummary;
+  /** The orchestration job's latest section (#899), when one exists. */
+  orchestration?: OrchestrationSection;
 }
 
-/** Loose validation of an orchestration summary (contract on #899). */
-export function isOrchestrationSummary(v: unknown): v is OrchestrationSummary {
+/**
+ * Minimal structural check for an orchestration section, shared by the
+ * collector (which embeds the orchestrator's file fail-soft) and the
+ * live source (which serves it). Absent or malformed = "not measured".
+ */
+export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
   if (typeof v !== "object" || v === null) return false;
-  const o = v as Partial<OrchestrationSummary>;
+  const s = v as Partial<OrchestrationSection>;
   return (
-    typeof o.generatedAt === "string" &&
-    Array.isArray(o.objectives) &&
-    Array.isArray(o.momentum) &&
-    Array.isArray(o.escalations)
+    s.version === 1 &&
+    typeof s.generatedAt === "string" &&
+    typeof s.runId === "string" &&
+    typeof s.tiers === "object" &&
+    s.tiers !== null &&
+    Array.isArray(s.tiers.needsDrew) &&
+    Array.isArray(s.tiers.needsOrchestrator) &&
+    Array.isArray(s.dependencies) &&
+    Array.isArray(s.goals) &&
+    Array.isArray(s.actions)
   );
 }
 

@@ -9,13 +9,12 @@ import {
   sessionChildren,
   sessionRoots,
 } from "../src/derive.ts";
-import { type OrchestrationSummary, type RoadmapRow, type SessionFeedEntry } from "../src/model.ts";
+import { type OrchestrationSection, type RoadmapRow, type SessionFeedEntry, type TierItem } from "../src/model.ts";
 import { renderAttention, renderRoadmap, renderToday } from "../src/render.ts";
 import {
   FIXTURE_ATTENTION,
   FIXTURE_BOARD,
   FIXTURE_ITEMS,
-  FIXTURE_ORCHESTRATION,
   FIXTURE_ROADMAP,
   fixtureSource,
 } from "../src/sources/fixtures.ts";
@@ -23,6 +22,53 @@ import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sourc
 
 const NOW = Date.parse("2026-10-25T15:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();
+
+const tierItem = (over: Partial<TierItem>): TierItem => ({
+  id: "x",
+  kind: "task",
+  title: "Item",
+  source: "github",
+  reason: "Because.",
+  since: iso(NOW),
+  lastSeenAt: iso(NOW),
+  ...over,
+});
+
+const section = (over: Partial<OrchestrationSection>): OrchestrationSection => ({
+  version: 1,
+  generatedAt: iso(NOW),
+  runId: "orch-test",
+  provenance: "test run",
+  tiers: { needsDrew: [], needsOrchestrator: [] },
+  dependencies: [],
+  goals: [],
+  actions: [],
+  ...over,
+});
+
+/** The fixture-feed section: ses_h_connect escalated to Drew by #899. */
+const SECTION = section({
+  tiers: {
+    needsDrew: [
+      tierItem({
+        id: "ses_h_connect",
+        kind: "session",
+        sessionId: "ses_h_connect",
+        title: "Connect the app",
+        source: "opencode-laptop",
+        reason: "Only Drew can pick which repo installs the developing.today app first.",
+      }),
+      tierItem({
+        id: "goal_plaid",
+        kind: "task",
+        title: "Link the Citi accounts in Plaid",
+        source: "tracked",
+        reason: "Only Drew can complete the bank sign-in in his own browser.",
+      }),
+    ],
+    needsOrchestrator: [],
+  },
+});
 
 describe("freshness expiry (#898 §2/§5)", () => {
   test("finished runs expire after 2h; anything after 24h; fresh stays", () => {
@@ -90,16 +136,20 @@ describe("tiering (#898 §2)", () => {
     expect(view.drew[0].drewReason).toContain("sign-in only you can complete");
   });
 
-  test("an orchestration escalation overrides the local rules, reason verbatim", () => {
-    const summary: OrchestrationSummary = {
-      generatedAt: iso(NOW),
-      objectives: [],
-      momentum: [],
-      escalations: [{ sessionId: "s", reason: "Only Drew can do this thing.", at: iso(NOW) }],
-    };
-    const view = buildAttention([entry({ lastTurnError: "plain error" })], summary, NOW);
+  test("the orchestration section's classification overrides local rules, reason verbatim", () => {
+    const sec = section({
+      tiers: {
+        needsDrew: [tierItem({ id: "s", kind: "session", sessionId: "s", reason: "Only Drew can do this thing." })],
+        needsOrchestrator: [],
+      },
+    });
+    const view = buildAttention([entry({ lastTurnError: "plain error" })], sec, NOW);
     expect(view.drew).toHaveLength(1);
     expect(view.drew[0].drewReason).toBe("Only Drew can do this thing.");
+    // Section items not backed by a live session in this feed (a task,
+    // or a session on a server outside the feed) render as tier cards.
+    const withExtra = buildAttention([entry({ lastTurnError: "plain error" })], SECTION, NOW);
+    expect(withExtra.drewExtra.map((i) => i.id)).toEqual(["ses_h_connect", "goal_plaid"]);
   });
 
   test("Jules questions belong to the keeper, not Drew", () => {
@@ -128,7 +178,7 @@ describe("tiering (#898 §2)", () => {
 
 describe("session hierarchy (#898 §5)", () => {
   test("children group under parents; roots exclude them", () => {
-    const view = buildAttention(FIXTURE_ATTENTION, FIXTURE_ORCHESTRATION);
+    const view = buildAttention(FIXTURE_ATTENTION, SECTION);
     const children = sessionChildren(view.all);
     const roots = sessionRoots(view.all);
     expect(children.get("ses_k_wip")?.map((e) => e.sessionId)).toEqual(["ses_k_wip_explore"]);
@@ -137,7 +187,7 @@ describe("session hierarchy (#898 §5)", () => {
     // The finished fixture probe expired out entirely.
     expect(view.all.some((e) => e.sessionId === "ses_old_probe")).toBe(false);
     expect(view.expiredCount).toBeGreaterThanOrEqual(1);
-    // The fixture escalation puts ses_h_connect in NEEDS DREW.
+    // The section's classification puts ses_h_connect in NEEDS DREW.
     expect(view.drew.some((e) => e.sessionId === "ses_h_connect")).toBe(true);
   });
 });
@@ -229,11 +279,36 @@ describe("roadmap grains (#898 §3)", () => {
 describe("today view (#898 §4)", () => {
   const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
 
-  test("renders the orchestration summary when present", () => {
-    const today = deriveToday(FIXTURE_BOARD, FIXTURE_ROADMAP, items, FIXTURE_ORCHESTRATION);
+  test("renders the orchestration section when present", () => {
+    const sec = section({
+      goals: [
+        {
+          goalId: null,
+          goal: "Keep the four repos healthy",
+          momentum: "blocked",
+          summary: "Waiting on the GitHub App route.",
+          linedUp: [
+            {
+              title: "Ship aggregator slice 2",
+              status: "in-progress",
+              horizon: "today",
+              horizonWhy: "Drew asked for it today",
+              blockedBy: [{ task: "CI green", status: "in-progress" }],
+            },
+          ],
+          progressedSinceLastRun: ["PR #892 merged"],
+          stalled: [],
+          gaps: [],
+        },
+      ],
+    });
+    const today = deriveToday(FIXTURE_BOARD, FIXTURE_ROADMAP, items, sec);
     expect(today.fromOrchestrator).toBe(true);
+    expect(today.objectives[0].title).toBe("Ship aggregator slice 2");
     expect(today.objectives[0].chip).toContain("orchestrator");
-    expect(today.momentum.some((m) => m.state === "blocked")).toBe(true);
+    expect(today.objectives[0].detail).toContain("blocked by CI green");
+    expect(today.momentum[0].state).toBe("blocked");
+    expect(today.momentum[0].accomplished).toEqual(["PR #892 merged"]);
   });
 
   test("derives objectives + momentum without a summary, and says so on the page", async () => {
@@ -246,14 +321,14 @@ describe("today view (#898 §4)", () => {
     const html = renderToday(today, attention, await src.quota(), await src.coverage(), src.provenance());
     expect(html).toContain("Top objectives");
     expect(html).toContain("Project momentum");
-    expect(html).toContain("has not written its goal-measurement summary yet");
+    expect(html).toContain("has not published a goal-measurement section yet");
   });
 });
 
 describe("attention render (slice 2)", () => {
   test("tiers, reasons, source labels, collapse, coverage, expiry all render", async () => {
     const src = fixtureSource();
-    const view = buildAttention(await src.attention(), await src.orchestration());
+    const view = buildAttention(await src.attention(), SECTION);
     const html = renderAttention(view, await src.coverage(), src.provenance());
     expect(html).toContain("Needs Drew");
     expect(html).toContain("Why you:");

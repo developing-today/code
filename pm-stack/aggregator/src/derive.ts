@@ -211,7 +211,7 @@ export function attentionSorted(feed: SessionFeedEntry[], now = Date.now()): Att
 // ORCHESTRATOR tiering, session hierarchy, roadmap grains, today view.
 // ---------------------------------------------------------------------------
 
-import type { AttentionTier, BoardItem, OrchestrationSummary, SessionSource, TieredEntry } from "./model.ts";
+import type { AttentionTier, BoardItem, OrchestrationSection, SessionSource, TierItem, TieredEntry } from "./model.ts";
 
 export function sourceOf(e: SessionFeedEntry): SessionSource {
   if (e.source) return e.source;
@@ -278,17 +278,30 @@ const ORCHESTRATOR_NOTES: Record<AttentionState, string> = {
   "stalled-on-cli": "Orchestrator checks the long-running command and nudges the session.",
 };
 
+/** The session id a #899 tier item names, when it names one. */
+export function tierItemSessionId(item: TierItem): string | null {
+  if (item.sessionId) return item.sessionId;
+  if (item.id.startsWith("jules:")) return item.id.slice("jules:".length);
+  if (item.kind === "session") return item.id;
+  return null;
+}
+
+export interface SectionMatch {
+  item: TierItem;
+  tier: "needs-drew" | "needs-orchestrator";
+}
+
 /**
  * Assign each classified entry its tier. Rule order matters — the first
- * match wins, and an orchestration escalation (#899) outranks every
- * local rule, carrying its reason verbatim.
+ * match wins, and the orchestration job's own classification (#899)
+ * outranks every local rule, carrying its reason verbatim: the job
+ * reviews these queues so Drew doesn't have to.
  */
-export function tierEntry(e: AttentionEntry, summary?: OrchestrationSummary | null): TieredEntry {
-  const esc = summary?.escalations.find(
-    (x) => (x.sessionId && x.sessionId === e.sessionId) || (x.title && x.title === e.title),
-  );
-  if (esc && e.state !== "in-motion") {
-    return { ...e, tier: "needs-drew", drewReason: esc.reason };
+export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): TieredEntry {
+  if (match && e.state !== "in-motion") {
+    if (match.tier === "needs-drew") return { ...e, tier: "needs-drew", drewReason: match.item.reason };
+    const next = match.item.recommendedAction ? ` Next: ${match.item.recommendedAction}` : "";
+    return { ...e, tier: "needs-orchestrator", orchestratorNote: `${match.item.reason}${next}` };
   }
   if (e.state !== "in-motion" && e.supervisionNote && ESCALATION_NOTE.test(e.supervisionNote)) {
     return { ...e, tier: "needs-drew", drewReason: `Keeper escalated this session — ${e.supervisionNote}` };
@@ -325,6 +338,9 @@ export function tierEntry(e: AttentionEntry, summary?: OrchestrationSummary | nu
 export interface AttentionView {
   drew: TieredEntry[];
   orchestrator: TieredEntry[];
+  /** #899 tier items that are not live sessions (decisions, tasks, gaps). */
+  drewExtra: TierItem[];
+  orchestratorExtra: TierItem[];
   /** Every current entry, tier-annotated, attention-ordered. */
   all: TieredEntry[];
   /** Finished/stale entries dropped before display. */
@@ -334,16 +350,46 @@ export interface AttentionView {
 /** Classify, expire, and tier a raw session feed in one pass. */
 export function buildAttention(
   feed: SessionFeedEntry[],
-  summary?: OrchestrationSummary | null,
+  section?: OrchestrationSection | null,
   now = Date.now(),
 ): AttentionView {
   const { current, expired } = partitionFresh(feed, now);
+  const bySession = new Map<string, SectionMatch>();
+  if (section) {
+    for (const item of section.tiers.needsDrew) {
+      const sid = tierItemSessionId(item);
+      if (sid && !bySession.has(sid)) bySession.set(sid, { item, tier: "needs-drew" });
+    }
+    for (const item of section.tiers.needsOrchestrator) {
+      const sid = tierItemSessionId(item);
+      if (sid && !bySession.has(sid)) bySession.set(sid, { item, tier: "needs-orchestrator" });
+    }
+  }
+  const consumed = new Set<string>();
   const all = current
-    .map((e) => tierEntry(classifyAttention(e, now), summary))
+    .map((raw) => {
+      const e = classifyAttention(raw, now);
+      const match = bySession.get(e.sessionId) ?? null;
+      if (match) consumed.add(match.item.id);
+      return tierEntry(e, match);
+    })
     .sort((a, b) => a.order - b.order || (b.lastActivityAt ?? "").localeCompare(a.lastActivityAt ?? ""));
+  // Section items that name a session in the feed are consumed by it
+  // (tiered above, or in motion again); items naming expired sessions
+  // expire with them. The rest are non-session queue items — decisions,
+  // tasks, gaps — and render as cards in their tier.
+  const knownIds = new Set([...current, ...expired].map((e) => e.sessionId));
+  const extras = (items: TierItem[] | undefined): TierItem[] =>
+    (items ?? []).filter((item) => {
+      if (consumed.has(item.id)) return false;
+      const sid = tierItemSessionId(item);
+      return !(sid && knownIds.has(sid));
+    });
   return {
     drew: all.filter((e) => e.tier === "needs-drew"),
     orchestrator: all.filter((e) => e.tier === "needs-orchestrator"),
+    drewExtra: extras(section?.tiers.needsDrew),
+    orchestratorExtra: extras(section?.tiers.needsOrchestrator),
     all,
     expiredCount: expired.length,
   };
@@ -529,42 +575,70 @@ export interface ProjectMomentum {
 export interface TodayView {
   objectives: TodayObjective[];
   momentum: ProjectMomentum[];
-  /** True when rendered from the #899 orchestration summary. */
+  /** True when rendered from the #899 orchestration section. */
   fromOrchestrator: boolean;
   generatedAt?: string;
+  /** What the orchestrator pushed back into motion (section path only). */
+  actions?: { at: string; kind: string; target: string; summary: string }[];
 }
 
-const HORIZON_ORDER: Record<string, number> = { today: 0, tomorrow: 1, "3d": 2, week: 3, longer: 4 };
 const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, normal: 2, medium: 2, low: 3 };
+
+/** Map the #899 section's goal measurements into the today view. */
+export function todayFromSection(section: OrchestrationSection): TodayView {
+  const blockedText = (deps?: { task: string; status: string; workerLabel?: string }[]): string | undefined =>
+    deps?.length
+      ? deps.map((d) => `${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`).join("; ")
+      : undefined;
+  const objectives: TodayObjective[] = [];
+  for (const g of section.goals) {
+    for (const task of g.linedUp.filter((t) => t.horizon === "today")) {
+      objectives.push({
+        title: task.title,
+        detail:
+          [task.status, task.horizonWhy, blockedText(task.blockedBy) && `blocked by ${blockedText(task.blockedBy)}`]
+            .filter(Boolean)
+            .join(" — ") || undefined,
+        chip: `orchestrator · today · ${g.goal}`,
+        ref: task.ref,
+      });
+    }
+  }
+  if (objectives.length === 0) {
+    for (const g of section.goals) {
+      objectives.push({ title: g.goal, detail: g.summary, chip: "orchestrator · goal" });
+    }
+  }
+  const momentum: ProjectMomentum[] = section.goals.map((g) => {
+    const blockers = [
+      ...g.stalled.filter((s) => s.blocker).map((s) => `${s.title}: ${s.blocker}`),
+      ...g.linedUp.flatMap((t) => (t.blockedBy?.length ? [`${t.title} — blocked by ${blockedText(t.blockedBy)}`] : [])),
+    ];
+    return {
+      project: g.goal,
+      state: g.momentum === "moving" ? "moving" : g.momentum === "blocked" ? "blocked" : "stalled",
+      accomplished: g.progressedSinceLastRun,
+      blockedBy: blockers.join("; ") || undefined,
+      detail: [g.summary, ...g.gaps].filter(Boolean).join(" "),
+    };
+  });
+  return {
+    fromOrchestrator: true,
+    generatedAt: section.generatedAt,
+    objectives,
+    momentum,
+    actions: section.actions.slice(-5).reverse(),
+  };
+}
 
 export function deriveToday(
   board: BoardItem[],
   rows: RoadmapRow[],
   items: Map<RefKey, GhItem>,
-  summary: OrchestrationSummary | null,
+  section: OrchestrationSection | null,
   now = new Date(),
 ): TodayView {
-  if (summary) {
-    return {
-      fromOrchestrator: true,
-      generatedAt: summary.generatedAt,
-      objectives: [...summary.objectives]
-        .sort((a, b) => (HORIZON_ORDER[a.horizon ?? "longer"] ?? 5) - (HORIZON_ORDER[b.horizon ?? "longer"] ?? 5))
-        .map((o) => ({
-          title: o.title,
-          detail: [o.status, o.detail].filter(Boolean).join(" — ") || undefined,
-          chip: `orchestrator${o.horizon ? ` · ${o.horizon}` : ""}`,
-          ref: o.ref,
-        })),
-      momentum: summary.momentum.map((m) => ({
-        project: m.project,
-        state: m.state,
-        accomplished: m.accomplished ?? [],
-        blockedBy: m.blockedBy,
-        detail: m.detail,
-      })),
-    };
-  }
+  if (section) return todayFromSection(section);
 
   // Derived until #899 lands: today's dated roadmap rows first, then the
   // board's in-progress work by priority, then what's in review.

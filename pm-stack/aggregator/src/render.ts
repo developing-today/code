@@ -27,6 +27,7 @@ import {
   type RoadmapRow,
   type SourceCoverage,
   type TieredEntry,
+  type TierItem,
   SESSION_SOURCE_LABELS,
   refUrl,
 } from "./model.ts";
@@ -389,16 +390,36 @@ function sessionCard(e: TieredEntry, children: Map<string, TieredEntry[]>, depth
   return `<div class="card"><strong>${esc(e.title ?? e.sessionId)}</strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${sub}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${kidsHtml}</div>`;
 }
 
+/** A #899 tier item that is not a live session — a decision, task, or gap. */
+function tierItemCard(item: TierItem, whyLabel: string): string {
+  const blocked = item.blockedBy?.length
+    ? `<br><strong>Blocked by:</strong> ${item.blockedBy
+        .map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`))
+        .join("; ")}`
+    : "";
+  const question = item.question ? `<br><span class="q">“${esc(item.question)}”</span>` : "";
+  const action = item.recommendedAction
+    ? `<br><span class="muted">Recommended: ${esc(item.recommendedAction)}</span>`
+    : "";
+  const ref = item.ref ? `<br><a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : "";
+  return `<div class="card"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span> <strong>${esc(item.title)}</strong><br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${ref}</div>`;
+}
+
 export function renderAttention(view: AttentionView, coverage: SourceCoverage[], provenance: Provenance): string {
   const children = sessionChildren(view.all);
   const roots = sessionRoots(view.all);
-  const chips = `<div class="chips"><a href="#drew">Needs Drew (${view.drew.length})</a><a href="#orchestrator">Needs orchestrator (${view.orchestrator.length})</a><a href="#sessions">All sessions (${roots.length})</a></div>`;
-  const drewCards = view.drew.length
-    ? view.drew.map((e) => sessionCard(e, children)).join("")
-    : `<p class="muted">Nothing needs you right now.</p>`;
-  const orchCards = view.orchestrator.length
-    ? view.orchestrator.map((e) => sessionCard(e, children)).join("")
-    : `<p class="muted">The fleet's queue is empty.</p>`;
+  const drewTotal = view.drew.length + view.drewExtra.length;
+  const orchTotal = view.orchestrator.length + view.orchestratorExtra.length;
+  const chips = `<div class="chips"><a href="#drew">Needs Drew (${drewTotal})</a><a href="#orchestrator">Needs orchestrator (${orchTotal})</a><a href="#sessions">All sessions (${roots.length})</a></div>`;
+  const drewCards =
+    [...view.drew.map((e) => sessionCard(e, children)), ...view.drewExtra.map((i) => tierItemCard(i, "Why you"))].join(
+      "",
+    ) || `<p class="muted">Nothing needs you right now.</p>`;
+  const orchCards =
+    [
+      ...view.orchestrator.map((e) => sessionCard(e, children)),
+      ...view.orchestratorExtra.map((i) => tierItemCard(i, "Why the fleet")),
+    ].join("") || `<p class="muted">The fleet's queue is empty.</p>`;
   const sessionCards = roots.length
     ? roots.map((e) => sessionCard(e, children)).join("")
     : `<p class="muted">No current sessions.</p>`;
@@ -407,8 +428,8 @@ export function renderAttention(view: AttentionView, coverage: SourceCoverage[],
     `<h1>Needs you</h1><p class="muted">Only what genuinely requires Drew lands in NEEDS DREW — each with its reason. Everything else the fleet can work is the orchestrator's queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>.</p>
 ${chips}
 ${coverageHtml(coverage)}
-<h2 id="drew">Needs Drew (${view.drew.length})</h2>${drewCards}
-<h2 id="orchestrator">Needs orchestrator (${view.orchestrator.length})</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates here only what truly needs Drew.</p>${orchCards}
+<h2 id="drew">Needs Drew (${drewTotal})</h2>${drewCards}
+<h2 id="orchestrator">Needs orchestrator (${orchTotal})</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates here only what truly needs Drew.</p>${orchCards}
 <h2 id="sessions">All sessions (${roots.length})</h2><p class="muted">Every current session with its source and state; sub-sessions collapse under their parent.</p>${sessionCards}
 ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale ${view.expiredCount === 1 ? "entry" : "entries"} expired out of this view.</p>` : ""}`,
     provenance,
@@ -427,9 +448,10 @@ export function renderToday(
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
   const alerts: string[] = [];
-  if (attention.drew.length) {
+  const drewTotal = attention.drew.length + attention.drewExtra.length;
+  if (drewTotal) {
     alerts.push(
-      `<div class="banner drew"><strong>${attention.drew.length} item${attention.drew.length === 1 ? "" : "s"} need Drew</strong> — <a href="/attention#drew">review them</a></div>`,
+      `<div class="banner drew"><strong>${drewTotal} item${drewTotal === 1 ? "" : "s"} need Drew</strong> — <a href="/attention#drew">review them</a></div>`,
     );
   }
   if (walled.length) {
@@ -438,8 +460,11 @@ export function renderToday(
     );
   }
   const provenanceLine = today.fromOrchestrator
-    ? `<p class="muted">From the orchestration job's summary (written ${fmtDate(today.generatedAt)}). Machine-first: <a href="/api/today.json">/api/today.json</a>.</p>`
-    : `<div class="banner">Derived from the board, roadmap, and item activity — the orchestration job (#899) has not written its goal-measurement summary yet, so this is the aggregator's own derivation, not the orchestrator's measurement.</div>`;
+    ? `<p class="muted">From the orchestration job's goal measurements (section written ${fmtDate(today.generatedAt)}). Machine-first: <a href="/api/today.json">/api/today.json</a> · <a href="/api/orchestration.json">/api/orchestration.json</a>.</p>`
+    : `<div class="banner">Derived from the board, roadmap, and item activity — the orchestration job (#899) has not published a goal-measurement section yet, so this is the aggregator's own derivation, not the orchestrator's measurement.</div>`;
+  const actions = today.actions?.length
+    ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
+    : "";
   const objectives = today.objectives.length
     ? today.objectives
         .map(
@@ -465,7 +490,7 @@ export function renderToday(
     `<h1>Today</h1>${provenanceLine}${alerts.join("")}
 <h2>Top objectives</h2>${objectives}
 <h2>Project momentum</h2>${momentum}
-${coverageHtml(coverage)}`,
+${actions}${coverageHtml(coverage)}`,
     provenance,
     "/today",
   );

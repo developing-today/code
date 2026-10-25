@@ -11,14 +11,14 @@ Design record (source of truth):
 
 ## The views
 
-| Route             | View                                                                                                                                                                                                                                                                                                      | Machine-first JSON                          |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `/today`          | **Today** (slice 2, #898) — the day's top objectives, prioritized, plus per-project momentum (moving / stalled / blocked-by-what, recent accomplishments). From the orchestration job's summary (#899) when it exists; derived from board + roadmap + item activity, and labelled as derived, until then. | `/api/today.json`                           |
-| `/attention`      | **Needs you** (#852, tiered in slice 2) — **NEEDS DREW** (default; only items that genuinely require Drew, each with its reason), **NEEDS ORCHESTRATOR** (the fleet's own queue), then every current session with source labels and plain-language states. Finished runs and stale items expire out.      | `/api/attention.json`, `/api/coverage.json` |
-| `/`               | **Cross-repo WIP board** — the curated in-flight set across all four repos, with an execution strip per card (implementing → review → merged → queued).                                                                                                                                                   | `/api/board.json`                           |
-| `/roadmap`        | **Roadmap** — Grist's `Program roadmap` table as a timeline; `?h=` switches the horizon: `quarter` (default), `month`, `week`, `3d`, `today` — one data model at every grain.                                                                                                                             | `/api/roadmap.json`                         |
-| `/quota`          | **Quota + throughput** (#851) — all pooled quotas, resets, burn rates, and model-choice guidance.                                                                                                                                                                                                         | `/api/quota.json`                           |
-| `/item/<subject>` | Drill-down for one board card or roadmap row: linked refs + a unified comment stream.                                                                                                                                                                                                                     | —                                           |
+| Route             | View                                                                                                                                                                                                                                                                                                                       | Machine-first JSON                          |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `/today`          | **Today** (slice 2, #898) — the day's top objectives, prioritized, plus per-project momentum (moving / stalled / blocked-by-what, recent accomplishments). From the orchestration job's goal measurements (#899) when a section exists; derived from board + roadmap + item activity, and labelled as derived, until then. | `/api/today.json`                           |
+| `/attention`      | **Needs you** (#852, tiered in slice 2) — **NEEDS DREW** (default; only items that genuinely require Drew, each with its reason), **NEEDS ORCHESTRATOR** (the fleet's own queue), then every current session with source labels and plain-language states. Finished runs and stale items expire out.                       | `/api/attention.json`, `/api/coverage.json` |
+| `/`               | **Cross-repo WIP board** — the curated in-flight set across all four repos, with an execution strip per card (implementing → review → merged → queued).                                                                                                                                                                    | `/api/board.json`                           |
+| `/roadmap`        | **Roadmap** — Grist's `Program roadmap` table as a timeline; `?h=` switches the horizon: `quarter` (default), `month`, `week`, `3d`, `today` — one data model at every grain.                                                                                                                                              | `/api/roadmap.json`                         |
+| `/quota`          | **Quota + throughput** (#851) — all pooled quotas, resets, burn rates, and model-choice guidance.                                                                                                                                                                                                                          | `/api/quota.json`                           |
+| `/item/<subject>` | Drill-down for one board card or roadmap row: linked refs + a unified comment stream.                                                                                                                                                                                                                                      | —                                           |
 
 All views are mobile-first (single-column stacking, scrollable tables,
 touch-sized switchers) — verify at phone width, not by resizing a desktop
@@ -32,8 +32,9 @@ that is plumbing, not links).
 - **Tiering** (`buildAttention` in `src/derive.ts`): every classified
   session lands in NEEDS DREW (with an explainable `drewReason`),
   NEEDS ORCHESTRATOR (with the fleet's next step), or in-motion. Drew
-  rules, in order: an orchestration escalation (#899, reason verbatim) →
-  a keeper "escalate" supervision note → a decision-shaped question → a
+  rules, in order: the orchestration job's own classification (#899 —
+  its tiers win for anything they name, reason verbatim) → a keeper
+  "escalate" supervision note → a decision-shaped question → a
   destructive permission request → a credential/sign-in wall. Routine
   questions, errors, and tool permissions are the orchestrator's —
   and so are Jules' questions (the keeper answers those itself).
@@ -154,12 +155,20 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
 - **Jules attention** (slice 2) — the keeper's tracked Jules sessions
   from the same state file, mapped by `src/sources/jules.ts`, plus the
   keeper's run totals as `julesSummary`.
-- **Orchestration summary** (slice 2, contract on #899) — when the
-  orchestration job writes
-  `~/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration-state.json`
-  on the sandbox, the collector embeds it as `feed.orchestration`
-  (override the path with `ORCHESTRATION_STATE_PATH`); the today view
-  renders it and its escalations override the tier rules.
+- **Orchestration section** (slice 2, #899 — the unified contract) —
+  the orchestration job republishes
+  `~/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json`
+  on the sandbox every run: an `OrchestrationSection` v1 (types in
+  `src/model.ts`) with tiered queue items (`tiers.needsDrew` /
+  `tiers.needsOrchestrator`, each with its reason), a flat dependency
+  view, per-goal measurements (momentum, tasks lined up by horizon,
+  what progressed), and the actions the run pushed back into motion.
+  The collector embeds it as `feed.orchestration` after a structural
+  check (fail-soft; override the path with `ORCHESTRATION_PATH`). The
+  aggregator serves it raw at `/api/orchestration.json`; the needs-you
+  view lets its classification win for anything it names (non-session
+  items render as tier cards), and the today view maps its goals —
+  until a section exists, the today view derives and labels itself.
 
 `scripts/push-fleet-feed.sh` pushes the feed to the laptop over the
 tailnet proxy route; a systemd timer on the sandbox runs it every

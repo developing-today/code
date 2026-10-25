@@ -5,7 +5,7 @@
 // provenance strings say exactly which facet is live vs fixture-backed.
 import { readFile } from "node:fs/promises";
 import type { Config } from "../config.ts";
-import { feedAgeText, loadFeed, type FleetFeed } from "../feed.ts";
+import { feedAgeText, isOrchestrationSection, loadFeed, type FleetFeed } from "../feed.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions } from "./opencode.ts";
 import {
@@ -13,7 +13,7 @@ import {
   type Comment,
   type GhItem,
   type Link,
-  type OrchestrationSummary,
+  type OrchestrationSection,
   type Provenance,
   type QuotaView,
   type RefKey,
@@ -501,14 +501,17 @@ export function liveSource(cfg: Config): Source {
       provenance.attention = "fixtures (no live attention source reachable)";
       return fix.attention();
     },
-    async orchestration(): Promise<OrchestrationSummary | null> {
+    async orchestration(): Promise<OrchestrationSection | null> {
+      // #899: the orchestration section rides the fleet feed, embedded
+      // by the collector from the orchestrator's own output file. The
+      // section carries its own provenance; absent = not measured yet.
       const feed = await getFeed();
-      if (feed?.orchestration) {
-        provenance.orchestration = `live (orchestration summary · ${feedAgeText(feed.orchestration.generatedAt)} · written ${feed.orchestration.generatedAt})`;
+      if (feed?.orchestration && isOrchestrationSection(feed.orchestration)) {
+        provenance.orchestration = `live (orchestration section ${feed.orchestration.runId} · ${feedAgeText(feed.orchestration.generatedAt)})`;
         return feed.orchestration;
       }
       provenance.orchestration = feed
-        ? "none yet — the orchestration job (#899) has not written a summary; the today view derives"
+        ? "none yet — the orchestration job (#899) has not published a section; the today view derives"
         : "fixtures (no fleet feed file yet)";
       return null;
     },
