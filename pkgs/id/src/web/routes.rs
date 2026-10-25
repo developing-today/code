@@ -150,10 +150,12 @@ pub struct FileInfo {
 fn classify_tag(name: &str) -> (FileKind, Option<u64>) {
     // Check for auto-backup: "auto-{ISO_DATE}"
     if let Some(iso_str) = name.strip_prefix("auto-") {
-        // Try to parse the ISO date to extract a unix timestamp
-        // Format: 2026-03-12T06:42:30.015Z
-        let ts = parse_iso_timestamp(iso_str);
-        return (FileKind::Auto, ts);
+        // Only an auto-backup when the remainder actually parses as an
+        // ISO date (format: 2026-03-12T06:42:30.015Z). An ordinary file
+        // that merely starts with "auto-" (auto-notes.txt) is Primary.
+        if let Some(ts) = parse_iso_timestamp(iso_str) {
+            return (FileKind::Auto, Some(ts));
+        }
     }
 
     // Check for archive: "{name}.archive.{unix_timestamp}"
@@ -195,11 +197,10 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
     let (year, month, day) = (date_parts[0], date_parts[1], date_parts[2]);
     let (hour, min, sec) = (time_parts[0], time_parts[1], time_parts[2]);
 
-    // Simple days-since-epoch calculation (not accounting for leap seconds)
-    let mut days: u64 = 0;
-    for y in 1970..year {
-        days += if is_leap_year(y) { 366 } else { 365 };
-    }
+    // Reject anything the arithmetic below cannot represent faithfully
+    // instead of rolling it over into a different date (#756). Generated
+    // names carry a 4-digit year; the u64 result cannot represent dates
+    // before the epoch, and a leap second (second 60) is not modelled.
     let month_days = [
         31,
         28 + u64::from(is_leap_year(year)),
@@ -214,13 +215,27 @@ fn parse_iso_timestamp(s: &str) -> Option<u64> {
         30,
         31,
     ];
-    #[allow(clippy::cast_possible_truncation)] // month is max 12, fits in usize
-    for m in 0..(month.saturating_sub(1) as usize) {
-        if m < month_days.len() {
-            days += month_days[m];
-        }
+    if !(1970..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || day == 0
+        || day > month_days[(month - 1) as usize]
+        || hour > 23
+        || min > 59
+        || sec > 59
+    {
+        return None;
     }
-    days += day.saturating_sub(1);
+
+    // Simple days-since-epoch calculation (not accounting for leap seconds)
+    let mut days: u64 = 0;
+    for y in 1970..year {
+        days += if is_leap_year(y) { 366 } else { 365 };
+    }
+    #[allow(clippy::cast_possible_truncation)] // month is 1..=12, fits in usize
+    for m in 0..(month.saturating_sub(1) as usize) {
+        days += month_days[m];
+    }
+    days += day - 1;
 
     Some(days * 86400 + hour * 3600 + min * 60 + sec)
 }
@@ -1673,7 +1688,7 @@ async fn download_handler(Json(req): Json<DownloadRequest>) -> Response {
         "json" => {
             // Return PM JSON as-is
             let json_bytes = serde_json::to_vec_pretty(&req.doc).unwrap_or_default();
-            let json_name = if req.name.ends_with(".pm.json") {
+            let json_name = if req.name.to_lowercase().ends_with(".pm.json") {
                 req.name.clone()
             } else {
                 format!("{}.pm.json", req.name)
@@ -2428,6 +2443,22 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_tag_auto_prefix_non_date_is_primary() {
+        // Regression (#809): an ordinary file that merely starts with
+        // "auto-" is not an auto-backup — only "auto-{ISO_DATE}" is.
+        for name in [
+            "auto-notes.txt",
+            "auto-2026-report.md",
+            "auto-",
+            "auto-draft",
+        ] {
+            let (kind, ts) = classify_tag(name);
+            assert_eq!(kind, FileKind::Primary, "{name}");
+            assert!(ts.is_none(), "{name}");
+        }
+    }
+
+    #[test]
     fn test_classify_tag_archive() {
         let (kind, ts) = classify_tag("notes.md.archive.1711000000");
         assert_eq!(kind, FileKind::Archive);
@@ -2457,6 +2488,36 @@ mod tests {
         assert!(parse_iso_timestamp("auto-not-a-date").is_none());
         assert!(parse_iso_timestamp("auto-").is_none());
         assert!(parse_iso_timestamp("noprefix").is_none());
+    }
+
+    #[test]
+    fn test_parse_iso_timestamp_rejects_out_of_range_components() {
+        // Each of these used to roll over into a different, plausible
+        // timestamp instead of returning None (#756).
+        assert!(parse_iso_timestamp("2026-13-01T00:00:00Z").is_none());
+        assert!(parse_iso_timestamp("2026-00-01T00:00:00Z").is_none());
+        assert!(parse_iso_timestamp("2026-03-00T00:00:00Z").is_none());
+        assert!(parse_iso_timestamp("2026-03-32T00:00:00Z").is_none());
+        assert!(parse_iso_timestamp("2026-02-30T00:00:00Z").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T25:00:00Z").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T00:60:00Z").is_none());
+        assert!(parse_iso_timestamp("2026-03-12T00:00:60Z").is_none());
+        // Before the epoch the u64 result cannot represent the date;
+        // it used to collapse to Some(0), the same value as the epoch.
+        assert!(parse_iso_timestamp("1969-01-01T00:00:00Z").is_none());
+        // Absurd years must not be accepted (or iterated year by year).
+        assert!(parse_iso_timestamp("999999999-01-01T00:00:00Z").is_none());
+    }
+
+    #[test]
+    fn test_parse_iso_timestamp_leap_day() {
+        // 2024 is a leap year: Feb 29 is real and must keep parsing.
+        assert_eq!(
+            parse_iso_timestamp("2024-02-29T00:00:00Z"),
+            Some(1_709_164_800)
+        );
+        // 2026 is not: Feb 29 does not exist.
+        assert!(parse_iso_timestamp("2026-02-29T00:00:00Z").is_none());
     }
 
     #[test]

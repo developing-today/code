@@ -19,6 +19,8 @@ let
   codexProxyPort = 18744;
   antigravityLsProxyPort = 18745;
   designCodeProxyPort = 18746;
+  museProxyPort = 18747;
+  commandcodeProxyPort = 18748;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -705,6 +707,37 @@ in
         ];
       }
     ];
+  };
+
+  # Command Code CLI Local Proxy Bridge for OpenCode (Go plan: the hosted
+  # Provider API rejects the Go plan, so OpenCode talks to the CLI via
+  # this OpenAI-compatible bridge on 18748, same pattern as codex-proxy).
+  # Runs the repo's start script (shared with the fleet proxy-supervisor's
+  # transient fps-commandcode-proxy unit) so laptop/sandbox env handling
+  # and the MAX_TURNS pins live in exactly one place:
+  # bin/commandcode-proxy-start.sh.
+  # NOT YET DEPLOYED: host builds for another change are in flight — run a
+  # NixOS/home-manager rebuild + switch to activate, then
+  #   systemctl --user status commandcode-proxy
+  # Until then the supervisor-owned transient unit serves the port.
+  systemd.user.services.commandcode-proxy = {
+    Unit = {
+      Description = "Command Code CLI Local Proxy Bridge for OpenCode";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${../../bin}/commandcode-proxy-start.sh";
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "COMMANDCODE_PROXY_PORT=${toString commandcodeProxyPort}"
+        "COMMANDCODE_PROXY_HOST=127.0.0.1"
+        "COMMANDCODE_PROXY_MAX_TURNS=1"
+        "COMMANDCODE_PROXY_AGENCY_MAX_TURNS=8"
+      ];
+    };
+    Install.WantedBy = [ "default.target" ];
   };
 
   systemd.user.services.sync-models = {
