@@ -4146,7 +4146,7 @@
 //       "npm": "@ai-sdk/openai-compatible",
 //       "name": "Muse (CLI via muse-proxy)",
 //       "options": {
-//         "baseURL": "http://127.0.0.1:18747/v1",
+//         "baseURL": "http://127.0.0.1:{env:MUSE_PROXY_PORT:-18747}/v1",
 //         "apiKey": "muse-local"
 //       },
 //       "models": {
@@ -4213,7 +4213,7 @@
           "npm": "@ai-sdk/openai-compatible",
           "name": "Command Code (CLI proxy)",
           "options": {
-                "baseURL": "http://127.0.0.1:18748/v1",
+                "baseURL": "http://127.0.0.1:{env:COMMANDCODE_PROXY_PORT:-18748}/v1",
                 "apiKey": "commandcode-local"
           },
           "models": {
