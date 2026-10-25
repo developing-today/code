@@ -16,15 +16,16 @@
 //
 // Usage: bun run scripts/collect-fleet-feed.ts [--out <path>]
 // Env overrides: QUOTA_VIEW_PATH, JULES_STATE_PATH, SANDBOX_OPENCODE_URL,
-// OPENCODE_SERVER_PASSWORD_FILE.
+// OPENCODE_SERVER_PASSWORD_FILE, ORCHESTRATION_STATE_PATH.
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { FleetFeed } from "../src/feed.ts";
-import type { QuotaPool, SessionFeedEntry } from "../src/model.ts";
+import { isOrchestrationSummary, type FleetFeed } from "../src/feed.ts";
+import type { JulesSummary, QuotaPool, SessionFeedEntry } from "../src/model.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
+import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,6 +41,8 @@ const quotaViewPath =
     "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
   );
 const julesStatePath = process.env.JULES_STATE_PATH ?? join(HIDDEN, "jules-review-state.json");
+const orchestrationStatePath =
+  process.env.ORCHESTRATION_STATE_PATH ?? join(HIDDEN, "orchestration-state.json");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
   process.env.OPENCODE_SERVER_PASSWORD_FILE ?? join(HOME, "tools/secrets.d/opencode-server-password");
@@ -108,7 +111,9 @@ async function main(): Promise<void> {
   let attention: SessionFeedEntry[] = [];
   try {
     const password = (await readFile(passwordFile, "utf8")).trim();
-    const mapped = await mapServerSessions({ baseUrl: serverUrl, password }, now.getTime());
+    const mapped = await mapServerSessions({ baseUrl: serverUrl, password }, now.getTime(), {
+      source: "opencode-sandbox",
+    });
     if (mapped) {
       attention = mapped.entries;
       const notes = await supervisionNotes();
@@ -139,16 +144,38 @@ async function main(): Promise<void> {
     console.error(`collector: sandbox server read failed (${err}); attention empty`);
   }
 
+  // --- Jules sessions + keeper totals (slice 2, #898 §5) ------------------
+  let jules: JulesSummary | undefined;
+  try {
+    const state = JSON.parse(await readFile(julesStatePath, "utf8")) as JulesReviewState;
+    const entries = mapJulesItems(state);
+    if (entries.length) attention = [...attention, ...entries];
+    jules = julesSummary(state);
+  } catch {
+    console.error("collector: jules-review state unreadable; no Jules sessions this run");
+  }
+
+  // --- orchestration summary (slice 2, #899 -> today view) -----------------
+  let orchestration: FleetFeed["orchestration"];
+  try {
+    const parsed: unknown = JSON.parse(await readFile(orchestrationStatePath, "utf8"));
+    if (isOrchestrationSummary(parsed)) orchestration = parsed;
+  } catch {
+    /* the orchestration job has not written one yet — the view derives */
+  }
+
   const feed: FleetFeed = {
     version: 1,
     generatedAt: now.toISOString(),
     quota: { pools, burn: [], choices: computeChoices(pools, now.getTime()) },
     attention,
+    julesSummary: jules,
+    orchestration,
   };
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
-    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sandbox sessions`,
+    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (sandbox + jules${jules ? `, ${jules.tracked} jules tracked` : ""})${orchestration ? ", orchestration summary embedded" : ""}`,
   );
 }
 
