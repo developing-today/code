@@ -1,0 +1,24 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 754,
+    "title": "Kaneo sync trial issue (kept closed/in-Done)",
+    "state": "open",
+    "html_url": "https://github.com/developing-today/code/issues/754",
+    "url": "https://api.github.com/repos/developing-today/code/issues/754",
+    "user": { "login": "dezren39" },
+    "labels": [],
+    "created_at": "2026-10-25T08:00:00Z",
+    "updated_at": "2026-10-25T08:02:00Z"
+  },
+  "comment": {
+    "id": 9001,
+    "html_url": "https://github.com/developing-today/code/issues/754#issuecomment-9001",
+    "body": "Reproducing with the projector fixture.",
+    "user": { "login": "dezren39" },
+    "created_at": "2026-10-25T08:02:00Z",
+    "updated_at": "2026-10-25T08:02:00Z"
+  },
+  "repository": { "full_name": "developing-today/code", "name": "code" },
+  "sender": { "login": "dezren39" }
+}
