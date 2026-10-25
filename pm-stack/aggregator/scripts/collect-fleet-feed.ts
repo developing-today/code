@@ -41,8 +41,7 @@ const quotaViewPath =
     "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
   );
 const julesStatePath = process.env.JULES_STATE_PATH ?? join(HIDDEN, "jules-review-state.json");
-const orchestrationStatePath =
-  process.env.ORCHESTRATION_STATE_PATH ?? join(HIDDEN, "orchestration-state.json");
+const orchestrationStatePath = process.env.ORCHESTRATION_STATE_PATH ?? join(HIDDEN, "orchestration-state.json");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
   process.env.OPENCODE_SERVER_PASSWORD_FILE ?? join(HOME, "tools/secrets.d/opencode-server-password");

@@ -17,9 +17,9 @@ Phase 2 (2026-10-24) added three layers, each in its own subdirectory
 with the same deploy shape (SOPS → mode-600 env → compose/unit →
 health gate):
 
-| Layer     | Piece           | Version / pin                                                    | Reach                                                                | Deployment definition |
-| --------- | --------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------- | --------------------- |
-| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, all interfaces (loopback + tailnet + LAN)    | `ready-for-agent/`    |
+| Layer     | Piece           | Version / pin                                                    | Reach                                                                                 | Deployment definition |
+| --------- | --------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------- |
+| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, all interfaces (loopback + tailnet + LAN)                     | `ready-for-agent/`    |
 | Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + tailnet `amd-6.raptor-pumpkinseed.ts.net:7777`; no tunnel hostname | `pad/`                |
 | Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + tailnet `amd-6.raptor-pumpkinseed.ts.net:8484`; no tunnel hostname | `grist/`              |
 | Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route    | `aggregator/`         |

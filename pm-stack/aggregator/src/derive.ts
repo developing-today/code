@@ -211,13 +211,7 @@ export function attentionSorted(feed: SessionFeedEntry[], now = Date.now()): Att
 // ORCHESTRATOR tiering, session hierarchy, roadmap grains, today view.
 // ---------------------------------------------------------------------------
 
-import type {
-  AttentionTier,
-  BoardItem,
-  OrchestrationSummary,
-  SessionSource,
-  TieredEntry,
-} from "./model.ts";
+import type { AttentionTier, BoardItem, OrchestrationSummary, SessionSource, TieredEntry } from "./model.ts";
 
 export function sourceOf(e: SessionFeedEntry): SessionSource {
   if (e.source) return e.source;
@@ -270,8 +264,7 @@ export function partitionFresh(
 
 const DECISION_Q =
   /(should (i|we)\b|which (option|approach|repo|one|of|path)|approve|approval|choose|pick one|sign[- ]?off|go ahead\?)/i;
-const DESTRUCTIVE_Q =
-  /(\brm\b|delete|drop table|destroy|force[- ]?push|reset --hard|spend|purchase|\bpay\b|deploy)/i;
+const DESTRUCTIVE_Q = /(\brm\b|delete|drop table|destroy|force[- ]?push|reset --hard|spend|purchase|\bpay\b|deploy)/i;
 const CREDENTIAL_ERR =
   /(otp|one[- ]?time code|verification code|passkey|2fa|sign[- ]?in required|login required|authentication required)/i;
 const ESCALATION_NOTE = /(escalat|needs drew|drew decision|decision needed)/i;
@@ -404,8 +397,18 @@ export function weekStartYmd(ymd: string): string {
 }
 
 const MONTH_NAMES = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
 ];
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -467,7 +470,11 @@ export function roadmapDayGrain(rows: RoadmapRow[], grain: "week" | "3d" | "toda
     }
   }
   return {
-    lanes: days.map((d) => ({ key: d, label: d === today ? `${ymdLabel(d)} · today` : ymdLabel(d), rows: lanes.get(d) ?? [] })),
+    lanes: days.map((d) => ({
+      key: d,
+      label: d === today ? `${ymdLabel(d)} · today` : ymdLabel(d),
+      rows: lanes.get(d) ?? [],
+    })),
     outside,
     coarse,
   };
@@ -572,10 +579,16 @@ export function deriveToday(
     (PRIORITY_ORDER[(a.priority ?? "normal").toLowerCase()] ?? 2) -
       (PRIORITY_ORDER[(b.priority ?? "normal").toLowerCase()] ?? 2) ||
     (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
-  for (const item of board.filter((b) => b.status === "in-progress").sort(byPriority).slice(0, 5)) {
+  for (const item of board
+    .filter((b) => b.status === "in-progress")
+    .sort(byPriority)
+    .slice(0, 5)) {
     objectives.push({ title: item.title, chip: `in progress · ${item.repo}` });
   }
-  for (const item of board.filter((b) => b.status === "in-review").sort(byPriority).slice(0, 3)) {
+  for (const item of board
+    .filter((b) => b.status === "in-review")
+    .sort(byPriority)
+    .slice(0, 3)) {
     objectives.push({ title: item.title, chip: `in review · ${item.repo}` });
   }
 
@@ -598,9 +611,7 @@ export function deriveToday(
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .slice(0, 3)
       .map((i) => `${i.ref} — ${i.title}`);
-    const blocked = all.filter(
-      (i) => i.state === "open" && i.labels.some((l) => /blocked/i.test(l)),
-    );
+    const blocked = all.filter((i) => i.state === "open" && i.labels.some((l) => /blocked/i.test(l)));
     const recent = all.some((i) => Date.parse(i.updatedAt) >= twoDaysAgo);
     const inProgress = repoBoard.some((b) => b.status === "in-progress" || b.status === "in-review");
     momentum.push({

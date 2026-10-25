@@ -2,14 +2,7 @@
 // server-rendered HTML; /api/*.json serve the same data machine-first.
 import { loadConfig } from "./config.ts";
 import { allRefs, buildAttention, deriveToday, type RoadmapGrain } from "./derive.ts";
-import {
-  renderAttention,
-  renderBoard,
-  renderItem,
-  renderQuota,
-  renderRoadmap,
-  renderToday,
-} from "./render.ts";
+import { renderAttention, renderBoard, renderItem, renderQuota, renderRoadmap, renderToday } from "./render.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
@@ -48,11 +41,7 @@ async function roadmapContext() {
 }
 
 async function attentionContext() {
-  const [feed, summary, coverage] = await Promise.all([
-    source.attention(),
-    source.orchestration(),
-    source.coverage(),
-  ]);
+  const [feed, summary, coverage] = await Promise.all([source.attention(), source.orchestration(), source.coverage()]);
   return { view: buildAttention(feed, summary), coverage };
 }
 

@@ -9,11 +9,7 @@ import {
   sessionChildren,
   sessionRoots,
 } from "../src/derive.ts";
-import {
-  type OrchestrationSummary,
-  type RoadmapRow,
-  type SessionFeedEntry,
-} from "../src/model.ts";
+import { type OrchestrationSummary, type RoadmapRow, type SessionFeedEntry } from "../src/model.ts";
 import { renderAttention, renderRoadmap, renderToday } from "../src/render.ts";
 import {
   FIXTURE_ATTENTION,
@@ -33,7 +29,13 @@ describe("freshness expiry (#898 §2/§5)", () => {
     const feed: SessionFeedEntry[] = [
       { sessionId: "fresh-err", lastActivityAt: iso(NOW - 10 * 60_000), lastTurnError: "boom", activeToolCalls: 0 },
       { sessionId: "done-3h", lastActivityAt: iso(NOW - 3 * 3_600_000), outcome: "succeeded", activeToolCalls: 0 },
-      { sessionId: "done-1h", lastActivityAt: iso(NOW - 1 * 3_600_000), outcome: "failed", lastTurnError: "x", activeToolCalls: 0 },
+      {
+        sessionId: "done-1h",
+        lastActivityAt: iso(NOW - 1 * 3_600_000),
+        outcome: "failed",
+        lastTurnError: "x",
+        activeToolCalls: 0,
+      },
       { sessionId: "ancient", lastActivityAt: iso(NOW - 30 * 3_600_000), activeToolCalls: 1 },
       { sessionId: "no-time", lastActivityAt: null, lastTurnError: "boom", activeToolCalls: 0 },
     ];
@@ -153,7 +155,12 @@ describe("jules mapping (#898 §5)", () => {
         last_action_at: "2026-10-25T14:58:25Z",
         note: "Agent reported work done and asked 'Does this look good, and should I proceed?' Replied.",
       },
-      "999": { state: "FAILED", title: "Broke", source: "sources/github/developing-today/opencode", last_action_at: "2026-10-25T10:00:00Z" },
+      "999": {
+        state: "FAILED",
+        title: "Broke",
+        source: "sources/github/developing-today/opencode",
+        last_action_at: "2026-10-25T10:00:00Z",
+      },
     },
     jules_note_1458:
       "Jules list this run: 84 sessions - 77 COMPLETED, 6 FAILED, 1 AWAITING_USER_FEEDBACK, 0 AWAITING_PLAN_APPROVAL, 0 IN_PROGRESS. 1 Jules response sent.",
