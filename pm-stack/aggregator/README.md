@@ -9,15 +9,45 @@ works standalone (design record, "Data flow").
 Design record (source of truth):
 [`doc/2026-10-24T11-05-38Z_design_project-management-stack/`](../../doc/2026-10-24T11-05-38Z_design_project-management-stack/).
 
-## The four views
+## The views
 
-| Route             | View                                                                                                                                                    | Machine-first JSON    |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `/`               | **Cross-repo WIP board** — the curated in-flight set across all four repos, with an execution strip per card (implementing → review → merged → queued). | `/api/board.json`     |
-| `/roadmap`        | **Roadmap** — Grist's `Program roadmap` table as a timeline (theme × quarter lane); each row drills down to its linked issues/PRs with live state.      | `/api/roadmap.json`   |
-| `/quota`          | **Quota + throughput** (#851) — all pooled quotas, resets, burn rates, and model-choice guidance.                                                       | `/api/quota.json`     |
-| `/attention`      | **Needs you** (#852) — every live agent session, classified and attention-ordered, with the evidence inline.                                            | `/api/attention.json` |
-| `/item/<subject>` | Drill-down for one board card or roadmap row: linked refs + a unified comment stream.                                                                   | —                     |
+| Route             | View                                                                                                                                                                                                                                                                                                                       | Machine-first JSON                          |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `/today`          | **Today** (slice 2, #898) — the day's top objectives, prioritized, plus per-project momentum (moving / stalled / blocked-by-what, recent accomplishments). From the orchestration job's goal measurements (#899) when a section exists; derived from board + roadmap + item activity, and labelled as derived, until then. | `/api/today.json`                           |
+| `/attention`      | **Needs you** (#852, tiered in slice 2) — **NEEDS DREW** (default; only items that genuinely require Drew, each with its reason), **NEEDS ORCHESTRATOR** (the fleet's own queue), then every current session with source labels and plain-language states. Finished runs and stale items expire out.                       | `/api/attention.json`, `/api/coverage.json` |
+| `/`               | **Cross-repo WIP board** — the curated in-flight set across all four repos, with an execution strip per card (implementing → review → merged → queued).                                                                                                                                                                    | `/api/board.json`                           |
+| `/roadmap`        | **Roadmap** — Grist's `Program roadmap` table as a timeline; `?h=` switches the horizon: `quarter` (default), `month`, `week`, `3d`, `today` — one data model at every grain.                                                                                                                                              | `/api/roadmap.json`                         |
+| `/quota`          | **Quota + throughput** (#851) — all pooled quotas, resets, burn rates, and model-choice guidance.                                                                                                                                                                                                                          | `/api/quota.json`                           |
+| `/item/<subject>` | Drill-down for one board card or roadmap row: linked refs + a unified comment stream.                                                                                                                                                                                                                                      | —                                           |
+
+All views are mobile-first (single-column stacking, scrollable tables,
+touch-sized switchers) — verify at phone width, not by resizing a desktop
+window. The canonical tailnet URL is
+`http://amd-6.raptor-pumpkinseed.ts.net:4870` (MagicDNS); links never use
+the raw tailnet IP (bind addresses and the feed-push transport still do —
+that is plumbing, not links).
+
+### Needs-you tiers + session clarity (slice 2, #898)
+
+- **Tiering** (`buildAttention` in `src/derive.ts`): every classified
+  session lands in NEEDS DREW (with an explainable `drewReason`),
+  NEEDS ORCHESTRATOR (with the fleet's next step), or in-motion. Drew
+  rules, in order: the orchestration job's own classification (#899 —
+  its tiers win for anything they name, reason verbatim) → a keeper
+  "escalate" supervision note → a decision-shaped question → a
+  destructive permission request → a credential/sign-in wall. Routine
+  questions, errors, and tool permissions are the orchestrator's —
+  and so are Jules' questions (the keeper answers those itself).
+- **Expiry**: a finished run (the runtime reported an outcome) expires
+  2 h after its last activity; anything expires at 24 h. The page counts
+  what expired.
+- **Sources**: every entry is stamped `opencode-sandbox` /
+  `opencode-laptop` / `jules` / `claude-code`; OpenCode sub-sessions
+  carry `parentId` and collapse under their parent. **Jules is wired**
+  via the keeper's `jules-review-state.json` (collector-side,
+  `src/sources/jules.ts`). **Muse is not wired** — the assistant
+  runtime exposes no session registry to read; the coverage note on the
+  page says so, and the gap is tracked in #898.
 
 Each view is **machine-first**: the `/api/*.json` endpoint returns the
 exact same data the GUI renders, so Muse can poll it in one call.
@@ -119,8 +149,26 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   registry: exactly one Meta pool (Muse API High Usage, `meta`
   provider the only door); no "muse plan" pool exists.
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
-  mapper (`src/sources/opencode.ts`); keeper supervision entries
-  from `jules-review-state.json` annotate matching sessions.
+  mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with
+  parent/agent/outcome; keeper supervision entries from
+  `jules-review-state.json` annotate matching sessions.
+- **Jules attention** (slice 2) — the keeper's tracked Jules sessions
+  from the same state file, mapped by `src/sources/jules.ts`, plus the
+  keeper's run totals as `julesSummary`.
+- **Orchestration section** (slice 2, #899 — the unified contract) —
+  the orchestration job republishes
+  `~/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json`
+  on the sandbox every run: an `OrchestrationSection` v1 (types in
+  `src/model.ts`) with tiered queue items (`tiers.needsDrew` /
+  `tiers.needsOrchestrator`, each with its reason), a flat dependency
+  view, per-goal measurements (momentum, tasks lined up by horizon,
+  what progressed), and the actions the run pushed back into motion.
+  The collector embeds it as `feed.orchestration` after a structural
+  check (fail-soft; override the path with `ORCHESTRATION_PATH`). The
+  aggregator serves it raw at `/api/orchestration.json`; the needs-you
+  view lets its classification win for anything it names (non-session
+  items render as tier cards), and the today view maps its goals —
+  until a section exists, the today view derives and labels itself.
 
 `scripts/push-fleet-feed.sh` pushes the feed to the laptop over the
 tailnet proxy route; a systemd timer on the sandbox runs it every
@@ -198,6 +246,7 @@ src/
     fixtures.ts   fixture data (real Grist seed + design-record refs)
     live.ts       Kaneo/Grist/projector readers with per-facet fallback
     opencode.ts   OpenCode v2 server -> SessionFeedEntry mapper (shared)
+    jules.ts      keeper state -> Jules SessionFeedEntry mapper (shared)
 scripts/
   collect-fleet-feed.ts  sandbox collector: quota + sandbox attention -> feed
   push-fleet-feed.sh     collect + push the feed to the laptop (~5 min timer)
@@ -209,4 +258,6 @@ test/
   projector.test.ts projector wire-schema mapping + stub-server reads
   opencode.test.ts  mapper against a stub OpenCode v2 server
   quota.test.ts     extractors + guidance against the dated-read format
+  slice2.test.ts    tiers, expiry, hierarchy, Jules mapping, roadmap
+                    grains, today derivation, slice-2 render smoke
 ```

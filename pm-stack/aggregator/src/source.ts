@@ -11,6 +11,7 @@ import type {
   RefKey,
   RoadmapRow,
   SessionFeedEntry,
+  SourceCoverage,
 } from "./model.ts";
 
 export interface Source {
@@ -28,5 +29,7 @@ export interface Source {
   attention(): Promise<SessionFeedEntry[]>;
   /** The orchestration job's latest section (#899); null = not measured yet. */
   orchestration(): Promise<OrchestrationSection | null>;
+  /** Which session sources are wired, for the coverage note (slice 2). */
+  coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;
 }

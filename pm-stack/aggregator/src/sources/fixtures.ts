@@ -16,6 +16,7 @@ import {
   type RefKey,
   type RoadmapRow,
   type SessionFeedEntry,
+  type SourceCoverage,
   refsInText,
   refUrl,
 } from "../model.ts";
@@ -436,28 +437,50 @@ export const FIXTURE_QUOTA: QuotaView = {
 };
 
 // "Needs you" view (#852). One entry per state so the classifier's ordering
-// is exercised; values are illustrative.
+// is exercised; values are illustrative. Timestamps are relative to load
+// time so the slice-2 freshness expiry behaves the same whenever the
+// fixtures render: current entries are minutes old, the finished probe
+// is 30 h old and expires out.
+const ago = (h: number): string => new Date(Date.now() - h * 3_600_000).toISOString();
 export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   {
     sessionId: "ses_k_wip",
+    source: "opencode-laptop",
     title: "pm wave K — aggregator UI",
     directory: "/home/user/work/id-train/pm-aggregator-ui",
     branch: "pm/aggregator-ui",
     model: "deepseek-v4-pro",
     provider: "cloudflare-gateway",
-    lastActivityAt: "2026-10-25T02:45:00Z",
+    lastActivityAt: ago(0.4),
     messageCount: 41,
     messageDelta: 3,
     activeToolCalls: 1,
   },
   {
+    // A sub-session of ses_k_wip: collapses under its parent (slice 2).
+    sessionId: "ses_k_wip_explore",
+    source: "opencode-laptop",
+    parentId: "ses_k_wip",
+    agent: "explore",
+    outcome: "interrupted",
+    title: "Explore: locate the projector schema",
+    directory: "/home/user/work/id-train/pm-aggregator-ui",
+    model: "deepseek-v4-flash",
+    provider: "opencode-go",
+    lastActivityAt: ago(0.5),
+    messageCount: 6,
+    messageDelta: 0,
+    activeToolCalls: 0,
+  },
+  {
     sessionId: "ses_h_connect",
+    source: "opencode-laptop",
     title: "pm wave H — connect repos",
     directory: "/home/user/work/id-train/pm-connect-repos",
     branch: "pm/connect-repos",
     model: "claude-opus-5-5",
     provider: "claude-code",
-    lastActivityAt: "2026-10-25T02:30:00Z",
+    lastActivityAt: ago(0.6),
     messageCount: 88,
     messageDelta: 0,
     activeToolCalls: 0,
@@ -465,12 +488,13 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   },
   {
     sessionId: "ses_i_kaneo",
+    source: "opencode-sandbox",
     title: "pm wave I — Kaneo fork",
     directory: "/home/user/work/kaneo-fork",
     branch: "main",
     model: "muse-wonder-1.0",
     provider: "muse",
-    lastActivityAt: "2026-10-25T02:20:00Z",
+    lastActivityAt: ago(0.8),
     messageCount: 19,
     messageDelta: 0,
     activeToolCalls: 0,
@@ -478,30 +502,59 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   },
   {
     sessionId: "ses_j_proj",
+    source: "opencode-laptop",
     title: "pm wave J — projector",
     directory: "/home/user/work/id-train/pm-projector",
     branch: "pm/projector",
     model: "claude-opus-5-5",
     provider: "claude-code",
-    lastActivityAt: "2026-10-25T02:10:00Z",
+    lastActivityAt: ago(1),
     messageCount: 55,
     messageDelta: 0,
     activeToolCalls: 1,
-    longRunningCall: { command: "cargo build --release", startedAt: "2026-10-25T01:40:00Z" },
+    longRunningCall: { command: "cargo build --release", startedAt: ago(1.8) },
   },
   {
     sessionId: "ses_f_phase13",
+    source: "opencode-sandbox",
     title: "id train F — Phase 13",
     directory: "/home/user/work/id-train/phase-13-impl",
     branch: "phase-13-impl",
     model: "claude-opus-5-5",
     provider: "claude-code",
-    lastActivityAt: "2026-10-25T01:55:00Z",
+    lastActivityAt: ago(1.2),
     messageCount: 102,
     messageDelta: 0,
     activeToolCalls: 0,
     repeatedErrorCount: 4,
     lastTurnError: "claude_session_limit (retry)",
+  },
+  {
+    // Jules, wired via the keeper's state in slice 2.
+    sessionId: "4259424002214698449",
+    source: "jules",
+    title: "Fix #811: id phase-9: a joiner's resize (up to 500x200) can permanently…",
+    directory: "developing-today/code",
+    createdAt: ago(5),
+    lastActivityAt: ago(0.2),
+    messageCount: 0,
+    activeToolCalls: 0,
+    awaitingQuestion: "Does this look good, and should I proceed?",
+    supervisionNote: "Jules AWAITING_USER_FEEDBACK · keeper: replied",
+  },
+  {
+    // A finished one-shot probe: expires out of the view (slice 2).
+    sessionId: "ses_old_probe",
+    source: "opencode-sandbox",
+    outcome: "succeeded",
+    title: "one-shot probe: GEMINI LIVE",
+    directory: "/home/hatch/tmp/gemini-probe",
+    model: "gemini-3.8-flash",
+    provider: "google",
+    lastActivityAt: ago(30),
+    messageCount: 2,
+    messageDelta: 0,
+    activeToolCalls: 0,
   },
 ];
 
@@ -514,6 +567,7 @@ export function fixtureSource(): Source {
     comments: "fixtures",
     quota: "fixtures",
     attention: "fixtures",
+    orchestration: "fixtures",
   };
   return {
     board: async () => FIXTURE_BOARD,
@@ -528,6 +582,33 @@ export function fixtureSource(): Source {
     // Fixtures carry no orchestration section: "not measured" is the
     // honest fixture state for a job that only runs live (#899).
     orchestration: async () => null,
+    coverage: async (): Promise<SourceCoverage[]> => [
+      {
+        source: "opencode-sandbox",
+        label: "OpenCode · sandbox server",
+        wired: true,
+        detail: "fixtures",
+      },
+      {
+        source: "opencode-laptop",
+        label: "OpenCode · laptop server",
+        wired: true,
+        detail: "fixtures",
+      },
+      {
+        source: "jules",
+        label: "Jules",
+        wired: true,
+        detail: "fixtures (keeper state)",
+      },
+      {
+        source: "claude-code",
+        label: "Muse",
+        wired: false,
+        detail:
+          "Not wired — Muse subagents run inside the assistant runtime, which exposes no session registry for the aggregator to read. Gap tracked in #898.",
+      },
+    ],
     provenance: () => provenance,
   };
 }

@@ -111,6 +111,7 @@ export interface Provenance {
   comments: string;
   quota: string;
   attention: string;
+  orchestration: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,9 +187,28 @@ export type AttentionState =
   | "stalled-on-cli"
   | "stuck-retrying";
 
+/** Which runtime a session belongs to (slice 2, #898 §5). */
+export type SessionSource = "opencode-sandbox" | "opencode-laptop" | "jules" | "claude-code";
+
+export const SESSION_SOURCE_LABELS: Record<SessionSource, string> = {
+  "opencode-sandbox": "OpenCode · sandbox",
+  "opencode-laptop": "OpenCode · laptop",
+  jules: "Jules",
+  "claude-code": "Muse",
+};
+
 /** The raw feed entry for one session, as the projector / watch cron emits. */
 export interface SessionFeedEntry {
   sessionId: string;
+  /** Owning runtime; feed entries default to the sandbox server. */
+  source?: SessionSource;
+  /** Parent session id for sub-sessions (OpenCode `parentID`), else null/absent. */
+  parentId?: string | null;
+  /** Subagent name when the session is a spawned sub-session (e.g. "explore"). */
+  agent?: string;
+  /** Run outcome when the runtime reports one (succeeded/failed/interrupted). */
+  outcome?: string | null;
+  createdAt?: string;
   title?: string;
   directory?: string;
   branch?: string;
@@ -216,6 +236,44 @@ export interface AttentionEntry extends SessionFeedEntry {
   state: AttentionState;
   order: number; // lower = more urgent
   evidence: string;
+}
+
+/**
+ * Slice 2 tiers (#898 §2): who has to act on a session. NEEDS DREW is the
+ * default view and only holds items with an explainable `drewReason`;
+ * everything else the fleet can work itself is NEEDS ORCHESTRATOR.
+ */
+export type AttentionTier = "needs-drew" | "needs-orchestrator" | "in-motion";
+
+export interface TieredEntry extends AttentionEntry {
+  tier: AttentionTier;
+  /** Why this needs Drew — present iff tier is "needs-drew". */
+  drewReason?: string;
+  /** What the fleet will do with it — present iff tier is "needs-orchestrator". */
+  orchestratorNote?: string;
+}
+
+/** One session source's wiring status, for the coverage note (#898 §5). */
+export interface SourceCoverage {
+  source: SessionSource;
+  label: string;
+  wired: boolean;
+  detail: string;
+}
+
+/** Keeper run totals for Jules, parsed from jules-review-state.json. */
+export interface JulesSummary {
+  /** When the keeper last ran (its `last_run`). */
+  at: string | null;
+  /** Sessions the keeper currently tracks in its `items` map. */
+  tracked: number;
+  /** Totals from the keeper's freshest run note, when it parses. */
+  total?: number;
+  completed?: number;
+  failed?: number;
+  inProgress?: number;
+  awaitingFeedback?: number;
+  awaitingPlan?: number;
 }
 
 export function refKey(ref: GhRef): RefKey {

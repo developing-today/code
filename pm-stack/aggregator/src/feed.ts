@@ -4,15 +4,17 @@
 // record live on the sandbox). The aggregator renders the feed as-is;
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
-import type { OrchestrationSection, QuotaView, SessionFeedEntry } from "./model.ts";
+import type { JulesSummary, OrchestrationSection, QuotaView, SessionFeedEntry } from "./model.ts";
 
 export interface FleetFeed {
   version: 1;
   /** ISO timestamp of collection on the sandbox. */
   generatedAt: string;
   quota: QuotaView;
-  /** Sandbox-server sessions, pre-classification (render classifies). */
+  /** Sandbox-server + Jules sessions, pre-classification (render classifies). */
   attention: SessionFeedEntry[];
+  /** Jules keeper totals (slice 2); absent when the keeper state is unreadable. */
+  julesSummary?: JulesSummary;
   /** The orchestration job's latest section (#899), when one exists. */
   orchestration?: OrchestrationSection;
 }
