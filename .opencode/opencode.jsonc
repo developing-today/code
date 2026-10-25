@@ -3813,90 +3813,141 @@
         }
       }
     },
+    // NOTE (2026-10-25): the block below was keyed "opendesign" until today; renamed to
+    // "design-code" to free the ID for the direct Open Design cloud block (active, further
+    // below). It points at the local design-code proxy, which routes to the
+    // the antigravity-ls/codex proxies. Commented out per Drew (unrecognized/unused) -
+    // preserved, not deleted. An identical ACTIVE "design-code" block already exists above,
+    // so this renamed copy stays commented out to avoid a duplicate key.
+//    "design-code": {
+//      "npm": "@ai-sdk/openai-compatible",
+//      "name": "OpenDesign",
+//      "options": {
+//        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
+//        "apiKey": "design-local"
+//      },
+//      "models": {
+//        "claude-haiku-5.5": {
+//          "name": "Claude Haiku 5.5 (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "gpt-6-luna": {
+//          "name": "GPT-6 Luna (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        },
+//        "gpt-6.1-sol": {
+//          "name": "GPT-6.1 Sol (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        },
+//        "deepseek-v4.1-flash": {
+//          "name": "DeepSeek V4.1 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "glm-5.3-flash": {
+//          "name": "GLM 5.3 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "glm-5.3-flashx": {
+//          "name": "GLM 5.3 FlashX (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "mimo-v2.6-flash": {
+//          "name": "MIMO v2.6 Flash (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "mimo-v2.6-pro": {
+//          "name": "MIMO v2.6 Pro (Design Code)",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "design-code-pro": {
+//          "name": "Design Code Pro",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "design-code-flash": {
+//          "name": "Design Code Flash",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 64000
+//          }
+//        },
+//        "open-design-pro": {
+//          "name": "Open Design Pro",
+//          "limit": {
+//            "context": 1000000,
+//            "output": 128000
+//          }
+//        }
+//      }
+//    },
     "opendesign": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "OpenDesign",
+      "name": "Open Design",
       "options": {
-        "baseURL": "http://127.0.0.1:{env:DESIGN_CODE_PROXY_PORT:-18746}/v1",
-        "apiKey": "design-local"
+        "baseURL": "https://amr-link.open-design.ai/v1"
       },
       "models": {
         "claude-haiku-5.5": {
-          "name": "Claude Haiku 5.5 (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
+          "name": "Claude Haiku 5.5 (Open Design)"
         },
-        "gpt-6-luna": {
-          "name": "GPT-6 Luna (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
+        "deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash"
         },
-        "gpt-6.1-sol": {
-          "name": "GPT-6.1 Sol (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
+        "deepseek-v4-flash-vision-exp": {
+          "name": "DeepSeek V4 Flash Vision Exp"
+        },
+        "deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro"
         },
         "deepseek-v4.1-flash": {
-          "name": "DeepSeek V4.1 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
+          "name": "DeepSeek V4.1 Flash"
         },
         "glm-5.3-flash": {
-          "name": "GLM 5.3 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
+          "name": "GLM-5.3 Flash"
         },
         "glm-5.3-flashx": {
-          "name": "GLM 5.3 FlashX (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
+          "name": "GLM-5.3 Flash-X"
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna (Open Design)"
+        },
+        "hy4-preview": {
+          "name": "Hunyuan H4 Preview"
+        },
+        "kimi-k2.7-code": {
+          "name": "Kimi K2.7 Code"
         },
         "mimo-v2.6-flash": {
-          "name": "MIMO v2.6 Flash (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
+          "name": "MiMo V2.6 Flash"
         },
         "mimo-v2.6-pro": {
-          "name": "MIMO v2.6 Pro (Design Code)",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "design-code-pro": {
-          "name": "Design Code Pro",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "design-code-flash": {
-          "name": "Design Code Flash",
-          "limit": {
-            "context": 1000000,
-            "output": 64000
-          }
-        },
-        "open-design-pro": {
-          "name": "Open Design Pro",
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
+          "name": "MiMo V2.6 Pro"
         }
       }
     },
