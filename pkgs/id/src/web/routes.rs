@@ -150,10 +150,12 @@ pub struct FileInfo {
 fn classify_tag(name: &str) -> (FileKind, Option<u64>) {
     // Check for auto-backup: "auto-{ISO_DATE}"
     if let Some(iso_str) = name.strip_prefix("auto-") {
-        // Try to parse the ISO date to extract a unix timestamp
-        // Format: 2026-03-12T06:42:30.015Z
-        let ts = parse_iso_timestamp(iso_str);
-        return (FileKind::Auto, ts);
+        // Only an auto-backup when the remainder actually parses as an
+        // ISO date (format: 2026-03-12T06:42:30.015Z). An ordinary file
+        // that merely starts with "auto-" (auto-notes.txt) is Primary.
+        if let Some(ts) = parse_iso_timestamp(iso_str) {
+            return (FileKind::Auto, Some(ts));
+        }
     }
 
     // Check for archive: "{name}.archive.{unix_timestamp}"
@@ -2438,6 +2440,22 @@ mod tests {
         let (kind, ts) = classify_tag("auto-2026-03-12T06:42:30.015Z");
         assert_eq!(kind, FileKind::Auto);
         assert!(ts.is_some());
+    }
+
+    #[test]
+    fn test_classify_tag_auto_prefix_non_date_is_primary() {
+        // Regression (#809): an ordinary file that merely starts with
+        // "auto-" is not an auto-backup — only "auto-{ISO_DATE}" is.
+        for name in [
+            "auto-notes.txt",
+            "auto-2026-report.md",
+            "auto-",
+            "auto-draft",
+        ] {
+            let (kind, ts) = classify_tag(name);
+            assert_eq!(kind, FileKind::Primary, "{name}");
+            assert!(ts.is_none(), "{name}");
+        }
     }
 
     #[test]
