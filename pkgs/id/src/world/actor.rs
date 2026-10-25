@@ -1145,7 +1145,10 @@ impl WorldActor {
                                                     Ok(None)
                                                 }
                                             }
-                                            Err(error) => Err(error.context("world program view fallback failed")),
+                                            Err(error) => {
+                                                Err(error
+                                                    .context("world program view fallback failed"))
+                                            }
                                         }
                                     } else {
                                         Ok(view)

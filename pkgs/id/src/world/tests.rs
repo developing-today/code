@@ -2501,7 +2501,10 @@ mod tests {
             actor.program_healthy,
             "an oversized layout must not poison the world"
         );
-        assert_eq!(actor.view_failures, 1, "the fallback triggers a view failure count");
+        assert_eq!(
+            actor.view_failures, 1,
+            "the fallback triggers a view failure count"
+        );
     }
 }
 
