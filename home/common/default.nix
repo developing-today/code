@@ -1425,7 +1425,6 @@ in
       OPENCODE_EXPERIMENTAL_PLAN_MODE = "1";
       OPENCODE_EXPERIMENTAL_SCOUT = "1";
       OPENCODE_EXPERIMENTAL_WORKSPACES = "1";
-      OPENCODE_EXPERIMENTAL_LSP_TOOL = "1";
       OPENCODE_EXPERIMENTAL_OXFMT = "1";
       OPENCODE_EXPERIMENTAL_EXA = "1";
       OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
@@ -1440,7 +1439,10 @@ in
       # File watcher off by default (Drew, 2026-10-20): the working trees
       # are giant, and watching costs more than the live-external-edit
       # awareness it buys. Diffs are git-computed on demand either way.
-      OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER = "1";
+      # (Name corrected 2026-10-25 per #698: opencode's server-process.ts
+      # reads OPENCODE_DISABLE_FILEWATCHER; the EXPERIMENTAL_ name was
+      # read nowhere, so the watcher was silently still on.)
+      OPENCODE_DISABLE_FILEWATCHER = "1";
       # XDG_CACHE_HOME = "$HOME/.cache";
       # XDG_CONFIG_DIRS = "/etc/xdg";
       # XDG_CONFIG_HOME = "$HOME/.config";
