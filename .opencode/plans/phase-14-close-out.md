@@ -122,7 +122,7 @@ Tasks are numbered F14.n. Each names its tracking issue, a size in the Phase 11-
 - **F14.3 Manifest semantics and honest apply/diff (F12.1; #817, #818; M).** Represent "unspecified" distinctly from "empty" for grants, ceiling, schedules and profile; expose the install seed digest and pending schedules over the admin wire so `diff` and `plan` read real state; report applied and skipped steps separately with a nonzero exit when any planned step was skipped. Exit: a minimal manifest against a configured world plans zero steps; an omitted ceiling never widens; `apply` never claims a step it skipped.
 - **F14.4 Manifest apply wiring: module and schedules (F12.1; #807; M).** `id world apply` installs or compiles the manifest module and sets and cancels schedules, journaling each step. Depends on F14.1 and F14.3. Exit: a manifest naming only a module and schedules applies idempotently — the second run changes nothing.
 - **F14.5 `id world fork` over the wire (F12.2; #556; M).** CLI and admin frame for the store-level fork, the template flag, and the F11.11 seed-inheritance hook. Depends on F14.1. Exit: a fork replays to the parent's records at the fork point, and the seed is inherited only as the policy allows.
-- **F14.6 Builder and moderator authority through session frames (F12.3; new issue; M).** The install and revoke frames accept builder and moderator participants and pass the actor to `install_program_by`/`revoke_by`, so the `BuilderInstalled` and `Revoked { by }` audit entries are produced in practice. Depends on F14.1. Exit: over a real session, a builder installs a module, a moderator revokes a participant, a guest can do neither, and each use is journaled with its actor.
+- **F14.6 Builder and moderator authority through session frames (F12.3; #835; M).** The install and revoke frames accept builder and moderator participants and pass the actor to `install_program_by`/`revoke_by`, so the `BuilderInstalled` and `Revoked { by }` audit entries are produced in practice. Depends on F14.1. Exit: over a real session, a builder installs a module, a moderator revokes a participant, a guest can do neither, and each use is journaled with its actor.
 
 ### C. Measure
 
@@ -178,7 +178,7 @@ F14.1 is the highest-return task: every later journal entry, and Phase 12's F12.
 
 Each F14.x carries an exit criterion above. The consolidated checkpoints are:
 
-- [ ] `.opencode/plans/phase-14-close-out.md` committed (this file)
+- [ ] `.opencode/plans/phase-14-close-out.md` committed (this file) — PR #834
 - [ ] Every F14.x names one tracking issue; existing issues are referenced, not duplicated
 - [ ] The Phase 13 gates (F12.4, F12.6, F11.9) each have a scheduled F14.x item
 - [ ] The Phase 11 status tracker is corrected (F14.18)
