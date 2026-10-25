@@ -1,16 +1,7 @@
 {
-  "name": "devtoday-code",
   "build": {
     "dockerfile": "Dockerfile"
   },
-  "features": {
-    "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers/features/go:1": {
-      "version": "1.25"
-    }
-  },
-  "remoteUser": "vscode",
-  "postCreateCommand": "bash -lc 'direnv allow . ; nix develop ./src/id --command bash -c \"cargo --version && rustc --version\" ; go version ; nix --version ; git --version'",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -19,5 +10,14 @@
         "golang.Go"
       ]
     }
-  }
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.25"
+    }
+  },
+  "name": "devtoday-code",
+  "postCreateCommand": "bash -lc 'direnv allow . ; go version ; nix --version ; git --version'",
+  "remoteUser": "vscode"
 }
