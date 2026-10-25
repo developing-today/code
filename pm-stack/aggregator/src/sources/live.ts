@@ -3,8 +3,11 @@
 // the projector's /items and /comments for live ref state and the comment
 // projection. Anything a reader cannot reach falls back to fixtures, and the
 // provenance strings say exactly which facet is live vs fixture-backed.
+import { readFile } from "node:fs/promises";
 import type { Config } from "../config.ts";
+import { feedAgeText, loadFeed } from "../feed.ts";
 import { fixtureSource } from "./fixtures.ts";
+import { mapServerSessions } from "./opencode.ts";
 import {
   type BoardItem,
   type Comment,
@@ -358,6 +361,26 @@ export function liveSource(cfg: Config): Source {
     return value;
   }
 
+  // The laptop's OpenChamber-managed OpenCode server: port + password
+  // are read from its state file at request time (the port changes
+  // across restarts). Mapped sessions are cached for 45 s (#890).
+  let laptopCache: { value: SessionFeedEntry[]; at: number } | null = null;
+  async function laptopSessions(): Promise<SessionFeedEntry[] | null> {
+    if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
+    const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
+      port?: number;
+      password?: string;
+    };
+    if (!state.port || !state.password) return null;
+    const mapped = await mapServerSessions({
+      baseUrl: `http://127.0.0.1:${state.port}`,
+      password: state.password,
+    });
+    if (!mapped) return null;
+    laptopCache = { value: mapped.entries, at: Date.now() };
+    return mapped.entries;
+  }
+
   return {
     async board() {
       try {
@@ -415,13 +438,46 @@ export function liveSource(cfg: Config): Source {
       return fix.comments(refs);
     },
     async quota() {
-      // The quota reader (per the #851 source list) is a projector concern;
-      // until it lands there, fixtures stand in.
+      // Slice 1 (#890): quota comes from the fleet feed file produced
+      // on the sandbox by scripts/collect-fleet-feed.ts. A stale feed
+      // keeps rendering, with its age in provenance; fixtures only when
+      // no feed exists at all.
+      const feed = await loadFeed(cfg.feedFile);
+      if (feed) {
+        provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
+        return feed.quota;
+      }
+      provenance.quota = "fixtures (no fleet feed file yet)";
       return fix.quota();
     },
     async attention() {
-      // The session-state feed (per #852) is a projector/watch-cron concern;
-      // until it lands there, fixtures stand in.
+      // Slice 1 (#890): laptop sessions live from the OpenChamber-
+      // managed OpenCode server (45 s cache); sandbox sessions from
+      // the fleet feed (the sandbox server binds its own loopback).
+      const parts: string[] = [];
+      const byId = new Map<string, SessionFeedEntry>();
+
+      const feed = await loadFeed(cfg.feedFile);
+      if (feed) {
+        for (const e of feed.attention) byId.set(e.sessionId, e);
+        parts.push(`sandbox via fleet feed (${feedAgeText(feed.generatedAt)})`);
+      }
+
+      try {
+        const laptop = await laptopSessions();
+        if (laptop) {
+          for (const e of laptop) byId.set(e.sessionId, e);
+          parts.push("laptop live");
+        }
+      } catch {
+        /* laptop part fails soft */
+      }
+
+      if (byId.size > 0) {
+        provenance.attention = `live (${parts.join(" + ")})`;
+        return [...byId.values()];
+      }
+      provenance.attention = "fixtures (no live attention source reachable)";
       return fix.attention();
     },
     provenance: () => provenance,
