@@ -27,7 +27,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister } from "../src/dns.ts";
 import { isOrchestrationSection, type FleetFeed } from "../src/feed.ts";
-import type { DnsSection, JulesSummary, OrchestrationSection, QuotaPool, SessionFeedEntry, SessionRecord } from "../src/model.ts";
+import type {
+  DnsSection,
+  JulesSummary,
+  OrchestrationSection,
+  QuotaPool,
+  SessionFeedEntry,
+  SessionRecord,
+} from "../src/model.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
@@ -50,12 +57,8 @@ const julesStatePath = process.env.JULES_STATE_PATH ?? join(HIDDEN, "jules-revie
 const orchestrationPath = process.env.ORCHESTRATION_PATH ?? join(HIDDEN, "orchestration.json");
 const dnsRegisterPath =
   process.env.DNS_REGISTER_PATH ??
-  join(
-    HOME,
-    "workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md",
-  );
-const launchRecordsPath =
-  process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
+  join(HOME, "workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md");
+const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
   process.env.OPENCODE_SERVER_PASSWORD_FILE ?? join(HOME, "tools/secrets.d/opencode-server-password");

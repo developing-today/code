@@ -4,7 +4,14 @@
 // record live on the sandbox). The aggregator renders the feed as-is;
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
-import type { DnsSection, JulesSummary, OrchestrationSection, QuotaView, SessionFeedEntry, SessionRecord } from "./model.ts";
+import type {
+  DnsSection,
+  JulesSummary,
+  OrchestrationSection,
+  QuotaView,
+  SessionFeedEntry,
+  SessionRecord,
+} from "./model.ts";
 
 export interface FleetFeed {
   version: 1;

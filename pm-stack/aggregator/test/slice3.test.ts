@@ -7,12 +7,7 @@ import { CommentsStore, validateNewComment } from "../src/comments.ts";
 import { dnsSectionFromRegister, parseDnsRegister, summarizeDns } from "../src/dns.ts";
 import type { SessionFeedEntry } from "../src/model.ts";
 import { PAGES } from "../src/pages.ts";
-import {
-  agentIdentityOf,
-  mergeRecords,
-  parseLaunchRecords,
-  recordFromSessionEntry,
-} from "../src/registry.ts";
+import { agentIdentityOf, mergeRecords, parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { renderBoard, renderDns, renderPages, renderSessions } from "../src/render.ts";
 import { FIXTURE_BOARD, FIXTURE_DNS, FIXTURE_ITEMS, FIXTURE_REGISTRY, fixtureSource } from "../src/sources/fixtures.ts";
 
@@ -130,8 +125,18 @@ describe("dashboard comments", () => {
 
   test("add/list/counts, triage, github result, persistence", async () => {
     const store = new CommentsStore(file);
-    const note = await store.add({ objectRef: "gh:developing-today/code#906", kind: "note", author: drew, body: "a note" });
-    const msg = await store.add({ objectRef: "gh:developing-today/code#906", kind: "message", author: drew, body: "please do X" });
+    const note = await store.add({
+      objectRef: "gh:developing-today/code#906",
+      kind: "note",
+      author: drew,
+      body: "a note",
+    });
+    const msg = await store.add({
+      objectRef: "gh:developing-today/code#906",
+      kind: "message",
+      author: drew,
+      body: "please do X",
+    });
     const gh = await store.add({
       objectRef: "gh:developing-today/code#906",
       kind: "github",
@@ -158,7 +163,13 @@ describe("dashboard comments", () => {
     expect(validateNewComment({ objectRef: "x", kind: "note", author: drew, body: "  " }).ok).toBe(false);
     expect(validateNewComment({ objectRef: "x", kind: "github", author: drew, body: "hi" }).ok).toBe(false);
     expect(
-      validateNewComment({ objectRef: "x", kind: "github", author: drew, body: "hi", githubRef: "developing-today/code#906" }).ok,
+      validateNewComment({
+        objectRef: "x",
+        kind: "github",
+        author: drew,
+        body: "hi",
+        githubRef: "developing-today/code#906",
+      }).ok,
     ).toBe(true);
     // Drew's authorship from a raw string author is never accepted.
     expect(validateNewComment({ objectRef: "x", kind: "note", author: "drew", body: "hi" }).ok).toBe(false);
@@ -318,7 +329,13 @@ describe("slice-3 routes", () => {
     expect(note.status).toBe(201);
     const msg = await post({ objectRef: ref, kind: "message", author, body: "Muse: please check X" });
     const msgBody = (await msg.json()) as { comment: { id: string } };
-    const ghRes = await post({ objectRef: ref, kind: "github", author, body: "for the issue", githubRef: "developing-today/code#906" });
+    const ghRes = await post({
+      objectRef: ref,
+      kind: "github",
+      author,
+      body: "for the issue",
+      githubRef: "developing-today/code#906",
+    });
     const ghBody = (await ghRes.json()) as { comment: { id: string } };
 
     const list = (await (await fetch(`http://127.0.0.1:${port}/api/comments.json?kind=message&state=new`)).json()) as {
@@ -342,7 +359,10 @@ describe("slice-3 routes", () => {
       await fetch(`http://127.0.0.1:${port}/api/comments/github-result`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: ghBody.comment.id, url: "https://github.com/developing-today/code/issues/906#issuecomment-1" }),
+        body: JSON.stringify({
+          id: ghBody.comment.id,
+          url: "https://github.com/developing-today/code/issues/906#issuecomment-1",
+        }),
       })
     ).json()) as { comment: { githubState: string } };
     expect(result.comment.githubState).toBe("posted");

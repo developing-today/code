@@ -149,9 +149,7 @@ export class CommentsStore {
       body: input.body,
       createdAt: new Date().toISOString(),
       ...(input.kind === "message" ? { triageState: "new" as const } : {}),
-      ...(input.kind === "github"
-        ? { githubRef: input.githubRef, githubState: "pending" as const }
-        : {}),
+      ...(input.kind === "github" ? { githubRef: input.githubRef, githubState: "pending" as const } : {}),
     };
     this.comments.push(comment);
     await this.persist();

@@ -188,7 +188,8 @@ function layout(title: string, body: string, provenance: Provenance, active: str
     .map((p) => `<a href="${p.route}"${p.route === active ? ' class="active"' : ""}>${esc(p.title)}</a>`)
     .join("");
   const options = PAGES.map(
-    (p) => `<option value="${p.route}"${p.route === active ? " selected" : ""}>${esc(p.title)} — ${esc(p.blurb)}</option>`,
+    (p) =>
+      `<option value="${p.route}"${p.route === active ? " selected" : ""}>${esc(p.title)} — ${esc(p.blurb)}</option>`,
   ).join("");
   const dropdown = `<select aria-label="Go to page" onchange="if(this.value)location.href=this.value"><option value="">Pages ▾</option>${options}</select>`;
   return `<!doctype html>
@@ -216,9 +217,7 @@ export function commentBadge(objectRef: string, counts?: Map<string, number>): s
 
 export function authorBadge(a: DashAuthor): string {
   const cls = a.kind === "drew" ? "drew" : a.kind === "muse" ? "Muse" : "agent";
-  const link = a.sessionId
-    ? ` <a href="/sessions#${encodeURIComponent(a.sessionId)}" class="muted">session</a>`
-    : "";
+  const link = a.sessionId ? ` <a href="/sessions#${encodeURIComponent(a.sessionId)}" class="muted">session</a>` : "";
   return `<span class="badge ${cls}">${esc(a.label)}</span>${link}`;
 }
 
@@ -380,7 +379,11 @@ function roadmapCard(row: RoadmapRow, items: Map<RefKey, GhItem>, counts?: Map<s
   return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}</div>`;
 }
 
-function timelineTable(tl: ReturnType<typeof buildTimeline>, items: Map<RefKey, GhItem>, counts?: Map<string, number>): string {
+function timelineTable(
+  tl: ReturnType<typeof buildTimeline>,
+  items: Map<RefKey, GhItem>,
+  counts?: Map<string, number>,
+): string {
   const head = `<tr><th>Theme</th>${tl.lanes.map((l) => `<th>${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
     .map((theme) => {
@@ -501,7 +504,9 @@ ${sessionSection}${dashSection}`,
 /** One registry record as a compact line (item page, sessions page). */
 export function sessionRecordLine(r: SessionRecord): string {
   const tokens = r.tokensTotal != null ? ` · ${r.tokensTotal.toLocaleString()} tok` : "";
-  const parent = r.parentId ? ` · sub of <a href="/sessions#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>` : "";
+  const parent = r.parentId
+    ? ` · sub of <a href="/sessions#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
+    : "";
   const refs = r.taskRefs.length
     ? ` · ${r.taskRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(" ")}`
     : "";
@@ -553,7 +558,12 @@ export function renderQuota(view: QuotaView, provenance: Provenance): string {
 
 // --- Attention view (#852, tiered in slice 2) -------------------------------
 
-function sessionCard(e: TieredEntry, children: Map<string, TieredEntry[]>, depth = 0, counts?: Map<string, number>): string {
+function sessionCard(
+  e: TieredEntry,
+  children: Map<string, TieredEntry[]>,
+  depth = 0,
+  counts?: Map<string, number>,
+): string {
   const src = SESSION_SOURCE_LABELS[sourceOf(e)];
   const sub =
     e.parentId && depth === 0
@@ -744,7 +754,9 @@ export function renderSessions(records: SessionRecord[], provenance: Provenance)
   const totalTokens = records.reduce((sum, r) => sum + (r.tokensTotal ?? 0), 0);
   const groups = [...bySource.entries()]
     .sort((a, b) => REGISTRY_SOURCE_ORDER.indexOf(a[0]) - REGISTRY_SOURCE_ORDER.indexOf(b[0]))
-    .map(([source, list]) => `<h2>${esc(source)} (${list.length})</h2>${list.map((r) => sessionRecordLine(r)).join("")}`)
+    .map(
+      ([source, list]) => `<h2>${esc(source)} (${list.length})</h2>${list.map((r) => sessionRecordLine(r)).join("")}`,
+    )
     .join("");
   const body = `<h1>Sessions — identity registry</h1>
 <p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records · ${totalTokens.toLocaleString()} tokens recorded. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
@@ -785,7 +797,9 @@ export function renderDiscuss(
         : `<p class="muted"><a href="/attention">← Needs you</a></p>`;
   const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}
 <p class="muted">Two kinds, visibly distinct: a <strong>note</strong> is read when this is next picked up and triggers nothing; a <strong>message to Muse</strong> is triaged by the orchestrator on its next pass and may create work.${
-    opts.githubRefs?.length ? ` This item is GitHub-backed, so a comment can also be posted as a <strong>GitHub comment</strong> on an explicit target.` : ""
+    opts.githubRefs?.length
+      ? ` This item is GitHub-backed, so a comment can also be posted as a <strong>GitHub comment</strong> on an explicit target.`
+      : ""
   }</p>
 ${commentThreadHtml(objectRef, comments, opts)}`;
   return layout(title, body, provenance, "", COMMENT_SCRIPT);

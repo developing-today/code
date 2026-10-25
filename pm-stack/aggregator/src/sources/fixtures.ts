@@ -628,9 +628,7 @@ export const FIXTURE_DNS: DnsSection = {
 // records (with token totals on two), plus one Muse launch
 // record so the claude-code source renders in fixture mode.
 export const FIXTURE_REGISTRY: SessionRecord[] = [
-  ...FIXTURE_ATTENTION.map((e, i) =>
-    recordFromSessionEntry(e, i === 0 ? 3_412_000 : i === 2 ? 1_208_500 : undefined),
-  ),
+  ...FIXTURE_ATTENTION.map((e, i) => recordFromSessionEntry(e, i === 0 ? 3_412_000 : i === 2 ? 1_208_500 : undefined)),
   {
     id: "claude-2026-10-25-slice2-review",
     source: "claude-code",

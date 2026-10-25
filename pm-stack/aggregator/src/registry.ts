@@ -128,8 +128,7 @@ export function mergeRecords(existing: SessionRecord[], incoming: SessionRecord[
       startedAt: prev.startedAt ?? r.startedAt,
       tokensTotal: Math.max(prev.tokensTotal ?? 0, r.tokensTotal ?? 0) || undefined,
       taskRefs: [...new Set([...prev.taskRefs, ...r.taskRefs])],
-      lastSeenAt:
-        (prev.lastSeenAt ?? "") >= (r.lastSeenAt ?? "") ? (prev.lastSeenAt ?? r.lastSeenAt) : r.lastSeenAt,
+      lastSeenAt: (prev.lastSeenAt ?? "") >= (r.lastSeenAt ?? "") ? (prev.lastSeenAt ?? r.lastSeenAt) : r.lastSeenAt,
     });
   }
   return [...byKey.values()].sort((a, b) => (b.lastSeenAt ?? "").localeCompare(a.lastSeenAt ?? ""));
