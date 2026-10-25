@@ -26,10 +26,11 @@ mkdir -p "$DST" "$HOME/.config/systemd/user"
 for f in package.json bun.lock tsconfig.json fleet-feed.json; do
   [ -f "$SRC/$f" ] && cp "$SRC/$f" "$DST/$f"
 done
-rm -rf "$DST/src" "$DST/test" "$DST/scripts"
+rm -rf "$DST/src" "$DST/test" "$DST/scripts" "$DST/opencode-tools"
 cp -r "$SRC/src" "$DST/src"
 cp -r "$SRC/test" "$DST/test"
 cp -r "$SRC/scripts" "$DST/scripts"
+cp -r "$SRC/opencode-tools" "$DST/opencode-tools"
 
 # Service env from the SOPS file — same pattern as Kaneo's postgres.env.
 umask 077

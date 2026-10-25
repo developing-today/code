@@ -4,7 +4,14 @@
 // record live on the sandbox). The aggregator renders the feed as-is;
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
-import type { JulesSummary, OrchestrationSection, QuotaView, SessionFeedEntry } from "./model.ts";
+import type {
+  DnsSection,
+  JulesSummary,
+  OrchestrationSection,
+  QuotaView,
+  SessionFeedEntry,
+  SessionRecord,
+} from "./model.ts";
 
 export interface FleetFeed {
   version: 1;
@@ -17,6 +24,10 @@ export interface FleetFeed {
   julesSummary?: JulesSummary;
   /** The orchestration job's latest section (#899), when one exists. */
   orchestration?: OrchestrationSection;
+  /** The DNS/domain register (#902), parsed by the collector (slice 3). */
+  dns?: DnsSection;
+  /** Identity-registry records (#906 §3): sandbox OpenCode + Jules + Muse launches. */
+  registry?: SessionRecord[];
 }
 
 /**

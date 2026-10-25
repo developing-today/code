@@ -2,9 +2,13 @@
 
 The PM-stack **aggregator UI** — the dashboard Drew lives in while the
 fleet works in GitHub, Kaneo, and Pad underneath. It is a **read-mostly
-projection**: it never writes back to GitHub, Kaneo, Pad, or Grist, and
-it is disposable by design — if it rots, every layer underneath still
-works standalone (design record, "Data flow").
+projection**: it never writes back to GitHub, Kaneo, Pad, or Grist
+directly, and it is disposable by design — if it rots, every layer
+underneath still works standalone (design record, "Data flow"). Slice 3
+(#906) adds the app's first writes, and they are dashboard-local:
+comments Drew and agents leave on items live in the aggregator's own
+store (below), and GitHub-bound ones are posted by Muse side, never
+by this server.
 
 Design record (source of truth):
 [`doc/2026-10-24T11-05-38Z_design_project-management-stack/`](../../doc/2026-10-24T11-05-38Z_design_project-management-stack/).
@@ -18,7 +22,11 @@ Design record (source of truth):
 | `/`               | **Cross-repo WIP board** — the curated in-flight set across all four repos, with an execution strip per card (implementing → review → merged → queued).                                                                                                                                                                    | `/api/board.json`                           |
 | `/roadmap`        | **Roadmap** — Grist's `Program roadmap` table as a timeline; `?h=` switches the horizon: `quarter` (default), `month`, `week`, `3d`, `today` — one data model at every grain.                                                                                                                                              | `/api/roadmap.json`                         |
 | `/quota`          | **Quota + throughput** (#851) — all pooled quotas, resets, burn rates, and model-choice guidance.                                                                                                                                                                                                                          | `/api/quota.json`                           |
-| `/item/<subject>` | Drill-down for one board card or roadmap row: linked refs + a unified comment stream.                                                                                                                                                                                                                                      | —                                           |
+| `/dns`            | **DNS / domain register** (slice 3, #906; data owned by #902) — the register rendered next-renewal-first: renewing-soon spend, then in-use / unused-but-earmarked / completely-unused views and the full table.                                                                                                            | `/api/dns.json`                             |
+| `/sessions`       | **Sessions** (slice 3, #906) — the identity registry: every known session with its stable id, agent identity, parent, task refs, and token total, grouped by source.                                                                                                                                                       | `/api/registry.json`                        |
+| `/pages`          | **All pages** — the page manifest rendered: every registered page, its route, and its JSON twin.                                                                                                                                                                                                                           | — (the manifest is `src/pages.ts`)          |
+| `/discuss/<ref>`  | **Comment thread** for one object ref (a `gh:` ref, an `orch:` tier item, a `session:` id, a board item, a roadmap subject) — dashboard comments + the post form.                                                                                                                                                          | `/api/comments.json?object=<ref>`           |
+| `/item/<subject>` | Drill-down for one board card or roadmap row: linked refs + a unified comment stream, plus its dashboard comments and the sessions that worked it.                                                                                                                                                                         | —                                           |
 
 All views are mobile-first (single-column stacking, scrollable tables,
 touch-sized switchers) — verify at phone width, not by resizing a desktop
@@ -45,12 +53,86 @@ that is plumbing, not links).
   `opencode-laptop` / `jules` / `claude-code`; OpenCode sub-sessions
   carry `parentId` and collapse under their parent. **Jules is wired**
   via the keeper's `jules-review-state.json` (collector-side,
-  `src/sources/jules.ts`). **Muse is not wired** — the assistant
-  runtime exposes no session registry to read; the coverage note on the
-  page says so, and the gap is tracked in #898.
+  `src/sources/jules.ts`). **Muse** has no runtime registry to
+  read; slice 3 (#906) wires it via launch records instead — a Muse
+  session that never wrote one stays invisible, and the coverage note
+  on the page says which (see "Session identity registry" above).
 
 Each view is **machine-first**: the `/api/*.json` endpoint returns the
 exact same data the GUI renders, so Muse can poll it in one call.
+
+### Pages are pluggable (slice 3, #906)
+
+Every page is registered once in `src/pages.ts` (`PAGES`): the nav
+bar, the "Pages ▾" dropdown, and `/pages` all render from that
+manifest, so a new page never touches the chrome. To add one:
+
+1. Add a `PAGES` entry — `{ id, title, route, api?, blurb }`.
+2. Write its `renderX` function in `src/render.ts`.
+3. Add the route branch in `src/server.ts`, plus the `/api/*.json`
+   twin when the page has data worth polling.
+4. Wire any new data through `Source` (with its fixture twin), and
+   through the fleet feed when the data originates on the sandbox.
+
+`/dns` is the worked example: the register file lives on the sandbox
+(#902 owns it), the collector parses it into a `dns` feed section
+(`src/dns.ts`, keyed on the register's table header), and the page
+renders its views from that section alone.
+
+### Dashboard comments (slice 3, #906)
+
+Comments live in a dashboard-side store (`src/comments.ts`, one JSON
+file with atomic writes; path `PM_AGG_COMMENTS_FILE`) keyed by
+**object ref**, so they survive republishes of the underlying data:
+`gh:<owner/repo#N>` for a GitHub issue/PR, `orch:<tierItem.id>` for an
+orchestration tier item, `session:<sessionId>` for a session, and
+board item ids / roadmap subjects as-is. Every comment carries an
+unambiguous author — `drew`, `muse` (the orchestrator), or an agent
+identity from the registry — and the API refuses authorless comments.
+Two kinds, visually distinct everywhere they render:
+
+- **note** — plain context; read by whoever picks the item up next.
+  Triggers nothing.
+- **message** — a message to Claude: the orchestrator's queue input.
+  Stays `triageState: new` until the orchestrator consumes it.
+- **github** — a message that should also land on GitHub. Requires an
+  explicit `githubRef` target chosen at post time (never guessed);
+  waits in `githubState: pending` until a poster (Muse side, `gh`)
+  posts it and reports back via `POST /api/comments/github-result`,
+  which can also record a failure — a failed post stays visible.
+
+**Orchestrator consumption contract** (also posted on #899/#906): each
+pass polls `GET /api/comments.json?kind=message&state=new` (and
+`?kind=github&state=new` for pending GitHub posts), triages each into
+its normal flow — update the item, queue work, escalate to Drew via
+the usual NEEDS DREW path; github-kind ones get posted and reported —
+then marks them consumed with `POST /api/comments/triage { ids }`.
+Notes are never polled; they are read from
+`/api/comments.json?object=<ref>` when an item is picked up. Item
+pages merge the item's own thread with the threads of its linked
+`gh:` refs.
+
+### Session identity registry (slice 3, #906)
+
+`src/registry.ts` normalizes every session source into one durable
+registry (`PM_AGG_REGISTRY_FILE`; merges keep the max cumulative
+token total so counts never go backwards):
+
+- **OpenCode** (laptop live + sandbox via the feed): session id,
+  parent id, agent identity (`opencode:<agent>`, `opencode (sub)` for
+  unnamed sub-sessions), status, per-session token totals.
+- **Jules**: keeper state, via the feed.
+- **Muse**: launch records appended at spawn to a JSONL the
+  collector carries — `scripts/record-claude-launch.ts` writes them,
+  `CLAUDE_LAUNCH_RECORDS_PATH` locates the file; a record is
+  `{ id, label, parentId?, taskRefs?, model?, status? }`.
+
+Task↔session links are loose v1: a record's `taskRefs` come from its
+PR, an issue URL in its title, or its launch record; item pages list
+the sessions that worked them. The OpenCode tool in
+`opencode-tools/session-identity.ts` lets a session report its own
+`{ sessionId, parentId, agent, directory }` on demand — copy it to
+`~/.config/opencode/tool/` on each host and restart that server.
 
 ## First-class requirements (from the design record)
 
@@ -98,21 +180,25 @@ Everything defaults to **fixtures** and works with no configuration:
 | `GRIST_API_KEY`            | —                                                   | Grist API key (Bitwarden `grist.api-key`)                                               |
 | `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                            | The `Program roadmap` document id (Phase 2 seed)                                        |
 | `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                             | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it |
+| `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment             |
+| `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts       |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
 
 ## What each facet reads
 
-| Facet            | Live reader (when `PM_AGG_SOURCE=live`)                                      | Fallback                            |
-| ---------------- | ---------------------------------------------------------------------------- | ----------------------------------- |
-| Board            | Kaneo REST (`/api/task/tasks/<project>`, all four projects) + registry links | fixtures                            |
-| Roadmap          | Grist REST (`/api/docs/<doc>/tables/Roadmap/records`) + registry links       | fixtures (the real Grist seed rows) |
-| Registry links   | Projector `GET /links?subject=…`, unioned into board cards and roadmap rows  | Kaneo external links / text refs    |
-| Items (refs)     | Projector `GET /items?refs=…`                                                | fixtures                            |
-| Comments         | Projector `GET /comments?refs=…`                                             | fixtures                            |
-| Quota (#851)     | Fleet feed file (`fleet-feed.json`; see "The fleet feed" below)              | fixtures when no feed exists        |
-| Attention (#852) | Laptop OpenCode server live (state file, 45s cache) + sandbox via fleet feed | fixtures when neither is reachable  |
+| Facet            | Live reader (when `PM_AGG_SOURCE=live`)                                                                                                | Fallback                            |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Board            | Kaneo REST (`/api/task/tasks/<project>`, all four projects) + registry links                                                           | fixtures                            |
+| Roadmap          | Grist REST (`/api/docs/<doc>/tables/Roadmap/records`) + registry links                                                                 | fixtures (the real Grist seed rows) |
+| Registry links   | Projector `GET /links?subject=…`, unioned into board cards and roadmap rows                                                            | Kaneo external links / text refs    |
+| Items (refs)     | Projector `GET /items?refs=…`                                                                                                          | fixtures                            |
+| Comments         | Projector `GET /comments?refs=…`                                                                                                       | fixtures                            |
+| Quota (#851)     | Fleet feed file (`fleet-feed.json`; see "The fleet feed" below)                                                                        | fixtures when no feed exists        |
+| Attention (#852) | Laptop OpenCode server live (state file, 45s cache) + sandbox via fleet feed                                                           | fixtures when neither is reachable  |
+| DNS (#906)       | Fleet feed `dns` section, parsed collector-side from the #902 register                                                                 | fixtures when no section exists     |
+| Registry (#906)  | Feed registry records (sandbox OpenCode, Jules, Muse launches) merged with live laptop OpenCode records into the durable registry file | fixtures when the feed is absent    |
 
 The projector's wire schema is its `schema.sql` (Session J, PR #859):
 snake_case fields, `state` is only `open|closed` with `merged` as a
@@ -169,6 +255,19 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   view lets its classification win for anything it names (non-session
   items render as tier cards), and the today view maps its goals —
   until a section exists, the today view derives and labels itself.
+- **DNS register** (slice 3, #906) — the register Markdown (#902's
+  file; override with `DNS_REGISTER_PATH`) parsed by `src/dns.ts`
+  into a `dns` section: entries with renewal dates, list prices, and
+  an active/earmarked/unused status read from the register's own
+  Plan cell. Absent file or unparseable table → no section (the page
+  says why).
+- **Registry records** (slice 3, #906) — normalized session records
+  (`src/registry.ts`) for sandbox OpenCode sessions (with per-session
+  token totals read off the server at collection time), Jules
+  sessions, and Muse launch records (JSONL at
+  `CLAUDE_LAUNCH_RECORDS_PATH`, written by
+  `scripts/record-claude-launch.ts`). The aggregator merges them with
+  live laptop records into its durable registry.
 
 `scripts/push-fleet-feed.sh` pushes the feed to the laptop over the
 tailnet proxy route; a systemd timer on the sandbox runs it every
@@ -233,13 +332,18 @@ machine-first data surface with a GUI on top is used.
 
 ```
 src/
-  model.ts      read model (refs, board, roadmap, quota, attention)
+  model.ts      read model (refs, board, roadmap, quota, attention,
+                dns, comments, registry)
   source.ts     the one Source interface
+  pages.ts      the page manifest — nav, dropdown, /pages (#906)
   derive.ts     execution strip, timeline lanes, quota/attention rules
   render.ts     pure HTML rendering of every view
-  server.ts     Bun HTTP server (read-only routes)
+  server.ts     Bun HTTP server (pages, JSON twins, comment writes)
   config.ts     env config
   feed.ts       fleet-feed file format + loader
+  dns.ts        the #902 register parser (#906)
+  comments.ts   the dashboard comment store (#906)
+  registry.ts   session records + identity normalization (#906)
   quota-extract.ts  per-pool extractors over the quota view's dated reads
   quota-guidance.ts headroom / burn-before-reset / do-not-start derivation
   sources/
@@ -247,9 +351,13 @@ src/
     live.ts       Kaneo/Grist/projector readers with per-facet fallback
     opencode.ts   OpenCode v2 server -> SessionFeedEntry mapper (shared)
     jules.ts      keeper state -> Jules SessionFeedEntry mapper (shared)
+opencode-tools/
+  session-identity.ts  OpenCode tool: a session reports its own id (#906)
 scripts/
-  collect-fleet-feed.ts  sandbox collector: quota + sandbox attention -> feed
+  collect-fleet-feed.ts  sandbox collector: quota + sandbox attention
+                         + dns + registry records -> feed
   push-fleet-feed.sh     collect + push the feed to the laptop (~5 min timer)
+  record-claude-launch.ts append a Muse launch record to the JSONL (#906)
 systemd/
   fleet-feed-collector.{service,timer}  sandbox-side collector units
 test/
@@ -260,4 +368,6 @@ test/
   quota.test.ts     extractors + guidance against the dated-read format
   slice2.test.ts    tiers, expiry, hierarchy, Jules mapping, roadmap
                     grains, today derivation, slice-2 render smoke
+  slice3.test.ts    dns parser, registry normalization, comment store,
+                    page manifest, slice-3 renders + HTTP flows
 ```

@@ -112,6 +112,8 @@ export interface Provenance {
   quota: string;
   attention: string;
   orchestration: string;
+  dns: string;
+  registry: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -405,4 +407,115 @@ export interface OrchestrationSection {
   goals: GoalMeasurement[];
   /** What the producing run pushed back into motion. */
   actions: { at: string; kind: string; target: string; summary: string }[];
+}
+
+// ---------------------------------------------------------------------------
+// Slice 3 (#906): pluggable pages, dashboard comments, the DNS register
+// view, and the agent/session identity registry.
+// ---------------------------------------------------------------------------
+
+/** One row of the DNS/domain register (#902's register file, parsed). */
+export interface DnsEntry {
+  domain: string;
+  registrar: string;
+  dnsHost: string;
+  /** Next renewal date, "YYYY-MM-DD". */
+  renewal: string;
+  /** "ON" | "OFF" | "unknown" — as the register states it. */
+  autoRenew: string;
+  /** List renewal price in USD, when the register names one. */
+  priceUsd: number | null;
+  priorYearCost: string;
+  /** The register's "Where it's used" evidence cell. */
+  used: string;
+  /** The register's "Plan / status" cell. */
+  plan: string;
+  /** The register's "Review?" cell. */
+  review: string;
+  /** Derived from `plan`: in use, earmarked for a project, or unused. */
+  status: "active" | "earmarked" | "unused";
+}
+
+/** The register as the collector embeds it in the fleet feed. */
+export interface DnsSection {
+  /** ISO timestamp of the collector run that parsed the register. */
+  generatedAt: string;
+  /** Where the register came from (file + pipeline owner). */
+  source: string;
+  /** Sum of list renewal prices across the register, USD/yr. */
+  totalAnnualListUsd: number;
+  entries: DnsEntry[];
+}
+
+/**
+ * A dashboard comment (#906 §2). Distinct from the projector's `Comment`
+ * (GitHub's own stream): these are written ON the dashboard, keyed by a
+ * stable object ref — "gh:<owner/repo#N>" for GitHub-backed objects,
+ * "orch:<tier item id>", "session:<sessionId>", a board item id
+ * ("kaneo:…"/"gh:…"), or a roadmap subject ("grist:…") — so threads
+ * survive feed republishes.
+ */
+export type DashCommentKind = "message" | "note" | "github";
+
+/** Who wrote a dashboard comment. No anonymous comments exist. */
+export interface DashAuthor {
+  kind: "drew" | "muse" | "agent";
+  /** Stable identity id ("drew", "muse", a registry/session id, …). */
+  id: string;
+  /** Human display name, rendered verbatim. */
+  label: string;
+  /** For agent authors: the session the comment came from, when known. */
+  sessionId?: string;
+}
+
+export interface DashComment {
+  id: string;
+  /** The object ref the thread hangs on (see above). */
+  objectRef: string;
+  kind: DashCommentKind;
+  author: DashAuthor;
+  body: string;
+  createdAt: string;
+  /** kind "message": the orchestrator's triage state. */
+  triageState?: "new" | "triaged";
+  /** kind "github": the explicit target issue/PR the comment posts to. */
+  githubRef?: RefKey;
+  /** kind "github": pending until a fleet poster lands it, then posted. */
+  githubState?: "pending" | "posted" | "failed";
+  /** kind "github", once posted: the live comment URL. */
+  githubUrl?: string;
+}
+
+/** Runtime families the session registry tracks. */
+export type RegistrySource = SessionSource | "cron";
+
+/**
+ * One session in the identity registry (#906 §3): a stable id, a human
+ * label, the agent identity it ran as, its parent (sub-sessions), its
+ * lifecycle, its token totals where the source reports them, and the
+ * task refs it is loosely linked to (from its PR/title/launch record).
+ */
+export interface SessionRecord {
+  /** The session's own stable id (OpenCode ses_…, Jules id, launch id). */
+  id: string;
+  source: RegistrySource;
+  /** Human display name (session title, or a launch-record label). */
+  label: string;
+  /** Agent identity: "opencode:main", "opencode:<subagent>", "claude-code", "jules", "cron:<job>", … */
+  agentId: string;
+  /** Display name for the agent identity. */
+  agentLabel: string;
+  /** Parent session id for sub-sessions, else null. */
+  parentId: string | null;
+  startedAt?: string;
+  lastSeenAt?: string;
+  /** Runtime-reported outcome or lifecycle label ("in-progress", …). */
+  status: string;
+  model?: string;
+  title?: string;
+  directory?: string;
+  /** Cumulative tokens (input+output+reasoning), when reported. */
+  tokensTotal?: number;
+  /** Loose task linkage: GitHub refs this session is working. */
+  taskRefs: RefKey[];
 }

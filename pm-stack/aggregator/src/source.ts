@@ -4,6 +4,7 @@
 import type {
   BoardItem,
   Comment,
+  DnsSection,
   GhItem,
   OrchestrationSection,
   Provenance,
@@ -11,6 +12,7 @@ import type {
   RefKey,
   RoadmapRow,
   SessionFeedEntry,
+  SessionRecord,
   SourceCoverage,
 } from "./model.ts";
 
@@ -29,6 +31,10 @@ export interface Source {
   attention(): Promise<SessionFeedEntry[]>;
   /** The orchestration job's latest section (#899); null = not measured yet. */
   orchestration(): Promise<OrchestrationSection | null>;
+  /** The DNS/domain register (#902) for the register page; null = not collected yet. */
+  dns(): Promise<DnsSection | null>;
+  /** The identity registry (#906 §3): durable session records, oldest sources merged. */
+  registry(): Promise<SessionRecord[]>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;

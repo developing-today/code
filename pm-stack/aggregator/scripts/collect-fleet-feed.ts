@@ -19,15 +19,25 @@
 //
 // Usage: bun run scripts/collect-fleet-feed.ts [--out <path>]
 // Env overrides: QUOTA_VIEW_PATH, JULES_STATE_PATH, SANDBOX_OPENCODE_URL,
-// OPENCODE_SERVER_PASSWORD_FILE, ORCHESTRATION_PATH.
+// OPENCODE_SERVER_PASSWORD_FILE, ORCHESTRATION_PATH, DNS_REGISTER_PATH,
+// CLAUDE_LAUNCH_RECORDS_PATH.
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { dnsSectionFromRegister } from "../src/dns.ts";
 import { isOrchestrationSection, type FleetFeed } from "../src/feed.ts";
-import type { JulesSummary, OrchestrationSection, QuotaPool, SessionFeedEntry } from "../src/model.ts";
+import type {
+  DnsSection,
+  JulesSummary,
+  OrchestrationSection,
+  QuotaPool,
+  SessionFeedEntry,
+  SessionRecord,
+} from "../src/model.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
+import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 
@@ -45,6 +55,10 @@ const quotaViewPath =
   );
 const julesStatePath = process.env.JULES_STATE_PATH ?? join(HIDDEN, "jules-review-state.json");
 const orchestrationPath = process.env.ORCHESTRATION_PATH ?? join(HIDDEN, "orchestration.json");
+const dnsRegisterPath =
+  process.env.DNS_REGISTER_PATH ??
+  join(HOME, "workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md");
+const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
   process.env.OPENCODE_SERVER_PASSWORD_FILE ?? join(HOME, "tools/secrets.d/opencode-server-password");
@@ -99,6 +113,8 @@ async function supervisionNotes(): Promise<Map<string, string>> {
 
 async function main(): Promise<void> {
   const now = new Date();
+  // Identity-registry records (#906 §3), accumulated across sources below.
+  const registry: SessionRecord[] = [];
 
   // --- quota -------------------------------------------------------------
   let pools: QuotaPool[] = [];
@@ -118,6 +134,9 @@ async function main(): Promise<void> {
     });
     if (mapped) {
       attention = mapped.entries;
+      for (const e of mapped.entries) {
+        registry.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
+      }
       const notes = await supervisionNotes();
       for (const e of attention) {
         const note = notes.get(e.sessionId);
@@ -152,9 +171,34 @@ async function main(): Promise<void> {
     const state = JSON.parse(await readFile(julesStatePath, "utf8")) as JulesReviewState;
     const entries = mapJulesItems(state);
     if (entries.length) attention = [...attention, ...entries];
+    for (const e of entries) registry.push(recordFromSessionEntry(e));
     jules = julesSummary(state);
   } catch {
     console.error("collector: jules-review state unreadable; no Jules sessions this run");
+  }
+
+  // --- Muse launch records (#906 §3) --------------------------------
+  // Muse sessions have no server to scrape: they register by
+  // appending one JSON line at launch (scripts/record-claude-launch.ts).
+  // Absent file = no Muse sessions recorded yet — the normal state
+  // until the helper is used.
+  try {
+    const jsonl = await readFile(launchRecordsPath, "utf8");
+    registry.push(...parseLaunchRecords(jsonl));
+  } catch {
+    /* no launch records yet */
+  }
+
+  // --- DNS register (#902's file, parsed; #906 §1 owns the view) ---------
+  let dns: DnsSection | undefined;
+  try {
+    const md = await readFile(dnsRegisterPath, "utf8");
+    dns =
+      dnsSectionFromRegister(md, now.toISOString(), "register file (#902 pipeline) via fleet feed collector") ??
+      undefined;
+    if (!dns) console.error("collector: DNS register parsed to zero entries; section omitted");
+  } catch {
+    console.error("collector: DNS register unreadable; section omitted");
   }
 
   // --- orchestration section (#899) --------------------------------------
@@ -178,12 +222,16 @@ async function main(): Promise<void> {
     attention,
     julesSummary: jules,
     ...(orchestration ? { orchestration } : {}),
+    ...(dns ? { dns } : {}),
+    ...(registry.length ? { registry } : {}),
   };
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
     `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (sandbox + jules${jules ? `, ${jules.tracked} jules tracked` : ""})` +
-      (orchestration ? `, orchestration ${orchestration.runId}` : ", no orchestration section"),
+      (orchestration ? `, orchestration ${orchestration.runId}` : ", no orchestration section") +
+      (dns ? `, dns ${dns.entries.length} domains` : ", no dns section") +
+      `, registry ${registry.length} records`,
   );
 }
 

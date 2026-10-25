@@ -3,14 +3,18 @@
 // the projector's /items and /comments for live ref state and the comment
 // projection. Anything a reader cannot reach falls back to fixtures, and the
 // provenance strings say exactly which facet is live vs fixture-backed.
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { Config } from "../config.ts";
+import { isDnsSection } from "../dns.ts";
 import { feedAgeText, isOrchestrationSection, loadFeed, type FleetFeed } from "../feed.ts";
+import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { fixtureSource } from "./fixtures.ts";
-import { mapServerSessions } from "./opencode.ts";
+import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
   type BoardItem,
   type Comment,
+  type DnsSection,
   type GhItem,
   type Link,
   type OrchestrationSection,
@@ -19,6 +23,7 @@ import {
   type RefKey,
   type RoadmapRow,
   type SessionFeedEntry,
+  type SessionRecord,
   type SourceCoverage,
   refsInText,
   refUrl,
@@ -339,6 +344,8 @@ export function liveSource(cfg: Config): Source {
     quota: "fixtures",
     attention: "fixtures",
     orchestration: "fixtures",
+    dns: "fixtures",
+    registry: "fixtures",
   };
 
   async function kaneoCookieHeader(): Promise<string> {
@@ -377,8 +384,8 @@ export function liveSource(cfg: Config): Source {
   // The laptop's OpenChamber-managed OpenCode server: port + password
   // are read from its state file at request time (the port changes
   // across restarts). Mapped sessions are cached for 45 s (#890).
-  let laptopCache: { value: SessionFeedEntry[]; at: number } | null = null;
-  async function laptopSessions(): Promise<SessionFeedEntry[] | null> {
+  let laptopCache: { value: MappedSessions; at: number } | null = null;
+  async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
     const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
       port?: number;
@@ -394,8 +401,46 @@ export function liveSource(cfg: Config): Source {
       { source: "opencode-laptop" },
     );
     if (!mapped) return null;
-    laptopCache = { value: mapped.entries, at: Date.now() };
-    return mapped.entries;
+    laptopCache = { value: mapped, at: Date.now() };
+    return mapped;
+  }
+  async function laptopSessions(): Promise<SessionFeedEntry[] | null> {
+    const mapped = await laptopMapped();
+    return mapped ? mapped.entries : null;
+  }
+
+  // The durable identity registry (#906 §3): records from the feed and
+  // the laptop's live server are merged into a store file on every
+  // read, so sessions outlive the feed's attention window. The store
+  // is the aggregator's own data (like comments.json); a failed write
+  // never breaks the read.
+  let registryStore: SessionRecord[] | null = null;
+  async function loadRegistryStore(): Promise<SessionRecord[]> {
+    if (registryStore) return registryStore;
+    try {
+      const parsed: unknown = JSON.parse(await readFile(cfg.registryFile, "utf8"));
+      registryStore = Array.isArray(parsed) ? parsed.filter(isSessionRecord) : [];
+    } catch {
+      registryStore = [];
+    }
+    return registryStore;
+  }
+  async function mergeIntoRegistry(incoming: SessionRecord[]): Promise<SessionRecord[]> {
+    const current = await loadRegistryStore();
+    const merged = mergeRecords(current, incoming);
+    const changed = merged.length !== current.length || merged.some((r, i) => r !== current[i]);
+    registryStore = merged;
+    if (changed) {
+      try {
+        await mkdir(dirname(cfg.registryFile), { recursive: true });
+        const tmp = `${cfg.registryFile}.tmp-${process.pid}`;
+        await writeFile(tmp, JSON.stringify(merged, null, 2));
+        await rename(tmp, cfg.registryFile);
+      } catch {
+        /* durability is best-effort; the in-memory merge still serves */
+      }
+    }
+    return merged;
   }
 
   return {
@@ -515,6 +560,46 @@ export function liveSource(cfg: Config): Source {
         : "fixtures (no fleet feed file yet)";
       return null;
     },
+    async dns(): Promise<DnsSection | null> {
+      // Slice 3 (#906 §1): the register rides the fleet feed, parsed
+      // from #902's register file by the collector. The page renders
+      // the register; it never edits it.
+      const feed = await getFeed();
+      if (feed?.dns && isDnsSection(feed.dns)) {
+        provenance.dns = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · register parsed ${feed.dns.generatedAt})`;
+        return feed.dns;
+      }
+      provenance.dns = feed
+        ? "not collected yet — the collector has not embedded a register section"
+        : "fixtures (no fleet feed file yet)";
+      return null;
+    },
+    async registry(): Promise<SessionRecord[]> {
+      // Slice 3 (#906 §3): feed records (sandbox OpenCode + Jules +
+      // Muse launches) merged with the laptop server's live
+      // sessions, accumulated into the durable store.
+      const incoming: SessionRecord[] = [];
+      const feed = await getFeed();
+      if (feed?.registry) {
+        for (const r of feed.registry) if (isSessionRecord(r)) incoming.push(r);
+      }
+      try {
+        const mapped = await laptopMapped();
+        if (mapped) {
+          for (const e of mapped.entries) {
+            incoming.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
+          }
+        }
+      } catch {
+        /* laptop part fails soft, like attention */
+      }
+      if (incoming.length > 0) {
+        provenance.registry = `live (${incoming.length} records merged · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})`;
+        return mergeIntoRegistry(incoming);
+      }
+      provenance.registry = "store only (no live registry source reachable)";
+      return loadRegistryStore();
+    },
     async coverage(): Promise<SourceCoverage[]> {
       const feed = lastFeed ?? (await getFeed());
       const out: SourceCoverage[] = [];
@@ -550,12 +635,15 @@ export function liveSource(cfg: Config): Source {
             }`
           : "keeper state not in the feed — Jules sessions are not visible",
       });
+      const claudeRecords = (feed?.registry ?? []).filter((r) => r.source === "claude-code");
       out.push({
         source: "claude-code",
         label: "Muse",
-        wired: false,
+        wired: claudeRecords.length > 0,
         detail:
-          "Not wired — Muse subagents run inside the assistant runtime, which exposes no session registry for the aggregator to read. Gap tracked in #898.",
+          claudeRecords.length > 0
+            ? `via launch records in the fleet feed (${claudeRecords.length} recorded) — a Muse session is visible only when its launch appended a record (scripts/record-claude-launch.ts); the runtime exposes no session list to scrape`
+            : "no launch records in the feed yet — Muse sessions register by appending a launch record (scripts/record-claude-launch.ts, #906 §3); the runtime exposes no session list to scrape",
       });
       return out;
     },
