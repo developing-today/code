@@ -14,7 +14,7 @@ the same manifest schema).
   concatenated. The bundle is named `b_<first 16 hex of its sha256>.csb` and
   is immutable — a changed object set produces a new bundle, never an edit.
 - **Manifest.** A local SQLite database (`schema.sql`, verbatim the canonical
-  cold-store schema) records objects (sha256 of the *original* bytes),
+  cold-store schema) records objects (sha256 of the _original_ bytes),
   bundles, and members with the byte offset/length of each object's frame
   inside its bundle, plus a `transfer_ledger` for the daily budget checks.
 - **Upload.** `upload` sends a bundle to Drive with a resumable, chunked
@@ -29,7 +29,7 @@ the same manifest schema).
 
 The OAuth app ("Cold Store Reaper", in the operator's Google Cloud project)
 holds **only** the `https://www.googleapis.com/auth/drive.file` scope. It can
-see *nothing* in Drive except files and folders it creates itself (or that
+see _nothing_ in Drive except files and folders it creates itself (or that
 the user explicitly opens with it).
 
 Therefore the tool **creates its own root folder** — `Cold Store Reaper` in
@@ -80,13 +80,13 @@ cold-store status                                     # counts, cold bytes, last
 
 ## Configuration
 
-| Knob | Default |
-|---|---|
-| Home dir | `$COLD_STORE_HOME` or `~/.config/cold-store` (or `--home`) |
-| Bundle target size (design constant) | 8 GiB (`pack` packs what it is given) |
-| Upload chunk size | 8 MiB |
-| Endpoints | Google; overridable via `COLD_STORE_TOKEN_URL`, `COLD_STORE_DRIVE_BASE`, `COLD_STORE_UPLOAD_BASE` (used by tests) |
-| zstd binary | `/usr/local/bin/zstd`, or `$COLD_STORE_ZSTD` |
+| Knob                                 | Default                                                                                                           |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| Home dir                             | `$COLD_STORE_HOME` or `~/.config/cold-store` (or `--home`)                                                        |
+| Bundle target size (design constant) | 8 GiB (`pack` packs what it is given)                                                                             |
+| Upload chunk size                    | 8 MiB                                                                                                             |
+| Endpoints                            | Google; overridable via `COLD_STORE_TOKEN_URL`, `COLD_STORE_DRIVE_BASE`, `COLD_STORE_UPLOAD_BASE` (used by tests) |
+| zstd binary                          | `/usr/local/bin/zstd`, or `$COLD_STORE_ZSTD`                                                                      |
 
 ## Tests
 

@@ -99,19 +99,29 @@ def http_request(method, url, headers=None, data=None, timeout=120):
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers or {}), e.read()
     except urllib.error.URLError as e:
-        raise ColdStoreError(f"network error talking to {urllib.parse.urlparse(url).netloc}: {e.reason}")
+        raise ColdStoreError(
+            f"network error talking to {urllib.parse.urlparse(url).netloc}: {e.reason}"
+        )
 
 
 class ColdStore:
-    def __init__(self, home: Path, token_url=None, drive_base=None, upload_base=None, zstd=None):
+    def __init__(
+        self, home: Path, token_url=None, drive_base=None, upload_base=None, zstd=None
+    ):
         self.home = Path(home)
         self.credentials_path = self.home / "credentials.json"
         self.state_path = self.home / "state.json"
         self.manifest_path = self.home / "manifest.sqlite"
         self.bundles_dir = self.home / "bundles"
-        self.token_url = token_url or os.environ.get("COLD_STORE_TOKEN_URL", DEFAULT_TOKEN_URL)
-        self.drive_base = (drive_base or os.environ.get("COLD_STORE_DRIVE_BASE", DEFAULT_DRIVE_BASE)).rstrip("/")
-        self.upload_base = (upload_base or os.environ.get("COLD_STORE_UPLOAD_BASE", DEFAULT_UPLOAD_BASE)).rstrip("/")
+        self.token_url = token_url or os.environ.get(
+            "COLD_STORE_TOKEN_URL", DEFAULT_TOKEN_URL
+        )
+        self.drive_base = (
+            drive_base or os.environ.get("COLD_STORE_DRIVE_BASE", DEFAULT_DRIVE_BASE)
+        ).rstrip("/")
+        self.upload_base = (
+            upload_base or os.environ.get("COLD_STORE_UPLOAD_BASE", DEFAULT_UPLOAD_BASE)
+        ).rstrip("/")
         candidate = zstd or os.environ.get("COLD_STORE_ZSTD") or "/usr/local/bin/zstd"
         if not Path(candidate).exists():
             candidate = "zstd"  # fall back to PATH lookup
@@ -186,7 +196,9 @@ class ColdStore:
         ).fetchone()
         return row["n"] == 0
 
-    def ledger_add(self, conn, direction: str, nbytes: int, kind: str, ref: str) -> None:
+    def ledger_add(
+        self, conn, direction: str, nbytes: int, kind: str, ref: str
+    ) -> None:
         conn.execute(
             "INSERT INTO transfer_ledger (ts, direction, bytes, kind, ref) VALUES (?, ?, ?, ?, ?)",
             (utcnow_str(), direction, nbytes, kind, ref),
@@ -207,16 +219,20 @@ class ColdStore:
 
     def auth_exchange(self, code: str) -> dict:
         creds = self.load_credentials()
-        body = urllib.parse.urlencode({
-            "code": code,
-            "client_id": creds["client_id"],
-            "client_secret": creds["client_secret"],
-            "redirect_uri": REDIRECT_URI,
-            "grant_type": "authorization_code",
-        }).encode()
+        body = urllib.parse.urlencode(
+            {
+                "code": code,
+                "client_id": creds["client_id"],
+                "client_secret": creds["client_secret"],
+                "redirect_uri": REDIRECT_URI,
+                "grant_type": "authorization_code",
+            }
+        ).encode()
         status, _headers, resp = http_request(
-            "POST", self.token_url,
-            headers={"Content-Type": "application/x-www-form-urlencoded"}, data=body,
+            "POST",
+            self.token_url,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data=body,
         )
         if status != 200:
             raise ColdStoreError(f"token exchange failed (HTTP {status})")
@@ -246,15 +262,19 @@ class ColdStore:
                 "no refresh_token in credentials.json — complete the grant: "
                 "`cold-store auth-url`, then `cold-store auth-exchange --code <code>`"
             )
-        body = urllib.parse.urlencode({
-            "client_id": creds["client_id"],
-            "client_secret": creds["client_secret"],
-            "refresh_token": creds["refresh_token"],
-            "grant_type": "refresh_token",
-        }).encode()
+        body = urllib.parse.urlencode(
+            {
+                "client_id": creds["client_id"],
+                "client_secret": creds["client_secret"],
+                "refresh_token": creds["refresh_token"],
+                "grant_type": "refresh_token",
+            }
+        ).encode()
         status, _headers, resp = http_request(
-            "POST", self.token_url,
-            headers={"Content-Type": "application/x-www-form-urlencoded"}, data=body,
+            "POST",
+            self.token_url,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data=body,
         )
         if status != 200:
             raise ColdStoreError(f"token refresh failed (HTTP {status})")
@@ -262,7 +282,8 @@ class ColdStore:
         token = payload["access_token"]
         state["access_token"] = token
         state["access_token_expires_at"] = (
-            datetime.now(timezone.utc) + timedelta(seconds=payload.get("expires_in", 3600))
+            datetime.now(timezone.utc)
+            + timedelta(seconds=payload.get("expires_in", 3600))
         ).timestamp()
         self.save_state(state)
         self._access_token = token
@@ -279,8 +300,12 @@ class ColdStore:
         q = f"name = '{name}' and mimeType = '{FOLDER_MIME}' and trashed = false"
         if parent_id:
             q += f" and '{parent_id}' in parents"
-        url = self.drive_base + "/files?" + urllib.parse.urlencode(
-            {"q": q, "fields": "files(id,name)", "pageSize": 1}
+        url = (
+            self.drive_base
+            + "/files?"
+            + urllib.parse.urlencode(
+                {"q": q, "fields": "files(id,name)", "pageSize": 1}
+            )
         )
         status, _h, resp = http_request("GET", url, headers=self._auth_headers())
         if status != 200:
@@ -293,7 +318,8 @@ class ColdStore:
         if parent_id:
             meta["parents"] = [parent_id]
         status, _h, resp = http_request(
-            "POST", self.drive_base + "/files",
+            "POST",
+            self.drive_base + "/files",
             headers=self._auth_headers({"Content-Type": "application/json"}),
             data=json.dumps(meta).encode(),
         )
@@ -305,20 +331,20 @@ class ColdStore:
         state = self.load_state()
         folders = dict(state.get("folders") or {})
         if not folders.get("root"):
-            folders["root"] = self._find_folder(ROOT_FOLDER_NAME, None) or self._create_folder(
+            folders["root"] = self._find_folder(
                 ROOT_FOLDER_NAME, None
-            )
+            ) or self._create_folder(ROOT_FOLDER_NAME, None)
         for sub in SUBFOLDERS:
             if not folders.get(sub):
-                folders[sub] = self._find_folder(sub, folders["root"]) or self._create_folder(
+                folders[sub] = self._find_folder(
                     sub, folders["root"]
-                )
+                ) or self._create_folder(sub, folders["root"])
         state["folders"] = folders
         self.save_state(state)
         return folders
 
     def _folder_id(self, key: str) -> str:
-        folders = (self.load_state().get("folders") or {})
+        folders = self.load_state().get("folders") or {}
         if key not in folders:
             folders = self.ensure_folders()
         return folders[key]
@@ -334,15 +360,16 @@ class ColdStore:
         with open(frame_path, "wb") as out:
             proc = self._run_zstd(
                 ["-q", "-f", "-3", "-c", str(src)],
-                stdout=out, stderr=subprocess.PIPE,
+                stdout=out,
+                stderr=subprocess.PIPE,
             )
         if proc.returncode != 0:
-            raise ColdStoreError(f"zstd failed for {src}: {proc.stderr.decode(errors='replace')[:200]}")
+            raise ColdStoreError(
+                f"zstd failed for {src}: {proc.stderr.decode(errors='replace')[:200]}"
+            )
 
     def decompress_frame(self, frame: bytes) -> bytes:
-        proc = self._run_zstd(
-            ["-q", "-d", "-c"], input=frame, capture_output=True
-        )
+        proc = self._run_zstd(["-q", "-d", "-c"], input=frame, capture_output=True)
         if proc.returncode != 0:
             raise ColdStoreError("zstd decompression failed")
         return proc.stdout
@@ -369,13 +396,15 @@ class ColdStore:
                         bundle_hash.update(block)
                         bundle_out.write(block)
                 frame_path.unlink()
-                members.append({
-                    "hash": obj_hash,
-                    "size": src.stat().st_size,
-                    "content_type": mimetypes.guess_type(src.name)[0],
-                    "offset": offset,
-                    "length": frame_len,
-                })
+                members.append(
+                    {
+                        "hash": obj_hash,
+                        "size": src.stat().st_size,
+                        "content_type": mimetypes.guess_type(src.name)[0],
+                        "offset": offset,
+                        "length": frame_len,
+                    }
+                )
                 offset += frame_len
         bundle_sha = bundle_hash.hexdigest()
         bundle_id = "b_" + bundle_sha[:16]
@@ -390,8 +419,14 @@ class ColdStore:
             conn.execute(
                 "INSERT OR IGNORE INTO bundles (bundle_id, sha256, bytes, member_count, live_bytes, sealed_at, state)"
                 " VALUES (?, ?, ?, ?, ?, ?, 'sealed')",
-                (bundle_id, bundle_sha, total_bytes, len(members),
-                 sum(m["size"] for m in members), utcnow_str()),
+                (
+                    bundle_id,
+                    bundle_sha,
+                    total_bytes,
+                    len(members),
+                    sum(m["size"] for m in members),
+                    utcnow_str(),
+                ),
             )
             for m in members:
                 conn.execute(
@@ -403,20 +438,27 @@ class ColdStore:
                     (bundle_id, m["hash"], m["offset"], m["length"]),
                 )
         conn.close()
-        return {"bundle_id": bundle_id, "path": str(final_path), "bytes": total_bytes,
-                "members": len(members)}
+        return {
+            "bundle_id": bundle_id,
+            "path": str(final_path),
+            "bytes": total_bytes,
+            "members": len(members),
+        }
 
     # ---------------------------------------------------------------- upload
     def _resumable_upload(self, path: Path, name: str, parent_id: str) -> str:
         total = path.stat().st_size
         meta = {"name": name, "parents": [parent_id]}
         status, headers, _resp = http_request(
-            "POST", self.upload_base + "/upload/drive/v3/files?uploadType=resumable",
-            headers=self._auth_headers({
-                "Content-Type": "application/json; charset=UTF-8",
-                "X-Upload-Content-Type": "application/octet-stream",
-                "X-Upload-Content-Length": str(total),
-            }),
+            "POST",
+            self.upload_base + "/upload/drive/v3/files?uploadType=resumable",
+            headers=self._auth_headers(
+                {
+                    "Content-Type": "application/json; charset=UTF-8",
+                    "X-Upload-Content-Type": "application/octet-stream",
+                    "X-Upload-Content-Length": str(total),
+                }
+            ),
             data=json.dumps(meta).encode(),
         )
         if status not in (200, 201):
@@ -432,12 +474,14 @@ class ColdStore:
                 end = sent + len(chunk) - 1
                 content_range = f"bytes {sent}-{end}/{total}" if total else "bytes */0"
                 status, headers, resp = http_request(
-                    "PUT", session_uri,
+                    "PUT",
+                    session_uri,
                     headers={
                         "Content-Length": str(len(chunk)),
                         "Content-Range": content_range,
                     },
-                    data=chunk, timeout=600,
+                    data=chunk,
+                    timeout=600,
                 )
                 if status in (200, 201):
                     file_id = json.loads(resp)["id"]
@@ -476,15 +520,24 @@ class ColdStore:
             raise ColdStoreError(f"bundle file missing: {path}")
         if row["state"] == "verified":
             conn.close()
-            return {"bundle_id": bundle_id, "already": "verified",
-                    "drive_file_id": row["drive_file_id"]}
+            return {
+                "bundle_id": bundle_id,
+                "already": "verified",
+                "drive_file_id": row["drive_file_id"],
+            }
         with conn:
-            conn.execute("UPDATE bundles SET state='uploading' WHERE bundle_id=?", (bundle_id,))
+            conn.execute(
+                "UPDATE bundles SET state='uploading' WHERE bundle_id=?", (bundle_id,)
+            )
         conn.close()
-        file_id = self._resumable_upload(path, f"{bundle_id}.csb", self._folder_id("bundles"))
+        file_id = self._resumable_upload(
+            path, f"{bundle_id}.csb", self._folder_id("bundles")
+        )
         status, _h, resp = http_request(
-            "GET", self.drive_base + f"/files/{file_id}?" + urllib.parse.urlencode(
-                {"fields": "id,md5Checksum,size"}),
+            "GET",
+            self.drive_base
+            + f"/files/{file_id}?"
+            + urllib.parse.urlencode({"fields": "id,md5Checksum,size"}),
             headers=self._auth_headers(),
         )
         if status != 200:
@@ -524,38 +577,53 @@ class ColdStore:
         ).fetchone()
         conn.close()
         if row is None:
-            raise ColdStoreError(f"object not found in any verified bundle: {object_hash}")
+            raise ColdStoreError(
+                f"object not found in any verified bundle: {object_hash}"
+            )
         start, length = row["offset"], row["length"]
         url = self.drive_base + f"/files/{row['drive_file_id']}?alt=media"
         status, _h, resp = http_request(
-            "GET", url,
-            headers=self._auth_headers({"Range": f"bytes={start}-{start + length - 1}"}),
+            "GET",
+            url,
+            headers=self._auth_headers(
+                {"Range": f"bytes={start}-{start + length - 1}"}
+            ),
         )
         if status not in (200, 206):
             raise ColdStoreError(f"range download failed (HTTP {status})")
         frame = resp[:length] if status == 200 else resp
         if len(frame) != length:
-            raise ColdStoreError(f"range download short: got {len(frame)} of {length} bytes")
+            raise ColdStoreError(
+                f"range download short: got {len(frame)} of {length} bytes"
+            )
         data = self.decompress_frame(frame)
         if hashlib.sha256(data).hexdigest() != object_hash:
-            raise ColdStoreError("sha256 mismatch after decompression — output NOT written")
+            raise ColdStoreError(
+                "sha256 mismatch after decompression — output NOT written"
+            )
         Path(out_path).write_bytes(data)
         conn = self.db()
         with conn:
             self.ledger_add(conn, "download", length, "rehydrate", object_hash)
         conn.close()
-        return {"hash": object_hash, "out": out_path, "bytes": len(data),
-                "bundle_id": row["bundle_id"]}
+        return {
+            "hash": object_hash,
+            "out": out_path,
+            "bytes": len(data),
+            "bundle_id": row["bundle_id"],
+        }
 
     # ---------------------------------------------------------------- status
     def status_data(self) -> dict:
         conn = self.db()
         objects_total = conn.execute("SELECT count(*) n FROM objects").fetchone()["n"]
         objects_cold = conn.execute(
-            "SELECT count(*) n FROM objects WHERE state='cold'").fetchone()["n"]
+            "SELECT count(*) n FROM objects WHERE state='cold'"
+        ).fetchone()["n"]
         bundles_total = conn.execute("SELECT count(*) n FROM bundles").fetchone()["n"]
         bundles_verified = conn.execute(
-            "SELECT count(*) n FROM bundles WHERE state='verified'").fetchone()["n"]
+            "SELECT count(*) n FROM bundles WHERE state='verified'"
+        ).fetchone()["n"]
         cold_bytes = conn.execute(
             "SELECT coalesce(sum(bytes),0) n FROM bundles WHERE state='verified'"
         ).fetchone()["n"]
@@ -567,7 +635,9 @@ class ColdStore:
             "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
             " WHERE direction='download' AND ts >= datetime('now','-1 day')"
         ).fetchone()["n"]
-        meta = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")}
+        meta = {
+            r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")
+        }
         conn.close()
         hard_stop = int(meta.get("daily_upload_hard_stop_bytes", "700000000000"))
         budget = int(meta.get("project_budget_bytes", "0"))
@@ -587,7 +657,9 @@ class ColdStore:
 
 
 def home_from_env() -> Path:
-    return Path(os.environ.get("COLD_STORE_HOME", Path.home() / ".config" / "cold-store"))
+    return Path(
+        os.environ.get("COLD_STORE_HOME", Path.home() / ".config" / "cold-store")
+    )
 
 
 def build_store(args) -> ColdStore:
@@ -600,22 +672,40 @@ def _human(n: int) -> str:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="cold-store", description=__doc__.splitlines()[0])
-    parser.add_argument("--home", help="cold-store home (default: $COLD_STORE_HOME or ~/.config/cold-store)")
+    parser = argparse.ArgumentParser(
+        prog="cold-store", description=__doc__.splitlines()[0]
+    )
+    parser.add_argument(
+        "--home",
+        help="cold-store home (default: $COLD_STORE_HOME or ~/.config/cold-store)",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("init", help="create the cold-store home, credential template and manifest DB")
+    sub.add_parser(
+        "init", help="create the cold-store home, credential template and manifest DB"
+    )
     sub.add_parser("auth-url", help="print the OAuth consent URL for the manual grant")
-    p_exchange = sub.add_parser("auth-exchange", help="exchange a grant code and store the refresh token")
+    p_exchange = sub.add_parser(
+        "auth-exchange", help="exchange a grant code and store the refresh token"
+    )
     p_exchange.add_argument("--code", required=True)
     sub.add_parser("ensure-folders", help="create/find the app-owned Drive folder tree")
-    p_pack = sub.add_parser("pack", help="pack files into a local bundle and record it in the manifest")
+    p_pack = sub.add_parser(
+        "pack", help="pack files into a local bundle and record it in the manifest"
+    )
     p_pack.add_argument("files", nargs="+")
-    p_upload = sub.add_parser("upload", help="resumable-upload a bundle, verify it, mark it verified")
+    p_upload = sub.add_parser(
+        "upload", help="resumable-upload a bundle, verify it, mark it verified"
+    )
     p_upload.add_argument("bundle", help="bundle id (b_...) or path to the .csb file")
-    p_fetch = sub.add_parser("fetch", help="range-download, decompress and verify one object")
+    p_fetch = sub.add_parser(
+        "fetch", help="range-download, decompress and verify one object"
+    )
     p_fetch.add_argument("hash")
     p_fetch.add_argument("out_path")
-    sub.add_parser("status", help="manifest counts, cold bytes, last-24h transfers, hard-stop check")
+    sub.add_parser(
+        "status",
+        help="manifest counts, cold bytes, last-24h transfers, hard-stop check",
+    )
     args = parser.parse_args(argv)
     store = build_store(args)
     try:
@@ -624,37 +714,55 @@ def main(argv=None) -> int:
             print(f"cold-store home: {result['home']}")
             for item in result["created"]:
                 print(f"  ensured: {item}")
-            print("fill credentials.json from Bitwarden (mode 600; never commit it), then:")
+            print(
+                "fill credentials.json from Bitwarden (mode 600; never commit it), then:"
+            )
             print("  cold-store auth-url   # open, grant, copy the code")
             print("  cold-store auth-exchange --code <code>")
         elif args.cmd == "auth-url":
             print(store.auth_url())
         elif args.cmd == "auth-exchange":
             result = store.auth_exchange(args.code)
-            print(f"refresh token stored in {store.credentials_path} (expires_in={result['expires_in']})")
+            print(
+                f"refresh token stored in {store.credentials_path} (expires_in={result['expires_in']})"
+            )
         elif args.cmd == "ensure-folders":
             folders = store.ensure_folders()
             for key in ("root",) + SUBFOLDERS:
                 print(f"{key}: {folders[key]}")
         elif args.cmd == "pack":
             result = store.pack(args.files)
-            print(f"bundle {result['bundle_id']}: {_human(result['bytes'])}, {result['members']} member(s)")
+            print(
+                f"bundle {result['bundle_id']}: {_human(result['bytes'])}, {result['members']} member(s)"
+            )
             print(f"  at {result['path']}")
         elif args.cmd == "upload":
             result = store.upload(args.bundle)
-            print(f"bundle {result['bundle_id']}: verified in Drive as {result.get('drive_file_id')}")
+            print(
+                f"bundle {result['bundle_id']}: verified in Drive as {result.get('drive_file_id')}"
+            )
         elif args.cmd == "fetch":
             result = store.fetch(args.hash, args.out_path)
-            print(f"{result['hash'][:16]}... -> {result['out']}: {_human(result['bytes'])} (bundle {result['bundle_id']})")
+            print(
+                f"{result['hash'][:16]}... -> {result['out']}: {_human(result['bytes'])} (bundle {result['bundle_id']})"
+            )
         elif args.cmd == "status":
             d = store.status_data()
             print(f"objects: {d['objects_total']} total, {d['objects_cold']} cold")
-            print(f"bundles: {d['bundles_total']} total, {d['bundles_verified']} verified")
-            print(f"cold bytes in Drive: {_human(d['cold_bytes'])} of budget {_human(d['project_budget_bytes'])}"
-                  f" ({'within' if d['within_budget'] else 'OVER'} budget)")
-            print(f"last 24h: uploads {_human(d['uploads_24h_bytes'])}, downloads {_human(d['downloads_24h_bytes'])}")
-            print(f"daily upload hard stop: {_human(d['daily_upload_hard_stop_bytes'])} — "
-                  f"{'OK' if d['hard_stop_ok'] else 'EXCEEDED'}")
+            print(
+                f"bundles: {d['bundles_total']} total, {d['bundles_verified']} verified"
+            )
+            print(
+                f"cold bytes in Drive: {_human(d['cold_bytes'])} of budget {_human(d['project_budget_bytes'])}"
+                f" ({'within' if d['within_budget'] else 'OVER'} budget)"
+            )
+            print(
+                f"last 24h: uploads {_human(d['uploads_24h_bytes'])}, downloads {_human(d['downloads_24h_bytes'])}"
+            )
+            print(
+                f"daily upload hard stop: {_human(d['daily_upload_hard_stop_bytes'])} — "
+                f"{'OK' if d['hard_stop_ok'] else 'EXCEEDED'}"
+            )
     except ColdStoreError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

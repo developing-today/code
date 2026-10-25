@@ -28,10 +28,10 @@ class FakeDrive:
     """In-memory state for the fake Google endpoints."""
 
     def __init__(self):
-        self.folders = []          # {id, name, parents}
-        self.files = {}            # id -> bytes
-        self.file_meta = {}        # id -> {name, parents}
-        self.sessions = {}         # sid -> {meta, chunks: {start: bytes}, total}
+        self.folders = []  # {id, name, parents}
+        self.files = {}  # id -> bytes
+        self.file_meta = {}  # id -> {name, parents}
+        self.sessions = {}  # sid -> {meta, chunks: {start: bytes}, total}
         self.counter = 0
 
     def next_id(self, prefix):
@@ -67,17 +67,28 @@ def make_handler(fake: FakeDrive):
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path == "/token":
                 self._body()
-                payload = {"access_token": "fake-access", "expires_in": 3600,
-                           "token_type": "Bearer", "refresh_token": "fake-refresh-token"}
+                payload = {
+                    "access_token": "fake-access",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                    "refresh_token": "fake-refresh-token",
+                }
                 self._send(200, payload)
                 return
             if parsed.path == "/drive/v3/files":
                 meta = json.loads(self._body() or b"{}")
                 fid = fake.next_id("folder")
-                fake.folders.append({"id": fid, "name": meta["name"],
-                                     "parents": meta.get("parents", [])})
-                self._send(200, {"id": fid, "name": meta["name"],
-                                 "mimeType": meta.get("mimeType")})
+                fake.folders.append(
+                    {
+                        "id": fid,
+                        "name": meta["name"],
+                        "parents": meta.get("parents", []),
+                    }
+                )
+                self._send(
+                    200,
+                    {"id": fid, "name": meta["name"], "mimeType": meta.get("mimeType")},
+                )
                 return
             if parsed.path == "/upload/drive/v3/files":
                 meta = json.loads(self._body() or b"{}")
@@ -114,14 +125,23 @@ def make_handler(fake: FakeDrive):
                     range_hdr = self.headers.get("Range", "")
                     rm = re.fullmatch(r"bytes=(\d+)-(\d+)", range_hdr)
                     start, end = int(rm.group(1)), int(rm.group(2))
-                    chunk = data[start:end + 1]
-                    self._send(206, chunk, ctype="application/octet-stream",
-                               headers={"Content-Range": f"bytes {start}-{end}/{len(data)}"})
+                    chunk = data[start : end + 1]
+                    self._send(
+                        206,
+                        chunk,
+                        ctype="application/octet-stream",
+                        headers={"Content-Range": f"bytes {start}-{end}/{len(data)}"},
+                    )
                     return
                 data = fake.files[fid]
-                self._send(200, {"id": fid,
-                                 "md5Checksum": hashlib.md5(data).hexdigest(),
-                                 "size": str(len(data))})
+                self._send(
+                    200,
+                    {
+                        "id": fid,
+                        "md5Checksum": hashlib.md5(data).hexdigest(),
+                        "size": str(len(data)),
+                    },
+                )
                 return
             self._send(404, {"error": "not found"})
 
@@ -169,8 +189,11 @@ class ColdStoreTestBase(unittest.TestCase):
             upload_base=base,
         )
         self.store.init()
-        creds = {"client_id": "fake-client-id", "client_secret": "fake-secret",
-                 "refresh_token": "fake-refresh-token"}
+        creds = {
+            "client_id": "fake-client-id",
+            "client_secret": "fake-secret",
+            "refresh_token": "fake-refresh-token",
+        }
         self.store._write_private_json(self.store.credentials_path, creds)
 
     def tearDown(self):
@@ -216,24 +239,27 @@ class TestPack(ColdStoreTestBase):
         conn = self.store.db()
         members = conn.execute(
             "SELECT * FROM members WHERE bundle_id=? ORDER BY offset",
-            (result["bundle_id"],)).fetchall()
+            (result["bundle_id"],),
+        ).fetchall()
         self.assertEqual(len(members), 2)
         self.assertEqual(members[0]["offset"], 0)
         self.assertEqual(members[1]["offset"], members[0]["length"])
-        brow = conn.execute("SELECT * FROM bundles WHERE bundle_id=?",
-                            (result["bundle_id"],)).fetchone()
+        brow = conn.execute(
+            "SELECT * FROM bundles WHERE bundle_id=?", (result["bundle_id"],)
+        ).fetchone()
         self.assertEqual(brow["member_count"], 2)
         self.assertEqual(brow["state"], "sealed")
         self.assertEqual(brow["bytes"], result["bytes"])
 
         raw = bundle.read_bytes()
         for member, src in zip(members, (a, b)):
-            frame = raw[member["offset"]:member["offset"] + member["length"]]
+            frame = raw[member["offset"] : member["offset"] + member["length"]]
             data = self.store.decompress_frame(frame)
             self.assertEqual(hashlib.sha256(data).hexdigest(), member["object_hash"])
             self.assertEqual(data, src.read_bytes())
-        orow = conn.execute("SELECT state FROM objects WHERE hash=?",
-                            (members[0]["object_hash"],)).fetchone()
+        orow = conn.execute(
+            "SELECT state FROM objects WHERE hash=?", (members[0]["object_hash"],)
+        ).fetchone()
         self.assertEqual(orow["state"], "staging")
         conn.close()
 
@@ -258,15 +284,17 @@ class TestUploadFetch(ColdStoreTestBase):
         self.assertTrue(uploaded["verified"])
 
         conn = self.store.db()
-        brow = conn.execute("SELECT * FROM bundles WHERE bundle_id=?",
-                            (packed["bundle_id"],)).fetchone()
+        brow = conn.execute(
+            "SELECT * FROM bundles WHERE bundle_id=?", (packed["bundle_id"],)
+        ).fetchone()
         self.assertEqual(brow["state"], "verified")
         local = Path(self.store.bundles_dir / f"{packed['bundle_id']}.csb")
         self.assertEqual(brow["drive_md5"], cold_store.md5_file(local))
         orow = conn.execute("SELECT state FROM objects").fetchone()
         self.assertEqual(orow["state"], "cold")
         ledger = conn.execute(
-            "SELECT * FROM transfer_ledger WHERE direction='upload'").fetchall()
+            "SELECT * FROM transfer_ledger WHERE direction='upload'"
+        ).fetchall()
         self.assertEqual(len(ledger), 1)
         self.assertEqual(ledger[0]["bytes"], packed["bytes"])
         self.assertEqual(ledger[0]["kind"], "bundle")
@@ -277,7 +305,8 @@ class TestUploadFetch(ColdStoreTestBase):
         self.assertEqual(out.read_bytes(), a.read_bytes())
         self.assertEqual(fetched["bundle_id"], packed["bundle_id"])
         dledger = conn.execute(
-            "SELECT * FROM transfer_ledger WHERE direction='download'").fetchall()
+            "SELECT * FROM transfer_ledger WHERE direction='download'"
+        ).fetchall()
         self.assertEqual(len(dledger), 1)
         conn.close()
 
@@ -298,7 +327,8 @@ class TestStatus(ColdStoreTestBase):
         with conn:  # an upload 3 days ago must NOT count in the rolling 24h window
             conn.execute(
                 "INSERT INTO transfer_ledger (ts, direction, bytes, kind, ref)"
-                " VALUES (datetime('now','-3 days'), 'upload', 999999, 'bundle', 'b_old')")
+                " VALUES (datetime('now','-3 days'), 'upload', 999999, 'bundle', 'b_old')"
+            )
         conn.close()
 
         d = self.store.status_data()
