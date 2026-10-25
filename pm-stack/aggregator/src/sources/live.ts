@@ -61,7 +61,18 @@ interface KaneoColumn {
   tasks: KaneoTask[];
 }
 
-async function kaneoProjects(cfg: Config, cookie: string): Promise<{ id: string; name: string; repo: string }[]> {
+/** Kaneo project slug -> GitHub repo (pm-stack/kaneo-projects.json, Session H). */
+const KANEO_PROJECT_REPOS: Record<string, string> = {
+  code: "developing-today/code",
+  opencode: "developing-today/opencode",
+  openchamber: "developing-today/openchamber",
+  nix: "dezren39/nix",
+};
+
+async function kaneoProjects(
+  cfg: Config,
+  cookie: string,
+): Promise<{ id: string; slug: string; name: string; repo: string }[]> {
   const ws = await getJson(`${cfg.kaneo.baseUrl}/api/workspace`, { Cookie: cookie });
   if (!ws.ok) throw new Error("kaneo workspace read failed");
   const workspaces = ws.json as { id: string }[];
@@ -71,8 +82,9 @@ async function kaneoProjects(cfg: Config, cookie: string): Promise<{ id: string;
   if (!proj.ok) throw new Error("kaneo project read failed");
   return (proj.json as { id: string; slug: string; name: string }[]).map((p) => ({
     id: p.id,
+    slug: p.slug,
     name: p.name,
-    repo: `developing-today/${p.slug}`,
+    repo: KANEO_PROJECT_REPOS[p.slug] ?? `developing-today/${p.slug}`,
   }));
 }
 
@@ -104,7 +116,8 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
             return { ref: `${repo}#${l.externalId}`, relation: "tracks" as const };
           });
         out.push({
-          id: `kaneo:${p.name}/${t.id}`,
+          // Registry subject: kaneo:<projectSlug>/<taskId> (Session J).
+          id: `kaneo:${p.slug}/${t.id}`,
           title: t.title,
           repo: p.repo,
           source: "kaneo",
@@ -154,19 +167,159 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
   });
 }
 
-// --- Projector (J's service) --------------------------------------------
+// --- Projector (J's service, pm-stack/projector) -------------------------
+// The wire schema is the projector's schema.sql: snake_case fields, `state`
+// is only open|closed with `merged` as a separate 0/1 flag, and
+// `labels`/`assignees` are JSON array *strings*. Map rows to the read model
+// here; nothing else in the app sees the wire shape.
 
-async function projectorItems(baseUrl: string, refs: RefKey[]): Promise<Map<RefKey, GhItem> | null> {
-  const r = await getJson(`${baseUrl}/items?refs=${refs.join(",")}`);
-  if (!r.ok) return null;
-  const items = (r.json as { items?: GhItem[] }).items ?? [];
-  return new Map(items.map((i) => [i.ref, i]));
+export interface ProjectorItemRow {
+  ref: string;
+  repo: string;
+  number: number;
+  kind: "issue" | "pr";
+  url: string;
+  title: string;
+  state: "open" | "closed";
+  state_reason?: string | null;
+  draft?: number | boolean;
+  merged?: number | boolean;
+  author?: string | null;
+  labels?: string | string[];
+  assignees?: string | string[];
+  created_at: string;
+  updated_at: string;
+  closed_at?: string | null;
+  merged_at?: string | null;
 }
 
-async function projectorComments(baseUrl: string, refs: RefKey[]): Promise<Comment[] | null> {
-  const r = await getJson(`${baseUrl}/comments?refs=${refs.join(",")}`);
+export interface ProjectorCommentRow {
+  id: string;
+  ref: string;
+  kind: Comment["kind"];
+  author?: string | null;
+  body?: string | null;
+  created_at: string;
+  url?: string;
+  path?: string | null;
+  line?: number | null;
+  review_state?: string | null;
+  commit_id?: string | null;
+  deleted?: number | boolean;
+}
+
+export interface ProjectorLinkRow {
+  subject: string;
+  ref: string;
+  relation: string;
+  note?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+}
+
+const asBool = (v: number | boolean | undefined): boolean => v === 1 || v === true;
+
+export function parseProjectorLabels(labels: string | string[] | undefined): string[] {
+  if (Array.isArray(labels)) return labels;
+  if (typeof labels !== "string" || labels === "") return [];
+  try {
+    const parsed: unknown = JSON.parse(labels);
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function mapProjectorItem(row: ProjectorItemRow): GhItem {
+  return {
+    ref: row.ref,
+    kind: row.kind,
+    url: row.url,
+    title: row.title,
+    state: asBool(row.merged) ? "merged" : row.state,
+    draft: asBool(row.draft),
+    labels: parseProjectorLabels(row.labels),
+    author: row.author ?? "",
+    updatedAt: row.updated_at,
+  };
+}
+
+export function mapProjectorComment(row: ProjectorCommentRow): Comment {
+  return {
+    id: String(row.id),
+    ref: row.ref,
+    kind: row.kind,
+    author: row.author ?? "",
+    body: row.body ?? "",
+    createdAt: row.created_at,
+    url: row.url ?? refUrl(row.ref, row.kind === "issue_comment" ? "issue" : "pr"),
+    path: row.path ?? undefined,
+    line: row.line ?? undefined,
+    reviewState: row.review_state ?? undefined,
+    deleted: asBool(row.deleted),
+  };
+}
+
+/** Union two link lists, deduped by ref+relation (first relation wins). */
+export function mergeLinks(existing: Link[], extra: Link[]): Link[] {
+  const seen = new Set(existing.map((l) => `${l.ref}|${l.relation}`));
+  const out = [...existing];
+  for (const l of extra) {
+    const key = `${l.ref}|${l.relation}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(l);
+    }
+  }
+  return out;
+}
+
+const RELATIONS = new Set<string>(["tracks", "implements", "relates"]);
+const asRelation = (v: string): Link["relation"] => (RELATIONS.has(v) ? (v as Link["relation"]) : "relates");
+
+export async function projectorItems(baseUrl: string, refs: RefKey[]): Promise<Map<RefKey, GhItem> | null> {
+  if (refs.length === 0) return new Map();
+  // Refs contain `#` — they must be percent-encoded or the `#` starts a
+  // fragment and the projector never sees the number.
+  const r = await getJson(`${baseUrl}/items?refs=${encodeURIComponent(refs.join(","))}`);
   if (!r.ok) return null;
-  return ((r.json as { comments?: Comment[] }).comments ?? []).filter((c) => !c.deleted);
+  const rows = (r.json as { items?: ProjectorItemRow[] }).items ?? [];
+  return new Map(rows.map((row) => [row.ref, mapProjectorItem(row)] as const));
+}
+
+export async function projectorComments(baseUrl: string, refs: RefKey[]): Promise<Comment[] | null> {
+  if (refs.length === 0) return [];
+  const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(refs.join(","))}`);
+  if (!r.ok) return null;
+  return ((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
+    .map(mapProjectorComment)
+    .filter((c) => !c.deleted);
+}
+
+/** Registry links for one subject (kaneo:/grist:/gh:), from GET /links. */
+export async function projectorLinks(baseUrl: string, subject: string): Promise<Link[]> {
+  const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
+  if (!r.ok) return [];
+  const rows = (r.json as { links?: ProjectorLinkRow[] }).links ?? [];
+  return rows.map((row) => ({ ref: row.ref, relation: asRelation(row.relation) }));
+}
+
+/**
+ * Enrich board items / roadmap rows with their cross-repo registry links.
+ * This is the first-class requirement Kaneo cannot provide: the registry is
+ * where a `code` task's link to an `opencode` PR lives.
+ */
+async function enrichWithRegistryLinks<T extends { links: Link[] }>(
+  baseUrl: string,
+  entries: T[],
+  subjectOf: (entry: T) => string,
+): Promise<T[]> {
+  return Promise.all(
+    entries.map(async (entry) => {
+      const extra = await projectorLinks(baseUrl, subjectOf(entry));
+      return extra.length ? { ...entry, links: mergeLinks(entry.links, extra) } : entry;
+    }),
+  );
 }
 
 // --- Composition ----------------------------------------------------------
@@ -212,6 +365,11 @@ export function liveSource(cfg: Config): Source {
         const board = await kaneoBoard(cfg, cookie);
         if (board.length > 0) {
           provenance.board = "live (Kaneo)";
+          if (cfg.projector.baseUrl) {
+            const enriched = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
+            provenance.board = "live (Kaneo + projector links)";
+            return enriched;
+          }
           return board;
         }
       } catch (err) {
@@ -224,6 +382,11 @@ export function liveSource(cfg: Config): Source {
         const rows = await gristRoadmap(cfg);
         if (rows.length > 0) {
           provenance.roadmap = "live (Grist)";
+          if (cfg.projector.baseUrl) {
+            const enriched = await enrichWithRegistryLinks(cfg.projector.baseUrl, rows, (r) => r.subject);
+            provenance.roadmap = "live (Grist + projector links)";
+            return enriched;
+          }
           return rows;
         }
       } catch (err) {

@@ -41,7 +41,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       docId: s(env.GRIST_ROADMAP_DOC, "czYHYKgG9SHcm9CPwiKEq1"),
     },
     projector: {
-      baseUrl: env.PM_PROJECTOR_URL ?? null,
+      // Session J's projector serves on 127.0.0.1:7801 by default; set
+      // PM_PROJECTOR_URL=off to disable the live registry/item/comment reads.
+      baseUrl:
+        env.PM_PROJECTOR_URL === "off" || env.PM_PROJECTOR_URL === "none"
+          ? null
+          : s(env.PM_PROJECTOR_URL, "http://127.0.0.1:7801"),
     },
   };
 }

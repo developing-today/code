@@ -54,31 +54,46 @@ bun test
 
 Everything defaults to **fixtures** and works with no configuration:
 
-| Env var                | Default                                        | Purpose                                                                |
-| ---------------------- | ---------------------------------------------- | ---------------------------------------------------------------------- |
-| `PM_AGG_SOURCE`        | `fixtures`                                     | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet |
-| `PM_AGG_PORT`          | `4870`                                         | HTTP port                                                              |
-| `KANEO_URL`            | `http://127.0.0.1:5173`                        | Kaneo base URL (board reader)                                          |
-| `KANEO_ADMIN_EMAIL`    | —                                              | Kaneo admin email (secret `kaneo.admin-password` pairs with it)        |
-| `KANEO_ADMIN_PASSWORD` | —                                              | Kaneo admin password (Bitwarden `kaneo.admin-password`)                |
-| `GRIST_URL`            | `http://127.0.0.1:8484`                        | Grist base URL                                                         |
-| `GRIST_API_KEY`        | —                                              | Grist API key (Bitwarden `grist.api-key`)                              |
-| `GRIST_ROADMAP_DOC`    | `czYHYKgG9SHcm9CPwiKEq1`                       | The `Program roadmap` document id (Phase 2 seed)                       |
-| `PM_PROJECTOR_URL`     | `http://127.0.0.1:7801` is J's planned default | The projector + link registry base URL (for `/items`, `/comments`)     |
+| Env var                | Default                  | Purpose                                                                                 |
+| ---------------------- | ------------------------ | --------------------------------------------------------------------------------------- |
+| `PM_AGG_SOURCE`        | `fixtures`               | `live` reads Kaneo/Grist/projector, falling back to fixtures per facet                  |
+| `PM_AGG_PORT`          | `4870`                   | HTTP port                                                                               |
+| `KANEO_URL`            | `http://127.0.0.1:5173`  | Kaneo base URL (board reader)                                                           |
+| `KANEO_ADMIN_EMAIL`    | —                        | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                         |
+| `KANEO_ADMIN_PASSWORD` | —                        | Kaneo admin password (Bitwarden `kaneo.admin-password`)                                 |
+| `GRIST_URL`            | `http://127.0.0.1:8484`  | Grist base URL                                                                          |
+| `GRIST_API_KEY`        | —                        | Grist API key (Bitwarden `grist.api-key`)                                               |
+| `GRIST_ROADMAP_DOC`    | `czYHYKgG9SHcm9CPwiKEq1` | The `Program roadmap` document id (Phase 2 seed)                                        |
+| `PM_PROJECTOR_URL`     | `http://127.0.0.1:7801`  | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
 
 ## What each facet reads
 
-| Facet            | Live reader (when `PM_AGG_SOURCE=live`)                     | Fallback                            |
-| ---------------- | ----------------------------------------------------------- | ----------------------------------- |
-| Board            | Kaneo REST (`/api/task/tasks/<project>`, all four projects) | fixtures                            |
-| Roadmap          | Grist REST (`/api/docs/<doc>/tables/Roadmap/records`)       | fixtures (the real Grist seed rows) |
-| Items (refs)     | Projector `GET /items?refs=…`                               | fixtures                            |
-| Comments         | Projector `GET /comments?refs=…`                            | fixtures                            |
-| Quota (#851)     | (projector concern — not yet projected)                     | fixtures                            |
-| Attention (#852) | (projector/watch-cron concern — not yet projected)          | fixtures                            |
+| Facet            | Live reader (when `PM_AGG_SOURCE=live`)                                      | Fallback                            |
+| ---------------- | ---------------------------------------------------------------------------- | ----------------------------------- |
+| Board            | Kaneo REST (`/api/task/tasks/<project>`, all four projects) + registry links | fixtures                            |
+| Roadmap          | Grist REST (`/api/docs/<doc>/tables/Roadmap/records`) + registry links       | fixtures (the real Grist seed rows) |
+| Registry links   | Projector `GET /links?subject=…`, unioned into board cards and roadmap rows  | Kaneo external links / text refs    |
+| Items (refs)     | Projector `GET /items?refs=…`                                                | fixtures                            |
+| Comments         | Projector `GET /comments?refs=…`                                             | fixtures                            |
+| Quota (#851)     | (projector concern — not yet projected)                                      | fixtures                            |
+| Attention (#852) | (projector/watch-cron concern — not yet projected)                           | fixtures                            |
+
+The projector's wire schema is its `schema.sql` (Session J, PR #859):
+snake_case fields, `state` is only `open|closed` with `merged` as a
+separate 0/1 flag, `labels`/`assignees` are JSON array strings, and
+comment rows carry `created_at` / `review_state`. The mapping to this
+app's read model lives in `src/sources/live.ts`
+(`mapProjectorItem` / `mapProjectorComment` / `parseProjectorLabels`),
+covered by `test/projector.test.ts` — including a stub-server test that
+refs survive the query string (`#` is percent-encoded, otherwise it
+would start a URL fragment and the projector would never see the
+number). Registry subjects are `kaneo:<projectSlug>/<taskId>` and
+`grist:<docId>/<tableId>/<rowId>`; board cards and roadmap rows are
+enriched with `GET /links?subject=…` so cross-repo links (the
+requirement Kaneo cannot provide) render live.
 
 The footer of every page states, facet by facet, whether it is live or
 fixture-backed. When a live reader is unreachable, that facet alone
@@ -86,23 +101,22 @@ falls back to fixtures and the footer says why.
 
 ## What is fixture-backed vs live
 
-- **Fixture-backed today:** items, comments, quota, and attention. The
-  fixtures are shaped exactly like the live readers' output and sit
-  behind the same `Source` interface (`src/source.ts`), so swapping is a
-  config change, not a code change. Roadmap fixtures are the real Grist
-  seed rows; the design record's known refs (#752, #754, #762, #763,
-  nix #501–#508, opencode #365) are real; the rest are illustrative.
-- **Live-capable today:** board (Kaneo) and roadmap (Grist) when the
-  services are reachable on this host and the env vars are set. The
-  projector's `/items` and `/comments` are wired but require Session J's
-  service (`pm/projector`) to be running and `PM_PROJECTOR_URL` set.
-  The live board is the curated in-flight set (in-progress / in-review /
-  recent done columns; the to-do backlog is excluded). It is genuinely
-  cross-repo only once the remaining repos are connected as Kaneo
-  projects (Session H, `pm/connect-repos`) — today Kaneo has the `code`
-  project, so GitHub-only work from the other three repos appears on the
-  board through the fixtures until the projector/registry or H's
-  connections feed them.
+- **Fixture-backed today:** quota and attention (their feeds are not
+  projected yet). The fixtures are shaped like the live readers' output
+  and sit behind the same `Source` interface (`src/source.ts`), so
+  swapping is a config change, not a code change. Roadmap fixtures are
+  the real Grist seed rows; the design record's known refs (#752, #754,
+  #762, #763, nix #501–#508, opencode #365) are real; the rest are
+  illustrative.
+- **Live-capable today:** board (Kaneo), roadmap (Grist), and — since
+  Session J's projector landed (PR #859) — registry links, live item
+  state, and the comment projection via `PM_PROJECTOR_URL`
+  (default `http://127.0.0.1:7801`). Each facet falls back to fixtures
+  independently when its service is unreachable. The live board is the
+  curated in-flight set (in-progress / in-review / recent done columns;
+  the to-do backlog is excluded). Kaneo project slugs map to repos as
+  in `pm-stack/kaneo-projects.json` (Session H): `code`, `opencode`,
+  `openchamber` under `developing-today/`, `nix` under `dezren39/`.
 
 ## Design notes — the two new views (#851, #852)
 
@@ -145,6 +159,7 @@ src/
     fixtures.ts   fixture data (real Grist seed + design-record refs)
     live.ts       Kaneo/Grist/projector readers with per-facet fallback
 test/
-  render.test.ts  unit derivations + render smoke
-  boot.test.ts    boots the server, serves all views from fixtures
+  render.test.ts    unit derivations + render smoke
+  boot.test.ts      boots the server, serves all views from fixtures
+  projector.test.ts projector wire-schema mapping + stub-server reads
 ```
