@@ -25,9 +25,10 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isOrchestrationSection, type FleetFeed } from "../src/feed.ts";
-import type { OrchestrationSection, QuotaPool, SessionFeedEntry } from "../src/model.ts";
+import type { JulesSummary, OrchestrationSection, QuotaPool, SessionFeedEntry } from "../src/model.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
+import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
 
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -112,7 +113,9 @@ async function main(): Promise<void> {
   let attention: SessionFeedEntry[] = [];
   try {
     const password = (await readFile(passwordFile, "utf8")).trim();
-    const mapped = await mapServerSessions({ baseUrl: serverUrl, password }, now.getTime());
+    const mapped = await mapServerSessions({ baseUrl: serverUrl, password }, now.getTime(), {
+      source: "opencode-sandbox",
+    });
     if (mapped) {
       attention = mapped.entries;
       const notes = await supervisionNotes();
@@ -143,6 +146,17 @@ async function main(): Promise<void> {
     console.error(`collector: sandbox server read failed (${err}); attention empty`);
   }
 
+  // --- Jules sessions + keeper totals (slice 2, #898 §5) ------------------
+  let jules: JulesSummary | undefined;
+  try {
+    const state = JSON.parse(await readFile(julesStatePath, "utf8")) as JulesReviewState;
+    const entries = mapJulesItems(state);
+    if (entries.length) attention = [...attention, ...entries];
+    jules = julesSummary(state);
+  } catch {
+    console.error("collector: jules-review state unreadable; no Jules sessions this run");
+  }
+
   // --- orchestration section (#899) --------------------------------------
   let orchestration: OrchestrationSection | undefined;
   try {
@@ -162,12 +176,13 @@ async function main(): Promise<void> {
     generatedAt: now.toISOString(),
     quota: { pools, burn: [], choices: computeChoices(pools, now.getTime()) },
     attention,
+    julesSummary: jules,
     ...(orchestration ? { orchestration } : {}),
   };
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
-    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sandbox sessions` +
+    `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (sandbox + jules${jules ? `, ${jules.tracked} jules tracked` : ""})` +
       (orchestration ? `, orchestration ${orchestration.runId}` : ", no orchestration section"),
   );
 }

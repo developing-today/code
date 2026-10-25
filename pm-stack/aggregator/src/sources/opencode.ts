@@ -10,7 +10,7 @@
 // GET /api/session/{id}/message?limit=N -> { data: Message[] } (newest
 // first), GET /api/permission/request -> { data: PermissionRequest[] },
 // GET /api/session/{id}/form -> { data: Form[] }.
-import type { SessionFeedEntry } from "../model.ts";
+import type { SessionFeedEntry, SessionSource } from "../model.ts";
 
 export interface OpenCodeTarget {
   baseUrl: string;
@@ -24,6 +24,10 @@ interface V2Session {
   model?: { id?: string; providerID?: string };
   tokens?: { input?: number; output?: number; reasoning?: number };
   outcome?: string | null;
+  /** Present on sub-sessions: the spawning session's id (probed live). */
+  parentID?: string | null;
+  /** Present on sub-sessions: the subagent name (e.g. "explore"). */
+  agent?: string;
   time?: { created?: number; updated?: number; idle?: number };
   location?: { directory?: string };
   subpath?: string;
@@ -112,7 +116,7 @@ export interface MappedSessions {
 export async function mapServerSessions(
   target: OpenCodeTarget,
   now = Date.now(),
-  opts: { messageLimit?: number; maxDetailed?: number } = {},
+  opts: { messageLimit?: number; maxDetailed?: number; source?: SessionSource } = {},
 ): Promise<MappedSessions | null> {
   const list = await getJson<{ data: V2Session[] }>(target, "/api/session?limit=100");
   if (!list?.data) return null;
@@ -146,7 +150,7 @@ export async function mapServerSessions(
 
   const entries: SessionFeedEntry[] = [];
   for (const s of included) {
-    entries.push(await mapOne(target, s, activeIds, pendingBySession.get(s.id), opts.messageLimit ?? 40));
+    entries.push(await mapOne(target, s, activeIds, pendingBySession.get(s.id), opts.messageLimit ?? 40, opts.source));
   }
   return { entries, tokensBySession, activeIds };
 }
@@ -157,9 +161,17 @@ async function mapOne(
   activeIds: Set<string>,
   pending: V2PermissionRequest | undefined,
   messageLimit: number,
+  source?: SessionSource,
 ): Promise<SessionFeedEntry> {
   const entry: SessionFeedEntry = {
     sessionId: s.id,
+    source,
+    parentId: s.parentID ?? null,
+    agent: s.agent,
+    // A session the server holds active is mid-run; any stored outcome
+    // belongs to an earlier run of it and must not mark it finished.
+    outcome: activeIds.has(s.id) ? null : (s.outcome ?? null),
+    createdAt: iso(s.time?.created) ?? undefined,
     title: s.title,
     directory: s.location?.directory,
     model: s.model?.id,
