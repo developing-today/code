@@ -2433,7 +2433,12 @@ mod tests {
     fn test_classify_tag_auto_prefix_non_date_is_primary() {
         // Regression (#809): an ordinary file that merely starts with
         // "auto-" is not an auto-backup — only "auto-{ISO_DATE}" is.
-        for name in ["auto-notes.txt", "auto-2026-report.md", "auto-", "auto-draft"] {
+        for name in [
+            "auto-notes.txt",
+            "auto-2026-report.md",
+            "auto-",
+            "auto-draft",
+        ] {
             let (kind, ts) = classify_tag(name);
             assert_eq!(kind, FileKind::Primary, "{name}");
             assert!(ts.is_none(), "{name}");
