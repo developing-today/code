@@ -4217,10 +4217,11 @@
       "instanceOf": "opencode-go",
       "name": "OpenCode Go (Lab)"
     },
-    "opencode-go-home": {
-      "instanceOf": "opencode-go",
-      "name": "OpenCode Go (Home)"
-    },
+    // disabled 2026-10-25: Home workspace has no active Go subscription (e2e: "An active OpenCode Go subscription is required"); re-enable when subscribed
+    // "opencode-go-home": {
+      // "instanceOf": "opencode-go",
+      // "name": "OpenCode Go (Home)"
+    // },
     "commandcode": {
           "npm": "@ai-sdk/openai-compatible",
           "name": "Command Code (CLI proxy)",
