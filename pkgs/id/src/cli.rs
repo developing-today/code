@@ -1659,7 +1659,10 @@ pub enum WorldCommand {
     ///
     /// Checks the Roc toolchain, the platform build, the capability ceiling,
     /// the execution profile, the journal format and the clock. Exits nonzero
-    /// when any check fails. `--json` prints one machine-readable report.
+    /// only when a check FAILS; a warning does not fail the command. The
+    /// ceiling and profile checks run against the values given with
+    /// `--ceiling` / `--profile`; without them they report that none is
+    /// configured. `--json` prints one machine-readable report.
     Doctor {
         /// Roc compiler binary to check (default: $`ID_ROC_BIN`, then the
         /// pinned nightly, then `roc` on PATH).
@@ -1672,6 +1675,14 @@ pub enum WorldCommand {
         /// World journal (`journal.jsonl`) to check for format errors.
         #[arg(long, value_name = "FILE")]
         journal: Option<PathBuf>,
+        /// Capability ceiling to check (comma-separated or repeatable; only
+        /// known capabilities, no `*`).
+        #[arg(long, value_delimiter = ',')]
+        ceiling: Option<Vec<String>>,
+        /// Execution profile to check, as a JSON file whose fields are the
+        /// `WorldExecutionProfile` bounds (e.g. `{"wasm_fuel": 0}`).
+        #[arg(long, value_name = "FILE")]
+        profile: Option<PathBuf>,
         /// Print one JSON object instead of text.
         #[arg(long)]
         json: bool,
@@ -4137,6 +4148,34 @@ mod tests {
                         ceiling,
                         Some(vec!["time.now".to_owned(), "chat.say".to_owned()])
                     );
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_world_doctor_ceiling_and_profile() {
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "doctor",
+            "--ceiling",
+            "time.now,chat.say",
+            "--profile",
+            "profile.json",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Doctor {
+                    ceiling, profile, ..
+                } => {
+                    assert_eq!(
+                        ceiling,
+                        Some(vec!["time.now".to_owned(), "chat.say".to_owned()])
+                    );
+                    assert_eq!(profile, Some(PathBuf::from("profile.json")));
                 }
                 other => panic!("unexpected: {other:?}"),
             },

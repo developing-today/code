@@ -397,6 +397,8 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             roc_bin,
             platform,
             journal,
+            ceiling,
+            profile,
             json,
         } => {
             let platform_dir = platform
@@ -409,12 +411,31 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     .into_iter()
                     .find(|dir| dir.is_dir())
                 });
+            // The ceiling/profile checks take their values from the
+            // --ceiling / --profile flags; without them the checks report
+            // that none is configured (they are not silently passed off as
+            // a live world's values).
+            let profile = match profile {
+                Some(path) => {
+                    let text = std::fs::read_to_string(&path)
+                        .with_context(|| format!("read execution profile {}", path.display()))?;
+                    Some(
+                        serde_json::from_str::<crate::world_limits::WorldExecutionProfile>(
+                            &text,
+                        )
+                        .with_context(|| {
+                            format!("parse execution profile {}", path.display())
+                        })?,
+                    )
+                }
+                None => None,
+            };
             let inputs = crate::world_doctor::DoctorInputs {
                 roc_bin,
                 roc_resolved: None,
                 platform_dir,
-                caps_ceiling: None,
-                profile: None,
+                caps_ceiling: ceiling,
+                profile,
                 journal,
                 now_ms: Some(crate::time::unix_ms()),
             };
@@ -424,11 +445,9 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             } else {
                 print!("{}", report.render_text());
             }
-            if report.healthy() {
-                Ok(())
-            } else {
-                bail!("world doctor found {} problem(s)", report.findings.len());
-            }
+            // Warn findings print but do not fail the command; only Fail
+            // findings exit nonzero, counted by failure_count().
+            report.exit_result()
         }
         WorldCommand::Diff {
             node,
