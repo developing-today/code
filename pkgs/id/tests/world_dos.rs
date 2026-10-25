@@ -16,6 +16,7 @@
 //!   (`the_session_ceiling_refuses_then_recovers`, `open_world_ceiling_refuses_when_nothing_is_evictable`).
 //! - **schedule count / horizon**: `pkgs/id/src/world/tests.rs`
 //!   (`schedule_bounds_refuse_each_violation_with_a_reason`).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeSet;
 

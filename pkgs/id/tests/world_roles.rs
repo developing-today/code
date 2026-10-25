@@ -3,6 +3,7 @@
 //! A `builder` participant may install modules and a `moderator` may revoke
 //! participants; neither gains capability, network, file or process authority.
 //! Each use of those scopes is journaled as an audit record.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::{Arc, Mutex};
 
