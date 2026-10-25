@@ -166,7 +166,7 @@ jobs:
           # Error excerpt: last lines of the failing step's log with nix's
           # "copying path" noise removed, capped, and code fences neutralized
           # so the issue body stays valid Markdown.
-          grep -v "copying path" "${ERROR_LOG}" | tail -n 80 | sed 's/~~~/---/g' | head -c 5000 > "$RUNNER_TEMP/excerpt.txt" || true
+          grep -v "copying path" "${ERROR_LOG}" | tail -n 80 | sed 's/~~~/---/g' | tail -c 5000 > "$RUNNER_TEMP/excerpt.txt" || true
           entry_file="$RUNNER_TEMP/entry.md"
           {
             echo "### Attempt ${attempts} — ${now} — openchamber \`${NEW_OC_REV}\`, opencode \`${NEW_OPENCODE_REV}\`"
