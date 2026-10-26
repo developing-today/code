@@ -4197,13 +4197,29 @@
           "name": "Muse Wonder"
         },
         "muse-wonder-1.0-contributor": {
-          "name": "Muse Wonder 1.0 Contributor"
+          "name": "Muse Wonder 1.0 Contributor",
+          "variants": {
+            "minimal": { "options": { "reasoning_effort": "minimal" } },
+            "low": { "options": { "reasoning_effort": "low" } },
+            "medium": { "options": { "reasoning_effort": "medium" } },
+            "high": { "options": { "reasoning_effort": "high" } },
+            "xhigh": { "options": { "reasoning_effort": "xhigh" } },
+            "max": { "options": { "reasoning_effort": "max" } }
+          }
         },
         "muse-spark-1.3": {
           "name": "Muse Spark 1.3"
         },
         "muse-spark-1.3-contributor": {
-          "name": "Muse Spark 1.3 Contributor"
+          "name": "Muse Spark 1.3 Contributor",
+          "variants": {
+            "minimal": { "options": { "reasoning_effort": "minimal" } },
+            "low": { "options": { "reasoning_effort": "low" } },
+            "medium": { "options": { "reasoning_effort": "medium" } },
+            "high": { "options": { "reasoning_effort": "high" } },
+            "xhigh": { "options": { "reasoning_effort": "xhigh" } },
+            "max": { "options": { "reasoning_effort": "max" } }
+          }
         },
         "muse-spark-1.2": {
           "name": "Muse Spark 1.2"
@@ -5137,10 +5153,22 @@
       // Plan routes only — the one exception is the DeepSeek PAYG reserve, last in its ordered pool.
       "deepseek-flash-plan": {
         "name": "DeepSeek Flash - plan providers",
+        // 2026-10-26: per-leaf variant remaps (honored by expansion since
+        // developing-today/opencode#541). ClinePass has no medium/xhigh; OpenDesign tops at
+        // high. Remaps keep every leaf in the dispatch at its nearest wired rung.
         "targets": [
-          "cline-pass/deepseek-v4.1-flash",
-          "opendesign/deepseek-v4.1-flash",
-          "opendesign/deepseek-v4-flash"
+          {
+            "model": "cline-pass/deepseek-v4.1-flash",
+            "variants": { "medium": "high", "xhigh": "max" }
+          },
+          {
+            "model": "opendesign/deepseek-v4.1-flash",
+            "variants": { "xhigh": "high", "max": "high" }
+          },
+          {
+            "model": "opendesign/deepseek-v4-flash",
+            "variants": { "xhigh": "high", "max": "high" }
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules"
@@ -5149,7 +5177,10 @@
         "name": "DeepSeek Flash - plan first, PAYG reserve last",
         "targets": [
           "opencode-route/deepseek-flash-plan",
-          "deepseek/deepseek-chat"
+          {
+            "model": "deepseek/deepseek-chat",
+            "variants": { "medium": "high", "xhigh": "max" }
+          }
         ],
         "selection": "ordered",
         "autonomy": "rules",
@@ -5160,8 +5191,14 @@
       "deepseek-pro-plan": {
         "name": "DeepSeek V4 Pro - plan providers",
         "targets": [
-          "cline-pass/deepseek-v4-pro",
-          "opendesign/deepseek-v4-pro"
+          {
+            "model": "cline-pass/deepseek-v4-pro",
+            "variants": { "low": "high", "medium": "high", "xhigh": "max" }
+          },
+          {
+            "model": "opendesign/deepseek-v4-pro",
+            "variants": { "xhigh": "high", "max": "high" }
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules"
@@ -5170,7 +5207,10 @@
         "name": "Claude Haiku - plan providers",
         "targets": [
           "claude-code/claude-haiku-5-5",
-          "opendesign/claude-haiku-5.5"
+          {
+            "model": "opendesign/claude-haiku-5.5",
+            "variants": { "xhigh": "high", "max": "high" }
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules"
@@ -5180,7 +5220,10 @@
         "targets": [
           "openai/gpt-6-luna",
           "openai.alternate/gpt-6-luna",
-          "opendesign/gpt-6-luna",
+          {
+            "model": "opendesign/gpt-6-luna",
+            "variants": { "xhigh": "high", "max": "high" }
+          },
           "opencode-go.lab/gpt-5.6-luna",
           "opencode-go.personal/gpt-5.6-luna"
         ],
@@ -5190,9 +5233,18 @@
       "glm-flash-plan": {
         "name": "GLM Flash - plan providers",
         "targets": [
-          "cline-pass/glm-5.3-flash",
-          "opendesign/glm-5.3-flash",
-          "opendesign/glm-5.3-flashx"
+          {
+            "model": "cline-pass/glm-5.3-flash",
+            "variants": { "medium": "high", "xhigh": "max" }
+          },
+          {
+            "model": "opendesign/glm-5.3-flash",
+            "variants": { "xhigh": "high", "max": "high" }
+          },
+          {
+            "model": "opendesign/glm-5.3-flashx",
+            "variants": { "xhigh": "high", "max": "high" }
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules"
@@ -5200,7 +5252,10 @@
       "gemini-flash-plan": {
         "name": "Gemini Flash - plan providers",
         "targets": [
-          "antigravity-ls/gemini-3.8-flash"
+          {
+            "model": "antigravity-ls/gemini-3.8-flash",
+            "variants": { "xhigh": "high", "max": "high" }
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules"
@@ -5208,7 +5263,10 @@
       "sonnet-plan": {
         "name": "Claude Sonnet - plan providers",
         "targets": [
-          "antigravity-ls/claude-sonnet-5-5"
+          {
+            "model": "antigravity-ls/claude-sonnet-5-5",
+            "variants": { "xhigh": "high", "max": "high" }
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules"
@@ -5216,7 +5274,10 @@
       "opus-plan": {
         "name": "Claude Opus - plan providers",
         "targets": [
-          "antigravity-ls/claude-opus-5-5"
+          {
+            "model": "antigravity-ls/claude-opus-5-5",
+            "variants": { "xhigh": "high", "max": "high" }
+          }
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -5234,12 +5295,12 @@
       },
       "scout": {
         "name": "Scout - routine work: cheapest, fastest, smart enough",
-        // 2026-10-26 (pool remap review): all three routes addressed at #low — the only rung
-        // every leaf on every door actually has wired (ClinePass has no medium; GLM has no
-        // medium anywhere; Haiku low is wired on both doors). Flash/GLM are overpowered for
-        // this tier at any rung (AA v4.3.2: Flash max 45, GLM max 42 vs Haiku low 29).
+        // 2026-10-26 (pool remap review): all three routes addressed at #low — the rung every
+        // leaf on every door has wired (Flash/GLM are overpowered for this tier at any rung:
+        // AA v4.3.2 Flash max 45, GLM max 42 vs Haiku low 29). Flash addresses the PLAN pool
+        // directly so routine traffic can never reach the PAYG tail on the parent route.
         "targets": [
-          "opencode-route/deepseek-flash#low",
+          "opencode-route/deepseek-flash-plan#low",
           "opencode-route/glm-flash-plan#low",
           "opencode-route/haiku-plan#low"
         ],
@@ -5248,38 +5309,74 @@
       },
       "workhorse": {
         "name": "Workhorse - standard work: fast and smart across plan pools",
+        // 2026-10-26: Haiku at #xhigh (AA 41 vs 38 at high; real on both doors — claude-code
+        // has a wired xhigh body, OpenDesign remaps xhigh -> high). Spark runs the contributor
+        // model at #xhigh (AA 45, fastest seat in the pool) — contributor ids are always the
+        // cheaper seat on the Meta plan; #low was rejected on the data (AA publishes Spark's
+        // capability at xhigh/max, and xhigh matches this tier's top band). Weights burn the
+        // small soon-expiring plans fastest and the OpenAI final reserve (Luna) slowest.
         "targets": [
           "opencode-route/deepseek-flash#high",
           "opencode-route/luna-plan#max",
-          "opencode-route/haiku-plan#high",
-          "meta/muse-spark-1.3#low"
+          "opencode-route/haiku-plan#xhigh",
+          "meta/muse-spark-1.3-contributor#xhigh"
         ],
         "selection": "round-robin",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        "weights": {
+          "opencode-route/deepseek-flash": 3,
+          "opencode-route/haiku-plan": 2,
+          "meta/muse-spark-1.3-contributor": 2,
+          "opencode-route/luna-plan": 1
+        }
       },
       "specialist": {
-        "name": "Specialist - hard work: quality first, Claude then OpenAI then DeepSeek Pro, Luna as capacity relief",
-        // 2026-10-26 (pool remap review): reordered by AA v4.3.2 capability — Sonnet #high 47,
-        // Sol #medium 48, Pro #high <=36, Luna #max 38. Luna was second (a full band below the
-        // tier, ahead of band-correct Sol); it is now last as capacity relief only.
+        "name": "Specialist - hard work: quality first, Claude then Meta Spark then OpenAI, Luna relief, DeepSeek Pro last",
+        // 2026-10-26 (pool remap review, AA v4.3.2): Sonnet #high 47, Spark contributor #max 48
+        // (~3x Sol medium's speed at under half its shadow price; single Meta door is the
+        // caveat), Sol #medium 48, Luna #max 38 (relief), Pro #high <=36 last — Luna outranks
+        // Pro on capability, speed and leaf diversity alike.
         "targets": [
           "opencode-route/sonnet-plan#high",
+          "meta/muse-spark-1.3-contributor#max",
           "opencode-route/sol-plan#medium",
-          "opencode-route/deepseek-pro-plan#high",
-          "opencode-route/luna-plan#max"
+          "opencode-route/luna-plan#max",
+          "opencode-route/deepseek-pro-plan#high"
         ],
         "selection": "ordered",
         "autonomy": "rules"
       },
       "summit": {
         "name": "Summit - very complex design only, deliberate use",
+        // 2026-10-26: Sol addressed through sol-plan (four doors) instead of a single direct
+        // OpenAI leaf; Wonder runs the contributor model (always cheaper on the Meta plan).
         "targets": [
           "opencode-route/opus-plan#high",
-          "openai/gpt-6.1-sol#xhigh",
-          "meta/muse-wonder-1.0#max"
+          "opencode-route/sol-plan#xhigh",
+          "meta/muse-wonder-1.0-contributor#max"
         ],
         "selection": "ordered",
         "autonomy": "rules"
+      },
+      "speed": {
+        "name": "Speed - fastest seats at or above the Haiku bar, for latency-bound work",
+        // 2026-10-26 (pool remap review): AA v4.3.2 intelligence / output speed — Spark
+        // contributor #xhigh 45 at ~301 t/s, Flash #max 45 at ~200, Haiku #xhigh 41 at ~189,
+        // Luna #max 38 at ~129. Flash addresses the plan pool directly (no PAYG tail).
+        "targets": [
+          "meta/muse-spark-1.3-contributor#xhigh",
+          "opencode-route/deepseek-flash-plan#max",
+          "opencode-route/haiku-plan#xhigh",
+          "opencode-route/luna-plan#max"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "meta/muse-spark-1.3-contributor": 3,
+          "opencode-route/deepseek-flash-plan": 2,
+          "opencode-route/haiku-plan": 2,
+          "opencode-route/luna-plan": 1
+        }
       }
     }
   }
