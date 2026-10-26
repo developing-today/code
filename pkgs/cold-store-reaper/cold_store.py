@@ -1526,9 +1526,11 @@ class ColdStore:
     def _curl_fetch(self, url: str, access: str, secret: str) -> bytes:
         """GET `url` with curl, which does its own SigV4 signing
         (--aws-sigv4) and reads the proxy from the environment itself.
-        Credentials travel in argv — the local process list sees them,
-        as with any credentialed CLI — but they are scrubbed from every
-        error this raises, and nothing here is logged.
+        Credentials travel in a curl config fed on stdin (--config -),
+        never in argv — the local process list must not see them (the
+        --user argv form was issue #983, the pattern #948/#970 removed
+        from push-fleet-feed.sh) — and never on disk. They are scrubbed
+        from every error this raises, and nothing here is logged.
         """
         argv = [
             self.curl,
@@ -1536,13 +1538,21 @@ class ColdStore:
             "--fail",
             "--aws-sigv4",
             "aws:amz:auto:s3",
-            "--user",
-            f"{access}:{secret}",
+            "--config",
+            "-",
             url,
         ]
+        config = (
+            'user = "'
+            + f"{access}:{secret}".replace("\\", "\\\\").replace('"', '\\"')
+            + '"\n'
+        ).encode()
         try:
             proc = subprocess.run(
-                argv, capture_output=True, timeout=S3_CURL_TIMEOUT_SECONDS
+                argv,
+                input=config,
+                capture_output=True,
+                timeout=S3_CURL_TIMEOUT_SECONDS,
             )
         except FileNotFoundError:
             raise ColdStoreError(
