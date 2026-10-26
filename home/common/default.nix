@@ -756,6 +756,43 @@ in
           }
         ];
       }
+      # The two entries below were added to the LIVE supervisor config by
+      # hand on 2026-10-24 but never made it back into this file -- the drift
+      # surfaced on 2026-10-26, when home-manager activation failed on the
+      # hand-placed (unmanaged) supervisor unit/config files and the live
+      # config turned out to supervise two more proxies than the repo knew
+      # about. Transcribed verbatim from the live config: unlike the node
+      # proxies above these run their repo start scripts (which own their
+      # environment, cf. the commandcode-proxy unit below), so they carry
+      # no `env` block.
+      {
+        name = "commandcode-proxy";
+        canonicalPort = commandcodeProxyPort;
+        portEnv = "COMMANDCODE_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/bash"
+          "~/code/bin/commandcode-proxy-start.sh"
+        ];
+        hashFiles = [
+          "~/code/bin/commandcode-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+          "~/.local/state/proxy-supervisor/commandcode-proxy.build-stamp"
+        ];
+      }
+      {
+        name = "muse-proxy";
+        canonicalPort = museProxyPort;
+        portEnv = "MUSE_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/bash"
+          "~/code/bin/muse-proxy-start.sh"
+        ];
+        hashFiles = [
+          "~/code/bin/muse-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+          "~/.local/state/proxy-supervisor/muse-proxy.build-stamp"
+        ];
+      }
     ];
   };
 
