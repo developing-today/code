@@ -1159,8 +1159,7 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
     // which spelling or editor produced the doc — so the same marked text
     // always saves to the same markdown.
     let mut sorted_marks: Vec<&Value> = marks.iter().collect();
-    sorted_marks
-        .sort_by_key(|mark| mark_nesting_rank(mark["type"].as_str().unwrap_or("")));
+    sorted_marks.sort_by_key(|mark| mark_nesting_rank(mark["type"].as_str().unwrap_or("")));
     let mut wrappers: Vec<NodeValue> = Vec::new();
 
     for mark in sorted_marks {
