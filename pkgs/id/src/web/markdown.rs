@@ -70,6 +70,7 @@ fn commonmark_options() -> Options<'static> {
     options.extension.strikethrough = true;
     options.extension.tasklist = true;
     options.extension.table = true;
+    options.extension.footnotes = true;
     options.parse.smart = false; // Don't convert quotes/dashes
     options.render.r#unsafe = true; // Allow HTML output (needed for sized images)
     options
@@ -491,9 +492,29 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
             json!(collect_inline_children(node, &marks))
         }
 
-        NodeValue::FootnoteDefinition(_) | NodeValue::FootnoteReference(_) => {
-            // Footnotes not supported - skip
-            json!(null)
+        NodeValue::FootnoteReference(reference) => {
+            // #945: carry the reference as a dedicated inline atom node so
+            // the save direction can emit [^label] again instead of the
+            // reference being dropped / backslash-escaped as plain text.
+            json!({
+                "type": "footnote_reference",
+                "attrs": {"label": reference.name}
+            })
+        }
+
+        NodeValue::FootnoteDefinition(definition) => {
+            // #945: a definition's AST children are block nodes (usually a
+            // single paragraph); carry their inline content directly on a
+            // block node with the label, mirroring the reference arm.
+            let mut content = Vec::new();
+            for child in node.children() {
+                content.extend(collect_inline_children(child, &[]));
+            }
+            json!({
+                "type": "footnote_definition",
+                "attrs": {"label": definition.name},
+                "content": content
+            })
         }
 
         // Other unsupported nodes
@@ -1071,6 +1092,27 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             NodeValue::HtmlInline(json["attrs"]["html"].as_str().unwrap_or("").to_owned())
         }
 
+        // #945: footnote reference atom -> comrak FootnoteReference; the
+        // commonmark formatter renders it natively as [^label].
+        "footnote_reference" => {
+            NodeValue::FootnoteReference(Box::new(comrak::nodes::NodeFootnoteReference {
+                name: json["attrs"]["label"].as_str().unwrap_or("").to_owned(),
+                ..Default::default()
+            }))
+        }
+
+        // #945: footnote definition block -> comrak FootnoteDefinition.
+        // Its content children were stored as inline nodes by the parse
+        // direction; the special case below re-wraps them in a Paragraph
+        // (comrak requires block children) and the formatter renders them
+        // under the [^label]: heading.
+        "footnote_definition" => {
+            NodeValue::FootnoteDefinition(comrak::nodes::NodeFootnoteDefinition {
+                name: json["attrs"]["label"].as_str().unwrap_or("").to_owned(),
+                total_references: 0,
+            })
+        }
+
         "hard_break" => NodeValue::LineBreak,
 
         "text" => {
@@ -1106,6 +1148,25 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                     append_inline_child(ast_node, child);
                 }
             }
+        }
+        return Ok(ast_node);
+    }
+
+    // Special case: footnote definitions. The parse direction stores the
+    // definition's inline content directly on the PM node (#945), but
+    // comrak's AST requires a FootnoteDefinition's children to be blocks —
+    // re-wrap the inline children in a Paragraph here, or the commonmark
+    // formatter rejects the document as ill-formed.
+    if node_type == "footnote_definition" {
+        if let Some(content) = json["content"].as_array()
+            && !content.is_empty()
+        {
+            let paragraph = arena.alloc(AstNode::from(NodeValue::Paragraph));
+            for child_json in content {
+                let child = json_to_ast(arena, child_json)?;
+                append_inline_child(paragraph, child);
+            }
+            ast_node.append(paragraph);
         }
         return Ok(ast_node);
     }
@@ -1621,6 +1682,72 @@ mod tests {
             assert_eq!(first, expected, "first save for {original:?}");
             assert_eq!(first, second, "no fixpoint for {original:?}");
         }
+    }
+
+    #[test]
+    fn test_footnote_roundtrip_fixpoint() {
+        // #945: a footnote reference + definition round-trip open->save
+        // intact — emitted as [^label] syntax, never backslash-escaped,
+        // never dropped — and the second save is byte-identical.
+        let original = "Text with a note.[^1]\n\n[^1]: The footnote body.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^1]"),
+            "footnote syntax survives save: {first:?}"
+        );
+        assert!(
+            !first.contains("\\[^"),
+            "footnote must not be backslash-escaped: {first:?}"
+        );
+        assert!(
+            first.contains("The footnote body."),
+            "definition body survives save: {first:?}"
+        );
+        assert_eq!(first, second, "footnote round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_multiple_footnotes_roundtrip_fixpoint() {
+        // #945: several footnotes keep their own labels and bodies.
+        let original = "One.[^a] Two.[^b]\n\n[^a]: First note.\n\n[^b]: Second note.\n";
+        let (first, second) = two_saves(original);
+        for needle in ["[^a]", "[^b]", "First note.", "Second note."] {
+            assert!(first.contains(needle), "{needle} survives save: {first:?}");
+        }
+        assert!(!first.contains("\\[^"), "no escaped footnotes: {first:?}");
+        assert_eq!(first, second, "multi-footnote round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_parse_shape_is_footnote_nodes() {
+        // #945: the parse direction represents a footnote as dedicated
+        // footnote_reference / footnote_definition nodes carrying the
+        // label, not as plain (escapable) text.
+        let doc = markdown_to_prosemirror("Text.[^1]\n\n[^1]: Body.\n");
+        let top = doc["content"].as_array().unwrap();
+        let definition = top
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("footnote_definition node present");
+        assert_eq!(definition["attrs"]["label"], "1");
+        let definition_text: Vec<&str> = definition["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n["text"].as_str())
+            .collect();
+        assert_eq!(definition_text, ["Body."]);
+        let paragraph = top
+            .iter()
+            .find(|n| n["type"] == "paragraph")
+            .expect("paragraph present");
+        let reference = paragraph["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_reference")
+            .expect("footnote_reference node present");
+        assert_eq!(reference["attrs"]["label"], "1");
     }
 
     #[test]
