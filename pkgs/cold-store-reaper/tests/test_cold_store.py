@@ -558,12 +558,55 @@ class TestSyncManifest(ColdStoreTestBase):
             self.assertEqual(len(req["params"]) % col_counts[table], 0)
             self.assertGreater(len(req["params"]), 0)
 
+    def test_sync_many_objects_stays_under_d1_param_limit(self):
+        # Regression: D1 allows at most 100 bound parameters per query,
+        # and the old flat 50-row batch put 50 x 8 = 400 params into one
+        # objects statement (already 112 params at 14 rows), which D1
+        # rejected with HTTP 400. Seed enough objects that the old
+        # batching would blow the limit, then assert every statement
+        # stays under it and every row of every table arrives.
+        conn = self.store.db()
+        for i in range(30):
+            digest = hashlib.sha256(f"seed-object-{i}".encode()).hexdigest()
+            conn.execute(
+                "INSERT INTO objects (hash, size, state) VALUES (?, ?, 'cold')",
+                (digest, 1000 + i),
+            )
+        conn.commit()
+        conn.close()
+        expected = self._row_counts()
+        # 13 objects x 8 columns = 104 params: the old batching already
+        # breaks below this seed size.
+        self.assertGreater(expected["objects"], 12)
+        with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}):
+            result = self.store.sync_manifest()
+        col_counts = {
+            "objects": 8,
+            "bundles": 10,
+            "members": 4,
+            "transfer_ledger": 6,
+            "meta": 2,
+        }
+        arrived = {t: 0 for t in cold_store.MANIFEST_TABLES}
+        for req in self.d1.requests:
+            # D1's hard per-query limit is 100 bound parameters.
+            self.assertLessEqual(len(req["params"]), 100)
+            table = re.match(r"INSERT INTO (\w+)", req["sql"]).group(1)
+            self.assertEqual(len(req["params"]) % col_counts[table], 0)
+            arrived[table] += len(req["params"]) // col_counts[table]
+        self.assertEqual(arrived, expected)
+        self.assertEqual(result["rows"], sum(expected.values()))
+        # objects batch is 90 // 8 = 11 rows, so 31 rows take 3 statements.
+        self.assertEqual(result["tables"]["objects"]["statements"], 3)
+
     def test_sync_http_error_is_clear(self):
         self.d1.fail = True
         with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}):
             with self.assertRaises(cold_store.ColdStoreError) as ctx:
                 self.store.sync_manifest()
         self.assertIn("HTTP 500", str(ctx.exception))
+        # The D1 API's own error text rides along, not just the status.
+        self.assertIn("fake failure", str(ctx.exception))
 
     def test_sync_requires_token(self):
         with mock.patch.dict(os.environ, self._env_without_token(), clear=True):
