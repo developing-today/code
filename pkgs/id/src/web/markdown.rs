@@ -70,6 +70,7 @@ fn commonmark_options() -> Options<'static> {
     options.extension.strikethrough = true;
     options.extension.tasklist = true;
     options.extension.table = true;
+    options.extension.footnotes = true;
     options.parse.smart = false; // Don't convert quotes/dashes
     options.render.r#unsafe = true; // Allow HTML output (needed for sized images)
     options
@@ -491,9 +492,29 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
             json!(collect_inline_children(node, &marks))
         }
 
-        NodeValue::FootnoteDefinition(_) | NodeValue::FootnoteReference(_) => {
-            // Footnotes not supported - skip
-            json!(null)
+        NodeValue::FootnoteReference(reference) => {
+            // #945: carry the reference as a dedicated inline atom node so
+            // the save direction can emit [^label] again instead of the
+            // reference being dropped / backslash-escaped as plain text.
+            json!({
+                "type": "footnote_reference",
+                "attrs": {"label": reference.name}
+            })
+        }
+
+        NodeValue::FootnoteDefinition(definition) => {
+            // #945: a definition's AST children are block nodes (usually a
+            // single paragraph); carry their inline content directly on a
+            // block node with the label, mirroring the reference arm.
+            let mut content = Vec::new();
+            for child in node.children() {
+                content.extend(collect_inline_children(child, &[]));
+            }
+            json!({
+                "type": "footnote_definition",
+                "attrs": {"label": definition.name},
+                "content": content
+            })
         }
 
         // Other unsupported nodes
@@ -1117,6 +1138,27 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             NodeValue::HtmlInline(json["attrs"]["html"].as_str().unwrap_or("").to_owned())
         }
 
+        // #945: footnote reference atom -> comrak FootnoteReference; the
+        // commonmark formatter renders it natively as [^label].
+        "footnote_reference" => {
+            NodeValue::FootnoteReference(Box::new(comrak::nodes::NodeFootnoteReference {
+                name: json["attrs"]["label"].as_str().unwrap_or("").to_owned(),
+                ..Default::default()
+            }))
+        }
+
+        // #945: footnote definition block -> comrak FootnoteDefinition.
+        // Its content children were stored as inline nodes by the parse
+        // direction; the special case below re-wraps them in a Paragraph
+        // (comrak requires block children) and the formatter renders them
+        // under the [^label]: heading.
+        "footnote_definition" => {
+            NodeValue::FootnoteDefinition(comrak::nodes::NodeFootnoteDefinition {
+                name: json["attrs"]["label"].as_str().unwrap_or("").to_owned(),
+                total_references: 0,
+            })
+        }
+
         "hard_break" => NodeValue::LineBreak,
 
         "text" => {
@@ -1144,14 +1186,33 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                     if let Some(para_content) = child_json["content"].as_array() {
                         for inline_json in para_content {
                             let inline_node = json_to_ast(arena, inline_json)?;
-                            append_inline_child(ast_node, inline_node);
+                            append_table_cell_child(arena, ast_node, inline_node);
                         }
                     }
                 } else {
                     let child = json_to_ast(arena, child_json)?;
-                    append_inline_child(ast_node, child);
+                    append_table_cell_child(arena, ast_node, child);
                 }
             }
+        }
+        return Ok(ast_node);
+    }
+
+    // Special case: footnote definitions. The parse direction stores the
+    // definition's inline content directly on the PM node (#945), but
+    // comrak's AST requires a FootnoteDefinition's children to be blocks —
+    // re-wrap the inline children in a Paragraph here, or the commonmark
+    // formatter rejects the document as ill-formed.
+    if node_type == "footnote_definition" {
+        if let Some(content) = json["content"].as_array()
+            && !content.is_empty()
+        {
+            let paragraph = arena.alloc(AstNode::from(NodeValue::Paragraph));
+            for child_json in content {
+                let child = json_to_ast(arena, child_json)?;
+                append_inline_child(paragraph, child);
+            }
+            ast_node.append(paragraph);
         }
         return Ok(ast_node);
     }
@@ -1194,6 +1255,92 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     }
 
     Ok(ast_node)
+}
+
+/// Whether comrak's AST validation accepts this node type as a direct
+/// child of a `TableCell` (#1017). Mirrors `can_contain_type` for
+/// `TableCell` in comrak's nodes.rs (shortcodes/heex variants are not
+/// enabled in this codec).
+fn valid_table_cell_child(value: &NodeValue) -> bool {
+    matches!(
+        value,
+        NodeValue::Text(..)
+            | NodeValue::Code(..)
+            | NodeValue::Emph
+            | NodeValue::Strong
+            | NodeValue::Link(..)
+            | NodeValue::Image(..)
+            | NodeValue::Strikethrough
+            | NodeValue::Highlight
+            | NodeValue::Insert
+            | NodeValue::HtmlInline(..)
+            | NodeValue::Math(..)
+            | NodeValue::WikiLink(..)
+            | NodeValue::FootnoteReference(..)
+            | NodeValue::Superscript
+            | NodeValue::SpoileredText
+            | NodeValue::Underline
+            | NodeValue::Subscript
+            | NodeValue::TaskItem(_)
+            | NodeValue::Escaped
+            | NodeValue::EscapedTag(_)
+    )
+}
+
+/// Append a converted child to a table cell, degrading anything comrak
+/// would reject there instead of building an ill-formed AST that makes
+/// `format_commonmark` panic (#1017):
+///
+/// - valid inline children pass through unchanged;
+/// - a hard/soft break degrades to a single space (a table cell is
+///   single-line content in markdown);
+/// - any other node (a list, code block, heading, nested table, …)
+///   flattens to its plain text, words space-joined.
+fn append_table_cell_child<'a>(
+    arena: &'a Arena<'a>,
+    cell: &'a AstNode<'a>,
+    child: &'a AstNode<'a>,
+) {
+    let value = &child.data.borrow().value;
+    if valid_table_cell_child(value) {
+        append_inline_child(cell, child);
+        return;
+    }
+    if matches!(value, NodeValue::LineBreak | NodeValue::SoftBreak) {
+        let space = arena.alloc(AstNode::from(NodeValue::Text(" ".to_owned().into())));
+        cell.append(space);
+        return;
+    }
+    let mut segments: Vec<String> = Vec::new();
+    collect_cell_text(child, &mut segments);
+    let text = segments
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !text.is_empty() {
+        let text_node = arena.alloc(AstNode::from(NodeValue::Text(text.into())));
+        cell.append(text_node);
+    }
+}
+
+/// Collect the text of a node being flattened into a table cell (#1017):
+/// text/code literals verbatim, breaks as spaces, and a space segment at
+/// every other node's boundary so sibling blocks cannot fuse into one
+/// word. The caller normalizes whitespace runs.
+fn collect_cell_text<'a>(node: &'a AstNode<'a>, segments: &mut Vec<String>) {
+    match &node.data.borrow().value {
+        NodeValue::Text(literal) => segments.push(literal.to_string()),
+        NodeValue::Code(code) => segments.push(code.literal.clone()),
+        NodeValue::CodeBlock(code_block) => segments.push(code_block.literal.clone()),
+        NodeValue::LineBreak | NodeValue::SoftBreak => segments.push(" ".to_owned()),
+        _ => {
+            for child in node.children() {
+                collect_cell_text(child, segments);
+            }
+            segments.push(" ".to_owned());
+        }
+    }
 }
 
 /// Whether two node values are the same mark wrapper, so adjacent
@@ -1726,6 +1873,71 @@ mod tests {
             back["content"][0]["content"][0]["marks"][0]["attrs"]["href"], "https://e.com/a b",
             "href identical after round trip"
         );
+    }
+
+    fn test_footnote_roundtrip_fixpoint() {
+        // #945: a footnote reference + definition round-trip open->save
+        // intact — emitted as [^label] syntax, never backslash-escaped,
+        // never dropped — and the second save is byte-identical.
+        let original = "Text with a note.[^1]\n\n[^1]: The footnote body.\n";
+        let (first, second) = two_saves(original);
+        assert!(
+            first.contains("[^1]"),
+            "footnote syntax survives save: {first:?}"
+        );
+        assert!(
+            !first.contains("\\[^"),
+            "footnote must not be backslash-escaped: {first:?}"
+        );
+        assert!(
+            first.contains("The footnote body."),
+            "definition body survives save: {first:?}"
+        );
+        assert_eq!(first, second, "footnote round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_multiple_footnotes_roundtrip_fixpoint() {
+        // #945: several footnotes keep their own labels and bodies.
+        let original = "One.[^a] Two.[^b]\n\n[^a]: First note.\n\n[^b]: Second note.\n";
+        let (first, second) = two_saves(original);
+        for needle in ["[^a]", "[^b]", "First note.", "Second note."] {
+            assert!(first.contains(needle), "{needle} survives save: {first:?}");
+        }
+        assert!(!first.contains("\\[^"), "no escaped footnotes: {first:?}");
+        assert_eq!(first, second, "multi-footnote round-trip is a fixpoint");
+    }
+
+    #[test]
+    fn test_footnote_parse_shape_is_footnote_nodes() {
+        // #945: the parse direction represents a footnote as dedicated
+        // footnote_reference / footnote_definition nodes carrying the
+        // label, not as plain (escapable) text.
+        let doc = markdown_to_prosemirror("Text.[^1]\n\n[^1]: Body.\n");
+        let top = doc["content"].as_array().unwrap();
+        let definition = top
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("footnote_definition node present");
+        assert_eq!(definition["attrs"]["label"], "1");
+        let definition_text: Vec<&str> = definition["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n["text"].as_str())
+            .collect();
+        assert_eq!(definition_text, ["Body."]);
+        let paragraph = top
+            .iter()
+            .find(|n| n["type"] == "paragraph")
+            .expect("paragraph present");
+        let reference = paragraph["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "footnote_reference")
+            .expect("footnote_reference node present");
+        assert_eq!(reference["attrs"]["label"], "1");
     }
 
     #[test]
@@ -2334,6 +2546,82 @@ mod tests {
             }),
             "no literal anchor text nodes: {doc}"
         );
+    }
+
+    /// Build a one-column table doc whose single data cell holds the
+    /// given PM content (#1017 regression tests).
+    fn table_doc_with_cell(cell_content: Value) -> Value {
+        json!({
+            "type": "doc",
+            "content": [{
+                "type": "table",
+                "content": [
+                    {"type": "table_row", "content": [
+                        {"type": "table_header", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "h"}]}]}
+                    ]},
+                    {"type": "table_row", "content": [
+                        {"type": "table_cell", "content": cell_content}
+                    ]}
+                ]
+            }]
+        })
+    }
+
+    #[test]
+    fn test_table_cell_hard_break_does_not_panic() {
+        // #1017: Shift+Enter in a cell produces a hard_break inside the
+        // cell's paragraph; LineBreak is not a valid TableCell child in
+        // comrak's AST, so this used to panic in format_commonmark. The
+        // break degrades to a space.
+        let doc = table_doc_with_cell(json!([{
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "line one"},
+                {"type": "hard_break"},
+                {"type": "text", "text": "line two"}
+            ]
+        }]));
+        let md = prosemirror_to_markdown(&doc).expect("hard_break cell converts");
+        assert!(
+            md.contains("line one line two"),
+            "break became a space: {md}"
+        );
+        let second =
+            prosemirror_to_markdown(&markdown_to_prosemirror(&md)).expect("second save converts");
+        assert_eq!(md, second, "hard_break cell output is a fixpoint");
+    }
+
+    #[test]
+    fn test_table_cell_list_does_not_panic() {
+        // #1017: a bullet_list inside a cell is a block node — invalid
+        // under TableCell — and panicked the save. It flattens to text.
+        let doc = table_doc_with_cell(json!([{
+            "type": "bullet_list",
+            "attrs": {"tight": true},
+            "content": [
+                {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "item one"}]}]},
+                {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "item two"}]}]}
+            ]
+        }]));
+        let md = prosemirror_to_markdown(&doc).expect("list cell converts");
+        assert!(md.contains("item one item two"), "list flattened: {md}");
+        let second =
+            prosemirror_to_markdown(&markdown_to_prosemirror(&md)).expect("second save converts");
+        assert_eq!(md, second, "list cell output is a fixpoint");
+    }
+
+    #[test]
+    fn test_table_cell_code_block_does_not_panic() {
+        // #1017: a code_block inside a cell likewise flattens to text.
+        let doc = table_doc_with_cell(json!([{
+            "type": "code_block",
+            "content": [{"type": "text", "text": "let x = 1;"}]
+        }]));
+        let md = prosemirror_to_markdown(&doc).expect("code_block cell converts");
+        assert!(md.contains("let x = 1;"), "code flattened: {md}");
+        let second =
+            prosemirror_to_markdown(&markdown_to_prosemirror(&md)).expect("second save converts");
+        assert_eq!(md, second, "code_block cell output is a fixpoint");
     }
 
     #[test]
