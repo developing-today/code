@@ -9,7 +9,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -17,6 +19,7 @@ import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import cold_store
@@ -30,13 +33,19 @@ class FakeDrive:
     def __init__(self):
         self.folders = []  # {id, name, parents}
         self.files = {}  # id -> bytes
-        self.file_meta = {}  # id -> {name, parents}
+        self.file_meta = {}  # id -> {name, parents, createdTime}
         self.sessions = {}  # sid -> {meta, chunks: {start: bytes}, total}
         self.counter = 0
+        self.clock = 0
 
     def next_id(self, prefix):
         self.counter += 1
         return f"{prefix}-{self.counter}"
+
+    def stamp(self):
+        """Monotonic fake createdTime so newest-first ordering is testable."""
+        self.clock += 1
+        return f"2026-01-01T00:{self.clock // 60:02d}:{self.clock % 60:02d}.000Z"
 
 
 def make_handler(fake: FakeDrive):
@@ -114,6 +123,18 @@ def make_handler(fake: FakeDrive):
                     if parent_m and parent_m.group(1) not in folder["parents"]:
                         continue
                     out.append({"id": folder["id"], "name": folder["name"]})
+                if parent_m and not name_m:
+                    # parent-only listing (list-backups): include real files
+                    for fid, meta in fake.file_meta.items():
+                        if parent_m.group(1) in meta.get("parents", []):
+                            out.append(
+                                {
+                                    "id": fid,
+                                    "name": meta["name"],
+                                    "size": str(len(fake.files[fid])),
+                                    "createdTime": meta.get("createdTime", ""),
+                                }
+                            )
                 self._send(200, {"files": out})
                 return
             m = re.fullmatch(r"/drive/v3/files/([^/]+)", parsed.path)
@@ -165,7 +186,10 @@ def make_handler(fake: FakeDrive):
                 data = b"".join(session["chunks"][k] for k in sorted(session["chunks"]))
                 fid = fake.next_id("file")
                 fake.files[fid] = data
-                fake.file_meta[fid] = session["meta"]
+                fake.file_meta[fid] = {
+                    **session["meta"],
+                    "createdTime": fake.stamp(),
+                }
                 self._send(200, {"id": fid, "name": session["meta"]["name"]})
             else:
                 self._send(308, b"", headers={"Range": f"bytes=0-{received - 1}"})
@@ -269,7 +293,8 @@ class TestUploadFetch(ColdStoreTestBase):
         first = self.store.ensure_folders()
         second = self.store.ensure_folders()
         self.assertEqual(first, second)
-        self.assertEqual(len(self.fake.folders), 4)  # root + 3 subfolders
+        # root + 3 subfolders + 3 db-backup subfolders (supabase/turso/d1)
+        self.assertEqual(len(self.fake.folders), 7)
 
     def test_upload_verify_and_fetch_roundtrip(self):
         # force multi-chunk resumable uploads against the fake (308 path)
@@ -346,6 +371,227 @@ class TestStatus(ColdStoreTestBase):
         self.assertTrue(d["hard_stop_ok"])
         self.assertTrue(d["within_budget"])
         conn.close()
+
+
+# ------------------------------------------------------------------ fake D1
+class FakeD1:
+    """Captures D1 REST query calls; can be told to fail."""
+
+    def __init__(self):
+        self.requests = []  # {path, authorization, sql, params}
+        self.fail = False
+
+
+def make_d1_handler(fake: FakeD1):
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):  # silence
+            pass
+
+        def _send(self, code, payload):
+            body = json.dumps(payload).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else b""
+            payload = json.loads(body or b"{}")
+            fake.requests.append(
+                {
+                    "path": self.path,
+                    "authorization": self.headers.get("Authorization"),
+                    "sql": payload.get("sql", ""),
+                    "params": payload.get("params", []),
+                }
+            )
+            if fake.fail:
+                self._send(
+                    500, {"success": False, "errors": [{"message": "fake failure"}]}
+                )
+                return
+            self._send(
+                200,
+                {
+                    "success": True,
+                    "errors": [],
+                    "messages": [],
+                    "result": [{"success": True, "results": []}],
+                },
+            )
+
+    return Handler
+
+
+class TestBackups(ColdStoreTestBase):
+    def test_ensure_folders_creates_backup_subfolders_once(self):
+        first = self.store.ensure_folders()
+        for db in cold_store.BACKUP_DBS:
+            self.assertIn(f"db-backups/{db}", first)
+        count = len(self.fake.folders)
+        second = self.store.ensure_folders()
+        self.assertEqual(first, second)
+        self.assertEqual(len(self.fake.folders), count)
+
+    def test_put_backup_naming_routing_ledger(self):
+        dump = self.write_src("dump.sql", b"-- fake supabase dump\n" * 10)
+        result = self.store.put_backup("supabase", str(dump))
+        self.assertRegex(result["name"], r"^supabase-\d{8}T\d{6}Z-dump\.sql$")
+        folders = self.store.ensure_folders()
+        meta = self.fake.file_meta[result["drive_file_id"]]
+        self.assertEqual(meta["parents"], [folders["db-backups/supabase"]])
+        self.assertEqual(meta["name"], result["name"])
+        self.assertEqual(self.fake.files[result["drive_file_id"]], dump.read_bytes())
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-upload'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["direction"], "upload")
+        self.assertEqual(rows[0]["bytes"], dump.stat().st_size)
+        self.assertEqual(rows[0]["ref"], result["name"])
+
+    def test_put_backup_rejects_unknown_db(self):
+        dump = self.write_src("dump.sql", b"x")
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.put_backup("oracle", str(dump))
+
+    def test_list_backups_newest_first_and_filtered(self):
+        a = self.write_src("a.sql", b"a")
+        b = self.write_src("b.sql", b"b")
+        self.store.put_backup("supabase", str(a))
+        self.store.put_backup("turso", str(b))
+        all_rows = self.store.list_backups()
+        self.assertEqual(len(all_rows), 2)
+        self.assertEqual(all_rows[0]["db"], "turso")  # later createdTime first
+        self.assertEqual(all_rows[1]["db"], "supabase")
+        only = self.store.list_backups("supabase")
+        self.assertEqual(len(only), 1)
+        self.assertEqual(only[0]["db"], "supabase")
+
+
+class TestSyncManifest(ColdStoreTestBase):
+    def setUp(self):
+        super().setUp()
+        self.d1 = FakeD1()
+        self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
+        self.d1_thread = threading.Thread(
+            target=self.d1_server.serve_forever, daemon=True
+        )
+        self.d1_thread.start()
+        self.store.d1_base = f"http://127.0.0.1:{self.d1_server.server_address[1]}"
+        a = self.write_src("a.txt", b"sync me " * 10)
+        packed = self.store.pack([str(a)])
+        self.store.upload(packed["bundle_id"])
+
+    def tearDown(self):
+        self.d1_server.shutdown()
+        self.d1_server.server_close()
+        super().tearDown()
+
+    def _row_counts(self):
+        conn = self.store.db()
+        counts = {
+            t: conn.execute(f"SELECT count(*) n FROM {t}").fetchone()["n"]
+            for t in cold_store.MANIFEST_TABLES
+        }
+        conn.close()
+        return counts
+
+    def _env_without_token(self):
+        return {k: v for k, v in os.environ.items() if k != "CLOUDFLARE_API_TOKEN"}
+
+    def test_dry_run_counts_without_contacting_d1(self):
+        with mock.patch.dict(os.environ, self._env_without_token(), clear=True):
+            result = self.store.sync_manifest(dry_run=True)
+        self.assertTrue(result["dry_run"])
+        expected = self._row_counts()
+        for table, n in expected.items():
+            self.assertEqual(result["tables"][table]["rows"], n)
+            self.assertEqual(result["tables"][table]["statements"], 1 if n else 0)
+        self.assertEqual(result["rows"], sum(expected.values()))
+        self.assertEqual(self.d1.requests, [])  # nothing was contacted
+
+    def test_sync_posts_idempotent_upserts(self):
+        with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}):
+            result = self.store.sync_manifest()
+            again = self.store.sync_manifest()  # re-sync must be safe + identical
+        self.assertFalse(result["dry_run"])
+        self.assertEqual(result["rows"], again["rows"])
+        self.assertEqual(len(self.d1.requests), 2 * result["statements"])
+        expected_path = (
+            f"/accounts/{cold_store.DEFAULT_CF_ACCOUNT_ID}"
+            f"/d1/database/{cold_store.DEFAULT_CF_D1_DATABASE_ID}/query"
+        )
+        for req in self.d1.requests:
+            self.assertEqual(req["authorization"], "Bearer fake-cf-token")
+            self.assertIn(expected_path, req["path"])
+            self.assertTrue(req["sql"].startswith("INSERT INTO "))
+            self.assertIn("ON CONFLICT", req["sql"])
+        by_table = {}
+        for req in self.d1.requests[: result["statements"]]:
+            m = re.match(r"INSERT INTO (\w+)", req["sql"])
+            by_table[m.group(1)] = req
+        self.assertIn("ON CONFLICT(hash) DO UPDATE SET", by_table["objects"]["sql"])
+        self.assertIn(
+            "ON CONFLICT(bundle_id, object_hash) DO UPDATE SET",
+            by_table["members"]["sql"],
+        )
+        self.assertIn("offset=excluded.offset", by_table["members"]["sql"])
+        self.assertIn(
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            by_table["meta"]["sql"],
+        )
+        col_counts = {
+            "objects": 8,
+            "bundles": 10,
+            "members": 4,
+            "transfer_ledger": 6,
+            "meta": 2,
+        }
+        for table, req in by_table.items():
+            self.assertEqual(len(req["params"]) % col_counts[table], 0)
+            self.assertGreater(len(req["params"]), 0)
+
+    def test_sync_http_error_is_clear(self):
+        self.d1.fail = True
+        with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.sync_manifest()
+        self.assertIn("HTTP 500", str(ctx.exception))
+
+    def test_sync_requires_token(self):
+        with mock.patch.dict(os.environ, self._env_without_token(), clear=True):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.sync_manifest()
+
+
+class TestWorkerDecoder(unittest.TestCase):
+    """Local proof for the rehydrator Worker: the exact decoder module the
+    Worker bundles (worker/src/decoder.js, fzstd) decodes one member frame
+    out of a real bundle produced by `cold-store pack`, sha256-checked by
+    worker/test/run-local-proof.mjs. Skips when node or the worker's
+    node_modules are unavailable (e.g. a bare repo checkout in CI)."""
+
+    def test_worker_decoder_decodes_packed_frame(self):
+        worker_dir = Path(__file__).resolve().parent.parent / "worker"
+        node = shutil.which("node")
+        if not node or not (worker_dir / "node_modules" / "fzstd").is_dir():
+            self.skipTest("node or worker node_modules (fzstd) unavailable")
+        proc = subprocess.run(
+            [node, "test/run-local-proof.mjs"],
+            cwd=worker_dir,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr[-500:])
+        self.assertIn("PASS", proc.stdout)
 
 
 if __name__ == "__main__":
