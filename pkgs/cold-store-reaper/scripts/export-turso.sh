@@ -54,9 +54,22 @@ COLD_STORE="${COLD_STORE_BIN:-${SCRIPT_DIR}/../cold-store}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
+# curl with an Authorization header that never touches argv (#1027):
+# the header travels in a curl config fed on stdin (--config -), the
+# pattern cold_store.py's _curl_fetch established for #983 — a token in
+# -H argv is world-readable in the process list for the whole transfer.
+# Usage: curl_auth <token> <curl args...> (token is $1, rest is argv).
+curl_auth() {
+  local token="$1"
+  shift
+  local escaped="${token//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  printf 'header = "Authorization: Bearer %s"\n' "${escaped}" |
+    curl --config - "$@"
+}
+
 # ------------------------------------------------------------ discovery
-if ! curl -fsS --max-time 60 \
-  -H "Authorization: Bearer ${TURSO_PLATFORM_API_TOKEN}" \
+if ! curl_auth "${TURSO_PLATFORM_API_TOKEN}" -fsS --max-time 60 \
   "${API_BASE}/v1/organizations/${ORG}/databases" \
   -o "${WORK}/databases.json"; then
   echo "turso export: ERROR: could not list databases from ${API_BASE} (org ${ORG})" >&2
@@ -90,8 +103,7 @@ export_one() {
   local jwt dump_url
 
   # Mint a per-database auth token (the value is never printed).
-  if ! curl -fsS --max-time 60 -X POST \
-    -H "Authorization: Bearer ${TURSO_PLATFORM_API_TOKEN}" \
+  if ! curl_auth "${TURSO_PLATFORM_API_TOKEN}" -fsS --max-time 60 -X POST \
     "${API_BASE}/v1/organizations/${ORG}/databases/${name}/auth/tokens" \
     -o "${WORK}/${name}.token.json"; then
     echo "turso export: ERROR: ${name}: could not mint a database auth token" >&2
@@ -117,8 +129,7 @@ PY
   else
     dump_url="https://${hostname}/dump"
   fi
-  if ! curl -fsS --max-time 300 \
-    -H "Authorization: Bearer ${jwt}" \
+  if ! curl_auth "${jwt}" -fsS --max-time 300 \
     "${dump_url}" -o "${dump_sql}"; then
     echo "turso export: ERROR: ${name}: dump download failed (${dump_url})" >&2
     return 1
