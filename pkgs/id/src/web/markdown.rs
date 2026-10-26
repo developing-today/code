@@ -1098,12 +1098,12 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                     if let Some(para_content) = child_json["content"].as_array() {
                         for inline_json in para_content {
                             let inline_node = json_to_ast(arena, inline_json)?;
-                            append_inline_child(ast_node, inline_node);
+                            append_table_cell_child(arena, ast_node, inline_node);
                         }
                     }
                 } else {
                     let child = json_to_ast(arena, child_json)?;
-                    append_inline_child(ast_node, child);
+                    append_table_cell_child(arena, ast_node, child);
                 }
             }
         }
@@ -1148,6 +1148,92 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     }
 
     Ok(ast_node)
+}
+
+/// Whether comrak's AST validation accepts this node type as a direct
+/// child of a `TableCell` (#1017). Mirrors `can_contain_type` for
+/// `TableCell` in comrak's nodes.rs (shortcodes/heex variants are not
+/// enabled in this codec).
+fn valid_table_cell_child(value: &NodeValue) -> bool {
+    matches!(
+        value,
+        NodeValue::Text(..)
+            | NodeValue::Code(..)
+            | NodeValue::Emph
+            | NodeValue::Strong
+            | NodeValue::Link(..)
+            | NodeValue::Image(..)
+            | NodeValue::Strikethrough
+            | NodeValue::Highlight
+            | NodeValue::Insert
+            | NodeValue::HtmlInline(..)
+            | NodeValue::Math(..)
+            | NodeValue::WikiLink(..)
+            | NodeValue::FootnoteReference(..)
+            | NodeValue::Superscript
+            | NodeValue::SpoileredText
+            | NodeValue::Underline
+            | NodeValue::Subscript
+            | NodeValue::TaskItem(_)
+            | NodeValue::Escaped
+            | NodeValue::EscapedTag(_)
+    )
+}
+
+/// Append a converted child to a table cell, degrading anything comrak
+/// would reject there instead of building an ill-formed AST that makes
+/// `format_commonmark` panic (#1017):
+///
+/// - valid inline children pass through unchanged;
+/// - a hard/soft break degrades to a single space (a table cell is
+///   single-line content in markdown);
+/// - any other node (a list, code block, heading, nested table, …)
+///   flattens to its plain text, words space-joined.
+fn append_table_cell_child<'a>(
+    arena: &'a Arena<'a>,
+    cell: &'a AstNode<'a>,
+    child: &'a AstNode<'a>,
+) {
+    let value = &child.data.borrow().value;
+    if valid_table_cell_child(value) {
+        append_inline_child(cell, child);
+        return;
+    }
+    if matches!(value, NodeValue::LineBreak | NodeValue::SoftBreak) {
+        let space = arena.alloc(AstNode::from(NodeValue::Text(" ".to_owned().into())));
+        cell.append(space);
+        return;
+    }
+    let mut segments: Vec<String> = Vec::new();
+    collect_cell_text(child, &mut segments);
+    let text = segments
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !text.is_empty() {
+        let text_node = arena.alloc(AstNode::from(NodeValue::Text(text.into())));
+        cell.append(text_node);
+    }
+}
+
+/// Collect the text of a node being flattened into a table cell (#1017):
+/// text/code literals verbatim, breaks as spaces, and a space segment at
+/// every other node's boundary so sibling blocks cannot fuse into one
+/// word. The caller normalizes whitespace runs.
+fn collect_cell_text<'a>(node: &'a AstNode<'a>, segments: &mut Vec<String>) {
+    match &node.data.borrow().value {
+        NodeValue::Text(literal) => segments.push(literal.to_string()),
+        NodeValue::Code(code) => segments.push(code.literal.clone()),
+        NodeValue::CodeBlock(code_block) => segments.push(code_block.literal.clone()),
+        NodeValue::LineBreak | NodeValue::SoftBreak => segments.push(" ".to_owned()),
+        _ => {
+            for child in node.children() {
+                collect_cell_text(child, segments);
+            }
+            segments.push(" ".to_owned());
+        }
+    }
 }
 
 /// Whether two node values are the same mark wrapper, so adjacent
@@ -2229,6 +2315,82 @@ mod tests {
             }),
             "no literal anchor text nodes: {doc}"
         );
+    }
+
+    /// Build a one-column table doc whose single data cell holds the
+    /// given PM content (#1017 regression tests).
+    fn table_doc_with_cell(cell_content: Value) -> Value {
+        json!({
+            "type": "doc",
+            "content": [{
+                "type": "table",
+                "content": [
+                    {"type": "table_row", "content": [
+                        {"type": "table_header", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "h"}]}]}
+                    ]},
+                    {"type": "table_row", "content": [
+                        {"type": "table_cell", "content": cell_content}
+                    ]}
+                ]
+            }]
+        })
+    }
+
+    #[test]
+    fn test_table_cell_hard_break_does_not_panic() {
+        // #1017: Shift+Enter in a cell produces a hard_break inside the
+        // cell's paragraph; LineBreak is not a valid TableCell child in
+        // comrak's AST, so this used to panic in format_commonmark. The
+        // break degrades to a space.
+        let doc = table_doc_with_cell(json!([{
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "line one"},
+                {"type": "hard_break"},
+                {"type": "text", "text": "line two"}
+            ]
+        }]));
+        let md = prosemirror_to_markdown(&doc).expect("hard_break cell converts");
+        assert!(
+            md.contains("line one line two"),
+            "break became a space: {md}"
+        );
+        let second =
+            prosemirror_to_markdown(&markdown_to_prosemirror(&md)).expect("second save converts");
+        assert_eq!(md, second, "hard_break cell output is a fixpoint");
+    }
+
+    #[test]
+    fn test_table_cell_list_does_not_panic() {
+        // #1017: a bullet_list inside a cell is a block node — invalid
+        // under TableCell — and panicked the save. It flattens to text.
+        let doc = table_doc_with_cell(json!([{
+            "type": "bullet_list",
+            "attrs": {"tight": true},
+            "content": [
+                {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "item one"}]}]},
+                {"type": "list_item", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "item two"}]}]}
+            ]
+        }]));
+        let md = prosemirror_to_markdown(&doc).expect("list cell converts");
+        assert!(md.contains("item one item two"), "list flattened: {md}");
+        let second =
+            prosemirror_to_markdown(&markdown_to_prosemirror(&md)).expect("second save converts");
+        assert_eq!(md, second, "list cell output is a fixpoint");
+    }
+
+    #[test]
+    fn test_table_cell_code_block_does_not_panic() {
+        // #1017: a code_block inside a cell likewise flattens to text.
+        let doc = table_doc_with_cell(json!([{
+            "type": "code_block",
+            "content": [{"type": "text", "text": "let x = 1;"}]
+        }]));
+        let md = prosemirror_to_markdown(&doc).expect("code_block cell converts");
+        assert!(md.contains("let x = 1;"), "code flattened: {md}");
+        let second =
+            prosemirror_to_markdown(&markdown_to_prosemirror(&md)).expect("second save converts");
+        assert_eq!(md, second, "code_block cell output is a fixpoint");
     }
 
     #[test]
