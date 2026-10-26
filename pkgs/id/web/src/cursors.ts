@@ -603,21 +603,6 @@ function createCursorDecorations(
     // Cluster overlapping groups - only merge those that actually overlap
     const clusters = clusterOverlappingGroups(positionGroups, getLeftCoord);
 
-    // DEBUG: Log clustering results
-    if (positionGroups.length > 1) {
-      console.log("[cursor-debug] positionGroups:", positionGroups.length, "clusters:", clusters.length);
-      positionGroups.forEach((g, i) => {
-        const left = getLeftCoord ? getLeftCoord(g.position) : "no-view";
-        console.log(
-          `  group[${i}]: pos=${g.position}, left=${left}, cursors=${g.cursors.map((c) => c.clientID).join(",")}`,
-        );
-      });
-      clusters.forEach((c, i) => {
-        console.log(
-          `  cluster[${i}]: groups=${c.groups.length}, cursors=${c.groups.flatMap((g) => g.cursors.map((cur) => cur.clientID)).join(",")}`,
-        );
-      });
-    }
 
     clusters.forEach((cluster) => {
       // Check if own cursor is in this cluster
@@ -811,7 +796,6 @@ export function createCursorPlugin(myClientID: string | number | null, sendCurso
         if (cursorUpdate) {
           switch (cursorUpdate.type) {
             case "update": {
-              console.log("[cursor-debug] apply() UPDATE for", cursorUpdate.clientID, "at", cursorUpdate.head);
               const newCursors = new Map(pluginState.cursors);
               // If idleSecs is provided (initial load), backdate lastUpdate
               const lastUpdate = cursorUpdate.idleSecs ? Date.now() - cursorUpdate.idleSecs * 1000 : Date.now();
@@ -922,14 +906,6 @@ export function createCursorPlugin(myClientID: string | number | null, sendCurso
       decorations(state: EditorState): DecorationSet {
         const pluginState = cursorPluginKey.getState(state);
         if (!pluginState) return DecorationSet.empty;
-
-        // DEBUG: Log cursor count
-        console.log(
-          "[cursor-debug] decorations() called, cursor count:",
-          pluginState.cursors.size,
-          "cursors:",
-          Array.from(pluginState.cursors.keys()).join(","),
-        );
 
         return createCursorDecorations(state, pluginState, myClientID, currentView);
       },
