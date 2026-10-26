@@ -64,8 +64,8 @@ curl_auth() {
   shift
   local escaped="${token//\\/\\\\}"
   escaped="${escaped//\"/\\\"}"
-  printf 'header = "Authorization: Bearer %s"\n' "${escaped}" \
-    | curl --config - "$@"
+  printf 'header = "Authorization: Bearer %s"\n' "${escaped}" |
+    curl --config - "$@"
 }
 
 # ------------------------------------------------------------ discovery

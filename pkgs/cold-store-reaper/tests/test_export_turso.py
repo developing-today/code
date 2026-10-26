@@ -19,9 +19,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = (
-    Path(__file__).resolve().parent.parent / "scripts" / "export-turso.sh"
-)
+SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "export-turso.sh"
 
 PLATFORM_TOKEN = "fake-platform-token-SECRET"
 DB_JWT = "fake-db-jwt-SECRET"
@@ -127,20 +125,16 @@ class TestExportTursoArgv(unittest.TestCase):
             self.assertIn("--config", argv_lines)
             self.assertEqual(argv_lines[argv_lines.index("--config") + 1], "-")
             all_stdin += stdin_log.read_text()
-        self.assertEqual(
-            all_stdin.count(f"Authorization: Bearer {PLATFORM_TOKEN}"), 2
-        )
+        self.assertEqual(all_stdin.count(f"Authorization: Bearer {PLATFORM_TOKEN}"), 2)
         self.assertEqual(all_stdin.count(f"Authorization: Bearer {DB_JWT}"), 1)
         # behaviour unchanged: the export was filed with cold-store
         self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
 
     def test_skip_when_token_unset(self):
-        env = {k: v for k, v in self.env.items()
-               if k != "TURSO_PLATFORM_API_TOKEN"}
+        env = {k: v for k, v in self.env.items() if k != "TURSO_PLATFORM_API_TOKEN"}
         result = self.run_script(env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("skipped (TURSO_PLATFORM_API_TOKEN not set)",
-                      result.stdout)
+        self.assertIn("skipped (TURSO_PLATFORM_API_TOKEN not set)", result.stdout)
         self.assertEqual(list(self.capture.glob("argv-*.log")), [])
 
 
