@@ -46,10 +46,6 @@
       settings = {
         PermitRootLogin = "no";
         PasswordAuthentication = false;
-        # Agent fleets connect in bursts over slow relays (Tailscale DERP);
-        # stock MaxStartups drops those handshakes. Raised 2026-10-25.
-        MaxStartups = "100:30:250";
-        MaxSessions = 50;
       };
       hostKeys = [
         #   {

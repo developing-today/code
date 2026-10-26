@@ -343,9 +343,7 @@
             ["#!/usr/bin/env bash"],
             ["set -euo pipefail"],
             ["git grep -rl '[[:space:]]$' -- \\"],
-            [
-              "  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' ':!*/transcript.txt' \\"
-            ],
+            ["  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \\"],
             ["  ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \\"],
             [
               "  ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \\"
@@ -356,7 +354,6 @@
             ["  ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \\"],
             ["  2>/dev/null | while IFS= read -r f; do"],
             ["  case \"$f\" in"],
-            ["    */transcript.txt) continue ;;"],
             ["    */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;"],
             ["    */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;"],
             ["    */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;"],
@@ -665,7 +662,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/hatch/git/wt-869/root.just",
+      "source": "/home/user/code/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -2403,50 +2400,6 @@
       "namepath": "test-sandbox",
       "shebang": false
     },
-    "test-shard-sandbox": {
-      "attributes": [{ "group": "test" }],
-      "body": [["bash scripts/test-shard-sandbox.sh ", [["variable", "SHARD"]], " ", [["variable", "COUNT"]]]],
-      "dependencies": [],
-      "doc": "pair (#869).",
-      "name": "test-shard-sandbox",
-      "parameters": [
-        {
-          "default": null,
-          "export": false,
-          "flag": false,
-          "help": null,
-          "kind": "singular",
-          "long": null,
-          "max": null,
-          "min": null,
-          "multiple": false,
-          "name": "SHARD",
-          "pattern": null,
-          "short": null,
-          "value": null
-        },
-        {
-          "default": null,
-          "export": false,
-          "flag": false,
-          "help": null,
-          "kind": "singular",
-          "long": null,
-          "max": null,
-          "min": null,
-          "multiple": false,
-          "name": "COUNT",
-          "pattern": null,
-          "short": null,
-          "value": null
-        }
-      ],
-      "priors": 0,
-      "private": false,
-      "quiet": false,
-      "namepath": "test-shard-sandbox",
-      "shebang": false
-    },
     "test-unit": {
       "attributes": [{ "group": "test" }],
       "body": [["cargo test --all-features --lib"]],
@@ -2989,7 +2942,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/hatch/git/wt-869/pkgs/id/justfile",
+  "source": "/home/user/code/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }

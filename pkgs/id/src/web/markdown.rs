@@ -304,21 +304,6 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
                 attrs["title"] = json!(image.title);
             }
 
-            // #880: an image inside a link arrives here with a link mark in
-            // active_marks (the Link arm is a mark wrapper). Carry the link
-            // on the image node itself — the editor schema has no way to
-            // wrap an image node in a mark — so the href survives to save.
-            if let Some(link_mark) = active_marks.iter().find(|m| m.mark_type == "link")
-                && let Some(link_attrs) = &link_mark.attrs
-            {
-                if let Some(href) = link_attrs["href"].as_str() {
-                    attrs["linkHref"] = json!(href);
-                }
-                if let Some(link_title) = link_attrs["title"].as_str() {
-                    attrs["linkTitle"] = json!(link_title);
-                }
-            }
-
             json!({
                 "type": "image",
                 "attrs": attrs
@@ -327,11 +312,9 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
         // Unsupported nodes - pass through as best we can
         NodeValue::HtmlBlock(html) => {
-            // Check if this is an <img> tag with width/height, or the
-            // combined <a><img /></a> sized linked image form (#893)
+            // Check if this is an <img> tag with width/height
             let trimmed = html.literal.trim();
-            if let Some(img_node) = parse_linked_img_tag(trimmed).or_else(|| parse_img_tag(trimmed))
-            {
+            if let Some(img_node) = parse_img_tag(trimmed) {
                 // Wrap in paragraph since this is block-level
                 return json!({
                     "type": "paragraph",
@@ -352,48 +335,24 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
         }
 
         NodeValue::HtmlInline(html) => {
-            // Check if this is an <img> tag with width/height, or the
-            // combined <a><img /></a> form in a single literal (#893; the
-            // split form is merged in collect_inline_children)
-            if let Some(img_attrs) = parse_linked_img_tag(html).or_else(|| parse_img_tag(html)) {
+            // Check if this is an <img> tag with width/height
+            if let Some(img_attrs) = parse_img_tag(html) {
                 return img_attrs;
             }
             // Other inline HTML becomes plain text
             text_node_with_marks(html, active_marks)
         }
 
-        NodeValue::Table(table) => {
+        NodeValue::Table(_table) => {
             let children = collect_block_children(node);
-            let mut table_json = json!({
+            json!({
                 "type": "table",
                 "content": if children.is_empty() {
                     vec![json!({"type": "table_row", "content": [{"type": "table_cell", "content": [{"type": "paragraph"}]}]})]
                 } else {
                     children
                 }
-            });
-            // #881: carry column alignments on the table node (absent = all
-            // None, exactly as before) so the delimiter row survives save.
-            if table
-                .alignments
-                .iter()
-                .any(|a| !matches!(a, comrak::nodes::TableAlignment::None))
-            {
-                let alignments: Vec<Value> = table
-                    .alignments
-                    .iter()
-                    .map(|a| {
-                        json!(match a {
-                            comrak::nodes::TableAlignment::Left => "left",
-                            comrak::nodes::TableAlignment::Center => "center",
-                            comrak::nodes::TableAlignment::Right => "right",
-                            comrak::nodes::TableAlignment::None => "none",
-                        })
-                    })
-                    .collect();
-                table_json["attrs"] = json!({ "alignments": alignments });
-            }
-            table_json
+            })
         }
 
         NodeValue::TableRow(is_header) => {
@@ -529,57 +488,11 @@ fn collect_list_items<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
         .collect()
 }
 
-/// The literal of an `HtmlInline` node, if `node` is one.
-fn html_inline_literal<'a>(node: &'a AstNode<'a>) -> Option<String> {
-    if let NodeValue::HtmlInline(html) = &node.data.borrow().value {
-        Some(html.clone())
-    } else {
-        None
-    }
-}
-
-/// Detect the split sized-linked-image sequence at the head of `children`
-/// (#893): an `<a href="...">` `HtmlInline`, an `<img ... />` `HtmlInline`,
-/// and the closing `</a>` `HtmlInline`. Comrak splits the HTML form the
-/// save direction emits for a sized linked image into those three sibling
-/// nodes; merged here they become one image node carrying `linkHref`, and
-/// neither anchor piece falls through as literal text. The closing tag is
-/// optional in the match (consumed when present) so a missing one cannot
-/// strand the opening tag as text either. Returns the merged image node
-/// and how many siblings it consumed.
-fn linked_image_sequence<'a>(children: &[&'a AstNode<'a>]) -> Option<(Value, usize)> {
-    if children.len() < 2 {
-        return None;
-    }
-    let (href, link_title) = parse_anchor_tag(&html_inline_literal(children[0])?)?;
-    let img = parse_img_tag(&html_inline_literal(children[1])?)?;
-    let consumed = if children.len() >= 3
-        && html_inline_literal(children[2]).is_some_and(|h| h.trim() == "</a>")
-    {
-        3
-    } else {
-        2
-    };
-    Some((image_with_link(img, &href, link_title.as_deref()), consumed))
-}
-
 /// Collect inline children of a node, flattening nested mark wrappers.
 fn collect_inline_children<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Vec<Value> {
     let mut result = Vec::new();
-    let children: Vec<&AstNode<'a>> = node.children().collect();
-    let mut index = 0;
 
-    while index < children.len() {
-        // #893: merge a split <a><img /></a> sequence before the pieces
-        // are converted individually (see linked_image_sequence).
-        if let Some((img, consumed)) = linked_image_sequence(&children[index..]) {
-            result.push(img);
-            index += consumed;
-            continue;
-        }
-
-        let child = children[index];
-        index += 1;
+    for child in node.children() {
         let child_data = child.data.borrow();
 
         // Check if this is a mark wrapper (Emph, Strong, Link)
@@ -632,120 +545,6 @@ fn collect_text<'a>(node: &'a AstNode<'a>, text: &mut String) {
     }
 }
 
-/// Escape a value for a double-quoted HTML attribute (#873): `&` first, so
-/// the entities introduced here are not themselves re-escaped, then the
-/// quote that would terminate the value, and `<`.
-fn escape_attr_value(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-}
-
-/// Decode the entities [`escape_attr_value`] can emit (plus `&gt;`/`&apos;`
-/// and numeric single-quote) in one left-to-right pass, so `&amp;quot;`
-/// decodes to the literal text `&quot;`, never to `"`.
-fn decode_attr_entities(value: &str) -> String {
-    if !value.contains('&') {
-        return value.to_owned();
-    }
-    let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(idx) = rest.find('&') {
-        out.push_str(&rest[..idx]);
-        let tail = &rest[idx..];
-        let (decoded, len) = if let Some(t) = tail.strip_prefix("&quot;") {
-            ('"', tail.len() - t.len())
-        } else if let Some(t) = tail.strip_prefix("&amp;") {
-            ('&', tail.len() - t.len())
-        } else if let Some(t) = tail.strip_prefix("&lt;") {
-            ('<', tail.len() - t.len())
-        } else if let Some(t) = tail.strip_prefix("&gt;") {
-            ('>', tail.len() - t.len())
-        } else if let Some(t) = tail.strip_prefix("&apos;") {
-            ('\'', tail.len() - t.len())
-        } else if let Some(t) = tail.strip_prefix("&#39;") {
-            ('\'', tail.len() - t.len())
-        } else {
-            out.push('&');
-            rest = &tail[1..];
-            continue;
-        };
-        out.push(decoded);
-        rest = &tail[len..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Parse the attributes of an HTML tag, starting just past its `<name`
-/// prefix (`tag_len` bytes: 4 for `<img`, 2 for `<a`).
-///
-/// Parses attribute-by-attribute instead of searching substrings (#872):
-/// a substring search for `src="` also matches `data-src="`, and
-/// attribute-looking text inside an earlier quoted value (e.g. `title=`
-/// inside `alt="..."`) was extracted as a real attribute. Scanning
-/// name=value pairs left to right records whole attribute names only, and
-/// a quoted value is consumed as that attribute's value alone. First
-/// occurrence of a name wins (HTML duplicate-attribute rule).
-fn parse_tag_attrs(html: &str, tag_len: usize) -> std::collections::HashMap<String, String> {
-    let bytes = html.as_bytes();
-    let mut pos = tag_len;
-    let mut map = std::collections::HashMap::new();
-    while pos < bytes.len() {
-        // Skip separators between attributes (whitespace, '/' of '/>').
-        while pos < bytes.len() && (bytes[pos].is_ascii_whitespace() || bytes[pos] == b'/') {
-            pos += 1;
-        }
-        if pos >= bytes.len() || bytes[pos] == b'>' {
-            break;
-        }
-        // Attribute name: up to '=', whitespace, '/' or '>'.
-        let name_start = pos;
-        while pos < bytes.len()
-            && !bytes[pos].is_ascii_whitespace()
-            && !matches!(bytes[pos], b'=' | b'/' | b'>')
-        {
-            pos += 1;
-        }
-        if pos == name_start {
-            break;
-        }
-        let name = html[name_start..pos].to_ascii_lowercase();
-        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-            pos += 1;
-        }
-        let mut value = String::new();
-        if pos < bytes.len() && bytes[pos] == b'=' {
-            pos += 1;
-            while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-                pos += 1;
-            }
-            if pos < bytes.len() && matches!(bytes[pos], b'"' | b'\'') {
-                let quote = bytes[pos];
-                pos += 1;
-                let value_start = pos;
-                while pos < bytes.len() && bytes[pos] != quote {
-                    pos += 1;
-                }
-                value = decode_attr_entities(&html[value_start..pos]);
-                if pos < bytes.len() {
-                    pos += 1; // closing quote
-                }
-            } else {
-                let value_start = pos;
-                while pos < bytes.len() && !bytes[pos].is_ascii_whitespace() && bytes[pos] != b'>' {
-                    pos += 1;
-                }
-                value = decode_attr_entities(&html[value_start..pos]);
-            }
-        }
-        // First occurrence wins (HTML duplicate-attribute rule).
-        map.entry(name).or_insert(value);
-    }
-    map
-}
-
 /// Parse an HTML `<img>` tag and extract attributes into a `ProseMirror` image node.
 ///
 /// Returns `Some(json)` if the input looks like `<img src="..." ... />`, otherwise `None`.
@@ -755,24 +554,29 @@ fn parse_img_tag(html: &str) -> Option<Value> {
         return None;
     }
 
-    let parsed = parse_tag_attrs(trimmed, 4);
-    let attr = |name: &str| parsed.get(name).map(String::as_str);
+    // Simple attribute extraction (no full HTML parser needed for self-closing <img>)
+    fn attr_value<'a>(html: &'a str, name: &str) -> Option<&'a str> {
+        let pattern = format!("{name}=\"");
+        let start = html.find(&pattern)? + pattern.len();
+        let end = start + html[start..].find('"')?;
+        Some(&html[start..end])
+    }
 
-    let src = attr("src")?; // src is required
+    let src = attr_value(trimmed, "src")?; // src is required
     let mut attrs = json!({"src": src});
 
-    if let Some(alt) = attr("alt") {
+    if let Some(alt) = attr_value(trimmed, "alt") {
         attrs["alt"] = json!(alt);
     }
-    if let Some(title) = attr("title") {
+    if let Some(title) = attr_value(trimmed, "title") {
         attrs["title"] = json!(title);
     }
-    if let Some(w) = attr("width")
+    if let Some(w) = attr_value(trimmed, "width")
         && let Ok(n) = w.parse::<u64>()
     {
         attrs["width"] = json!(n);
     }
-    if let Some(h) = attr("height")
+    if let Some(h) = attr_value(trimmed, "height")
         && let Ok(n) = h.parse::<u64>()
     {
         attrs["height"] = json!(n);
@@ -782,49 +586,6 @@ fn parse_img_tag(html: &str) -> Option<Value> {
         "type": "image",
         "attrs": attrs
     }))
-}
-
-/// Parse an HTML `<a ...>` opening tag, returning its `href` and optional
-/// `title`. Returns `None` for anything else, including an anchor with no
-/// (or an empty) `href`.
-fn parse_anchor_tag(html: &str) -> Option<(String, Option<String>)> {
-    let trimmed = html.trim();
-    let after_name = trimmed.as_bytes().get(2).copied()?;
-    if !trimmed.starts_with("<a") || !(after_name.is_ascii_whitespace() || after_name == b'>') {
-        return None;
-    }
-    let parsed = parse_tag_attrs(trimmed, 2);
-    let href = parsed.get("href")?;
-    if href.is_empty() {
-        return None;
-    }
-    let title = parsed.get("title").filter(|t| !t.is_empty()).cloned();
-    Some((href.clone(), title))
-}
-
-/// Attach a wrapping anchor's link to an image node (#880/#893), in the
-/// same `linkHref`/`linkTitle` attrs the markdown `Image` arm produces.
-fn image_with_link(mut img: Value, href: &str, link_title: Option<&str>) -> Value {
-    img["attrs"]["linkHref"] = json!(href);
-    if let Some(title) = link_title {
-        img["attrs"]["linkTitle"] = json!(title);
-    }
-    img
-}
-
-/// Parse the combined `<a href="..."><img ... /></a>` form (#893) — the
-/// sized linked image emission when comrak keeps it in a single literal
-/// (e.g. an `HtmlBlock`) instead of splitting it into sibling `HtmlInline`
-/// nodes (that split form is merged in `collect_inline_children`).
-fn parse_linked_img_tag(html: &str) -> Option<Value> {
-    let trimmed = html.trim();
-    let (href, link_title) = parse_anchor_tag(trimmed)?;
-    let img_start = trimmed.find("<img")?;
-    if !trimmed[..img_start].trim_end().ends_with('>') || !trimmed[img_start..].contains("</a>") {
-        return None;
-    }
-    let img = parse_img_tag(&trimmed[img_start..])?;
-    Some(image_with_link(img, &href, link_title.as_deref()))
 }
 
 /// Convert `ProseMirror` JSON document to markdown text.
@@ -870,15 +631,11 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "blockquote" => NodeValue::BlockQuote,
 
         "code_block" => {
-            // #882: editors/collab can split a code block into several text
-            // nodes; concatenate ALL of them instead of keeping only the
-            // first (which silently truncated the block on save).
-            let content = json["content"].as_array().map_or(String::new(), |arr| {
-                arr.iter()
-                    .filter_map(|n| n["text"].as_str())
-                    .collect::<String>()
-            });
-            let content = content.as_str();
+            let content = json["content"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|n| n["text"].as_str())
+                .unwrap_or("");
             let info = json["attrs"]["params"].as_str().unwrap_or("");
 
             NodeValue::CodeBlock(Box::new(comrak::nodes::NodeCodeBlock {
@@ -947,25 +704,8 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                 .and_then(|row| row["content"].as_array())
                 .map_or(0, Vec::len);
             let num_rows = rows.map_or(0, Vec::len);
-            // #881: read back the alignments convert_node stored on the
-            // table node; absent/short/unknown entries default to None.
-            let mut alignments: Vec<comrak::nodes::TableAlignment> = json["attrs"]["alignments"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .map(|a| match a.as_str() {
-                            Some("left") => comrak::nodes::TableAlignment::Left,
-                            Some("center") => comrak::nodes::TableAlignment::Center,
-                            Some("right") => comrak::nodes::TableAlignment::Right,
-                            _ => comrak::nodes::TableAlignment::None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            alignments.resize(num_columns, comrak::nodes::TableAlignment::None);
-            alignments.truncate(num_columns);
             NodeValue::Table(Box::new(comrak::nodes::NodeTable {
-                alignments,
+                alignments: vec![comrak::nodes::TableAlignment::None; num_columns],
                 num_columns,
                 num_rows,
                 num_nonempty_cells: 0,
@@ -993,14 +733,12 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
 
             // If image has explicit dimensions, emit as HTML <img> tag
             if width.is_some() || height.is_some() {
-                // #873: escape values — a raw `"` truncated the attribute on
-                // reparse and could inject new attributes.
-                let mut tag = format!("<img src=\"{}\"", escape_attr_value(src));
+                let mut tag = format!("<img src=\"{src}\"");
                 if !alt.is_empty() {
-                    tag.push_str(&format!(" alt=\"{}\"", escape_attr_value(alt)));
+                    tag.push_str(&format!(" alt=\"{alt}\""));
                 }
                 if !title.is_empty() {
-                    tag.push_str(&format!(" title=\"{}\"", escape_attr_value(title)));
+                    tag.push_str(&format!(" title=\"{title}\""));
                 }
                 if let Some(w) = width {
                     tag.push_str(&format!(" width=\"{w}\""));
@@ -1009,21 +747,6 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                     tag.push_str(&format!(" height=\"{h}\""));
                 }
                 tag.push_str(" />");
-                // #880: a sized image cannot use [![..](..)](..) syntax;
-                // keep its link as an HTML anchor around the <img> tag.
-                // #893: carry linkTitle too, so the parse direction's
-                // linkTitle survives the next save as well.
-                if let Some(link_href) = json["attrs"]["linkHref"].as_str()
-                    && !link_href.is_empty()
-                {
-                    let mut anchor = format!("<a href=\"{}\"", escape_attr_value(link_href));
-                    if let Some(link_title) = json["attrs"]["linkTitle"].as_str()
-                        && !link_title.is_empty()
-                    {
-                        anchor.push_str(&format!(" title=\"{}\"", escape_attr_value(link_title)));
-                    }
-                    tag = format!("{anchor}>{tag}</a>");
-                }
                 NodeValue::HtmlInline(tag)
             } else {
                 // Standard markdown image syntax
@@ -1091,23 +814,6 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     {
         let text_node = arena.alloc(AstNode::from(NodeValue::Text(alt.to_owned().into())));
         ast_node.append(text_node);
-    }
-
-    // #880: an image carrying linkHref (a linked image, see convert_node)
-    // is wrapped in a Link node so save emits [![alt](src)](href).
-    if node_type == "image"
-        && matches!(ast_node.data.borrow().value, NodeValue::Image(_))
-        && let Some(link_href) = json["attrs"]["linkHref"].as_str()
-        && !link_href.is_empty()
-    {
-        let link_node = arena.alloc(AstNode::from(NodeValue::Link(Box::new(
-            comrak::nodes::NodeLink {
-                url: link_href.to_owned(),
-                title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
-            },
-        ))));
-        link_node.append(ast_node);
-        return Ok(link_node);
     }
 
     Ok(ast_node)
@@ -1787,259 +1493,5 @@ mod tests {
         assert_eq!(img["attrs"]["alt"], "pic");
         assert_eq!(img["attrs"]["width"], 200);
         assert_eq!(img["attrs"]["height"], 150);
-    }
-
-    #[test]
-    fn test_img_data_prefixed_attributes_do_not_shadow_real_ones() {
-        // #872: data-src / data-width / data-alt must not shadow the real
-        // attributes, in either order.
-        let node =
-            parse_img_tag("<img data-src=\"lazy.png\" src=\"real.png\" />").expect("img parses");
-        assert_eq!(node["attrs"]["src"], "real.png");
-        let node =
-            parse_img_tag("<img src=\"real.png\" data-src=\"lazy.png\" />").expect("img parses");
-        assert_eq!(node["attrs"]["src"], "real.png");
-        let node = parse_img_tag(
-            "<img data-width=\"5\" width=\"100\" data-alt=\"decoy\" alt=\"real alt\" src=\"x.png\" />",
-        )
-        .expect("img parses");
-        assert_eq!(node["attrs"]["width"], 100);
-        assert_eq!(node["attrs"]["alt"], "real alt");
-    }
-
-    #[test]
-    fn test_img_attribute_looking_text_inside_a_value_is_not_an_attribute() {
-        // #872: `title=` inside the quoted alt value is value text, not an
-        // attribute.
-        let node =
-            parse_img_tag("<img alt=\"my title=\"quoted\" src=\"x.png\" />").expect("img parses");
-        assert_eq!(node["attrs"]["src"], "x.png");
-        assert!(node["attrs"].get("title").is_none());
-    }
-
-    #[test]
-    fn test_img_single_quoted_and_spaced_attributes_parse() {
-        // #872 secondary facet: legal spellings the substring search missed.
-        let node = parse_img_tag("<img src = 'x.png' alt = 'A' />").expect("img parses");
-        assert_eq!(node["attrs"]["src"], "x.png");
-        assert_eq!(node["attrs"]["alt"], "A");
-    }
-
-    #[test]
-    fn test_image_quoted_alt_roundtrips_through_html_emission() {
-        // #873 + #872: emission escapes, parsing decodes — the value is
-        // byte-identical after a full round trip and cannot inject a title.
-        let doc = json!({
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{
-                    "type": "image",
-                    "attrs": {"src": "x.png", "alt": "a \"quoted\" caption", "width": 100}
-                }]
-            }]
-        });
-        let md = prosemirror_to_markdown(&doc).expect("converts");
-        assert!(md.contains("&quot;"), "alt quote escaped on emission: {md}");
-        let back = markdown_to_prosemirror(&md);
-        let img = &back["content"][0]["content"][0];
-        assert_eq!(img["attrs"]["alt"], "a \"quoted\" caption");
-        assert_eq!(img["attrs"]["width"], 100);
-        assert!(img["attrs"].get("title").is_none());
-
-        // An injection-shaped alt cannot manufacture a title attribute.
-        let doc = json!({
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{
-                    "type": "image",
-                    "attrs": {"src": "x.png", "alt": "x\" title=\"injected", "width": 100}
-                }]
-            }]
-        });
-        let md = prosemirror_to_markdown(&doc).expect("converts");
-        let back = markdown_to_prosemirror(&md);
-        let img = &back["content"][0]["content"][0];
-        assert_eq!(img["attrs"]["alt"], "x\" title=\"injected");
-        assert!(img["attrs"].get("title").is_none());
-    }
-
-    #[test]
-    fn test_image_ampersand_roundtrips_without_double_escaping() {
-        // Convention pin: `&` emits as `&amp;` and decodes back to `&`;
-        // a literal `&quot;` in the value stays literal text.
-        let doc = json!({
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{
-                    "type": "image",
-                    "attrs": {"src": "x.png", "alt": "fish & chips &quot;sea&quot;", "width": 10}
-                }]
-            }]
-        });
-        let md = prosemirror_to_markdown(&doc).expect("converts");
-        let back = markdown_to_prosemirror(&md);
-        let img = &back["content"][0]["content"][0];
-        assert_eq!(img["attrs"]["alt"], "fish & chips &quot;sea&quot;");
-    }
-
-    #[test]
-    fn test_linked_image_roundtrip_keeps_href() {
-        // #880: [![alt](src)](href) — the href rides on the image node as
-        // linkHref and is re-emitted as a Link wrapping the image.
-        let doc = markdown_to_prosemirror("[![alt](img.png)](https://example.com)\n");
-        let img = &doc["content"][0]["content"][0];
-        assert_eq!(img["type"], "image");
-        assert_eq!(img["attrs"]["src"], "img.png");
-        assert_eq!(img["attrs"]["linkHref"], "https://example.com");
-        let md = prosemirror_to_markdown(&doc).expect("converts");
-        assert!(
-            md.contains("[![alt](img.png)](https://example.com)"),
-            "linked image re-emitted with href: {md}"
-        );
-        // And the emitted form re-parses to the same linked image.
-        let back = markdown_to_prosemirror(&md);
-        assert_eq!(
-            back["content"][0]["content"][0]["attrs"]["linkHref"],
-            "https://example.com"
-        );
-        // Plain images gain no linkHref; plain text links are unchanged.
-        let doc = markdown_to_prosemirror("![alt](img.png) and [text](https://x.test)\n");
-        let content = doc["content"][0]["content"].as_array().expect("inline");
-        assert!(content[0]["attrs"].get("linkHref").is_none());
-        let md = prosemirror_to_markdown(&doc).expect("converts");
-        assert!(md.contains("![alt](img.png)"), "plain image: {md}");
-        assert!(md.contains("[text](https://x.test)"), "plain link: {md}");
-    }
-
-    #[test]
-    fn test_sized_linked_image_roundtrip_keeps_href() {
-        // #893: a sized linked image is emitted as
-        // <a href="..."><img ... width="..." /></a>, and that form must
-        // parse back to one image node — href, dimensions, and alt intact,
-        // with no literal <a>/</a> text nodes.
-        let doc = json!({
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [{
-                    "type": "image",
-                    "attrs": {
-                        "src": "img.png",
-                        "alt": "alt",
-                        "width": 200,
-                        "height": 150,
-                        "linkHref": "https://example.com",
-                        "linkTitle": "Link title"
-                    }
-                }]
-            }]
-        });
-        let md = prosemirror_to_markdown(&doc).expect("converts");
-        assert!(
-            md.contains("<a href=\"https://example.com\""),
-            "sized linked image emitted with anchor: {md}"
-        );
-        assert!(md.contains("width=\"200\""), "width emitted: {md}");
-        assert!(md.contains("height=\"150\""), "height emitted: {md}");
-
-        // Full round trip, twice, so the re-emitted form is pinned too.
-        for back in [
-            markdown_to_prosemirror(&md),
-            markdown_to_prosemirror(
-                &prosemirror_to_markdown(&markdown_to_prosemirror(&md)).expect("converts"),
-            ),
-        ] {
-            let para_content = back["content"][0]["content"]
-                .as_array()
-                .expect("inline content");
-            assert_eq!(
-                para_content.len(),
-                1,
-                "only the image node, no literal anchor text: {back}"
-            );
-            let img = &para_content[0];
-            assert_eq!(img["type"], "image");
-            assert_eq!(img["attrs"]["src"], "img.png");
-            assert_eq!(img["attrs"]["alt"], "alt");
-            assert_eq!(img["attrs"]["width"], 200);
-            assert_eq!(img["attrs"]["height"], 150);
-            assert_eq!(img["attrs"]["linkHref"], "https://example.com");
-            assert_eq!(img["attrs"]["linkTitle"], "Link title");
-        }
-
-        // The split-inline form inside running text: comrak yields the
-        // <a>, <img>, and </a> pieces as sibling HtmlInline nodes of the
-        // paragraph, which must merge the same way.
-        let doc = markdown_to_prosemirror(
-            "before <a href=\"https://example.com\"><img src=\"img.png\" alt=\"alt\" width=\"200\" /></a> after\n",
-        );
-        let para_content = doc["content"][0]["content"]
-            .as_array()
-            .expect("inline content");
-        let img = para_content
-            .iter()
-            .find(|n| n["type"] == "image")
-            .expect("image node present");
-        assert_eq!(img["attrs"]["src"], "img.png");
-        assert_eq!(img["attrs"]["alt"], "alt");
-        assert_eq!(img["attrs"]["width"], 200);
-        assert_eq!(img["attrs"]["linkHref"], "https://example.com");
-        assert!(
-            para_content.iter().all(|n| {
-                n["text"]
-                    .as_str()
-                    .is_none_or(|t| !t.contains("<a") && !t.contains("</a>"))
-            }),
-            "no literal anchor text nodes: {doc}"
-        );
-    }
-
-    #[test]
-    fn test_table_alignment_roundtrip() {
-        // #881: alignments ride on the table node and re-emit in the
-        // delimiter row.
-        let md_in = "| a | b | c | d |\n|:---|:---:|---:|---|\n| 1 | 2 | 3 | 4 |\n";
-        let doc = markdown_to_prosemirror(md_in);
-        let table = &doc["content"][0];
-        assert_eq!(table["type"], "table");
-        assert_eq!(
-            table["attrs"]["alignments"],
-            json!(["left", "center", "right", "none"])
-        );
-        let md = prosemirror_to_markdown(&doc).expect("converts");
-        let back = markdown_to_prosemirror(&md);
-        assert_eq!(
-            back["content"][0]["attrs"]["alignments"],
-            json!(["left", "center", "right", "none"]),
-            "alignments survive round trip via: {md}"
-        );
-        // Unaligned tables carry no alignments attr and render as before.
-        let doc = markdown_to_prosemirror("| a |\n|---|\n| 1 |\n");
-        assert!(doc["content"][0]["attrs"].get("alignments").is_none());
-        let md = prosemirror_to_markdown(&doc).expect("converts");
-        assert!(md.contains("| a |"), "plain table: {md}");
-    }
-
-    #[test]
-    fn test_code_block_multiple_text_nodes_all_kept() {
-        // #882: a code_block split into several text nodes must not lose
-        // every node after the first on save.
-        let doc = json!({
-            "type": "doc",
-            "content": [{
-                "type": "code_block",
-                "attrs": {"params": "rust"},
-                "content": [
-                    {"type": "text", "text": "fn a() {}\n"},
-                    {"type": "text", "text": "fn b() {}"}
-                ]
-            }]
-        });
-        let md = prosemirror_to_markdown(&doc).expect("converts");
-        assert!(md.contains("fn a() {}"), "first node kept: {md}");
-        assert!(md.contains("fn b() {}"), "second node kept: {md}");
     }
 }

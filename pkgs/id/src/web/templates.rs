@@ -259,13 +259,11 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 let key_esc = html_escape(key);
                 match value {
                     Some(v) => {
-                        // Truncate on a char boundary: a raw &v[..256] slice
-                        // panics when byte 256 splits a multi-byte character
-                        // (#815). The CLI's helper already handles this.
-                        let truncated = crate::commands::tag::truncate_on_char_boundary(
-                            v,
-                            crate::tags::TAG_DISPLAY_MAX_BYTES,
-                        );
+                        let truncated = if v.len() > crate::tags::TAG_DISPLAY_MAX_BYTES {
+                            format!("{}…", &v[..crate::tags::TAG_DISPLAY_MAX_BYTES])
+                        } else {
+                            v.clone()
+                        };
                         let val_esc = html_escape(&truncated);
                         let _ = write!(
                             tag_pills,
@@ -440,7 +438,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
     // Download dropdown
     html.push_str("            <span class=\"relative\" id=\"download-dropdown\">\n");
-    html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\" aria-label=\"Download\">dl</button>\n");
+    html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\">dl</button>\n");
     html.push_str("                <span class=\"dropdown-menu\" id=\"download-menu\">\n");
     html.push_str(
         "                    <button class=\"px-3 py-1 text-xs hover:bg-base-300 cursor-pointer text-left whitespace-nowrap\" data-dl-format=\"raw\">raw</button>\n",
@@ -1104,39 +1102,6 @@ mod tests {
         assert!(html.contains("test.txt"));
         assert!(html.contains("abc123def456"));
         assert!(html.contains("aria-label=\"Select file test.txt\""));
-    }
-
-    #[test]
-    fn test_render_file_list_tag_value_straddling_truncation_boundary() {
-        // Regression (#815): a tag value longer than TAG_DISPLAY_MAX_BYTES
-        // whose byte-256 offset splits a multi-byte character used to panic
-        // on &v[..256]. 'é' here occupies bytes 255..257.
-        let value = format!("{}é{}", "a".repeat(255), "tail-tail-tail");
-        assert!(value.len() > crate::tags::TAG_DISPLAY_MAX_BYTES);
-        let files = vec![FileInfo {
-            name: "tagged.txt".to_owned(),
-            display_name: None,
-            hash: "abc123def456".to_owned(),
-            size: 1024,
-            kind: FileKind::Primary,
-            parent_name: None,
-            timestamp: None,
-            created_at: None,
-            modified_at: None,
-            tags: vec![("note".to_owned(), Some(value))],
-            is_deleted: false,
-        }];
-        let page = FileListPage {
-            total: files.len(),
-            files,
-            page: 1,
-            per_page: 50,
-            search: None,
-            show_deleted: false,
-        };
-        let html = render_file_list(&page);
-        // Truncated on the char boundary before 'é', with the ellipsis.
-        assert!(html.contains(&format!("note: {}…", "a".repeat(255))));
     }
 
     #[test]

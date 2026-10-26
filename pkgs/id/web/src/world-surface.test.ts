@@ -84,26 +84,4 @@ describe("world screen presenter", () => {
     // zero graphemes in one cell
     expect(renderWorldSurface(root, makeScreen([{ symbol: "", fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
   });
-
-  it("measures astral-plane, ZWJ and variation-selector glyphs as width 2, like Rust unicode-width (#761)", () => {
-    const root = document.createElement("div");
-    // Each of these is exactly one grapheme whose Rust unicode-width 0.2 width is 2:
-    // 😀 U+1F600, 𠮷 U+20BB7 (CJK Ext. B), 👨‍👩‍👧 (ZWJ sequence), ⚠️ U+26A0 U+FE0F.
-    const wideGlyphs = ["\u{1F600}", "\u{20BB7}", "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}", "\u26A0\uFE0F"];
-    for (const symbol of wideGlyphs) {
-      const screen: ScreenSurface = {
-        kind: "screen",
-        version: 1,
-        width: 2,
-        height: 1,
-        cells: [
-          { symbol, fg: 0, bg: 0, bold: false, columns: 2 },
-          { symbol: "", fg: 0, bg: 0, bold: false, columns: 0 },
-        ],
-      };
-      expect(renderWorldSurface(root, screen)).toBe(true);
-      // …and the same glyph squeezed into 1 column must be refused.
-      expect(renderWorldSurface(root, makeScreen([{ symbol, fg: 0, bg: 0, bold: false, columns: 1 }]))).toBe(false);
-    }
-  });
 });

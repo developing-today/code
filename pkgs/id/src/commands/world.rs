@@ -5,7 +5,6 @@
 //! presentation can consume the same stream a browser would.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use iroh::{
@@ -17,8 +16,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::{
     CLIENT_KEY_FILE,
-    cli::{WorldCommand, WorldVia},
-    frames::{read_frame_from, write_frame_to},
+    cli::WorldCommand,
+    frames::{read_frame, write_frame},
     is_node_id, load_or_create_keypair,
     world_net::WorldClient,
 };
@@ -34,18 +33,9 @@ async fn connect(
         bail!("`{node}` is not a node ID (expected 64 hex characters)");
     }
     let id: EndpointId = node.parse().context("parse node ID")?;
-    let endpoint = client_endpoint(addrs, no_relay).await?;
-    let addr = EndpointAddr::from_parts(id, addrs.iter().copied().map(TransportAddr::Ip));
-    let client = WorldClient::connect(&endpoint, addr)
-        .await?
-        .with_world(world);
-    Ok((endpoint, client))
-}
-
-/// A client endpoint for reaching a host: direct addresses need neither
-/// relay nor discovery, so keep it off the public network in that case.
-async fn client_endpoint(addrs: &[SocketAddr], no_relay: bool) -> Result<Endpoint> {
     let key = load_or_create_keypair(CLIENT_KEY_FILE).await?;
+    // Direct addresses need neither relay nor discovery, so keep the client
+    // off the public network entirely in that case.
     let endpoint = if addrs.is_empty() {
         crate::connectivity::public_builder(crate::connectivity::RelayPolicy::from_no_relay(
             no_relay,
@@ -60,7 +50,11 @@ async fn client_endpoint(addrs: &[SocketAddr], no_relay: bool) -> Result<Endpoin
             .bind()
             .await?
     };
-    Ok(endpoint)
+    let addr = EndpointAddr::from_parts(id, addrs.iter().copied().map(TransportAddr::Ip));
+    let client = WorldClient::connect(&endpoint, addr)
+        .await?
+        .with_world(world);
+    Ok((endpoint, client))
 }
 
 /// Run an `id world` subcommand.
@@ -398,138 +392,6 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             Ok(())
         }
         WorldCommand::New { dir, name } => scaffold_world(&dir, &name),
-        WorldCommand::Doctor {
-            roc_bin,
-            platform,
-            journal,
-            ceiling,
-            profile,
-            json,
-        } => {
-            let platform_dir = platform
-                .or_else(|| std::env::var("ID_ROC_PLATFORM").ok().map(PathBuf::from))
-                .or_else(|| {
-                    [
-                        PathBuf::from("examples/roc-world"),
-                        PathBuf::from("../examples/roc-world"),
-                    ]
-                    .into_iter()
-                    .find(|dir| dir.is_dir())
-                });
-            // The ceiling/profile checks take their values from the
-            // --ceiling / --profile flags; without them the checks report
-            // that none is configured (they are not silently passed off as
-            // a live world's values).
-            let profile = match profile {
-                Some(path) => {
-                    let text = std::fs::read_to_string(&path)
-                        .with_context(|| format!("read execution profile {}", path.display()))?;
-                    Some(
-                        serde_json::from_str::<crate::world_limits::WorldExecutionProfile>(
-                            &text,
-                        )
-                        .with_context(|| {
-                            format!("parse execution profile {}", path.display())
-                        })?,
-                    )
-                }
-                None => None,
-            };
-            let inputs = crate::world_doctor::DoctorInputs {
-                roc_bin,
-                roc_resolved: None,
-                platform_dir,
-                caps_ceiling: ceiling,
-                profile,
-                journal,
-                now_ms: Some(crate::time::unix_ms()),
-            };
-            let report = crate::world_doctor::run(&inputs);
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                print!("{}", report.render_text());
-            }
-            // Warn findings print but do not fail the command; only Fail
-            // findings exit nonzero, counted by failure_count().
-            report.exit_result()
-        }
-        WorldCommand::Diff {
-            node,
-            file,
-            capability,
-            world,
-            addrs,
-            no_relay,
-        } => {
-            let manifest = parse_manifest_file(&file)?;
-            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
-            let state = current_world_state(&mut client, &capability).await?;
-            client.close();
-            endpoint.close().await;
-            print!("{}", crate::world_manifest::diff(&manifest, &state));
-            Ok(())
-        }
-        WorldCommand::Apply {
-            node,
-            file,
-            admin_token,
-            capability,
-            dry_run,
-            world,
-            addrs,
-            no_relay,
-        } => {
-            let manifest = parse_manifest_file(&file)?;
-            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
-            let state = current_world_state(&mut client, &capability).await?;
-            let steps = crate::world_manifest::plan(&manifest, &state);
-            if steps.is_empty() {
-                println!("no drift");
-            } else {
-                println!(
-                    "{}",
-                    steps
-                        .iter()
-                        .map(crate::world_manifest::ApplyStep::kind)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                if !dry_run {
-                    let applied =
-                        apply_steps(&mut client, &admin_token, &capability, &steps).await?;
-                    if applied == steps.len() {
-                        println!("applied {} step(s)", applied);
-                    } else {
-                        println!(
-                            "applied {} of {} step(s); the rest were reported but not applied",
-                            applied,
-                            steps.len()
-                        );
-                    }
-                } else {
-                    println!("dry run: nothing changed");
-                }
-            }
-            client.close();
-            endpoint.close().await;
-            Ok(())
-        }
-        WorldCommand::Contract { check: None } => {
-            print!("{}", crate::shell_contract::SHELL_CONTRACT_JSON);
-            Ok(())
-        }
-        WorldCommand::Contract { check: Some(path) } => {
-            let text = if path.as_os_str() == "-" {
-                std::io::read_to_string(std::io::stdin()).context("read transcript")?
-            } else {
-                std::fs::read_to_string(&path)
-                    .with_context(|| format!("read transcript {}", path.display()))?
-            };
-            let checked = check_contract(&text)?;
-            println!("{checked}");
-            Ok(())
-        }
         #[cfg(feature = "sandbox")]
         WorldCommand::Measure {
             module,
@@ -702,272 +564,23 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             node,
             capability,
             after,
-            command_mode,
             world,
             addrs,
             no_relay,
-            via,
-            ssh_host_key,
         } => {
-            let join = serde_json::json!({
-                "type": "join",
-                "capability": capability,
-                "after": after,
-            });
-            // The same routed bytes on every transport.
-            let first = crate::world_net::route_frame(&join, world.as_deref());
-            match via {
-                WorldVia::Iroh => {
-                    if ssh_host_key.is_some() {
-                        bail!("--ssh-host-key needs --via ssh");
-                    }
-                    let (endpoint, client) =
-                        connect(&node, &addrs, no_relay, world.as_deref()).await?;
-                    let (conn, send, recv) = client.into_parts();
-                    let result = pump(recv, send, &first, command_mode, &capability).await;
-                    conn.close(0_u32.into(), b"done");
-                    endpoint.close().await;
-                    result
-                }
-                WorldVia::Ssh => {
-                    if !addrs.is_empty() || no_relay {
-                        bail!("--addr and --no-relay apply to --via iroh only");
-                    }
-                    join_over_ssh(&node, ssh_host_key, &first, command_mode, &capability).await
-                }
-            }
-        }
-        WorldCommand::SshTunnel {
-            node,
-            listen,
-            stdio,
-            addrs,
-            no_relay,
-        } => ssh_tunnel(&node, listen.as_deref(), stdio, &addrs, no_relay).await,
-    }
-}
-
-/// `id world join --via ssh`: the frame session over an SSH exec channel.
-#[cfg(feature = "ssh")]
-async fn join_over_ssh(
-    target: &str,
-    ssh_host_key: Option<String>,
-    first: &str,
-    command_mode: bool,
-    capability: &str,
-) -> Result<()> {
-    use crate::world_ssh::{HostKeyCheck, SshTarget, connect_frames};
-    let target: SshTarget = target.parse()?;
-    let check = match ssh_host_key {
-        Some(fingerprint) => HostKeyCheck::Fingerprint(fingerprint),
-        None => {
-            let home = std::env::var_os("HOME")
-                .context("no HOME for ~/.ssh/known_hosts; pass --ssh-host-key")?;
-            HostKeyCheck::KnownHosts(PathBuf::from(home).join(".ssh").join("known_hosts"))
-        }
-    };
-    let (_connection, stream) = connect_frames(&target, check).await?;
-    let (recv, send) = tokio::io::split(stream);
-    pump(recv, send, first, command_mode, capability).await
-}
-
-/// `id world ssh-tunnel`: forward a local TCP listener (or stdio, as an SSH
-/// ProxyCommand) over iroh to the host's world SSH server (F13.3). The
-/// tunnel carries SSH bytes only; the `ssh` client still authenticates to
-/// the host inside it.
-#[cfg(feature = "ssh")]
-async fn ssh_tunnel(
-    node: &str,
-    listen: Option<&str>,
-    stdio: bool,
-    addrs: &[SocketAddr],
-    no_relay: bool,
-) -> Result<()> {
-    if !is_node_id(node) {
-        bail!("`{node}` is not a node ID (expected 64 hex characters)");
-    }
-    let id: EndpointId = node.parse().context("parse node ID")?;
-    let endpoint = client_endpoint(addrs, no_relay).await?;
-    let addr = EndpointAddr::from_parts(id, addrs.iter().copied().map(TransportAddr::Ip));
-    let conn = crate::connectivity::connect(&endpoint, addr, crate::world_ssh::SSH_TUNNEL_ALPN)
-        .await
-        .context("connect ssh tunnel")?;
-    if stdio {
-        let (send, recv) = conn.open_bi().await.context("open tunnel stream")?;
-        let mut tunnel = tokio::io::join(recv, send);
-        let mut local = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
-        tokio::io::copy_bidirectional(&mut local, &mut tunnel)
-            .await
-            .context("ssh tunnel stdio")?;
-        conn.close(0_u32.into(), b"done");
-        endpoint.close().await;
-        return Ok(());
-    }
-    let listen = listen.unwrap_or("127.0.0.1:2222");
-    let listener = tokio::net::TcpListener::bind(listen)
-        .await
-        .with_context(|| format!("listen on {listen}"))?;
-    eprintln!(
-        "ssh tunnel: {} -> world host; connect with `ssh -p {} <world>@{}` (password: a guest capability)",
-        listener.local_addr()?,
-        listener.local_addr()?.port(),
-        listener.local_addr()?.ip()
-    );
-    loop {
-        tokio::select! {
-            accepted = listener.accept() => {
-                let (mut tcp, _) = accepted?;
-                let conn = conn.clone();
-                tokio::spawn(async move {
-                    let Ok((send, recv)) = conn.open_bi().await else { return; };
-                    let mut tunnel = tokio::io::join(recv, send);
-                    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut tunnel).await;
-                });
-            }
-            _ = tokio::signal::ctrl_c() => break,
+            let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
+            client
+                .send_json(&serde_json::json!({
+                    "type": "join",
+                    "capability": capability,
+                    "after": after,
+                }))
+                .await?;
+            let result = pump(client).await;
+            endpoint.close().await;
+            result
         }
     }
-    conn.close(0_u32.into(), b"done");
-    endpoint.close().await;
-    Ok(())
-}
-
-#[cfg(not(feature = "ssh"))]
-async fn ssh_tunnel(
-    _node: &str,
-    _listen: Option<&str>,
-    _stdio: bool,
-    _addrs: &[SocketAddr],
-    _no_relay: bool,
-) -> Result<()> {
-    bail!("this build of id has no SSH support (cargo feature `ssh`)")
-}
-
-#[cfg(not(feature = "ssh"))]
-async fn join_over_ssh(
-    _target: &str,
-    _ssh_host_key: Option<String>,
-    _first: &str,
-    _command_mode: bool,
-    _capability: &str,
-) -> Result<()> {
-    bail!("this build of id has no SSH support (cargo feature `ssh`)")
-}
-
-/// Parse a `world.toml` file into a validated manifest.
-fn parse_manifest_file(file: &std::path::Path) -> Result<crate::world_manifest::WorldManifest> {
-    let text = std::fs::read_to_string(file)
-        .with_context(|| format!("read world manifest {}", file.display()))?;
-    crate::world_manifest::parse(&text)
-}
-
-/// Fetch the current world state the manifest is compared against: the active
-/// module hash, the grants, the ceiling and the execution profile. Schedules
-/// and the install seed are not exposed over the wire yet, so they read as
-/// empty here.
-async fn current_world_state(
-    client: &mut WorldClient,
-    capability: &str,
-) -> Result<crate::world_manifest::WorldState> {
-    let info = client.info_details(capability).await?;
-    let caps: crate::world_caps::CapsReport =
-        serde_json::from_value(client.caps(capability).await?)
-            .context("host returned a malformed capability report")?;
-    let profile: crate::world_limits::WorldExecutionProfile =
-        serde_json::from_value(client.execution_profile(None, Some(capability)).await?)
-            .context("host returned a malformed execution profile")?;
-    // The report carries the world's own ceiling as a list; an unrestricted
-    // ceiling is the whole catalog, which we fold back to "no ceiling".
-    let ceiling = if caps.ceiling
-        == crate::world_caps::catalog_names()
-            .into_iter()
-            .collect::<Vec<_>>()
-    {
-        None
-    } else {
-        Some(caps.ceiling.clone())
-    };
-    Ok(crate::world_manifest::WorldState {
-        module_hash: info.active_module_hash,
-        seed: 0,
-        grants: caps.granted,
-        ceiling,
-        profile,
-        schedules: std::collections::BTreeMap::new(),
-    })
-}
-
-/// Whether [`apply_steps`] actually applies this step today. Module and
-/// schedule steps are reported, not applied, until their apply paths are
-/// wired (#807), so they must not count toward the "applied N step(s)"
-/// summary (#818).
-fn step_is_applied(step: &crate::world_manifest::ApplyStep) -> bool {
-    use crate::world_manifest::ApplyStep;
-    matches!(
-        step,
-        ApplyStep::SetGrants { .. } | ApplyStep::SetCeiling { .. } | ApplyStep::SetProfile { .. }
-    )
-}
-
-/// Apply the reconciliation steps that the existing admin operations cover:
-/// grants, ceiling and profile. Module and schedule steps are reported, not
-/// applied, until their apply paths are wired. Returns how many of the steps
-/// were actually applied, so the caller's summary cannot claim credit for
-/// the reported-only ones (#818).
-async fn apply_steps(
-    client: &mut WorldClient,
-    admin_token: &str,
-    capability: &str,
-    steps: &[crate::world_manifest::ApplyStep],
-) -> Result<usize> {
-    use crate::world_manifest::ApplyStep;
-    let applied = steps.iter().filter(|step| step_is_applied(step)).count();
-    for step in steps {
-        match step {
-            ApplyStep::SetGrants { grants } => {
-                let current: crate::world_caps::CapsReport =
-                    serde_json::from_value(client.caps(capability).await?)
-                        .context("host returned a malformed capability report")?;
-                let to_revoke: Vec<String> = current
-                    .granted
-                    .iter()
-                    .filter(|name| !grants.contains(name))
-                    .cloned()
-                    .collect();
-                let to_grant: Vec<String> = grants
-                    .iter()
-                    .filter(|name| !current.granted.contains(name))
-                    .cloned()
-                    .collect();
-                if !to_grant.is_empty() || !to_revoke.is_empty() {
-                    client
-                        .update_caps(admin_token, &to_grant, &to_revoke)
-                        .await?;
-                }
-            }
-            ApplyStep::SetCeiling { ceiling } => {
-                // `None` means "no ceiling": restore the whole catalog.
-                let names = ceiling.clone().unwrap_or_else(|| {
-                    crate::world_caps::catalog_names()
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                });
-                client.set_caps_ceiling(admin_token, &names).await?;
-            }
-            ApplyStep::SetProfile { profile } => {
-                client.set_execution_profile(admin_token, *profile).await?;
-            }
-            ApplyStep::InstallModule { .. }
-            | ApplyStep::ScheduleAt { .. }
-            | ApplyStep::CancelSchedule { .. } => {
-                eprintln!(
-                    "note: {} is reported but not applied here; use `id world install`/`compile` for modules",
-                    step.kind()
-                );
-            }
-        }
-    }
-    Ok(applied)
 }
 
 /// Record a world to a fixture: the file at `out`, or standard output.
@@ -1373,24 +986,10 @@ impl Replica {
 }
 
 /// Print server frames as JSON lines while sending stdin lines as chat.
-/// Notes for the user go to stderr, so stdout stays a stream of frames.
-///
-/// The transport is any byte stream carrying the length-prefixed envelope
-/// (an iroh stream or an SSH exec channel); `first` is the join frame.
-async fn pump<R, W>(
-    mut recv: R,
-    mut send: W,
-    first: &str,
-    command_mode: bool,
-    capability: &str,
-) -> Result<()>
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    write_frame_to(&mut send, first.as_bytes()).await?;
+async fn pump(client: WorldClient) -> Result<()> {
+    let (conn, mut send, mut recv) = client.into_parts();
     let mut reader = tokio::spawn(async move {
-        while let Some(body) = read_frame_from(&mut recv).await? {
+        while let Some(body) = read_frame(&mut recv).await? {
             println!("{}", String::from_utf8_lossy(&body));
         }
         anyhow::Ok(())
@@ -1403,22 +1002,12 @@ where
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
-                    let frame = if command_mode {
-                        match pump_command(line, capability) {
-                            PumpLine::Send(frame) => frame,
-                            PumpLine::Say(text) => {
-                                eprintln!("{text}");
-                                continue;
-                            }
-                            PumpLine::Quit => break Ok(()),
-                        }
-                    } else {
-                        match line.strip_prefix("/input ") {
-                            Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
-                            None => serde_json::json!({"type": "chat", "text": line}),
-                        }
+                    if line == "/quit" { break Ok(()); }
+                    let frame = match line.strip_prefix("/input ") {
+                        Some(hex) => serde_json::json!({"type": "input", "data_hex": hex.trim()}),
+                        None => serde_json::json!({"type": "chat", "text": line}),
                     };
-                    if let Err(e) = write_frame_to(&mut send, frame.to_string().as_bytes()).await {
+                    if let Err(e) = write_frame(&mut send, frame.to_string().as_bytes()).await {
                         break Err(e);
                     }
                 }
@@ -1430,191 +1019,15 @@ where
             _ = tokio::signal::ctrl_c() => break Ok(()),
         }
     };
+    conn.close(0_u32.into(), b"done");
     reader.abort();
     result
-}
-
-/// Check a transcript against the shell contract, returning a summary.
-///
-/// # Errors
-///
-/// Fails on an unreadable transcript, or with every violation listed.
-fn check_contract(text: &str) -> Result<String> {
-    let contract = crate::shell_contract::ShellContract::embedded().map_err(anyhow::Error::msg)?;
-    let violations = crate::shell_contract::check_transcript(contract, text)?;
-    let frames = text.lines().filter(|line| !line.trim().is_empty()).count();
-    if violations.is_empty() {
-        return Ok(format!(
-            "{frames} frames conform to shell contract v{}.{}",
-            contract.version, contract.revision
-        ));
-    }
-    let listed: Vec<String> = violations.iter().map(ToString::to_string).collect();
-    bail!(
-        "{} of {frames} frames violate shell contract v{}.{}:\n{}",
-        violations.len(),
-        contract.version,
-        contract.revision,
-        listed.join("\n")
-    )
-}
-
-/// What one stdin line does in the `id world join --command-mode` pump.
-#[derive(Debug, PartialEq, Eq)]
-enum PumpLine {
-    /// Send this session frame.
-    Send(serde_json::Value),
-    /// Answer the user locally; nothing is sent.
-    Say(String),
-    /// End the session.
-    Quit,
-}
-
-const PUMP_HELP: &str = "Commands: a line is chat; /input <hex>, /records [prefix], /stats, /caps, /logs, /help, /quit. Server frames print to stdout as JSON lines.";
-
-/// Map one line of the shared grammar ([`crate::world_line`]) to what the
-/// pump does. Every frame it sends is in the shell contract's joined phase;
-/// the commands that need the host's own store (`/documents`) or that the
-/// pump already does (`/logs`) are answered locally.
-fn pump_command(line: &str, capability: &str) -> PumpLine {
-    use crate::world_line::{WorldLine, parse_line};
-    let Some(action) = parse_line(line) else {
-        return PumpLine::Quit;
-    };
-    PumpLine::Send(match action {
-        WorldLine::Chat(text) => serde_json::json!({"type": "chat", "text": text}),
-        WorldLine::Input(hex) => serde_json::json!({"type": "input", "data_hex": hex}),
-        WorldLine::Records { prefix } => serde_json::json!({
-            "type": "records", "capability": capability, "prefix": prefix, "after": null
-        }),
-        WorldLine::Stats => serde_json::json!({"type": "info", "capability": capability}),
-        WorldLine::Caps => serde_json::json!({"type": "caps", "capability": capability}),
-        WorldLine::Documents { .. } | WorldLine::Document(_) => {
-            return PumpLine::Say(
-                "documents are read from the host's own store over SSH (`ssh cmd:<world>@host`); `id world join` has no document reader".to_owned(),
-            );
-        }
-        WorldLine::Logs { .. } => {
-            return PumpLine::Say(
-                "events already print live here as JSON lines; use `id world logs` for a bounded tail".to_owned(),
-            );
-        }
-        WorldLine::Help => return PumpLine::Say(PUMP_HELP.to_owned()),
-        WorldLine::Quit => return PumpLine::Quit,
-        WorldLine::Message(message) => return PumpLine::Say(message),
-    })
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{PumpLine, check_contract, pump_command, scaffold_world, step_is_applied};
-
-    /// #818: only grants/ceiling/profile steps are actually applied by
-    /// `apply_steps`; module and schedule steps are reported-only until
-    /// #807 wires their apply paths, so they must not count as applied.
-    #[test]
-    fn only_grants_ceiling_and_profile_steps_count_as_applied() {
-        use crate::world_manifest::ApplyStep;
-        let steps = [
-            ApplyStep::InstallModule {
-                hash: Some("abc".to_owned()),
-                source: None,
-                seed: 0,
-            },
-            ApplyStep::SetGrants { grants: vec![] },
-            ApplyStep::SetCeiling { ceiling: None },
-            ApplyStep::SetProfile {
-                profile: crate::world_limits::WorldExecutionProfile::default(),
-            },
-            ApplyStep::ScheduleAt {
-                id: "round".to_owned(),
-                at_ms: 5,
-            },
-            ApplyStep::CancelSchedule {
-                id: "round".to_owned(),
-            },
-        ];
-        let applied = steps.iter().filter(|step| step_is_applied(step)).count();
-        assert_eq!(applied, 3);
-    }
-
-    /// The shared line grammar maps the same line to the same action on the
-    /// join pump as it does on the SSH command mode (both call
-    /// [`crate::world_line::parse_line`]); this asserts the pump's mapping,
-    /// and that every frame it sends is in the shell contract.
-    #[test]
-    fn the_pump_command_mode_maps_the_shared_grammar_to_contract_frames() {
-        use crate::shell_contract::{Phase, ShellContract};
-        let send = |line: &str| match pump_command(line, "cap") {
-            PumpLine::Send(frame) => frame,
-            other => panic!("{line}: {other:?}"),
-        };
-        assert_eq!(
-            send("/stats"),
-            serde_json::json!({"type": "info", "capability": "cap"})
-        );
-        assert_eq!(
-            send("/caps"),
-            serde_json::json!({"type": "caps", "capability": "cap"})
-        );
-        assert_eq!(
-            send("/records x"),
-            serde_json::json!({"type": "records", "capability": "cap", "prefix": "x", "after": null})
-        );
-        assert_eq!(
-            send("/input 00aF"),
-            serde_json::json!({"type": "input", "data_hex": "00af"})
-        );
-        assert_eq!(
-            send("hello"),
-            serde_json::json!({"type": "chat", "text": "hello"})
-        );
-        let contract = ShellContract::embedded().unwrap();
-        for line in [
-            "/stats",
-            "/caps",
-            "/records",
-            "/records x",
-            "/input 00",
-            "hi",
-        ] {
-            contract
-                .check_client_frame(&send(line), Phase::Joined)
-                .unwrap_or_else(|error| panic!("{line}: {error}"));
-        }
-        for line in ["/logs", "/help", "/documents", "/document a.md", "/nope"] {
-            assert!(
-                matches!(pump_command(line, "cap"), PumpLine::Say(_)),
-                "{line}"
-            );
-        }
-        assert_eq!(pump_command("/quit", "cap"), PumpLine::Quit);
-    }
-
-    #[test]
-    fn the_contract_check_reports_conformance_or_every_violation() {
-        let good = [
-            r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
-            r#"{"from": "server", "frame": {"type": "snapshot", "snapshot": {}}}"#,
-            r#"{"from": "client", "frame": {"type": "resize", "width": 80, "height": 24}}"#,
-        ]
-        .join("\n");
-        assert_eq!(
-            check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.1"
-        );
-        let bad = [
-            r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
-            r#"{"from": "server", "frame": {"type": "teleport"}}"#,
-        ]
-        .join("\n");
-        let error = check_contract(&bad).unwrap_err().to_string();
-        assert!(error.starts_with("2 of 2 frames violate"), "{error}");
-        assert!(error.contains("frame 0 (client)"), "{error}");
-        assert!(error.contains("frame 1 (server)"), "{error}");
-        assert!(check_contract("{").is_err());
-    }
+    use super::scaffold_world;
 
     #[test]
     fn scaffolding_writes_a_buildable_app_skeleton() {

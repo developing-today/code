@@ -511,8 +511,9 @@ impl WorldInstance {
         );
         let result = self.view_inner();
         self.settle(GuestCall::View);
-        // A trapped view does not poison the instance: rendering never changes
-        // the model, so the next event retries against intact state (F11.17).
+        if result.is_err() {
+            self.poisoned = true;
+        }
         result
     }
 
@@ -546,7 +547,9 @@ impl WorldInstance {
         };
         let result = self.layout_inner(&layout, width, height);
         self.settle(GuestCall::Layout);
-        // As with `view`, a trapped layout does not poison the instance.
+        if result.is_err() {
+            self.poisoned = true;
+        }
         result
     }
 
@@ -1656,16 +1659,7 @@ mod tests {
                 .to_string()
                 .contains("fuel exhausted")
         );
-        // A trapped view does not poison the instance (F11.17): the retry runs
-        // the same view and exhausts fuel again, rather than being refused up
-        // front as poisoned.
-        assert!(
-            world
-                .view()
-                .unwrap_err()
-                .to_string()
-                .contains("fuel exhausted")
-        );
+        assert!(world.view().unwrap_err().to_string().contains("poisoned"));
     }
 
     #[test]
@@ -1753,10 +1747,9 @@ mod tests {
         .unwrap();
         world.view().unwrap_err();
         assert_eq!(world.last_fuel(GuestCall::View), 1_000);
-        // A trapped view no longer poisons the instance (F11.17): the retry
-        // runs the guest again, so the call is counted a second time.
+        // A poisoned world refuses the call before the guest runs.
         world.view().unwrap_err();
-        assert_eq!(world.metrics().get(GuestCall::View).calls, 2);
+        assert_eq!(world.metrics().get(GuestCall::View).calls, 1);
     }
 
     #[test]

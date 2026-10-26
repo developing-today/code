@@ -10,12 +10,6 @@ const ANTIGRAVITY_LS_PORT = parseProxyPort('ANTIGRAVITY_LS_PROXY_PORT', 18745);
 const CODEX_PROXY_PORT = parseProxyPort('CODEX_PROXY_PORT', 18744);
 const AMR_UPSTREAM_URL = process.env.AMR_UPSTREAM_URL || 'https://amr-link.open-design.ai/v1';
 
-// Warm connections (#480): one keep-alive pool per scheme, shared by every
-// backend/upstream call, so repeat requests reuse an open socket instead of
-// paying a fresh TCP (and, for the AMR upstream, TLS) handshake per request.
-const httpAgent = new http.Agent({ keepAlive: true, keepAliveMsecs: 1000, maxSockets: 32 });
-const httpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 1000, maxSockets: 32 });
-
 const DESIGN_SYSTEM_PROMPT = `You are an elite Code & Systems Design Architect.
 Your core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.`;
 
@@ -145,20 +139,12 @@ const server = http.createServer((req, res) => {
           port: upstreamUrl.port || 443,
           path: upstreamUrl.pathname + upstreamUrl.search,
           method: 'POST',
-          agent: httpsAgent,
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${upstreamKey}`
           }
         }, upstreamRes => {
           res.writeHead(upstreamRes.statusCode || 200, upstreamRes.headers);
-          // A mid-stream upstream error must not leave the client (or the
-          // pooled socket) hanging: tear the response down so the socket
-          // is released instead of stalling half-open.
-          upstreamRes.on('error', err => {
-            console.error(`[design-code-proxy] Upstream response error: ${err.message}`);
-            res.destroy();
-          });
           upstreamRes.pipe(res);
         });
 
@@ -218,21 +204,11 @@ const dispatchWithFallback = (body, clientRes) => {
       port: target.port,
       path: '/v1/chat/completions',
       method: 'POST',
-      agent: httpAgent,
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload)
       }
     }, localRes => {
-      // A backend response error must not hang the client: fall back when
-      // nothing was sent yet, otherwise tear the response down so the
-      // pooled socket is released instead of stalling half-open.
-      localRes.on('error', err => {
-        console.warn(`[design-code-proxy] Error reading response from 127.0.0.1:${target.port}: ${err.message}`);
-        if (!clientRes.headersSent) onFail(err);
-        else clientRes.destroy();
-      });
-
       // Check for quota exhaustion / error codes
       if (localRes.statusCode === 429 || localRes.statusCode >= 500) {
         console.warn(`[design-code-proxy] Target 127.0.0.1:${target.port} returned ${localRes.statusCode}`);

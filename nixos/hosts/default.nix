@@ -36,7 +36,6 @@ in
     users = [
       "user"
       "backup"
-      "muse"
       "root"
     ];
     wireless = [

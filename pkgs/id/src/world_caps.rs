@@ -23,22 +23,6 @@
 //! capability names, and the grant policy with its usage accounting. The
 //! actor in [`crate::world`] executes providers because they need the world.
 //!
-//! ## Refusal codes
-//!
-//! A refused request or subscription carries a stable wire `"error"` code and,
-//! when the refusal has a specific cause, an advisory `"reason"`. Codes are
-//! part of the wire contract and never change meaning; the DoS suite asserts
-//! them.
-//!
-//! | Code             | Meaning                                                             |
-//! | ---------------- | ------------------------------------------------------------------- |
-//! | `cap_denied`     | The world has not granted the capability.                           |
-//! | `unknown_cap`    | The server has no such capability.                                  |
-//! | `bad_args`       | The request's arguments were not acceptable.                        |
-//! | `failed`         | The provider failed.                                                |
-//! | `actor_denied`   | The participant whose input caused the request lacks the scope.     |
-//! | `outside_ceiling`| The server or the world's capability ceiling excludes it.           |
-//!
 //! **Local, not signed.** The granted set, the policy and the usage counts
 //! ([`CapUsage`]) belong to the hosting node and are journaled there. None of
 //! them is signed or replicated. A usage count reports what happened and bounds
@@ -312,12 +296,7 @@ pub fn result_event(id: &str, outcome: Result<serde_json::Value, CapError>) -> S
     let event = match outcome {
         Ok(value) => serde_json::json!({"cap":"result","id":id,"ok":true,"value":value}),
         Err(error) => {
-            let mut event =
-                serde_json::json!({"cap":"result","id":id,"ok":false,"error":error.code()});
-            if let Some(reason) = error.reason() {
-                event["reason"] = serde_json::json!(reason);
-            }
-            event
+            serde_json::json!({"cap":"result","id":id,"ok":false,"error":error.code()})
         }
     };
     let text = event.to_string();
@@ -331,32 +310,13 @@ pub fn result_event(id: &str, outcome: Result<serde_json::Value, CapError>) -> S
 /// The event delivered when a subscription is refused.
 #[must_use]
 pub fn subscription_refused_event(spec: &str, error: CapError) -> String {
-    let mut event =
-        serde_json::json!({"cap":"subscription","spec":spec,"ok":false,"error":error.code()});
-    if let Some(reason) = error.reason() {
-        event["reason"] = serde_json::json!(reason);
-    }
-    event.to_string()
+    serde_json::json!({"cap":"subscription","spec":spec,"ok":false,"error":error.code()})
+        .to_string()
 }
 
 /// Why a request or subscription was refused.
-///
-/// Every refusal carries a stable [`CapErrorCode`] and, where the refusal has
-/// one, a human-readable reason. Codes are part of the wire contract and never
-/// change meaning; reasons are advisory and describe the specific refusal.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CapError {
-    code: CapErrorCode,
-    reason: Option<String>,
-}
-
-/// The stable wire code of a refused request or subscription.
-///
-/// These are documented in the capability guide and asserted by the DoS
-/// suite; adding a code changes the wire contract, so new refusals reuse an
-/// existing code before a new one is considered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CapErrorCode {
+pub enum CapError {
     /// The world has not granted the capability.
     Denied,
     /// The server has no such capability.
@@ -372,86 +332,17 @@ pub enum CapErrorCode {
 }
 
 impl CapError {
-    /// The capability was not granted.
-    #[must_use]
-    pub const fn denied() -> Self {
-        Self {
-            code: CapErrorCode::Denied,
-            reason: None,
-        }
-    }
-
-    /// The server has no such capability.
-    #[must_use]
-    pub const fn unknown() -> Self {
-        Self {
-            code: CapErrorCode::Unknown,
-            reason: None,
-        }
-    }
-
-    /// The request's arguments were not acceptable.
-    #[must_use]
-    pub const fn bad_args() -> Self {
-        Self {
-            code: CapErrorCode::BadArgs,
-            reason: None,
-        }
-    }
-
-    /// The request's arguments were not acceptable, and `reason` says why.
-    #[must_use]
-    pub fn bad_args_with(reason: impl Into<String>) -> Self {
-        Self {
-            code: CapErrorCode::BadArgs,
-            reason: Some(reason.into()),
-        }
-    }
-
-    /// The provider failed.
-    #[must_use]
-    pub const fn failed() -> Self {
-        Self {
-            code: CapErrorCode::Failed,
-            reason: None,
-        }
-    }
-
-    /// The acting participant lacks the scope for the effect.
-    #[must_use]
-    pub const fn actor_denied() -> Self {
-        Self {
-            code: CapErrorCode::ActorDenied,
-            reason: None,
-        }
-    }
-
-    /// A ceiling excludes the capability, even if granted.
-    #[must_use]
-    pub const fn outside_ceiling() -> Self {
-        Self {
-            code: CapErrorCode::OutsideCeiling,
-            reason: None,
-        }
-    }
-
     /// The code a program sees.
     #[must_use]
-    pub const fn code(&self) -> &'static str {
-        match self.code {
-            CapErrorCode::Denied => "cap_denied",
-            CapErrorCode::Unknown => "unknown_cap",
-            CapErrorCode::BadArgs => "bad_args",
-            CapErrorCode::Failed => "failed",
-            CapErrorCode::ActorDenied => "actor_denied",
-            CapErrorCode::OutsideCeiling => "outside_ceiling",
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Denied => "cap_denied",
+            Self::Unknown => "unknown_cap",
+            Self::BadArgs => "bad_args",
+            Self::Failed => "failed",
+            Self::ActorDenied => "actor_denied",
+            Self::OutsideCeiling => "outside_ceiling",
         }
-    }
-
-    /// The advisory reason, if the refusal has one.
-    #[must_use]
-    pub const fn reason(&self) -> Option<&String> {
-        self.reason.as_ref()
     }
 }
 
@@ -479,7 +370,7 @@ pub struct CapLedger {
 }
 
 /// The outcome of asking the ledger about one use.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decision {
     /// Allowed; the capability was already granted.
     Allow,
@@ -532,17 +423,17 @@ impl CapLedger {
         let entry = self.usage.entry(cap.to_owned()).or_default();
         if !is_known(cap) {
             entry.denied += 1;
-            return Decision::Deny(CapError::unknown());
+            return Decision::Deny(CapError::Unknown);
         }
         // A ceiling is checked before anything else, so grant-on-use can
         // never add a name the server or the world excludes.
         if !self.allowed.contains(cap) {
             entry.denied += 1;
-            return Decision::Deny(CapError::outside_ceiling());
+            return Decision::Deny(CapError::OutsideCeiling);
         }
         if !actor_permits {
             entry.denied += 1;
-            return Decision::Deny(CapError::actor_denied());
+            return Decision::Deny(CapError::ActorDenied);
         }
         if self.granted.contains(cap) || self.granted.contains("*") {
             entry.allowed += 1;
@@ -554,7 +445,7 @@ impl CapLedger {
             return Decision::AllowAndGrant;
         }
         entry.denied += 1;
-        Decision::Deny(CapError::denied())
+        Decision::Deny(CapError::Denied)
     }
 
     /// The granted set.
@@ -648,11 +539,6 @@ pub struct CapsReport {
     /// ceilings.
     #[serde(default)]
     pub effective: Vec<String>,
-    /// Times a `view` or `layout` call trapped since the world opened
-    /// (F11.17). A trapping view degrades to an error screen instead of
-    /// poisoning the world, so this is the only trace of it.
-    #[serde(default)]
-    pub view_failures: u64,
 }
 
 #[cfg(test)]
@@ -740,17 +626,11 @@ mod tests {
     #[test]
     fn the_ledger_denies_until_granted_and_counts_every_use() {
         let mut ledger = CapLedger::new(BTreeSet::new(), false);
-        assert_eq!(
-            ledger.decide("time.now"),
-            Decision::Deny(CapError::denied())
-        );
-        assert_eq!(
-            ledger.decide("time.now"),
-            Decision::Deny(CapError::denied())
-        );
+        assert_eq!(ledger.decide("time.now"), Decision::Deny(CapError::Denied));
+        assert_eq!(ledger.decide("time.now"), Decision::Deny(CapError::Denied));
         assert_eq!(
             ledger.decide("telepathy"),
-            Decision::Deny(CapError::unknown())
+            Decision::Deny(CapError::Unknown)
         );
         ledger.set_granted(BTreeSet::from(["time.now".to_owned()]));
         assert_eq!(ledger.decide("time.now"), Decision::Allow);
@@ -770,7 +650,7 @@ mod tests {
         );
         assert_eq!(
             ledger.decide("telepathy"),
-            Decision::Deny(CapError::unknown())
+            Decision::Deny(CapError::Unknown)
         );
     }
 
@@ -781,7 +661,7 @@ mod tests {
         assert_eq!(ledger.decide("random.u64"), Decision::Allow);
         assert_eq!(
             ledger.decide("telepathy"),
-            Decision::Deny(CapError::unknown())
+            Decision::Deny(CapError::Unknown)
         );
         assert!(ledger.granted().contains("random.u64"));
         assert!(!ledger.granted().contains("telepathy"));
@@ -792,7 +672,7 @@ mod tests {
         let mut ledger = CapLedger::new(BTreeSet::new(), true);
         assert_eq!(
             ledger.decide_for("chat.say", false),
-            Decision::Deny(CapError::actor_denied())
+            Decision::Deny(CapError::ActorDenied)
         );
         assert!(!ledger.granted().contains("chat.say"));
         assert_eq!(
@@ -848,7 +728,7 @@ mod tests {
         assert_eq!(ok["ok"], true);
         assert_eq!(ok["value"]["n"], 1);
         let denied: serde_json::Value =
-            serde_json::from_str(&result_event("a", Err(CapError::denied()))).unwrap();
+            serde_json::from_str(&result_event("a", Err(CapError::Denied))).unwrap();
         assert_eq!(
             (denied["ok"].as_bool(), denied["error"].as_str()),
             (Some(false), Some("cap_denied"))
@@ -870,10 +750,7 @@ mod tests {
         assert_eq!(ledger.allowed(), &catalog_names());
         assert!(ledger.is_granted("time.now"));
         assert_eq!(ledger.decide("time.now"), Decision::Allow);
-        assert_eq!(
-            ledger.decide("chat.say"),
-            Decision::Deny(CapError::denied())
-        );
+        assert_eq!(ledger.decide("chat.say"), Decision::Deny(CapError::Denied));
         ledger.set_granted(names(&["*"]));
         assert_eq!(ledger.effective(), catalog_names());
         assert_eq!(
@@ -891,12 +768,12 @@ mod tests {
         assert!(!ledger.is_granted("chat.say"));
         assert_eq!(
             ledger.decide_for("chat.say", true),
-            Decision::Deny(CapError::outside_ceiling())
+            Decision::Deny(CapError::OutsideCeiling)
         );
         ledger.set_granted(names(&["chat.say"]));
         assert_eq!(
             ledger.decide_for("chat.say", true),
-            Decision::Deny(CapError::outside_ceiling()),
+            Decision::Deny(CapError::OutsideCeiling),
             "an explicit grant does not reach past the ceiling"
         );
         assert_eq!(
@@ -919,7 +796,7 @@ mod tests {
         ledger.set_allowed(names(&["time.now"]));
         assert_eq!(
             ledger.decide("chat.say"),
-            Decision::Deny(CapError::outside_ceiling())
+            Decision::Deny(CapError::OutsideCeiling)
         );
         assert!(!ledger.granted().contains("chat.say"));
         assert_eq!(ledger.decide("time.now"), Decision::AllowAndGrant);
@@ -932,7 +809,7 @@ mod tests {
         ledger.set_allowed(names(&["time.now", "telepathy"]));
         assert_eq!(
             ledger.decide("telepathy"),
-            Decision::Deny(CapError::unknown()),
+            Decision::Deny(CapError::Unknown),
             "a name the catalog lacks is never allowed, even if a ceiling lists it"
         );
         assert_eq!(ledger.allowed(), &names(&["time.now"]));

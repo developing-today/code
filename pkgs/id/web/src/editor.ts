@@ -54,28 +54,18 @@ export const richSchema = new Schema({
         title: { default: null },
         width: { default: null },
         height: { default: null },
-        // #880: a linked image ([![alt](src)](href)) carries its link on
-        // the image node; the markdown codec reads/writes these attrs.
-        linkHref: { default: null },
-        linkTitle: { default: null },
       },
       parseDOM: [
         {
           tag: "img[src]",
           getAttrs(dom) {
             const el = dom as HTMLImageElement;
-            // #893: a linked image arrives wrapped in an anchor
-            // (<a href="..."><img ...></a>) — read the link from the
-            // wrapping <a>, or it is dropped on parse/paste.
-            const anchor = el.closest("a");
             return {
               src: el.getAttribute("src"),
               alt: el.getAttribute("alt"),
               title: el.getAttribute("title"),
               width: el.getAttribute("width") ? Number(el.getAttribute("width")) : null,
               height: el.getAttribute("height") ? Number(el.getAttribute("height")) : null,
-              linkHref: anchor?.getAttribute("href") ?? null,
-              linkTitle: anchor?.getAttribute("title") ?? null,
             };
           },
         },
@@ -86,11 +76,6 @@ export const richSchema = new Schema({
         if (node.attrs.title) attrs.title = node.attrs.title;
         if (node.attrs.width) attrs.width = String(node.attrs.width);
         if (node.attrs.height) attrs.height = String(node.attrs.height);
-        if (node.attrs.linkHref) {
-          const linkAttrs: Record<string, string> = { href: node.attrs.linkHref };
-          if (node.attrs.linkTitle) linkAttrs.title = node.attrs.linkTitle;
-          return ["a", linkAttrs, ["img", attrs]];
-        }
         return ["img", attrs];
       },
     })
@@ -152,9 +137,6 @@ export const richSchema = new Schema({
         tableRole: "table",
         group: "block",
         isolating: true,
-        // #881: column alignments (["left"|"center"|"right"|"none", ...])
-        // carried for the markdown codec; absent = unaligned.
-        attrs: { alignments: { default: null } },
         parseDOM: [{ tag: "table" }],
         toDOM() {
           return ["table", { class: "pm-table" }, ["tbody", 0]];

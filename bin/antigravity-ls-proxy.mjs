@@ -470,7 +470,7 @@ const formatPrompt = (messages, tools = []) => {
       const fn = t.function || t;
       return `- ${fn.name}: ${fn.description || ''} (parameters: ${JSON.stringify(fn.parameters || {})})`;
     }).join('\n');
-    parts.push(`[Available Tools]\n${toolsDesc}\n\n[Tool Calling]\nWhen you need to use a tool, emit each call as a fenced block in exactly this format, with nothing else inside the block:\n\`\`\`tool_call\n{"name": "<tool name>", "arguments": {<arguments as a JSON object>}}\n\`\`\`\nEmit one block per call. Never describe a call in prose instead of emitting its block. Any text outside the blocks is treated as your reply text.`);
+    parts.push(`[Available Tools]\n${toolsDesc}`);
   }
 
   if (convoMessages.length > 0) {
@@ -504,122 +504,6 @@ const formatPrompt = (messages, tools = []) => {
   }
 
   return parts.join('\n\n');
-};
-
-// --- Tool-call extraction ---------------------------------------------------
-// The language server returns plain text, so models spell tool calls in
-// text: the canonical ```tool_call fenced JSON formatPrompt asks for,
-// Claude's <invoke> XML, or a fenced/bare JSON object. When a request
-// carries tools, lift every recognized call whose name matches an offered
-// tool into structured OpenAI tool_calls and strip the syntax from the
-// reply text. Without this, clients that require structured tool_calls
-// (e.g. OpenCode) receive the calls as inert prose and execute nothing.
-const coerceArgValue = (value) => {
-  if (typeof value !== 'string') return value;
-  const trimmed = value.trim();
-  if (!trimmed) return value;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return value;
-  }
-};
-
-const extractToolCalls = (text, tools) => {
-  if (!text || !Array.isArray(tools) || tools.length === 0) {
-    return { content: text, toolCalls: [] };
-  }
-  const validNames = new Set(tools.map(t => (t.function || t).name).filter(Boolean));
-  if (validNames.size === 0) return { content: text, toolCalls: [] };
-
-  const calls = [];
-  const spans = [];
-  const addCall = (name, args, start, end) => {
-    if (!validNames.has(name) || start < 0) return;
-    calls.push({ name, arguments: args && typeof args === 'object' ? args : {} });
-    spans.push([start, end]);
-  };
-
-  // Fenced blocks: ```tool_call {json} ``` — a plain ```json fence whose
-  // object names an offered tool counts too.
-  const fenceRe = /```(?:tool_call|json)?[ \t]*\n?([\s\S]*?)```/g;
-  for (const m of text.matchAll(fenceRe)) {
-    const inner = m[1].trim();
-    if (!inner.startsWith('{')) continue;
-    try {
-      const obj = JSON.parse(inner);
-      if (obj && typeof obj.name === 'string') {
-        addCall(obj.name, obj.arguments ?? obj.args ?? {}, m.index, m.index + m[0].length);
-      }
-    } catch {}
-  }
-
-  // Claude-style XML: <invoke name="x"><parameter name="y">v</parameter></invoke>
-  const invokeRe = /<invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/invoke>/g;
-  for (const m of text.matchAll(invokeRe)) {
-    const args = {};
-    for (const p of m[2].matchAll(/<parameter\s+name="([^"]+)"\s*>([\s\S]*?)<\/parameter>/g)) {
-      args[p[1]] = coerceArgValue(p[2].trim());
-    }
-    addCall(m[1], args, m.index, m.index + m[0].length);
-  }
-
-  // A reply that is one bare JSON object naming an offered tool.
-  if (calls.length === 0) {
-    const trimmed = text.trim();
-    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-      try {
-        const obj = JSON.parse(trimmed);
-        if (obj && typeof obj.name === 'string' && validNames.has(obj.name)) {
-          addCall(obj.name, obj.arguments ?? obj.args ?? {}, text.indexOf('{'), text.lastIndexOf('}') + 1);
-        }
-      } catch {}
-    }
-  }
-
-  if (calls.length === 0) return { content: text, toolCalls: [] };
-
-  spans.sort((a, b) => a[0] - b[0]);
-  let content = '';
-  let cursor = 0;
-  for (const [start, end] of spans) {
-    if (start < cursor) continue;
-    content += text.slice(cursor, start);
-    cursor = end;
-  }
-  content += text.slice(cursor);
-  content = content.replace(/<function_calls>|<\/function_calls>/g, '').replace(/\n{3,}/g, '\n\n').trim();
-
-  return {
-    content,
-    toolCalls: calls.map(c => ({
-      id: `call_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
-      type: 'function',
-      function: { name: c.name, arguments: JSON.stringify(c.arguments) }
-    }))
-  };
-};
-
-// Emit one streaming chunk per tool call (OpenAI delta.tool_calls shape).
-const writeToolCallChunks = (res, base, toolCalls) => {
-  toolCalls.forEach((tc, i) => {
-    const chunk = {
-      ...base,
-      choices: [{
-        index: 0,
-        delta: {
-          tool_calls: [{
-            index: i,
-            id: tc.id,
-            type: 'function',
-            function: { name: tc.function.name, arguments: tc.function.arguments }
-          }]
-        },
-        finish_reason: null
-      }]
-    };
-    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-  });
 };
 
 const getSessionKey = (req, body) => {
@@ -839,18 +723,6 @@ const server = http.createServer(async (req, res) => {
           const inputTokens = parseInt(usageInfo?.inputTokens || '0', 10);
           const outputTokens = parseInt(usageInfo?.outputTokens || '0', 10);
 
-          const cascadeExtract = extractToolCalls(completedResponse, body.tools);
-          const cascadeContent = cascadeExtract.content;
-          const cascadeToolCalls = cascadeExtract.toolCalls;
-          const cascadeFinish = cascadeToolCalls.length > 0 ? 'tool_calls' : 'stop';
-          const cascadeBase = {
-            id: reqId,
-            object: 'chat.completion.chunk',
-            created,
-            model: body.model || 'gemini-3.8-flash',
-            conversation_id: cascadeId
-          };
-
           if (stream) {
             res.writeHead(200, {
               'Content-Type': 'text/event-stream',
@@ -860,19 +732,23 @@ const server = http.createServer(async (req, res) => {
               'X-Session-Id': cascadeId
             });
 
-            if (cascadeContent) {
-              const chunk = {
-                ...cascadeBase,
-                choices: [{ index: 0, delta: { content: cascadeContent }, finish_reason: null }]
-              };
-              res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-            }
-
-            if (cascadeToolCalls.length > 0) writeToolCallChunks(res, cascadeBase, cascadeToolCalls);
+            const chunk = {
+              id: reqId,
+              object: 'chat.completion.chunk',
+              created,
+              model: body.model || 'gemini-3.8-flash',
+              conversation_id: cascadeId,
+              choices: [{ index: 0, delta: { content: completedResponse }, finish_reason: null }]
+            };
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
 
             const finishChunk = {
-              ...cascadeBase,
-              choices: [{ index: 0, delta: {}, finish_reason: cascadeFinish }],
+              id: reqId,
+              object: 'chat.completion.chunk',
+              created,
+              model: body.model || 'gemini-3.8-flash',
+              conversation_id: cascadeId,
+              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
               usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens }
             };
             res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
@@ -892,12 +768,8 @@ const server = http.createServer(async (req, res) => {
               conversation_id: cascadeId,
               choices: [{
                 index: 0,
-                message: {
-                  role: 'assistant',
-                  content: cascadeToolCalls.length > 0 ? (cascadeContent || null) : cascadeContent,
-                  ...(cascadeToolCalls.length > 0 ? { tool_calls: cascadeToolCalls } : {})
-                },
-                finish_reason: cascadeFinish
+                message: { role: 'assistant', content: completedResponse },
+                finish_reason: 'stop'
               }],
               usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens }
             }, null, 2));
@@ -915,19 +787,7 @@ const server = http.createServer(async (req, res) => {
           const outTokens = Math.max(1, Math.round(responseText.length / 4));
           const inTokens = Math.max(1, Math.round(prompt.length / 4));
 
-          const extracted = extractToolCalls(responseText, body.tools);
-          const finalContent = extracted.content;
-          const toolCalls = extracted.toolCalls;
-          const finishReason = toolCalls.length > 0 ? 'tool_calls' : 'stop';
-
           const activeId = sessionInfo.key || reqId;
-          const directBase = {
-            id: reqId,
-            object: 'chat.completion.chunk',
-            created,
-            model: body.model || 'gemini-3.8-flash',
-            conversation_id: activeId
-          };
 
           if (stream) {
             res.writeHead(200, {
@@ -939,20 +799,26 @@ const server = http.createServer(async (req, res) => {
             });
 
             // Stream chunks
-            const words = finalContent ? finalContent.split(/(?<=\s+)/) : [];
+            const words = responseText.split(/(?<=\s+)/);
             for (const word of words) {
               const chunk = {
-                ...directBase,
+                id: reqId,
+                object: 'chat.completion.chunk',
+                created,
+                model: body.model || 'gemini-3.8-flash',
+                conversation_id: activeId,
                 choices: [{ index: 0, delta: { content: word }, finish_reason: null }]
               };
               res.write(`data: ${JSON.stringify(chunk)}\n\n`);
             }
 
-            if (toolCalls.length > 0) writeToolCallChunks(res, directBase, toolCalls);
-
             const finishChunk = {
-              ...directBase,
-              choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+              id: reqId,
+              object: 'chat.completion.chunk',
+              created,
+              model: body.model || 'gemini-3.8-flash',
+              conversation_id: activeId,
+              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
               usage: { prompt_tokens: inTokens, completion_tokens: outTokens, total_tokens: inTokens + outTokens }
             };
             res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
@@ -986,12 +852,8 @@ const server = http.createServer(async (req, res) => {
               conversation_id: activeId,
               choices: [{
                 index: 0,
-                message: {
-                  role: 'assistant',
-                  content: toolCalls.length > 0 ? (finalContent || null) : finalContent,
-                  ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {})
-                },
-                finish_reason: finishReason
+                message: { role: 'assistant', content: responseText },
+                finish_reason: 'stop'
               }],
               usage: { prompt_tokens: inTokens, completion_tokens: outTokens, total_tokens: inTokens + outTokens }
             }, null, 2));

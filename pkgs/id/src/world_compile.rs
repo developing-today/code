@@ -540,37 +540,6 @@ fn apply_rlimits() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Locate the Roc compiler binary for world builds: `$ID_ROC_BIN`, then the
-/// pinned nightly the platform's ABI bindings were generated with, then a
-/// `roc` on `PATH` that answers `roc version`.
-///
-/// The exact nightly matters: a different one produces a different module
-/// layout (found the hard way). `id world doctor` and the compile path agree
-/// on the toolchain by both going through this function.
-pub fn locate_roc() -> Result<String> {
-    if let Ok(path) = std::env::var("ID_ROC_BIN") {
-        return Ok(path);
-    }
-    let tag = "nightly-2026-10-04-130536d";
-    let version = tag.trim_start_matches("nightly-");
-    for home in [
-        std::env::var("HOME").unwrap_or_default(),
-        "/home/user".to_owned(),
-    ] {
-        let path = format!(
-            "{home}/.local/share/plaza-tools/roc/{tag}/roc_nightly-linux_x86_64-{version}/roc"
-        );
-        if Path::new(&path).is_file() {
-            return Ok(path);
-        }
-    }
-    let output = std::process::Command::new("roc").arg("version").output();
-    match output {
-        Ok(output) if output.status.success() => Ok("roc".to_owned()),
-        _ => bail!("no roc binary"),
-    }
-}
-
 #[cfg(all(test, feature = "sandbox"))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -1255,7 +1224,27 @@ restore = |text| match U64.from_str(text) {
     /// The roc the platform's ABI bindings were generated with; a different
     /// nightly produces a different module layout (found the hard way).
     fn which_roc() -> Result<String> {
-        crate::world_compile::locate_roc()
+        if let Ok(path) = std::env::var("ID_ROC_BIN") {
+            return Ok(path);
+        }
+        let tag = "nightly-2026-10-04-130536d";
+        let version = tag.trim_start_matches("nightly-");
+        for home in [
+            std::env::var("HOME").unwrap_or_default(),
+            "/home/user".to_owned(),
+        ] {
+            let path = format!(
+                "{home}/.local/share/plaza-tools/roc/{tag}/roc_nightly-linux_x86_64-{version}/roc"
+            );
+            if Path::new(&path).is_file() {
+                return Ok(path);
+            }
+        }
+        let output = std::process::Command::new("roc").arg("version").output();
+        match output {
+            Ok(output) if output.status.success() => Ok("roc".to_owned()),
+            _ => bail!("no roc binary"),
+        }
     }
 
     /// The first candidate that is a complete world platform. The built

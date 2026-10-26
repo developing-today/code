@@ -52,4 +52,14 @@ This repo is the only source for `mcpx`. The macOS flake in `dezren39/nix` delet
 
 ## Done
 
-Completed work is recorded in GitHub — see closed issues and merged PRs.
+| Title                                                                                                                         | Date       | Result                    |
+| ----------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------------- |
+| Orphan-session DELETEs off the takeover serving path                                                                          | 2026-10-18 | #296                      |
+| Wait for orphan-session DELETEs on orderly exit                                                                               | 2026-10-18 | #299                      |
+| Daemon restart waits for orphan DELETEs                                                                                       | 2026-10-18 | #307 (closes #301)        |
+| `MCPX_STATE_DIR` in daemon discovery                                                                                          | 2026-10-18 | #306 (closes #305)        |
+| `EnsureDaemon` honours a cancelled context                                                                                    | 2026-10-18 | #285                      |
+| PR gate is one direct-Go job, Nix build only on dependency changes                                                            | 2026-10-18 | #295, `mcpx-nixbuild.yml` |
+| mcpx is the single source; the `dezren39/nix` vendored copy is deleted and that flake builds from a pinned input of this repo | 2026-10-19 | #362, dezren39/nix#469    |
+| Per-package 30m test timeout in the nix check phase                                                                           | 2026-10-20 | #417 (for nix#510)        |
+| Darwin -skip override fails loudly on drift                                                                                   | 2026-10-20 | #445 (closes #418)        |

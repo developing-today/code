@@ -59,10 +59,9 @@
         """Run the full API test suite against a single instance."""
         BASE = f"http://localhost:{port}"
 
-        # ── Discovery home page renders ────────────────────────────────────
+        # ── Home page renders ─────────────────────────────────────────────
         html = server.succeed(f"curl -sf {BASE}/")
-        assert "<title>Home - id</title>" in html, f"[port {port}] Home page missing title: {html[:200]}"
-        assert "Browse files" in html, f"[port {port}] Home page missing files link: {html[:200]}"
+        assert "Files" in html, f"[port {port}] Home page missing 'Files': {html[:200]}"
 
         # ── Static assets served ──────────────────────────────────────────
         server.succeed(f"curl -sf -o /dev/null {BASE}/assets/manifest.json")
@@ -79,7 +78,7 @@
         file_hash = resp["hash"]
 
         # ── File appears in list ──────────────────────────────────────────
-        list_html = server.succeed(f"curl -sf {BASE}/files")
+        list_html = server.succeed(f"curl -sf {BASE}/")
         assert "hello.txt" in list_html, f"[port {port}] Created file not in file list"
 
         # ── File accessible by name ───────────────────────────────────────
@@ -158,11 +157,11 @@
     assert iso.get("name") == "isolation-test.txt", f"Isolation file creation failed: {iso_resp}"
 
     # Verify it exists on primary
-    primary_html = server.succeed("curl -sf http://localhost:3000/files")
+    primary_html = server.succeed("curl -sf http://localhost:3000/")
     assert "isolation-test.txt" in primary_html, "Isolation file missing on primary"
 
     # Verify it does NOT exist on secondary
-    secondary_html = server.succeed("curl -sf http://localhost:3001/files")
+    secondary_html = server.succeed("curl -sf http://localhost:3001/")
     assert "isolation-test.txt" not in secondary_html, "Isolation FAILED: file leaked to secondary instance"
   '';
 }

@@ -152,24 +152,6 @@ impl SessionIo for StreamIo {
     }
 }
 
-/// The text of a client frame addressed to `world`.
-///
-/// The host reads the routing field from a session's first frame only;
-/// adding it to every frame is harmless and keeps callers simple. Every
-/// transport's client uses this, so the same frame is the same bytes on iroh
-/// and on SSH.
-#[must_use]
-pub fn route_frame(frame: &serde_json::Value, world: Option<&str>) -> String {
-    match (world, frame) {
-        (Some(world), serde_json::Value::Object(object)) if !object.contains_key("world") => {
-            let mut routed = object.clone();
-            routed.insert("world".to_owned(), serde_json::Value::from(world));
-            serde_json::Value::Object(routed).to_string()
-        }
-        _ => frame.to_string(),
-    }
-}
-
 /// A client-side world connection (one session).
 #[derive(Debug)]
 pub struct WorldClient {
@@ -229,8 +211,20 @@ impl WorldClient {
     ///
     /// Fails if the frame is too large or the stream is closed.
     pub async fn send_json(&mut self, frame: &serde_json::Value) -> Result<()> {
-        let text = route_frame(frame, self.world.as_deref());
-        write_frame(&mut self.send, text.as_bytes()).await
+        // The host reads the routing field from a session's first frame only;
+        // adding it to every frame is harmless and keeps callers simple.
+        match (&self.world, frame) {
+            (Some(world), serde_json::Value::Object(object)) if !object.contains_key("world") => {
+                let mut routed = object.clone();
+                routed.insert("world".to_owned(), serde_json::Value::from(world.clone()));
+                write_frame(
+                    &mut self.send,
+                    serde_json::Value::Object(routed).to_string().as_bytes(),
+                )
+                .await
+            }
+            _ => write_frame(&mut self.send, frame.to_string().as_bytes()).await,
+        }
     }
 
     /// Compile Roc sources on the host and install the result.
