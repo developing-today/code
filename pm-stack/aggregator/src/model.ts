@@ -77,7 +77,15 @@ export interface BoardItem {
   title: string;
   /** Repository the item belongs to (its Kaneo project's repo, or the ref's). */
   repo: string;
-  source: "kaneo" | "github";
+  source: "kaneo" | "github" | "orchestrator";
+  /** Orchestrator in-flight entries only: the linedUp task's own status
+   *  ("in-progress" | "queued" | "blocked"); the board status of such an
+   *  entry is the synthetic lane key "in-flight" instead. */
+  orchStatus?: string;
+  /** Orchestrator in-flight entries only: the goal it is lined up under. */
+  goal?: string;
+  /** Orchestrator in-flight entries only: flattened blocked-by labels. */
+  blockedBy?: string[];
   status: BoardStatus;
   priority?: string;
   updatedAt?: string;
