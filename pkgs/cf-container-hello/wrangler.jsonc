@@ -12,7 +12,7 @@
     },
     {
       "class_name": "CrawlerProbe",
-      "image": "registry.cloudflare.com/234b866b99ce2b142d7963d8d139cbfa/lab-ops-hub-crawlercontainer:v4",
+      "image": "registry.cloudflare.com/234b866b99ce2b142d7963d8d139cbfa/lab-ops-hub-crawlercontainer:v5",
       "max_instances": 1
     },
     {
