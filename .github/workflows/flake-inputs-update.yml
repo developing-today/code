@@ -8,10 +8,12 @@
 # repo's own nix-ci evaluates). This repo has no OpenChamber-specific test
 # suite, so evaluation is the check — no full test run. If validation passes
 # and flake.lock moved, the change lands as a pull request that this
-# workflow merges itself. Exception: this repository protects main against
-# the workflow token and has auto-merge disabled, so here the PR is
-# commented as validated and left for a privileged merge — the same way
-# other PRs land in this repo.
+# workflow merges itself. This repository protects main against the
+# workflow token, so the merge normally lands through auto-merge (a merge
+# commit, enabled repository-wide): the workflow sets it and GitHub merges
+# once checks pass. Only if both the direct and the auto-merge attempts
+# are refused is the PR commented as validated and left for a privileged
+# merge.
 #
 # Failures are tracked in ONE issue (title in FAILURE_ISSUE_TITLE below):
 # the first failure opens it, later failures edit it in place (attempt count,
@@ -246,17 +248,17 @@ jobs:
           elif auto_out=$(gh pr merge "${pr_number}" --auto --merge 2>&1); then
             echo "Direct merge was refused; auto-merge enabled for PR #${pr_number}."
           else
-            # This repository protects main against the workflow token and
-            # has auto-merge disabled, so a validated update PR waits for a
-            # privileged merge here — the same way other PRs land in this
-            # repo. Hand it over visibly instead of failing the run: the
+            # This repository protects main against the workflow token, and
+            # both the direct merge and the auto-merge attempt were refused,
+            # so a validated update PR waits for a privileged merge here.
+            # Hand it over visibly instead of failing the run: the
             # update itself succeeded. Any other publish error still fails.
             echo "${merge_out}"
             echo "${auto_out}"
             if echo "${merge_out}${auto_out}" | grep -qiE "not authorized|not allowed|protected|permission"; then
               handoff="true"
-              gh pr comment "${pr_number}" --body "Validated by the \`flake-inputs-update\` workflow (run: ${RUN_URL}): the flake evaluates with these pins, including the openchamber and opencode package outputs. The workflow's token cannot merge into protected \`main\` and auto-merge is disabled for this repository, so this PR is ready for a privileged merge."
-              echo "::warning::PR #${pr_number} is validated and ready, but the workflow token cannot merge it (protected main, auto-merge disabled). Left open for a privileged merge."
+              gh pr comment "${pr_number}" --body "Validated by the \`flake-inputs-update\` workflow (run: ${RUN_URL}): the flake evaluates with these pins, including the openchamber and opencode package outputs. The workflow's token cannot merge into protected \`main\` and the auto-merge attempt was also refused, so this PR is ready for a privileged merge."
+              echo "::warning::PR #${pr_number} is validated and ready, but the workflow token cannot merge it (protected main; direct and auto-merge refused). Left open for a privileged merge."
             else
               exit 1
             fi
