@@ -1082,7 +1082,7 @@ in
             claude-code # 2.1.293, >= 2.1.280 -- driver "claudeAgent"
             muse-code # 1.4.13            -- driver "muse"
             pi-coding-agent # 0.84.3, >= 0.80.5   -- driver "pi"
-            mcpx # T3 Code MCP / session MCP injection surface
+            mcpx # fleet MCP gateway binary, for shells and agents t3 spawns
             latestCli.gh # `gh` for threads that shell out to GitHub
             pkgs.antigravity-cli # binary is `agy` -- t3 driver "antigravity"
             pkgs.tailscale # MUST be here or --tailscale-serve fails (see above)
