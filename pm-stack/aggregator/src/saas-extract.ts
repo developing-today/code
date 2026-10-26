@@ -90,6 +90,11 @@ function conflictsOf(section: string): string[] {
  * "low $X / high $Y per month; counted as used = 1.2 × high = $Z".
  * Returns the estimate, or a note explaining its absence.
  */
+/** Strip a PAYG bullet's bold label (two shapes: "**PAYG estimate:** …" and "**PAYG estimate (…): …**"). */
+function stripPaygLabel(text: string): string {
+  return text.replace(/^\*\*PAYG estimate[^*]*:\*\*\s*/, "").replace(/^\*\*PAYG estimate[^*]*:\s*/, "");
+}
+
 function paygOf(section: string): { estimate: PaygEstimate | null; note?: string } {
   const text = bullet(section, /\*\*PAYG estimate/);
   if (!text) return { estimate: null };
@@ -100,7 +105,7 @@ function paygOf(section: string): { estimate: PaygEstimate | null; note?: string
         low: Number(m[1]),
         high: Number(m[2]),
         period: "per month",
-        note: text.replace(/^\*\*PAYG estimate[^:]*:\*\*\s*/, "").slice(0, 300),
+        note: stripPaygLabel(text).replace(/\*\*/g, "").slice(0, 300),
       },
     };
   }
@@ -108,10 +113,7 @@ function paygOf(section: string): { estimate: PaygEstimate | null; note?: string
     return { estimate: null, note: "not estimable from local records" };
   }
   if (/not applicable/i.test(text)) {
-    const why = text
-      .replace(/^\*\*PAYG estimate[^:]*:\*\*\s*/, "")
-      .replace(/^not applicable\s*—\s*/i, "")
-      .split(".")[0];
+    const why = stripPaygLabel(text).replace(/^not applicable\s*—\s*/i, "").split(".")[0];
     return { estimate: null, note: `not applicable — ${why}`.slice(0, 220) };
   }
   return { estimate: null };
@@ -481,12 +483,17 @@ export function extractSaasServices(doc: string): SaasService[] {
     try {
       const payg = paygOf(section);
       const usageText = bullet(section, /\*\*Usage \/ dates:\*\*/).replace(/^\*\*Usage \/ dates:\*\*\s*/, "");
+      // measuredAt = the freshest date in the section's own "Last
+      // checked" record — NOT the freshest date anywhere in the
+      // section, which can be a future operational date (a mirror
+      // review, a cycle end) rather than a read.
+      const measuredAt = freshestDate(bullet(section, /\*\*Last checked:\*\*/)) ?? freshestDate(section);
       services.push({
         ...shell,
         metrics: spec.metrics(section, doc),
         paygEstimate: payg.estimate,
         paygNote: payg.note,
-        measuredAt: freshestDate(section),
+        measuredAt,
         conflicts: conflictsOf(section),
         reads: readsOf(section),
         usageNote: usageText ? usageText.slice(0, 600) : spec.shellNote,
@@ -503,7 +510,7 @@ export function extractSaasServices(doc: string): SaasService[] {
   if (cf && zone) {
     cf.reads = [...readsOf(zone), ...cf.reads].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 14);
     cf.conflicts = [...conflictsOf(zone), ...cf.conflicts];
-    const zoneDate = freshestDate(zone);
+    const zoneDate = freshestDate(bullet(zone, /\*\*Last checked:\*\*/)) ?? freshestDate(zone);
     if (zoneDate && (!cf.measuredAt || zoneDate > cf.measuredAt)) cf.measuredAt = zoneDate;
   }
   return services;

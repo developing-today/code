@@ -789,7 +789,16 @@ export interface Freshness {
 /** A card is stale when its freshest read is older than its cadence (§1.1). */
 export function freshness(measuredAt: string | null, cadenceDays: number, now = new Date()): Freshness {
   if (!measuredAt) return { stale: true, ageDays: null };
-  const t = Date.parse(measuredAt.length <= 10 ? `${measuredAt}T23:59:59Z` : measuredAt);
+  // Date-only stamps age by calendar day (a read dated yesterday is
+  // 1 day old all day today); datetimes age by elapsed whole days.
+  if (measuredAt.length <= 10) {
+    const t = Date.parse(`${measuredAt}T00:00:00Z`);
+    if (Number.isNaN(t)) return { stale: true, ageDays: null };
+    const startOfToday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const ageDays = Math.max(0, Math.round((startOfToday - t) / 86_400_000));
+    return { stale: ageDays > cadenceDays, ageDays };
+  }
+  const t = Date.parse(measuredAt);
   if (Number.isNaN(t)) return { stale: true, ageDays: null };
   const ageDays = Math.max(0, Math.floor((now.getTime() - t) / 86_400_000));
   return { stale: ageDays > cadenceDays, ageDays };

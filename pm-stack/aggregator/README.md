@@ -21,7 +21,7 @@ Design record (source of truth):
 | `/attention`      | **Needs you** (#852, tiered in slice 2) — **NEEDS DREW** (default; only items that genuinely require Drew, each with its reason), **NEEDS ORCHESTRATOR** (the fleet's own queue), then every current session with source labels and plain-language states. Finished runs and stale items expire out.                       | `/api/attention.json`, `/api/coverage.json` |
 | `/`               | **Cross-repo WIP board** — the curated in-flight set across all four repos, with an execution strip per card (implementing → review → merged → queued).                                                                                                                                                                    | `/api/board.json`                           |
 | `/roadmap`        | **Roadmap** — Grist's `Program roadmap` table as a timeline; `?h=` switches the horizon: `quarter` (default), `month`, `week`, `3d`, `today` — one data model at every grain.                                                                                                                                              | `/api/roadmap.json`                         |
-| `/quota`          | **Quota + throughput** (#851) — all pooled quotas, resets, burn rates, and model-choice guidance.                                                                                                                                                                                                                          | `/api/quota.json`                           |
+| `/quota`          | **Usage & billing** (hub, design 2026-10-25; pools from #851) — needs-attention strip (bubble rules: >80% of a limit, >$5 projected unbilled PAYG), token-quota pools + PAYG dollars card, SaaS service cards grouped by kind with highlight metrics, charges evidence strip. Per-service detail: `/quota/service/<id>`. | `/api/quota.json` (extended: `saas`/`payg`/`charges`/…), `/api/quota/service.json?id=` |
 | `/dns`            | **DNS / domain register** (slice 3, #906; data owned by #902) — the register rendered next-renewal-first: renewing-soon spend, then in-use / unused-but-earmarked / completely-unused views and the full table.                                                                                                            | `/api/dns.json`                             |
 | `/sessions`       | **Sessions** (slice 3, #906) — the identity registry: every known session with its stable id, agent identity, parent, task refs, and token total, grouped by source.                                                                                                                                                       | `/api/registry.json`                        |
 | `/pages`          | **All pages** — the page manifest rendered: every registered page, its route, and its JSON twin.                                                                                                                                                                                                                           | — (the manifest is `src/pages.ts`)          |
@@ -172,6 +172,9 @@ Everything defaults to **fixtures** and works with no configuration:
 | `PM_AGG_PORT`              | `4870`                                              | HTTP port                                                                               |
 | `PM_AGG_HOSTS`             | `127.0.0.1`                                         | Comma-separated bind addresses (deployment: loopback + tailnet; no public route)        |
 | `PM_AGG_FEED_FILE`         | `./fleet-feed.json`                                 | The fleet feed (quota + sandbox attention) written by the collector (below)             |
+| `PM_AGG_SNAPSHOTS_DIR`     | `./snapshots`                                       | Usage snapshot store (hub §4): monthly `usage-YYYY-MM.jsonl` files; read by the hub, appended by writer jobs + `scripts/backfill-usage-snapshots.ts` |
+| `PM_AGG_QUOTA_VIEW`        | stewardship goal's `visibility/quota-view.md`       | Hub fallback source when the feed carries no `saas`/`payg` sections yet                |
+| `PM_AGG_QUOTA_REGISTRY`    | repo-health goal's `provider-quota-registry.md`     | The hub's second dated-read source (billing incidents) for the same fallback           |
 | `PM_AGG_OPENCHAMBER_STATE` | `~/.config/openchamber/managed-opencode/state.json` | Laptop OpenCode server port + password source (laptop attention, live)                  |
 | `KANEO_URL`                | `http://127.0.0.1:5173`                             | Kaneo base URL (board reader)                                                           |
 | `KANEO_ADMIN_EMAIL`        | —                                                   | Kaneo admin email (secret `kaneo.admin-password` pairs with it)                         |
@@ -234,6 +237,14 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   The pool map is the corrected one from the provider-quota
   registry: exactly one Meta pool (Muse API High Usage, `meta`
   provider the only door); no "muse plan" pool exists.
+- **Usage & billing hub sections** — the same collector run extracts
+  quota-view Part (b) via `src/saas-extract.ts` into `saas` / `payg` /
+  `charges` / `subscriptions` feed sections (the provider registry's
+  billing incidents supply the gateway accrual + card-alert charges).
+  The aggregator's `Source.usage()` serves them with snapshot history
+  from the §4 store; older feeds without the sections fall back to a
+  direct read of the two source documents. Seed the store once with
+  `bun run scripts/backfill-usage-snapshots.ts` (idempotent).
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
   mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with
   parent/agent/outcome; keeper supervision entries from
