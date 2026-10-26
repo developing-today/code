@@ -186,6 +186,28 @@ export const richSchema = new Schema({
           return ["th", 0];
         },
       },
+      // #943: raw inline HTML (e.g. <sub>, <sup>, <u>, <kbd>) as an atom
+      // node carrying the tag verbatim in `html`; the markdown codec
+      // reads/writes it. Display shows the tag as inert text — the attr
+      // is never rendered via innerHTML or as live markup.
+      html_inline: {
+        inline: true,
+        group: "inline",
+        atom: true,
+        selectable: true,
+        attrs: { html: { default: "" } },
+        parseDOM: [
+          {
+            tag: "span[data-html-inline]",
+            getAttrs(dom) {
+              return { html: (dom as HTMLElement).dataset.htmlInline ?? "" };
+            },
+          },
+        ],
+        toDOM(node) {
+          return ["span", { "data-html-inline": node.attrs.html as string }, node.attrs.html as string];
+        },
+      },
     }),
   marks: basicSchema.spec.marks.append({
     strikethrough: {

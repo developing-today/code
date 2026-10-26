@@ -379,8 +379,14 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
             if let Some(img_attrs) = parse_linked_img_tag(html).or_else(|| parse_img_tag(html)) {
                 return img_attrs;
             }
-            // Other inline HTML becomes plain text
-            text_node_with_marks(html, active_marks)
+            // #943: other inline HTML passes through as an html_inline
+            // atom node carrying the raw tag, so the save direction emits
+            // it verbatim (NodeValue::HtmlInline) instead of the comrak
+            // text renderer backslash-escaping it as literal text.
+            json!({
+                "type": "html_inline",
+                "attrs": {"html": html}
+            })
         }
 
         NodeValue::Table(table) => {
@@ -1057,6 +1063,12 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                     title: title.to_owned(),
                 }))
             }
+        }
+
+        // #943: raw inline HTML (e.g. <sub>, <sup>, <u>, <kbd>) carried
+        // verbatim; comrak renders HtmlInline without escaping.
+        "html_inline" => {
+            NodeValue::HtmlInline(json["attrs"]["html"].as_str().unwrap_or("").to_owned())
         }
 
         "hard_break" => NodeValue::LineBreak,
@@ -2263,5 +2275,64 @@ mod tests {
         let md = prosemirror_to_markdown(&doc).expect("converts");
         assert!(md.contains("fn a() {}"), "first node kept: {md}");
         assert!(md.contains("fn b() {}"), "second node kept: {md}");
+    }
+
+    #[test]
+    fn test_inline_html_sub_sup_u_roundtrip_unescaped() {
+        // #943: inline HTML must round-trip open->save as HTML, not as
+        // backslash-escaped literal text.
+        for original in [
+            "H<sub>2</sub>O\n",
+            "x<sup>2</sup> + y\n",
+            "some <u>underlined</u> text\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert!(
+                !first.contains("\\<"),
+                "no backslash-escaping in save of {original:?}: {first}"
+            );
+            for tag in ["<sub>", "</sub>", "<sup>", "</sup>", "<u>", "</u>"] {
+                if original.contains(tag) {
+                    assert!(
+                        first.contains(tag),
+                        "{tag} survives save of {original:?}: {first}"
+                    );
+                }
+            }
+            assert_eq!(first, second, "fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_inline_html_parse_shape_is_html_inline_node() {
+        // #943: the parse direction represents a tag as one html_inline
+        // atom node carrying the raw tag, not as a text node.
+        let doc = markdown_to_prosemirror("H<sub>2</sub>O\n");
+        let content = &doc["content"][0]["content"];
+        let html_nodes: Vec<&Value> = content
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "html_inline")
+            .collect();
+        assert_eq!(html_nodes.len(), 2, "open+close tags: {content}");
+        assert_eq!(html_nodes[0]["attrs"]["html"], "<sub>");
+        assert_eq!(html_nodes[1]["attrs"]["html"], "</sub>");
+    }
+
+    #[test]
+    fn test_inline_html_generality_nonformatting_tag_roundtrips() {
+        // #943 generality: passthrough is not a sub/sup/u whitelist — any
+        // inline tag (here <kbd> and a classed <span>) round-trips.
+        let (first, second) = two_saves("press <kbd>Ctrl</kbd> then <span class=\"x\">go</span>\n");
+        assert!(first.contains("<kbd>"), "kbd tag survives: {first}");
+        assert!(first.contains("</kbd>"), "kbd close survives: {first}");
+        assert!(
+            first.contains("<span class=\"x\">"),
+            "span with attrs survives verbatim: {first}"
+        );
+        assert!(first.contains("</span>"), "span close survives: {first}");
+        assert!(!first.contains("\\<"), "no escaping: {first}");
+        assert_eq!(first, second, "fixpoint");
     }
 }
