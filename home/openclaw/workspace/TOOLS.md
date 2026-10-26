@@ -24,7 +24,7 @@ This file is managed by Nix (source: `home/openclaw/` in the developing-today/co
 
 ## Coding work = OpenCode (the OpenChamber engine)
 
-For real coding, spawn an ACP session instead of improvising: `/acp spawn opencode` (also `claude`, `codex`, `gemini`, `copilot`), with cwd `~/code` for repo work. `opencode` is the default ACP agent. It uses the same OpenCode build, config, auth, route pools and quota discipline as OpenChamber sessions.
+For real coding, spawn an ACP session instead of improvising: `/acp spawn opencode`, with cwd `~/code` for repo work. `opencode` is the default and currently the only ACP harness (the acpx startup check initializes every allowed agent; the others resolve to npx-fetched adapters that hang on this laptop's flaky npmjs route). Claude/Codex are available through their native runtime plugins instead. It uses the same OpenCode build, config, auth, route pools and quota discipline as OpenChamber sessions.
 
 ## Repos (the fleet of four — see FLEET.md)
 

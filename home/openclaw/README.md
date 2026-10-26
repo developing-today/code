@@ -25,8 +25,13 @@ source in the fleet next to Muse (Archer) and Aster (Dot). It is installed
 - **Coding:** ACP via the acpx plugin. The default ACP agent is
   `opencode` (spawn with cwd `~/code`) — the same OpenCode
   build/config/auth OpenChamber drives; `~/.acpx/config.json` (managed in
-  `default.nix`) points acpx at the pinned fork binary. `claude`, `codex`,
-  `gemini` and `copilot` are also allowed ACP agents. Note: predeclared
+  `default.nix`) points the standalone acpx CLI at the fork binary, and
+  `plugins.entries.acpx.config.agents.opencode` does the same for the
+  embedded runtime (without that override acpx defaults to
+  `npx -y opencode-ai acp` — upstream v1, which rejects the fleet's v2
+  config). OpenCode is currently the ONLY allowed ACP agent: the acpx
+  startup check initializes every allowed agent, and the other harnesses
+  resolve to npx-fetched adapters. Note: predeclared
   `agents.entries.*.runtime` ACP agents are NOT used — nix-openclaw's
   pinned schema types `runtime` as a oneOf of submodules, which rejects
   the `acp` branch (minimal repro verified 2026-10-26); on-demand ACP

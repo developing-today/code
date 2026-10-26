@@ -281,13 +281,12 @@ in
         enabled = true;
         backend = "acpx";
         defaultAgent = "opencode";
-        allowedAgents = [
-          "opencode"
-          "claude"
-          "codex"
-          "gemini"
-          "copilot"
-        ];
+        # Only opencode is wired as an ACP harness for now: the acpx
+        # startup check initializes every allowed agent, and the other
+        # harnesses resolve to npx-fetched adapters, which hang on this
+        # laptop's flaky npmjs route (120s check timeout, 2026-10-26).
+        # Claude/Codex still work via their native runtime plugins.
+        allowedAgents = [ "opencode" ];
         dispatch.enabled = true;
       };
 
@@ -300,6 +299,16 @@ in
             # rather than hanging the session.
             permissionMode = "approve-all";
             nonInteractivePermissions = "deny";
+            # Per-agent command override for the EMBEDDED acpx runtime.
+            # Without this, acpx defaults to `npx -y opencode-ai acp` —
+            # upstream OpenCode v1, which rejects the fleet's v2 config
+            # (and the npx fetch hangs on this laptop's npmjs route).
+            # The standalone acpx CLI reads ~/.acpx/config.json instead;
+            # that file is kept in sync above, but the plugin ignores it.
+            agents.opencode = {
+              command = "/etc/profiles/per-user/user/bin/opencode";
+              args = [ "acp" ];
+            };
           };
         };
         slack.enabled = true;
