@@ -910,9 +910,27 @@ pub(super) fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// Largest timestamp `format_unix_timestamp` renders: 9999-12-31
+/// 23:59:59 UTC, the last instant with a 4-digit year.
+const MAX_FORMATTABLE_TS: u64 = 253_402_300_799;
+
 /// Format a unix timestamp as a short date string (YYYY-MM-DD HH:MM).
+///
+/// Out-of-range timestamps render as an empty string (the file list
+/// already omits the date span for empty output). Timestamps arrive
+/// from unvalidated tag names and file metadata — a value like
+/// `u64::MAX` (e.g. a file named `x.archive.18446744073709551615`) or a
+/// millisecond-scale value must never reach the conversion: the
+/// previous implementation looped year-by-year from 1970, so one huge
+/// value hung every file-list render (#934). The conversion itself is
+/// the closed-form civil-from-days algorithm (Howard Hinnant) —
+/// constant time for every accepted input.
 #[allow(clippy::cast_possible_truncation)]
 fn format_unix_timestamp(ts: u64) -> String {
+    if ts > MAX_FORMATTABLE_TS {
+        return String::new();
+    }
+
     // Simple UTC conversion without pulling in chrono
     let secs = ts;
     let mins = secs / 60;
@@ -922,51 +940,22 @@ fn format_unix_timestamp(ts: u64) -> String {
     let hour = hours % 24;
     let minute = mins % 60;
 
-    // Calculate year/month/day from days since epoch
-    let mut y: i64 = 1970;
-    #[allow(clippy::cast_possible_wrap)] // days since 1970 won't exceed i64::MAX
-    let mut remaining = days_total as i64;
+    // Civil date from days since epoch (Hinnant's algorithm). All
+    // values are non-negative here (ts is unsigned and range-checked),
+    // so plain truncating division applies throughout.
+    #[allow(clippy::cast_possible_wrap)] // days in range fit i64 easily
+    let z = days_total as i64 + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097; // day of era, [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // year of era, [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year, [0, 365]
+    let mp = (5 * doy + 2) / 153; // month index from March, [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if month <= 2 { y + 1 } else { y };
 
-    loop {
-        let days_in_year: i64 = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-            366
-        } else {
-            365
-        };
-        if remaining < days_in_year {
-            break;
-        }
-        remaining -= days_in_year;
-        y += 1;
-    }
-
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days: [i64; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut m = 0usize;
-    for (i, &md) in month_days.iter().enumerate() {
-        if remaining < md {
-            m = i;
-            break;
-        }
-        remaining -= md;
-    }
-    let day = remaining + 1;
-    let month = m + 1;
-
-    format!("{y:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }
 
 /// Format a file size in human-readable form.
@@ -1001,6 +990,33 @@ mod tests {
         assert_eq!(html_escape("<script>"), "&lt;script&gt;");
         assert_eq!(html_escape("a & b"), "a &amp; b");
         assert_eq!(html_escape("say \"hello\""), "say &quot;hello&quot;");
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_normal_values_unchanged() {
+        assert_eq!(format_unix_timestamp(0), "1970-01-01 00:00");
+        assert_eq!(format_unix_timestamp(951_782_400), "2000-02-29 00:00");
+        assert_eq!(format_unix_timestamp(1_727_740_800), "2024-10-01 00:00");
+        assert_eq!(format_unix_timestamp(1_727_744_160), "2024-10-01 00:56");
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_u64_max_is_empty() {
+        // Regression (#934): this value previously looped ~5.8e11 times
+        // (once per year from 1970) and hung the file-list render.
+        assert_eq!(format_unix_timestamp(u64::MAX), "");
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_millisecond_scale_is_empty() {
+        // A millisecond-scale value misread as seconds is out of range.
+        assert_eq!(format_unix_timestamp(1_727_740_800_000), "");
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_year_9999_boundary() {
+        assert_eq!(format_unix_timestamp(253_402_300_799), "9999-12-31 23:59");
+        assert_eq!(format_unix_timestamp(253_402_300_800), "");
     }
 
     #[test]
