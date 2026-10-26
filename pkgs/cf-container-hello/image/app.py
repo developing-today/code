@@ -7,6 +7,7 @@ JSON in the same shape the Worker's fallback produces. Runs only on demand
 (Worker starts it via getContainer, sleepAfter=2m kills it when idle), so it
 burns container minutes only while crawling.
 """
+
 import glob
 import json
 import re
@@ -84,13 +85,16 @@ class Handler(BaseHTTPRequestHandler):
             ex = Extractor()
             ex.feed(html)
             text = re.sub(r"\s+", " ", " ".join(ex.text)).strip()
-            self._send(200, {
-                "title": ex.title.strip(),
-                "excerpt": text[:500],
-                "links": ex.links,
-                "status_code": status,
-                "text": text[:20000],
-            })
+            self._send(
+                200,
+                {
+                    "title": ex.title.strip(),
+                    "excerpt": text[:500],
+                    "links": ex.links,
+                    "status_code": status,
+                    "text": text[:20000],
+                },
+            )
         except Exception as e:  # noqa: BLE001 - surface any crawl failure as JSON
             self._send(502, {"error": str(e)})
 

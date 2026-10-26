@@ -2,6 +2,10 @@
   "name": "cf-container-hello",
   "version": "0.0.1",
   "private": true,
-  "scripts": { "deploy": "wrangler deploy" },
-  "dependencies": { "@cloudflare/containers": "^0.0.31" }
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.0.31"
+  }
 }

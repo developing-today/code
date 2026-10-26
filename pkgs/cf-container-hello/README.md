@@ -7,6 +7,7 @@ Docker Hub `cloudflare/hello-world`, linux/amd64 manifest copied
 byte-for-byte into our account registry as `hello-world:v1`).
 
 Routes:
+
 - `/` — singleton HelloContainer (official image, default instance type)
 - `/lite` — HelloLite (official image, instance_type "lite")
 - `/probe` — CrawlerProbe: the Lab Ops Hub crawler image inside a fresh

@@ -20,7 +20,12 @@ in
 pkgs.dockerTools.buildLayeredImage {
   name = "lab-ops-hub-crawlercontainer";
   tag = "v5";
-  contents = [ pkgs.python3 pkgs.cacert pkgs.bash pkgs.coreutils ];
+  contents = [
+    pkgs.python3
+    pkgs.cacert
+    pkgs.bash
+    pkgs.coreutils
+  ];
   extraCommands = ''
     mkdir -p app
     cp ${./container/app.py} app/app.py
@@ -28,8 +33,13 @@ pkgs.dockerTools.buildLayeredImage {
   '';
   config = {
     WorkingDir = "/app";
-    Cmd = [ "${pkgs.python3}/bin/python3" "/app/app.py" ];
-    ExposedPorts = { "8080/tcp" = { }; };
+    Cmd = [
+      "${pkgs.python3}/bin/python3"
+      "/app/app.py"
+    ];
+    ExposedPorts = {
+      "8080/tcp" = { };
+    };
     Env = [
       "PATH=${pkgs.python3}/bin:${pkgs.coreutils}/bin:${pkgs.bash}/bin:/bin:/usr/bin"
       # Nix python ships no CA bundle config; without this, outbound HTTPS
