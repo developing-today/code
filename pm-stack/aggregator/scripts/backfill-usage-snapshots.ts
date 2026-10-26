@@ -25,8 +25,7 @@ import type { SnapshotRecord } from "../src/model.ts";
 const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const dirArg = process.argv.indexOf("--dir");
-const storeDir =
-  dirArg >= 0 ? process.argv[dirArg + 1] : (process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots"));
+const storeDir = dirArg >= 0 ? process.argv[dirArg + 1] : (process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots"));
 const quotaViewPath =
   process.env.QUOTA_VIEW_PATH ??
   join(
@@ -87,8 +86,15 @@ async function main(): Promise<void> {
     const reset = first(s, /weekly reset \w+ (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDT/i);
     push(
       m
-        ? pct("anthropic:claude-pro", "weekly", Number(m[1]), dayTs("2026-10-25"), "console", BY_VIEW,
-            reset ? cdt(reset[1], reset[2]) : undefined)
+        ? pct(
+            "anthropic:claude-pro",
+            "weekly",
+            Number(m[1]),
+            dayTs("2026-10-25"),
+            "console",
+            BY_VIEW,
+            reset ? cdt(reset[1], reset[2]) : undefined,
+          )
         : null,
       "claude weekly %",
     );
@@ -98,7 +104,10 @@ async function main(): Promise<void> {
   {
     const s = sectionOf(doc, /^### ChatGPT/);
     const m = first(s, /7-day\s+(\d+(?:\.\d+)?)%\s+used/i);
-    push(m ? pct("openai:codex", "7-day", Number(m[1]), dayTs("2026-10-25"), "console", BY_VIEW) : null, "codex 7-day %");
+    push(
+      m ? pct("openai:codex", "7-day", Number(m[1]), dayTs("2026-10-25"), "console", BY_VIEW) : null,
+      "codex 7-day %",
+    );
   }
 
   // --- OpenCode Go workspaces (console reads, 2026-10-25) ------------------
@@ -108,18 +117,48 @@ async function main(): Promise<void> {
       s,
       /Personal — monthly (\d+(?:\.\d+)?)% used, weekly (\d+(?:\.\d+)?)%, rolling (\d+(?:\.\d+)?)%/i,
     );
-    push(fresh ? pct("opencode-go:personal", "monthly", Number(fresh[1]), cdt("2026-10-25", "09:17"), "console", BY_VIEW) : null, "go personal monthly (09:17 read)");
-    push(fresh ? pct("opencode-go:personal", "weekly", Number(fresh[2]), cdt("2026-10-25", "09:17"), "console", BY_VIEW) : null, "go personal weekly (09:17 read)");
+    push(
+      fresh
+        ? pct("opencode-go:personal", "monthly", Number(fresh[1]), cdt("2026-10-25", "09:17"), "console", BY_VIEW)
+        : null,
+      "go personal monthly (09:17 read)",
+    );
+    push(
+      fresh
+        ? pct("opencode-go:personal", "weekly", Number(fresh[2]), cdt("2026-10-25", "09:17"), "console", BY_VIEW)
+        : null,
+      "go personal weekly (09:17 read)",
+    );
     const freshLab = first(
       s,
       /Lab — monthly (\d+(?:\.\d+)?)% used, weekly (\d+(?:\.\d+)?)%, rolling (\d+(?:\.\d+)?)%/i,
     );
-    push(freshLab ? pct("opencode-go:lab", "monthly", Number(freshLab[1]), cdt("2026-10-25", "09:18"), "console", BY_VIEW) : null, "go lab monthly (09:18 read)");
-    push(freshLab ? pct("opencode-go:lab", "weekly", Number(freshLab[2]), cdt("2026-10-25", "09:18"), "console", BY_VIEW) : null, "go lab weekly (09:18 read)");
+    push(
+      freshLab
+        ? pct("opencode-go:lab", "monthly", Number(freshLab[1]), cdt("2026-10-25", "09:18"), "console", BY_VIEW)
+        : null,
+      "go lab monthly (09:18 read)",
+    );
+    push(
+      freshLab
+        ? pct("opencode-go:lab", "weekly", Number(freshLab[2]), cdt("2026-10-25", "09:18"), "console", BY_VIEW)
+        : null,
+      "go lab weekly (09:18 read)",
+    );
     const morning = first(s, /\*\*Personal — monthly (\d+(?:\.\d+)?)% used\*\*/i);
-    push(morning ? pct("opencode-go:personal", "monthly", Number(morning[1]), dayTs("2026-10-25"), "console", BY_VIEW) : null, "go personal monthly (morning read)");
+    push(
+      morning
+        ? pct("opencode-go:personal", "monthly", Number(morning[1]), dayTs("2026-10-25"), "console", BY_VIEW)
+        : null,
+      "go personal monthly (morning read)",
+    );
     const morningLab = first(s, /\*\*Lab — monthly (\d+(?:\.\d+)?)% used, weekly (\d+(?:\.\d+)?)%\*\*/i);
-    push(morningLab ? pct("opencode-go:lab", "monthly", Number(morningLab[1]), dayTs("2026-10-25"), "console", BY_VIEW) : null, "go lab monthly (morning read)");
+    push(
+      morningLab
+        ? pct("opencode-go:lab", "monthly", Number(morningLab[1]), dayTs("2026-10-25"), "console", BY_VIEW)
+        : null,
+      "go lab monthly (morning read)",
+    );
   }
 
   // --- ClinePass (dashboard read, 2026-10-25 ~04:48 CDT) -------------------
@@ -141,13 +180,28 @@ async function main(): Promise<void> {
     const bal = first(s, /\$(\d+(?:\.\d+)?) of \$(\d+(?:\.\d+)?) used/i);
     push(
       bal
-        ? { ts: dayTs("2026-10-25"), serviceId: "commandcode:go", metricId: "monthly-credits", value: Number(bal[1]), unit: "usd", limit: Number(bal[2]), source: "console", observedBy: BY_VIEW }
+        ? {
+            ts: dayTs("2026-10-25"),
+            serviceId: "commandcode:go",
+            metricId: "monthly-credits",
+            value: Number(bal[1]),
+            unit: "usd",
+            limit: Number(bal[2]),
+            source: "console",
+            observedBy: BY_VIEW,
+          }
         : null,
       "command code $ used (2026-10-25 read)",
     );
     const short = first(s, /5h (\d+(?:\.\d+)?)%, weekly (\d+(?:\.\d+)?)%/i);
-    push(short ? pct("commandcode:go", "5-hour", Number(short[1]), dayTs("2026-10-25"), "console", BY_VIEW) : null, "command code 5h");
-    push(short ? pct("commandcode:go", "weekly", Number(short[2]), dayTs("2026-10-25"), "console", BY_VIEW) : null, "command code weekly");
+    push(
+      short ? pct("commandcode:go", "5-hour", Number(short[1]), dayTs("2026-10-25"), "console", BY_VIEW) : null,
+      "command code 5h",
+    );
+    push(
+      short ? pct("commandcode:go", "weekly", Number(short[2]), dayTs("2026-10-25"), "console", BY_VIEW) : null,
+      "command code weekly",
+    );
     push(
       /68% monthly limit used/.test(s)
         ? pct("commandcode:go", "monthly", 68, dayTs("2026-10-20"), "manual", BY_VIEW)
@@ -157,7 +211,16 @@ async function main(): Promise<void> {
     const left = first(s, /\$(\d+(?:\.\d+)?) left/i);
     push(
       left
-        ? { ts: dayTs("2026-10-24"), serviceId: "commandcode:go", metricId: "monthly-credits", value: Math.round((10 - Number(left[1])) * 100) / 100, unit: "usd", limit: 10, source: "manual", observedBy: BY_VIEW }
+        ? {
+            ts: dayTs("2026-10-24"),
+            serviceId: "commandcode:go",
+            metricId: "monthly-credits",
+            value: Math.round((10 - Number(left[1])) * 100) / 100,
+            unit: "usd",
+            limit: 10,
+            source: "manual",
+            observedBy: BY_VIEW,
+          }
         : null,
       "command code $ left (2026-10-24)",
     );
@@ -166,23 +229,59 @@ async function main(): Promise<void> {
   // --- Muse consumer weekly (init-log panel captures) ----------------------
   {
     const s = sectionOf(doc, /^### Muse — consumer/);
-    push(/36% observed 2026-10-20/.test(s) ? pct("muse:consumer", "weekly", 36, dayTs("2026-10-20"), "manual", BY_VIEW) : null, "muse consumer 36% (2026-10-20)");
-    push(/\*\*34% of weekly limit used/.test(s) ? pct("muse:consumer", "weekly", 34, cdt("2026-10-25", "07:24"), "manual", BY_VIEW) : null, "muse consumer 34% (07:24 panel)");
-    push(/37% of weekly limit \(2026-10-25 08:49 CDT/.test(doc) ? pct("muse:consumer", "weekly", 37, cdt("2026-10-25", "08:49"), "manual", BY_VIEW) : null, "muse consumer 37% (08:49 read)");
+    push(
+      /36% observed 2026-10-20/.test(s)
+        ? pct("muse:consumer", "weekly", 36, dayTs("2026-10-20"), "manual", BY_VIEW)
+        : null,
+      "muse consumer 36% (2026-10-20)",
+    );
+    push(
+      /\*\*34% of weekly limit used/.test(s)
+        ? pct("muse:consumer", "weekly", 34, cdt("2026-10-25", "07:24"), "manual", BY_VIEW)
+        : null,
+      "muse consumer 34% (07:24 panel)",
+    );
+    push(
+      /37% of weekly limit \(2026-10-25 08:49 CDT/.test(doc)
+        ? pct("muse:consumer", "weekly", 37, cdt("2026-10-25", "08:49"), "manual", BY_VIEW)
+        : null,
+      "muse consumer 37% (08:49 read)",
+    );
   }
 
   // --- Meta High Usage + PAYG (console reads, 2026-10-25) -------------------
   {
     const s = sectionOf(doc, /^### Meta Model API/);
-    push(/weekly quota \*\*46% at 03:20 CDT\*\*/.test(s) || /46% used at 03:20 CDT/.test(registry)
-      ? pct("meta:high-usage", "weekly", 46, cdt("2026-10-25", "03:20"), "console", BY_VIEW)
-      : null, "meta weekly 46% (03:20)");
-    push(/weekly limit \*\*85% used at 09:38 CDT\*\*/.test(s) ? pct("meta:high-usage", "weekly", 85, cdt("2026-10-25", "09:38"), "console", BY_VIEW) : null, "meta weekly 85% (09:38 console)");
-    push(/short window 1%/.test(registry) ? pct("meta:high-usage", "short-window", 1, cdt("2026-10-25", "09:38"), "console", BY_REGISTRY) : null, "meta short window 1% (registry console note)");
+    push(
+      /weekly quota \*\*46% at 03:20 CDT\*\*/.test(s) || /46% used at 03:20 CDT/.test(registry)
+        ? pct("meta:high-usage", "weekly", 46, cdt("2026-10-25", "03:20"), "console", BY_VIEW)
+        : null,
+      "meta weekly 46% (03:20)",
+    );
+    push(
+      /weekly limit \*\*85% used at 09:38 CDT\*\*/.test(s)
+        ? pct("meta:high-usage", "weekly", 85, cdt("2026-10-25", "09:38"), "console", BY_VIEW)
+        : null,
+      "meta weekly 85% (09:38 console)",
+    );
+    push(
+      /short window 1%/.test(registry)
+        ? pct("meta:high-usage", "short-window", 1, cdt("2026-10-25", "09:38"), "console", BY_REGISTRY)
+        : null,
+      "meta short window 1% (registry console note)",
+    );
     const accrued = first(s, /PAYG Oct 19–25: \$(\d+(?:\.\d+)?) accrued/);
     push(
       accrued
-        ? { ts: cdt("2026-10-25", "09:38"), serviceId: "meta:high-usage", metricId: "payg-accrued", value: Number(accrued[1]), unit: "usd", source: "console", observedBy: BY_VIEW }
+        ? {
+            ts: cdt("2026-10-25", "09:38"),
+            serviceId: "meta:high-usage",
+            metricId: "payg-accrued",
+            value: Number(accrued[1]),
+            unit: "usd",
+            source: "console",
+            observedBy: BY_VIEW,
+          }
         : null,
       "meta PAYG accrued $ (Oct 19-25)",
     );
@@ -192,20 +291,59 @@ async function main(): Promise<void> {
   {
     const s = sectionOf(doc, /^### Gemini/);
     const g = first(s, /Gemini weekly (\d+(?:\.\d+)?)% remaining/i);
-    push(g ? pct("antigravity:gemini", "weekly", Math.round((100 - Number(g[1])) * 10) / 10, cdt("2026-10-25", "03:52"), "console", BY_VIEW) : null, "antigravity gemini weekly");
+    push(
+      g
+        ? pct(
+            "antigravity:gemini",
+            "weekly",
+            Math.round((100 - Number(g[1])) * 10) / 10,
+            cdt("2026-10-25", "03:52"),
+            "console",
+            BY_VIEW,
+          )
+        : null,
+      "antigravity gemini weekly",
+    );
     const cg = first(s, /Claude\+GPT pools (\d+(?:\.\d+)?)% remaining/i);
-    push(cg ? pct("antigravity:claude-gpt", "weekly", Math.round((100 - Number(cg[1])) * 10) / 10, cdt("2026-10-25", "03:52"), "console", BY_VIEW) : null, "antigravity claude+gpt weekly");
+    push(
+      cg
+        ? pct(
+            "antigravity:claude-gpt",
+            "weekly",
+            Math.round((100 - Number(cg[1])) * 10) / 10,
+            cdt("2026-10-25", "03:52"),
+            "console",
+            BY_VIEW,
+          )
+        : null,
+      "antigravity claude+gpt weekly",
+    );
   }
 
   // --- Turso (dashboard read, 2026-10-20) ------------------------------------
   {
     const s = sectionOf(doc, /^### Turso$/m);
-    push(/~0%, far behind: 1 DB/.test(s) || /1 DB `/.test(s)
-      ? { ts: dayTs("2026-10-20"), serviceId: "turso", metricId: "databases", value: 1, unit: "count", limit: 100, source: "manual", observedBy: BY_VIEW }
-      : null, "turso databases (2026-10-20)");
-    push(/~0%/.test(sectionOf(doc, /^## Summary \(b\)/))
-      ? pct("turso", "usage", 0, dayTs("2026-10-20"), "manual", BY_VIEW)
-      : null, "turso ~0% (2026-10-20 summary)");
+    push(
+      /~0%, far behind: 1 DB/.test(s) || /1 DB `/.test(s)
+        ? {
+            ts: dayTs("2026-10-20"),
+            serviceId: "turso",
+            metricId: "databases",
+            value: 1,
+            unit: "count",
+            limit: 100,
+            source: "manual",
+            observedBy: BY_VIEW,
+          }
+        : null,
+      "turso databases (2026-10-20)",
+    );
+    push(
+      /~0%/.test(sectionOf(doc, /^## Summary \(b\)/))
+        ? pct("turso", "usage", 0, dayTs("2026-10-20"), "manual", BY_VIEW)
+        : null,
+      "turso ~0% (2026-10-20 summary)",
+    );
   }
 
   // --- Cloudflare (Tracker footprint 2026-10-20 + Decision-004 estimates) ----
@@ -214,21 +352,46 @@ async function main(): Promise<void> {
     const r2 = /~(\d+(?:\.\d+)?) GB/.exec(s);
     push(
       r2
-        ? { ts: dayTs("2026-10-20"), serviceId: "cloudflare", metricId: "r2-storage", value: Number(r2[1]), unit: "gb", limit: 10, source: "manual", observedBy: BY_VIEW }
+        ? {
+            ts: dayTs("2026-10-20"),
+            serviceId: "cloudflare",
+            metricId: "r2-storage",
+            value: Number(r2[1]),
+            unit: "gb",
+            limit: 10,
+            source: "manual",
+            observedBy: BY_VIEW,
+          }
         : null,
       "cloudflare r2 storage footprint",
     );
     const est = /low \$(\d+(?:\.\d+)?) \/ high \$(\d+(?:\.\d+)?) per month/i.exec(s);
     push(
       est
-        ? { ts: dayTs("2026-10-25"), serviceId: "cloudflare", metricId: "platform-excess-est", value: { low: Number(est[1]), high: Number(est[2]) }, unit: "usd-est", source: "estimate", observedBy: BY_VIEW }
+        ? {
+            ts: dayTs("2026-10-25"),
+            serviceId: "cloudflare",
+            metricId: "platform-excess-est",
+            value: { low: Number(est[1]), high: Number(est[2]) },
+            unit: "usd-est",
+            source: "estimate",
+            observedBy: BY_VIEW,
+          }
         : null,
       "cloudflare platform excess estimate",
     );
     const gw = /\$(\d+(?:\.\d+)?) per budget alert vs \$(\d+(?:\.\d+)?) per gateway cost attribution/.exec(registry);
     push(
       gw
-        ? { ts: dayTs("2026-10-25"), serviceId: "cloudflare", metricId: "gateway-accrual-est", value: { low: Number(gw[1]), high: Number(gw[2]) }, unit: "usd-est", source: "estimate", observedBy: BY_REGISTRY }
+        ? {
+            ts: dayTs("2026-10-25"),
+            serviceId: "cloudflare",
+            metricId: "gateway-accrual-est",
+            value: { low: Number(gw[1]), high: Number(gw[2]) },
+            unit: "usd-est",
+            source: "estimate",
+            observedBy: BY_REGISTRY,
+          }
         : null,
       "cloudflare gateway accrual estimate (registry)",
     );
@@ -240,7 +403,15 @@ async function main(): Promise<void> {
     const comped = /(\d[\d,]*) Linux \+ (\d+) macOS minutes/.exec(s);
     push(
       comped
-        ? { ts: dayTs("2026-10-25"), serviceId: "github", metricId: "actions-comped-minutes", value: Number(comped[1].replace(/,/g, "")) + Number(comped[2]), unit: "count", source: "manual", observedBy: BY_VIEW }
+        ? {
+            ts: dayTs("2026-10-25"),
+            serviceId: "github",
+            metricId: "actions-comped-minutes",
+            value: Number(comped[1].replace(/,/g, "")) + Number(comped[2]),
+            unit: "count",
+            source: "manual",
+            observedBy: BY_VIEW,
+          }
         : null,
       "github comped minutes (October)",
     );

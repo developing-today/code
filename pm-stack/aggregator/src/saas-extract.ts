@@ -11,15 +11,7 @@
 // here: B2 is omitted until an account exists (§1.4), and Fly/Baseten
 // are unheld candidates with no meter and no renewal date.
 import { sectionOf } from "./quota-extract.ts";
-import type {
-  ChargeRow,
-  DatedRead,
-  PaygEstimate,
-  PaygLine,
-  SaasGroup,
-  SaasService,
-  UsageMetric,
-} from "./model.ts";
+import type { ChargeRow, DatedRead, PaygEstimate, PaygLine, SaasGroup, SaasService, UsageMetric } from "./model.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 
@@ -58,7 +50,10 @@ function summaryRow(doc: string, firstCell: RegExp): string[] | null {
   const summary = sectionOf(doc, /^## Summary \(b\)/);
   for (const line of summary.split("\n")) {
     if (!line.startsWith("|")) continue;
-    const cells = line.split("|").slice(1, -1).map((c) => c.trim());
+    const cells = line
+      .split("|")
+      .slice(1, -1)
+      .map((c) => c.trim());
     if (cells.length >= 5 && firstCell.test(cells[0])) return cells;
   }
   return null;
@@ -113,7 +108,9 @@ function paygOf(section: string): { estimate: PaygEstimate | null; note?: string
     return { estimate: null, note: "not estimable from local records" };
   }
   if (/not applicable/i.test(text)) {
-    const why = stripPaygLabel(text).replace(/^not applicable\s*—\s*/i, "").split(".")[0];
+    const why = stripPaygLabel(text)
+      .replace(/^not applicable\s*—\s*/i, "")
+      .split(".")[0];
     return { estimate: null, note: `not applicable — ${why}`.slice(0, 220) };
   }
   return { estimate: null };
@@ -245,17 +242,67 @@ const cloudflareMetrics: MetricExtractor = (section) => {
       highlight: true,
     }),
     // The long tail — detail view only (§1.5).
-    metric({ id: "logs-events", label: "Workers logs events", unit: "count", limit: allowance(both, /logs ([\d,.]+[kMB]?),/) }),
+    metric({
+      id: "logs-events",
+      label: "Workers logs events",
+      unit: "count",
+      limit: allowance(both, /logs ([\d,.]+[kMB]?),/),
+    }),
     metric({ id: "kv-storage", label: "KV storage", unit: "gb", limit: allowance(both, /([\d,.]+[kMB]?) GB; D1/) }),
-    metric({ id: "d1-storage", label: "D1 storage", unit: "gb", limit: allowance(both, /written, ([\d,.]+[kMB]?) GB/) }),
-    metric({ id: "do-requests", label: "Durable Objects requests", unit: "count", limit: allowance(both, /Durable Objects ([\d,.]+[kMB]?) requests/) }),
-    metric({ id: "do-duration", label: "Durable Objects duration", unit: "other", limit: allowance(both, /([\d,.]+[kMB]?) GB-s/) }),
-    metric({ id: "workflows-steps", label: "Workflows steps", unit: "count", limit: allowance(both, /Workflows ([\d,.]+[kMB]?) steps/) }),
-    metric({ id: "vectorize-queried", label: "Vectorize queried dimensions", unit: "count", limit: allowance(both, /Vectorize ([\d,.]+[kMB]?) queried/) }),
-    metric({ id: "vectorize-stored", label: "Vectorize stored dimensions", unit: "count", limit: allowance(both, /([\d,.]+[kMB]?) stored dimensions/) }),
-    metric({ id: "containers-memory", label: "Containers memory", unit: "hours", limit: allowance(both, /Containers ([\d,.]+[kMB]?) GiB-hours/) }),
-    metric({ id: "containers-vcpu", label: "Containers vCPU-minutes", unit: "minutes", limit: allowance(both, /([\d,.]+[kMB]?) vCPU-min/) }),
-    metric({ id: "containers-disk", label: "Containers disk", unit: "hours", limit: allowance(both, /([\d,.]+[kMB]?) GB-hours disk/) }),
+    metric({
+      id: "d1-storage",
+      label: "D1 storage",
+      unit: "gb",
+      limit: allowance(both, /written, ([\d,.]+[kMB]?) GB/),
+    }),
+    metric({
+      id: "do-requests",
+      label: "Durable Objects requests",
+      unit: "count",
+      limit: allowance(both, /Durable Objects ([\d,.]+[kMB]?) requests/),
+    }),
+    metric({
+      id: "do-duration",
+      label: "Durable Objects duration",
+      unit: "other",
+      limit: allowance(both, /([\d,.]+[kMB]?) GB-s/),
+    }),
+    metric({
+      id: "workflows-steps",
+      label: "Workflows steps",
+      unit: "count",
+      limit: allowance(both, /Workflows ([\d,.]+[kMB]?) steps/),
+    }),
+    metric({
+      id: "vectorize-queried",
+      label: "Vectorize queried dimensions",
+      unit: "count",
+      limit: allowance(both, /Vectorize ([\d,.]+[kMB]?) queried/),
+    }),
+    metric({
+      id: "vectorize-stored",
+      label: "Vectorize stored dimensions",
+      unit: "count",
+      limit: allowance(both, /([\d,.]+[kMB]?) stored dimensions/),
+    }),
+    metric({
+      id: "containers-memory",
+      label: "Containers memory",
+      unit: "hours",
+      limit: allowance(both, /Containers ([\d,.]+[kMB]?) GiB-hours/),
+    }),
+    metric({
+      id: "containers-vcpu",
+      label: "Containers vCPU-minutes",
+      unit: "minutes",
+      limit: allowance(both, /([\d,.]+[kMB]?) vCPU-min/),
+    }),
+    metric({
+      id: "containers-disk",
+      label: "Containers disk",
+      unit: "hours",
+      limit: allowance(both, /([\d,.]+[kMB]?) GB-hours disk/),
+    }),
   );
   const counts = /(\d+) Workers, (\d+) R2 buckets[^;]*; (\d+) D1, (\d+) KV, (\d+) Queues/.exec(usage);
   if (counts) {
@@ -276,18 +323,69 @@ const tursoMetrics: MetricExtractor = (section) => {
   const db = /(\d+) DB/.exec(usage);
   const zero = /0 B, 0 usage/.test(usage);
   return [
-    metric({ id: "databases", label: "Databases", unit: "count", used: db ? Number(db[1]) : null, limit: allowance(plan, /(100) DBs/), highlight: true }),
-    metric({ id: "storage", label: "Storage", unit: "gb", used: zero ? 0 : null, limit: allowance(plan, /([\d,.]+) GB storage/), highlight: true, note: zero ? "0 B at the 2026-10-20 dashboard read; later mirror activity is not an org-wide meter." : undefined }),
-    metric({ id: "rows-read", label: "Rows read / month", unit: "rows", limit: allowance(plan, /([\d,.]+[kMB]?) reads\/month/), highlight: true }),
-    metric({ id: "rows-written", label: "Rows written / month", unit: "rows", limit: allowance(plan, /([\d,.]+[kMB]?) writes\/month/), highlight: true }),
-    metric({ id: "sync", label: "Sync / month", unit: "gb", limit: allowance(plan, /([\d,.]+) GB syncs\/month/), highlight: true }),
+    metric({
+      id: "databases",
+      label: "Databases",
+      unit: "count",
+      used: db ? Number(db[1]) : null,
+      limit: allowance(plan, /(100) DBs/),
+      highlight: true,
+    }),
+    metric({
+      id: "storage",
+      label: "Storage",
+      unit: "gb",
+      used: zero ? 0 : null,
+      limit: allowance(plan, /([\d,.]+) GB storage/),
+      highlight: true,
+      note: zero ? "0 B at the 2026-10-20 dashboard read; later mirror activity is not an org-wide meter." : undefined,
+    }),
+    metric({
+      id: "rows-read",
+      label: "Rows read / month",
+      unit: "rows",
+      limit: allowance(plan, /([\d,.]+[kMB]?) reads\/month/),
+      highlight: true,
+    }),
+    metric({
+      id: "rows-written",
+      label: "Rows written / month",
+      unit: "rows",
+      limit: allowance(plan, /([\d,.]+[kMB]?) writes\/month/),
+      highlight: true,
+    }),
+    metric({
+      id: "sync",
+      label: "Sync / month",
+      unit: "gb",
+      limit: allowance(plan, /([\d,.]+) GB syncs\/month/),
+      highlight: true,
+    }),
   ].filter((m) => m.used != null || m.limit != null);
 };
 
 const supabaseMetrics: MetricExtractor = () => [
-  metric({ id: "db-size", label: "Database size", unit: "gb", highlight: true, note: "Free-plan numerical limits are not recorded in local records; account meters are not verified from this host." }),
-  metric({ id: "egress", label: "Egress", unit: "gb", highlight: true, note: "Not measured — manual dashboard read needed." }),
-  metric({ id: "storage", label: "Storage", unit: "gb", highlight: true, note: "Not measured — manual dashboard read needed." }),
+  metric({
+    id: "db-size",
+    label: "Database size",
+    unit: "gb",
+    highlight: true,
+    note: "Free-plan numerical limits are not recorded in local records; account meters are not verified from this host.",
+  }),
+  metric({
+    id: "egress",
+    label: "Egress",
+    unit: "gb",
+    highlight: true,
+    note: "Not measured — manual dashboard read needed.",
+  }),
+  metric({
+    id: "storage",
+    label: "Storage",
+    unit: "gb",
+    highlight: true,
+    note: "Not measured — manual dashboard read needed.",
+  }),
 ];
 
 const githubMetrics: MetricExtractor = (section) => {
@@ -303,9 +401,28 @@ const githubMetrics: MetricExtractor = (section) => {
       highlight: true,
       note: "No billable-minute volume outside the included/comped bucket is recorded; billing API needs a billing-scoped token (§2.2).",
     }),
-    metric({ id: "codespaces-hours", label: "Codespaces core-hours", unit: "hours", limit: allowance(plan, /([\d,.]+) Codespaces core-hours/), highlight: true }),
-    metric({ id: "codespaces-storage", label: "Codespaces storage", unit: "gb", limit: allowance(plan, /([\d,.]+) GB storage\/month/), highlight: true, note: "Usage unknown in local records." }),
-    metric({ id: "packages", label: "Packages storage", unit: "gb", limit: allowance(plan, /([\d,.]+) GB Packages/), highlight: true }),
+    metric({
+      id: "codespaces-hours",
+      label: "Codespaces core-hours",
+      unit: "hours",
+      limit: allowance(plan, /([\d,.]+) Codespaces core-hours/),
+      highlight: true,
+    }),
+    metric({
+      id: "codespaces-storage",
+      label: "Codespaces storage",
+      unit: "gb",
+      limit: allowance(plan, /([\d,.]+) GB storage\/month/),
+      highlight: true,
+      note: "Usage unknown in local records.",
+    }),
+    metric({
+      id: "packages",
+      label: "Packages storage",
+      unit: "gb",
+      limit: allowance(plan, /([\d,.]+) GB Packages/),
+      highlight: true,
+    }),
   ];
   if (comped) {
     out.push(
@@ -339,11 +456,31 @@ const modalMetrics: MetricExtractor = (section) => {
 const ociMetrics: MetricExtractor = (section) => {
   const plan = bullet(section, /\*\*Plan \/ price \/ allowance:\*\*/);
   return [
-    metric({ id: "ocpu-hours", label: "A1 OCPU-hours / month", unit: "hours", limit: allowance(plan, /([\d,.]+) OCPU-hours/) }),
-    metric({ id: "gb-hours", label: "A1 GB-hours / month", unit: "hours", limit: allowance(plan, /([\d,.]+) GB-hours\/month/) }),
+    metric({
+      id: "ocpu-hours",
+      label: "A1 OCPU-hours / month",
+      unit: "hours",
+      limit: allowance(plan, /([\d,.]+) OCPU-hours/),
+    }),
+    metric({
+      id: "gb-hours",
+      label: "A1 GB-hours / month",
+      unit: "hours",
+      limit: allowance(plan, /([\d,.]+) GB-hours\/month/),
+    }),
     metric({ id: "block-storage", label: "Block storage", unit: "gb", limit: allowance(plan, /([\d,.]+) GB block/) }),
-    metric({ id: "egress", label: "Egress / month", unit: "gb", limit: allowance(plan, /([\d,.]+) TB egress/) ? allowance(plan, /([\d,.]+) TB egress/)! * 1000 : null }),
-    metric({ id: "object-storage", label: "Object storage", unit: "gb", limit: allowance(plan, /([\d,.]+) GB object storage/) }),
+    metric({
+      id: "egress",
+      label: "Egress / month",
+      unit: "gb",
+      limit: allowance(plan, /([\d,.]+) TB egress/) ? allowance(plan, /([\d,.]+) TB egress/)! * 1000 : null,
+    }),
+    metric({
+      id: "object-storage",
+      label: "Object storage",
+      unit: "gb",
+      limit: allowance(plan, /([\d,.]+) GB object storage/),
+    }),
   ].filter((m) => m.limit != null);
 };
 
@@ -448,7 +585,8 @@ const SERVICE_SPECS: ServiceSpec[] = [
     status: "active",
     cadenceDays: 7,
     metrics: () => [],
-    shellNote: "Counts only in this hub — secret names/values never enter it. No count recorded yet; plan/price unknown.",
+    shellNote:
+      "Counts only in this hub — secret names/values never enter it. No count recorded yet; plan/price unknown.",
   },
 ];
 
@@ -589,12 +727,25 @@ export function extractCharges(doc: string, registryText = ""): ChargeRow[] {
   const both = `${doc}\n${registryText}`;
   const visa = /Visa\s*(?:•\s*)?(\d{4})/.exec(both);
   const method = visa ? `Visa •${visa[1]}` : "card";
-  const metaCharges = /\$(\d+(?:\.\d+)?) charged(?:[^$]*)\+ \$(\d+(?:\.\d+)?) charged/.exec(both) ??
+  const metaCharges =
+    /\$(\d+(?:\.\d+)?) charged(?:[^$]*)\+ \$(\d+(?:\.\d+)?) charged/.exec(both) ??
     /\$(\d+(?:\.\d+)?) at 05:15 CDT \+ \$(\d+(?:\.\d+)?) at 07:47 CDT/.exec(both);
   if (metaCharges) {
     rows.push(
-      { at: "2026-10-25", label: "Meta PAYG spill", amountUsd: Number(metaCharges[1]), method, source: "Gmail card alert (registry billing incidents)" },
-      { at: "2026-10-25", label: "Meta PAYG spill", amountUsd: Number(metaCharges[2]), method, source: "Gmail card alert (registry billing incidents)" },
+      {
+        at: "2026-10-25",
+        label: "Meta PAYG spill",
+        amountUsd: Number(metaCharges[1]),
+        method,
+        source: "Gmail card alert (registry billing incidents)",
+      },
+      {
+        at: "2026-10-25",
+        label: "Meta PAYG spill",
+        amountUsd: Number(metaCharges[2]),
+        method,
+        source: "Gmail card alert (registry billing incidents)",
+      },
     );
   }
   const cline = sectionOf(doc, /^### ClinePass/);
