@@ -162,6 +162,57 @@ The mobile app must be **T3 Code 2.0** — a V1 client refuses a V2 server
 and vice versa, which is also why the desktop in this PR is
 version-locked to the server.
 
+## Rollout outcome (2026-10-26, laptop `amd`)
+
+The checklist above was executed the same day. Results:
+
+- The build and switch succeeded; `home-manager-user.service` initially
+  FAILED on hand-placed, unmanaged proxy-supervisor files
+  (`~/.config/systemd/user/proxy-supervisor.{service,timer}`,
+  `~/.config/proxy-supervisor/config.json`, and a `timers.target.wants`
+  symlink, all dated 2026-10-24). They were renamed aside
+  (`.unmanaged-20261026`), not deleted. Diffing them against this PR's
+  generation surfaced the drift fixed in this PR: the live supervisor
+  config supervised `commandcode-proxy` and `muse-proxy`, which the
+  repo config did not know about.
+- With the conflicts aside, activation succeeded. Verified live:
+  seed reported `added muse, pi; refreshed binaryPath for
+  antigravity-acp, opencode-v2; disabled OpenCode 1.x instance(s)
+  opencode-v1`; the 0.1.2 server logged `Tailscale Serve configured`
+  and answered 200 on loopback and at
+  `https://amd-6.raptor-pumpkinseed.ts.net/`; projects `~/code` and
+  `~/work` were registered with `t3 project add`.
+- Shared sessions PROVEN, with a schema caveat: T3 spawns its own
+  `opencode serve` (systemd scope, loopback, ephemeral port) from the
+  seeded binary, with the standard data dir. The fork's OpenCode 2.x
+  writes current sessions to the `session_v2` table of the shared
+  `~/.local/share/opencode/opencode.db` (the legacy `session`/`part`
+  tables are the old schema's leftovers — do not look there). Two T3
+  threads' sessions (`ses_e859ce97…`, `ses_e859b8063…`, directory
+  `~/code`) were found in `session_v2`, i.e. in the same store
+  OpenChamber's server reads and resumes from.
+- `t3 doctor` confirms the one-way V1 → V2 import happened and the
+  pre-0.1.0 database (296 KiB) is kept for rollback; it was left in
+  place deliberately.
+- NOT verified before the revert below: a live thread on the `muse`
+  provider (the CLI requires `--provider` and `--model` together).
+- At 17:47 CDT a concurrent workstream's home-manager activation
+  loop (building `home.activationPackage` to `/tmp/oc-result` and
+  running its `activate`) re-applied an older generation, reverting
+  the T3 units to 0.0.45 and the supervisor config to five proxies.
+  The system-level switch (t3 0.1.2 CLI, muse 1.4.13 in the profiles)
+  persisted; only the home-manager state flip-flops. Steady state
+  requires this PR merged (so main-based activations produce the
+  0.1.2 state) plus one final switch after the concurrent work
+  settles.
+- Two pre-existing faults surfaced, both unrelated to this PR:
+  `libvirtd.service` fails to start on this host (credential-key
+  error), which makes `nixos-rebuild switch` exit 4 even when the
+  activation itself completes; and the `commandcode-proxy` user unit
+  (marked "NOT YET DEPLOYED" in `home/common`) crash-loops against
+  the supervisor-owned transient unit on port 18748 whenever any
+  home-manager activation starts it.
+
 ## Verification done in this PR
 
 - Seed script fixture test (see above): add / refresh / disable /
