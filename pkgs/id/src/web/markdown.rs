@@ -895,9 +895,55 @@ fn parse_linked_img_tag(html: &str) -> Option<Value> {
 pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     let arena = Arena::new();
     let root = json_to_ast(&arena, doc)?;
+    // #1019: comrak's renderer percent-encodes a space in a link/image
+    // destination (`my notes.md` -> `my%20notes.md`) instead of emitting
+    // the <...> angle form, silently breaking relative file links and
+    // mutating the PM href on reparse. The renderer has no angle-form
+    // option, so swap each spaced destination for a unique placeholder
+    // before rendering and restore it as <raw destination> afterwards.
+    let substitutions = substitute_spaced_destinations(root);
     let mut output = String::new();
     format_commonmark(root, &commonmark_options(), &mut output)?;
+    for (placeholder, raw) in substitutions {
+        output = output.replace(&placeholder, &format!("<{raw}>"));
+    }
     Ok(output)
+}
+
+/// Replace every link/image destination containing a space with a
+/// unique placeholder token, returning (placeholder, raw destination)
+/// pairs for restoration after rendering (#1019). The token is a valid
+/// bare destination (no spaces or characters comrak encodes), so the
+/// renderer emits it verbatim exactly where the destination belongs.
+fn substitute_spaced_destinations<'a>(root: &'a AstNode<'a>) -> Vec<(String, String)> {
+    let mut substitutions: Vec<(String, String)> = Vec::new();
+    let mut stack: Vec<&AstNode<'a>> = vec![root];
+    while let Some(node) = stack.pop() {
+        stack.extend(node.children());
+        let mut data = node.data.borrow_mut();
+        let url = match &mut data.value {
+            NodeValue::Link(link) | NodeValue::Image(link) => &mut link.url,
+            _ => continue,
+        };
+        if !url.contains(' ') {
+            continue;
+        }
+        if let Some(index) = substitutions
+            .iter()
+            .position(|(_, raw)| raw.as_str() == url.as_str())
+        {
+            *url = substitutions[index].0.clone();
+        } else {
+            let placeholder = format!(
+                "idweb-spaced-destination-{}-placeholder",
+                substitutions.len()
+            );
+            let raw = std::mem::take(url);
+            *url = placeholder.clone();
+            substitutions.push((placeholder, raw));
+        }
+    }
+    substitutions
 }
 
 /// Convert `ProseMirror` JSON to comrak AST.
@@ -1771,6 +1817,64 @@ mod tests {
     }
 
     #[test]
+    fn test_spaced_link_destination_roundtrips_in_angle_form() {
+        // #1019: a destination containing a space must save in the
+        // <...> angle form byte-identically — comrak's renderer would
+        // otherwise percent-encode it to %20, breaking relative links
+        // and mutating the PM href on reparse.
+        let original = "[notes](<my notes.md>)\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, original, "angle form retained");
+        assert_eq!(first, second, "fixpoint");
+        assert!(!first.contains("%20"), "no percent-encoding: {first}");
+        let doc = markdown_to_prosemirror(&first);
+        let link = &doc["content"][0]["content"][0]["marks"][0];
+        assert_eq!(link["type"], "link");
+        assert_eq!(link["attrs"]["href"], "my notes.md", "PM href unmutated");
+    }
+
+    #[test]
+    fn test_spaced_image_destination_roundtrips_in_angle_form() {
+        // #1019: same preservation for image src.
+        let original = "![a](<my pic.png>)\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, original, "angle form retained");
+        assert_eq!(first, second, "fixpoint");
+        let doc = markdown_to_prosemirror(&first);
+        let img = &doc["content"][0]["content"][0];
+        assert_eq!(img["type"], "image");
+        assert_eq!(img["attrs"]["src"], "my pic.png", "PM src unmutated");
+    }
+
+    #[test]
+    fn test_spaced_destination_with_title_and_editor_href() {
+        // #1019: a spaced destination with a title keeps both, and an
+        // editor-created PM link whose href contains a space saves in
+        // angle form and reparses to the identical href.
+        let (first, second) = two_saves("[t](<a b.md> \"T\")\n");
+        assert_eq!(first, "[t](<a b.md> \"T\")\n");
+        assert_eq!(first, second, "fixpoint");
+
+        let pm = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "t",
+                    "marks": [{"type": "link", "attrs": {"href": "https://e.com/a b"}}]
+                }]
+            }]
+        });
+        let md = prosemirror_to_markdown(&pm).expect("converts");
+        assert_eq!(md, "[t](<https://e.com/a b>)\n");
+        let back = markdown_to_prosemirror(&md);
+        assert_eq!(
+            back["content"][0]["content"][0]["marks"][0]["attrs"]["href"], "https://e.com/a b",
+            "href identical after round trip"
+        );
+    }
+
     fn test_footnote_roundtrip_fixpoint() {
         // #945: a footnote reference + definition round-trip open->save
         // intact — emitted as [^label] syntax, never backslash-escaped,
