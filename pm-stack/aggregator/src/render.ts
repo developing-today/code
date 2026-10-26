@@ -352,25 +352,46 @@ export function renderBoard(
     const k = key === "to-do" ? "to-do" : key;
     cols.set(k, [...(cols.get(k) ?? []), item]);
   }
-  const order = ["to-do", "in-progress", "in-review", "done"];
+  const order = ["in-flight", "to-do", "in-progress", "in-review", "done"];
   const extra = [...cols.keys()].filter((k) => !order.includes(k));
   const bodies = [...order, ...extra]
     .filter((k) => cols.has(k))
     .map((k) => {
-      const cards = (cols.get(k) ?? [])
+      const colItems = cols.get(k) ?? [];
+      const cards = colItems
         .map((item) => {
           const repo = item.repo ? `<span class="muted">${esc(item.repo)}</span><br>` : "";
-          const src = item.source === "github" ? `<span class="badge open">gh-only</span> ` : "";
           const cmt = counts ? commentBadge(item.id, counts) : "";
+          if (item.source === "orchestrator") {
+            // Synthetic in-flight entry: visibly not a Kaneo card. Its
+            // GitHub refs link directly (no execution strip — the
+            // projector may not know these refs yet).
+            const status = item.orchStatus ? `<span class="badge src">${esc(item.orchStatus)}</span> ` : "";
+            const goal = item.goal ? `<br><span class="muted">goal: ${esc(item.goal)}</span>` : "";
+            const blocked = item.blockedBy?.length
+              ? `<br><strong>Blocked by:</strong> ${item.blockedBy.map(esc).join("; ")}`
+              : "";
+            const refs = item.links.length
+              ? `<div class="strip">${item.links.map((l) => `<a class="badge open" href="${esc(refUrl(l.ref))}">${esc(l.ref)}</a>`).join(" ")}</div>`
+              : "";
+            return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}"><span class="badge implementing">orchestrator · in flight</span> ${esc(item.title)}</a>${cmt}<br>${status}${repo}${goal}${blocked}${refs}</div>`;
+          }
+          const src = item.source === "github" ? `<span class="badge open">gh-only</span> ` : "";
           return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${stripHtml(items, item.links)}</div>`;
         })
         .join("");
-      return `<div class="col"><h2>${esc(k)} (${(cols.get(k) ?? []).length})</h2>${cards}</div>`;
+      // The in-flight lane is dated by the orchestration section that
+      // produced it (stamped on every synthetic entry as updatedAt).
+      const heading =
+        k === "in-flight"
+          ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length})`
+          : `${esc(k)} (${colItems.length})`;
+      return `<div class="col"><h2>${heading}</h2>${cards}</div>`;
     })
     .join("");
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">Curated in-flight set across the four repos. Each card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p><div class="board">${bodies}</div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p><div class="board">${bodies}</div>`,
     provenance,
     "/",
   );

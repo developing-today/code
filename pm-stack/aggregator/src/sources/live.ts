@@ -30,6 +30,7 @@ import {
   type SessionRecord,
   type SourceCoverage,
   type UsageView,
+  parseRef,
   refsInText,
   refUrl,
 } from "../model.ts";
@@ -337,6 +338,119 @@ async function enrichWithRegistryLinks<T extends { links: Link[] }>(
   );
 }
 
+// --- Orchestrator in-flight lane -------------------------------------------
+// Kaneo's columns are a completion record in practice: the reader above
+// keeps only in-progress / in-review / done, to-do is dropped as backlog,
+// and in practice the live board holds done and in-review cards only —
+// on their own they cannot answer "what is being worked on today". The
+// fleet feed's orchestration section (#899) can: its per-goal linedUp
+// tasks are the orchestrator's current queue. board() merges the
+// in-progress / queued / blocked ones in as synthetic entries with the
+// board status "in-flight", so renderBoard groups them into their own
+// lane, visibly sourced from the orchestrator. Kaneo is never written
+// to — its cards stay the completion record underneath.
+
+/** Repo shorthands the orchestrator uses in linedUp titles. */
+const TITLE_REPO_ALIASES: Record<string, string> = {
+  code: "developing-today/code",
+  opencode: "developing-today/opencode",
+  openchamber: "developing-today/openchamber",
+  nix: "dezren39/nix",
+};
+
+/**
+ * GitHub refs a linedUp title carries, as ref keys: "owner/repo#N" and
+ * GitHub URLs first, then shorthand "#N" mentions attributed to the
+ * repo alias ("code", "nix", …) nearest the mention in the title
+ * (a preceding alias wins, else the following one). A "#N" with no
+ * alias anywhere in the title is not a ref we can name — the same text
+ * also carries queue/task numbers — so it is left unlinked rather
+ * than guessed at.
+ */
+export function titleRefs(title: string): RefKey[] {
+  const out: RefKey[] = [];
+  const add = (ref: RefKey) => {
+    if (!out.includes(ref)) out.push(ref);
+  };
+  for (const ref of refsInText(title)) add(ref);
+  for (const m of title.matchAll(/([\w.-]+\/[\w.-]+)#(\d+)/g)) add(`${m[1]}#${m[2]}`);
+  const aliases: { at: number; repo: string }[] = [];
+  for (const m of title.matchAll(/\b(code|opencode|openchamber|nix)\b/gi)) {
+    aliases.push({ at: m.index ?? 0, repo: TITLE_REPO_ALIASES[m[1].toLowerCase()] });
+  }
+  if (aliases.length) {
+    for (const m of title.matchAll(/#(\d+)/g)) {
+      const at = m.index ?? 0;
+      const before = aliases.filter((a) => a.at < at).pop();
+      const repo = (before ?? aliases.find((a) => a.at > at))?.repo;
+      if (repo) add(`${repo}#${m[1]}`);
+    }
+  }
+  return out;
+}
+
+const slugify = (s: string): string =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60) || "task";
+const normTitle = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/**
+ * The synthetic in-flight entries for one orchestration section,
+ * deduped against the board they will be merged into:
+ * - a task whose GitHub ref (its own `ref`, or one its title carries)
+ *   already appears in a Kaneo card's links is dropped — the Kaneo
+ *   card is the record for that work. This is deliberately coarse:
+ *   one shared ref drops the whole entry, even when its title names
+ *   further refs no Kaneo card carries.
+ * - a task whose title matches a Kaneo card's title is dropped.
+ * - repeats inside the section itself (the same task lined up under
+ *   two goals, or twice under one) emit once, keyed by first ref,
+ *   else by normalized title.
+ * Tasks with no ref anywhere still emit (title only, no GitHub link).
+ */
+export function inFlightBoardItems(section: OrchestrationSection, existing: BoardItem[]): BoardItem[] {
+  const existingRefs = new Set(existing.flatMap((b) => b.links.map((l) => l.ref)));
+  const existingTitles = new Set(existing.map((b) => normTitle(b.title)));
+  const emitted = new Set<string>();
+  const out: BoardItem[] = [];
+  for (const goal of section.goals) {
+    for (const task of goal.linedUp) {
+      if (task.status !== "in-progress" && task.status !== "queued" && task.status !== "blocked") continue;
+      const refs: RefKey[] = [];
+      const add = (ref: RefKey) => {
+        if (!refs.includes(ref)) refs.push(ref);
+      };
+      if (task.ref) add(task.ref);
+      for (const ref of titleRefs(task.title)) add(ref);
+      if (refs.some((r) => existingRefs.has(r))) continue;
+      const titleKey = normTitle(task.title);
+      if (existingTitles.has(titleKey)) continue;
+      const key = refs[0] ?? titleKey;
+      if (emitted.has(key) || emitted.has(titleKey)) continue;
+      emitted.add(key);
+      emitted.add(titleKey);
+      out.push({
+        id: `orch:${slugify(goal.goal)}/${slugify(task.title)}`,
+        title: task.title,
+        repo: refs.length ? parseRef(refs[0]).repo : "",
+        source: "orchestrator",
+        status: "in-flight",
+        orchStatus: task.status,
+        goal: goal.goal,
+        blockedBy: task.blockedBy?.map((d) => `${d.task} (${d.status})`),
+        // The lane header dates the lane by the section that produced
+        // it; every synthetic entry carries that stamp.
+        updatedAt: section.generatedAt,
+        links: refs.map((ref) => ({ ref, relation: "tracks" as const })),
+      });
+    }
+  }
+  return out;
+}
+
 // --- Composition ----------------------------------------------------------
 
 export function liveSource(cfg: Config): Source {
@@ -456,12 +570,29 @@ export function liveSource(cfg: Config): Source {
         const board = await kaneoBoard(cfg, cookie);
         if (board.length > 0) {
           provenance.board = "live (Kaneo)";
+          let merged = board;
           if (cfg.projector.baseUrl) {
-            const enriched = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
+            merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
             provenance.board = "live (Kaneo + projector links)";
-            return enriched;
           }
-          return board;
+          // In-flight lane (see inFlightBoardItems above): synthetic
+          // entries from the fleet feed's orchestration section — the
+          // same feed read this source already uses for quota and
+          // orchestration — merged ahead of the Kaneo cards. The lane
+          // fails soft: no feed / no section = the Kaneo board alone.
+          try {
+            const feed = await getFeed();
+            if (feed?.orchestration && isOrchestrationSection(feed.orchestration)) {
+              const inFlight = inFlightBoardItems(feed.orchestration, merged);
+              if (inFlight.length) {
+                provenance.board += ` + orchestrator in-flight (${inFlight.length} lined-up, section ${feed.orchestration.generatedAt})`;
+                merged = [...inFlight, ...merged];
+              }
+            }
+          } catch {
+            /* the Kaneo board still renders without the lane */
+          }
+          return merged;
         }
       } catch (err) {
         provenance.board = `fixtures (kaneo unreachable: ${err instanceof Error ? err.message : err})`;
