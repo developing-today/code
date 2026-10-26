@@ -46,10 +46,10 @@ export const PAGES: PageDef[] = [
   },
   {
     id: "quota",
-    title: "Quota",
+    title: "Usage & billing",
     route: "/quota",
     api: "/api/quota.json",
-    blurb: "All pooled quotas, resets, and burn rates.",
+    blurb: "Token quotas, PAYG dollars, and every SaaS service's usage vs its limits.",
   },
   {
     id: "dns",

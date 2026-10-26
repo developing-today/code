@@ -17,6 +17,14 @@ export interface Config {
   commentsFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
+  /** Usage snapshot store (hub §4): a directory of monthly JSONL files. */
+  snapshotsDir: string;
+  /** The stewardship quota view; the hub's live fallback source when the
+   * fleet feed carries no saas/payg sections yet (hub §2.3). */
+  quotaViewFile: string;
+  /** The provider quota registry; the hub's second dated-read source
+   * (billing incidents) for the same fallback path. */
+  quotaRegistryFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
   kaneo: {
@@ -47,6 +55,18 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
+    snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),
+    quotaViewFile: s(
+      env.PM_AGG_QUOTA_VIEW,
+      join(
+        homedir(),
+        "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
+      ),
+    ),
+    quotaRegistryFile: s(
+      env.PM_AGG_QUOTA_REGISTRY,
+      join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
+    ),
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
       join(homedir(), ".config", "openchamber", "managed-opencode", "state.json"),
