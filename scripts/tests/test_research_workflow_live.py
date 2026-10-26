@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -509,6 +510,219 @@ class ReceiptTests(Fixture):
             + b"\n<!-- /workflow:resolution -->\n"
         )
         self.assertIn("Duplicate note disposition", self.check(ok=False))
+
+
+class LeaseTests(Fixture):
+    """`lease acquire|release|list`: mkdir locks, expiry, renewal and takeover."""
+
+    T0 = "2026-10-22T10:00:00Z"
+    T10 = "2026-10-22T10:10:00Z"
+    T20 = "2026-10-22T10:20:00Z"
+    T30 = "2026-10-22T10:30:00Z"
+
+    def args(self, action, name="worker-a", resource="C001", scoped=True, **extra):
+        args = ["lease", action, "--resource", resource, "--name", name]
+        if scoped:
+            args += ["--package", self.package]
+        if action == "acquire":
+            extra = {"purpose": "S2 research"} | extra
+        for key, value in extra.items():
+            args += [f"--{key}", value]
+        return args
+
+    def acquire(self, ok=True, now=T0, **kwargs):
+        return self.cli(*self.args("acquire", **kwargs), ok=ok, now=now)
+
+    def release(self, ok=True, now=T0, **kwargs):
+        return self.cli(*self.args("release", **kwargs), ok=ok, now=now)
+
+    def listed(self, *args, now=T0):
+        return self.cli("lease", "list", *args, now=now)
+
+    def spawn(self, args, now):
+        return subprocess.Popen(
+            [sys.executable, "-I", str(SCRIPT), *map(str, args)]
+            + ["--repo-root", str(self.root)],
+            cwd=self.root,
+            env=clean_env(RESEARCH_WORKFLOW_NOW=now),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def race(self, now, names):
+        """Run one acquire per name at once; return (winning output, errors)."""
+        runs = [self.spawn(self.args("acquire", name=n), now) for n in names]
+        results = [(run, *run.communicate(timeout=120)) for run in runs]
+        wins = [json.loads(out) for run, out, _ in results if run.returncode == 0]
+        errors = [err for run, _, err in results if run.returncode]
+        self.assertEqual(len(wins), 1, errors)
+        return wins[0], errors
+
+    @property
+    def scoped(self):
+        return f"C001@{self.package.name}.lock"
+
+    def test_acquire_makes_a_lock_directory_with_an_owner_line(self):
+        output = self.acquire()
+        self.assertEqual(
+            output,
+            {
+                "dir": str(self.locks().parent),
+                "action": "acquired",
+                "lock": self.scoped,
+                "name": "worker-a",
+                "acquired": self.T0,
+                "expires": self.T20,
+                "purpose": "S2 research",
+            },
+        )
+        lock = self.locks() / self.scoped
+        self.assertEqual(sorted(p.name for p in lock.iterdir()), ["owner"])
+        self.assertEqual(
+            (lock / "owner").read_text(encoding="utf-8"),
+            f"worker-a {self.T0} {self.T20} S2 research\n",
+        )
+        self.acquire(resource="ids", name="worker-b", scoped=False, minutes="5")
+        listed = self.listed()["leases"]
+        self.assertEqual(
+            [(x["lock"], x["name"], x["expires"], x["expired"]) for x in listed],
+            [
+                (self.scoped, "worker-a", self.T20, False),
+                ("ids.lock", "worker-b", "2026-10-22T10:05:00Z", False),
+            ],
+        )
+        self.assertEqual(listed[0]["package"], self.package.name)
+        self.assertEqual(listed[0]["resource"], "C001")
+        self.assertEqual(
+            [x["expired"] for x in self.listed(now=self.T10)["leases"]], [False, True]
+        )
+        output = self.ready(now=self.T10)
+        self.assertEqual(list(output["excluded"]), ["C001"])
+        self.assertNotIn("C001", output["ready"])
+
+    def test_a_held_lease_is_refused_to_others_and_renewed_by_its_holder(self):
+        self.acquire()
+        error = self.acquire(ok=False, name="worker-b", now=self.T10)
+        self.assertIn(f"{self.scoped} is held by worker-a until {self.T20}", error)
+        output = self.acquire(now=self.T10, purpose="S2 research, renewed")
+        self.assertEqual(output["action"], "renewed")
+        self.assertEqual(
+            (self.locks() / self.scoped / "owner").read_text(encoding="utf-8"),
+            f"worker-a {self.T0} {self.T30} S2 research, renewed\n",
+        )
+        self.assertIn(
+            "held by worker-a", self.acquire(ok=False, name="worker-b", now=self.T20)
+        )
+
+    def test_only_the_holder_releases_and_release_frees_the_resource(self):
+        self.acquire()
+        error = self.release(ok=False, name="worker-b")
+        self.assertIn("held by worker-a", error)
+        self.assertEqual(self.release()["action"], "released")
+        self.assertEqual(list(self.locks().iterdir()), [])
+        self.assertIn("is not held", self.release(ok=False))
+        self.assertEqual(self.acquire(name="worker-b")["action"], "acquired")
+
+    def test_an_expired_lease_is_taken_over_by_renaming_it(self):
+        self.acquire()
+        output = self.acquire(name="worker-b", now=self.T20)
+        stale = f"{self.scoped}.stale-2026-10-22T10-20-00Z"
+        self.assertEqual(output["action"], "taken-over")
+        self.assertEqual(output["stale"], stale)
+        self.assertEqual(
+            (self.locks() / stale / "owner").read_text(encoding="utf-8"),
+            f"worker-a {self.T0} {self.T20} S2 research\n",
+        )
+        self.assertEqual(
+            sorted(p.name for p in self.locks().iterdir()), [self.scoped, stale]
+        )
+        self.assertEqual(self.listed()["leases"][0]["name"], "worker-b")
+        # The old holder lost it: it can neither release nor renew it.
+        self.assertIn("held by worker-b", self.release(ok=False, now=self.T20))
+        self.assertIn("held by worker-b", self.acquire(ok=False, now=self.T20))
+
+    def test_a_lock_without_an_owner_is_taken_over_only_once_stale(self):
+        lock = self.lock(self.scoped)
+        self.assertIn("being acquired by another holder", self.acquire(ok=False))
+        old = time.time() - 120
+        os.utime(lock, (old, old))
+        self.assertEqual(self.acquire()["action"], "taken-over")
+
+    def test_a_guard_left_by_a_dead_process_is_cleared(self):
+        self.acquire()
+        guard = self.locks() / f"{self.scoped}.guard"
+        guard.mkdir()
+        old = time.time() - 120
+        os.utime(guard, (old, old))
+        self.assertEqual(self.acquire(now=self.T10)["action"], "renewed")
+        self.assertFalse(guard.exists())
+
+    def test_concurrent_acquirers_get_exactly_one_lease(self):
+        names = [f"worker-{n}" for n in range(8)]
+        win, errors = self.race(self.T0, names)
+        self.assertEqual(win["action"], "acquired")
+        for error in errors:
+            self.assertRegex(
+                error, rf"is (held by {win['name']} until {self.T20}|being acquired)"
+            )
+        self.assertEqual(self.listed()["leases"][0]["name"], win["name"])
+
+    def test_concurrent_takers_of_an_expired_lease_get_exactly_one(self):
+        self.lock(self.scoped, f"worker-old {self.T0} {self.T10} S2 research")
+        win, errors = self.race(self.T20, [f"worker-{n}" for n in range(8)])
+        self.assertEqual(win["action"], "taken-over")
+        for error in errors:
+            self.assertIn(f"held by {win['name']} until {self.T30}", error)
+        stale = [p.name for p in self.locks().iterdir() if ".stale-" in p.name]
+        self.assertEqual(stale, [win["stale"]])
+        self.assertEqual(self.listed(now=self.T20)["leases"][0]["name"], win["name"])
+
+    def test_every_worktree_shares_the_leases(self):
+        self.git("add", "-A")
+        self.git("commit", "-qm", "fixture")
+        other = self.scratch / "other"
+        self.git("worktree", "add", "-q", "-b", "other", other)
+        package = other / self.package.relative_to(self.root)
+        args = self.args("acquire", scoped=False) + ["--package", package]
+        output = self.cli(*args, now=self.T0, cwd=other)
+        self.assertEqual(Path(output["dir"]), self.locks().parent)
+        self.assertEqual(self.locks(other), self.locks())
+        self.assertEqual(self.listed()["leases"][0]["lock"], self.scoped)
+        self.assertEqual(list(self.ready(now=self.T10)["excluded"]), ["C001"])
+
+    def test_the_profile_agent_work_dir_is_used_when_git_has_no_room(self):
+        self.locks().parent.parent.joinpath("agent-work").write_text(
+            "", encoding="utf-8"
+        )
+        self.assertIn("the profile sets no agent_work_dir", self.acquire(ok=False))
+        self.profile["agent_work_dir"] = "relative/live"
+        self.write_profile()
+        self.assertIn("must be an absolute path", self.acquire(ok=False))
+        live = self.scratch / "live"
+        self.profile["agent_work_dir"] = str(live)
+        self.write_profile()
+        self.assertEqual(Path(self.acquire()["dir"]), live)
+        self.assertTrue((live / "locks" / self.scoped / "owner").is_file())
+        self.assertEqual(Path(self.ready()["leases"]), live)
+        self.assertEqual(list(self.ready()["excluded"]), ["C001"])
+
+    def test_bad_arguments_are_refused_before_any_lock_is_made(self):
+        cases = [
+            {"resource": "concepts/C001"},
+            {"resource": "C001@other"},
+            {"resource": ".hidden"},
+            {"resource": "C001.lock"},
+            {"resource": "two words"},
+            {"name": "two words"},
+            {"name": ""},
+            {"purpose": " "},
+            {"minutes": "0"},
+        ]
+        for fields in cases:
+            with self.subTest(**fields):
+                self.acquire(ok=False, **fields)
+        self.assertFalse(self.locks().exists() and any(self.locks().iterdir()))
 
 
 if __name__ == "__main__":

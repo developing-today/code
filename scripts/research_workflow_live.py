@@ -3,28 +3,36 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """Live coordination for research packages (Python stdlib only).
 
-Loaded by research_workflow.py through EXTENSIONS. `ready` plans waves from the
-committed state plus live leases. Leases are never committed: they live in
-`$(git rev-parse --git-common-dir)/agent-work/locks/`, shared by every worktree,
-or in the profile's `agent_work_dir` when that is not writable (collaboration
-rule 5). RESEARCH_WORKFLOW_NOW (YYYY-MM-DDTHH:MM:SSZ) pins the clock for tests.
+Loaded by research_workflow.py through EXTENSIONS. Commands: `ready` plans waves
+from the committed state plus live leases; `resolve-note` writes a note's one
+receipt; `lease acquire|release|list` manages the leases. Leases are never
+committed: they live in `$(git rev-parse --git-common-dir)/agent-work/locks/`,
+shared by every worktree, or in the profile's `agent_work_dir` when that is not
+writable (collaboration rule 5). RESEARCH_WORKFLOW_NOW (YYYY-MM-DDTHH:MM:SSZ)
+pins the clock for tests.
 """
 
+import contextlib
 import hashlib
 import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
-GUARD_STALE = 60  # seconds before an ownerless lock is stale
+GUARD_STALE = 60  # seconds before an ownerless lock or a leftover guard is stale
+GUARD_WAIT = 5  # seconds to wait for another process's guard before giving up
+LEASE_MINUTES = 20
+RESOURCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 CLAIMED = {"claimed", "running"}
 # A lease on C003, concept-C003 or a facet such as C003.2 marks C003 as taken.
 CONCEPT_LEASE = re.compile(r"(?:concept-)?(C\d{3,}(?:\.\d+)*)")
@@ -193,6 +201,170 @@ def leases(base, moment=None):
             }
         )
     return found
+
+
+# ------------------------------------------------------------------- leases
+
+
+def lock_path(base, resource, package):
+    """`locks/<resource>.lock`, or `locks/<resource>@<package>.lock` for one package."""
+    if not RESOURCE.fullmatch(resource) or ".lock" in resource:
+        fail(
+            "A lease resource is a name such as C001, ids or file-AGENTS.md "
+            f"(letters, digits, '.', '_', '-'; write each / of a path as __): {resource}"
+        )
+    scope = f"@{package.name}" if package else ""
+    return base / "locks" / f"{resource}{scope}.lock"
+
+
+def write_owner(lock, name, acquired, expires, purpose):
+    """Replace the owner file whole, so a reader never sees half a line."""
+    partial = lock / f".owner-{uuid.uuid4().hex}"
+    partial.write_text(
+        f"{name} {stamp(acquired)} {stamp(expires)} {purpose}\n", encoding="utf-8"
+    )
+    os.replace(partial, lock / "owner")
+
+
+def spare(path, label, moment):
+    """`<path>.<label>-<UTC>`, numbered when that name is taken."""
+    base = f"{path.name}.{label}-{stamp(moment).replace(':', '-')}"
+    for n in range(1000):
+        candidate = path.with_name(base + (f"-{n}" if n else ""))
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    fail(f"Too many {label} copies of {path}")
+
+
+@contextlib.contextmanager
+def guard(lock):
+    """Serialise renewal, takeover and release of one lock.
+
+    Taking over is a rename, and a second taker could otherwise rename the
+    fresh lock the first one just made. Under the guard each re-reads the lock
+    first. A guard left by a process that died is cleared after GUARD_STALE.
+    """
+    path = lock.with_name(lock.name + ".guard")
+    deadline = time.monotonic() + GUARD_WAIT
+    while True:
+        try:
+            os.mkdir(path)
+            break
+        except FileExistsError:
+            if age(path) >= GUARD_STALE:
+                retired = path.with_name(f"{path.name}.stale-{uuid.uuid4().hex}")
+                with contextlib.suppress(FileNotFoundError):
+                    os.rename(path, retired)
+                    os.rmdir(retired)
+            elif time.monotonic() > deadline:
+                fail(f"{lock.name} is being changed by another process; try again")
+            else:
+                time.sleep(0.01)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.rmdir(path)
+
+
+def describe(lock, action, **extra):
+    owner = read_owner(lock)
+    return {
+        "action": action,
+        "lock": lock.name,
+        "name": owner["name"],
+        "acquired": stamp(owner["acquired"]),
+        "expires": stamp(owner["expires"]),
+        "purpose": owner["purpose"],
+        **extra,
+    }
+
+
+def holder(lock, owner):
+    if owner is None:
+        return f"{lock.name} is being acquired by another holder"
+    return f"{lock.name} is held by {owner['name']} until {stamp(owner['expires'])}"
+
+
+def create(lock, name, moment, expires, purpose):
+    """mkdir the lock (atomic: exactly one process succeeds) and write its owner."""
+    try:
+        os.mkdir(lock)
+    except FileExistsError:
+        return False
+    try:
+        write_owner(lock, name, moment, expires, purpose)
+    except BaseException:
+        shutil.rmtree(lock, ignore_errors=True)
+        raise
+    return True
+
+
+def acquire(lock, name, purpose, minutes):
+    """Take the lock, renew it for its holder, or take it over once expired."""
+    moment = now()
+    expires = moment + timedelta(minutes=minutes)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    if create(lock, name, moment, expires, purpose):
+        return describe(lock, "acquired")
+    with guard(lock):
+        # Released while we waited for the guard.
+        if create(lock, name, moment, expires, purpose):
+            return describe(lock, "acquired")
+        owner = read_owner(lock)
+        if owner and owner["name"] == name:
+            write_owner(lock, name, owner["acquired"], expires, purpose)
+            return describe(lock, "renewed")
+        expired = owner["expires"] <= moment if owner else age(lock) >= GUARD_STALE
+        if not expired:
+            fail(holder(lock, owner))
+        stale = spare(lock, "stale", moment)
+        os.rename(lock, stale)
+        if not create(lock, name, moment, expires, purpose):
+            fail(holder(lock, read_owner(lock)))
+        return describe(lock, "taken-over", stale=stale.name)
+
+
+def release(lock, name):
+    """Remove the lock; only its holder may, expired or not."""
+    if not lock.is_dir():
+        fail(f"{lock.name} is not held")
+    with guard(lock):
+        if not lock.is_dir():
+            fail(f"{lock.name} is not held")
+        owner = read_owner(lock)
+        if owner is None or owner["name"] != name:
+            fail(holder(lock, owner) + f", not {name}")
+        result = describe(lock, "released")
+        gone = spare(lock, "released", now())
+        os.rename(lock, gone)
+        shutil.rmtree(gone)
+    return result
+
+
+def lease_target(args, root, config, package):
+    if package is not None and not (package / "main.md").is_file():
+        fail(f"Not a research package: {package}")
+    base = live_dir(root, config, create=args.action == "acquire")
+    return base, lock_path(base, args.resource, package)
+
+
+def lease_command(args, root, config, package):
+    if args.action == "list":
+        base = live_dir(root, config)
+        found = leases(base)
+        if package is not None:
+            found = [x for x in found if x["package"] in (None, package.name)]
+        return {"dir": str(base), "leases": found}
+    if not args.name or LINE_BREAK.search(args.name) or re.search(r"\s", args.name):
+        fail("--name must be one word, such as the worker's branch or session name")
+    base, lock = lease_target(args, root, config, package)
+    if args.action == "release":
+        return {"dir": str(base), **release(lock, args.name)}
+    single_line(args.purpose, "--purpose")
+    if not 1 <= args.minutes <= 24 * 60:
+        fail("--minutes must be between 1 and 1440")
+    return {"dir": str(base), **acquire(lock, args.name, args.purpose, args.minutes)}
 
 
 # -------------------------------------------------------------------- ready
@@ -507,3 +679,25 @@ def register(sub):
         "--by", help="who resolved it; defaults to the receiving concept"
     )
     resolve.set_defaults(handler=resolve_command)
+    lease = sub.add_parser("lease", help="take, release or list live leases")
+    actions = lease.add_subparsers(dest="action", required=True)
+    for action, text in (
+        ("acquire", "take a lease, renew your own, or take over an expired one"),
+        ("release", "remove a lease you hold"),
+        ("list", "list every lease, expired ones flagged"),
+    ):
+        command = actions.add_parser(action, help=text)
+        command.add_argument("--repo-root")
+        command.add_argument("--package", help="scope the lease to one package")
+        command.set_defaults(handler=lease_command)
+        if action == "list":
+            continue
+        command.add_argument(
+            "--resource", required=True, help="C001, ids, or file-<path with / as __>"
+        )
+        command.add_argument("--name", required=True, help="the holder, one word")
+        if action == "acquire":
+            command.add_argument("--purpose", required=True, help="e.g. S2 research")
+            command.add_argument(
+                "--minutes", type=int, default=LEASE_MINUTES, help="lease length"
+            )
