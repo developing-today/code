@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
+import http.client
 import json
 import mimetypes
 import os
@@ -28,6 +30,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -61,6 +64,86 @@ MANIFEST_TABLES = ("objects", "bundles", "members", "transfer_ledger", "meta")
 # a 90-parameter budget, keeping headroom under the hard limit.
 D1_MAX_PARAMS_PER_QUERY = 100
 D1_SYNC_PARAM_BUDGET = 90
+
+
+# R2 (DESIGN.md sections 4-5): the supabase-backups bucket is both a
+# nightly filing source (backup-supabase) and the first eviction trial
+# bucket. Access is the S3 API at the account's R2 host, with
+# bucket-scoped credentials from the environment only.
+DEFAULT_R2_HOST = "234b866b99ce2b142d7963d8d139cbfa.r2.cloudflarestorage.com"
+DEFAULT_R2_BUCKET = "supabase-backups"
+R2_SIGNING_REGION = "auto"  # R2 is region-agnostic; SigV4 still needs one
+S3_GET_ATTEMPTS = 3
+
+
+def s3_error_message(body: bytes) -> str:
+    """Best-effort <Message> extraction from an S3 XML error body."""
+    m = re.search(rb"<Message>([^<]+)</Message>", body or b"")
+    if m:
+        return m.group(1).decode("utf-8", "replace")
+    text = (body or b"").decode("utf-8", "replace").strip()
+    return text[:200] if text else "no error detail in response body"
+
+
+def _header_value(headers: dict, name: str):
+    for k, v in headers.items():
+        if k.lower() == name.lower():
+            return v
+    return None
+
+
+def _xml_local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _parse_s3_list_page(body: bytes):
+    """One ListObjectsV2 page -> (objects, is_truncated, next_token).
+
+    Namespace-agnostic (S3 replies carry a default xmlns; a stub may
+    omit it). Each object is {key, size, last_modified}; last_modified
+    is an aware datetime, or None when absent/unparseable — callers
+    treat None as oldest, never as 'now'.
+    """
+    root = ET.fromstring(body)
+    objects = []
+    truncated = False
+    token = None
+    for child in root:
+        name = _xml_local(child.tag)
+        if name == "IsTruncated":
+            truncated = (child.text or "").strip().lower() == "true"
+        elif name == "NextContinuationToken":
+            token = child.text
+        elif name == "Contents":
+            fields = {_xml_local(c.tag): c.text for c in child}
+            stamp = None
+            raw = fields.get("LastModified")
+            if raw:
+                try:
+                    stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
+                    stamp = None
+            objects.append(
+                {
+                    "key": fields.get("Key") or "",
+                    "size": int(fields.get("Size") or 0),
+                    "last_modified": stamp,
+                }
+            )
+    return objects, truncated, token
+
+
+def content_hash_from_key(key: str) -> str | None:
+    """The content sha256 a content-addressed R2 key carries, or None.
+
+    Trial-bucket keys look like pg/muse-dev/2026/10/<sha256>.api.jsonl.zst:
+    the basename's first dot-segment is the hash when it is 64-hex —
+    the same hash the manifest keys objects by.
+    """
+    stem = key.rsplit("/", 1)[-1].split(".", 1)[0]
+    if re.fullmatch(r"[0-9a-f]{64}", stem):
+        return stem
+    return None
 
 
 def d1_sync_batch_rows(ncols: int) -> int:
@@ -154,6 +237,7 @@ class ColdStore:
         upload_base=None,
         zstd=None,
         d1_base=None,
+        s3_base=None,
     ):
         self.home = Path(home)
         self.credentials_path = self.home / "credentials.json"
@@ -171,6 +255,11 @@ class ColdStore:
         ).rstrip("/")
         self.d1_base = (
             d1_base or os.environ.get("COLD_STORE_D1_BASE", DEFAULT_D1_BASE)
+        ).rstrip("/")
+        self.s3_base = (
+            s3_base
+            or os.environ.get("COLD_STORE_S3_BASE")
+            or ("https://" + os.environ.get("COLD_STORE_R2_HOST", DEFAULT_R2_HOST))
         ).rstrip("/")
         candidate = zstd or os.environ.get("COLD_STORE_ZSTD") or "/usr/local/bin/zstd"
         if not Path(candidate).exists():
@@ -238,6 +327,7 @@ class ColdStore:
             conn.executescript(SCHEMA_PATH.read_text())
             conn.commit()
         self._migrate_ledger_trash(conn)
+        self._migrate_objects_evicted(conn)
         return conn
 
     @staticmethod
@@ -266,6 +356,42 @@ class ColdStore:
         conn.execute("DROP TABLE transfer_ledger_pre_trash")
         conn.execute(index.group(0))
         conn.commit()
+
+    @staticmethod
+    def _migrate_objects_evicted(conn) -> None:
+        """Let pre-v4 manifests record the 'evicted' object state:
+        rebuild objects with the current schema.sql CHECK if its CHECK
+        predates 'evicted'. members references objects by name, so the
+        new table is built under a scratch name, copied into, and
+        renamed over the dropped original — with foreign keys off,
+        because dropping a referenced parent would otherwise fail.
+        No-op for fresh or already-migrated databases."""
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='objects'"
+        ).fetchone()
+        if row is None or "'evicted'" in (row["sql"] or ""):
+            return
+        text = SCHEMA_PATH.read_text()
+        create = re.search(r"CREATE TABLE IF NOT EXISTS objects \(.*?\);", text, re.S)
+        index = re.search(r"CREATE INDEX IF NOT EXISTS idx_objects_state[^;]*;", text)
+        if create is None or index is None:
+            raise ColdStoreError("schema.sql is missing the objects definition")
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(objects)")]
+        collist = ", ".join(cols)
+        if conn.in_transaction:
+            conn.commit()
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            conn.execute(create.group(0).replace("objects", "objects_new", 1))
+            conn.execute(
+                f"INSERT INTO objects_new ({collist}) SELECT {collist} FROM objects"
+            )
+            conn.execute("DROP TABLE objects")
+            conn.execute("ALTER TABLE objects_new RENAME TO objects")
+            conn.execute(index.group(0))
+            conn.commit()
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
 
     @staticmethod
     def _schema_missing(conn) -> bool:
@@ -1142,6 +1268,282 @@ class ColdStore:
         result["rows"] = total
         return result
 
+    # ------------------------------------------------------------------- s3
+    @staticmethod
+    def _r2_credentials() -> tuple[str, str]:
+        access = os.environ.get("R2_ACCESS_KEY_ID")
+        secret = os.environ.get("R2_SECRET_ACCESS_KEY")
+        if not access or not secret:
+            raise ColdStoreError(
+                "R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are not set — "
+                "materialize them from Bitwarden (cloudflare.r2-backups-*) "
+                "into the environment first (they are never stored)"
+            )
+        return access, secret
+
+    def _s3_signed_headers(self, method: str, path: str, query: str) -> dict:
+        """SigV4 headers for one R2 request (payload is always empty:
+        the client only lists, downloads and deletes)."""
+        access, secret = self._r2_credentials()
+        host = urllib.parse.urlparse(self.s3_base).netloc
+        now = datetime.now(timezone.utc)
+        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+        date_stamp = now.strftime("%Y%m%d")
+        payload_hash = hashlib.sha256(b"").hexdigest()
+        signed = "host;x-amz-content-sha256;x-amz-date"
+        canonical_headers = (
+            f"host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
+        )
+        canonical_request = "\n".join(
+            [method, path, query, canonical_headers, signed, payload_hash]
+        )
+        scope = f"{date_stamp}/{R2_SIGNING_REGION}/s3/aws4_request"
+        string_to_sign = "\n".join(
+            [
+                "AWS4-HMAC-SHA256",
+                amz_date,
+                scope,
+                hashlib.sha256(canonical_request.encode()).hexdigest(),
+            ]
+        )
+
+        def _hmac(key, msg):
+            return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+        k_signing = _hmac(
+            _hmac(
+                _hmac(_hmac(("AWS4" + secret).encode(), date_stamp), R2_SIGNING_REGION),
+                "s3",
+            ),
+            "aws4_request",
+        )
+        signature = hmac.new(
+            k_signing, string_to_sign.encode(), hashlib.sha256
+        ).hexdigest()
+        return {
+            "Authorization": (
+                f"AWS4-HMAC-SHA256 Credential={access}/{scope}, "
+                f"SignedHeaders={signed}, Signature={signature}"
+            ),
+            "x-amz-content-sha256": payload_hash,
+            "x-amz-date": amz_date,
+        }
+
+    def _s3_request(self, method, bucket, key=None, query=None):
+        """One signed S3 request; returns (status, headers, body)."""
+        path = "/" + urllib.parse.quote(bucket, safe="")
+        if key is not None:
+            path += "/" + urllib.parse.quote(key, safe="/")
+        canonical_query = urllib.parse.urlencode(
+            sorted((query or {}).items()), quote_via=urllib.parse.quote
+        )
+        url = self.s3_base + path
+        if canonical_query:
+            url += "?" + canonical_query
+        headers = self._s3_signed_headers(method, path, canonical_query)
+        return http_request(method, url, headers=headers)
+
+    @staticmethod
+    def _s3_check(status: int, body: bytes, what: str) -> None:
+        if status >= 300:
+            raise ColdStoreError(
+                f"S3 {what} failed (HTTP {status}): {s3_error_message(body)}"
+            )
+
+    def s3_list_objects(self, bucket: str) -> list[dict]:
+        """Every object in the bucket, following ListObjectsV2
+        continuation tokens until the listing is complete."""
+        out: list[dict] = []
+        token = None
+        while True:
+            query = {"list-type": "2"}
+            if token:
+                query["continuation-token"] = token
+            status, _h, resp = self._s3_request("GET", bucket, query=query)
+            self._s3_check(status, resp, f"list of {bucket}")
+            page, truncated, token = _parse_s3_list_page(resp)
+            out.extend(page)
+            if not truncated:
+                return out
+
+    def s3_get_object(self, bucket: str, key: str) -> bytes:
+        """Download one object, verifying the received byte count
+        against Content-Length. A truncated body — seen live through
+        this sandbox's egress proxy, where urllib surfaces it as an
+        http.client.IncompleteRead (an HTTPException) or a short read —
+        retries the whole GET, up to S3_GET_ATTEMPTS attempts."""
+        problem = "no attempt made"
+        for _attempt in range(S3_GET_ATTEMPTS):
+            try:
+                status, headers, resp = self._s3_request("GET", bucket, key=key)
+            except (http.client.HTTPException, ColdStoreError) as e:
+                problem = str(e)
+                continue
+            self._s3_check(status, resp, f"GET {bucket}/{key}")
+            expected = _header_value(headers, "Content-Length")
+            if expected is not None and len(resp) != int(expected):
+                problem = f"truncated body: got {len(resp)} of {expected} bytes"
+                continue
+            return resp
+        raise ColdStoreError(
+            f"S3 GET {bucket}/{key} failed after {S3_GET_ATTEMPTS} attempts: {problem}"
+        )
+
+    def s3_delete_object(self, bucket: str, key: str) -> None:
+        status, _h, resp = self._s3_request("DELETE", bucket, key=key)
+        self._s3_check(status, resp, f"DELETE {bucket}/{key}")
+
+    # ---------------------------------------------------------- backup from R2
+    def backup_supabase(self, bucket: str = DEFAULT_R2_BUCKET) -> dict:
+        """File the newest Supabase backup object from R2 as a supabase
+        backup (DESIGN section 5), via the put-backup machinery.
+
+        'Newest' is by S3 LastModified among the bucket's backup
+        objects; manifest.json is excluded — it is the backup system's
+        own index, not a dump. The download is byte-count verified
+        (s3_get_object). Filing is point-in-time, exactly like
+        backup-d1: unchanged content is filed again, and the content
+        sha256 is reported so the duplication is visible.
+        """
+        epoch = datetime.min.replace(tzinfo=timezone.utc)
+        objects = [
+            o
+            for o in self.s3_list_objects(bucket)
+            if o["key"].rsplit("/", 1)[-1] != "manifest.json"
+        ]
+        if not objects:
+            raise ColdStoreError(f"no backup objects found in R2 bucket {bucket}")
+        newest = max(objects, key=lambda o: (o["last_modified"] or epoch, o["key"]))
+        data = self.s3_get_object(bucket, newest["key"])
+        staging = self.home / "staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        path = staging / newest["key"].rsplit("/", 1)[-1]
+        path.write_bytes(data)
+        result = self.put_backup("supabase", str(path))
+        result["sha256"] = hashlib.sha256(data).hexdigest()
+        result["source_bucket"] = bucket
+        result["source_key"] = newest["key"]
+        return result
+
+    # --------------------------------------------------------------- eviction
+    def _object_cold_verified(self, conn, obj_hash: str):
+        """(manifest state or None, member of a verified bundle?) —
+        the two manifest facts every eviction decision rests on."""
+        row = conn.execute(
+            "SELECT state FROM objects WHERE hash = ?", (obj_hash,)
+        ).fetchone()
+        if row is None:
+            return None, False
+        member = conn.execute(
+            "SELECT 1 AS x FROM members m JOIN bundles b"
+            " ON b.bundle_id = m.bundle_id"
+            " WHERE m.object_hash = ? AND b.state = 'verified' LIMIT 1",
+            (obj_hash,),
+        ).fetchone()
+        return row["state"], member is not None
+
+    def evict_scan(
+        self,
+        bucket: str = DEFAULT_R2_BUCKET,
+        min_age_days: int = 14,
+        keep_newest: int = 3,
+    ) -> list[dict]:
+        """One verdict per R2 object (manifest.json excluded): may it
+        be evicted from R2 because the cold store already holds it?
+
+        An object is 'evictable' only if ALL hold: (a) its content hash
+        is known (content-addressed key), (b) the manifest has it
+        'cold' in a verified bundle, (c) its LastModified is at least
+        min_age_days old, (d) it is not among the keep_newest newest
+        objects in the bucket. Anything else gets the first failing
+        reason: hash-unknown / not-in-manifest / bundle-unverified /
+        kept-newest / too-young. The scan never deletes.
+        """
+        epoch = datetime.min.replace(tzinfo=timezone.utc)
+        objects = [
+            o
+            for o in self.s3_list_objects(bucket)
+            if o["key"].rsplit("/", 1)[-1] != "manifest.json"
+        ]
+        newest_first = sorted(
+            objects,
+            key=lambda o: (o["last_modified"] or epoch, o["key"]),
+            reverse=True,
+        )
+        protected = {o["key"] for o in newest_first[: max(keep_newest, 0)]}
+        now = datetime.now(timezone.utc)
+        min_age = timedelta(days=min_age_days)
+        conn = self.db()
+        scan = []
+        for obj in newest_first:
+            entry = {**obj, "hash": content_hash_from_key(obj["key"])}
+            if entry["hash"] is None:
+                entry["verdict"] = "hash-unknown"
+            else:
+                state, verified = self._object_cold_verified(conn, entry["hash"])
+                if state != "cold":
+                    entry["verdict"] = "not-in-manifest"
+                    entry["detail"] = (
+                        "no manifest row"
+                        if state is None
+                        else f"manifest state is {state!r}, not 'cold'"
+                    )
+                elif not verified:
+                    entry["verdict"] = "bundle-unverified"
+                elif obj["key"] in protected:
+                    entry["verdict"] = "kept-newest"
+                elif (
+                    obj["last_modified"] is None or now - obj["last_modified"] < min_age
+                ):
+                    entry["verdict"] = "too-young"
+                else:
+                    entry["verdict"] = "evictable"
+            scan.append(entry)
+        conn.close()
+        return scan
+
+    def evict_apply(self, bucket: str, scan: list[dict]) -> list[dict]:
+        """Delete a scan's evictable objects from R2, one by one.
+
+        Each candidate is RE-VERIFIED against the manifest at deletion
+        time (state 'cold' in a verified bundle) — the scan may be
+        stale, and nothing is ever deleted on a stale verdict. After a
+        successful DELETE, the object's manifest state becomes
+        'evicted' and one ledger row is written (direction 'trash',
+        kind 'evict', ref = R2 key). One object's failure is recorded
+        in its outcome and does not abort the rest.
+        """
+        outcomes = []
+        conn = self.db()
+        for entry in scan:
+            if entry["verdict"] != "evictable":
+                continue
+            key = entry["key"]
+            try:
+                state, verified = self._object_cold_verified(conn, entry["hash"])
+                if state != "cold" or not verified:
+                    outcomes.append(
+                        {
+                            "key": key,
+                            "outcome": "skipped",
+                            "detail": "re-verify failed at deletion time "
+                            f"(state={state!r}, verified bundle={verified})",
+                        }
+                    )
+                    continue
+                self.s3_delete_object(bucket, key)
+                with conn:
+                    conn.execute(
+                        "UPDATE objects SET state='evicted' WHERE hash=?",
+                        (entry["hash"],),
+                    )
+                    self.ledger_add(conn, "trash", entry["size"], "evict", key)
+                outcomes.append({"key": key, "outcome": "evicted", "detail": ""})
+            except ColdStoreError as e:
+                outcomes.append({"key": key, "outcome": "failed", "detail": str(e)})
+        conn.close()
+        return outcomes
+
     # ---------------------------------------------------------------- status
     def status_data(self) -> dict:
         conn = self.db()
@@ -1198,6 +1600,26 @@ def build_store(args) -> ColdStore:
 
 def _human(n: int) -> str:
     return f"{n} bytes ({n / 1e9:.2f} GB)"
+
+
+def _print_evict_scan(scan: list[dict]) -> None:
+    counts: dict[str, int] = {}
+    for entry in scan:
+        counts[entry["verdict"]] = counts.get(entry["verdict"], 0) + 1
+        stamp = (
+            entry["last_modified"].strftime("%Y-%m-%dT%H:%M:%SZ")
+            if entry["last_modified"]
+            else "unknown-time"
+        )
+        line = (
+            f"{entry['key']}: {entry['verdict']} "
+            f"({_human(entry['size'])}, last modified {stamp})"
+        )
+        if entry.get("detail"):
+            line += f" — {entry['detail']}"
+        print(line)
+    summary = ", ".join(f"{k} {v}" for k, v in sorted(counts.items()))
+    print(f"summary: {len(scan)} object(s) scanned: {summary or 'none'}")
 
 
 def main(argv=None) -> int:
@@ -1272,6 +1694,30 @@ def main(argv=None) -> int:
     sub.add_parser(
         "backup-d1",
         help="export the D1 cold-store-manifest database and file it as a d1 backup",
+    )
+    p_backup_sb = sub.add_parser(
+        "backup-supabase",
+        help="file the newest Supabase backup object from R2 into db-backups/supabase/",
+    )
+    p_backup_sb.add_argument("--bucket", default=DEFAULT_R2_BUCKET)
+    p_evict_scan = sub.add_parser(
+        "evict-scan",
+        help="dry-run: verdict per R2 object — evictable only if cold in a verified bundle, old enough, and not among the newest kept (never deletes)",
+    )
+    p_evict_scan.add_argument("--bucket", default=DEFAULT_R2_BUCKET)
+    p_evict_scan.add_argument("--min-age-days", type=int, default=14)
+    p_evict_scan.add_argument("--keep-newest", type=int, default=3)
+    p_evict = sub.add_parser(
+        "evict",
+        help="delete evictable objects from R2 (requires --apply; each is re-verified against the manifest at deletion time)",
+    )
+    p_evict.add_argument("--bucket", default=DEFAULT_R2_BUCKET)
+    p_evict.add_argument("--min-age-days", type=int, default=14)
+    p_evict.add_argument("--keep-newest", type=int, default=3)
+    p_evict.add_argument(
+        "--apply",
+        action="store_true",
+        help="actually delete (without it, prints the scan and exits non-zero)",
     )
     args = parser.parse_args(argv)
     store = build_store(args)
@@ -1386,6 +1832,36 @@ def main(argv=None) -> int:
                 f"backup {result['name']}: {_human(result['bytes'])}, "
                 f"uploaded to Drive as {result['drive_file_id']} "
                 f"({result['rows']} row(s) across {len(result['tables'])} table(s))"
+            )
+        elif args.cmd == "backup-supabase":
+            result = store.backup_supabase(args.bucket)
+            print(
+                f"backup {result['name']}: {_human(result['bytes'])}, "
+                f"sha256 {result['sha256']}, "
+                f"uploaded to Drive as {result['drive_file_id']} "
+                f"(from r2://{result['source_bucket']}/{result['source_key']})"
+            )
+        elif args.cmd == "evict-scan":
+            scan = store.evict_scan(args.bucket, args.min_age_days, args.keep_newest)
+            _print_evict_scan(scan)
+        elif args.cmd == "evict":
+            scan = store.evict_scan(args.bucket, args.min_age_days, args.keep_newest)
+            _print_evict_scan(scan)
+            if not args.apply:
+                raise ColdStoreError(
+                    "evict deletes objects from R2 — the scan above is a "
+                    "dry run; re-run with --apply to delete the evictable "
+                    "objects"
+                )
+            outcomes = store.evict_apply(args.bucket, scan)
+            for o in outcomes:
+                line = f"{o['outcome']}: {o['key']}"
+                if o["detail"]:
+                    line += f" — {o['detail']}"
+                print(line)
+            done = sum(1 for o in outcomes if o["outcome"] == "evicted")
+            print(
+                f"evict: {done} object(s) evicted, {len(outcomes) - done} not evicted"
             )
     except ColdStoreError as e:
         print(f"error: {e}", file=sys.stderr)

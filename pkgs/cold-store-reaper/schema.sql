@@ -1,5 +1,9 @@
 -- Cold-store manifest schema v1 (2026-10-25)
 -- Canonical index for the Drive cold store. Drive holds bundles; this DB is the system.
+-- v1.2 (reaper v4): objects.state gains 'evicted' — still cold in Drive, but
+-- deleted from R2 by `cold-store evict`. The D1 copy of this schema needs the
+-- same one-line CHECK change before evicted rows can sync; sync-manifest
+-- surfaces D1's own error text until then.
 CREATE TABLE IF NOT EXISTS objects (
   hash          TEXT PRIMARY KEY,            -- sha256 hex of object content
   size          INTEGER NOT NULL,
@@ -9,7 +13,7 @@ CREATE TABLE IF NOT EXISTS objects (
   first_seen    TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen_hot TEXT,                        -- last time it was present in R2
   state         TEXT NOT NULL DEFAULT 'hot'
-                CHECK (state IN ('hot','staging','cold','rehydrating','gone'))
+                CHECK (state IN ('hot','staging','cold','rehydrating','gone','evicted'))
 );
 CREATE INDEX IF NOT EXISTS idx_objects_state ON objects(state);
 
