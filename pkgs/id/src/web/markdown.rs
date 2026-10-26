@@ -1210,7 +1210,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             let paragraph = arena.alloc(AstNode::from(NodeValue::Paragraph));
             for child_json in content {
                 let child = json_to_ast(arena, child_json)?;
-                append_inline_child(paragraph, child);
+                append_inline_child(arena, paragraph, child);
             }
             ast_node.append(paragraph);
         }
@@ -1223,7 +1223,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     {
         for child_json in content {
             let child = json_to_ast(arena, child_json)?;
-            append_inline_child(ast_node, child);
+            append_inline_child(arena, ast_node, child);
         }
     }
 
@@ -1303,7 +1303,7 @@ fn append_table_cell_child<'a>(
 ) {
     let value = &child.data.borrow().value;
     if valid_table_cell_child(value) {
-        append_inline_child(cell, child);
+        append_inline_child(arena, cell, child);
         return;
     }
     if matches!(value, NodeValue::LineBreak | NodeValue::SoftBreak) {
@@ -1355,14 +1355,105 @@ fn same_mark_wrapper(a: &NodeValue, b: &NodeValue) -> bool {
     }
 }
 
+/// Whether a node value is a mark wrapper (the wrapper kinds
+/// `create_marked_text` chains and `same_mark_wrapper` compares).
+fn is_mark_wrapper(value: &NodeValue) -> bool {
+    matches!(
+        value,
+        NodeValue::Link(..) | NodeValue::Strong | NodeValue::Emph | NodeValue::Strikethrough
+    )
+}
+
+/// Peel a pure mark chain — wrapper → wrapper → … → a single
+/// non-wrapper leaf, as `create_marked_text` builds — into its wrapper
+/// values (outermost first) and the leaf node. Returns `None` for
+/// anything else (no wrappers, a wrapper with several children, a
+/// wrapper bottoming out in another wrapper): those children keep the
+/// legacy append behaviour.
+fn peel_mark_chain<'a>(child: &'a AstNode<'a>) -> Option<(Vec<NodeValue>, &'a AstNode<'a>)> {
+    let mut wrappers: Vec<NodeValue> = Vec::new();
+    let mut current = child;
+    loop {
+        let value = current.data.borrow().value.clone();
+        if !is_mark_wrapper(&value) {
+            break;
+        }
+        let mut children = current.children();
+        let only = children.next()?;
+        if children.next().is_some() {
+            return None;
+        }
+        wrappers.push(value);
+        current = only;
+    }
+    if wrappers.is_empty() || is_mark_wrapper(&current.data.borrow().value) {
+        return None;
+    }
+    Some((wrappers, current))
+}
+
+/// Insert a peeled mark chain's leaf under `parent`, reusing the
+/// parent's tail wrapper whenever it carries one of the chain's marks
+/// (#968). Adjacent ProseMirror runs are converted one at a time, each
+/// in canonical rank order, so neighbouring runs that share a mark can
+/// disagree about which shared mark is outermost: `*em **strong**
+/// end*` arrives as Emph, Strong→Emph, Emph and used to render as
+/// three fragmented sibling spans with `&#32;` boundary entities.
+/// Reusing the tail wrapper for the shared mark — wherever it sits in
+/// the incoming chain — and nesting the chain's remaining wrappers
+/// inside it emits one properly nested span instead. When the tail
+/// shares no mark with the chain, the chain is appended fresh, which
+/// also subsumes the #953 same-wrapper merge (an identical tail
+/// wrapper is simply the shared mark at position 0, recursively).
+fn insert_marked_chain<'a>(
+    arena: &'a Arena<'a>,
+    parent: &'a AstNode<'a>,
+    wrappers: &[NodeValue],
+    leaf: &'a AstNode<'a>,
+) {
+    if !wrappers.is_empty()
+        && let Some(last) = parent.last_child()
+    {
+        let last_value = last.data.borrow().value.clone();
+        if is_mark_wrapper(&last_value)
+            && let Some(shared) = wrappers
+                .iter()
+                .position(|wrapper| same_mark_wrapper(wrapper, &last_value))
+        {
+            let rest: Vec<NodeValue> = wrappers
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != shared)
+                .map(|(_, wrapper)| wrapper.clone())
+                .collect();
+            insert_marked_chain(arena, last, &rest, leaf);
+            return;
+        }
+    }
+    let mut current = parent;
+    for wrapper in wrappers {
+        let node = arena.alloc(AstNode::from(wrapper.clone()));
+        current.append(node);
+        current = node;
+    }
+    current.append(leaf);
+}
+
 /// Append an inline child, merging it into the previous sibling when
 /// both are the same mark wrapper (#953): `[a `code` b](href)` reaches
 /// the save direction as three text nodes that share the link mark, and
 /// three sibling Link nodes render as three fragmented links. Moving
 /// the new wrapper's children into the previous wrapper (recursively,
 /// so nested wrappers merge too) emits one link containing all three
-/// segments. Non-wrapper children are appended unchanged.
-fn append_inline_child<'a>(parent: &'a AstNode<'a>, child: &'a AstNode<'a>) {
+/// segments. Pure mark chains go through the #968 tail insertion
+/// (`insert_marked_chain`), which handles the #953 merge as its
+/// shared-mark case; non-chain children keep the original merge.
+fn append_inline_child<'a>(arena: &'a Arena<'a>, parent: &'a AstNode<'a>, child: &'a AstNode<'a>) {
+    if let Some((wrappers, leaf)) = peel_mark_chain(child) {
+        leaf.detach();
+        insert_marked_chain(arena, parent, &wrappers, leaf);
+        return;
+    }
     if let Some(last) = parent.last_child() {
         let same = {
             let last_value = last.data.borrow();
@@ -1373,7 +1464,7 @@ fn append_inline_child<'a>(parent: &'a AstNode<'a>, child: &'a AstNode<'a>) {
             let grandchildren: Vec<&AstNode<'a>> = child.children().collect();
             for grandchild in grandchildren {
                 grandchild.detach();
-                append_inline_child(last, grandchild);
+                append_inline_child(arena, last, grandchild);
             }
             return;
         }
@@ -1813,6 +1904,52 @@ mod tests {
             let (first, second) = two_saves(original);
             assert_eq!(first, expected, "first save for {original:?}");
             assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_nested_mark_spans_roundtrip_fixpoint() {
+        // #968: a span whose extra mark ranks OUTER to the mark it
+        // shares with its neighbours (strong/link inside em, strong
+        // inside strike, em inside strike) used to save as fragmented
+        // sibling wrappers with &#32; boundary entities. The save
+        // direction must re-nest the runs into one span: byte-identical
+        // first save and a fixpoint on the second.
+        for original in [
+            "*em **strong** end*\n",
+            "~~strike **strong** end~~\n",
+            "*em [link](https://e.com) end*\n",
+            "**strong [link](https://e.com) end**\n",
+            "~~strike *em* end~~\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "first save for {original:?}");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+            assert!(!first.contains("&#32;"), "entity in {first:?}");
+        }
+    }
+
+    #[test]
+    fn test_nested_mark_clean_cases_do_not_regress() {
+        // #968 regression guards: the combinations the #944/#953/#999
+        // fixes already round-trip must keep doing so, byte-identical
+        // (modulo the documented _em_ -> *em* spelling normalization).
+        for (original, expected) in [
+            ("**bold ~~strike~~ end**\n", "**bold ~~strike~~ end**\n"),
+            ("**bold `code` end**\n", "**bold `code` end**\n"),
+            ("*em `code` end*\n", "*em `code` end*\n"),
+            (
+                "[link *em* text](https://e.com)\n",
+                "[link *em* text](https://e.com)\n",
+            ),
+            ("**a *b `c` d* e**\n", "**a *b `c` d* e**\n"),
+            ("*em ~~strike~~ end*\n", "*em ~~strike~~ end*\n"),
+            ("**bold _em_ end**\n", "**bold *em* end**\n"),
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, expected, "first save for {original:?}");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+            assert!(!first.contains("&#32;"), "entity in {first:?}");
         }
     }
 
