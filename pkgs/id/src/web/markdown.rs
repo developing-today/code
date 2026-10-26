@@ -360,14 +360,19 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
                     "content": [img_node]
                 });
             }
-            // Convert HTML blocks to code blocks (safe fallback)
+            // Convert HTML blocks to code blocks (safe fallback), with
+            // a provenance attr (#982, cf. the #880 linkHref precedent):
+            // in PM shape a converted block is otherwise identical to an
+            // authored ```html fence, so the save direction uses
+            // `htmlBlock` to tell them apart and emit a real HtmlBlock
+            // for converted blocks while authored fences stay fenced.
             let text = html.literal.strip_suffix('\n').unwrap_or(&html.literal);
             if text.is_empty() {
                 json!({"type": "paragraph"})
             } else {
                 json!({
                     "type": "code_block",
-                    "attrs": {"params": "html"},
+                    "attrs": {"params": "html", "htmlBlock": true},
                     "content": [{"type": "text", "text": text}]
                 })
             }
@@ -932,6 +937,20 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             });
             let content = content.as_str();
             let info = json["attrs"]["params"].as_str().unwrap_or("");
+
+            // #982: a code_block carrying the htmlBlock provenance attr
+            // (set by the parse direction for blocks converted from raw
+            // HTML) emits as a real HTML block again, not a ```html
+            // fence. Authored fences and already-saved docs have no
+            // attr and keep the fenced emit below — no retro-guessing.
+            if info == "html" && json["attrs"]["htmlBlock"].as_bool() == Some(true) {
+                return Ok(arena.alloc(AstNode::from(NodeValue::HtmlBlock(Box::new(
+                    comrak::nodes::NodeHtmlBlock {
+                        literal: format!("{content}\n"),
+                        ..Default::default()
+                    },
+                )))));
+            }
 
             NodeValue::CodeBlock(Box::new(comrak::nodes::NodeCodeBlock {
                 fenced: true,
@@ -1834,6 +1853,58 @@ mod tests {
             .find(|n| n["type"] == "footnote_reference")
             .expect("footnote_reference node present");
         assert_eq!(reference["attrs"]["label"], "1");
+    }
+
+    #[test]
+    fn test_html_block_roundtrip_fixpoint() {
+        // #982: raw HTML blocks (comment, details, div) round-trip
+        // byte-identically instead of being rewritten as ```html
+        // fences on save, and the second save is a fixpoint.
+        for original in [
+            "<!-- comment -->\n",
+            "<details>\n<summary>Title</summary>\n\nBody text.\n</details>\n",
+            "<div>\nSome content\n</div>\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "HTML block preserved: {original:?}");
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert!(!first.contains("```"), "no fence rewrite: {first:?}");
+        }
+    }
+
+    #[test]
+    fn test_html_block_parse_shape_has_provenance_attr() {
+        // #982: the parse direction marks converted HTML blocks with
+        // the htmlBlock provenance attr so save can tell them apart
+        // from authored fences.
+        let doc = markdown_to_prosemirror("<!-- comment -->\n");
+        let block = &doc["content"][0];
+        assert_eq!(block["type"], "code_block");
+        assert_eq!(block["attrs"]["params"], "html");
+        assert_eq!(block["attrs"]["htmlBlock"], true);
+    }
+
+    #[test]
+    fn test_authored_html_fence_stays_fenced() {
+        // #982: a user-authored ```html fence round-trips as a fence —
+        // it has no provenance attr, so save keeps the fenced emit.
+        let original = "```html\n<div>x</div>\n```\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, original, "authored fence preserved");
+        assert_eq!(first, second, "fixpoint");
+
+        // Already-saved docs (params=html, no htmlBlock attr) also
+        // stay fenced — no retro-guessing about their origin.
+        let pm = json!({
+            "type": "doc",
+            "content": [{
+                "type": "code_block",
+                "attrs": {"params": "html"},
+                "content": [{"type": "text", "text": "<!-- old -->"}]
+            }]
+        });
+        let md = prosemirror_to_markdown(&pm).expect("converts");
+        assert_eq!(md, "```html\n<!-- old -->\n```\n");
     }
 
     #[test]
