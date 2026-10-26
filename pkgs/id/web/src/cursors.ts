@@ -719,10 +719,6 @@ function createCursorDecorations(
         // Create merged bar for all remote cursors
         const leftmostPos = Math.min(...groupsForBar.map((g) => g.position));
 
-        // Find the leftmost group (we'll attach the bar to its cursor line)
-        const leftmostGroup = groupsForBar.find((g) => g.position === leftmostPos);
-        const leftmostCursorLine: HTMLElement | null = null;
-
         // Create a cluster-wide key that includes ALL client IDs, positions, opacities, and connection state in the cluster
         // This ensures widgets are recreated when cluster membership, positions, or dynamic states change
         const clusterKey = groupsForBar
