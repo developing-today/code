@@ -133,6 +133,21 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
     expect(meta[0].source).toContain("card alert");
   });
 
+  test("single dated Meta charge incidents land as their own rows, deduped across both records", () => {
+    const registry = `- [observed — Gmail card alert, 2026-10-26 10:08 CDT] Meta PAYG (METAPAY) —\n  **$20.00 charged 10:08 CDT** (Citi Costco card ending 9545; merchant "Metapay*uc5dpa22y4").`;
+    const view = `### Meta Model API\n- **Usage / dates:** **Newer dated charge (2026-10-26): $20.00 charged 10:08 CDT — Meta PAYG (METAPAY), merchant "Metapay*uc5dpa22y4", on Citi Costco card ending 9545 (Gmail card alert).**`;
+    const meta = extractCharges(view, registry).filter((c) => c.label === "Meta PAYG spill");
+    expect(meta).toEqual([
+      {
+        at: "2026-10-26",
+        label: "Meta PAYG spill",
+        amountUsd: 20,
+        method: "Citi Costco •9545",
+        source: "Gmail card alert (registry billing incidents)",
+      },
+    ]);
+  });
+
   test("subscriptions strip is renewal-only rows from the records", () => {
     const subs = extractSubscriptions(`${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`);
     expect(subs).toEqual([
