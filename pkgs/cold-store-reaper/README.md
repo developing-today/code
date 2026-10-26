@@ -146,12 +146,18 @@ environment only):
 - `scripts/restore-drill.sh` — the quarterly restore drill (design
   section 8): picks 3 pseudo-random cold objects from the local
   manifest, fetches each through the rehydrator Worker and verifies its
-  sha256, then downloads the newest d1 backup with `get-backup`, loads
-  it into in-memory SQLite, and compares per-table row counts against
-  live D1 (falling back to the local manifest if D1 is unreachable).
-  Prints `DRILL PASS`/`DRILL FAIL` per item and a final verdict; exits
-  non-zero on any failure. Requires `REHYDRATOR_API_KEY` and
-  `CLOUDFLARE_API_TOKEN` in the environment.
+  sha256, then downloads the newest d1 backup with `get-backup` and
+  checks it with `scripts/drill_compare.py`: loaded into in-memory
+  SQLite, the backup must be a **content-equal subset** of live D1 —
+  every backup row present with identical values, keyed by each
+  table's primary key. (Row-count equality was the old check; it
+  false-failed every healthy backup, because the manifest is
+  append-mostly and the nightly run appends its own `transfer_ledger`
+  rows after its export. Extra live rows are reported as a count
+  note, never a failure.) If D1 is unreachable, the fallback oracle
+  is the local manifest. Prints `DRILL PASS`/`DRILL FAIL` per item
+  and a final verdict; exits non-zero on any failure. Requires
+  `REHYDRATOR_API_KEY` and `CLOUDFLARE_API_TOKEN` in the environment.
 
 ## Manifest sync → D1
 
