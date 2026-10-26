@@ -774,9 +774,7 @@ class ColdStore:
     def _parse_backup_stamp(db_name: str, name: str) -> datetime | None:
         """Timestamp embedded in a dated backup name, or None if the name
         does not follow <db>-<YYYYMMDDTHHMMSSZ>-<basename> for this db."""
-        m = re.fullmatch(
-            re.escape(db_name) + r"-(\d{8}T\d{6}Z)-.+", name
-        )
+        m = re.fullmatch(re.escape(db_name) + r"-(\d{8}T\d{6}Z)-.+", name)
         if not m:
             return None
         try:
@@ -1127,9 +1125,7 @@ class ColdStore:
             rows = self._d1_select(f'SELECT * FROM "{t}" ORDER BY rowid')
             for row in rows:
                 vals = ", ".join(self._sql_literal(row[c]) for c in cols)
-                lines.append(
-                    f'INSERT INTO "{t}" ({", ".join(cols)}) VALUES ({vals});'
-                )
+                lines.append(f'INSERT INTO "{t}" ({", ".join(cols)}) VALUES ({vals});')
             total += len(rows)
         return "\n".join(lines) + "\n", tables, total
 

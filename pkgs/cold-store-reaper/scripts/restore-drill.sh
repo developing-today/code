@@ -65,18 +65,18 @@ for (h,) in rows:
 PY
 mapfile -t COLD_HASHES <"${WORK}/cold-hashes.txt"
 
-if [[ "${#COLD_HASHES[@]}" -eq 0 ]]; then
+if [[ ${#COLD_HASHES[@]} -eq 0 ]]; then
   fail "no cold objects in the local manifest — nothing to rehydrate"
 else
   PICKED="$(printf '%s\n' "${COLD_HASHES[@]}" | shuf | head -n 3)"
   while IFS= read -r obj_hash; do
-    [[ -n "${obj_hash}" ]] || continue
+    [[ -n ${obj_hash} ]] || continue
     out="${WORK}/object.bin"
     if curl -fsS --max-time 120 \
       -H "Authorization: Bearer ${REHYDRATOR_API_KEY}" \
       "${WORKER_BASE}/fetch/${obj_hash}" -o "${out}"; then
       actual="$(sha256sum "${out}" | awk '{print $1}')"
-      if [[ "${actual}" = "${obj_hash}" ]]; then
+      if [[ ${actual} == "${obj_hash}" ]]; then
         pass "object ${obj_hash} rehydrated via Worker, sha256 verified"
       else
         fail "object ${obj_hash} sha256 mismatch (Worker returned ${actual})"
@@ -88,9 +88,9 @@ else
 fi
 
 # ------------------------------------------------------------ newest d1 backup
-BACKUP_NAME="$("${COLD_STORE}" list-backups --db d1 2>/dev/null \
-  | sed -n 's/.*\(d1-[0-9]*T[0-9]*Z-[^ ]*\).*/\1/p' | head -n 1)" || true
-if [[ -z "${BACKUP_NAME}" ]]; then
+BACKUP_NAME="$("${COLD_STORE}" list-backups --db d1 2>/dev/null |
+  sed -n 's/.*\(d1-[0-9]*T[0-9]*Z-[^ ]*\).*/\1/p' | head -n 1)" || true
+if [[ -z ${BACKUP_NAME} ]]; then
   fail "no d1 backup found in Drive"
 elif ! "${COLD_STORE}" get-backup d1 "${BACKUP_NAME}" "${WORK}/backup.sql" >/dev/null; then
   fail "get-backup could not download ${BACKUP_NAME}"
@@ -167,7 +167,7 @@ else
 fi
 
 # ------------------------------------------------------------ verdict
-if [[ "${FAILURES}" -eq 0 ]]; then
+if [[ ${FAILURES} -eq 0 ]]; then
   echo "DRILL VERDICT: PASS"
 else
   echo "DRILL VERDICT: FAIL (${FAILURES} failure(s))"

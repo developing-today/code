@@ -259,7 +259,12 @@ class ColdStoreTestBase(unittest.TestCase):
         return p
 
     def seed_drive_file(
-        self, name, parent_id, data=b"x", trashed=False, created="2026-01-01T00:00:00.000Z"
+        self,
+        name,
+        parent_id,
+        data=b"x",
+        trashed=False,
+        created="2026-01-01T00:00:00.000Z",
     ):
         """Place a file directly in the fake Drive (no upload round-trip)."""
         fid = self.fake.next_id("file")
@@ -879,7 +884,9 @@ class TestBackupD1(ColdStoreTestBase):
         )
         fresh.executescript(sql_text)
         self.assertEqual(
-            fresh.execute("SELECT hash, size, note FROM objects ORDER BY hash").fetchall(),
+            fresh.execute(
+                "SELECT hash, size, note FROM objects ORDER BY hash"
+            ).fetchall(),
             [("aaa", 10, "plain"), ("bbb", 20, "o'brien"), ("ccc", 30, None)],
         )
         self.assertEqual(
@@ -922,7 +929,9 @@ class TestLedgerTrashMigration(ColdStoreTestBase):
         )
         conn = legacy.db()
         rows = conn.execute("SELECT direction, ref FROM transfer_ledger").fetchall()
-        self.assertEqual([(r["direction"], r["ref"]) for r in rows], [("upload", "b_legacy")])
+        self.assertEqual(
+            [(r["direction"], r["ref"]) for r in rows], [("upload", "b_legacy")]
+        )
         with conn:
             legacy.ledger_add(conn, "trash", 7, "backup-prune", "d1-old.sql")
         n = conn.execute(
