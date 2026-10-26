@@ -1086,12 +1086,12 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                     if let Some(para_content) = child_json["content"].as_array() {
                         for inline_json in para_content {
                             let inline_node = json_to_ast(arena, inline_json)?;
-                            ast_node.append(inline_node);
+                            append_inline_child(ast_node, inline_node);
                         }
                     }
                 } else {
                     let child = json_to_ast(arena, child_json)?;
-                    ast_node.append(child);
+                    append_inline_child(ast_node, child);
                 }
             }
         }
@@ -1104,7 +1104,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     {
         for child_json in content {
             let child = json_to_ast(arena, child_json)?;
-            ast_node.append(child);
+            append_inline_child(ast_node, child);
         }
     }
 
@@ -1138,21 +1138,58 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     Ok(ast_node)
 }
 
+/// Whether two node values are the same mark wrapper, so adjacent
+/// siblings carrying it are really one marked span (#953).
+fn same_mark_wrapper(a: &NodeValue, b: &NodeValue) -> bool {
+    match (a, b) {
+        (NodeValue::Link(x), NodeValue::Link(y)) => x.url == y.url && x.title == y.title,
+        (NodeValue::Strong, NodeValue::Strong)
+        | (NodeValue::Emph, NodeValue::Emph)
+        | (NodeValue::Strikethrough, NodeValue::Strikethrough) => true,
+        _ => false,
+    }
+}
+
+/// Append an inline child, merging it into the previous sibling when
+/// both are the same mark wrapper (#953): `[a `code` b](href)` reaches
+/// the save direction as three text nodes that share the link mark, and
+/// three sibling Link nodes render as three fragmented links. Moving
+/// the new wrapper's children into the previous wrapper (recursively,
+/// so nested wrappers merge too) emits one link containing all three
+/// segments. Non-wrapper children are appended unchanged.
+fn append_inline_child<'a>(parent: &'a AstNode<'a>, child: &'a AstNode<'a>) {
+    if let Some(last) = parent.last_child() {
+        let same = {
+            let last_value = last.data.borrow();
+            let child_value = child.data.borrow();
+            same_mark_wrapper(&last_value.value, &child_value.value)
+        };
+        if same {
+            let grandchildren: Vec<&AstNode<'a>> = child.children().collect();
+            for grandchild in grandchildren {
+                grandchild.detach();
+                append_inline_child(last, grandchild);
+            }
+            return;
+        }
+    }
+    parent.append(child);
+}
+
 /// Create marked text node(s) - handles nested marks.
 fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> &'a AstNode<'a> {
     if marks.is_empty() {
         return arena.alloc(AstNode::from(NodeValue::Text(text.to_owned().into())));
     }
 
-    // Check if code mark is present - it takes precedence and replaces the text node
-    for mark in marks {
-        if mark["type"].as_str() == Some("code") {
-            return arena.alloc(AstNode::from(NodeValue::Code(comrak::nodes::NodeCode {
-                num_backticks: 1,
-                literal: text.to_owned(),
-            })));
-        }
-    }
+    // A code mark replaces the text node itself (code is the innermost
+    // mark, rank 4) but does NOT discard the other marks (#953): the
+    // remaining marks wrap the Code node via the same chain the plain
+    // text path uses, so [`code`](href) keeps its link and **`code`**
+    // keeps its strong.
+    let has_code = marks
+        .iter()
+        .any(|mark| mark["type"].as_str() == Some("code"));
 
     // Collect wrapper values in the canonical nesting order, outermost
     // first (#944): sort the incoming marks — whose array order depends on
@@ -1176,23 +1213,31 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
                     title: title.to_owned(),
                 }))
             }
-            _ => continue, // Skip unknown marks
+            _ => continue, // Skip code (handled below) and unknown marks
         };
         wrappers.push(wrapper_value);
     }
 
-    // Start with text node
-    let text_node = arena.alloc(AstNode::from(NodeValue::Text(text.to_owned().into())));
+    // Start with the innermost node: a Code node when a code mark is
+    // present, otherwise the plain text node.
+    let inner_node = if has_code {
+        arena.alloc(AstNode::from(NodeValue::Code(comrak::nodes::NodeCode {
+            num_backticks: 1,
+            literal: text.to_owned(),
+        })))
+    } else {
+        arena.alloc(AstNode::from(NodeValue::Text(text.to_owned().into())))
+    };
 
     if wrappers.is_empty() {
-        return text_node;
+        return inner_node;
     }
 
-    // Build wrapper chain recursively - innermost mark wraps text, outer
-    // marks wrap that. `build_mark_chain` consumes its list innermost
-    // first, so reverse the canonical outermost-first wrapper list.
+    // Build wrapper chain recursively - innermost mark wraps the inner
+    // node, outer marks wrap that. `build_mark_chain` consumes its list
+    // innermost first, so reverse the canonical outermost-first list.
     wrappers.reverse();
-    build_mark_chain(arena, text_node, &wrappers, 0)
+    build_mark_chain(arena, inner_node, &wrappers, 0)
 }
 
 /// Build a chain of mark wrappers around a text node.
@@ -1567,6 +1612,45 @@ mod tests {
         let (first, second) = two_saves("***both***\n");
         assert_eq!(first, second);
         assert!(first.contains("***both***"));
+    }
+
+    #[test]
+    fn test_code_link_roundtrip_fixpoint() {
+        // #953: a code mark combined with a link must keep the link on save.
+        let (first, second) = two_saves("[`code`](https://x.test)\n");
+        assert_eq!(first, "[`code`](https://x.test)\n");
+        assert_eq!(first, second, "no fixpoint");
+    }
+
+    #[test]
+    fn test_code_inside_link_text_roundtrip() {
+        // #953: the code segment stays inside the surrounding link instead
+        // of fragmenting it into [a ](href)`code`[ b](href).
+        let (first, second) = two_saves("[a `code` b](https://x.test)\n");
+        assert_eq!(first, "[a `code` b](https://x.test)\n");
+        assert_eq!(first, second, "no fixpoint");
+    }
+
+    #[test]
+    fn test_code_strong_em_strikethrough_roundtrip_fixpoint() {
+        // #953: code combined with strong / em / strikethrough keeps both.
+        for (original, expected) in [
+            ("**`code`**\n", "**`code`**\n"),
+            ("*`code`*\n", "*`code`*\n"),
+            ("~~`code`~~\n", "~~`code`~~\n"),
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, expected, "first save for {original:?}");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_plain_code_roundtrip_unchanged() {
+        // #953 control: plain inline code saves exactly as before.
+        let (first, second) = two_saves("`code`\n");
+        assert_eq!(first, "`code`\n");
+        assert_eq!(first, second);
     }
 
     #[test]
