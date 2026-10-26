@@ -44,6 +44,31 @@ export function freshestDate(text: string): string | null {
   return ds.length ? ds[ds.length - 1] : null;
 }
 
+/**
+ * The freshest date in a section's "**Last checked:**" bullet, or
+ * null. Sections also carry operational dates that are NOT reads
+ * (renewals, cycle ends — sometimes future ones), so the read date
+ * comes from the Last-checked record when there is one, mirroring
+ * saas-extract's measuredAt discipline.
+ */
+export function lastCheckedDate(section: string): string | null {
+  const lines = section.split("\n");
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/\*\*Last checked:\*\*/.test(lines[i])) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return null;
+  const out = [lines[start]];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^-\s/.test(lines[i]) || /^#{2,3} /.test(lines[i])) break;
+    out.push(lines[i]);
+  }
+  return freshestDate(out.join("\n"));
+}
+
 /** Snapshot units the store accepts; other metric units have no clean mapping. */
 const UNIT_MAP: Partial<Record<UsageUnit, SnapshotRecord["unit"]>> = {
   count: "count",
@@ -137,7 +162,7 @@ export function recordsFromPools(pools: QuotaPool[], quotaViewText: string, obse
     if (!pool.windows.length) continue;
     const spec = POOL_SPECS.find((s) => s.id === pool.id);
     const section = spec ? sectionOf(quotaViewText, spec.heading) : "";
-    const date = freshestDate(section);
+    const date = lastCheckedDate(section) ?? freshestDate(section);
     if (!date) continue;
     const ts = dayTs(date);
     for (const w of pool.windows) {
