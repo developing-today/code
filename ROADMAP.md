@@ -48,4 +48,4 @@ A row here records intent. It does not settle a product question and it is not a
 
 ## Done
 
-Completed work is recorded in GitHub — see closed issues and merged PRs.
+The finished items are kept in each project's roadmap, in its "Done" table.

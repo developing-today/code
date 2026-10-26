@@ -61,7 +61,7 @@ describe("server boots from fixtures", () => {
   test("quota and attention pages render", async () => {
     const quota = await (await fetch(`http://127.0.0.1:${port}/quota`)).text();
     const attention = await (await fetch(`http://127.0.0.1:${port}/attention`)).text();
-    expect(quota.includes("Usage &amp; billing")).toBe(true); // the hub retitle (design 2026-10-25 §1.1)
+    expect(quota.includes("Quota + throughput")).toBe(true);
     expect(attention.includes("Needs you")).toBe(true);
     expect(attention.includes("Needs Drew")).toBe(true);
     expect(attention.includes("Session coverage")).toBe(true);

@@ -1,22 +1,10 @@
 #!/usr/bin/env bash
 # Collect the fleet feed on this (sandbox) host and push it to the
-# laptop aggregator over the tailnet proxy route (hatch-egress-proxy:3130).
-#
-# Security (issue #948):
-# - The proxy credential is NEVER passed as a process argument. The
-#   Python process below reads it from HTTPS_PROXY (agent runs) or
-#   ~/tools/secrets.d/mcpx-daemon.env (systemd timer runs), opens an
-#   HTTP CONNECT tunnel to the laptop itself, and sends the credential
-#   only on the wire, in the Proxy-Authorization header. ssh/scp talk
-#   to a throwaway 127.0.0.1 forwarder owned by that same process, so
-#   no spawned process (ssh, scp, or any tunnel helper) carries the
-#   credential in its argv.
-# - The laptop host key is pinned: scripts/laptop_known_hosts is
-#   checked in, and ssh verifies against it with
-#   StrictHostKeyChecking=yes + HostKeyAlias=<laptop tailnet IP>.
-#   A mismatched key fails the push.
-# Guard: scripts/push-fleet-feed.guard.sh fails if either pattern
-# regresses.
+# laptop aggregator, over the same tailnet proxy route laptop-ssh.sh
+# uses (socat PROXY via hatch-egress-proxy:3130). The proxy credential
+# comes from this process's HTTPS_PROXY when present (agent runs), or
+# from ~/tools/secrets.d/mcpx-daemon.env (systemd timer runs) — it is
+# read at runtime and never stored here.
 #
 # Cadence: ~5 min via fleet-feed-collector.timer (systemd, sandbox).
 set -euo pipefail
@@ -35,23 +23,13 @@ PKG="$PWD"
 FEED="$PKG/fleet-feed.json"
 LAPTOP=user@100.99.113.103
 DEST_DIR="~/pm-stack/aggregator"
-KNOWN_HOSTS="${PUSH_FLEET_FEED_KNOWN_HOSTS:-$PKG/scripts/laptop_known_hosts}"
 
 bun run scripts/collect-fleet-feed.ts --out "$FEED"
 
-exec python3 - "$FEED" "$LAPTOP" "$DEST_DIR" "$KNOWN_HOSTS" <<'PYEOF'
-import base64, os, re, socket, subprocess, sys, threading, urllib.parse
+exec python3 - "$FEED" "$LAPTOP" "$DEST_DIR" <<'PYEOF'
+import os, re, subprocess, sys, urllib.parse
 
-feed, laptop, dest_dir, known_hosts = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-target_host = laptop.split("@", 1)[-1]
-target_port = 22
-# Tailnet tunnel port on the egress proxy (same route the old external
-# proxy-helper command used; the HTTPS_PROXY URL port is the general
-# egress port).
-PROXY_PORT = 3130
-
-if not os.path.isfile(known_hosts) or os.path.getsize(known_hosts) == 0:
-    sys.exit(f"push-fleet-feed: pinned known_hosts missing/empty: {known_hosts}")
+feed, laptop, dest_dir = sys.argv[1], sys.argv[2], sys.argv[3]
 
 proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
 if not proxy:
@@ -67,111 +45,25 @@ if not proxy:
 u = urllib.parse.urlparse(proxy)
 user = urllib.parse.unquote(u.username or "")
 pw = urllib.parse.unquote(u.password or "")
-# Credential exists only in this process's memory and on the proxy wire.
-auth = base64.b64encode(f"{user}:{pw}".encode()).decode()
-
-
-def open_tunnel():
-    """CONNECT through the egress proxy to the laptop sshd.
-    Returns (socket, leftover_bytes_received_after_the_CONNECT_reply)."""
-    s = socket.create_connection((u.hostname, PROXY_PORT), timeout=25)
-    req = (
-        f"CONNECT {target_host}:{target_port} HTTP/1.1\r\n"
-        f"Host: {target_host}:{target_port}\r\n"
-        f"Proxy-Authorization: Basic {auth}\r\n"
-        "Proxy-Connection: keep-alive\r\n\r\n"
-    )
-    s.sendall(req.encode())
-    buf = b""
-    while b"\r\n\r\n" not in buf:
-        chunk = s.recv(4096)
-        if not chunk:
-            s.close()
-            raise OSError("proxy closed during CONNECT")
-        buf += chunk
-    head, leftover = buf.split(b"\r\n\r\n", 1)
-    status = head.split(b"\r\n", 1)[0].decode("latin1")
-    if " 200" not in status:
-        s.close()
-        raise OSError(f"proxy CONNECT failed: {status}")
-    return s, leftover
-
-
-def relay(src, dst, initial=b""):
-    try:
-        if initial:
-            dst.sendall(initial)
-        while True:
-            data = src.recv(65536)
-            if not data:
-                break
-            dst.sendall(data)
-    except OSError:
-        pass
-    finally:
-        try:
-            dst.shutdown(socket.SHUT_WR)
-        except OSError:
-            pass
-
-
-def handle(local):
-    try:
-        remote, leftover = open_tunnel()
-    except OSError as e:
-        print(f"push-fleet-feed: tunnel failed: {e}", file=sys.stderr)
-        local.close()
-        return
-    t = threading.Thread(target=relay, args=(remote, local, leftover), daemon=True)
-    t.start()
-    relay(local, remote)
-    t.join(timeout=5)
-    local.close()
-    remote.close()
-
-
-listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-listener.bind(("127.0.0.1", 0))
-listener.listen(5)
-local_port = listener.getsockname()[1]
-
-
-def accept_loop():
-    while True:
-        try:
-            conn, _ = listener.accept()
-        except OSError:
-            return
-        threading.Thread(target=handle, args=(conn,), daemon=True).start()
-
-
-threading.Thread(target=accept_loop, daemon=True).start()
-
+proxycmd = f"socat - PROXY:{u.hostname}:100.99.113.103:22,proxyport=3130,proxyauth={user}:{pw}"
 ssh_opts = [
-    "-o", "StrictHostKeyChecking=yes",
-    "-o", f"UserKnownHostsFile={known_hosts}",
-    "-o", f"HostKeyAlias={target_host}",
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
     "-o", "IdentitiesOnly=yes",
     "-i", os.path.expanduser("~/.ssh/id_ed25519"),
+    "-o", f"ProxyCommand={proxycmd}",
     "-o", "ConnectTimeout=25",
-    # No ControlMaster/ControlPersist: the tunnel lives in this process,
-    # so a persisted master connection would outlive its forwarder.
-    "-o", "ControlMaster=no",
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPath=" + os.path.expanduser("~/.ssh/cm-%r@%h:%p"),
+    "-o", "ControlPersist=120",
 ]
-dest = f"{laptop.split('@', 1)[0]}@127.0.0.1"
-try:
-    subprocess.run(
-        ["scp", "-P", str(local_port), *ssh_opts, feed,
-         f"{dest}:{dest_dir}/fleet-feed.json.tmp"],
-        check=True,
-    )
-    subprocess.run(
-        ["ssh", "-p", str(local_port), *ssh_opts, dest,
-         f"mv {dest_dir}/fleet-feed.json.tmp {dest_dir}/fleet-feed.json"],
-        check=True,
-    )
-finally:
-    listener.close()
+subprocess.run(
+    ["scp", *ssh_opts, feed, f"{laptop}:{dest_dir}/fleet-feed.json.tmp"],
+    check=True,
+)
+subprocess.run(
+    ["ssh", *ssh_opts, laptop, f"mv {dest_dir}/fleet-feed.json.tmp {dest_dir}/fleet-feed.json"],
+    check=True,
+)
 print("push-fleet-feed: feed pushed to laptop")
 PYEOF

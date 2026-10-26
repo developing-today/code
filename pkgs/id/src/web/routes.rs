@@ -27,9 +27,6 @@ use crate::fileops::{FileOpError, FileOps};
 /// Default number of files per page.
 const DEFAULT_PER_PAGE: usize = 50;
 
-/// Maximum number of files per page.
-const MAX_PER_PAGE: usize = 200;
-
 /// Maximum size of a single uploaded image file, in bytes.
 ///
 /// This is the *file* limit the web UI advertises and enforces client-side
@@ -923,29 +920,6 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
 /// 2. Tag keys/values for the file in the global namespace
 ///
 /// When `show_deleted` is false (default), soft-deleted files are hidden.
-/// Generic helper to paginate a slice of items safely.
-/// Returns (paginated_items, clamped_page, clamped_per_page).
-fn paginate<T: Clone>(
-    items: &[T],
-    page: Option<usize>,
-    per_page: Option<usize>,
-) -> (Vec<T>, usize, usize) {
-    let total = items.len();
-    let per_page = per_page.unwrap_or(DEFAULT_PER_PAGE).clamp(1, MAX_PER_PAGE);
-    let page = page.unwrap_or(1).max(1);
-
-    let start = page.saturating_sub(1).saturating_mul(per_page);
-    let end = start.saturating_add(per_page).min(total);
-
-    let page_items = if start < total {
-        items[start..end].to_vec()
-    } else {
-        Vec::new()
-    };
-
-    (page_items, page, per_page)
-}
-
 async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileListPage {
     let mut files = get_file_list(state).await;
 
@@ -996,7 +970,15 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
     }
 
     let total = files.len();
-    let (page_files, page, per_page) = paginate(&files, query.page, query.per_page);
+    let per_page = query.per_page.unwrap_or(DEFAULT_PER_PAGE).max(1);
+    let page = query.page.unwrap_or(1).max(1);
+    let start = (page - 1) * per_page;
+
+    let page_files = if start < total {
+        files[start..(start + per_page).min(total)].to_vec()
+    } else {
+        Vec::new()
+    };
 
     FileListPage {
         files: page_files,
@@ -3015,48 +2997,5 @@ mod tests {
         assert_eq!(mime_to_extension("image/x-icon"), "ico");
         assert_eq!(mime_to_extension("application/octet-stream"), "bin");
         assert_eq!(mime_to_extension("text/plain"), "bin");
-    }
-
-    #[test]
-    fn test_paginate_normal() {
-        let items: Vec<usize> = (0..10).collect();
-        let (page_items, page, per_page) = paginate(&items, Some(3), Some(2));
-        assert_eq!(page_items, vec![4, 5]);
-        assert_eq!(page, 3);
-        assert_eq!(per_page, 2);
-    }
-
-    #[test]
-    fn test_paginate_overflow_page_per_page() {
-        let items: Vec<usize> = (0..10).collect();
-        // Using page=3, per_page=usize::MAX would overflow in standard multiplication
-        // The query string max represents per_page, which we clamp to MAX_PER_PAGE.
-        // But even if we didn't clamp, saturating arithmetic prevents panic.
-        let (page_items, page, per_page) = paginate(&items, Some(3), Some(usize::MAX));
-        assert_eq!(page_items, Vec::<usize>::new());
-        assert_eq!(page, 3);
-        assert_eq!(per_page, MAX_PER_PAGE);
-    }
-
-    #[test]
-    fn test_paginate_overflow_page() {
-        let items: Vec<usize> = (0..10).collect();
-        // page=usize::MAX, per_page=50
-        let (page_items, page, per_page) = paginate(&items, Some(usize::MAX), Some(50));
-        assert_eq!(page_items, Vec::<usize>::new());
-        assert_eq!(page, usize::MAX);
-        assert_eq!(per_page, 50);
-    }
-
-    #[test]
-    fn test_paginate_above_max_per_page() {
-        let items: Vec<usize> = (0..300).collect();
-        let (page_items, page, per_page) = paginate(&items, Some(1), Some(1000));
-        // We clamp per_page to MAX_PER_PAGE (200)
-        assert_eq!(page_items.len(), 200);
-        assert_eq!(page_items[0], 0);
-        assert_eq!(page_items[199], 199);
-        assert_eq!(page, 1);
-        assert_eq!(per_page, MAX_PER_PAGE);
     }
 }

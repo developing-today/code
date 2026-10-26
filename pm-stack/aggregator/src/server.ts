@@ -5,7 +5,7 @@
 // (GitHub, Kaneo, Grist) stays read-only from here.
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
-import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
+import { allRefs, buildAttention, deriveToday, type RoadmapGrain } from "./derive.ts";
 import type { DashComment, RefKey } from "./model.ts";
 import { identitiesFromRecords } from "./registry.ts";
 import {
@@ -18,7 +18,6 @@ import {
   renderPages,
   renderQuota,
   renderRoadmap,
-  renderServiceDetail,
   renderSessions,
   renderToday,
   type CommentFormOpts,
@@ -197,18 +196,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/quota") {
-    const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
-    return html(renderQuota(quota, prov(), usage));
-  }
-
-  const serviceMatch = /^\/quota\/service\/([\w-]+)$/.exec(path);
-  if (serviceMatch) {
-    const usage = await source.usage();
-    const svc = usage.services.find((s) => s.id === serviceMatch[1]);
-    if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov()));
-    return html(
-      `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${serviceMatch[1]}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
-    );
+    return html(renderQuota(await source.quota(), prov()));
   }
 
   if (path === "/attention") {
@@ -253,31 +241,7 @@ async function handler(req: Request): Promise<Response> {
     return json({ rows, items: [...items.values()] });
   }
   if (path === "/api/quota.json") {
-    // Extended in place for the hub (design §1.1): the pools/burn/choices
-    // shape is unchanged for existing consumers (quota-guidance); the
-    // hub sections ride as additional top-level keys. Snapshot history
-    // stays out of this twin — it is per-service, on the service twin.
-    const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
-    return json({
-      ...quota,
-      saas: usage.services,
-      payg: usage.payg,
-      charges: usage.charges,
-      attention: usage.attention,
-      domains: usage.domains,
-      subscriptions: usage.subscriptions,
-    });
-  }
-  if (path === "/api/quota/service.json") {
-    const id = url.searchParams.get("id") ?? "";
-    const usage = await source.usage();
-    const svc = usage.services.find((s) => s.id === id);
-    if (!svc) return json({ error: "unknown service", id }, 404);
-    const history = usage.history[svc.id] ?? [];
-    const paces = [...new Set(history.map((r) => r.metricId))]
-      .map((metricId) => ({ metricId, pace: projectPace(history, metricId) }))
-      .filter((p) => p.pace);
-    return json({ service: svc, history, paces });
+    return json(await source.quota());
   }
   if (path === "/api/attention.json") {
     // Slice 2: the flat array shape stays; entries are now current-only

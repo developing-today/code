@@ -9,10 +9,6 @@ import type { Config } from "../config.ts";
 import { isDnsSection } from "../dns.ts";
 import { feedAgeText, isOrchestrationSection, loadFeed, type FleetFeed } from "../feed.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
-import { buildAttentionFlags } from "../derive.ts";
-import { summarizeDns } from "../dns.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
-import { SnapshotStore } from "../snapshots.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
@@ -29,7 +25,6 @@ import {
   type SessionFeedEntry,
   type SessionRecord,
   type SourceCoverage,
-  type UsageView,
   refsInText,
   refUrl,
 } from "../model.ts";
@@ -347,7 +342,6 @@ export function liveSource(cfg: Config): Source {
     items: "fixtures",
     comments: "fixtures",
     quota: "fixtures",
-    usage: "fixtures",
     attention: "fixtures",
     orchestration: "fixtures",
     dns: "fixtures",
@@ -517,68 +511,6 @@ export function liveSource(cfg: Config): Source {
       }
       provenance.quota = "fixtures (no fleet feed file yet)";
       return fix.quota();
-    },
-    async usage(): Promise<UsageView> {
-      // Usage & billing hub (design §3): feed sections first (the
-      // collector extracts Part (b) on the sandbox, where the sources
-      // of record live); when an older feed has none, extract directly
-      // from the quota view + registry files; fixtures only when
-      // neither exists. Snapshot history always comes from the local
-      // store (§4) — the aggregator reads it, writers live elsewhere.
-      const feed = await getFeed();
-      const history = await new SnapshotStore(cfg.snapshotsDir).byService().catch(() => ({}));
-      const domains =
-        feed?.dns && isDnsSection(feed.dns)
-          ? {
-              totalAnnualUsd: feed.dns.totalAnnualListUsd,
-              nextRenewal: summarizeDns(feed.dns).nextRenewal?.renewal ?? null,
-              domainCount: feed.dns.entries.length,
-            }
-          : null;
-      if (feed?.saas && feed.saas.length) {
-        provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
-        const partial = {
-          services: feed.saas,
-          payg: feed.payg ?? [],
-          charges: feed.charges ?? [],
-          subscriptions: feed.subscriptions ?? [],
-        };
-        return {
-          ...partial,
-          chargesNote: partial.charges.length
-            ? undefined
-            : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: buildAttentionFlags(feed.quota, partial),
-          domains,
-          history,
-        };
-      }
-      try {
-        const [doc, registryText] = await Promise.all([
-          readFile(cfg.quotaViewFile, "utf8"),
-          readFile(cfg.quotaRegistryFile, "utf8").catch(() => ""),
-        ]);
-        const partial = {
-          services: extractSaasServices(doc),
-          payg: extractPaygLines(doc, registryText),
-          charges: extractCharges(doc, registryText),
-          subscriptions: extractSubscriptions(doc),
-        };
-        provenance.usage = "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)";
-        return {
-          ...partial,
-          chargesNote: partial.charges.length
-            ? undefined
-            : "No charge evidence in the local records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: buildAttentionFlags(feed?.quota ?? (await fix.quota()), partial),
-          domains,
-          history,
-        };
-      } catch {
-        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)";
-        const fallback = await fix.usage();
-        return { ...fallback, history: Object.keys(history).length ? history : fallback.history };
-      }
     },
     async attention() {
       // Slice 1 (#890): laptop sessions live from the OpenChamber-

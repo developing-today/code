@@ -20,8 +20,7 @@
 // Usage: bun run scripts/collect-fleet-feed.ts [--out <path>]
 // Env overrides: QUOTA_VIEW_PATH, JULES_STATE_PATH, SANDBOX_OPENCODE_URL,
 // OPENCODE_SERVER_PASSWORD_FILE, ORCHESTRATION_PATH, DNS_REGISTER_PATH,
-// CLAUDE_LAUNCH_RECORDS_PATH, QUOTA_REGISTRY_PATH (the hub's PAYG/charges
-// sections read the provider registry's billing incidents, fail-soft).
+// CLAUDE_LAUNCH_RECORDS_PATH.
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -38,8 +37,6 @@ import type {
 } from "../src/model.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
-import type { ChargeRow, PaygLine, SaasService } from "../src/model.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
@@ -62,7 +59,6 @@ const dnsRegisterPath =
   process.env.DNS_REGISTER_PATH ??
   join(HOME, "workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md");
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
-const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
   process.env.OPENCODE_SERVER_PASSWORD_FILE ?? join(HOME, "tools/secrets.d/opencode-server-password");
@@ -122,30 +118,11 @@ async function main(): Promise<void> {
 
   // --- quota -------------------------------------------------------------
   let pools: QuotaPool[] = [];
-  let quotaViewText = "";
   try {
-    quotaViewText = await readFile(quotaViewPath, "utf8");
-    pools = extractQuotaPools(quotaViewText, now);
+    const quotaView = await readFile(quotaViewPath, "utf8");
+    pools = extractQuotaPools(quotaView, now);
   } catch (err) {
     console.error(`collector: quota view unreadable (${err}); emitting no pools`);
-  }
-
-  // --- usage & billing hub sections (design §2.3: ride the same feed) ---
-  let saas: SaasService[] | undefined;
-  let payg: PaygLine[] | undefined;
-  let charges: ChargeRow[] | undefined;
-  let subscriptions: FleetFeed["subscriptions"];
-  if (quotaViewText) {
-    let registryText = "";
-    try {
-      registryText = await readFile(quotaRegistryPath, "utf8");
-    } catch {
-      console.error("collector: provider quota registry unreadable; hub PAYG/charges lose the registry reads");
-    }
-    saas = extractSaasServices(quotaViewText);
-    payg = extractPaygLines(quotaViewText, registryText);
-    charges = extractCharges(quotaViewText, registryText);
-    subscriptions = extractSubscriptions(quotaViewText);
   }
 
   // --- sandbox attention + burn -------------------------------------------
@@ -247,10 +224,6 @@ async function main(): Promise<void> {
     ...(orchestration ? { orchestration } : {}),
     ...(dns ? { dns } : {}),
     ...(registry.length ? { registry } : {}),
-    ...(saas ? { saas } : {}),
-    ...(payg ? { payg } : {}),
-    ...(charges ? { charges } : {}),
-    ...(subscriptions ? { subscriptions } : {}),
   };
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
@@ -258,7 +231,6 @@ async function main(): Promise<void> {
     `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (sandbox + jules${jules ? `, ${jules.tracked} jules tracked` : ""})` +
       (orchestration ? `, orchestration ${orchestration.runId}` : ", no orchestration section") +
       (dns ? `, dns ${dns.entries.length} domains` : ", no dns section") +
-      (saas ? `, hub ${saas.length} services / ${payg?.length ?? 0} payg / ${charges?.length ?? 0} charges` : ", no hub sections") +
       `, registry ${registry.length} records`,
   );
 }
