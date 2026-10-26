@@ -311,6 +311,56 @@ describe("today view (#898 §4)", () => {
     expect(today.momentum[0].accomplished).toEqual(["PR #892 merged"]);
   });
 
+  test("tolerates a string-shaped progressedSinceLastRun and renders it", async () => {
+    // Regression for the /today 500: the orchestrator published each
+    // goal's progressedSinceLastRun as a single string, and renderToday
+    // called .map on it. The section type declares string[], so the
+    // string shape arrives via a cast, exactly as it does at runtime.
+    const sec = section({
+      goals: [
+        {
+          goalId: null,
+          goal: "Keep the four repos healthy",
+          momentum: "moving",
+          summary: "Sweeps are landing.",
+          linedUp: [],
+          progressedSinceLastRun: "PR #892 merged" as unknown as string[],
+          stalled: [],
+          gaps: [],
+        },
+      ],
+    });
+    const today = deriveToday(FIXTURE_BOARD, FIXTURE_ROADMAP, items, sec);
+    expect(today.momentum[0].accomplished).toEqual(["PR #892 merged"]);
+    const src = fixtureSource();
+    const attention = buildAttention(await src.attention(), null);
+    const html = renderToday(today, attention, await src.quota(), await src.coverage(), src.provenance());
+    expect(html).toContain("Recently accomplished");
+    expect(html).toContain("PR #892 merged");
+  });
+
+  test("renderToday coerces a non-array accomplished instead of crashing", async () => {
+    // Belt-and-braces for the same regression: a TodayView that bypasses
+    // derive.ts normalization must still render.
+    const today = {
+      fromOrchestrator: true,
+      generatedAt: iso(NOW),
+      objectives: [],
+      momentum: [
+        {
+          project: "Keep the four repos healthy",
+          state: "moving" as const,
+          accomplished: "PR #892 merged" as unknown as string[],
+        },
+      ],
+    };
+    const src = fixtureSource();
+    const attention = buildAttention(await src.attention(), null);
+    const html = renderToday(today, attention, await src.quota(), await src.coverage(), src.provenance());
+    expect(html).toContain("Recently accomplished");
+    expect(html).toContain("PR #892 merged");
+  });
+
   test("derives objectives + momentum without a summary, and says so on the page", async () => {
     const today = deriveToday(FIXTURE_BOARD, FIXTURE_ROADMAP, items, null);
     expect(today.fromOrchestrator).toBe(false);

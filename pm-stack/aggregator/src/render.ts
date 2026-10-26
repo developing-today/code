@@ -944,8 +944,18 @@ export function renderToday(
   const momentum = today.momentum.length
     ? today.momentum
         .map((m) => {
-          const done = (m.accomplished ?? []).length
-            ? `<br>Recently accomplished:<ul>${(m.accomplished ?? []).map((a) => `<li>${esc(a)}</li>`).join("")}</ul>`
+          // Defensive: a TodayView built outside derive.ts may still
+          // carry a non-array `accomplished` (e.g. a bare string) —
+          // coerce instead of crashing the whole /today render.
+          const rawAccomplished: unknown = m.accomplished;
+          const accomplished = (Array.isArray(rawAccomplished)
+            ? rawAccomplished
+            : rawAccomplished
+              ? [rawAccomplished]
+              : []
+          ).map((a) => String(a));
+          const done = accomplished.length
+            ? `<br>Recently accomplished:<ul>${accomplished.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>`
             : "";
           const blocked = m.blockedBy ? `<br><strong>Blocked by:</strong> ${esc(m.blockedBy)}` : "";
           const detail = m.detail ? `<br><span class="muted">${esc(m.detail)}</span>` : "";
