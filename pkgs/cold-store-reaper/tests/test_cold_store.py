@@ -505,7 +505,9 @@ class FakeS3:
     the client asks for, so pagination is always exercised. A key in
     `truncate_once` gets one response whose body stops halfway while
     its Content-Length promises the whole object — the truncated-read
-    case the real client must retry.
+    case the real client must retry. A key in `truncate_always` gets
+    that response every time — the systematic large-object truncation
+    that only the curl fallback survives.
     """
 
     BUCKET = "supabase-backups"
@@ -515,6 +517,7 @@ class FakeS3:
         self.deleted = []  # keys, in DELETE order
         self.requests = []  # {"method", "path", "query", "headers"}
         self.truncate_once = set()
+        self.truncate_always = set()
         self._truncated = set()
         self.page_size = 2
         # Transport-failure injection for LIST requests: a queue of
@@ -624,7 +627,9 @@ def make_s3_handler(fake: FakeS3):
                 self._error(404, "The specified key does not exist.")
                 return
             body = obj["body"]
-            if key in fake.truncate_once and key not in fake._truncated:
+            if key in fake.truncate_always or (
+                key in fake.truncate_once and key not in fake._truncated
+            ):
                 fake._truncated.add(key)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/octet-stream")
@@ -634,6 +639,21 @@ def make_s3_handler(fake: FakeS3):
                 self.close_connection = True
                 return
             self._send(200, body, ctype="application/octet-stream")
+
+        def do_HEAD(self):
+            parsed = self._record()
+            rest = parsed.path.lstrip("/").split("/", 1)
+            key = urllib.parse.unquote(rest[1]) if len(rest) > 1 else ""
+            obj = fake.objects.get(key)
+            if obj is None:
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(obj["body"])))
+            self.end_headers()
 
         def do_DELETE(self):
             parsed = self._record()
@@ -1242,6 +1262,106 @@ class TestBackupSupabase(S3TestBase):
         self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
         with self.assertRaises(cold_store.ColdStoreError):
             self.store.backup_supabase()
+
+
+class TestS3CurlFallback(S3TestBase):
+    """The curl fallback in s3_get_object: multi-megabyte R2
+    responses truncate SYSTEMATICALLY through the sandbox egress
+    proxy (live: every urllib attempt cut at exactly 409,600 bytes),
+    which no amount of urllib retrying survives — so once urllib is
+    exhausted, one curl attempt (stubbed here at the _curl_fetch
+    transport seam; no network, no real curl) delivers the object,
+    byte-count verified like the urllib path."""
+
+    BODY = b"large backup payload " * 500
+
+    def _persistent_truncation(self, body=None):
+        """The newest bucket object, truncated on every urllib GET."""
+        body = self.BODY if body is None else body
+        key = self.key_for(hashlib.sha256(body).hexdigest())
+        self.s3.put(key, body, "2026-10-21T02:00:00.000Z")
+        # the bucket manifest is newer still — and is never a dump filing
+        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
+        self.s3.truncate_always.add(key)
+        return key
+
+    def _stub_curl(self, body):
+        """Patch the store's curl transport; return the call log. Each
+        entry records how many urllib GETs of `key` had happened when
+        curl was invoked, proving the fallback fires only after
+        urllib exhaustion, never alongside it."""
+        calls = []
+
+        def fake_fetch(url, access, secret):
+            calls.append(
+                {
+                    "url": url,
+                    "access": access,
+                    "secret": secret,
+                    "get_requests": {
+                        k: len(self.s3.get_requests(k)) for k in self.s3.objects
+                    },
+                }
+            )
+            return body
+
+        return mock.patch.object(self.store, "_curl_fetch", fake_fetch), calls
+
+    def test_fallback_after_urllib_exhaustion_files_backup(self):
+        key = self._persistent_truncation()
+        patcher, calls = self._stub_curl(self.BODY)
+        with patcher:
+            result = self.store.backup_supabase()
+        # exactly one curl attempt, and only after urllib was fully
+        # exhausted: S3_GET_ATTEMPTS outer loops, each burning
+        # S3_TRANSPORT_ATTEMPTS transport attempts on the object GET
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0]["get_requests"][key],
+            cold_store.S3_GET_ATTEMPTS * cold_store.S3_TRANSPORT_ATTEMPTS,
+        )
+        self.assertTrue(calls[0]["url"].endswith("/" + key))
+        self.assertEqual(calls[0]["access"], "test-access-key")
+        # the fallback body was byte-verified and filed whole
+        self.assertEqual(result["source_key"], key)
+        self.assertEqual(result["sha256"], hashlib.sha256(self.BODY).hexdigest())
+        self.assertEqual(self.fake.files[result["drive_file_id"]], self.BODY)
+
+    def test_short_curl_body_named_error_nothing_filed(self):
+        key = self._persistent_truncation()
+        files_before = dict(self.fake.files)
+        patcher, calls = self._stub_curl(self.BODY[:100])
+        with patcher:
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.backup_supabase()
+        self.assertEqual(len(calls), 1)
+        message = str(ctx.exception)
+        self.assertIn("supabase-backups", message)
+        self.assertIn(key, message)
+        self.assertIn("curl fallback delivered 100 of", message)
+        self.assertNotIn("test-secret-key", message)
+        self.assertEqual(self.fake.files, files_before)
+
+    def test_curl_never_invoked_on_urllib_happy_path(self):
+        body = b"small backup " * 20
+        key = self.key_for(hashlib.sha256(body).hexdigest())
+        self.s3.put(key, body, "2026-10-21T02:00:00.000Z")
+        patcher, calls = self._stub_curl(body)
+        with patcher:
+            result = self.store.backup_supabase()
+        self.assertEqual(calls, [])
+        self.assertEqual(result["sha256"], hashlib.sha256(body).hexdigest())
+
+    def test_fallback_sizes_via_head_when_caller_gives_none(self):
+        key = self._persistent_truncation()
+        patcher, calls = self._stub_curl(self.BODY)
+        with patcher:
+            data = self.store.s3_get_object("supabase-backups", key)
+        self.assertEqual(data, self.BODY)
+        self.assertEqual(len(calls), 1)
+        head_requests = [r for r in self.s3.requests if r["method"] == "HEAD"]
+        self.assertEqual(len(head_requests), 1)
+        self.assertTrue(head_requests[0]["path"].endswith("/" + key))
 
 
 class EvictTestBase(S3TestBase):
