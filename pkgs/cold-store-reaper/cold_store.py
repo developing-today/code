@@ -27,6 +27,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -74,6 +75,27 @@ DEFAULT_R2_HOST = "234b866b99ce2b142d7963d8d139cbfa.r2.cloudflarestorage.com"
 DEFAULT_R2_BUCKET = "supabase-backups"
 R2_SIGNING_REGION = "auto"  # R2 is region-agnostic; SigV4 still needs one
 S3_GET_ATTEMPTS = 3
+# Transport-level retries inside the S3 layer (LIST/GET/DELETE are all
+# idempotent). Through some egress proxies, urllib responses are
+# intermittently truncated mid-body or the connection drops outright;
+# http_request surfaces those as the exceptions below, and before this
+# retry existed they escaped _s3_request as raw tracebacks that killed
+# the caller at the LIST step. Only S3 requests retry — Drive and the
+# other http_request callers keep their own semantics.
+S3_TRANSPORT_ATTEMPTS = 4
+S3_TRANSPORT_BACKOFF_SECONDS = 0.5  # x attempt number, capped below
+S3_TRANSPORT_BACKOFF_CAP_SECONDS = 5.0
+# A reset during the request-send phase is wrapped by urllib into a
+# URLError, which http_request converts to ColdStoreError; _s3_request
+# adds ColdStoreError to this tuple at call time (the class is defined
+# further down). Its try covers only the http_request call, so no
+# other ColdStoreError can be caught by the retry.
+S3_TRANSPORT_ERRORS = (
+    http.client.IncompleteRead,
+    http.client.RemoteDisconnected,
+    http.client.BadStatusLine,
+    ConnectionResetError,
+)
 
 
 def s3_error_message(body: bytes) -> str:
@@ -266,6 +288,9 @@ class ColdStore:
             candidate = "zstd"  # fall back to PATH lookup
         self.zstd = candidate
         self._access_token = None
+        # Injectable so tests can zero it: transport-retry backoff for
+        # the S3 layer (see _s3_request).
+        self.s3_backoff_seconds = S3_TRANSPORT_BACKOFF_SECONDS
 
     # ------------------------------------------------------------------ init
     def init(self) -> dict:
@@ -1330,7 +1355,23 @@ class ColdStore:
         }
 
     def _s3_request(self, method, bucket, key=None, query=None):
-        """One signed S3 request; returns (status, headers, body)."""
+        """One signed S3 request; returns (status, headers, body).
+
+        Transport failures — the response truncated mid-body
+        (IncompleteRead), the peer dropping or resetting the
+        connection (RemoteDisconnected / ConnectionResetError,
+        including the URLError form http_request converts to
+        ColdStoreError), or a garbled status line (BadStatusLine) —
+        retry the WHOLE request, up to S3_TRANSPORT_ATTEMPTS attempts
+        with a small backoff (self.s3_backoff_seconds x attempt,
+        capped). LIST, GET and DELETE are all idempotent, so a blind
+        retry is safe; the retry lives only in this S3 layer, never in
+        http_request itself. The request is re-signed per attempt
+        (SigV4 timestamps go stale; a fresh signature costs nothing).
+        If every attempt fails at the transport level, raise a
+        ColdStoreError naming the operation and bucket instead of
+        leaking a raw http.client traceback.
+        """
         path = "/" + urllib.parse.quote(bucket, safe="")
         if key is not None:
             path += "/" + urllib.parse.quote(key, safe="/")
@@ -1340,8 +1381,25 @@ class ColdStore:
         url = self.s3_base + path
         if canonical_query:
             url += "?" + canonical_query
-        headers = self._s3_signed_headers(method, path, canonical_query)
-        return http_request(method, url, headers=headers)
+        what = f"{method} {bucket}" + (f"/{key}" if key is not None else "")
+        problem: Exception | None = None
+        for attempt in range(1, S3_TRANSPORT_ATTEMPTS + 1):
+            headers = self._s3_signed_headers(method, path, canonical_query)
+            try:
+                return http_request(method, url, headers=headers)
+            except (*S3_TRANSPORT_ERRORS, ColdStoreError) as e:
+                problem = e
+                if attempt < S3_TRANSPORT_ATTEMPTS:
+                    delay = min(
+                        self.s3_backoff_seconds * attempt,
+                        S3_TRANSPORT_BACKOFF_CAP_SECONDS,
+                    )
+                    if delay > 0:
+                        time.sleep(delay)
+        raise ColdStoreError(
+            f"S3 {what} failed after {S3_TRANSPORT_ATTEMPTS} attempts: "
+            f"transport error ({type(problem).__name__}: {problem})"
+        )
 
     @staticmethod
     def _s3_check(status: int, body: bytes, what: str) -> None:

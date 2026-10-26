@@ -517,6 +517,13 @@ class FakeS3:
         self.truncate_once = set()
         self._truncated = set()
         self.page_size = 2
+        # Transport-failure injection for LIST requests: a queue of
+        # modes consumed one per listing call — "truncate" (headers
+        # promise the full body, connection closes halfway through
+        # it) or "drop" (connection closes with no response at all).
+        # list_attempts counts every listing call, failed or not.
+        self.list_failures = []
+        self.list_attempts = 0
 
     def put(self, key, body: bytes, last_modified: str):
         self.objects[key] = {"body": body, "last_modified": last_modified}
@@ -568,6 +575,13 @@ def make_s3_handler(fake: FakeS3):
             qs = urllib.parse.parse_qs(parsed.query)
             rest = parsed.path.lstrip("/").split("/", 1)
             if len(rest) == 1:  # bucket root: ListObjectsV2
+                fake.list_attempts += 1
+                failure = fake.list_failures.pop(0) if fake.list_failures else None
+                if failure == "drop":
+                    # No response at all: the client sees the peer
+                    # vanish (RemoteDisconnected) and must retry.
+                    self.close_connection = True
+                    return
                 start = int(qs.get("continuation-token", ["0"])[0])
                 keys = sorted(fake.objects)
                 page = keys[start : start + fake.page_size]
@@ -591,6 +605,17 @@ def make_s3_handler(fake: FakeS3):
                     f"<IsTruncated>{str(truncated).lower()}</IsTruncated>"
                     f"{contents}{token}</ListBucketResult>"
                 ).encode()
+                if failure == "truncate":
+                    # Headers promise the full body; the connection
+                    # closes halfway — the client's read is truncated
+                    # (IncompleteRead) and it must retry the listing.
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/xml")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body[: len(body) // 2])
+                    self.close_connection = True
+                    return
                 self._send(200, body)
                 return
             key = urllib.parse.unquote(rest[1])
@@ -644,6 +669,8 @@ class S3TestBase(ColdStoreTestBase):
         self.s3_thread.start()
         self.s3_base_url = f"http://127.0.0.1:{self.s3_server.server_address[1]}"
         self.store.s3_base = self.s3_base_url
+        # Transport retries must not slow the suite down.
+        self.store.s3_backoff_seconds = 0
         self._r2_env = mock.patch.dict(os.environ, self.R2_ENV)
         self._r2_env.start()
 
@@ -1121,6 +1148,66 @@ class TestS3Client(S3TestBase):
             with self.assertRaises(cold_store.ColdStoreError) as ctx:
                 self.store.s3_list_objects("supabase-backups")
         self.assertIn("R2_ACCESS_KEY_ID", str(ctx.exception))
+
+
+class TestS3TransportRetry(S3TestBase):
+    """Transport-level retries in the S3 layer: through the sandbox
+    egress proxy, R2 responses are intermittently truncated mid-body
+    or dropped outright, and before the fix those escaped
+    _s3_request as raw http.client tracebacks that killed
+    backup-supabase / evict-scan at the LIST step. Backoff is zeroed
+    in S3TestBase.setUp, so these run instantly."""
+
+    def _put_five(self):
+        for i in range(5):
+            self.s3.put(f"pg/muse-dev/k{i}.bin", b"x", "2026-10-01T00:00:00.000Z")
+
+    def test_list_truncated_mid_body_retries_and_returns_all(self):
+        self._put_five()
+        self.s3.list_failures = ["truncate"]
+        objects = self.store.s3_list_objects("supabase-backups")
+        self.assertEqual([o["key"] for o in objects], sorted(self.s3.objects))
+        # 1 truncated attempt + the 3 good pages (fake pages are 2,2,1)
+        self.assertEqual(self.s3.list_attempts, 4)
+
+    def test_list_remote_disconnect_retries(self):
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.put("pg/muse-dev/b.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.list_failures = ["drop"]
+        objects = self.store.s3_list_objects("supabase-backups")
+        self.assertEqual([o["key"] for o in objects], sorted(self.s3.objects))
+        self.assertEqual(self.s3.list_attempts, 2)  # dropped + retried page
+
+    def test_list_permanent_truncation_raises_named_error_after_4(self):
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.list_failures = ["truncate"] * 10
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.s3_list_objects("supabase-backups")
+        message = str(ctx.exception)
+        self.assertIn("S3 GET supabase-backups failed after 4 attempts", message)
+        self.assertIn("IncompleteRead", message)
+        self.assertEqual(self.s3.list_attempts, 4)  # exactly 4, no more
+
+    def test_delete_transport_failure_retries(self):
+        # DELETE is idempotent, so it gets the transport retry too:
+        # the first attempt dies at the transport level, the retry
+        # goes through and the delete lands exactly once.
+        import http.client
+
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        real_http = cold_store.http_request
+        state = {"n": 0}
+
+        def flaky_http(method, url, headers=None, data=None, timeout=120):
+            state["n"] += 1
+            if state["n"] == 1:
+                raise http.client.RemoteDisconnected("simulated drop")
+            return real_http(method, url, headers=headers, data=data, timeout=timeout)
+
+        with mock.patch.object(cold_store, "http_request", flaky_http):
+            self.store.s3_delete_object("supabase-backups", "pg/muse-dev/a.bin")
+        self.assertEqual(state["n"], 2)
+        self.assertEqual(self.s3.deleted, ["pg/muse-dev/a.bin"])
 
 
 class TestBackupSupabase(S3TestBase):
