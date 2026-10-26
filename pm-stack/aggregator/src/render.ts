@@ -8,7 +8,10 @@ import {
   allRefs,
   commentStream,
   executionStrip,
+  freshness,
   monthTimeline,
+  projectPace,
+  resetMarkers,
   roadmapDayGrain,
   sessionChildren,
   sessionRoots,
@@ -21,21 +24,29 @@ import { githubCommentUrl } from "./comments.ts";
 import { summarizeDns } from "./dns.ts";
 import {
   type BoardItem,
+  type ChargeRow,
   type Comment,
   type DashAuthor,
   type DashComment,
   type DnsEntry,
   type DnsSection,
   type GhItem,
+  type PaygLine,
   type Provenance,
   type QuotaView,
   type RefKey,
   type RoadmapRow,
+  type SaasService,
   type SessionRecord,
+  type SnapshotRecord,
   type SourceCoverage,
   type TieredEntry,
   type TierItem,
+  type UsageMetric,
+  type UsageView,
+  SAAS_GROUP_LABELS,
   SESSION_SOURCE_LABELS,
+  countedEstimate,
   refUrl,
 } from "./model.ts";
 import { PAGES } from "./pages.ts";
@@ -127,6 +138,13 @@ meter { width: 140px; height: 14px; }
 .cform .err { color: #f85149; font-size: 12px; margin-top: 6px; }
 nav select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; margin-left: auto; max-width: 45vw; }
 .foot { margin-top: 40px; border-top: 1px solid #30363d; padding-top: 10px; color: #8b949e; font-size: 12px; }
+.card.stale { opacity: .55; }
+.badge.stale { background: #d2992233; border-color: #d29922; color: #e3b341; }
+.badge.conflict { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
+.flag { border: 1px solid #f85149; background: #f8514911; border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+.flag.payg { border-color: #d29922; background: #d2992211; }
+.svcgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: start; }
+.chart { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 8px; margin: 8px 0; overflow-x: auto; }
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
   main { padding: 12px 10px 60px; }
@@ -196,7 +214,7 @@ function layout(title: string, body: string, provenance: Provenance, active: str
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><style>${CSS}</style></head>
 <body><nav>${links}${dropdown}</nav><main>${body}
-<div class="foot">board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)}<br>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
+<div class="foot">board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)}<br>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main>${extra}</body></html>`;
 }
 
@@ -513,9 +531,125 @@ export function sessionRecordLine(r: SessionRecord): string {
   return `<div class="card" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span><br><span class="muted">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span></div>`;
 }
 
-// --- Quota view (#851) -----------------------------------------------------
+// --- Quota view (#851) + Usage & billing hub (design 2026-10-25) -----------
 
-export function renderQuota(view: QuotaView, provenance: Provenance): string {
+const SOURCE_CLASS_LABELS: Record<string, string> = {
+  api: "API read",
+  console: "console read",
+  manual: "manual read",
+  estimate: "estimate",
+  invoice: "invoice",
+};
+
+export function fmtMetricValue(v: number | null, unit: string): string {
+  if (v == null) return "not measured";
+  if (unit === "usd") return `$${v.toFixed(2)}`;
+  if (unit === "gb") return `${v} GB`;
+  if (unit === "pct") return `${v}%`;
+  return v.toLocaleString();
+}
+
+/** The freshness stamp every hub card carries (§1.1): measured-at + source + age. */
+export function freshnessStamp(measuredAt: string | null, sourceClass: string, cadenceDays: number): string {
+  const f = freshness(measuredAt, cadenceDays);
+  const cls = SOURCE_CLASS_LABELS[sourceClass] ?? sourceClass;
+  if (!measuredAt) return `<span class="badge stale">no dated read</span> <span class="muted">${esc(cls)} · ${esc("never measured")}</span>`;
+  const age = f.ageDays == null ? "" : f.ageDays === 0 ? " · today" : ` · ${f.ageDays}d ago`;
+  const stale = f.stale ? ` <span class="badge stale">stale — as of ${esc(measuredAt.slice(0, 10))}</span>` : "";
+  return `<span class="muted">measured ${esc(measuredAt.slice(0, 10))}${age} · ${esc(cls)}</span>${stale}`;
+}
+
+function metricRow(m: UsageMetric): string {
+  const pct = m.percent;
+  const meter =
+    pct != null
+      ? `<meter min="0" max="100" value="${Math.min(100, pct).toFixed(0)}"></meter> ${pct.toFixed(0)}% · `
+      : "";
+  const limit = m.limit == null ? "" : ` / ${fmtMetricValue(m.limit, m.unit)}`;
+  return `<div>${esc(m.label)}: ${meter}${fmtMetricValue(m.used, m.unit)}${limit}${m.note ? ` <span class="muted">— ${esc(m.note)}</span>` : ""}</div>`;
+}
+
+function attentionStripHtml(usage: UsageView): string {
+  if (!usage.attention.length) {
+    return `<div class="card"><strong>Needs attention</strong> — nothing over threshold. <span class="muted">(Bubble rules: any metric over 80% of its limit, or projected unbilled PAYG over $5.)</span></div>`;
+  }
+  const rows = usage.attention
+    .map(
+      (f) =>
+        `<div class="flag${f.kind === "payg-unbilled" ? " payg" : ""}"><strong>${esc(f.label)}</strong> — ${esc(f.detail)} <a href="${esc(f.href)}">details</a></div>`,
+    )
+    .join("");
+  return `<h2>Needs attention</h2>${rows}`;
+}
+
+function paygCardHtml(usage: UsageView): string {
+  if (!usage.payg.length) {
+    return `<div class="card"><div><strong>PAYG dollars</strong><br><span class="muted">pay-as-you-go agent spend</span></div><div class="muted">No metered spill recorded in local records.</div></div>`;
+  }
+  const lines = usage.payg
+    .map((l: PaygLine) => {
+      const figures =
+        l.accruedUsd != null
+          ? `$${l.accruedUsd.toFixed(2)} accrued${l.collectedUsd != null ? ` · $${l.collectedUsd.toFixed(2)} collected` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
+          : l.estimate
+            ? `counted $${countedEstimate(l.estimate).toFixed(2)} as used (1.2 × high) · estimate $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)} ${esc(l.estimate.period)}`
+            : "not estimable from local records";
+      return `<div><strong>${esc(l.label)}</strong>: ${figures}<br><span class="muted">${esc(l.note)}</span><br>${freshnessStamp(l.measuredAt, l.sourceClass, 7)}</div>`;
+    })
+    .join("");
+  const total = usage.payg.reduce((sum, l) => sum + (l.unbilledUsd ?? 0), 0);
+  return `<div class="card"><div><strong>PAYG dollars</strong><br><span class="muted">metered spill, counted per Decision 004 — estimates at 1.2 × high</span><br><span class="badge ${total > 5 ? "near" : "healthy"}">$${total.toFixed(2)} projected unbilled</span></div><div>${lines}</div></div>`;
+}
+
+function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
+  const f = freshness(svc.measuredAt, svc.cadenceDays);
+  const highlights = svc.metrics.filter((m) => m.highlight);
+  const metrics = highlights.length
+    ? highlights.map(metricRow).join("")
+    : `<div class="muted">${esc(svc.usageNote ?? "No highlight metrics recorded.")}</div>`;
+  const billed =
+    svc.billedUsd != null
+      ? `<div>billed this period: $${svc.billedUsd.toFixed(2)}</div>`
+      : "";
+  const payg = svc.paygEstimate
+    ? `<div>PAYG estimate: counted $${countedEstimate(svc.paygEstimate).toFixed(2)} (${esc(svc.paygEstimate.period)}; range $${svc.paygEstimate.low.toFixed(2)}–$${svc.paygEstimate.high.toFixed(2)} in detail)</div>`
+    : svc.paygNote
+      ? `<div class="muted">PAYG: ${esc(svc.paygNote)}</div>`
+      : "";
+  const conflict = svc.conflicts.length
+    ? ` <a class="badge conflict" href="/quota/service/${esc(svc.id)}" title="Sources disagree — the dated history is on the detail page">conflict</a>`
+    : "";
+  const pace = paceLineHtml(svc.id, history);
+  return `<div class="card${f.stale ? " stale" : ""}"><div><strong><a href="/quota/service/${esc(svc.id)}">${esc(svc.name)}</a></strong>${conflict}<br><span class="muted">${esc(svc.plan)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}${svc.nextDate ? `<br><span class="muted">next: ${esc(svc.nextDate)}</span>` : ""}</div><div>${metrics}${billed}${payg}${pace}<div><a href="/quota/service/${esc(svc.id)}">show all →</a></div></div></div>`;
+}
+
+/** A one-line pace projection on a card, when the history supports one (§1.5). */
+function paceLineHtml(serviceId: string, history: SnapshotRecord[]): string {
+  const metricIds = [...new Set(history.filter((r) => r.unit === "pct").map((r) => r.metricId))];
+  for (const metricId of metricIds) {
+    const pace = projectPace(history, metricId);
+    if (pace?.projectedExhaustionAt) {
+      return `<div class="muted">pace (${esc(metricId)}): +${pace.slopePerDay} pts/day → projected to exhaust ${esc(pace.projectedExhaustionAt.slice(0, 10))}${pace.projectedPercentAtReset != null ? ` · ${pace.projectedPercentAtReset}% at reset` : ""}</div>`;
+    }
+  }
+  return "";
+}
+
+function chargesStripHtml(usage: UsageView): string {
+  if (!usage.charges.length) {
+    return `<h2>Charges this period</h2><div class="card"><span class="muted">${esc(usage.chargesNote ?? "No charge evidence in the local records yet — rows appear as Plaid/Gmail receipt evidence is recorded.")}</span></div>`;
+  }
+  const rows = usage.charges
+    .map(
+      (c: ChargeRow) =>
+        `<tr><td>${esc(c.at)}</td><td>${esc(c.label)}</td><td>$${c.amountUsd.toFixed(2)}</td><td>${esc(c.method)}</td><td class="muted">${esc(c.source)}</td></tr>`,
+    )
+    .join("");
+  const total = usage.charges.reduce((sum, c) => sum + c.amountUsd, 0);
+  return `<h2>Charges this period</h2><p class="muted">Evidence, not accounting — charges observed on cards/receipts in the local records (full balances stay in the finance tooling). Total observed: $${total.toFixed(2)}.</p><div class="tblwrap"><table><tr><th>Date</th><th>Charge</th><th>Amount</th><th>Method</th><th>Evidence</th></tr>${rows}</table></div>`;
+}
+
+export function renderQuota(view: QuotaView, provenance: Provenance, usage?: UsageView): string {
   const pools = view.pools
     .map((p) => {
       const windows = p.windows
@@ -542,18 +676,141 @@ export function renderQuota(view: QuotaView, provenance: Provenance): string {
     )
     .join("");
   const choices = (list: string[]) => (list.length ? list.map(esc).join(", ") : "—");
-  return layout(
-    "Quota + throughput",
-    `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
-<h2>Pools</h2>${pools}
-<h2>Burn between resets</h2><div class="tblwrap"><table><tr><th>Provider</th><th>Pool</th><th>From</th><th>To</th><th>Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
+  const burnAndChoices = `<h2>Burn between resets</h2><div class="tblwrap"><table><tr><th>Provider</th><th>Pool</th><th>From</th><th>To</th><th>Tokens</th></tr>${burn || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>
 <h2>Model choice</h2><div class="tblwrap"><table><tr><th>Rule</th><th>Pools</th></tr>
 <tr><td>Headroom for a new session</td><td>${choices(view.choices.hasHeadroom)}</td></tr>
 <tr><td>Burn-it-before-reset (unused headroom)</td><td>${choices(view.choices.burnBeforeReset)}</td></tr>
-<tr><td>Do not start a second session</td><td>${choices(view.choices.doNotStart)}</td></tr></table></div>`,
+<tr><td>Do not start a second session</td><td>${choices(view.choices.doNotStart)}</td></tr></table></div>`;
+  if (!usage) {
+    return layout(
+      "Quota + throughput",
+      `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
+<h2>Pools</h2>${pools}
+${burnAndChoices}`,
+      provenance,
+      "/quota",
+    );
+  }
+  const groupOrder: (keyof typeof SAAS_GROUP_LABELS)[] = [
+    "database",
+    "object-storage",
+    "compute",
+    "dev-platform",
+    "domains",
+    "account-tooling",
+  ];
+  const groups = groupOrder
+    .map((g) => {
+      const svcs = usage.services.filter((s) => s.group === g);
+      const cards = svcs.map((s) => serviceCardHtml(s, usage.history[s.id] ?? [])).join("");
+      const domainsCard =
+        g === "domains"
+          ? usage.domains
+            ? `<div class="card"><div><strong><a href="/dns">Domains</a></strong><br><span class="muted">Porkbun register — summary only; the full register lives on the DNS page</span></div><div><div>renewal exposure: $${usage.domains.totalAnnualUsd.toFixed(2)}/yr across ${usage.domains.domainCount} domains</div><div>next renewal: ${esc(usage.domains.nextRenewal ?? "—")}</div><div><a href="/dns">the full register →</a></div></div></div>`
+            : `<div class="card"><span class="muted">Domains: the register has not reached the feed yet — see <a href="/dns">/dns</a>.</span></div>`
+          : "";
+      const subs =
+        g === "account-tooling" && usage.subscriptions.length
+          ? `<div class="card"><div><strong>Subscriptions (flat)</strong><br><span class="muted">renewal-only rows — no usage meter</span></div><div>${usage.subscriptions
+              .map(
+                (s) =>
+                  `<div>${esc(s.name)}: ${esc(s.plan)}${s.renewsAt ? ` · renews ${esc(s.renewsAt)}` : " · renewal date unknown"}</div>`,
+              )
+              .join("")}</div></div>`
+          : "";
+      if (!cards && !domainsCard && !subs) return "";
+      return `<h3>${esc(SAAS_GROUP_LABELS[g])}</h3><div class="svcgrid">${cards}${domainsCard}${subs}</div>`;
+    })
+    .join("");
+  return layout(
+    "Usage & billing",
+    `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
+${attentionStripHtml(usage)}
+<h2>Token quotas</h2>${pools}
+${paygCardHtml(usage)}
+<h2>SaaS &amp; services</h2>${groups || '<p class="muted">No services extracted yet.</p>'}
+${chargesStripHtml(usage)}
+${burnAndChoices}`,
     provenance,
     "/quota",
   );
+}
+
+// --- Service detail view (hub v1.1, §1.5) -------------------------------------
+
+/** An inline SVG history chart for one metric, with reset markers (§4). */
+export function historyChartHtml(records: SnapshotRecord[], metricId: string): string {
+  const recs = records
+    .filter((r) => r.metricId === metricId && typeof r.value === "number")
+    .sort((a, b) => a.ts.localeCompare(b.ts)) as (SnapshotRecord & { value: number })[];
+  if (!recs.length) return "";
+  const W = 640;
+  const H = 130;
+  const PAD = 28;
+  const t0 = Date.parse(recs[0].ts);
+  const t1 = Math.max(Date.parse(recs[recs.length - 1].ts), t0 + 1);
+  const vmax = Math.max(...recs.map((r) => r.value), ...(recs.map((r) => r.limit ?? 0) as number[]), 1) * 1.1;
+  const x = (ts: string) => PAD + ((Date.parse(ts) - t0) / (t1 - t0)) * (W - PAD - 8);
+  const y = (v: number) => H - 18 - (v / vmax) * (H - 34);
+  const markers = resetMarkers(records, metricId)
+    .filter((m) => Date.parse(m.ts) >= t0 && Date.parse(m.ts) <= t1)
+    .map(
+      (m) =>
+        `<line x1="${x(m.ts).toFixed(1)}" y1="8" x2="${x(m.ts).toFixed(1)}" y2="${H - 18}" stroke="#d29922" stroke-dasharray="3 3"><title>reset ${esc(m.resetsAt.slice(0, 10))}</title></line>`,
+    )
+    .join("");
+  const limitLine = recs.find((r) => r.limit != null)
+    ? `<line x1="${PAD}" y1="${y((recs.find((r) => r.limit != null) as SnapshotRecord).limit as number).toFixed(1)}" x2="${W - 8}" y2="${y((recs.find((r) => r.limit != null) as SnapshotRecord).limit as number).toFixed(1)}" stroke="#f85149" stroke-dasharray="2 4"></line>`
+    : "";
+  const points = recs
+    .map(
+      (r) =>
+        `<circle cx="${x(r.ts).toFixed(1)}" cy="${y(r.value).toFixed(1)}" r="3" fill="#58a6ff"><title>${esc(r.ts.slice(0, 10))}: ${r.value} ${esc(r.unit)} (${esc(r.source)})</title></circle>`,
+    )
+    .join("");
+  const line = recs.map((r, i) => `${i === 0 ? "M" : "L"}${x(r.ts).toFixed(1)},${y(r.value).toFixed(1)}`).join(" ");
+  const first = recs[0];
+  const last = recs[recs.length - 1];
+  return `<div class="chart"><div class="muted">${esc(metricId)} · ${recs.length} snapshot${recs.length === 1 ? "" : "s"} · ${esc(first.ts.slice(0, 10))} → ${esc(last.ts.slice(0, 10))} · dashed amber = window reset, red = limit</div><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="history chart for ${esc(metricId)}">${markers}${limitLine}<path d="${line}" fill="none" stroke="#58a6ff" stroke-width="1.5"></path>${points}</svg></div>`;
+}
+
+export function renderServiceDetail(svc: SaasService, history: SnapshotRecord[], provenance: Provenance): string {
+  const f = freshness(svc.measuredAt, svc.cadenceDays);
+  const metricRows = svc.metrics.length
+    ? svc.metrics.map((m) => `<tr><td>${esc(m.label)}${m.highlight ? ' <span class="badge src">highlight</span>' : ""}</td><td>${fmtMetricValue(m.used, m.unit)}</td><td>${m.limit == null ? "—" : fmtMetricValue(m.limit, m.unit)}</td><td>${m.percent != null ? `${m.percent.toFixed(0)}%` : "—"}</td><td class="muted">${esc(m.note ?? "")}</td></tr>`).join("")
+    : '<tr><td colspan="5" class="muted">No metrics recorded for this service yet.</td></tr>';
+  const payg = svc.paygEstimate
+    ? `<h2>PAYG estimate</h2><div class="card">low $${svc.paygEstimate.low.toFixed(2)} / high $${svc.paygEstimate.high.toFixed(2)} ${esc(svc.paygEstimate.period)} — counted as used: <strong>$${countedEstimate(svc.paygEstimate).toFixed(2)}</strong> (1.2 × high, Decision 004).${svc.paygEstimate.note ? `<br><span class="muted">${esc(svc.paygEstimate.note)}</span>` : ""}</div>`
+    : svc.paygNote
+      ? `<h2>PAYG estimate</h2><div class="card"><span class="muted">${esc(svc.paygNote)} — no number is invented where the records carry no volume.</span></div>`
+      : "";
+  const metricIds = [...new Set(history.map((r) => r.metricId))];
+  const charts = metricIds.map((id) => historyChartHtml(history, id)).filter(Boolean).join("");
+  const paces = metricIds
+    .map((id) => ({ id, pace: projectPace(history, id) }))
+    .filter((p) => p.pace)
+    .map(
+      (p) =>
+        `<div>${esc(p.id)}: +${p.pace!.slopePerDay} pts/day over ${p.pace!.points} reads${p.pace!.projectedExhaustionAt ? ` → projected to exhaust ${esc(p.pace!.projectedExhaustionAt.slice(0, 10))}` : ""}${p.pace!.projectedPercentAtReset != null ? ` · projected ${p.pace!.projectedPercentAtReset}% at reset` : ""}</div>`,
+    )
+    .join("");
+  const reads = svc.reads.length
+    ? svc.reads.map((r) => `<div class="cmt"><span class="muted">${esc(r.at)}</span><br>${esc(r.text)}</div>`).join("")
+    : '<p class="muted">No dated reads recorded.</p>';
+  const conflicts = svc.conflicts.length
+    ? `<h2>Conflicts (shown, not resolved)</h2>${svc.conflicts.map((c) => `<div class="reason">${esc(c)}</div>`).join("")}`
+    : "";
+  const body = `<p class="muted"><a href="/quota">← Usage &amp; billing</a></p>
+<h1>${esc(svc.name)}</h1>
+<div class="card${f.stale ? " stale" : ""}"><strong>${esc(svc.plan)}</strong> <span class="badge src">${esc(svc.status)}</span><br>${freshnessStamp(svc.measuredAt, svc.sourceClass, svc.cadenceDays)}<br><span class="muted">source: ${esc(svc.sourceNote)}${svc.nextDate ? ` · next: ${esc(svc.nextDate)}` : ""}${svc.billedUsd != null ? ` · billed this period: $${svc.billedUsd.toFixed(2)}` : ""}</span>${svc.usageNote ? `<br>${esc(svc.usageNote)}` : ""}</div>
+<h2>All metrics</h2><div class="tblwrap"><table><tr><th>Metric</th><th>Used</th><th>Limit</th><th>%</th><th>Note</th></tr>${metricRows}</table></div>
+${payg}
+<h2>Snapshot history</h2>${charts || '<p class="muted">No snapshots in the store for this service yet — history starts with the §4 backfill and accumulates as writers append.</p>'}
+${paces ? `<h2>Pace projections</h2><div class="card">${paces}</div>` : ""}
+${conflicts}
+<h2>Dated source reads</h2>${reads}
+<p class="muted">Machine-first: <a href="/api/quota/service.json?id=${encodeURIComponent(svc.id)}">/api/quota/service.json?id=${esc(svc.id)}</a></p>`;
+  return layout(`${svc.name} · usage`, body, provenance, "/quota");
 }
 
 // --- Attention view (#852, tiered in slice 2) -------------------------------

@@ -5,10 +5,13 @@
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
 import type {
+  ChargeRow,
   DnsSection,
   JulesSummary,
   OrchestrationSection,
+  PaygLine,
   QuotaView,
+  SaasService,
   SessionFeedEntry,
   SessionRecord,
 } from "./model.ts";
@@ -28,6 +31,15 @@ export interface FleetFeed {
   dns?: DnsSection;
   /** Identity-registry records (#906 §3): sandbox OpenCode + Jules + Muse launches. */
   registry?: SessionRecord[];
+  /** Usage & billing hub (design §2.3): family-2 services extracted from
+   * quota-view.md Part (b) by the collector; absent in older feeds. */
+  saas?: SaasService[];
+  /** Hub PAYG lines (§1.2), from quota-view.md + the provider registry. */
+  payg?: PaygLine[];
+  /** Hub charges evidence (§2.4), from the same dated records. */
+  charges?: ChargeRow[];
+  /** Hub subscriptions strip rows (Q5: renewal-only). */
+  subscriptions?: { name: string; plan: string; renewsAt: string | null }[];
 }
 
 /**

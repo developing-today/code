@@ -68,7 +68,7 @@ interface Raw {
 
 type Extractor = (section: string, now: Date) => Raw | null;
 
-function sectionOf(doc: string, headingPattern: RegExp): string {
+export function sectionOf(doc: string, headingPattern: RegExp): string {
   const lines = doc.split("\n");
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
