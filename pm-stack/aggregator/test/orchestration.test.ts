@@ -83,9 +83,7 @@ describe("orchestration section validation", () => {
   test("accepts the single-string form of progressedSinceLastRun", () => {
     const stringForm = {
       ...SECTION,
-      goals: [
-        { ...SECTION.goals[0]!, progressedSinceLastRun: "PR #888 merged" },
-      ],
+      goals: [{ ...SECTION.goals[0]!, progressedSinceLastRun: "PR #888 merged" }],
     };
     expect(isOrchestrationSection(stringForm)).toBe(true);
   });

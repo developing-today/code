@@ -78,8 +78,7 @@ function isGoalMeasurement(v: unknown): boolean {
     Array.isArray(g.linedUp) &&
     Array.isArray(g.stalled) &&
     Array.isArray(g.gaps) &&
-    (typeof g.progressedSinceLastRun === "string" ||
-      Array.isArray(g.progressedSinceLastRun))
+    (typeof g.progressedSinceLastRun === "string" || Array.isArray(g.progressedSinceLastRun))
   );
 }
 
