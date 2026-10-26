@@ -44,11 +44,43 @@
         "claude-haiku-5-5": {
           "name": "Haiku 5.5 (Claude Code)",
           "variants": {
+            "low": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 4096
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 8192
+                }
+              }
+            },
             "high": {
               "options": {
                 "thinking": {
                   "type": "enabled",
                   "budget_tokens": 16384
+                }
+              }
+            },
+            "xhigh": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 32768
+                }
+              }
+            },
+            "max": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 65536
                 }
               }
             }
@@ -4164,8 +4196,20 @@
         "muse-wonder-1.0": {
           "name": "Muse Wonder"
         },
+        "muse-wonder-1.0-contributor": {
+          "name": "Muse Wonder 1.0 Contributor"
+        },
         "muse-spark-1.3": {
           "name": "Muse Spark 1.3"
+        },
+        "muse-spark-1.3-contributor": {
+          "name": "Muse Spark 1.3 Contributor"
+        },
+        "muse-spark-1.2": {
+          "name": "Muse Spark 1.2"
+        },
+        "muse-spark-1.2-contributor": {
+          "name": "Muse Spark 1.2 Contributor"
         },
         "muse-spark-1.1": {
           "name": "Muse Spark 1.1"
@@ -5190,10 +5234,14 @@
       },
       "scout": {
         "name": "Scout - routine work: cheapest, fastest, smart enough",
+        // 2026-10-26 (pool remap review): all three routes addressed at #low — the only rung
+        // every leaf on every door actually has wired (ClinePass has no medium; GLM has no
+        // medium anywhere; Haiku low is wired on both doors). Flash/GLM are overpowered for
+        // this tier at any rung (AA v4.3.2: Flash max 45, GLM max 42 vs Haiku low 29).
         "targets": [
-          "opencode-route/deepseek-flash#medium",
-          "opencode-route/glm-flash-plan#medium",
-          "opencode-route/haiku-plan"
+          "opencode-route/deepseek-flash#low",
+          "opencode-route/glm-flash-plan#low",
+          "opencode-route/haiku-plan#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules"
@@ -5204,18 +5252,21 @@
           "opencode-route/deepseek-flash#high",
           "opencode-route/luna-plan#max",
           "opencode-route/haiku-plan#high",
-          "meta/muse-spark-1.3"
+          "meta/muse-spark-1.3#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules"
       },
       "specialist": {
-        "name": "Specialist - hard work: quality first, Claude then OpenAI then DeepSeek Pro",
+        "name": "Specialist - hard work: quality first, Claude then OpenAI then DeepSeek Pro, Luna as capacity relief",
+        // 2026-10-26 (pool remap review): reordered by AA v4.3.2 capability — Sonnet #high 47,
+        // Sol #medium 48, Pro #high <=36, Luna #max 38. Luna was second (a full band below the
+        // tier, ahead of band-correct Sol); it is now last as capacity relief only.
         "targets": [
           "opencode-route/sonnet-plan#high",
-          "opencode-route/luna-plan#max",
           "opencode-route/sol-plan#medium",
-          "opencode-route/deepseek-pro-plan#high"
+          "opencode-route/deepseek-pro-plan#high",
+          "opencode-route/luna-plan#max"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -5224,8 +5275,8 @@
         "name": "Summit - very complex design only, deliberate use",
         "targets": [
           "opencode-route/opus-plan#high",
-          "openai/gpt-6.1-sol#high",
-          "meta/muse-wonder-1.0"
+          "openai/gpt-6.1-sol#xhigh",
+          "meta/muse-wonder-1.0#max"
         ],
         "selection": "ordered",
         "autonomy": "rules"
