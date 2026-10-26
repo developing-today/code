@@ -309,6 +309,7 @@ class ColdStore:
         # (s3_get_object); PATH lookup unless overridden, like zstd.
         self.curl = curl or os.environ.get("COLD_STORE_CURL") or "curl"
         self._access_token = None
+        self._access_token_expires_at = 0.0
         # Injectable so tests can zero it: transport-retry backoff for
         # the S3 layer (see _s3_request).
         self.s3_backoff_seconds = S3_TRANSPORT_BACKOFF_SECONDS
@@ -324,7 +325,7 @@ class ColdStore:
             self._write_private_json(self.credentials_path, template)
             created.append("credentials.json (template — fill from Bitwarden)")
         if not self.state_path.exists():
-            self._write_json(self.state_path, {})
+            self._write_private_json(self.state_path, {})
             created.append("state.json")
         had_manifest = self.manifest_path.exists()
         self.db()  # creates manifest.sqlite with the schema
@@ -338,10 +339,6 @@ class ColdStore:
             json.dump(obj, f, indent=2)
             f.write("\n")
         os.chmod(path, 0o600)
-
-    @staticmethod
-    def _write_json(path: Path, obj: dict) -> None:
-        path.write_text(json.dumps(obj, indent=2) + "\n")
 
     # ------------------------------------------------------------ credentials
     def load_credentials(self) -> dict:
@@ -362,7 +359,11 @@ class ColdStore:
         return {}
 
     def save_state(self, state: dict) -> None:
-        self._write_json(self.state_path, state)
+        # state.json is written 0600 like credentials.json, and it must
+        # never carry credential material: drop any access_token a
+        # pre-#940 state file may still hold (tokens live in memory only).
+        state = {k: v for k, v in state.items() if k != "access_token"}
+        self._write_private_json(self.state_path, state)
 
     # ------------------------------------------------------------------- db
     def db(self) -> sqlite3.Connection:
@@ -454,6 +455,57 @@ class ColdStore:
             (utcnow_str(), direction, nbytes, kind, ref),
         )
 
+    # ------------------------------------------------------- upload limits
+    @staticmethod
+    def _upload_accounting(conn) -> dict:
+        """The guardrail accounting shared by `status` and enforcement
+        (#938): rolling-24h upload bytes from the transfer ledger,
+        verified cold bytes in Drive, and the two meta limits. One
+        implementation, so the readout and the refusal can never
+        disagree."""
+        up_24h = conn.execute(
+            "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
+            " WHERE direction='upload' AND ts >= datetime('now','-1 day')"
+        ).fetchone()["n"]
+        cold_bytes = conn.execute(
+            "SELECT coalesce(sum(bytes),0) n FROM bundles WHERE state='verified'"
+        ).fetchone()["n"]
+        meta = {
+            r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")
+        }
+        return {
+            "uploads_24h_bytes": up_24h,
+            "cold_bytes": cold_bytes,
+            "daily_upload_hard_stop_bytes": int(
+                meta.get("daily_upload_hard_stop_bytes", "700000000000")
+            ),
+            "project_budget_bytes": int(meta.get("project_budget_bytes", "0")),
+        }
+
+    def _check_upload_limits(self, conn, nbytes: int, what: str) -> None:
+        """Refuse a transfer BEFORE any bytes are uploaded when it would
+        cross the daily upload hard stop (rolling-24h ledger uploads +
+        this transfer) or the project budget (verified cold bytes + this
+        transfer). Raises ColdStoreError naming the limit, the current
+        usage, and the refused size."""
+        acct = self._upload_accounting(conn)
+        up_24h = acct["uploads_24h_bytes"]
+        hard_stop = acct["daily_upload_hard_stop_bytes"]
+        if up_24h + nbytes > hard_stop:
+            raise ColdStoreError(
+                f"{what} refused: daily upload hard stop — {up_24h} B uploaded "
+                f"in the last 24h + this {nbytes} B transfer would cross the "
+                f"{hard_stop} B daily_upload_hard_stop_bytes limit"
+            )
+        cold_bytes = acct["cold_bytes"]
+        budget = acct["project_budget_bytes"]
+        if budget and cold_bytes + nbytes > budget:
+            raise ColdStoreError(
+                f"{what} refused: project budget — {cold_bytes} B verified "
+                f"cold in Drive + this {nbytes} B transfer would cross the "
+                f"{budget} B project_budget_bytes limit"
+            )
+
     # ------------------------------------------------------------------ auth
     def auth_url(self) -> str:
         creds = self.load_credentials()
@@ -498,14 +550,13 @@ class ColdStore:
         return {"stored": "refresh_token", "expires_in": payload.get("expires_in")}
 
     def access_token(self) -> str:
-        if self._access_token:
+        # The access token lives in memory only — it is never persisted
+        # (state.json used to cache it; see #940). It is re-derived from
+        # the refresh token in credentials.json whenever the in-memory
+        # copy is missing or about to expire.
+        now = datetime.now(timezone.utc).timestamp()
+        if self._access_token and self._access_token_expires_at > now + 60:
             return self._access_token
-        state = self.load_state()
-        cached = state.get("access_token")
-        expires_at = state.get("access_token_expires_at", 0)
-        if cached and expires_at > datetime.now(timezone.utc).timestamp() + 60:
-            self._access_token = cached
-            return cached
         creds = self.load_credentials()
         if not creds.get("refresh_token"):
             raise ColdStoreError(
@@ -530,13 +581,8 @@ class ColdStore:
             raise ColdStoreError(f"token refresh failed (HTTP {status})")
         payload = json.loads(resp)
         token = payload["access_token"]
-        state["access_token"] = token
-        state["access_token_expires_at"] = (
-            datetime.now(timezone.utc)
-            + timedelta(seconds=payload.get("expires_in", 3600))
-        ).timestamp()
-        self.save_state(state)
         self._access_token = token
+        self._access_token_expires_at = now + payload.get("expires_in", 3600)
         return token
 
     def _auth_headers(self, extra=None) -> dict:
@@ -781,6 +827,11 @@ class ColdStore:
                 "already": "verified",
                 "drive_file_id": row["drive_file_id"],
             }
+        try:
+            self._check_upload_limits(conn, row["bytes"], f"upload of {bundle_id}")
+        except ColdStoreError:
+            conn.close()
+            raise
         with conn:
             conn.execute(
                 "UPDATE bundles SET state='uploading' WHERE bundle_id=?", (bundle_id,)
@@ -885,11 +936,16 @@ class ColdStore:
         src = Path(file)
         if not src.is_file():
             raise ColdStoreError(f"not a file: {src}")
+        size = src.stat().st_size
+        conn = self.db()
+        try:
+            self._check_upload_limits(conn, size, f"put-backup {db_name}")
+        finally:
+            conn.close()
         folder_id = self._folder_id(f"db-backups/{db_name}")
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         name = f"{db_name}-{stamp}-{src.name}"
         file_id = self._resumable_upload(src, name, folder_id)
-        size = src.stat().st_size
         conn = self.db()
         with conn:
             self.ledger_add(conn, "upload", size, "backup-upload", name)
@@ -1742,23 +1798,16 @@ class ColdStore:
         bundles_verified = conn.execute(
             "SELECT count(*) n FROM bundles WHERE state='verified'"
         ).fetchone()["n"]
-        cold_bytes = conn.execute(
-            "SELECT coalesce(sum(bytes),0) n FROM bundles WHERE state='verified'"
-        ).fetchone()["n"]
-        up_24h = conn.execute(
-            "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
-            " WHERE direction='upload' AND ts >= datetime('now','-1 day')"
-        ).fetchone()["n"]
+        acct = self._upload_accounting(conn)
+        cold_bytes = acct["cold_bytes"]
+        up_24h = acct["uploads_24h_bytes"]
         down_24h = conn.execute(
             "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
             " WHERE direction='download' AND ts >= datetime('now','-1 day')"
         ).fetchone()["n"]
-        meta = {
-            r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")
-        }
         conn.close()
-        hard_stop = int(meta.get("daily_upload_hard_stop_bytes", "700000000000"))
-        budget = int(meta.get("project_budget_bytes", "0"))
+        hard_stop = acct["daily_upload_hard_stop_bytes"]
+        budget = acct["project_budget_bytes"]
         return {
             "objects_total": objects_total,
             "objects_cold": objects_cold,
