@@ -42,6 +42,19 @@ REDIRECT_URI = "http://localhost"
 ROOT_FOLDER_NAME = "Cold Store Reaper"
 SUBFOLDERS = ("bundles", "manifests", "db-backups")
 
+# DB-backup class (DESIGN.md section 5): nightly dumps live unbundled under
+# db-backups/<db>/, one subfolder per database.
+BACKUP_DBS = ("supabase", "turso", "d1")
+
+# Manifest sync target (DESIGN.md section 3): the hosted copy of this schema lives
+# in Cloudflare D1. The token comes from the environment only; the account
+# and database IDs are non-secret and default to the cold-store database.
+DEFAULT_D1_BASE = "https://api.cloudflare.com/client/v4"
+DEFAULT_CF_ACCOUNT_ID = "234b866b99ce2b142d7963d8d139cbfa"
+DEFAULT_CF_D1_DATABASE_ID = "15d5f460-835c-4f24-b229-222908a5b30c"
+MANIFEST_TABLES = ("objects", "bundles", "members", "transfer_ledger", "meta")
+D1_SYNC_BATCH_ROWS = 50
+
 # Design constant: bundles are sealed at this size in the full reaper;
 # `pack` packs exactly what it is given regardless of size.
 BUNDLE_TARGET_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB
@@ -106,7 +119,13 @@ def http_request(method, url, headers=None, data=None, timeout=120):
 
 class ColdStore:
     def __init__(
-        self, home: Path, token_url=None, drive_base=None, upload_base=None, zstd=None
+        self,
+        home: Path,
+        token_url=None,
+        drive_base=None,
+        upload_base=None,
+        zstd=None,
+        d1_base=None,
     ):
         self.home = Path(home)
         self.credentials_path = self.home / "credentials.json"
@@ -121,6 +140,9 @@ class ColdStore:
         ).rstrip("/")
         self.upload_base = (
             upload_base or os.environ.get("COLD_STORE_UPLOAD_BASE", DEFAULT_UPLOAD_BASE)
+        ).rstrip("/")
+        self.d1_base = (
+            d1_base or os.environ.get("COLD_STORE_D1_BASE", DEFAULT_D1_BASE)
         ).rstrip("/")
         candidate = zstd or os.environ.get("COLD_STORE_ZSTD") or "/usr/local/bin/zstd"
         if not Path(candidate).exists():
@@ -339,6 +361,12 @@ class ColdStore:
                 folders[sub] = self._find_folder(
                     sub, folders["root"]
                 ) or self._create_folder(sub, folders["root"])
+        for db in BACKUP_DBS:
+            key = f"db-backups/{db}"
+            if not folders.get(key):
+                folders[key] = self._find_folder(
+                    db, folders["db-backups"]
+                ) or self._create_folder(db, folders["db-backups"])
         state["folders"] = folders
         self.save_state(state)
         return folders
@@ -613,6 +641,193 @@ class ColdStore:
             "bundle_id": row["bundle_id"],
         }
 
+    # ------------------------------------------------------------- backups
+    def put_backup(self, db_name: str, file: str) -> dict:
+        """Upload one DB dump, unbundled, into db-backups/<db>/ (DESIGN section 5).
+
+        The Drive name is dated (<db>-<YYYYMMDDTHHMMSSZ>-<basename>) so a
+        folder listing is already a chronological catalogue. Retention
+        enforcement (30 daily / 12 weekly / 12 monthly, trash-not-delete) is
+        NOT implemented yet — see README.
+        """
+        if db_name not in BACKUP_DBS:
+            raise ColdStoreError(
+                f"unknown backup db {db_name!r} — expected one of {', '.join(BACKUP_DBS)}"
+            )
+        src = Path(file)
+        if not src.is_file():
+            raise ColdStoreError(f"not a file: {src}")
+        folder_id = self._folder_id(f"db-backups/{db_name}")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        name = f"{db_name}-{stamp}-{src.name}"
+        file_id = self._resumable_upload(src, name, folder_id)
+        size = src.stat().st_size
+        conn = self.db()
+        with conn:
+            self.ledger_add(conn, "upload", size, "backup-upload", name)
+        conn.close()
+        return {
+            "db": db_name,
+            "name": name,
+            "drive_file_id": file_id,
+            "bytes": size,
+        }
+
+    def list_backups(self, db_name: str | None = None) -> list[dict]:
+        if db_name is not None and db_name not in BACKUP_DBS:
+            raise ColdStoreError(
+                f"unknown backup db {db_name!r} — expected one of {', '.join(BACKUP_DBS)}"
+            )
+        dbs = [db_name] if db_name else list(BACKUP_DBS)
+        out = []
+        for db in dbs:
+            folder_id = self._folder_id(f"db-backups/{db}")
+            q = f"'{folder_id}' in parents and trashed = false"
+            url = (
+                self.drive_base
+                + "/files?"
+                + urllib.parse.urlencode(
+                    {
+                        "q": q,
+                        "fields": "files(id,name,size,createdTime)",
+                        "orderBy": "createdTime desc",
+                        "pageSize": 1000,
+                    }
+                )
+            )
+            status, _h, resp = http_request("GET", url, headers=self._auth_headers())
+            if status != 200:
+                raise ColdStoreError(f"files.list for backups failed (HTTP {status})")
+            for f in json.loads(resp).get("files", []):
+                out.append(
+                    {
+                        "db": db,
+                        "id": f["id"],
+                        "name": f["name"],
+                        "size": int(f.get("size") or 0),
+                        "created_time": f.get("createdTime", ""),
+                    }
+                )
+        # Drive was asked for createdTime desc; sort again so the merged
+        # multi-db listing is deterministic even if a backend ignores it.
+        out.sort(key=lambda r: r["created_time"], reverse=True)
+        return out
+
+    # --------------------------------------------------------- manifest sync
+    @staticmethod
+    def _table_shape(conn, table: str) -> tuple[list[str], list[str]]:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        cols = [r["name"] for r in rows]
+        pk = [
+            r["name"]
+            for r in sorted((r for r in rows if r["pk"]), key=lambda r: r["pk"])
+        ]
+        return cols, pk
+
+    @staticmethod
+    def _upsert_sql(table: str, cols: list[str], pk: list[str], nrows: int) -> str:
+        one_group = "(" + ", ".join("?" for _ in cols) + ")"
+        groups = ", ".join(one_group for _ in range(nrows))
+        updates = [c for c in cols if c not in pk]
+        if updates:
+            action = "DO UPDATE SET " + ", ".join(f"{c}=excluded.{c}" for c in updates)
+        else:
+            action = "DO NOTHING"
+        return (
+            f"INSERT INTO {table} ({', '.join(cols)}) VALUES {groups} "
+            f"ON CONFLICT({', '.join(pk)}) {action}"
+        )
+
+    def build_sync_statements(self) -> tuple[list[dict], dict]:
+        """Read the local manifest and build batched D1 upsert statements.
+
+        Returns (statements, per-table {"rows": n, "statements": m}). Each
+        statement carries at most D1_SYNC_BATCH_ROWS row-groups so a re-sync
+        is a handful of HTTP calls, and every statement is an idempotent
+        upsert keyed by the table's primary key from schema.sql.
+        """
+        conn = self.db()
+        statements: list[dict] = []
+        counts: dict[str, dict] = {}
+        for table in MANIFEST_TABLES:
+            cols, pk = self._table_shape(conn, table)
+            order = ", ".join(pk) if pk else cols[0]
+            rows = conn.execute(
+                f"SELECT {', '.join(cols)} FROM {table} ORDER BY {order}"
+            ).fetchall()
+            table_statements = 0
+            for i in range(0, len(rows), D1_SYNC_BATCH_ROWS):
+                chunk = rows[i : i + D1_SYNC_BATCH_ROWS]
+                params: list = []
+                for row in chunk:
+                    params.extend(row[c] for c in cols)
+                statements.append(
+                    {
+                        "table": table,
+                        "sql": self._upsert_sql(table, cols, pk, len(chunk)),
+                        "params": params,
+                        "rows": len(chunk),
+                    }
+                )
+                table_statements += 1
+            counts[table] = {"rows": len(rows), "statements": table_statements}
+        conn.close()
+        return statements, counts
+
+    def sync_manifest(self, dry_run: bool = False) -> dict:
+        statements, counts = self.build_sync_statements()
+        total = {
+            "tables": counts,
+            "rows": sum(c["rows"] for c in counts.values()),
+            "statements": len(statements),
+            "dry_run": dry_run,
+        }
+        if dry_run:
+            return total
+        token = os.environ.get("CLOUDFLARE_API_TOKEN")
+        if not token:
+            raise ColdStoreError(
+                "CLOUDFLARE_API_TOKEN is not set — materialize it from "
+                "Bitwarden into the environment first (it is never stored)"
+            )
+        state = self.load_state()
+        account_id = (
+            os.environ.get("COLD_STORE_CF_ACCOUNT_ID")
+            or state.get("cf_account_id")
+            or DEFAULT_CF_ACCOUNT_ID
+        )
+        database_id = (
+            os.environ.get("COLD_STORE_CF_D1_DATABASE_ID")
+            or state.get("cf_d1_database_id")
+            or DEFAULT_CF_D1_DATABASE_ID
+        )
+        url = f"{self.d1_base}/accounts/{account_id}/d1/database/{database_id}/query"
+        for stmt in statements:
+            status, _h, resp = http_request(
+                "POST",
+                url,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                data=json.dumps(
+                    {"sql": stmt["sql"], "params": stmt["params"]}
+                ).encode(),
+            )
+            if status != 200:
+                raise ColdStoreError(
+                    f"D1 sync failed (HTTP {status}) on table {stmt['table']} — "
+                    "statements already sent are idempotent upserts, re-run to resume"
+                )
+            payload = json.loads(resp) if resp else {}
+            if payload and not payload.get("success", True):
+                errors = payload.get("errors") or [{}]
+                raise ColdStoreError(
+                    f"D1 sync rejected a {stmt['table']} statement: "
+                    f"{errors[0].get('message', 'unknown error')}"
+                )
+        return total
+
     # ---------------------------------------------------------------- status
     def status_data(self) -> dict:
         conn = self.db()
@@ -706,6 +921,24 @@ def main(argv=None) -> int:
         "status",
         help="manifest counts, cold bytes, last-24h transfers, hard-stop check",
     )
+    p_put_backup = sub.add_parser(
+        "put-backup", help="upload one DB dump, unbundled, into db-backups/<db>/"
+    )
+    p_put_backup.add_argument("db", choices=BACKUP_DBS)
+    p_put_backup.add_argument("file")
+    p_list_backups = sub.add_parser(
+        "list-backups", help="list DB backups in Drive, newest first"
+    )
+    p_list_backups.add_argument("--db", choices=BACKUP_DBS, default=None)
+    p_sync = sub.add_parser(
+        "sync-manifest",
+        help="push the local manifest to the D1 cold-store-manifest database (idempotent upserts)",
+    )
+    p_sync.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print statement counts only; contact nothing",
+    )
     args = parser.parse_args(argv)
     store = build_store(args)
     try:
@@ -728,7 +961,10 @@ def main(argv=None) -> int:
             )
         elif args.cmd == "ensure-folders":
             folders = store.ensure_folders()
-            for key in ("root",) + SUBFOLDERS:
+            keys = (
+                ("root",) + SUBFOLDERS + tuple(f"db-backups/{db}" for db in BACKUP_DBS)
+            )
+            for key in keys:
                 print(f"{key}: {folders[key]}")
         elif args.cmd == "pack":
             result = store.pack(args.files)
@@ -762,6 +998,31 @@ def main(argv=None) -> int:
             print(
                 f"daily upload hard stop: {_human(d['daily_upload_hard_stop_bytes'])} — "
                 f"{'OK' if d['hard_stop_ok'] else 'EXCEEDED'}"
+            )
+        elif args.cmd == "put-backup":
+            result = store.put_backup(args.db, args.file)
+            print(
+                f"backup {result['name']}: {_human(result['bytes'])}, "
+                f"uploaded to Drive as {result['drive_file_id']}"
+            )
+        elif args.cmd == "list-backups":
+            rows = store.list_backups(args.db)
+            if not rows:
+                print("no backups found")
+            for r in rows:
+                print(
+                    f"{r['created_time']}  {r['db']:<8} {_human(r['size']):>24}  "
+                    f"{r['name']}  ({r['id']})"
+                )
+        elif args.cmd == "sync-manifest":
+            result = store.sync_manifest(dry_run=args.dry_run)
+            for table in MANIFEST_TABLES:
+                c = result["tables"][table]
+                print(f"{table}: {c['rows']} row(s) in {c['statements']} statement(s)")
+            verb = "would send" if result["dry_run"] else "sent"
+            print(
+                f"total: {verb} {result['statements']} statement(s), "
+                f"{result['rows']} row(s)"
             )
     except ColdStoreError as e:
         print(f"error: {e}", file=sys.stderr)
