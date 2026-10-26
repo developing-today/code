@@ -12,6 +12,7 @@ import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../regist
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
 import { SnapshotStore } from "../snapshots.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
@@ -22,6 +23,7 @@ import {
   type GhItem,
   type Link,
   type OrchestrationSection,
+  type ProjectPoolItem,
   type Provenance,
   type QuotaView,
   type RefKey,
@@ -617,14 +619,44 @@ export function liveSource(cfg: Config): Source {
       return fix.roadmap();
     },
     async items(refs) {
-      if (cfg.projector.baseUrl) {
-        const live = await projectorItems(cfg.projector.baseUrl, refs);
-        if (live && live.size > 0) {
-          provenance.items = "live (projector)";
-          return live;
+      // #910 stage 5: the fleet feed's GitHub Project pool is the
+      // resolution source FIRST — the projector is dead by config and
+      // the Projects-scope token cannot read arbitrary issues, only
+      // the Project (whose items carry their linked issue's state).
+      const out = new Map<RefKey, GhItem>();
+      const feed = await getFeed();
+      const pool = (feed?.projects ?? []).filter(isProjectPoolItem);
+      if (pool.length && refs.length) {
+        const byRef = new Map(pool.map((p) => [p.ref, p] as const));
+        for (const ref of refs) {
+          const p = byRef.get(ref);
+          if (p) out.set(ref, poolItemToGhItem(p));
         }
       }
-      return fix.items(refs);
+      const remaining = refs.filter((r) => !out.has(r));
+      let projectorServed = false;
+      if (remaining.length) {
+        let rest: Map<RefKey, GhItem> | null = null;
+        if (cfg.projector.baseUrl) {
+          rest = await projectorItems(cfg.projector.baseUrl, remaining).catch(() => null);
+          if (rest && rest.size > 0) projectorServed = true;
+        }
+        if (!rest || rest.size === 0) rest = await fix.items(remaining);
+        for (const [k, v] of rest) out.set(k, v);
+      }
+      const poolServed = refs.length - remaining.length;
+      if (poolServed > 0 && feed) {
+        provenance.items =
+          `live (project pool · fleet feed · ${feedAgeText(feed.generatedAt)})` +
+          (remaining.length ? ` + ${projectorServed ? "projector" : "fixtures"} for ${remaining.length} ref(s) outside the pool` : "");
+      } else if (projectorServed) {
+        provenance.items = "live (projector)";
+      }
+      return out;
+    },
+    async projects(): Promise<ProjectPoolItem[]> {
+      const feed = await getFeed();
+      return (feed?.projects ?? []).filter(isProjectPoolItem);
     },
     async comments(refs) {
       if (cfg.projector.baseUrl) {

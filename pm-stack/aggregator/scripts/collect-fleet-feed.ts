@@ -16,6 +16,18 @@
 //   - orchestration.json — the orchestration job's latest section
 //     (#899: tiers, dependencies, goal measurements), embedded as-is
 //     after a structural check; absent/malformed = section omitted.
+//   - the org GitHub Project "Developing Today" (#4, #910 stage 5) —
+//     read via GraphQL Projects v2 into the feed's `projects` pool.
+//     Token plumbing: GITHUB_PROJECT_TOKEN / GH_TOKEN from the env
+//     when present; otherwise the collector resolves the Bitwarden
+//     secret named `github.project-token` itself (see
+//     resolveProjectToken) using ~/tools/bin/bws + the machine-account
+//     access-token file under $HOME/.config/bitwarden — both already
+//     present under the collector systemd unit's pinned HOME, so no
+//     unit change is needed. The token value is never logged, never
+//     written to the feed, and only ever sent to api.github.com.
+//     Any failure (no token, bws missing, GraphQL error) omits the
+//     section and logs only that it was omitted.
 //
 // Usage: bun run scripts/collect-fleet-feed.ts [--out <path>]
 // Env overrides: QUOTA_VIEW_PATH, JULES_STATE_PATH, SANDBOX_OPENCODE_URL,
@@ -25,7 +37,8 @@
 // USAGE_SNAPSHOT_OUTBOX_PATH (the §4 writers' outbox JSONL — stewardship
 // and check-usage append records there; each collection drains it into
 // the feed's snapshots field for the laptop store to ingest).
-import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +58,8 @@ import { extractCharges, extractPaygLines, extractSaasServices, extractSubscript
 import type { ChargeRow, PaygLine, SaasService, SnapshotRecord } from "../src/model.ts";
 import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from "../src/snapshot-records.ts";
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
+import { fetchProjectPool } from "../src/projects.ts";
+import type { ProjectPoolItem } from "../src/model.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
@@ -154,6 +169,46 @@ async function drainSnapshotOutbox(): Promise<SnapshotRecord[]> {
     return [];
   } finally {
     await unlink(drainPath).catch(() => {});
+  }
+}
+
+/**
+ * Resolve the Projects-scope GitHub token without ever logging it.
+ * Order: (1) GITHUB_PROJECT_TOKEN / GH_TOKEN already in the process
+ * env (agent runs, manual runs, a future systemd EnvironmentFile);
+ * (2) Bitwarden Secrets Manager via the bws CLI — the same access-
+ * token file ~/tools/bws-env.sh sources for interactive shells.
+ * The fleet-feed-collector.service pins HOME=/home/hatch and runs as
+ * root, so ~/.config/bitwarden/access-token and ~/tools/bin/bws are
+ * reachable under the unit as-is; no unit change is required.
+ * Returns null when neither route yields a token (section omitted).
+ */
+async function resolveProjectToken(): Promise<string | null> {
+  const fromEnv = process.env.GITHUB_PROJECT_TOKEN ?? process.env.GH_TOKEN;
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+  const bwsBin = process.env.BWS_BIN ?? join(HOME, "tools/bin/bws");
+  const accessTokenFile =
+    process.env.BWS_ACCESS_TOKEN_FILE ?? join(HOME, ".config/bitwarden/access-token");
+  try {
+    await access(bwsBin);
+    const accessToken = (await readFile(accessTokenFile, "utf8")).trim();
+    if (!accessToken) return null;
+    const run = (args: string[]): Promise<string> =>
+      new Promise((resolve, reject) => {
+        execFile(
+          bwsBin,
+          args,
+          { env: { ...process.env, BWS_ACCESS_TOKEN: accessToken }, maxBuffer: 16 * 1024 * 1024, timeout: 30_000 },
+          (err, stdout) => (err ? reject(err) : resolve(stdout)),
+        );
+      });
+    const list = JSON.parse(await run(["secret", "list"])) as { id?: string; key?: string }[];
+    const entry = list.find((s) => s.key === "github.project-token");
+    if (!entry?.id) return null;
+    const got = JSON.parse(await run(["secret", "get", entry.id])) as { value?: string };
+    return got.value && got.value.trim() ? got.value.trim() : null;
+  } catch {
+    return null; // bws unreachable/unreadable — fail soft, no details logged
   }
 }
 
@@ -280,6 +335,27 @@ async function main(): Promise<void> {
     // pre-#899 state — omit the section silently.
   }
 
+  // --- GitHub Project pool (#910 stage 5) --------------------------------
+  // Read-only GraphQL read of org Project #4. Fail-soft like every
+  // other section: no token / read failure = section omitted, and the
+  // aggregator's items() falls back to its previous chain.
+  let projects: ProjectPoolItem[] | undefined;
+  try {
+    const token = await resolveProjectToken();
+    if (!token) {
+      console.error("collector: no GitHub Project token available (env or bws); projects section omitted");
+    } else {
+      projects = await fetchProjectPool(token);
+      if (!projects.length) {
+        console.error("collector: GitHub Project read returned zero items; projects section omitted");
+        projects = undefined;
+      }
+    }
+  } catch (err) {
+    console.error(`collector: GitHub Project read failed (${err instanceof Error ? err.message : "error"}); projects section omitted`);
+    projects = undefined;
+  }
+
   // --- usage snapshot records (hub §4 writers) ---------------------------
   // Writer (a): records derived from this run's own hub sections. Each
   // carries its read's own date, so an unchanged read re-derives the
@@ -324,6 +400,7 @@ async function main(): Promise<void> {
     ...(charges ? { charges } : {}),
     ...(subscriptions ? { subscriptions } : {}),
     ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
+    ...(projects ? { projects } : {}),
   };
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
@@ -335,6 +412,7 @@ async function main(): Promise<void> {
         ? `, hub ${saas.length} services / ${payg?.length ?? 0} payg / ${charges?.length ?? 0} charges`
         : ", no hub sections") +
       (dedupedSnapshots.length ? `, snapshots ${dedupedSnapshots.length} records` : "") +
+      (projects ? `, projects ${projects.length} items` : ", no projects section") +
       `, registry ${registry.length} records`,
   );
 }

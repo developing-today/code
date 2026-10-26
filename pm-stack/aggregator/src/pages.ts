@@ -66,6 +66,13 @@ export const PAGES: PageDef[] = [
     blurb: "The agent/session identity registry: who ran what, tokens, task links.",
   },
   {
+    id: "projects",
+    title: "Projects",
+    route: "/projects",
+    api: "/api/projects.json",
+    blurb: "The live GitHub Project pool (#4): every item, its Project fields, and Project-vs-derived disagreements.",
+  },
+  {
     id: "pages",
     title: "All pages",
     route: "/pages",

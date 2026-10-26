@@ -10,6 +10,7 @@ import type {
   JulesSummary,
   OrchestrationSection,
   PaygLine,
+  ProjectPoolItem,
   QuotaView,
   SaasService,
   SessionFeedEntry,
@@ -47,6 +48,11 @@ export interface FleetFeed {
    * Absent in older feeds; the store dedupes, so republication of the
    * same observations appends nothing. */
   snapshots?: SnapshotRecord[];
+  /** GitHub Project pool (#910 stage 5): every item of the org Project
+   * "Developing Today" (#4) with its Project fields and linked issue
+   * state, read by the collector via GraphQL. Absent when the
+   * collector had no Projects token or the read failed. */
+  projects?: ProjectPoolItem[];
 }
 
 /**
