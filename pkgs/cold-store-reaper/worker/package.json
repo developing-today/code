@@ -1,0 +1,17 @@
+{
+  "dependencies": {
+    "fzstd": "^0.1.1"
+  },
+  "description": "Cold-store rehydrator Worker: serves single objects out of Google Drive cold bundles (see ../README.md and worker/README.md).",
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  },
+  "name": "cold-store-rehydrator",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.js --bundle --format=esm --platform=neutral --target=es2022 --outfile=dist/worker.js",
+    "test": "node test/run-local-proof.mjs"
+  },
+  "type": "module",
+  "version": "1.0.0"
+}

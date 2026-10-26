@@ -200,6 +200,20 @@ describe("isLightColor", () => {
     expect(isLightColor("ffffff")).toBe(true);
     expect(isLightColor("000000")).toBe(false);
   });
+
+  it("expands 3-digit shorthand hex per CSS rules", () => {
+    expect(isLightColor("#fff")).toBe(true);
+    expect(isLightColor("#ff0")).toBe(true);
+    expect(isLightColor("#000")).toBe(false);
+    expect(isLightColor("abc")).toBe(isLightColor("#aabbcc"));
+  });
+
+  it("treats malformed colors as dark instead of deciding via NaN", () => {
+    expect(isLightColor("")).toBe(false);
+    expect(isLightColor("red")).toBe(false);
+    expect(isLightColor("#gggggg")).toBe(false);
+    expect(isLightColor("#ffff")).toBe(false);
+  });
 });
 
 describe("getColorForClient", () => {
@@ -533,6 +547,36 @@ describe("clusterOverlappingGroups", () => {
       expect(result).toHaveLength(2);
       expect(result[0].groups).toHaveLength(1);
       expect(result[1].groups).toHaveLength(1);
+    });
+
+    // #831: getLeftCoord's contract is to throw when coordsAtPos fails
+    // (cursors.ts's cached getter throws on a cached failure). A
+    // throwing getter must yield separate clusters — never a merge
+    // against a fictitious left edge of 0.
+    it("returns separate clusters when getLeftCoord throws for the first group", () => {
+      const groups = [makeGroup(0, ["Alexander"]), makeGroup(3, ["B"])];
+      const throwingGetLeftCoord = (): number => {
+        throw new Error("coordsAtPos failed");
+      };
+      const result = clusterOverlappingGroups(groups, throwingGetLeftCoord);
+      expect(result).toHaveLength(2);
+      expect(result[0].groups).toEqual([groups[0]]);
+      expect(result[1].groups).toEqual([groups[1]]);
+    });
+
+    it("puts a group whose coords fail in its own cluster instead of merging it", () => {
+      // First group measures fine at left 0; the second group's lookup
+      // throws, so it must not be merged into the first cluster even
+      // though the groups' positions are close.
+      const groups = [makeGroup(0, ["Alexander"]), makeGroup(3, ["B"])];
+      const partiallyThrowing = (pos: number): number => {
+        if (pos === 3) throw new Error("coordsAtPos failed");
+        return pos * 10;
+      };
+      const result = clusterOverlappingGroups(groups, partiallyThrowing);
+      expect(result).toHaveLength(2);
+      expect(result[0].groups).toEqual([groups[0]]);
+      expect(result[1].groups).toEqual([groups[1]]);
     });
   });
 
