@@ -9,6 +9,7 @@ import seed from "../../../grist/seed/roadmap.json" with { type: "json" };
 import {
   type BoardItem,
   type Comment,
+  type DnsSection,
   type GhItem,
   type Link,
   type Provenance,
@@ -16,9 +17,14 @@ import {
   type RefKey,
   type RoadmapRow,
   type SessionFeedEntry,
+  type SessionRecord,
+  type SourceCoverage,
+  type UsageView,
   refsInText,
   refUrl,
 } from "../model.ts";
+import { buildAttentionFlags } from "../derive.ts";
+import { recordFromSessionEntry } from "../registry.ts";
 import type { Source } from "../source.ts";
 
 const GRIST_DOC = "czYHYKgG9SHcm9CPwiKEq1"; // "Program roadmap"
@@ -436,28 +442,50 @@ export const FIXTURE_QUOTA: QuotaView = {
 };
 
 // "Needs you" view (#852). One entry per state so the classifier's ordering
-// is exercised; values are illustrative.
+// is exercised; values are illustrative. Timestamps are relative to load
+// time so the slice-2 freshness expiry behaves the same whenever the
+// fixtures render: current entries are minutes old, the finished probe
+// is 30 h old and expires out.
+const ago = (h: number): string => new Date(Date.now() - h * 3_600_000).toISOString();
 export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   {
     sessionId: "ses_k_wip",
+    source: "opencode-laptop",
     title: "pm wave K — aggregator UI",
     directory: "/home/user/work/id-train/pm-aggregator-ui",
     branch: "pm/aggregator-ui",
     model: "deepseek-v4-pro",
     provider: "cloudflare-gateway",
-    lastActivityAt: "2026-10-25T02:45:00Z",
+    lastActivityAt: ago(0.4),
     messageCount: 41,
     messageDelta: 3,
     activeToolCalls: 1,
   },
   {
+    // A sub-session of ses_k_wip: collapses under its parent (slice 2).
+    sessionId: "ses_k_wip_explore",
+    source: "opencode-laptop",
+    parentId: "ses_k_wip",
+    agent: "explore",
+    outcome: "interrupted",
+    title: "Explore: locate the projector schema",
+    directory: "/home/user/work/id-train/pm-aggregator-ui",
+    model: "deepseek-v4-flash",
+    provider: "opencode-go",
+    lastActivityAt: ago(0.5),
+    messageCount: 6,
+    messageDelta: 0,
+    activeToolCalls: 0,
+  },
+  {
     sessionId: "ses_h_connect",
+    source: "opencode-laptop",
     title: "pm wave H — connect repos",
     directory: "/home/user/work/id-train/pm-connect-repos",
     branch: "pm/connect-repos",
     model: "claude-opus-5-5",
     provider: "claude-code",
-    lastActivityAt: "2026-10-25T02:30:00Z",
+    lastActivityAt: ago(0.6),
     messageCount: 88,
     messageDelta: 0,
     activeToolCalls: 0,
@@ -465,12 +493,13 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   },
   {
     sessionId: "ses_i_kaneo",
+    source: "opencode-sandbox",
     title: "pm wave I — Kaneo fork",
     directory: "/home/user/work/kaneo-fork",
     branch: "main",
     model: "muse-wonder-1.0",
     provider: "muse",
-    lastActivityAt: "2026-10-25T02:20:00Z",
+    lastActivityAt: ago(0.8),
     messageCount: 19,
     messageDelta: 0,
     activeToolCalls: 0,
@@ -478,32 +507,308 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   },
   {
     sessionId: "ses_j_proj",
+    source: "opencode-laptop",
     title: "pm wave J — projector",
     directory: "/home/user/work/id-train/pm-projector",
     branch: "pm/projector",
     model: "claude-opus-5-5",
     provider: "claude-code",
-    lastActivityAt: "2026-10-25T02:10:00Z",
+    lastActivityAt: ago(1),
     messageCount: 55,
     messageDelta: 0,
     activeToolCalls: 1,
-    longRunningCall: { command: "cargo build --release", startedAt: "2026-10-25T01:40:00Z" },
+    longRunningCall: { command: "cargo build --release", startedAt: ago(1.8) },
   },
   {
     sessionId: "ses_f_phase13",
+    source: "opencode-sandbox",
     title: "id train F — Phase 13",
     directory: "/home/user/work/id-train/phase-13-impl",
     branch: "phase-13-impl",
     model: "claude-opus-5-5",
     provider: "claude-code",
-    lastActivityAt: "2026-10-25T01:55:00Z",
+    lastActivityAt: ago(1.2),
     messageCount: 102,
     messageDelta: 0,
     activeToolCalls: 0,
     repeatedErrorCount: 4,
     lastTurnError: "claude_session_limit (retry)",
   },
+  {
+    // Jules, wired via the keeper's state in slice 2.
+    sessionId: "4259424002214698449",
+    source: "jules",
+    title: "Fix #811: id phase-9: a joiner's resize (up to 500x200) can permanently…",
+    directory: "developing-today/code",
+    createdAt: ago(5),
+    lastActivityAt: ago(0.2),
+    messageCount: 0,
+    activeToolCalls: 0,
+    awaitingQuestion: "Does this look good, and should I proceed?",
+    supervisionNote: "Jules AWAITING_USER_FEEDBACK · keeper: replied",
+  },
+  {
+    // A finished one-shot probe: expires out of the view (slice 2).
+    sessionId: "ses_old_probe",
+    source: "opencode-sandbox",
+    outcome: "succeeded",
+    title: "one-shot probe: GEMINI LIVE",
+    directory: "/home/hatch/tmp/gemini-probe",
+    model: "gemini-3.8-flash",
+    provider: "google",
+    lastActivityAt: ago(30),
+    messageCount: 2,
+    messageDelta: 0,
+    activeToolCalls: 0,
+  },
 ];
+
+// DNS register (#906 §1): real rows from #902's first-pass register
+// (2026-10-25) — one per status class, so the register page's three
+// views all render in fixture mode.
+export const FIXTURE_DNS: DnsSection = {
+  generatedAt: "2026-10-25T17:00:00Z",
+  source: "fixtures (rows from the #902 register, 2026-10-25)",
+  totalAnnualListUsd: 595.62,
+  entries: [
+    {
+      domain: "1110x.de",
+      registrar: "Porkbun",
+      dnsHost: "Porkbun",
+      renewal: "2027-02-09",
+      autoRenew: "ON",
+      priceUsd: 4.07,
+      priorYearCost: "unknown",
+      used: "No public-facing use found — Porkbun defaults only",
+      plan: "Unused — `0x111` dev-identity family (earmark inferred)",
+      review: "REVIEW — auto-renews despite no found use",
+      status: "earmarked",
+    },
+    {
+      domain: "security.cab",
+      registrar: "Porkbun",
+      dnsHost: "Cloudflare",
+      renewal: "2027-02-24",
+      autoRenew: "ON",
+      priceUsd: 29.35,
+      priorYearCost: "unknown",
+      used: "Active, recorded: kaneo.security.cab (PM board tunnel), agents.security.cab (agent-inbox email routing)",
+      plan: "Active — fleet infrastructure",
+      review: "Settled — in use",
+      status: "active",
+    },
+    {
+      domain: "grandnag.us",
+      registrar: "Porkbun",
+      dnsHost: "Porkbun",
+      renewal: "2027-02-23",
+      autoRenew: "ON",
+      priceUsd: 7.0,
+      priorYearCost: "unknown",
+      used: "No public-facing use found — Porkbun defaults only",
+      plan: "Unused — purpose unknown",
+      review: "REVIEW",
+      status: "unused",
+    },
+    {
+      domain: "drewrypope.com",
+      registrar: "Porkbun (other account)",
+      dnsHost: "Porkbun",
+      renewal: "2028-06-14",
+      autoRenew: "unknown",
+      priceUsd: 11.08,
+      priorYearCost: "unknown",
+      used: "Active, recorded: www + zettel.drewrypope.com → GitHub Pages (personal site + notes)",
+      plan: "Active",
+      review: "Settled — in use; identify which account holds it",
+      status: "active",
+    },
+  ],
+};
+
+// Identity registry fixtures (#906 §3): the attention fixtures as
+// records (with token totals on two), plus one Muse launch
+// record so the claude-code source renders in fixture mode.
+export const FIXTURE_REGISTRY: SessionRecord[] = [
+  ...FIXTURE_ATTENTION.map((e, i) => recordFromSessionEntry(e, i === 0 ? 3_412_000 : i === 2 ? 1_208_500 : undefined)),
+  {
+    id: "claude-2026-10-25-slice2-review",
+    source: "claude-code",
+    label: "Dashboard slice-2 review (main chat subagent)",
+    agentId: "claude-code",
+    agentLabel: "Muse",
+    parentId: null,
+    startedAt: "2026-10-25T14:02:00Z",
+    lastSeenAt: "2026-10-25T14:31:00Z",
+    status: "succeeded",
+    taskRefs: [`${CODE}#898`],
+  },
+];
+
+
+// Usage & billing hub fixtures (design 2026-10-25). Shaped exactly like
+// the live extraction over quota-view.md Part (b): dated manual reads,
+// one service tripping the >80% bubble (Turso rows read), one PAYG
+// estimate pair, charges evidence, and a short snapshot history so the
+// detail view's chart + pace projection render offline.
+const daysAgo = (d: number): string => new Date(Date.now() - d * 86_400_000).toISOString().slice(0, 10);
+export const FIXTURE_USAGE: UsageView = {
+  services: [
+    {
+      id: "cloudflare",
+      name: "Cloudflare",
+      group: "compute",
+      plan: "Workers Paid $5/mo + R2 Paid $0 base",
+      status: "active",
+      metrics: [
+        { id: "workers-requests", label: "Workers requests", used: null, limit: 10_000_000, unit: "count", highlight: true, note: "Current-cycle usage not read." },
+        { id: "r2-storage", label: "R2 storage", used: 2, limit: 10, unit: "gb", percent: 20, highlight: true },
+        { id: "workers-ai-neurons", label: "Workers AI neurons / day", used: null, limit: 10_000, unit: "neurons", highlight: true },
+      ],
+      paygEstimate: { low: 0, high: 5.2, period: "per month" },
+      measuredAt: daysAgo(1),
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      nextDate: "Subscription date unknown",
+      cadenceDays: 7,
+      conflicts: ["CF reports subscription endpoint 403 and presumed $0/free; the Tracker records Workers Paid $5/mo — neither establishes current free status."],
+      reads: [{ at: daysAgo(1), text: "Gateway observation: gateway barely gets any credits; amount unknown." }],
+      usageNote: "Small footprint: 3 Workers, 2 R2 buckets ~2 GB, 2 D1, 2 KV, 2 Queues; far behind, mostly unused.",
+    },
+    {
+      id: "turso",
+      name: "Turso",
+      group: "database",
+      plan: "Starter Free $0",
+      status: "active",
+      metrics: [
+        { id: "databases", label: "Databases", used: 1, limit: 100, unit: "count", percent: 1, highlight: true },
+        { id: "storage", label: "Storage", used: 0, limit: 5, unit: "gb", percent: 0, highlight: true },
+        { id: "rows-read", label: "Rows read / month", used: 410_000_000, limit: 500_000_000, unit: "rows", percent: 82, highlight: true },
+        { id: "rows-written", label: "Rows written / month", used: null, limit: 10_000_000, unit: "rows", highlight: true },
+        { id: "sync", label: "Sync / month", used: null, limit: 3, unit: "gb", highlight: true },
+      ],
+      paygEstimate: null,
+      paygNote: "not applicable — Starter Free is a $0 hard-capped plan with overages disabled",
+      measuredAt: daysAgo(2),
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      nextDate: "2026-10-31 cycle end",
+      cadenceDays: 7,
+      conflicts: [],
+      reads: [{ at: daysAgo(6), text: "2026-10-20 dashboard read: 1 DB, 0 B, 0 usage; cycle Sep 30 - Oct 31 2026." }],
+      usageNote: "Mirror activity since the zero read; org-wide reads require dashboard/API verification.",
+    },
+    {
+      id: "supabase",
+      name: "Supabase",
+      group: "database",
+      plan: "Free",
+      status: "active",
+      metrics: [
+        { id: "db-size", label: "Database size", used: null, limit: null, unit: "gb", highlight: true, note: "Free-plan numerical limits are not recorded in local records." },
+        { id: "egress", label: "Egress", used: null, limit: null, unit: "gb", highlight: true },
+        { id: "storage", label: "Storage", used: null, limit: null, unit: "gb", highlight: true },
+      ],
+      paygEstimate: null,
+      paygNote: "not applicable — Free plan, no metered overage in the records",
+      billedUsd: 0,
+      measuredAt: daysAgo(3),
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      nextDate: null,
+      cadenceDays: 7,
+      conflicts: [],
+      reads: [],
+      usageNote: "muse-dev in use as the primary coordination store; usage percentage unknown.",
+    },
+    {
+      id: "github",
+      name: "GitHub",
+      group: "dev-platform",
+      plan: "Pro $4/mo",
+      status: "active",
+      metrics: [
+        { id: "actions-billable-minutes", label: "Actions billable minutes", used: null, limit: 3000, unit: "minutes", highlight: true, note: "No billable volume outside the comped bucket is recorded." },
+        { id: "actions-comped-minutes", label: "Actions minutes (comped, October)", used: 3079, limit: null, unit: "minutes", highlight: false, note: "Fully comped — net $0." },
+        { id: "codespaces-hours", label: "Codespaces core-hours", used: null, limit: 180, unit: "hours", highlight: true },
+        { id: "packages", label: "Packages storage", used: null, limit: 2, unit: "gb", highlight: true },
+      ],
+      paygEstimate: null,
+      paygNote: "not applicable — recorded October overage was comped ($0 net)",
+      measuredAt: daysAgo(1),
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      nextDate: null,
+      cadenceDays: 7,
+      conflicts: [],
+      reads: [],
+      usageNote: "October minutes comped; Codespaces/Packages usage unknown.",
+    },
+    {
+      id: "bitwarden",
+      name: "Bitwarden Secrets Manager",
+      group: "account-tooling",
+      plan: "Secrets Manager, tier/price unknown",
+      status: "active",
+      metrics: [],
+      paygEstimate: null,
+      paygNote: "not applicable — no usage meter recorded",
+      measuredAt: daysAgo(2),
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      nextDate: null,
+      cadenceDays: 7,
+      conflicts: [],
+      reads: [],
+      usageNote: "Counts only in this hub — secret names/values never enter it. No count recorded yet.",
+    },
+  ],
+  payg: [
+    {
+      id: "meta-payg",
+      label: "Meta Model API PAYG",
+      accruedUsd: 23.92,
+      collectedUsd: 23.91,
+      unbilledUsd: 0.01,
+      note: "Oct 19-25 console read: spill past the plan's short window bills automatically.",
+      measuredAt: daysAgo(1),
+      sourceClass: "console",
+    },
+    {
+      id: "cloudflare-gateway",
+      label: "Cloudflare AI Gateway accrual (DeepSeek V4 Pro, Oct 24-25)",
+      accruedUsd: null,
+      estimate: { low: 29.6, high: 45.1, period: "Oct 24-25 accrual", note: "Budget alert vs gateway attribution disagree; Nov 2 invoice is authoritative." },
+      unbilledUsd: 54.12,
+      note: "Gateway providers disabled fleet-wide 2026-10-25; the invoice lands Nov 2.",
+      measuredAt: daysAgo(1),
+      sourceClass: "estimate",
+    },
+  ],
+  charges: [
+    { at: daysAgo(1), label: "Meta PAYG spill", amountUsd: 20, method: "Visa \u20227535", source: "Gmail card alert (registry billing incidents)" },
+    { at: daysAgo(1), label: "Meta PAYG spill", amountUsd: 3.91, method: "Visa \u20227535", source: "Gmail card alert (registry billing incidents)" },
+    { at: "2026-10-05", label: "ClinePass annual (Cline Bot Inc.)", amountUsd: 82.52, method: "Link", source: "invoice QUWGLQSJ-0001 (quota-view.md ClinePass read)" },
+  ],
+  attention: [],
+  domains: { totalAnnualUsd: 214.5, nextRenewal: "2026-11-03", domainCount: 14 },
+  subscriptions: [
+    { name: "Amazon RxPass", plan: "$5/mo flat pharmacy", renewsAt: null },
+    { name: "Wispr Flow", plan: "Pro $151.91/yr", renewsAt: "2027-10-09" },
+  ],
+  history: {
+    turso: [
+      { ts: `${daysAgo(6)}T12:00:00Z`, serviceId: "turso", metricId: "rows-read-pct", value: 12, unit: "pct", limit: 100, resetsAt: "2026-10-31T00:00:00Z", source: "manual", observedBy: "fixtures" },
+      { ts: `${daysAgo(4)}T12:00:00Z`, serviceId: "turso", metricId: "rows-read-pct", value: 38, unit: "pct", limit: 100, resetsAt: "2026-10-31T00:00:00Z", source: "manual", observedBy: "fixtures" },
+      { ts: `${daysAgo(2)}T12:00:00Z`, serviceId: "turso", metricId: "rows-read-pct", value: 82, unit: "pct", limit: 100, resetsAt: "2026-10-31T00:00:00Z", source: "manual", observedBy: "fixtures" },
+    ],
+    cloudflare: [
+      { ts: `${daysAgo(6)}T12:00:00Z`, serviceId: "cloudflare", metricId: "r2-storage", value: 1.8, unit: "gb", limit: 10, source: "manual", observedBy: "fixtures" },
+      { ts: `${daysAgo(1)}T12:00:00Z`, serviceId: "cloudflare", metricId: "r2-storage", value: 2, unit: "gb", limit: 10, source: "manual", observedBy: "fixtures" },
+    ],
+  },
+};
 
 export function fixtureSource(): Source {
   const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
@@ -513,7 +818,11 @@ export function fixtureSource(): Source {
     items: "fixtures",
     comments: "fixtures",
     quota: "fixtures",
+    usage: "fixtures",
     attention: "fixtures",
+    orchestration: "fixtures",
+    dns: "fixtures",
+    registry: "fixtures",
   };
   return {
     board: async () => FIXTURE_BOARD,
@@ -524,7 +833,40 @@ export function fixtureSource(): Source {
       return FIXTURE_COMMENTS.filter((x) => wanted.has(x.ref));
     },
     quota: async () => FIXTURE_QUOTA,
+    usage: async () => ({ ...FIXTURE_USAGE, attention: buildAttentionFlags(FIXTURE_QUOTA, FIXTURE_USAGE) }),
     attention: async () => FIXTURE_ATTENTION,
+    // Fixtures carry no orchestration section: "not measured" is the
+    // honest fixture state for a job that only runs live (#899).
+    orchestration: async () => null,
+    dns: async () => FIXTURE_DNS,
+    registry: async () => FIXTURE_REGISTRY,
+    coverage: async (): Promise<SourceCoverage[]> => [
+      {
+        source: "opencode-sandbox",
+        label: "OpenCode · sandbox server",
+        wired: true,
+        detail: "fixtures",
+      },
+      {
+        source: "opencode-laptop",
+        label: "OpenCode · laptop server",
+        wired: true,
+        detail: "fixtures",
+      },
+      {
+        source: "jules",
+        label: "Jules",
+        wired: true,
+        detail: "fixtures (keeper state)",
+      },
+      {
+        source: "claude-code",
+        label: "Muse",
+        wired: false,
+        detail:
+          "Not wired — Muse subagents run inside the assistant runtime, which exposes no session registry for the aggregator to read. Gap tracked in #898.",
+      },
+    ],
     provenance: () => provenance,
   };
 }

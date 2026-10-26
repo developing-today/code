@@ -21,6 +21,7 @@ let
   designCodeProxyPort = 18746;
   museProxyPort = 18747;
   commandcodeProxyPort = 18748;
+  claudeCodeProxyPort = 18749;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -1425,7 +1426,6 @@ in
       OPENCODE_EXPERIMENTAL_PLAN_MODE = "1";
       OPENCODE_EXPERIMENTAL_SCOUT = "1";
       OPENCODE_EXPERIMENTAL_WORKSPACES = "1";
-      OPENCODE_EXPERIMENTAL_LSP_TOOL = "1";
       OPENCODE_EXPERIMENTAL_OXFMT = "1";
       OPENCODE_EXPERIMENTAL_EXA = "1";
       OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "1";
@@ -1436,11 +1436,21 @@ in
       CODEX_PROXY_PORT = toString codexProxyPort;
       ANTIGRAVITY_LS_PROXY_PORT = toString antigravityLsProxyPort;
       DESIGN_CODE_PROXY_PORT = toString designCodeProxyPort;
+      # The three below were missing: their {env:...} templates in
+      # opencode.jsonc resolved to an empty port in the OpenChamber serve
+      # (2026-10-25 audit) because the variables never reached its
+      # environment. The session list must cover every let-block port.
+      MUSE_PROXY_PORT = toString museProxyPort;
+      COMMANDCODE_PROXY_PORT = toString commandcodeProxyPort;
+      CLAUDE_CODE_PROXY_PORT = toString claudeCodeProxyPort;
       OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT = "1";
       # File watcher off by default (Drew, 2026-10-20): the working trees
       # are giant, and watching costs more than the live-external-edit
       # awareness it buys. Diffs are git-computed on demand either way.
-      OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER = "1";
+      # (Name corrected 2026-10-25 per #698: opencode's server-process.ts
+      # reads OPENCODE_DISABLE_FILEWATCHER; the EXPERIMENTAL_ name was
+      # read nowhere, so the watcher was silently still on.)
+      OPENCODE_DISABLE_FILEWATCHER = "1";
       # XDG_CACHE_HOME = "$HOME/.cache";
       # XDG_CONFIG_DIRS = "/etc/xdg";
       # XDG_CONFIG_HOME = "$HOME/.config";

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { attentionSorted, classifyAttention, executionStrip, laneFor, timeline, allRefs } from "../src/derive.ts";
+import {
+  attentionSorted,
+  buildAttention,
+  classifyAttention,
+  executionStrip,
+  laneFor,
+  timeline,
+  allRefs,
+} from "../src/derive.ts";
 import {
   parseRef,
   refKey,
@@ -199,11 +207,14 @@ describe("render smoke (fixtures)", () => {
     expect(html).toContain("Headroom for a new session");
     expect(html).toContain("Antigravity");
   });
-  test("attention view renders attention-ordered sessions with evidence", async () => {
+  test("attention view renders the tiered needs-you page", async () => {
     const src = fixtureSource();
-    const html = renderAttention(await src.attention(), src.provenance());
+    const view = buildAttention(await src.attention(), await src.orchestration());
+    const html = renderAttention(view, await src.coverage(), src.provenance());
     expect(html).toContain("Needs you");
-    expect(html).toContain("stopped-for-question");
+    expect(html).toContain("Needs Drew");
+    expect(html).toContain("Needs orchestrator");
+    expect(html).toContain("waiting for an answer");
     expect(html).toContain("Waiting on:");
   });
 });

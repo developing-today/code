@@ -3,18 +3,33 @@
 // the projector's /items and /comments for live ref state and the comment
 // projection. Anything a reader cannot reach falls back to fixtures, and the
 // provenance strings say exactly which facet is live vs fixture-backed.
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { Config } from "../config.ts";
+import { isDnsSection } from "../dns.ts";
+import { feedAgeText, isOrchestrationSection, loadFeed, type FleetFeed } from "../feed.ts";
+import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
+import { buildAttentionFlags } from "../derive.ts";
+import { summarizeDns } from "../dns.ts";
+import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import { SnapshotStore } from "../snapshots.ts";
 import { fixtureSource } from "./fixtures.ts";
+import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
   type BoardItem,
   type Comment,
+  type DnsSection,
   type GhItem,
   type Link,
+  type OrchestrationSection,
   type Provenance,
   type QuotaView,
   type RefKey,
   type RoadmapRow,
   type SessionFeedEntry,
+  type SessionRecord,
+  type SourceCoverage,
+  type UsageView,
   refsInText,
   refUrl,
 } from "../model.ts";
@@ -332,7 +347,11 @@ export function liveSource(cfg: Config): Source {
     items: "fixtures",
     comments: "fixtures",
     quota: "fixtures",
+    usage: "fixtures",
     attention: "fixtures",
+    orchestration: "fixtures",
+    dns: "fixtures",
+    registry: "fixtures",
   };
 
   async function kaneoCookieHeader(): Promise<string> {
@@ -356,6 +375,78 @@ export function liveSource(cfg: Config): Source {
     const value = await kaneoCookieHeader();
     cookieCache = { value, at: Date.now() };
     return value;
+  }
+
+  // Slice-2 coverage state: what the last attention read actually saw,
+  // so the coverage note describes reality rather than config.
+  let lastFeed: FleetFeed | null = null;
+  let laptopSeen: boolean | null = null;
+  async function getFeed(): Promise<FleetFeed | null> {
+    const feed = await loadFeed(cfg.feedFile);
+    if (feed) lastFeed = feed;
+    return feed;
+  }
+
+  // The laptop's OpenChamber-managed OpenCode server: port + password
+  // are read from its state file at request time (the port changes
+  // across restarts). Mapped sessions are cached for 45 s (#890).
+  let laptopCache: { value: MappedSessions; at: number } | null = null;
+  async function laptopMapped(): Promise<MappedSessions | null> {
+    if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
+    const state = JSON.parse(await readFile(cfg.openchamberStateFile, "utf8")) as {
+      port?: number;
+      password?: string;
+    };
+    if (!state.port || !state.password) return null;
+    const mapped = await mapServerSessions(
+      {
+        baseUrl: `http://127.0.0.1:${state.port}`,
+        password: state.password,
+      },
+      Date.now(),
+      { source: "opencode-laptop" },
+    );
+    if (!mapped) return null;
+    laptopCache = { value: mapped, at: Date.now() };
+    return mapped;
+  }
+  async function laptopSessions(): Promise<SessionFeedEntry[] | null> {
+    const mapped = await laptopMapped();
+    return mapped ? mapped.entries : null;
+  }
+
+  // The durable identity registry (#906 §3): records from the feed and
+  // the laptop's live server are merged into a store file on every
+  // read, so sessions outlive the feed's attention window. The store
+  // is the aggregator's own data (like comments.json); a failed write
+  // never breaks the read.
+  let registryStore: SessionRecord[] | null = null;
+  async function loadRegistryStore(): Promise<SessionRecord[]> {
+    if (registryStore) return registryStore;
+    try {
+      const parsed: unknown = JSON.parse(await readFile(cfg.registryFile, "utf8"));
+      registryStore = Array.isArray(parsed) ? parsed.filter(isSessionRecord) : [];
+    } catch {
+      registryStore = [];
+    }
+    return registryStore;
+  }
+  async function mergeIntoRegistry(incoming: SessionRecord[]): Promise<SessionRecord[]> {
+    const current = await loadRegistryStore();
+    const merged = mergeRecords(current, incoming);
+    const changed = merged.length !== current.length || merged.some((r, i) => r !== current[i]);
+    registryStore = merged;
+    if (changed) {
+      try {
+        await mkdir(dirname(cfg.registryFile), { recursive: true });
+        const tmp = `${cfg.registryFile}.tmp-${process.pid}`;
+        await writeFile(tmp, JSON.stringify(merged, null, 2));
+        await rename(tmp, cfg.registryFile);
+      } catch {
+        /* durability is best-effort; the in-memory merge still serves */
+      }
+    }
+    return merged;
   }
 
   return {
@@ -415,14 +506,214 @@ export function liveSource(cfg: Config): Source {
       return fix.comments(refs);
     },
     async quota() {
-      // The quota reader (per the #851 source list) is a projector concern;
-      // until it lands there, fixtures stand in.
+      // Slice 1 (#890): quota comes from the fleet feed file produced
+      // on the sandbox by scripts/collect-fleet-feed.ts. A stale feed
+      // keeps rendering, with its age in provenance; fixtures only when
+      // no feed exists at all.
+      const feed = await getFeed();
+      if (feed) {
+        provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
+        return feed.quota;
+      }
+      provenance.quota = "fixtures (no fleet feed file yet)";
       return fix.quota();
     },
+    async usage(): Promise<UsageView> {
+      // Usage & billing hub (design §3): feed sections first (the
+      // collector extracts Part (b) on the sandbox, where the sources
+      // of record live); when an older feed has none, extract directly
+      // from the quota view + registry files; fixtures only when
+      // neither exists. Snapshot history always comes from the local
+      // store (§4) — the aggregator reads it, writers live elsewhere.
+      const feed = await getFeed();
+      const history = await new SnapshotStore(cfg.snapshotsDir).byService().catch(() => ({}));
+      const domains =
+        feed?.dns && isDnsSection(feed.dns)
+          ? {
+              totalAnnualUsd: feed.dns.totalAnnualListUsd,
+              nextRenewal: summarizeDns(feed.dns).nextRenewal?.renewal ?? null,
+              domainCount: feed.dns.entries.length,
+            }
+          : null;
+      if (feed?.saas && feed.saas.length) {
+        provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
+        const partial = {
+          services: feed.saas,
+          payg: feed.payg ?? [],
+          charges: feed.charges ?? [],
+          subscriptions: feed.subscriptions ?? [],
+        };
+        return {
+          ...partial,
+          chargesNote: partial.charges.length
+            ? undefined
+            : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
+          attention: buildAttentionFlags(feed.quota, partial),
+          domains,
+          history,
+        };
+      }
+      try {
+        const [doc, registryText] = await Promise.all([
+          readFile(cfg.quotaViewFile, "utf8"),
+          readFile(cfg.quotaRegistryFile, "utf8").catch(() => ""),
+        ]);
+        const partial = {
+          services: extractSaasServices(doc),
+          payg: extractPaygLines(doc, registryText),
+          charges: extractCharges(doc, registryText),
+          subscriptions: extractSubscriptions(doc),
+        };
+        provenance.usage = "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)";
+        return {
+          ...partial,
+          chargesNote: partial.charges.length
+            ? undefined
+            : "No charge evidence in the local records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
+          attention: buildAttentionFlags(feed?.quota ?? (await fix.quota()), partial),
+          domains,
+          history,
+        };
+      } catch {
+        provenance.usage = "fixtures (no fleet feed hub sections and quota view unreadable)";
+        const fallback = await fix.usage();
+        return { ...fallback, history: Object.keys(history).length ? history : fallback.history };
+      }
+    },
     async attention() {
-      // The session-state feed (per #852) is a projector/watch-cron concern;
-      // until it lands there, fixtures stand in.
+      // Slice 1 (#890): laptop sessions live from the OpenChamber-
+      // managed OpenCode server (45 s cache); sandbox sessions from
+      // the fleet feed (the sandbox server binds its own loopback).
+      const parts: string[] = [];
+      const byId = new Map<string, SessionFeedEntry>();
+
+      const feed = await getFeed();
+      if (feed) {
+        for (const e of feed.attention) byId.set(e.sessionId, e);
+        parts.push(`sandbox via fleet feed (${feedAgeText(feed.generatedAt)})`);
+      }
+
+      try {
+        const laptop = await laptopSessions();
+        if (laptop) {
+          laptopSeen = true;
+          for (const e of laptop) byId.set(e.sessionId, e);
+          parts.push("laptop live");
+        } else {
+          laptopSeen = false;
+        }
+      } catch {
+        laptopSeen = false;
+        /* laptop part fails soft */
+      }
+
+      if (byId.size > 0) {
+        provenance.attention = `live (${parts.join(" + ")})`;
+        return [...byId.values()];
+      }
+      provenance.attention = "fixtures (no live attention source reachable)";
       return fix.attention();
+    },
+    async orchestration(): Promise<OrchestrationSection | null> {
+      // #899: the orchestration section rides the fleet feed, embedded
+      // by the collector from the orchestrator's own output file. The
+      // section carries its own provenance; absent = not measured yet.
+      const feed = await getFeed();
+      if (feed?.orchestration && isOrchestrationSection(feed.orchestration)) {
+        provenance.orchestration = `live (orchestration section ${feed.orchestration.runId} · ${feedAgeText(feed.orchestration.generatedAt)})`;
+        return feed.orchestration;
+      }
+      provenance.orchestration = feed
+        ? "none yet — the orchestration job (#899) has not published a section; the today view derives"
+        : "fixtures (no fleet feed file yet)";
+      return null;
+    },
+    async dns(): Promise<DnsSection | null> {
+      // Slice 3 (#906 §1): the register rides the fleet feed, parsed
+      // from #902's register file by the collector. The page renders
+      // the register; it never edits it.
+      const feed = await getFeed();
+      if (feed?.dns && isDnsSection(feed.dns)) {
+        provenance.dns = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · register parsed ${feed.dns.generatedAt})`;
+        return feed.dns;
+      }
+      provenance.dns = feed
+        ? "not collected yet — the collector has not embedded a register section"
+        : "fixtures (no fleet feed file yet)";
+      return null;
+    },
+    async registry(): Promise<SessionRecord[]> {
+      // Slice 3 (#906 §3): feed records (sandbox OpenCode + Jules +
+      // Muse launches) merged with the laptop server's live
+      // sessions, accumulated into the durable store.
+      const incoming: SessionRecord[] = [];
+      const feed = await getFeed();
+      if (feed?.registry) {
+        for (const r of feed.registry) if (isSessionRecord(r)) incoming.push(r);
+      }
+      try {
+        const mapped = await laptopMapped();
+        if (mapped) {
+          for (const e of mapped.entries) {
+            incoming.push(recordFromSessionEntry(e, mapped.tokensBySession.get(e.sessionId)));
+          }
+        }
+      } catch {
+        /* laptop part fails soft, like attention */
+      }
+      if (incoming.length > 0) {
+        provenance.registry = `live (${incoming.length} records merged · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})`;
+        return mergeIntoRegistry(incoming);
+      }
+      provenance.registry = "store only (no live registry source reachable)";
+      return loadRegistryStore();
+    },
+    async coverage(): Promise<SourceCoverage[]> {
+      const feed = lastFeed ?? (await getFeed());
+      const out: SourceCoverage[] = [];
+      out.push({
+        source: "opencode-sandbox",
+        label: "OpenCode · sandbox server",
+        wired: Boolean(feed),
+        detail: feed
+          ? `via fleet feed (${feedAgeText(feed.generatedAt)}, collected ${feed.generatedAt})`
+          : "no fleet feed file — sandbox sessions are not visible",
+      });
+      out.push({
+        source: "opencode-laptop",
+        label: "OpenCode · laptop server",
+        wired: laptopSeen === true,
+        detail:
+          laptopSeen === true
+            ? "live from the OpenChamber-managed server (45 s cache)"
+            : laptopSeen === false
+              ? "unreachable on the last read — laptop sessions may be missing"
+              : "not read yet this process",
+      });
+      const j = feed?.julesSummary;
+      out.push({
+        source: "jules",
+        label: "Jules",
+        wired: Boolean(j),
+        detail: j
+          ? `via the keeper's state (jules-review) · ${j.tracked} tracked now · last keeper run ${j.at ?? "unknown"}${
+              j.total != null
+                ? ` · last run totals: ${j.total} sessions — ${j.completed ?? 0} completed, ${j.failed ?? 0} failed, ${j.inProgress ?? 0} in progress, ${j.awaitingFeedback ?? 0} awaiting feedback (completed runs are pruned by the keeper)`
+                : ""
+            }`
+          : "keeper state not in the feed — Jules sessions are not visible",
+      });
+      const claudeRecords = (feed?.registry ?? []).filter((r) => r.source === "claude-code");
+      out.push({
+        source: "claude-code",
+        label: "Muse",
+        wired: claudeRecords.length > 0,
+        detail:
+          claudeRecords.length > 0
+            ? `via launch records in the fleet feed (${claudeRecords.length} recorded) — a Muse session is visible only when its launch appended a record (scripts/record-claude-launch.ts); the runtime exposes no session list to scrape`
+            : "no launch records in the feed yet — Muse sessions register by appending a launch record (scripts/record-claude-launch.ts, #906 §3); the runtime exposes no session list to scrape",
+      });
+      return out;
     },
     provenance: () => provenance,
   };

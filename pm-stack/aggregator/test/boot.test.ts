@@ -61,8 +61,36 @@ describe("server boots from fixtures", () => {
   test("quota and attention pages render", async () => {
     const quota = await (await fetch(`http://127.0.0.1:${port}/quota`)).text();
     const attention = await (await fetch(`http://127.0.0.1:${port}/attention`)).text();
-    expect(quota.includes("Quota + throughput")).toBe(true);
+    expect(quota.includes("Usage &amp; billing")).toBe(true); // the hub retitle (design 2026-10-25 §1.1)
     expect(attention.includes("Needs you")).toBe(true);
+    expect(attention.includes("Needs Drew")).toBe(true);
+    expect(attention.includes("Session coverage")).toBe(true);
+    expect(attention.includes("amd-6.raptor-pumpkinseed.ts.net")).toBe(true);
+  });
+
+  test("today page + slice-2 JSON endpoints (today, coverage, horizons)", async () => {
+    const today = await (await fetch(`http://127.0.0.1:${port}/today`)).text();
+    expect(today.includes("Top objectives")).toBe(true);
+    expect(today.includes("Project momentum")).toBe(true);
+    const todayJson = (await (await fetch(`http://127.0.0.1:${port}/api/today.json`)).json()) as {
+      objectives: unknown[];
+      momentum: unknown[];
+      fromOrchestrator: boolean;
+    };
+    expect(todayJson.objectives.length).toBeGreaterThan(0);
+    expect(todayJson.momentum.length).toBeGreaterThan(0);
+    // Fixtures carry no orchestration section (#899: "not measured" is
+    // the honest fixture state), so the today view derives — labelled.
+    expect(todayJson.fromOrchestrator).toBe(false);
+    const coverage = (await (await fetch(`http://127.0.0.1:${port}/api/coverage.json`)).json()) as {
+      coverage: { source: string; wired: boolean }[];
+      expired: number;
+    };
+    expect(coverage.coverage.find((c) => c.source === "jules")?.wired).toBe(true);
+    expect(coverage.coverage.find((c) => c.source === "claude-code")?.wired).toBe(false);
+    expect(coverage.expired).toBeGreaterThan(0); // the finished fixture probe
+    const week = await (await fetch(`http://127.0.0.1:${port}/roadmap?h=week`)).text();
+    expect(week.includes("Next 3 days")).toBe(true);
   });
 
   test("machine-first JSON endpoints", async () => {
