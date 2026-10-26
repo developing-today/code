@@ -156,11 +156,11 @@ deleted, so Drive's own trash grace applies — and one `transfer_ledger`
 row per file is written (`direction='trash'`, `kind='backup-prune'`,
 `ref=<filename>`).
 
-One migration caveat: the `'trash'` ledger direction is a schema v1.1
+One migration note: the `'trash'` ledger direction is a schema v1.1
 extension (see `schema.sql`). Local manifests are migrated in place on
-first open, but the **D1 copy of the schema needs the same one-line
-CHECK change** before prune rows can sync — until then `sync-manifest`
-fails on the `transfer_ledger` statement with D1's own error text.
+first open, and the **D1 copy of the schema already carries the same
+CHECK change** (verified 2026-10-26, #984 — D1 already held real
+'trash' ledger rows), so prune rows sync normally.
 
 ### Scripts
 
@@ -288,11 +288,12 @@ manifest, and recorded in the ledger (`direction='trash'`,
 does not abort the rest.
 
 The `'evicted'` state is a schema v1.2 extension (see `schema.sql`):
-local manifests are migrated in place on first open, but the **D1
-copy of the schema needs the same one-line CHECK change** before
-evicted rows can sync — until then `sync-manifest` fails on the
-`objects` statement with D1's own error text (the same caveat the
-v1.1 `'trash'` direction had).
+local manifests are migrated in place on first open, and the **D1
+copy of the schema already carries the same CHECK change** (verified
+2026-10-26, #984: D1 `sqlite_master` read plus a probe `sync-manifest`
+carrying an 'evicted' row succeeded; the probe rows were removed
+afterwards), so evicted rows sync normally — the same applied state
+the v1.1 `'trash'` direction was verified in.
 
 ## Manifest sync → D1
 
