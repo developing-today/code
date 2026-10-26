@@ -258,7 +258,9 @@ async function main(): Promise<void> {
     `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (sandbox + jules${jules ? `, ${jules.tracked} jules tracked` : ""})` +
       (orchestration ? `, orchestration ${orchestration.runId}` : ", no orchestration section") +
       (dns ? `, dns ${dns.entries.length} domains` : ", no dns section") +
-      (saas ? `, hub ${saas.length} services / ${payg?.length ?? 0} payg / ${charges?.length ?? 0} charges` : ", no hub sections") +
+      (saas
+        ? `, hub ${saas.length} services / ${payg?.length ?? 0} payg / ${charges?.length ?? 0} charges`
+        : ", no hub sections") +
       `, registry ${registry.length} records`,
   );
 }

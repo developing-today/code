@@ -553,7 +553,8 @@ export function fmtMetricValue(v: number | null, unit: string): string {
 export function freshnessStamp(measuredAt: string | null, sourceClass: string, cadenceDays: number): string {
   const f = freshness(measuredAt, cadenceDays);
   const cls = SOURCE_CLASS_LABELS[sourceClass] ?? sourceClass;
-  if (!measuredAt) return `<span class="badge stale">no dated read</span> <span class="muted">${esc(cls)} · ${esc("never measured")}</span>`;
+  if (!measuredAt)
+    return `<span class="badge stale">no dated read</span> <span class="muted">${esc(cls)} · ${esc("never measured")}</span>`;
   const age = f.ageDays == null ? "" : f.ageDays === 0 ? " · today" : ` · ${f.ageDays}d ago`;
   const stale = f.stale ? ` <span class="badge stale">stale — as of ${esc(measuredAt.slice(0, 10))}</span>` : "";
   return `<span class="muted">measured ${esc(measuredAt.slice(0, 10))}${age} · ${esc(cls)}</span>${stale}`;
@@ -607,10 +608,7 @@ function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
   const metrics = highlights.length
     ? highlights.map(metricRow).join("")
     : `<div class="muted">${esc(svc.usageNote ?? "No highlight metrics recorded.")}</div>`;
-  const billed =
-    svc.billedUsd != null
-      ? `<div>billed this period: $${svc.billedUsd.toFixed(2)}</div>`
-      : "";
+  const billed = svc.billedUsd != null ? `<div>billed this period: $${svc.billedUsd.toFixed(2)}</div>` : "";
   const payg = svc.paygEstimate
     ? `<div>PAYG estimate: counted $${countedEstimate(svc.paygEstimate).toFixed(2)} (${esc(svc.paygEstimate.period)}; range $${svc.paygEstimate.low.toFixed(2)}–$${svc.paygEstimate.high.toFixed(2)} in detail)</div>`
     : svc.paygNote
@@ -777,7 +775,12 @@ export function historyChartHtml(records: SnapshotRecord[], metricId: string): s
 export function renderServiceDetail(svc: SaasService, history: SnapshotRecord[], provenance: Provenance): string {
   const f = freshness(svc.measuredAt, svc.cadenceDays);
   const metricRows = svc.metrics.length
-    ? svc.metrics.map((m) => `<tr><td>${esc(m.label)}${m.highlight ? ' <span class="badge src">highlight</span>' : ""}</td><td>${fmtMetricValue(m.used, m.unit)}</td><td>${m.limit == null ? "—" : fmtMetricValue(m.limit, m.unit)}</td><td>${m.percent != null ? `${m.percent.toFixed(0)}%` : "—"}</td><td class="muted">${esc(m.note ?? "")}</td></tr>`).join("")
+    ? svc.metrics
+        .map(
+          (m) =>
+            `<tr><td>${esc(m.label)}${m.highlight ? ' <span class="badge src">highlight</span>' : ""}</td><td>${fmtMetricValue(m.used, m.unit)}</td><td>${m.limit == null ? "—" : fmtMetricValue(m.limit, m.unit)}</td><td>${m.percent != null ? `${m.percent.toFixed(0)}%` : "—"}</td><td class="muted">${esc(m.note ?? "")}</td></tr>`,
+        )
+        .join("")
     : '<tr><td colspan="5" class="muted">No metrics recorded for this service yet.</td></tr>';
   const payg = svc.paygEstimate
     ? `<h2>PAYG estimate</h2><div class="card">low $${svc.paygEstimate.low.toFixed(2)} / high $${svc.paygEstimate.high.toFixed(2)} ${esc(svc.paygEstimate.period)} — counted as used: <strong>$${countedEstimate(svc.paygEstimate).toFixed(2)}</strong> (1.2 × high, Decision 004).${svc.paygEstimate.note ? `<br><span class="muted">${esc(svc.paygEstimate.note)}</span>` : ""}</div>`
@@ -785,7 +788,10 @@ export function renderServiceDetail(svc: SaasService, history: SnapshotRecord[],
       ? `<h2>PAYG estimate</h2><div class="card"><span class="muted">${esc(svc.paygNote)} — no number is invented where the records carry no volume.</span></div>`
       : "";
   const metricIds = [...new Set(history.map((r) => r.metricId))];
-  const charts = metricIds.map((id) => historyChartHtml(history, id)).filter(Boolean).join("");
+  const charts = metricIds
+    .map((id) => historyChartHtml(history, id))
+    .filter(Boolean)
+    .join("");
   const paces = metricIds
     .map((id) => ({ id, pace: projectPace(history, id) }))
     .filter((p) => p.pace)

@@ -775,9 +775,7 @@ export function buildAttentionFlags(
   // Worst first: over-limit by percent, then PAYG by dollars — the two
   // severities are different units, so kinds stay grouped, worst kind
   // (over-limit) first per the design's "worst first" reading order.
-  return flags.sort((a, b) =>
-    a.kind === b.kind ? b.severity - a.severity : a.kind === "over-limit" ? -1 : 1,
-  );
+  return flags.sort((a, b) => (a.kind === b.kind ? b.severity - a.severity : a.kind === "over-limit" ? -1 : 1));
 }
 
 export interface Freshness {
@@ -851,9 +849,7 @@ export function projectPace(records: SnapshotRecord[], metricId: string): PacePr
   if (slope <= 0.05) return null;
   const lastVal = last.value as number;
   const projectedExhaustionAt =
-    lastVal >= 100
-      ? last.ts
-      : new Date(Date.parse(last.ts) + ((100 - lastVal) / slope) * 86_400_000).toISOString();
+    lastVal >= 100 ? last.ts : new Date(Date.parse(last.ts) + ((100 - lastVal) / slope) * 86_400_000).toISOString();
   let projectedPercentAtReset: number | null = null;
   if (last.resetsAt) {
     const toReset = (Date.parse(last.resetsAt) - Date.parse(last.ts)) / 86_400_000;
@@ -870,9 +866,7 @@ export function projectPace(records: SnapshotRecord[], metricId: string): PacePr
 
 /** Reset points in a metric's history, for chart markers (§4, §1.5). */
 export function resetMarkers(records: SnapshotRecord[], metricId: string): { ts: string; resetsAt: string }[] {
-  const recs = records
-    .filter((r) => r.metricId === metricId)
-    .sort((a, b) => a.ts.localeCompare(b.ts));
+  const recs = records.filter((r) => r.metricId === metricId).sort((a, b) => a.ts.localeCompare(b.ts));
   const out: { ts: string; resetsAt: string }[] = [];
   for (let i = 1; i < recs.length; i++) {
     const prev = recs[i - 1];
