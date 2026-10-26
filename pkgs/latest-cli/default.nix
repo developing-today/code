@@ -324,20 +324,31 @@ in
   # app and release archives are at .../releases" -- so the release tarball is
   # the real artifact.
   #
+  # 0.1.2 is the first stable line containing Orchestrator V2: delegate_task,
+  # the T3 Code MCP, provider fork/switch, OpenCode 2 + Muse Code providers,
+  # the ACP registry, the server queue and scheduled tasks. It is a one-way
+  # upgrade from the 0.0.x (V1) line -- a V1 client refuses a V2 server and
+  # vice versa, so the desktop and mobile apps must move with it.
+  #
+  # Provider minimums at 0.1.2 (from the release notes): Codex >= 0.159,
+  # Claude Code >= 2.1.280, OpenCode >= 2.0.18 (2.x only -- never drive an
+  # OpenCode 1.x binary against the shared 2.x session DB), Pi >= 0.80.5,
+  # Grok >= 1.0.13. The fleet builds all satisfy these.
+  #
   # This provides the `t3` CLI/server (used by systemd.user.services.t3code).
-  # The Electron desktop GUI is a separate asset (.deb/.AppImage) and is still
-  # taken from nixpkgs as `t3code-desktop`.
+  # The Electron desktop GUI is a separate asset (.AppImage) and is packaged
+  # separately in pkgs/t3code-desktop, version-locked to this server.
   t3 =
     assert lib.assertMsg (
       system == "x86_64-linux"
     ) "pkgs/latest-cli: t3 is a prebuilt x86_64-linux artifact; system is ${system}";
-    stdenvNoCC.mkDerivation {
+    stdenvNoCC.mkDerivation rec {
       pname = "t3";
-      version = "0.0.45";
+      version = "0.1.2";
 
       src = fetchurl {
-        url = "https://github.com/pingdotgg/t3code/releases/download/v0.0.45/t3-0.0.45-linux-x64.tar.gz";
-        hash = "sha256-EFBa50vGpDz6sP3gvwag4NaGL3QDBZG+mUpkDUig1r0=";
+        url = "https://github.com/pingdotgg/t3code/releases/download/v0.1.2/t3-0.1.2-linux-x64.tar.gz";
+        hash = "sha256-eu1iXLlhk43xdMGgZ8DwUjU2CUC1PogqFkMSa3VNoWw=";
       };
 
       nativeBuildInputs = [
@@ -349,7 +360,7 @@ in
         stdenv.cc.cc.lib
       ];
 
-      sourceRoot = "t3-0.0.45-linux-x64";
+      sourceRoot = "t3-${version}-linux-x64";
       dontStrip = true;
 
       installPhase = ''
@@ -374,7 +385,10 @@ in
       meta = {
         description = "T3 Code server and CLI";
         homepage = "https://t3.codes";
-        license = lib.licenses.unfree;
+        # Upstream pingdotgg/t3code is MIT; this was previously marked unfree
+        # in error (the server tarball is the MIT-licensed project's own
+        # release artifact).
+        license = lib.licenses.mit;
         mainProgram = "t3";
         platforms = [ "x86_64-linux" ];
         sourceProvenance = [ lib.sourceTypes.binaryNativeCode ];

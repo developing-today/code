@@ -35,6 +35,16 @@ let
   # 2.1.293; nixpkgs is on 2.1.234. Must match the system `claude` so t3's
   # claudeAgent driver and the shell CLI are the same build.
   claude-code = pkgs.callPackage ../../pkgs/claude-code { };
+  # Muse Code, Meta's coding agent. A first-class T3 Code provider: the
+  # 0.1.2 driver id is literally "muse" and it drives this `muse` binary.
+  muse-code = pkgs.callPackage ../../pkgs/muse-code { };
+  # Pi coding agent harness. Also a T3 Code provider (driver "pi") in 0.1.2.
+  pi-coding-agent = pkgs.callPackage ../../pkgs/pi-coding-agent { };
+  # T3 Code desktop GUI, packaged from the upstream AppImage and
+  # version-locked to the latestCli.t3 server (0.1.2): a V1 app refuses a
+  # V2 server and vice versa. This shadows pkgs.t3code (nixpkgs), which the
+  # home.packages runCommand block below wraps for the desktop entry.
+  t3code = pkgs.callPackage ../../pkgs/t3code-desktop { };
   # Desktop Commander MCP: the local half of OpenAI's "Remote Desktop
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
   # desktop-commander-remote unit below keeps the device agent online.
@@ -417,7 +427,9 @@ in
         "%h/.claude.json"
         "%h/.codex/auth.json"
         "%h/.grok/auth.json"
+        "%h/.pi/agent/auth.json"
         "%h/.config/cloudflare/ai-inference-token"
+        "%h/.config/muse/auth.json"
         "%h/.config/openchamber/classifier-endpoint.json"
         "%h/.config/openchamber/classification.json"
       ];
@@ -450,6 +462,8 @@ in
         "T3CODE_HOME=%h/.local/share/t3code"
         "OPENCODE_V2_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "ANTIGRAVITY_ACP_BIN=${antigravity-acp}/bin/agy_acp_server"
+        "MUSE_BIN=${muse-code}/bin/muse"
+        "PI_BIN=${pi-coding-agent}/bin/pi"
       ];
     };
     Install.WantedBy = [ "default.target" ];
@@ -997,16 +1011,29 @@ in
 
   # T3 Code's backend, run headless over the tailnet.
   #
-  # The nixpkgs package advertises mainProgram = "t3code-desktop", but it also
-  # ships a `t3` binary whose whole purpose is "Run the T3 Code server":
+  # The server package (latestCli.t3) ships a `t3` binary whose whole purpose
+  # is "Run the T3 Code server":
   #   t3 serve   -- server, no browser, prints headless pairing details
   #   t3 pair    -- mints a pairing token and renders it as a QR code
   #   t3 auth    -- auth control plane for headless deployments
+  #   t3 thread / t3 project -- drive this server from other agents' shells
+  #
+  # 0.1.2 is Orchestrator V2: delegate_task spawns child threads on any
+  # provider, the T3 Code MCP lets agents create/message/wait on threads, and
+  # Muse Code is a native provider (driver "muse", below). T3 is a second
+  # control surface over the same provider CLIs OpenChamber drives -- it owns
+  # no provider credentials of its own. See
+  # doc/2026-10-26T21-18-21Z_feature_t3code-v2-integration/ for the
+  # coexistence line with OpenChamber.
   #
   # --tailscale-serve is a first-class upstream flag ("Configure Tailscale Serve
   # to expose this backend over HTTPS on the Tailnet"), so no tunnel, no
   # reverse proxy and no public exposure: the listener stays on loopback and
-  # Tailscale terminates HTTPS on the tailnet only.
+  # Tailscale terminates HTTPS on the tailnet only. NOTE: `tailscale` MUST be
+  # on this unit's PATH (below) or --tailscale-serve fails -- silently from
+  # the user's side, with only a TailscaleCommandExitError in the journal and
+  # no HTTPS entry in `tailscale serve status`. That was the live state of
+  # the 0.0.45 install.
   #
   # Defined here rather than via `t3 service install`, which would create the
   # same unit imperatively as untracked state outside the flake.
@@ -1027,21 +1054,38 @@ in
       # t3 keeps runtime state under T3CODE_HOME (equivalently --base-dir).
       #
       # PATH matters here. t3 is an orchestrator: it drives other coding agents
-      # through provider drivers (opencode, codex, claudeAgent, antigravity,
-      # cursor, grok) and discovers them on PATH. A systemd user unit does NOT
-      # inherit the login shell's PATH, so without this it would find none of
-      # them and every provider would show as unavailable.
+      # through provider drivers (opencode, codex, claudeAgent, muse, pi,
+      # antigravity, cursor, grok) and discovers them on PATH. A systemd user
+      # unit does NOT inherit the login shell's PATH, so without this it would
+      # find none of them and every provider would show as unavailable.
+      #
+      # Provider minimums for t3 0.1.2 are noted next to each entry; the
+      # fleet builds all satisfy them.
       #
       # t3 drives the same opencode build as the system `opencode`; its binary
-      # is the one noted in OPENCODE_V2_BIN below.
+      # is the one noted in OPENCODE_V2_BIN below. Only OpenCode 2.x binaries
+      # may touch the shared session DB -- never a 1.x build.
+      #
+      # `muse` is a first-class t3 driver in 0.1.2 (driver id "muse"): t3
+      # checks for the `muse` CLI and its channel manifest, drives sessions
+      # through it, and can inject session MCP servers into muse sessions.
+      # Muse is signed in on this host under its own login; t3 owns no Muse
+      # credentials.
       Environment = [
         "T3CODE_HOME=%h/.local/share/t3code"
+        # No upstream telemetry from a fleet service.
+        "T3CODE_TELEMETRY_ENABLED=false"
         "PATH=${
           lib.makeBinPath [
-            inputs.opencode.packages.${system}.opencode # driver "opencode"
-            latestCli.codex # 0.160.0   -- t3 driver "codex"
-            claude-code # 2.1.293 -- t3 driver "claudeAgent"
+            inputs.opencode.packages.${system}.opencode # 2.0.30, >= 2.0.18 -- driver "opencode"
+            latestCli.codex # 0.160.0, >= 0.159   -- driver "codex"
+            claude-code # 2.1.293, >= 2.1.280 -- driver "claudeAgent"
+            muse-code # 1.4.13            -- driver "muse"
+            pi-coding-agent # 0.84.3, >= 0.80.5   -- driver "pi"
+            mcpx # T3 Code MCP / session MCP injection surface
+            latestCli.gh # `gh` for threads that shell out to GitHub
             pkgs.antigravity-cli # binary is `agy` -- t3 driver "antigravity"
+            pkgs.tailscale # MUST be here or --tailscale-serve fails (see above)
             pkgs.git
             pkgs.openssh
           ]
@@ -1056,6 +1100,8 @@ in
         "OPENCODE_V2_BIN=${inputs.opencode.packages.${system}.opencode}/bin/opencode"
         "CODEX_BIN=${latestCli.codex}/bin/codex"
         "CLAUDE_BIN=${claude-code}/bin/claude"
+        "MUSE_BIN=${muse-code}/bin/muse"
+        "PI_BIN=${pi-coding-agent}/bin/pi"
         "ANTIGRAVITY_BIN=${pkgs.antigravity-cli}/bin/agy"
         # The ACP route: t3 ships an AcpRegistryDriver, and this is Google's
         # official Agent Client Protocol server for Antigravity. Preferred over
@@ -2088,14 +2134,17 @@ in
         # t3code splits across two sources on purpose.
         #
         # latestCli.t3 is the server/CLI from upstream's release tarball at
-        # 0.0.45; nixpkgs is on 0.0.33, twelve releases back on a 0.0.x project
-        # whose headless/Tailscale path is exactly what systemd.user.services
-        # .t3code uses below.
+        # 0.1.2 (Orchestrator V2), whose headless/Tailscale path is exactly
+        # what systemd.user.services.t3code uses below.
         latestCli.t3
-        # nixpkgs still provides the Electron desktop GUI (a separate .deb /
-        # AppImage asset upstream, not in that tarball). It also ships its own
-        # older `t3` binary, which would collide with the above, so only
-        # t3code-desktop and its desktop entry are taken from it.
+        # The Electron desktop GUI is a separate AppImage asset upstream,
+        # not in that tarball. It used to be taken from nixpkgs (which was
+        # on 0.0.45, the V1 line); it is now the local pkgs/t3code-desktop
+        # package at the same 0.1.2 as the server -- bound as `t3code` in
+        # the let block above, shadowing pkgs.t3code -- because a V1 app
+        # refuses a V2 server and vice versa. The desktop package also
+        # ships its own `t3` binary, which would collide with the above,
+        # so only t3code-desktop and its desktop entry are taken from it.
         (runCommand "t3code-desktop-${t3code.version}"
           {
             meta = t3code.meta // {
