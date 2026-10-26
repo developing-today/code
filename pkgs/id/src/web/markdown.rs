@@ -1574,6 +1574,44 @@ mod tests {
     }
 
     #[test]
+    fn test_softbreak_marked_span_roundtrip_fixpoint() {
+        // A marked span crossing a soft line break saves as the normalized
+        // single-line form and is stable from the first save on (#981).
+        // The marked " " node the SoftBreak arm produces must merge with
+        // its identically-marked neighbours instead of rendering as its
+        // own delimited span (which produced ****&#32;**** corruption).
+        for (original, expected) in [
+            ("**bold\nmore**\n", "**bold more**\n"),
+            ("*em\nmore*\n", "*em more*\n"),
+            ("~~gone\naway~~\n", "~~gone away~~\n"),
+            ("**bold\nmore words here**\n", "**bold more words here**\n"),
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, expected, "first save for {original:?}");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+            assert!(!first.contains("&#32;"), "entity in {first:?}");
+        }
+    }
+
+    #[test]
+    fn test_softbreak_link_roundtrip_fixpoint() {
+        // A link whose text crosses a soft line break stays ONE link on
+        // save, with and without a title (#981) — it must not fragment
+        // into per-word links plus a space-only link.
+        for (original, expected) in [
+            ("[a\nb](https://e.com)\n", "[a b](https://e.com)\n"),
+            (
+                "[a\nb](https://e.com \"T\")\n",
+                "[a b](https://e.com \"T\")\n",
+            ),
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, expected, "first save for {original:?}");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
     fn test_em_link_roundtrip_fixpoint() {
         for original in [
             "*[text](https://example.com)*\n",
