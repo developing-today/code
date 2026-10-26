@@ -177,8 +177,8 @@ The checklist above was executed the same day. Results:
   repo config did not know about.
 - With the conflicts aside, activation succeeded. Verified live:
   seed reported `added muse, pi; refreshed binaryPath for
-  antigravity-acp, opencode-v2; disabled OpenCode 1.x instance(s)
-  opencode-v1`; the 0.1.2 server logged `Tailscale Serve configured`
+antigravity-acp, opencode-v2; disabled OpenCode 1.x instance(s)
+opencode-v1`; the 0.1.2 server logged `Tailscale Serve configured`
   and answered 200 on loopback and at
   `https://amd-6.raptor-pumpkinseed.ts.net/`; projects `~/code` and
   `~/work` were registered with `t3 project add`.
