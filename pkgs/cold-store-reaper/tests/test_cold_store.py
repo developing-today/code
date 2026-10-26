@@ -337,6 +337,38 @@ class TestPack(ColdStoreTestBase):
         self.assertEqual(orow["state"], "staging")
         conn.close()
 
+    def test_pack_duplicate_content_stores_one_frame(self):
+        # #963: duplicate content in one pack call must be stored once —
+        # one frame, and bundles accounting equal to the members table.
+        data = b"hello cold store\n" * 10
+        a = self.write_src("a.txt", data)
+        b = self.write_src("b.txt", data)
+        result = self.store.pack([str(a), str(b)])
+        self.assertEqual(result["members"], 1)
+
+        conn = self.store.db()
+        members = conn.execute(
+            "SELECT * FROM members WHERE bundle_id=?", (result["bundle_id"],)
+        ).fetchall()
+        self.assertEqual(len(members), 1)
+        brow = conn.execute(
+            "SELECT * FROM bundles WHERE bundle_id=?", (result["bundle_id"],)
+        ).fetchone()
+        self.assertEqual(brow["member_count"], len(members))
+        self.assertEqual(brow["live_bytes"], len(data))
+        # the bundle holds exactly the one member frame, no orphan bytes
+        self.assertEqual(brow["bytes"], members[0]["length"])
+        self.assertEqual(result["bytes"], members[0]["length"])
+        raw = Path(result["path"]).read_bytes()
+        frame = raw[members[0]["offset"] : members[0]["offset"] + members[0]["length"]]
+        self.assertEqual(self.store.decompress_frame(frame), data)
+        conn.close()
+
+        # packing the same path twice behaves the same
+        again = self.store.pack([str(a), str(a)])
+        self.assertEqual(again["bundle_id"], result["bundle_id"])
+        self.assertEqual(again["members"], 1)
+
 
 class TestUploadFetch(ColdStoreTestBase):
     def test_ensure_folders_idempotent(self):
