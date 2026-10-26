@@ -41,33 +41,33 @@
 #     installCheck beyond `--version`, which works offline.
 
 let
-  version = "1.4.2-R4684.1";
+  version = "1.4.13-R6996.1";
 
   # artifacts.<platform> from the release manifest, keyed by Nix system.
+  # Checksums are the manifest's own sha256 values (converted to SRI),
+  # e.g. x86_linux = 51e97f8de0aa175080e6576cbc055510a95dfe0ededf175c7f6b34fc8e3bf524.
   artifacts = {
     "x86_64-linux" = {
       file = "muse-x86-linux";
-      hash = "sha256-37MJbJH0dnxNmABkYIALe6kGoLGkCCgKkmqNwZoa9k8=";
+      hash = "sha256-Uel/jeCqF1CA5ldsvAVVEKld/g7e3xdcf2s0/I479SQ=";
     };
     "aarch64-linux" = {
       file = "muse-aarch64-linux";
-      hash = "sha256-+ml0wjMHoNXbkTZ1SeQVBaXntV3NZsZy6y3YnBoSWtY=";
+      hash = "sha256-x/J4tfEoYvVyHHNDOXYlaqKoq9QzoS2g5ITTCwjAJP8=";
     };
     "x86_64-darwin" = {
       file = "muse-x86-macos";
-      hash = "sha256-g7IijkDFisN5gJWTbbfteHtW/I/QCBIJaXuMVP1mzoY=";
+      hash = "sha256-WKngBqqwKTTz0g9INUmZu63GYf9/vjqoP9DcSL7VIP0=";
     };
     "aarch64-darwin" = {
       file = "muse-aarch64-macos";
-      hash = "sha256-6Zh+9CZ6ZI3BkxwoNqI/bxb4tEFzaLEmqBC+ziq9MI0=";
+      hash = "sha256-n9QK6cbfuEfj71i2FAXABNDrvxnOsCl76Wb3ULO4SqA=";
     };
   };
 
   inherit (stdenvNoCC.hostPlatform) system;
 
-  artifact =
-    artifacts.${system}
-      or (throw "muse-code: no upstream artifact for system ${system}");
+  artifact = artifacts.${system} or (throw "muse-code: no upstream artifact for system ${system}");
 in
 
 stdenvNoCC.mkDerivation {
