@@ -1456,8 +1456,11 @@ class ColdStore:
         'cold' in a verified bundle, (c) its LastModified is at least
         min_age_days old, (d) it is not among the keep_newest newest
         objects in the bucket. Anything else gets the first failing
-        reason: hash-unknown / not-in-manifest / bundle-unverified /
-        kept-newest / too-young. The scan never deletes.
+        reason, checked in this order: hash-unknown / not-in-manifest /
+        bundle-unverified / too-young / kept-newest. (Age is checked
+        before position: a young object always has one of the newest
+        LastModified stamps, so position-first would mask the age
+        verdict entirely.) The scan never deletes.
         """
         epoch = datetime.min.replace(tzinfo=timezone.utc)
         objects = [
@@ -1490,12 +1493,12 @@ class ColdStore:
                     )
                 elif not verified:
                     entry["verdict"] = "bundle-unverified"
-                elif obj["key"] in protected:
-                    entry["verdict"] = "kept-newest"
                 elif (
                     obj["last_modified"] is None or now - obj["last_modified"] < min_age
                 ):
                     entry["verdict"] = "too-young"
+                elif obj["key"] in protected:
+                    entry["verdict"] = "kept-newest"
                 else:
                     entry["verdict"] = "evictable"
             scan.append(entry)
