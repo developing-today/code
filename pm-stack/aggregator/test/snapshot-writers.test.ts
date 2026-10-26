@@ -128,7 +128,10 @@ describe("recordsFromPools", () => {
       state: "healthy",
       windows: [{ name: "weekly", unit: "other", limit: 100, used: 42, percent: 42, resetsAt: "2026-10-28T14:00:00-05:00" }],
     };
-    const doc = "### Claude\n- read 2026-10-24 earlier\n- **Last checked:** 2026-10-26 refresh\n";
+    // The 2027 renewal date elsewhere in the section is an operational
+    // date, not a read — the Last checked bullet wins.
+    const doc =
+      "### Claude\n- read 2026-10-24 earlier\n- plan renews 2027-10-04\n- **Last checked:** 2026-10-26 refresh\n";
     const recs = recordsFromPools([pool], doc, "stewardship-cycle");
     expect(recs).toEqual([
       {
