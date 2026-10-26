@@ -67,9 +67,7 @@ let
 
   inherit (stdenvNoCC.hostPlatform) system;
 
-  artifact =
-    artifacts.${system}
-      or (throw "muse-code: no upstream artifact for system ${system}");
+  artifact = artifacts.${system} or (throw "muse-code: no upstream artifact for system ${system}");
 in
 
 stdenvNoCC.mkDerivation {

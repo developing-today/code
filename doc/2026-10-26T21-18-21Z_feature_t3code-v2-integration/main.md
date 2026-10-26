@@ -87,14 +87,14 @@ actually working.
 T3 Code 0.1.2 provider minimums vs the fleet builds this PR pins / already
 carries:
 
-| Provider    | T3 0.1.2 minimum | Fleet build |
-| ----------- | ---------------- | ----------- |
-| T3 Code     | —                | 0.1.2 (server + desktop) |
-| Codex       | ≥ 0.159          | 0.160.0 |
-| Claude Code | ≥ 2.1.280        | 2.1.293 |
-| OpenCode    | ≥ 2.0.18 (2.x)   | 2.0.30 (fleet fork) |
-| Muse Code   | (driver `muse`)  | 1.4.13-R6996.1 |
-| Pi          | ≥ 0.80.5         | 0.84.3 |
+| Provider    | T3 0.1.2 minimum | Fleet build                             |
+| ----------- | ---------------- | --------------------------------------- |
+| T3 Code     | —                | 0.1.2 (server + desktop)                |
+| Codex       | ≥ 0.159          | 0.160.0                                 |
+| Claude Code | ≥ 2.1.280        | 2.1.293                                 |
+| OpenCode    | ≥ 2.0.18 (2.x)   | 2.0.30 (fleet fork)                     |
+| Muse Code   | (driver `muse`)  | 1.4.13-R6996.1                          |
+| Pi          | ≥ 0.80.5         | 0.84.3                                  |
 | Grok        | ≥ 1.0.13         | (seeded; enabled only with credentials) |
 
 ## The coexistence line: T3 and OpenChamber
