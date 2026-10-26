@@ -10,11 +10,16 @@
 #      the same check the reaper's own `fetch` performs, but through
 #      the production read path (D1 lookup -> Durable Object -> Drive
 #      Range pull -> zstd decode -> hash verify).
-#   2. The newest d1 backup in Drive is downloaded with get-backup,
-#      loaded into an in-memory SQLite database, and its per-table row
-#      counts must equal the live D1 counts (queried over the same REST
-#      API backup-d1 uses). If D1 is unreachable, the fallback oracle is
-#      the latest local manifest's row counts.
+#   2. The newest d1 backup in Drive is downloaded with get-backup and
+#      checked against the live manifest by scripts/drill_compare.py:
+#      the backup is loaded into in-memory SQLite and must be a
+#      content-equal subset of live D1 (queried over the same REST API
+#      backup-d1 uses) — every backup row present with identical values,
+#      keyed by each table's primary key. A backup is point-in-time
+#      and the manifest is append-mostly, so live rows appended after
+#      the backup (the nightly run's own ledger rows, growth since)
+#      are reported as a count note, never a failure. If D1 is
+#      unreachable, the fallback oracle is the local manifest.
 #
 # Prints "DRILL PASS:" / "DRILL FAIL:" per item and a final verdict;
 # exits non-zero if anything failed.
@@ -94,76 +99,10 @@ if [[ -z ${BACKUP_NAME} ]]; then
   fail "no d1 backup found in Drive"
 elif ! "${COLD_STORE}" get-backup d1 "${BACKUP_NAME}" "${WORK}/backup.sql" >/dev/null; then
   fail "get-backup could not download ${BACKUP_NAME}"
-elif python3 - "${WORK}/backup.sql" "${MANIFEST}" <<'PY'
-import json
-import os
-import sqlite3
-import sys
-import urllib.request
-
-export_path, manifest_path = sys.argv[1], sys.argv[2]
-ACCOUNT = "234b866b99ce2b142d7963d8d139cbfa"
-DATABASE = "15d5f460-835c-4f24-b229-222908a5b30c"
-TABLES_SQL = (
-    "SELECT name, sql FROM sqlite_master WHERE type='table'"
-    " AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'"
-)
-
-
-def d1(sql):
-    req = urllib.request.Request(
-        f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT}"
-        f"/d1/database/{DATABASE}/query",
-        data=json.dumps({"sql": sql}).encode(),
-        method="POST",
-        headers={
-            "Authorization": "Bearer " + os.environ["CLOUDFLARE_API_TOKEN"],
-            "Content-Type": "application/json",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        payload = json.loads(resp.read())
-    if not payload.get("success"):
-        raise RuntimeError("D1 query failed")
-    return payload["result"][0]["results"]
-
-
-try:
-    meta = d1(TABLES_SQL)
-    creates = [(r["name"], r["sql"]) for r in meta]
-    expected = {
-        r["name"]: d1(f'SELECT count(*) AS n FROM "{r["name"]}"')[0]["n"]
-        for r in meta
-    }
-    source = "live D1"
-except Exception:
-    conn = sqlite3.connect(f"file:{manifest_path}?mode=ro", uri=True)
-    creates = conn.execute(TABLES_SQL).fetchall()
-    expected = {
-        name: conn.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
-        for name, _sql in creates
-    }
-    conn.close()
-    source = "local manifest (D1 unreachable)"
-
-mem = sqlite3.connect(":memory:")
-for _name, sql in creates:
-    if sql:
-        mem.execute(sql)
-with open(export_path) as f:
-    mem.executescript(f.read())
-ok = True
-for name, want in sorted(expected.items()):
-    got = mem.execute(f'SELECT count(*) FROM "{name}"').fetchone()[0]
-    print(f"  {name}: backup has {got} row(s), {source} has {want}")
-    if got != want:
-        ok = False
-sys.exit(0 if ok else 1)
-PY
-then
-  pass "d1 backup ${BACKUP_NAME} loads and row counts match"
+elif python3 "${SCRIPT_DIR}/drill_compare.py" "${WORK}/backup.sql" "${MANIFEST}"; then
+  pass "d1 backup ${BACKUP_NAME} loads and is a content-equal subset of the live manifest"
 else
-  fail "d1 backup ${BACKUP_NAME} row counts do not match"
+  fail "d1 backup ${BACKUP_NAME} does not match the live manifest (see rows above)"
 fi
 
 # ------------------------------------------------------------ verdict
