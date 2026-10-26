@@ -2255,7 +2255,10 @@ mod tests {
             );
             for tag in ["<sub>", "</sub>", "<sup>", "</sup>", "<u>", "</u>"] {
                 if original.contains(tag) {
-                    assert!(first.contains(tag), "{tag} survives save of {original:?}: {first}");
+                    assert!(
+                        first.contains(tag),
+                        "{tag} survives save of {original:?}: {first}"
+                    );
                 }
             }
             assert_eq!(first, second, "fixpoint for {original:?}");
