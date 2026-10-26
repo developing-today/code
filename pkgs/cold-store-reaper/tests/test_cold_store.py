@@ -901,6 +901,166 @@ class TestBackupD1(ColdStoreTestBase):
                 self.store.backup_d1()
 
 
+class TestDrillCompare(ColdStoreTestBase):
+    """restore-drill.sh's backup-vs-live check (scripts/drill_compare.py).
+
+    The invariant is subset + content-equal, NOT row-count equality: a
+    backup is point-in-time and the manifest is append-mostly — the
+    nightly run appends its own transfer_ledger rows (its backup-upload
+    row, prune trash rows) after the export was taken — so live rows
+    appended since the backup are expected, never a failure. A backup
+    row missing from live, or present with different content, fails.
+    """
+
+    DRILL_COMPARE = (
+        Path(__file__).resolve().parent.parent / "scripts" / "drill_compare.py"
+    )
+    HASH_A = "a" * 64
+    HASH_B = "b" * 64
+
+    def setUp(self):
+        super().setUp()
+        self.d1 = FakeD1()
+        # check_same_thread=False: the HTTP handler thread runs the queries.
+        self.live = sqlite3.connect(":memory:", check_same_thread=False)
+        self.live.executescript(cold_store.SCHEMA_PATH.read_text())
+        self.live.executemany(
+            "INSERT INTO objects (hash, size, content_type, source_bucket,"
+            " source_key, first_seen, state) VALUES (?, ?, ?, ?, ?, ?, 'cold')",
+            [
+                (
+                    self.HASH_A,
+                    100,
+                    "text/plain",
+                    "supabase-backups",
+                    "k/a",
+                    "2026-10-01T00:00:00",
+                ),
+                (
+                    self.HASH_B,
+                    200,
+                    None,
+                    "supabase-backups",
+                    "k/b",
+                    "2026-10-02T00:00:00",
+                ),
+            ],
+        )
+        self.live.execute(
+            "INSERT INTO bundles (bundle_id, drive_file_id, sha256, drive_md5,"
+            " bytes, member_count, live_bytes, sealed_at, uploaded_at, state)"
+            " VALUES ('b_test', 'drive-1', ?, 'md5x', 300, 2, 300,"
+            " '2026-10-03T00:00:00', '2026-10-03T01:00:00', 'verified')",
+            ("c" * 64,),
+        )
+        self.live.executemany(
+            "INSERT INTO members VALUES ('b_test', ?, ?, ?)",
+            [(self.HASH_A, 0, 50), (self.HASH_B, 50, 60)],
+        )
+        self.live.executemany(
+            "INSERT INTO transfer_ledger (id, ts, direction, bytes, kind, ref)"
+            " VALUES (?, ?, 'upload', ?, 'bundle', 'b_test')",
+            [(i, f"2026-10-{i:02d}T02:00:00", 100 * i) for i in range(1, 10)],
+        )
+        self.live.commit()
+        self.d1.db = self.live
+        self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
+        self.d1_thread = threading.Thread(
+            target=self.d1_server.serve_forever, daemon=True
+        )
+        self.d1_thread.start()
+
+    def tearDown(self):
+        self.d1_server.shutdown()
+        self.d1_server.server_close()
+        super().tearDown()
+
+    def _render_backup_sql(self, mutate=None) -> Path:
+        """Snapshot live into INSERT-only export SQL (the backup-d1
+        file format), optionally mutating the snapshot first."""
+        bak = sqlite3.connect(":memory:")
+        self.live.backup(bak)
+        if mutate:
+            mutate(bak)
+            bak.commit()
+        lines = []
+        for table in cold_store.MANIFEST_TABLES:
+            cols = [r[1] for r in bak.execute(f"PRAGMA table_info({table})")]
+            for row in bak.execute(f'SELECT * FROM "{table}" ORDER BY rowid'):
+                vals = ", ".join(cold_store.ColdStore._sql_literal(v) for v in row)
+                lines.append(
+                    f'INSERT INTO "{table}" ({", ".join(cols)}) VALUES ({vals});'
+                )
+        bak.close()
+        path = Path(self.tmp.name) / "drill-backup.sql"
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def _run_drill(self, backup_sql: Path):
+        env = dict(os.environ)
+        env["CLOUDFLARE_API_TOKEN"] = "fake-cf-token"
+        env["COLD_STORE_D1_BASE"] = (
+            f"http://127.0.0.1:{self.d1_server.server_address[1]}"
+        )
+        return subprocess.run(
+            [
+                sys.executable,
+                str(self.DRILL_COMPARE),
+                str(backup_sql),
+                str(Path(self.home) / "manifest.sqlite"),
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    def test_backup_subset_of_live_passes(self):
+        # The first live drill's scenario: the backup holds ledger rows
+        # 1-5; the nightly run then appended its own rows 6-9 to live.
+        # The backup rows are an exact prefix of live — must PASS.
+
+        def drop_appended(conn):
+            conn.execute("DELETE FROM transfer_ledger WHERE id > 5")
+
+        proc = self._run_drill(self._render_backup_sql(drop_appended))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn(
+            "transfer_ledger: backup has 5 row(s), live D1 has 9", proc.stdout
+        )
+        self.assertIn("4 additional row(s) appended since this backup", proc.stdout)
+        self.assertNotIn("FAIL", proc.stdout)
+
+    def test_exact_equal_passes(self):
+        proc = self._run_drill(self._render_backup_sql())
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("objects: backup has 2 row(s), live D1 has 2", proc.stdout)
+        self.assertNotIn("additional", proc.stdout)
+        self.assertNotIn("FAIL", proc.stdout)
+
+    def test_altered_live_row_fails(self):
+        backup_sql = self._render_backup_sql()
+        self.live.execute(
+            "UPDATE objects SET size = 101 WHERE hash = ?", (self.HASH_A,)
+        )
+        self.live.commit()
+        proc = self._run_drill(backup_sql)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("objects", proc.stdout)
+        self.assertIn(self.HASH_A, proc.stdout)
+        self.assertIn("differs", proc.stdout)
+
+    def test_missing_live_row_fails(self):
+        backup_sql = self._render_backup_sql()
+        self.live.execute("DELETE FROM objects WHERE hash = ?", (self.HASH_B,))
+        self.live.commit()
+        proc = self._run_drill(backup_sql)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("objects", proc.stdout)
+        self.assertIn(self.HASH_B, proc.stdout)
+        self.assertIn("missing", proc.stdout)
+
+
 class TestLedgerTrashMigration(ColdStoreTestBase):
     def test_pre_v3_manifest_gains_trash_direction(self):
         # Rebuild a manifest exactly as a pre-v3 home has it (CHECK
