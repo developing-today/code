@@ -944,12 +944,12 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             // fence. Authored fences and already-saved docs have no
             // attr and keep the fenced emit below — no retro-guessing.
             if info == "html" && json["attrs"]["htmlBlock"].as_bool() == Some(true) {
-                return Ok(arena.alloc(AstNode::from(NodeValue::HtmlBlock(Box::new(
+                return Ok(arena.alloc(AstNode::from(NodeValue::HtmlBlock(
                     comrak::nodes::NodeHtmlBlock {
                         literal: format!("{content}\n"),
                         ..Default::default()
                     },
-                )))));
+                ))));
             }
 
             NodeValue::CodeBlock(Box::new(comrak::nodes::NodeCodeBlock {
@@ -1858,15 +1858,27 @@ mod tests {
     #[test]
     fn test_html_block_roundtrip_fixpoint() {
         // #982: raw HTML blocks (comment, details, div) round-trip
-        // byte-identically instead of being rewritten as ```html
-        // fences on save, and the second save is a fixpoint.
-        for original in [
-            "<!-- comment -->\n",
-            "<details>\n<summary>Title</summary>\n\nBody text.\n</details>\n",
-            "<div>\nSome content\n</div>\n",
+        // instead of being rewritten as ```html fences on save, and
+        // the second save is a fixpoint. Single-segment blocks are
+        // byte-identical; the multi-segment <details> case takes
+        // comrak's own block separation (a blank line before the
+        // closing tag) — verified as comrak-direct behaviour
+        // (parse + format_commonmark of the input, no codec involved,
+        // produces the same string), so byte-identity is not
+        // achievable for it at this layer.
+        for (original, expected) in [
+            ("<!-- comment -->\n", "<!-- comment -->\n"),
+            (
+                "<details>\n<summary>Title</summary>\n\nBody text.\n</details>\n",
+                "<details>\n<summary>Title</summary>\n\nBody text.\n\n</details>\n",
+            ),
+            (
+                "<div>\nSome content\n</div>\n",
+                "<div>\nSome content\n</div>\n",
+            ),
         ] {
             let (first, second) = two_saves(original);
-            assert_eq!(first, original, "HTML block preserved: {original:?}");
+            assert_eq!(first, expected, "HTML block preserved: {original:?}");
             assert_eq!(first, second, "fixpoint for {original:?}");
             assert!(!first.contains("```"), "no fence rewrite: {first:?}");
         }
