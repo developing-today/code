@@ -6,6 +6,7 @@ Run:  python3 -m unittest discover -s pkgs/cold-store-reaper/tests -v
 """
 
 import contextlib
+import gzip
 import hashlib
 import io
 import json
@@ -1905,6 +1906,184 @@ class TestLedgerTrashMigration(ColdStoreTestBase):
         ).fetchone()["n"]
         conn.close()
         self.assertEqual(n, 1)
+
+
+# ---------------------------------------------------------------- fake Turso
+class FakeTurso:
+    """State for the fake Turso Platform API + libsql dump endpoints."""
+
+    PLATFORM_TOKEN = "test-platform-token"
+    ORG = "testorg"
+    DUMP_SQL = (
+        "PRAGMA foreign_keys=OFF;\n"
+        "BEGIN TRANSACTION;\n"
+        "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);\n"
+        "INSERT INTO notes VALUES(1,'hello');\n"
+        "COMMIT;\n"
+    )
+
+    def __init__(self):
+        self.failing_dumps = set()
+        self.databases = [
+            {"Name": "fake-one", "Hostname": "fake-one.example.invalid"},
+            {"Name": "fake-two", "Hostname": "fake-two.example.invalid"},
+        ]
+
+
+def make_turso_handler(fake: FakeTurso):
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):  # silence
+            pass
+
+        def _send(self, code, body, content_type="application/json"):
+            data = body.encode() if isinstance(body, str) else body
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            parts = [p for p in self.path.split("/") if p]
+            if parts == ["v1", "organizations", FakeTurso.ORG, "databases"]:
+                if (
+                    self.headers.get("Authorization")
+                    != f"Bearer {FakeTurso.PLATFORM_TOKEN}"
+                ):
+                    return self._send(401, {"error": "bad platform token"})
+                return self._send(200, json.dumps({"databases": fake.databases}))
+            if len(parts) == 2 and parts[1] == "dump":
+                name = parts[0]
+                if self.headers.get("Authorization") != f"Bearer fake-jwt-{name}":
+                    return self._send(401, {"error": "bad db token"})
+                if name in fake.failing_dumps:
+                    return self._send(500, "dump exploded", "text/plain")
+                return self._send(200, FakeTurso.DUMP_SQL, "text/plain")
+            return self._send(404, {"error": "not found"})
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            if length:
+                self.rfile.read(length)
+            parts = [p for p in self.path.split("/") if p]
+            if (
+                len(parts) == 7
+                and parts[:4] == ["v1", "organizations", FakeTurso.ORG, "databases"]
+                and parts[5:] == ["auth", "tokens"]
+            ):
+                if (
+                    self.headers.get("Authorization")
+                    != f"Bearer {FakeTurso.PLATFORM_TOKEN}"
+                ):
+                    return self._send(401, {"error": "bad platform token"})
+                return self._send(200, json.dumps({"jwt": f"fake-jwt-{parts[4]}"}))
+            return self._send(404, {"error": "not found"})
+
+    return Handler
+
+
+class TestTursoExportScript(unittest.TestCase):
+    """scripts/export-turso.sh against the fake Turso HTTP API and a stub
+    cold-store executable: databases are discovered, tokens minted, dumps
+    downloaded and rebuilt, and each export filed via put-backup."""
+
+    def setUp(self):
+        self.fake = FakeTurso()
+        self.server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_turso_handler(self.fake)
+        )
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.tmp = Path(tempfile.mkdtemp(prefix="cold-store-turso-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.calls_log = self.tmp / "cold-store-calls.log"
+        self.captured = self.tmp / "captured"
+        self.captured.mkdir()
+        self.stub = self.tmp / "cold-store-stub"
+        self.stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "$@" >>"{self.calls_log}"\n'
+            f'cp "$3" "{self.captured}/"\n'
+        )
+        self.stub.chmod(0o755)
+
+    def run_export(self, with_token=True):
+        script = Path(__file__).resolve().parent.parent / "scripts" / "export-turso.sh"
+        env = dict(os.environ)
+        env.pop("TURSO_PLATFORM_API_TOKEN", None)
+        if with_token:
+            env["TURSO_PLATFORM_API_TOKEN"] = FakeTurso.PLATFORM_TOKEN
+        env.update(
+            {
+                "TURSO_ORG": FakeTurso.ORG,
+                "TURSO_API_BASE": self.base,
+                "TURSO_DUMP_BASE": self.base,
+                "COLD_STORE_BIN": str(self.stub),
+                "NO_PROXY": "127.0.0.1,localhost",
+                "no_proxy": "127.0.0.1,localhost",
+            }
+        )
+        return subprocess.run(
+            ["bash", str(script)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+    def test_files_every_database(self):
+        proc = self.run_export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("turso export: all 2 database(s) filed", proc.stdout)
+        calls = self.calls_log.read_text().splitlines()
+        self.assertEqual(len(calls), 2)
+        for name in ("fake-one", "fake-two"):
+            self.assertTrue(
+                any(
+                    c.startswith("put-backup turso ") and f"{name}.db.gz" in c
+                    for c in calls
+                ),
+                calls,
+            )
+            raw = gzip.decompress((self.captured / f"{name}.db.gz").read_bytes())
+            check = self.tmp / f"check-{name}.db"
+            check.write_bytes(raw)
+            con = sqlite3.connect(str(check))
+            try:
+                self.assertEqual(
+                    con.execute("PRAGMA integrity_check").fetchone()[0], "ok"
+                )
+                self.assertEqual(
+                    con.execute("SELECT body FROM notes WHERE id=1").fetchone()[0],
+                    "hello",
+                )
+            finally:
+                con.close()
+        # No token material (platform or per-database) is ever printed.
+        self.assertNotIn(FakeTurso.PLATFORM_TOKEN, proc.stdout + proc.stderr)
+        self.assertNotIn("fake-jwt", proc.stdout + proc.stderr)
+
+    def test_missing_token_skips_cleanly(self):
+        proc = self.run_export(with_token=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(
+            "turso export: skipped (TURSO_PLATFORM_API_TOKEN not set)", proc.stdout
+        )
+        self.assertFalse(self.calls_log.exists())
+
+    def test_one_dump_failure_still_files_the_other(self):
+        self.fake.failing_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("fake-two", proc.stderr)
+        self.assertTrue((self.captured / "fake-one.db.gz").is_file())
+        self.assertFalse((self.captured / "fake-two.db.gz").exists())
 
 
 class TestWorkerDecoder(unittest.TestCase):
