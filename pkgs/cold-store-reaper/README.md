@@ -171,11 +171,25 @@ environment only):
 - `scripts/nightly-backup.sh` — the nightly run: `backup-d1`, then
   `backup-supabase` (only when both R2 credentials are set; a skip
   notice is printed otherwise — never an error), then
-  `prune-backups --apply`, then `sync-manifest`, then `status`. Any
-  failing step aborts the run non-zero. Requires `CLOUDFLARE_API_TOKEN`
-  in the environment (materialize from Bitwarden into the cron env);
+  `scripts/export-turso.sh`, then `prune-backups --apply`, then
+  `sync-manifest`, then `status`. Any failing step aborts the run
+  non-zero. Requires `CLOUDFLARE_API_TOKEN` in the environment
+  (materialize from Bitwarden into the cron env);
   `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` are optional (they gate
-  the Supabase step).
+  the Supabase step), as is `TURSO_PLATFORM_API_TOKEN` (it gates the
+  Turso step).
+- `scripts/export-turso.sh` — the Turso step: discovers every
+  database in the Turso organization through the Platform API (no
+  `turso` CLI needed), mints a per-database auth token, downloads
+  the SQL dump each database's own libsql endpoint serves at
+  `/dump`, rebuilds it into a standalone SQLite file (filed only
+  when `PRAGMA integrity_check` passes), gzips it, and files it
+  with `put-backup turso`. When `TURSO_PLATFORM_API_TOKEN` is
+  unset it prints a one-line skip notice and exits 0 — the nightly
+  run never fails for a missing Turso setup — but a database that
+  fails to export is named in a loud error line and makes the step
+  exit non-zero once the remaining databases have been attempted.
+  Token values are never printed.
 - `scripts/restore-drill.sh` — the quarterly restore drill (design
   section 8): picks 3 pseudo-random cold objects from the local
   manifest, fetches each through the rehydrator Worker and verifies its
