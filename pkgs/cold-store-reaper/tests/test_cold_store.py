@@ -1364,9 +1364,7 @@ class TestS3CurlFallback(S3TestBase):
         def fake_run(argv, **kwargs):
             seen["argv"] = argv
             seen["kwargs"] = kwargs
-            return subprocess.CompletedProcess(
-                argv, 0, stdout=b"payload", stderr=b""
-            )
+            return subprocess.CompletedProcess(argv, 0, stdout=b"payload", stderr=b"")
 
         with mock.patch.object(cold_store.subprocess, "run", fake_run):
             body = self.store._curl_fetch(
