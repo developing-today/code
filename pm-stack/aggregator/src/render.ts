@@ -31,7 +31,9 @@ import {
   type DnsEntry,
   type DnsSection,
   type GhItem,
+  type OrchestrationSection,
   type PaygLine,
+  type ProjectPoolItem,
   type Provenance,
   type QuotaView,
   type RefKey,
@@ -50,6 +52,7 @@ import {
   refUrl,
 } from "./model.ts";
 import { PAGES } from "./pages.ts";
+import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import { type AuthorIdentity } from "./registry.ts";
 
 export function esc(s: unknown): string {
@@ -352,25 +355,46 @@ export function renderBoard(
     const k = key === "to-do" ? "to-do" : key;
     cols.set(k, [...(cols.get(k) ?? []), item]);
   }
-  const order = ["to-do", "in-progress", "in-review", "done"];
+  const order = ["in-flight", "to-do", "in-progress", "in-review", "done"];
   const extra = [...cols.keys()].filter((k) => !order.includes(k));
   const bodies = [...order, ...extra]
     .filter((k) => cols.has(k))
     .map((k) => {
-      const cards = (cols.get(k) ?? [])
+      const colItems = cols.get(k) ?? [];
+      const cards = colItems
         .map((item) => {
           const repo = item.repo ? `<span class="muted">${esc(item.repo)}</span><br>` : "";
-          const src = item.source === "github" ? `<span class="badge open">gh-only</span> ` : "";
           const cmt = counts ? commentBadge(item.id, counts) : "";
+          if (item.source === "orchestrator") {
+            // Synthetic in-flight entry: visibly not a Kaneo card. Its
+            // GitHub refs link directly (no execution strip — the
+            // projector may not know these refs yet).
+            const status = item.orchStatus ? `<span class="badge src">${esc(item.orchStatus)}</span> ` : "";
+            const goal = item.goal ? `<br><span class="muted">goal: ${esc(item.goal)}</span>` : "";
+            const blocked = item.blockedBy?.length
+              ? `<br><strong>Blocked by:</strong> ${item.blockedBy.map(esc).join("; ")}`
+              : "";
+            const refs = item.links.length
+              ? `<div class="strip">${item.links.map((l) => `<a class="badge open" href="${esc(refUrl(l.ref))}">${esc(l.ref)}</a>`).join(" ")}</div>`
+              : "";
+            return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}"><span class="badge implementing">orchestrator · in flight</span> ${esc(item.title)}</a>${cmt}<br>${status}${repo}${goal}${blocked}${refs}</div>`;
+          }
+          const src = item.source === "github" ? `<span class="badge open">gh-only</span> ` : "";
           return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${stripHtml(items, item.links)}</div>`;
         })
         .join("");
-      return `<div class="col"><h2>${esc(k)} (${(cols.get(k) ?? []).length})</h2>${cards}</div>`;
+      // The in-flight lane is dated by the orchestration section that
+      // produced it (stamped on every synthetic entry as updatedAt).
+      const heading =
+        k === "in-flight"
+          ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length})`
+          : `${esc(k)} (${colItems.length})`;
+      return `<div class="col"><h2>${heading}</h2>${cards}</div>`;
     })
     .join("");
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">Curated in-flight set across the four repos. Each card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p><div class="board">${bodies}</div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p><div class="board">${bodies}</div>`,
     provenance,
     "/",
   );
@@ -944,8 +968,18 @@ export function renderToday(
   const momentum = today.momentum.length
     ? today.momentum
         .map((m) => {
-          const done = (m.accomplished ?? []).length
-            ? `<br>Recently accomplished:<ul>${(m.accomplished ?? []).map((a) => `<li>${esc(a)}</li>`).join("")}</ul>`
+          // Defensive: a TodayView built outside derive.ts may still
+          // carry a non-array `accomplished` (e.g. a bare string) —
+          // coerce instead of crashing the whole /today render.
+          const rawAccomplished: unknown = m.accomplished;
+          const accomplished = (Array.isArray(rawAccomplished)
+            ? rawAccomplished
+            : rawAccomplished
+              ? [rawAccomplished]
+              : []
+          ).map((a) => String(a));
+          const done = accomplished.length
+            ? `<br>Recently accomplished:<ul>${accomplished.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>`
             : "";
           const blocked = m.blockedBy ? `<br><strong>Blocked by:</strong> ${esc(m.blockedBy)}` : "";
           const detail = m.detail ? `<br><span class="muted">${esc(m.detail)}</span>` : "";
@@ -1066,4 +1100,60 @@ export function renderDiscuss(
   }</p>
 ${commentThreadHtml(objectRef, comments, opts)}`;
   return layout(title, body, provenance, "", COMMENT_SCRIPT);
+}
+
+// --- Projects page (#910 stage 5: the live GitHub Project pool) ------------
+// New function only (parallel agents own the other render functions).
+// Renders the feed's Project pool; where the Project Status and the
+// derived state (see src/projects.ts derivedProjectState) disagree,
+// BOTH are shown — neither side is silently preferred.
+
+export function renderProjects(
+  pool: ProjectPoolItem[],
+  provenance: Provenance,
+  opts: { area?: string | null; orchestration?: OrchestrationSection | null } = {},
+): string {
+  const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
+  const area = opts.area && areas.includes(opts.area) ? opts.area : null;
+  const shown = area ? pool.filter((p) => p.area === area) : pool;
+  const chips = [
+    `<a href="/projects"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
+    ...areas.map(
+      (a) =>
+        `<a href="/projects?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
+    ),
+  ].join("");
+  if (!pool.length) {
+    return layout(
+      "Projects",
+      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>`,
+      provenance,
+      "/projects",
+    );
+  }
+  const cards = shown
+    .map((p) => {
+      const derived = derivedProjectState(p, opts.orchestration);
+      const clash = projectDisagreement(p, opts.orchestration);
+      const clashBadge = clash
+        ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(clash.project)} · derived: ${esc(clash.derived)}</span>`
+        : "";
+      const statusBadge = p.status
+        ? `<span class="badge ${p.status === "Done" ? "merged" : p.status === "Todo" ? "closed" : "implementing"}">${esc(p.status)}</span>`
+        : `<span class="badge">no status</span>`;
+      const meta = [
+        p.area ? `<span class="badge src">${esc(p.area)}</span>` : "",
+        p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
+        p.kind ? `<span class="badge src">${esc(p.kind)}</span>` : "",
+        `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
+        `<span class="badge src">derived: ${esc(derived)}</span>`,
+      ].join(" ");
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span></div>`;
+    })
+    .join("");
+  const body = `<h1>Projects — GitHub Project pool</h1>
+<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
+<div class="chips">${chips}</div>
+${cards || '<p class="muted">No items in this area.</p>'}`;
+  return layout("Projects", body, provenance, "/projects");
 }

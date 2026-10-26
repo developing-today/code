@@ -37,6 +37,50 @@ export interface GhItem {
   updatedAt: string;
   /** PRs only: the latest review verdict, if any. */
   reviewDecision?: "approved" | "changes_requested" | "review_required" | null;
+  /** Project-pool items only (#910 stage 5): the org Project's fields. */
+  projectStatus?: string | null;
+  projectArea?: string | null;
+  projectHorizon?: string | null;
+  projectKind?: string | null;
+}
+
+/**
+ * One item of the org GitHub Project pool (#910 stage 5): a Project
+ * item plus its linked issue/PR, as read by the fleet-feed collector
+ * via GraphQL Projects v2 and carried in the feed's `projects`
+ * section. This is the live resolution source for GhItems — the
+ * Projects-scope token can read the Project (whose items carry their
+ * linked issue's state) but not arbitrary issues.
+ */
+export interface ProjectPoolItem {
+  /** Project item node id (PVTI_…). */
+  id: string;
+  /** Project item database id, used in the item URL's itemId param. */
+  databaseId?: number;
+  /** URL of the item in the Project (board + item pane). */
+  url: string;
+  /** URL of the Project itself. */
+  projectUrl: string;
+  /** "owner/repo#123" — same canonical key as GhItem.ref. */
+  ref: RefKey;
+  repo: string;
+  number: number;
+  /** URL of the linked issue/PR. */
+  issueUrl: string;
+  title: string;
+  /** Linked issue/PR state (PRs may be "merged"). */
+  state: GhState;
+  contentKind: GhKind;
+  draft?: boolean;
+  labels?: string[];
+  author?: string;
+  updatedAt?: string;
+  /** Project single-select fields; null when unset on the item. */
+  status: string | null;
+  area: string | null;
+  horizon: string | null;
+  /** The Project's "Kind" field (Task | Epic) — not the GhItem kind. */
+  kind: string | null;
 }
 
 export type CommentKind = "issue_comment" | "review" | "review_comment";
@@ -77,7 +121,15 @@ export interface BoardItem {
   title: string;
   /** Repository the item belongs to (its Kaneo project's repo, or the ref's). */
   repo: string;
-  source: "kaneo" | "github";
+  source: "kaneo" | "github" | "orchestrator";
+  /** Orchestrator in-flight entries only: the linedUp task's own status
+   *  ("in-progress" | "queued" | "blocked"); the board status of such an
+   *  entry is the synthetic lane key "in-flight" instead. */
+  orchStatus?: string;
+  /** Orchestrator in-flight entries only: the goal it is lined up under. */
+  goal?: string;
+  /** Orchestrator in-flight entries only: flattened blocked-by labels. */
+  blockedBy?: string[];
   status: BoardStatus;
   priority?: string;
   updatedAt?: string;

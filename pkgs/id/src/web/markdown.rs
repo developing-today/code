@@ -106,6 +106,27 @@ struct Mark {
     attrs: Option<Value>,
 }
 
+/// Canonical mark nesting order, outermost first (#944).
+///
+/// Both conversion directions agree on this order, so a marked text node
+/// has exactly one markdown spelling: the parse direction sorts the marks
+/// it emits into this order (see [`text_node_with_marks`]) and the save
+/// direction sorts incoming marks into this order before wrapping (see
+/// `create_marked_text`). Without the shared order, `**[text](url)` and
+/// `[**text**](url)` converted into each other on every save — the parse
+/// direction appends marks outermost-first (wrapper arms push as they
+/// nest) while the save direction treated the array as innermost-first.
+fn mark_nesting_rank(mark_type: &str) -> u8 {
+    match mark_type {
+        "link" => 0,
+        "strong" => 1,
+        "em" => 2,
+        "strikethrough" => 3,
+        "code" => 4,
+        _ => 5,
+    }
+}
+
 /// Convert a comrak AST node to `ProseMirror` JSON.
 fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
     let data = node.data.borrow();
@@ -497,7 +518,11 @@ fn text_node_with_marks(text: &str, marks: &[Mark]) -> Value {
     });
 
     if !marks.is_empty() {
-        let marks_json: Vec<Value> = marks
+        // #944: emit marks in the canonical nesting order so every
+        // spelling of the same marked text parses to the same PM doc.
+        let mut sorted: Vec<Mark> = marks.to_vec();
+        sorted.sort_by_key(|m| mark_nesting_rank(m.mark_type));
+        let marks_json: Vec<Value> = sorted
             .iter()
             .map(|m| {
                 if let Some(attrs) = &m.attrs {
@@ -1061,12 +1086,12 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
                     if let Some(para_content) = child_json["content"].as_array() {
                         for inline_json in para_content {
                             let inline_node = json_to_ast(arena, inline_json)?;
-                            ast_node.append(inline_node);
+                            append_inline_child(ast_node, inline_node);
                         }
                     }
                 } else {
                     let child = json_to_ast(arena, child_json)?;
-                    ast_node.append(child);
+                    append_inline_child(ast_node, child);
                 }
             }
         }
@@ -1079,7 +1104,7 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     {
         for child_json in content {
             let child = json_to_ast(arena, child_json)?;
-            ast_node.append(child);
+            append_inline_child(ast_node, child);
         }
     }
 
@@ -1113,26 +1138,68 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     Ok(ast_node)
 }
 
+/// Whether two node values are the same mark wrapper, so adjacent
+/// siblings carrying it are really one marked span (#953).
+fn same_mark_wrapper(a: &NodeValue, b: &NodeValue) -> bool {
+    match (a, b) {
+        (NodeValue::Link(x), NodeValue::Link(y)) => x.url == y.url && x.title == y.title,
+        (NodeValue::Strong, NodeValue::Strong)
+        | (NodeValue::Emph, NodeValue::Emph)
+        | (NodeValue::Strikethrough, NodeValue::Strikethrough) => true,
+        _ => false,
+    }
+}
+
+/// Append an inline child, merging it into the previous sibling when
+/// both are the same mark wrapper (#953): `[a `code` b](href)` reaches
+/// the save direction as three text nodes that share the link mark, and
+/// three sibling Link nodes render as three fragmented links. Moving
+/// the new wrapper's children into the previous wrapper (recursively,
+/// so nested wrappers merge too) emits one link containing all three
+/// segments. Non-wrapper children are appended unchanged.
+fn append_inline_child<'a>(parent: &'a AstNode<'a>, child: &'a AstNode<'a>) {
+    if let Some(last) = parent.last_child() {
+        let same = {
+            let last_value = last.data.borrow();
+            let child_value = child.data.borrow();
+            same_mark_wrapper(&last_value.value, &child_value.value)
+        };
+        if same {
+            let grandchildren: Vec<&AstNode<'a>> = child.children().collect();
+            for grandchild in grandchildren {
+                grandchild.detach();
+                append_inline_child(last, grandchild);
+            }
+            return;
+        }
+    }
+    parent.append(child);
+}
+
 /// Create marked text node(s) - handles nested marks.
 fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> &'a AstNode<'a> {
     if marks.is_empty() {
         return arena.alloc(AstNode::from(NodeValue::Text(text.to_owned().into())));
     }
 
-    // Check if code mark is present - it takes precedence and replaces the text node
-    for mark in marks {
-        if mark["type"].as_str() == Some("code") {
-            return arena.alloc(AstNode::from(NodeValue::Code(comrak::nodes::NodeCode {
-                num_backticks: 1,
-                literal: text.to_owned(),
-            })));
-        }
-    }
+    // A code mark replaces the text node itself (code is the innermost
+    // mark, rank 4) but does NOT discard the other marks (#953): the
+    // remaining marks wrap the Code node via the same chain the plain
+    // text path uses, so [`code`](href) keeps its link and **`code`**
+    // keeps its strong.
+    let has_code = marks
+        .iter()
+        .any(|mark| mark["type"].as_str() == Some("code"));
 
-    // Collect wrapper values (innermost first for building)
+    // Collect wrapper values in the canonical nesting order, outermost
+    // first (#944): sort the incoming marks — whose array order depends on
+    // which spelling or editor produced the doc — so the same marked text
+    // always saves to the same markdown.
+    let mut sorted_marks: Vec<&Value> = marks.iter().collect();
+    sorted_marks.sort_by_key(|mark| mark_nesting_rank(mark["type"].as_str().unwrap_or("")));
     let mut wrappers: Vec<NodeValue> = Vec::new();
 
-    for mark in marks {
+    for mark in sorted_marks {
         let mark_type = mark["type"].as_str().unwrap_or("");
         let wrapper_value = match mark_type {
             "em" => NodeValue::Emph,
@@ -1146,21 +1213,31 @@ fn create_marked_text<'a>(arena: &'a Arena<'a>, text: &str, marks: &[Value]) -> 
                     title: title.to_owned(),
                 }))
             }
-            _ => continue, // Skip unknown marks
+            _ => continue, // Skip code (handled below) and unknown marks
         };
         wrappers.push(wrapper_value);
     }
 
-    // Start with text node
-    let text_node = arena.alloc(AstNode::from(NodeValue::Text(text.to_owned().into())));
+    // Start with the innermost node: a Code node when a code mark is
+    // present, otherwise the plain text node.
+    let inner_node = if has_code {
+        arena.alloc(AstNode::from(NodeValue::Code(comrak::nodes::NodeCode {
+            num_backticks: 1,
+            literal: text.to_owned(),
+        })))
+    } else {
+        arena.alloc(AstNode::from(NodeValue::Text(text.to_owned().into())))
+    };
 
     if wrappers.is_empty() {
-        return text_node;
+        return inner_node;
     }
 
-    // Build wrapper chain recursively - innermost mark wraps text, outer marks wrap that
-    // marks array is [innermost, ..., outermost] so we build from index 0
-    build_mark_chain(arena, text_node, &wrappers, 0)
+    // Build wrapper chain recursively - innermost mark wraps the inner
+    // node, outer marks wrap that. `build_mark_chain` consumes its list
+    // innermost first, so reverse the canonical outermost-first list.
+    wrappers.reverse();
+    build_mark_chain(arena, inner_node, &wrappers, 0)
 }
 
 /// Build a chain of mark wrappers around a text node.
@@ -1467,6 +1544,113 @@ mod tests {
 
         assert!(result.contains("**bold**") || result.contains("__bold__"));
         assert!(result.contains("*italic*") || result.contains("_italic_"));
+    }
+
+    /// Two consecutive open->save round-trips of `original`, returning both
+    /// saved spellings (#944 fixpoint assertions).
+    fn two_saves(original: &str) -> (String, String) {
+        let first = prosemirror_to_markdown(&markdown_to_prosemirror(original)).unwrap();
+        let second = prosemirror_to_markdown(&markdown_to_prosemirror(&first)).unwrap();
+        (first, second)
+    }
+
+    #[test]
+    fn test_strong_link_roundtrip_fixpoint() {
+        // Both spellings of a bold link canonicalize to the link-outermost
+        // form and are byte-stable from the first save on (#944).
+        for original in [
+            "**[text](https://example.com)**\n",
+            "[**text**](https://example.com)\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, "[**text**](https://example.com)\n");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+        // The two spellings also parse to the identical PM doc.
+        assert_eq!(
+            markdown_to_prosemirror("**[text](https://example.com)**"),
+            markdown_to_prosemirror("[**text**](https://example.com)")
+        );
+    }
+
+    #[test]
+    fn test_em_link_roundtrip_fixpoint() {
+        for original in [
+            "*[text](https://example.com)*\n",
+            "[*text*](https://example.com)\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, "[*text*](https://example.com)\n");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_strong_link_with_title_roundtrip_fixpoint() {
+        // Href and title survive every round-trip (#944 acceptance).
+        let (first, second) = two_saves("[**text**](https://example.com \"Title\")\n");
+        assert_eq!(first, "[**text**](https://example.com \"Title\")\n");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_strikethrough_link_roundtrip_fixpoint() {
+        for original in [
+            "~~[text](https://example.com)~~\n",
+            "[~~text~~](https://example.com)\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, "[~~text~~](https://example.com)\n");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_bold_italic_roundtrip_fixpoint() {
+        // Control that already round-tripped stably before #944: the
+        // canonical order (strong outside em) must keep it stable.
+        let (first, second) = two_saves("***both***\n");
+        assert_eq!(first, second);
+        assert!(first.contains("***both***"));
+    }
+
+    #[test]
+    fn test_code_link_roundtrip_fixpoint() {
+        // #953: a code mark combined with a link must keep the link on save.
+        let (first, second) = two_saves("[`code`](https://x.test)\n");
+        assert_eq!(first, "[`code`](https://x.test)\n");
+        assert_eq!(first, second, "no fixpoint");
+    }
+
+    #[test]
+    fn test_code_inside_link_text_roundtrip() {
+        // #953: the code segment stays inside the surrounding link instead
+        // of fragmenting it into [a ](href)`code`[ b](href).
+        let (first, second) = two_saves("[a `code` b](https://x.test)\n");
+        assert_eq!(first, "[a `code` b](https://x.test)\n");
+        assert_eq!(first, second, "no fixpoint");
+    }
+
+    #[test]
+    fn test_code_strong_em_strikethrough_roundtrip_fixpoint() {
+        // #953: code combined with strong / em / strikethrough keeps both.
+        for (original, expected) in [
+            ("**`code`**\n", "**`code`**\n"),
+            ("*`code`*\n", "*`code`*\n"),
+            ("~~`code`~~\n", "~~`code`~~\n"),
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, expected, "first save for {original:?}");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
+    fn test_plain_code_roundtrip_unchanged() {
+        // #953 control: plain inline code saves exactly as before.
+        let (first, second) = two_saves("`code`\n");
+        assert_eq!(first, "`code`\n");
+        assert_eq!(first, second);
     }
 
     #[test]

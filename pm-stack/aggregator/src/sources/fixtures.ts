@@ -840,6 +840,9 @@ export function fixtureSource(): Source {
     orchestration: async () => null,
     dns: async () => FIXTURE_DNS,
     registry: async () => FIXTURE_REGISTRY,
+    // Fixtures carry no Project pool: the pool only exists live, from
+    // the collector's GraphQL read (#910 stage 5).
+    projects: async () => [],
     coverage: async (): Promise<SourceCoverage[]> => [
       {
         source: "opencode-sandbox",

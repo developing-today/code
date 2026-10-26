@@ -37,6 +37,28 @@ LAPTOP=user@100.99.113.103
 DEST_DIR="~/pm-stack/aggregator"
 KNOWN_HOSTS="${PUSH_FLEET_FEED_KNOWN_HOSTS:-$PKG/scripts/laptop_known_hosts}"
 
+# The collector itself needs egress under the systemd unit's minimal
+# env: Bitwarden (the GitHub Project token for the projects section)
+# and api.github.com (the Project pool GraphQL read). Reuse the same
+# proxy credential the push below uses, exported as env only — never
+# argv (the #948 rule the guard enforces). NO_PROXY keeps the
+# collector's loopback/tailnet reads (sandbox OpenCode server, laptop)
+# off the proxy.
+if [ -z "${HTTPS_PROXY:-}" ] && [ -f "$HOME/tools/secrets.d/mcpx-daemon.env" ]; then
+  _proxy_url="$(python3 -c 'import os, re
+try:
+    t = open(os.path.expanduser("~/tools/secrets.d/mcpx-daemon.env")).read()
+except OSError:
+    t = ""
+m = re.search(r"(https?://[^\s\"\x27]+@[^\s\"\x27]+)", t)
+print(m.group(1) if m else "")' 2>/dev/null || true)"
+  if [ -n "$_proxy_url" ]; then
+    export HTTPS_PROXY="$_proxy_url" https_proxy="$_proxy_url"
+  fi
+  unset _proxy_url
+fi
+export NO_PROXY="${NO_PROXY:-127.0.0.1,localhost,100.99.113.103}" no_proxy="${no_proxy:-127.0.0.1,localhost,100.99.113.103}"
+
 bun run scripts/collect-fleet-feed.ts --out "$FEED"
 
 exec python3 - "$FEED" "$LAPTOP" "$DEST_DIR" "$KNOWN_HOSTS" <<'PYEOF'

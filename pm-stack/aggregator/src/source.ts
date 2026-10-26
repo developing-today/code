@@ -7,6 +7,7 @@ import type {
   DnsSection,
   GhItem,
   OrchestrationSection,
+  ProjectPoolItem,
   Provenance,
   QuotaView,
   RefKey,
@@ -39,6 +40,8 @@ export interface Source {
   dns(): Promise<DnsSection | null>;
   /** The identity registry (#906 §3): durable session records, oldest sources merged. */
   registry(): Promise<SessionRecord[]>;
+  /** The GitHub Project pool (#910 stage 5) from the fleet feed; empty when not collected. */
+  projects(): Promise<ProjectPoolItem[]>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;

@@ -584,6 +584,17 @@ export interface TodayView {
 
 const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, normal: 2, medium: 2, low: 3 };
 
+/**
+ * The orchestrator sometimes publishes `progressedSinceLastRun` as a
+ * single string rather than a list (its declared shape). Normalize at
+ * this boundary so every downstream consumer can trust `string[]`.
+ */
+export function asStringList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map((x) => String(x));
+  if (typeof v === "string" && v) return [v];
+  return [];
+}
+
 /** Map the #899 section's goal measurements into the today view. */
 export function todayFromSection(section: OrchestrationSection): TodayView {
   const blockedText = (deps?: { task: string; status: string; workerLabel?: string }[]): string | undefined =>
@@ -617,7 +628,7 @@ export function todayFromSection(section: OrchestrationSection): TodayView {
     return {
       project: g.goal,
       state: g.momentum === "moving" ? "moving" : g.momentum === "blocked" ? "blocked" : "stalled",
-      accomplished: g.progressedSinceLastRun,
+      accomplished: asStringList(g.progressedSinceLastRun),
       blockedBy: blockers.join("; ") || undefined,
       detail: [g.summary, ...g.gaps].filter(Boolean).join(" "),
     };

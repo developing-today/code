@@ -11,12 +11,17 @@
 #                                     only when the R2 credentials below
 #                                     are set; skipped (not an error)
 #                                     otherwise
-#   3. cold-store prune-backups --apply
+#   3. scripts/export-turso.sh        file a portable SQLite export of
+#                                     every Turso database in
+#                                     db-backups/turso/ — only when the
+#                                     Turso platform token below is set;
+#                                     skipped (not an error) otherwise
+#   4. cold-store prune-backups --apply
 #                                     enforce 30 daily / 12 weekly /
 #                                     12 monthly retention across all DBs
-#   4. cold-store sync-manifest       push the local manifest (including
+#   5. cold-store sync-manifest       push the local manifest (including
 #                                     tonight's ledger rows) to D1
-#   5. cold-store status              one-screen summary (head)
+#   6. cold-store status              one-screen summary (head)
 #
 # Environment — the operator/cron supplies these; the script itself
 # stores nothing and echoes no secret values:
@@ -30,6 +35,12 @@
 #                         cloudflare.r2-backups-secret-access-key).
 #                         When either is unset, step 2 is skipped with
 #                         a one-line notice instead of failing the run.
+#   TURSO_PLATFORM_API_TOKEN
+#                         optional. Turso Platform API token (Bitwarden:
+#                         turso.platform-api-token-muse-cli). When unset,
+#                         step 3 is skipped with a one-line notice
+#                         instead of failing the run. See
+#                         scripts/export-turso.sh for its own env.
 #   COLD_STORE_HOME       optional; the reaper home (default
 #                         ~/.config/cold-store). That directory's
 #                         credentials.json holds the Drive grant.
@@ -48,6 +59,7 @@ if [[ -n ${R2_ACCESS_KEY_ID:-} && -n ${R2_SECRET_ACCESS_KEY:-} ]]; then
 else
   echo "nightly-backup: R2 credentials not set — skipping backup-supabase"
 fi
+"${SCRIPT_DIR}/export-turso.sh"
 "${COLD_STORE}" prune-backups --apply
 "${COLD_STORE}" sync-manifest
 "${COLD_STORE}" status | head -n 20

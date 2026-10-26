@@ -49,7 +49,8 @@ them into a local file only on the machine that runs the reaper:
 ```
 $COLD_STORE_HOME/            # default: ~/.config/cold-store/
   credentials.json           # mode 600: {client_id, client_secret, refresh_token}
-  state.json                 # folder IDs + cached access token (no secrets)
+  state.json                 # mode 600: folder IDs + D1 pointers — no tokens
+                             # (access tokens are kept in memory only)
   manifest.sqlite            # local manifest (schema.sql)
   bundles/                   # locally packed .csb bundles awaiting upload
 ```
@@ -75,7 +76,7 @@ cold-store pack backup-2026-10-25.sql photos.tar      # -> bundles/b_<...>.csb, 
 cold-store upload b_<...>                              # resumable upload + verify + ledger
 cold-store fetch <object-sha256> ./restored.sql       # range-pull one object back
 cold-store status                                     # counts, cold bytes, last-24h transfers,
-                                                      # 700 GB/day hard-stop + 3 TiB budget checks
+                                                      # 700 GB/day hard stop + 3 TiB budget (see below)
 cold-store sync-manifest                              # push the local manifest into D1
 cold-store sync-manifest --dry-run                    # ... or just print the statement counts
 cold-store backup-d1                                  # export the D1 manifest DB into db-backups/d1/
@@ -86,6 +87,25 @@ cold-store prune-backups                              # retention plan (dry-run)
 cold-store prune-backups --apply                      # ... and trash the excess
 cold-store get-backup d1 <name> ./restored.sql        # download one backup in full
 ```
+
+### Upload guardrails (enforced, not just reported)
+
+`upload` and `put-backup` refuse **before any bytes are sent** when the
+transfer would cross either limit in the manifest's `meta` table, using
+the same ledger/meta accounting as `status` (one shared implementation,
+so the readout and the refusal can never disagree):
+
+- **Daily upload hard stop** — rolling-24h `transfer_ledger` upload
+  bytes + this transfer > `daily_upload_hard_stop_bytes`
+  (700,000,000,000 B = 700 GB, sized to stay under Google Drive's own
+  ~750 GB/user/day upload ceiling).
+- **Project budget** — verified cold bytes in Drive (sum of verified
+  bundles) + this transfer > `project_budget_bytes`
+  (3,298,534,883,328 B = 3 TiB).
+
+A refusal is a `ColdStoreError` naming the limit, the current usage,
+and the refused transfer size; nothing is uploaded and the bundle is
+not marked `uploading`.
 
 ## DB backups (design section 5)
 
@@ -151,11 +171,25 @@ environment only):
 - `scripts/nightly-backup.sh` — the nightly run: `backup-d1`, then
   `backup-supabase` (only when both R2 credentials are set; a skip
   notice is printed otherwise — never an error), then
-  `prune-backups --apply`, then `sync-manifest`, then `status`. Any
-  failing step aborts the run non-zero. Requires `CLOUDFLARE_API_TOKEN`
-  in the environment (materialize from Bitwarden into the cron env);
+  `scripts/export-turso.sh`, then `prune-backups --apply`, then
+  `sync-manifest`, then `status`. Any failing step aborts the run
+  non-zero. Requires `CLOUDFLARE_API_TOKEN` in the environment
+  (materialize from Bitwarden into the cron env);
   `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` are optional (they gate
-  the Supabase step).
+  the Supabase step), as is `TURSO_PLATFORM_API_TOKEN` (it gates the
+  Turso step).
+- `scripts/export-turso.sh` — the Turso step: discovers every
+  database in the Turso organization through the Platform API (no
+  `turso` CLI needed), mints a per-database auth token, downloads
+  the SQL dump each database's own libsql endpoint serves at
+  `/dump`, rebuilds it into a standalone SQLite file (filed only
+  when `PRAGMA integrity_check` passes), gzips it, and files it
+  with `put-backup turso`. When `TURSO_PLATFORM_API_TOKEN` is
+  unset it prints a one-line skip notice and exits 0 — the nightly
+  run never fails for a missing Turso setup — but a database that
+  fails to export is named in a loud error line and makes the step
+  exit non-zero once the remaining databases have been attempted.
+  Token values are never printed.
 - `scripts/restore-drill.sh` — the quarterly restore drill (design
   section 8): picks 3 pseudo-random cold objects from the local
   manifest, fetches each through the rehydrator Worker and verifies its
