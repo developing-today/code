@@ -603,7 +603,6 @@ function createCursorDecorations(
     // Cluster overlapping groups - only merge those that actually overlap
     const clusters = clusterOverlappingGroups(positionGroups, getLeftCoord);
 
-
     clusters.forEach((cluster) => {
       // Check if own cursor is in this cluster
       const clusterHasOwnCursor = cluster.groups.some((g) => g.cursors.some((c) => c.isOwnCursor));
