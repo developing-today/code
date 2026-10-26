@@ -684,12 +684,21 @@ class ColdStore:
         bundle_hash = hashlib.sha256()
         members = []
         offset = 0
+        seen_hashes = set()
         with open(tmp_bundle, "wb") as bundle_out:
             for name in files:
                 src = Path(name)
                 if not src.is_file():
                     raise ColdStoreError(f"not a file: {src}")
                 obj_hash = sha256_file(src)
+                # Members are keyed (bundle_id, object_hash): duplicate
+                # content in one pack call would write a second frame no
+                # member row can ever point at (INSERT OR IGNORE drops
+                # it) while member_count/live_bytes counted it (#963).
+                # Store each distinct object exactly once.
+                if obj_hash in seen_hashes:
+                    continue
+                seen_hashes.add(obj_hash)
                 frame_path = self.bundles_dir / "frame.tmp"
                 self._compress_to_frame(src, frame_path)
                 frame_len = frame_path.stat().st_size
