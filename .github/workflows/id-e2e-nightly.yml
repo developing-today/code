@@ -49,5 +49,29 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # Disk telemetry + reclaim (#257, Option A): the full check
+      # intermittently dies with "No space left on device" while the big
+      # derivations build. Log free space before and after the reclaim and
+      # before and after the check so a recurrence is diagnosable at a
+      # glance, and drop preinstalled toolchains/SDKs this job never uses
+      # (the standard free-disk-space recipe, ~20-30 GB on ubuntu-latest).
+      - name: Disk space before reclaim
+        run: df -h
+
+      - name: Reclaim disk space (unused preinstalled toolchains)
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+
+      - name: Disk space after reclaim (before check)
+        run: df -h
+
       - name: Run full nix flake check
         run: nix flake check ./pkgs/id/ -L --keep-going
+
+      - name: Disk space after check
+        if: always()
+        run: df -h
