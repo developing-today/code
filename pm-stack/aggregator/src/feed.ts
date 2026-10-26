@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import type {
   ChargeRow,
   DnsSection,
+  GoalMeasurement,
   JulesSummary,
   OrchestrationSection,
   PaygLine,
@@ -60,6 +61,28 @@ export interface FleetFeed {
  * collector (which embeds the orchestrator's file fail-soft) and the
  * live source (which serves it). Absent or malformed = "not measured".
  */
+/**
+ * Per-goal gate (#949): `todayFromSection` dereferences `linedUp`,
+ * `stalled`, and `gaps` on every goal, so a goal missing any of them must
+ * fail validation here — this validator is the only gate on every path,
+ * and a rejected section falls back to the derived view by design.
+ * `progressedSinceLastRun` is deliberately string-or-array: `asStringList`
+ * in derive.ts normalizes the single-string form the orchestrator
+ * sometimes publishes, so requiring strictly an array would reject real
+ * sections.
+ */
+function isGoalMeasurement(v: unknown): boolean {
+  if (typeof v !== "object" || v === null) return false;
+  const g = v as Partial<GoalMeasurement>;
+  return (
+    Array.isArray(g.linedUp) &&
+    Array.isArray(g.stalled) &&
+    Array.isArray(g.gaps) &&
+    (typeof g.progressedSinceLastRun === "string" ||
+      Array.isArray(g.progressedSinceLastRun))
+  );
+}
+
 export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Partial<OrchestrationSection>;
@@ -67,12 +90,14 @@ export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
     s.version === 1 &&
     typeof s.generatedAt === "string" &&
     typeof s.runId === "string" &&
+    typeof s.provenance === "string" &&
     typeof s.tiers === "object" &&
     s.tiers !== null &&
     Array.isArray(s.tiers.needsDrew) &&
     Array.isArray(s.tiers.needsOrchestrator) &&
     Array.isArray(s.dependencies) &&
     Array.isArray(s.goals) &&
+    s.goals.every(isGoalMeasurement) &&
     Array.isArray(s.actions)
   );
 }
