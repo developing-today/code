@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -17,6 +18,7 @@ import tempfile
 import threading
 import unittest
 import urllib.parse
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -33,8 +35,9 @@ class FakeDrive:
     def __init__(self):
         self.folders = []  # {id, name, parents}
         self.files = {}  # id -> bytes
-        self.file_meta = {}  # id -> {name, parents, createdTime}
+        self.file_meta = {}  # id -> {name, parents, createdTime, trashed}
         self.sessions = {}  # sid -> {meta, chunks: {start: bytes}, total}
+        self.trashed_calls = []  # [{id, body}] from files.update PATCHes
         self.counter = 0
         self.clock = 0
 
@@ -123,18 +126,25 @@ def make_handler(fake: FakeDrive):
                     if parent_m and parent_m.group(1) not in folder["parents"]:
                         continue
                     out.append({"id": folder["id"], "name": folder["name"]})
-                if parent_m and not name_m:
-                    # parent-only listing (list-backups): include real files
+                if parent_m:
+                    # file listing under a parent (list-backups with no
+                    # name filter, get-backup with one); trashed files
+                    # are invisible, exactly as `trashed = false` asks.
                     for fid, meta in fake.file_meta.items():
-                        if parent_m.group(1) in meta.get("parents", []):
-                            out.append(
-                                {
-                                    "id": fid,
-                                    "name": meta["name"],
-                                    "size": str(len(fake.files[fid])),
-                                    "createdTime": meta.get("createdTime", ""),
-                                }
-                            )
+                        if meta.get("trashed"):
+                            continue
+                        if parent_m.group(1) not in meta.get("parents", []):
+                            continue
+                        if name_m and meta["name"] != name_m.group(1):
+                            continue
+                        out.append(
+                            {
+                                "id": fid,
+                                "name": meta["name"],
+                                "size": str(len(fake.files[fid])),
+                                "createdTime": meta.get("createdTime", ""),
+                            }
+                        )
                 self._send(200, {"files": out})
                 return
             m = re.fullmatch(r"/drive/v3/files/([^/]+)", parsed.path)
@@ -145,6 +155,10 @@ def make_handler(fake: FakeDrive):
                     data = fake.files[fid]
                     range_hdr = self.headers.get("Range", "")
                     rm = re.fullmatch(r"bytes=(\d+)-(\d+)", range_hdr)
+                    if rm is None:
+                        # full download (get-backup): no Range header
+                        self._send(200, data, ctype="application/octet-stream")
+                        return
                     start, end = int(rm.group(1)), int(rm.group(2))
                     chunk = data[start : end + 1]
                     self._send(
@@ -194,6 +208,20 @@ def make_handler(fake: FakeDrive):
             else:
                 self._send(308, b"", headers={"Range": f"bytes=0-{received - 1}"})
 
+        # ------------------------------------------------- files.update
+        def do_PATCH(self):
+            parsed = urllib.parse.urlparse(self.path)
+            m = re.fullmatch(r"/drive/v3/files/([^/]+)", parsed.path)
+            if not m:
+                self._send(404, {"error": "not found"})
+                return
+            body = json.loads(self._body() or b"{}")
+            fid = m.group(1)
+            fake.trashed_calls.append({"id": fid, "body": body})
+            if fid in fake.file_meta and body.get("trashed") is True:
+                fake.file_meta[fid]["trashed"] = True
+            self._send(200, {"id": fid, "trashed": bool(body.get("trashed"))})
+
     return Handler
 
 
@@ -229,6 +257,20 @@ class ColdStoreTestBase(unittest.TestCase):
         p = Path(self.tmp.name) / name
         p.write_bytes(data)
         return p
+
+    def seed_drive_file(
+        self, name, parent_id, data=b"x", trashed=False, created="2026-01-01T00:00:00.000Z"
+    ):
+        """Place a file directly in the fake Drive (no upload round-trip)."""
+        fid = self.fake.next_id("file")
+        self.fake.files[fid] = data
+        self.fake.file_meta[fid] = {
+            "name": name,
+            "parents": [parent_id],
+            "createdTime": created,
+            "trashed": trashed,
+        }
+        return fid
 
 
 class TestAuth(ColdStoreTestBase):
@@ -375,11 +417,17 @@ class TestStatus(ColdStoreTestBase):
 
 # ------------------------------------------------------------------ fake D1
 class FakeD1:
-    """Captures D1 REST query calls; can be told to fail."""
+    """Captures D1 REST query calls; can be told to fail.
+
+    If `db` (a sqlite3 connection) is set, SELECT statements are executed
+    against it for real and their rows returned — enough of D1 for the
+    backup-d1 export path. Non-SELECT statements are only recorded.
+    """
 
     def __init__(self):
         self.requests = []  # {path, authorization, sql, params}
         self.fail = False
+        self.db = None
 
 
 def make_d1_handler(fake: FakeD1):
@@ -412,6 +460,21 @@ def make_d1_handler(fake: FakeD1):
             if fake.fail:
                 self._send(
                     500, {"success": False, "errors": [{"message": "fake failure"}]}
+                )
+                return
+            sql = payload.get("sql", "")
+            if fake.db is not None and sql.lstrip().upper().startswith("SELECT"):
+                cur = fake.db.execute(sql)
+                cols = [d[0] for d in cur.description]
+                rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                self._send(
+                    200,
+                    {
+                        "success": True,
+                        "errors": [],
+                        "messages": [],
+                        "result": [{"success": True, "results": rows}],
+                    },
                 )
                 return
             self._send(
@@ -612,6 +675,261 @@ class TestSyncManifest(ColdStoreTestBase):
         with mock.patch.dict(os.environ, self._env_without_token(), clear=True):
             with self.assertRaises(cold_store.ColdStoreError):
                 self.store.sync_manifest()
+
+
+class TestPruneBackups(ColdStoreTestBase):
+    """Retention scenario, hand-computed (all dates 2026):
+
+    35 consecutive days of d1 backups, one per day at 02:00, ending
+    Mar 31, plus same-day dupes on Mar 31 at 01:00 and 03:00 (37 files).
+    Feb 25..Mar 1 all fall in ISO week 9; months present are Feb + Mar.
+
+    - daily   (newest 30 distinct days): Mar 2..Mar 31 newest-per-day
+    - weekly  (newest 12 distinct ISO weeks; only 6 present): newest of
+      W9..W14 = Mar 1, Mar 8, Mar 15, Mar 22, Mar 29, Mar 31 03:00
+    - monthly (newest 12 distinct months; only 2 present): Feb 28,
+      Mar 31 03:00
+    Union keep = 32. Prune = Feb 25, Feb 26, Feb 27, Mar 31 01:00 and
+    Mar 31 02:00 (the day's newest, 03:00, is the keeper).
+    """
+
+    EXPECTED_PRUNE = {
+        "d1-20260225T020000Z-export.sql",
+        "d1-20260226T020000Z-export.sql",
+        "d1-20260227T020000Z-export.sql",
+        "d1-20260331T010000Z-export.sql",
+        "d1-20260331T020000Z-export.sql",
+    }
+
+    def setUp(self):
+        super().setUp()
+        folders = self.store.ensure_folders()
+        self.d1_folder = folders["db-backups/d1"]
+
+    def _seed_series(self):
+        end = date(2026, 3, 31)
+        ids = {}
+        for i in range(35):
+            d = end - timedelta(days=i)
+            name = f"d1-{d:%Y%m%d}T020000Z-export.sql"
+            ids[name] = self.seed_drive_file(name, self.d1_folder, data=b"dump")
+        for hh in ("010000", "030000"):
+            name = f"d1-20260331T{hh}Z-export.sql"
+            ids[name] = self.seed_drive_file(name, self.d1_folder, data=b"dump")
+        return ids
+
+    def test_prune_dry_run_plan(self):
+        ids = self._seed_series()
+        self.seed_drive_file("d1-random.sql", self.d1_folder, data=b"?")
+        self.seed_drive_file("notes.txt", self.d1_folder, data=b"?")
+        trashed_id = self.seed_drive_file(
+            "d1-20200101T020000Z-export.sql", self.d1_folder, data=b"?", trashed=True
+        )
+        plans = self.store.prune_backups("d1")
+        self.assertEqual(len(plans), 1)
+        plan = plans[0]
+        self.assertFalse(plan["applied"])
+        keep = {f["name"]: f for f in plan["keep"]}
+        prune = {f["name"] for f in plan["prune"]}
+        self.assertEqual(prune, self.EXPECTED_PRUNE)
+        self.assertEqual(len(keep), 32)
+        self.assertEqual(keep["d1-20260301T020000Z-export.sql"]["reasons"], ["weekly"])
+        self.assertEqual(keep["d1-20260228T020000Z-export.sql"]["reasons"], ["monthly"])
+        self.assertEqual(
+            keep["d1-20260331T030000Z-export.sql"]["reasons"],
+            ["daily", "monthly", "weekly"],
+        )
+        self.assertEqual(keep["d1-20260302T020000Z-export.sql"]["reasons"], ["daily"])
+        skipped = {f["name"] for f in plan["unparseable"]}
+        self.assertEqual(skipped, {"d1-random.sql", "notes.txt"})
+        # the already-trashed file is invisible to the plan entirely
+        all_ids = {f["id"] for f in plan["keep"] + plan["prune"] + plan["unparseable"]}
+        self.assertNotIn(trashed_id, all_ids)
+        self.assertEqual(len(all_ids), 39)
+        # dry-run touches nothing: no PATCH, no ledger rows
+        self.assertEqual(self.fake.trashed_calls, [])
+        conn = self.store.db()
+        n = conn.execute(
+            "SELECT count(*) n FROM transfer_ledger WHERE kind='backup-prune'"
+        ).fetchone()["n"]
+        conn.close()
+        self.assertEqual(n, 0)
+        self.assertEqual(set(ids) - set(keep) - prune, set())
+
+    def test_prune_apply_trashes_and_ledgers(self):
+        ids = self._seed_series()
+        plans = self.store.prune_backups("d1", apply=True)
+        plan = plans[0]
+        self.assertTrue(plan["applied"])
+        prune_ids = {ids[name] for name in self.EXPECTED_PRUNE}
+        self.assertEqual({c["id"] for c in self.fake.trashed_calls}, prune_ids)
+        for call in self.fake.trashed_calls:
+            self.assertEqual(call["body"], {"trashed": True})
+        for fid in prune_ids:
+            self.assertTrue(self.fake.file_meta[fid]["trashed"])
+        conn = self.store.db()
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='backup-prune'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(len(rows), len(self.EXPECTED_PRUNE))
+        self.assertEqual({r["ref"] for r in rows}, self.EXPECTED_PRUNE)
+        for r in rows:
+            self.assertEqual(r["direction"], "trash")
+        # after applying, the folder's visible set is exactly the keepers
+        self.assertEqual(len(self.store.list_backups("d1")), 32)
+
+    def test_prune_long_history_oldest_pruned(self):
+        end = date(2026, 3, 31)
+        for i in range(400):
+            d = end - timedelta(days=i)
+            self.seed_drive_file(
+                f"d1-{d:%Y%m%d}T020000Z-export.sql", self.d1_folder, data=b"x"
+            )
+        plan = self.store.prune_backups("d1")[0]
+        keep = {f["name"] for f in plan["keep"]}
+        prune = {f["name"] for f in plan["prune"]}
+        self.assertEqual(len(keep) + len(prune), 400)
+        oldest = f"d1-{end - timedelta(days=399):%Y%m%d}T020000Z-export.sql"
+        self.assertIn(oldest, prune)
+        for i in range(30):  # newest-per-day of the last 30 days survives
+            d = end - timedelta(days=i)
+            self.assertIn(f"d1-{d:%Y%m%d}T020000Z-export.sql", keep)
+        # the union can never exceed 30 daily + 12 weekly + 12 monthly
+        self.assertLessEqual(len(keep), 30 + 12 + 12)
+
+    def test_prune_all_dbs_and_unknown_db(self):
+        plans = self.store.prune_backups()
+        self.assertEqual([p["db"] for p in plans], list(cold_store.BACKUP_DBS))
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.prune_backups("oracle")
+
+
+class TestGetBackup(ColdStoreTestBase):
+    def test_get_backup_roundtrip(self):
+        data = b"-- turso dump\n" + bytes(range(256)) * 4
+        src = self.write_src("libsql.sql", data)
+        put = self.store.put_backup("turso", str(src))
+        out = Path(self.tmp.name) / "restored.sql"
+        result = self.store.get_backup("turso", put["name"], str(out))
+        self.assertEqual(out.read_bytes(), data)
+        self.assertEqual(result["bytes"], len(data))
+        self.assertEqual(result["sha256"], hashlib.sha256(data).hexdigest())
+        self.assertEqual(result["drive_file_id"], put["drive_file_id"])
+
+    def test_get_backup_missing_and_unknown_db(self):
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.get_backup(
+                "d1", "d1-20260101T000000Z-nope.sql", str(Path(self.tmp.name) / "x")
+            )
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.get_backup("oracle", "x", str(Path(self.tmp.name) / "x"))
+
+
+class TestBackupD1(ColdStoreTestBase):
+    def setUp(self):
+        super().setUp()
+        self.d1 = FakeD1()
+        # check_same_thread=False: the HTTP handler thread runs the queries.
+        self.d1.db = sqlite3.connect(":memory:", check_same_thread=False)
+        self.d1.db.executescript(
+            """
+            CREATE TABLE objects (hash TEXT PRIMARY KEY, size INTEGER, note TEXT);
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO objects VALUES ('aaa', 10, 'plain');
+            INSERT INTO objects VALUES ('bbb', 20, 'o''brien');
+            INSERT INTO objects VALUES ('ccc', 30, NULL);
+            INSERT INTO meta VALUES ('schema_version', '1');
+            INSERT INTO meta VALUES ('project_budget_bytes', '3298534883328');
+            """
+        )
+        self.d1_server = ThreadingHTTPServer(("127.0.0.1", 0), make_d1_handler(self.d1))
+        self.d1_thread = threading.Thread(
+            target=self.d1_server.serve_forever, daemon=True
+        )
+        self.d1_thread.start()
+        self.store.d1_base = f"http://127.0.0.1:{self.d1_server.server_address[1]}"
+
+    def tearDown(self):
+        self.d1_server.shutdown()
+        self.d1_server.server_close()
+        super().tearDown()
+
+    def test_backup_d1_export_loads_back_identically(self):
+        with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}):
+            result = self.store.backup_d1()
+        self.assertRegex(
+            result["name"], r"^d1-\d{8}T\d{6}Z-cold-store-manifest-export\.sql$"
+        )
+        self.assertEqual(result["tables"], ["meta", "objects"])
+        self.assertEqual(result["rows"], 5)
+        folders = self.store.ensure_folders()
+        meta = self.fake.file_meta[result["drive_file_id"]]
+        self.assertEqual(meta["parents"], [folders["db-backups/d1"]])
+        sql_text = self.fake.files[result["drive_file_id"]].decode()
+        self.assertTrue(
+            sql_text.startswith("-- cold-store-manifest D1 export (via REST query API)")
+        )
+        self.assertIn("-- tables: meta, objects", sql_text)
+        self.assertIn("'o''brien'", sql_text)  # quote escaping survived
+        fresh = sqlite3.connect(":memory:")
+        fresh.executescript(
+            "CREATE TABLE objects (hash TEXT PRIMARY KEY, size INTEGER, note TEXT);"
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        )
+        fresh.executescript(sql_text)
+        self.assertEqual(
+            fresh.execute("SELECT hash, size, note FROM objects ORDER BY hash").fetchall(),
+            [("aaa", 10, "plain"), ("bbb", 20, "o'brien"), ("ccc", 30, None)],
+        )
+        self.assertEqual(
+            fresh.execute("SELECT key, value FROM meta ORDER BY key").fetchall(),
+            [("project_budget_bytes", "3298534883328"), ("schema_version", "1")],
+        )
+
+    def test_backup_d1_requires_token(self):
+        env = {k: v for k, v in os.environ.items() if k != "CLOUDFLARE_API_TOKEN"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(cold_store.ColdStoreError):
+                self.store.backup_d1()
+
+
+class TestLedgerTrashMigration(ColdStoreTestBase):
+    def test_pre_v3_manifest_gains_trash_direction(self):
+        # Rebuild a manifest exactly as a pre-v3 home has it (CHECK
+        # without 'trash'), with one live row, then open it via a store:
+        # the migration must preserve the row and admit 'trash' rows.
+        legacy_home = Path(self.tmp.name) / "legacy-home"
+        legacy_home.mkdir()
+        legacy_schema = cold_store.SCHEMA_PATH.read_text().replace(
+            "('upload','download','trash')", "('upload','download')"
+        )
+        self.assertIn("IN ('upload','download')", legacy_schema)
+        conn = sqlite3.connect(legacy_home / "manifest.sqlite")
+        conn.executescript(legacy_schema)
+        conn.execute(
+            "INSERT INTO transfer_ledger (direction, bytes, kind, ref)"
+            " VALUES ('upload', 42, 'bundle', 'b_legacy')"
+        )
+        conn.commit()
+        conn.close()
+        base = self.store.drive_base.rsplit("/drive/v3", 1)[0]
+        legacy = ColdStore(
+            legacy_home,
+            token_url=base + "/token",
+            drive_base=self.store.drive_base,
+            upload_base=base,
+        )
+        conn = legacy.db()
+        rows = conn.execute("SELECT direction, ref FROM transfer_ledger").fetchall()
+        self.assertEqual([(r["direction"], r["ref"]) for r in rows], [("upload", "b_legacy")])
+        with conn:
+            legacy.ledger_add(conn, "trash", 7, "backup-prune", "d1-old.sql")
+        n = conn.execute(
+            "SELECT count(*) n FROM transfer_ledger WHERE direction='trash'"
+        ).fetchone()["n"]
+        conn.close()
+        self.assertEqual(n, 1)
 
 
 class TestWorkerDecoder(unittest.TestCase):
