@@ -1352,6 +1352,39 @@ class TestS3CurlFallback(S3TestBase):
         self.assertEqual(calls, [])
         self.assertEqual(result["sha256"], hashlib.sha256(body).hexdigest())
 
+    def test_curl_fetch_keeps_credentials_out_of_argv(self):
+        """The spawned curl argv must never carry the credentials
+        (issue #983): _curl_fetch feeds curl its config on stdin
+        (--config -) instead of passing --user in argv, where the
+        local process list would see the secret for up to the 900s
+        fallback timeout. This test is the guard for cold_store.py in
+        the spirit of push-fleet-feed.guard.sh (#948/#970)."""
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            seen["kwargs"] = kwargs
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=b"payload", stderr=b""
+            )
+
+        with mock.patch.object(cold_store.subprocess, "run", fake_run):
+            body = self.store._curl_fetch(
+                "https://store.example/supabase-backups/some/key",
+                "test-access-key",
+                "test-secret-key",
+            )
+        self.assertEqual(body, b"payload")
+        argv = seen["argv"]
+        self.assertNotIn("--user", argv)
+        for element in argv:
+            self.assertNotIn("test-access-key", element)
+            self.assertNotIn("test-secret-key", element)
+        # the credential arrives on stdin as a curl config instead
+        config = seen["kwargs"]["input"].decode()
+        self.assertIn('user = "test-access-key:test-secret-key"', config)
+        self.assertEqual(argv[argv.index("--config") + 1], "-")
+
     def test_fallback_sizes_via_head_when_caller_gives_none(self):
         key = self._persistent_truncation()
         patcher, calls = self._stub_curl(self.BODY)
