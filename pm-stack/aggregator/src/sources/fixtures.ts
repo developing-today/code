@@ -19,9 +19,11 @@ import {
   type SessionFeedEntry,
   type SessionRecord,
   type SourceCoverage,
+  type UsageView,
   refsInText,
   refUrl,
 } from "../model.ts";
+import { buildAttentionFlags } from "../derive.ts";
 import { recordFromSessionEntry } from "../registry.ts";
 import type { Source } from "../source.ts";
 
@@ -643,6 +645,171 @@ export const FIXTURE_REGISTRY: SessionRecord[] = [
   },
 ];
 
+
+// Usage & billing hub fixtures (design 2026-10-25). Shaped exactly like
+// the live extraction over quota-view.md Part (b): dated manual reads,
+// one service tripping the >80% bubble (Turso rows read), one PAYG
+// estimate pair, charges evidence, and a short snapshot history so the
+// detail view's chart + pace projection render offline.
+const daysAgo = (d: number): string => new Date(Date.now() - d * 86_400_000).toISOString().slice(0, 10);
+export const FIXTURE_USAGE: UsageView = {
+  services: [
+    {
+      id: "cloudflare",
+      name: "Cloudflare",
+      group: "compute",
+      plan: "Workers Paid $5/mo + R2 Paid $0 base",
+      status: "active",
+      metrics: [
+        { id: "workers-requests", label: "Workers requests", used: null, limit: 10_000_000, unit: "count", highlight: true, note: "Current-cycle usage not read." },
+        { id: "r2-storage", label: "R2 storage", used: 2, limit: 10, unit: "gb", percent: 20, highlight: true },
+        { id: "workers-ai-neurons", label: "Workers AI neurons / day", used: null, limit: 10_000, unit: "neurons", highlight: true },
+      ],
+      paygEstimate: { low: 0, high: 5.2, period: "per month" },
+      measuredAt: daysAgo(1),
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      nextDate: "Subscription date unknown",
+      cadenceDays: 7,
+      conflicts: ["CF reports subscription endpoint 403 and presumed $0/free; the Tracker records Workers Paid $5/mo — neither establishes current free status."],
+      reads: [{ at: daysAgo(1), text: "Gateway observation: gateway barely gets any credits; amount unknown." }],
+      usageNote: "Small footprint: 3 Workers, 2 R2 buckets ~2 GB, 2 D1, 2 KV, 2 Queues; far behind, mostly unused.",
+    },
+    {
+      id: "turso",
+      name: "Turso",
+      group: "database",
+      plan: "Starter Free $0",
+      status: "active",
+      metrics: [
+        { id: "databases", label: "Databases", used: 1, limit: 100, unit: "count", percent: 1, highlight: true },
+        { id: "storage", label: "Storage", used: 0, limit: 5, unit: "gb", percent: 0, highlight: true },
+        { id: "rows-read", label: "Rows read / month", used: 410_000_000, limit: 500_000_000, unit: "rows", percent: 82, highlight: true },
+        { id: "rows-written", label: "Rows written / month", used: null, limit: 10_000_000, unit: "rows", highlight: true },
+        { id: "sync", label: "Sync / month", used: null, limit: 3, unit: "gb", highlight: true },
+      ],
+      paygEstimate: null,
+      paygNote: "not applicable — Starter Free is a $0 hard-capped plan with overages disabled",
+      measuredAt: daysAgo(2),
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      nextDate: "2026-10-31 cycle end",
+      cadenceDays: 7,
+      conflicts: [],
+      reads: [{ at: daysAgo(6), text: "2026-10-20 dashboard read: 1 DB, 0 B, 0 usage; cycle Sep 30 - Oct 31 2026." }],
+      usageNote: "Mirror activity since the zero read; org-wide reads require dashboard/API verification.",
+    },
+    {
+      id: "supabase",
+      name: "Supabase",
+      group: "database",
+      plan: "Free",
+      status: "active",
+      metrics: [
+        { id: "db-size", label: "Database size", used: null, limit: null, unit: "gb", highlight: true, note: "Free-plan numerical limits are not recorded in local records." },
+        { id: "egress", label: "Egress", used: null, limit: null, unit: "gb", highlight: true },
+        { id: "storage", label: "Storage", used: null, limit: null, unit: "gb", highlight: true },
+      ],
+      paygEstimate: null,
+      paygNote: "not applicable — Free plan, no metered overage in the records",
+      billedUsd: 0,
+      measuredAt: daysAgo(3),
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      nextDate: null,
+      cadenceDays: 7,
+      conflicts: [],
+      reads: [],
+      usageNote: "muse-dev in use as the primary coordination store; usage percentage unknown.",
+    },
+    {
+      id: "github",
+      name: "GitHub",
+      group: "dev-platform",
+      plan: "Pro $4/mo",
+      status: "active",
+      metrics: [
+        { id: "actions-billable-minutes", label: "Actions billable minutes", used: null, limit: 3000, unit: "minutes", highlight: true, note: "No billable volume outside the comped bucket is recorded." },
+        { id: "actions-comped-minutes", label: "Actions minutes (comped, October)", used: 3079, limit: null, unit: "minutes", highlight: false, note: "Fully comped — net $0." },
+        { id: "codespaces-hours", label: "Codespaces core-hours", used: null, limit: 180, unit: "hours", highlight: true },
+        { id: "packages", label: "Packages storage", used: null, limit: 2, unit: "gb", highlight: true },
+      ],
+      paygEstimate: null,
+      paygNote: "not applicable — recorded October overage was comped ($0 net)",
+      measuredAt: daysAgo(1),
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      nextDate: null,
+      cadenceDays: 7,
+      conflicts: [],
+      reads: [],
+      usageNote: "October minutes comped; Codespaces/Packages usage unknown.",
+    },
+    {
+      id: "bitwarden",
+      name: "Bitwarden Secrets Manager",
+      group: "account-tooling",
+      plan: "Secrets Manager, tier/price unknown",
+      status: "active",
+      metrics: [],
+      paygEstimate: null,
+      paygNote: "not applicable — no usage meter recorded",
+      measuredAt: daysAgo(2),
+      sourceClass: "manual",
+      sourceNote: "quota-view.md Part (b) — local-record snapshot; no live checks performed",
+      nextDate: null,
+      cadenceDays: 7,
+      conflicts: [],
+      reads: [],
+      usageNote: "Counts only in this hub — secret names/values never enter it. No count recorded yet.",
+    },
+  ],
+  payg: [
+    {
+      id: "meta-payg",
+      label: "Meta Model API PAYG",
+      accruedUsd: 23.92,
+      collectedUsd: 23.91,
+      unbilledUsd: 0.01,
+      note: "Oct 19-25 console read: spill past the plan's short window bills automatically.",
+      measuredAt: daysAgo(1),
+      sourceClass: "console",
+    },
+    {
+      id: "cloudflare-gateway",
+      label: "Cloudflare AI Gateway accrual (DeepSeek V4 Pro, Oct 24-25)",
+      accruedUsd: null,
+      estimate: { low: 29.6, high: 45.1, period: "Oct 24-25 accrual", note: "Budget alert vs gateway attribution disagree; Nov 2 invoice is authoritative." },
+      unbilledUsd: 54.12,
+      note: "Gateway providers disabled fleet-wide 2026-10-25; the invoice lands Nov 2.",
+      measuredAt: daysAgo(1),
+      sourceClass: "estimate",
+    },
+  ],
+  charges: [
+    { at: daysAgo(1), label: "Meta PAYG spill", amountUsd: 20, method: "Visa \u20227535", source: "Gmail card alert (registry billing incidents)" },
+    { at: daysAgo(1), label: "Meta PAYG spill", amountUsd: 3.91, method: "Visa \u20227535", source: "Gmail card alert (registry billing incidents)" },
+    { at: "2026-10-05", label: "ClinePass annual (Cline Bot Inc.)", amountUsd: 82.52, method: "Link", source: "invoice QUWGLQSJ-0001 (quota-view.md ClinePass read)" },
+  ],
+  attention: [],
+  domains: { totalAnnualUsd: 214.5, nextRenewal: "2026-11-03", domainCount: 14 },
+  subscriptions: [
+    { name: "Amazon RxPass", plan: "$5/mo flat pharmacy", renewsAt: null },
+    { name: "Wispr Flow", plan: "Pro $151.91/yr", renewsAt: "2027-10-09" },
+  ],
+  history: {
+    turso: [
+      { ts: `${daysAgo(6)}T12:00:00Z`, serviceId: "turso", metricId: "rows-read-pct", value: 12, unit: "pct", limit: 100, resetsAt: "2026-10-31T00:00:00Z", source: "manual", observedBy: "fixtures" },
+      { ts: `${daysAgo(4)}T12:00:00Z`, serviceId: "turso", metricId: "rows-read-pct", value: 38, unit: "pct", limit: 100, resetsAt: "2026-10-31T00:00:00Z", source: "manual", observedBy: "fixtures" },
+      { ts: `${daysAgo(2)}T12:00:00Z`, serviceId: "turso", metricId: "rows-read-pct", value: 82, unit: "pct", limit: 100, resetsAt: "2026-10-31T00:00:00Z", source: "manual", observedBy: "fixtures" },
+    ],
+    cloudflare: [
+      { ts: `${daysAgo(6)}T12:00:00Z`, serviceId: "cloudflare", metricId: "r2-storage", value: 1.8, unit: "gb", limit: 10, source: "manual", observedBy: "fixtures" },
+      { ts: `${daysAgo(1)}T12:00:00Z`, serviceId: "cloudflare", metricId: "r2-storage", value: 2, unit: "gb", limit: 10, source: "manual", observedBy: "fixtures" },
+    ],
+  },
+};
+
 export function fixtureSource(): Source {
   const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
   const provenance: Provenance = {
@@ -651,6 +818,7 @@ export function fixtureSource(): Source {
     items: "fixtures",
     comments: "fixtures",
     quota: "fixtures",
+    usage: "fixtures",
     attention: "fixtures",
     orchestration: "fixtures",
     dns: "fixtures",
@@ -665,6 +833,7 @@ export function fixtureSource(): Source {
       return FIXTURE_COMMENTS.filter((x) => wanted.has(x.ref));
     },
     quota: async () => FIXTURE_QUOTA,
+    usage: async () => ({ ...FIXTURE_USAGE, attention: buildAttentionFlags(FIXTURE_QUOTA, FIXTURE_USAGE) }),
     attention: async () => FIXTURE_ATTENTION,
     // Fixtures carry no orchestration section: "not measured" is the
     // honest fixture state for a job that only runs live (#899).

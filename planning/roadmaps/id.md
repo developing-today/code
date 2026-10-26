@@ -62,17 +62,4 @@ These are the Phase 12 tasks. The order inside the phase is in the plan.
 
 ## Done
 
-| Title                                                                          | Date       | Result                                                                                                           |
-| ------------------------------------------------------------------------------ | ---------- | ---------------------------------------------------------------------------------------------------------------- |
-| Server-scoped home discovery                                                   | 2026-10-18 | #212                                                                                                             |
-| Bring the Phase 11 plan up to date                                             | 2026-10-20 | [.opencode/plans/2026-10-20_phase-11-status.md](../../.opencode/plans/2026-10-20_phase-11-status.md) closes #312 |
-| Signed document revisions on save                                              | 2026-10-18 | #210                                                                                                             |
-| Replayable session fixtures                                                    | 2026-10-18 | #239                                                                                                             |
-| Journaled scheduled events for worlds                                          | 2026-10-18 | #243                                                                                                             |
-| Per-call guest fuel budgets                                                    | 2026-10-18 | #247                                                                                                             |
-| Territory view fits eight seats                                                | 2026-10-18 | #248                                                                                                             |
-| Cloudflare Workers pkarr design                                                | 2026-10-18 | #213                                                                                                             |
-| Relay kit vendored, drift test                                                 | 2026-10-17 | #249 (F11.1)                                                                                                     |
-| Install seed redaction                                                         | 2026-10-17 | #250                                                                                                             |
-| Fast PR gate, E2E and VM checks nightly                                        | 2026-10-18 | `id-e2e-nightly` workflow                                                                                        |
-| Phase 9 and 10 slices (portable screens, profiles, ceilings, libraries, roles) | 2026-10-16 | See the Phase 9 plan                                                                                             |
+Completed work is recorded in GitHub — see closed issues and merged PRs.

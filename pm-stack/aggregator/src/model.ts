@@ -110,6 +110,7 @@ export interface Provenance {
   items: string;
   comments: string;
   quota: string;
+  usage: string;
   attention: string;
   orchestration: string;
   dns: string;
@@ -518,4 +519,184 @@ export interface SessionRecord {
   tokensTotal?: number;
   /** Loose task linkage: GitHub refs this session is working. */
   taskRefs: RefKey[];
+}
+
+// ---------------------------------------------------------------------------
+// Usage & billing hub (design 2026-10-25, hub-design §1–§4). Family 2
+// (SaaS services), the PAYG dollars view, charges evidence, the bubble
+// flags, and the append-only snapshot store's record shape. The hub
+// evolves the quota page in place: QuotaView above stays untouched for
+// its existing consumers; UsageView rides beside it via Source.usage().
+// ---------------------------------------------------------------------------
+
+/** How a number was obtained — manual/console reads are first-class. */
+export type UsageSourceClass = "api" | "console" | "manual" | "estimate" | "invoice";
+
+export type UsageUnit =
+  | "pct"
+  | "usd"
+  | "count"
+  | "gb"
+  | "tokens"
+  | "minutes"
+  | "hours"
+  | "ms"
+  | "rows"
+  | "ops"
+  | "neurons"
+  | "other";
+
+/** One measured (or allowance-only) metric on a SaaS service card. */
+export interface UsageMetric {
+  id: string;
+  label: string;
+  /** null = an allowance is recorded but usage was not measured. */
+  used: number | null;
+  limit: number | null;
+  unit: UsageUnit;
+  /** 0–100+, present when used and limit are both known (or unit is pct). */
+  percent?: number;
+  /** In the §2 highlight set (front page); false = detail view only. */
+  highlight: boolean;
+  note?: string;
+}
+
+/**
+ * A Decision-004 PAYG estimate: low/high as recorded. The counted
+ * figure (1.2 × high) is derived at render time, never stored.
+ */
+export interface PaygEstimate {
+  low: number;
+  high: number;
+  /** What the low/high describe, e.g. "per month" or "Oct 24–25 accrual". */
+  period: string;
+  note?: string;
+}
+
+/** The counted figure for an estimate: 1.2 × high (Decision 004). */
+export function countedEstimate(e: PaygEstimate): number {
+  return Math.round(e.high * 1.2 * 100) / 100;
+}
+
+export type SaasGroup = "database" | "object-storage" | "compute" | "dev-platform" | "domains" | "account-tooling";
+
+export const SAAS_GROUP_LABELS: Record<SaasGroup, string> = {
+  database: "Database",
+  "object-storage": "Object storage",
+  compute: "Compute / platform",
+  "dev-platform": "Dev platform",
+  domains: "Domains",
+  "account-tooling": "Account tooling / flat",
+};
+
+/** One dated source read, preserved verbatim-ish for the detail view. */
+export interface DatedRead {
+  /** ISO date (or datetime) of the read. */
+  at: string;
+  text: string;
+}
+
+/** One family-2 service: a card on the hub, a page at /quota/service/<id>. */
+export interface SaasService {
+  id: string;
+  name: string;
+  group: SaasGroup;
+  /** Plan + price as recorded, e.g. "Workers Paid $5/mo + R2 Paid $0 base". */
+  plan: string;
+  status: "active" | "candidate" | "no-account" | "unknown";
+  metrics: UsageMetric[];
+  /** The recorded PAYG estimate, or null when none exists. */
+  paygEstimate: PaygEstimate | null;
+  /** Why there is no estimate: "not applicable — …" / "not estimable from local records". */
+  paygNote?: string;
+  /** USD invoiced/charged this period, when a record states it. */
+  billedUsd?: number | null;
+  /** ISO date/datetime of the freshest dated read behind this card. */
+  measuredAt: string | null;
+  sourceClass: UsageSourceClass;
+  /** Where the card's facts came from, human-readable. */
+  sourceNote: string;
+  /** Renewal/reset as recorded (may be prose, e.g. "cycle ends 2026-10-31"). */
+  nextDate?: string | null;
+  /** Expected re-measure cadence in days; older reads render stale. */
+  cadenceDays: number;
+  /** Dated disagreements between sources, shown not resolved (§1.1). */
+  conflicts: string[];
+  /** Every dated read the extractor found, freshest first (detail view). */
+  reads: DatedRead[];
+  /** The section's usage prose, trimmed (detail view + shell cards). */
+  usageNote?: string;
+}
+
+/** One line of the PAYG dollars card (§1.2). */
+export interface PaygLine {
+  id: string;
+  label: string;
+  /** Accrued this period, when a figure was recorded. */
+  accruedUsd: number | null;
+  collectedUsd?: number | null;
+  estimate?: PaygEstimate | null;
+  /** Unbilled accrual counted toward the $5 bubble (the counted figure). */
+  unbilledUsd: number | null;
+  note: string;
+  measuredAt: string | null;
+  sourceClass: UsageSourceClass;
+}
+
+/** One observed charge (§2.4 evidence — Plaid/Gmail/receipt class). */
+export interface ChargeRow {
+  /** ISO date the charge posted/was observed. */
+  at: string;
+  label: string;
+  amountUsd: number;
+  /** Payment method as recorded, e.g. "Visa •7535". */
+  method: string;
+  /** Evidence source for this row. */
+  source: string;
+}
+
+/**
+ * One tripped bubble rule (§1.3): a metric over 80% of its limit, or
+ * projected unbilled PAYG over $5 (unbilled accrual only, Q3 default).
+ */
+export interface AttentionFlag {
+  kind: "over-limit" | "payg-unbilled";
+  label: string;
+  detail: string;
+  href: string;
+  /** Percent (over-limit) or counted dollars (payg-unbilled); worst first. */
+  severity: number;
+}
+
+/**
+ * One snapshot-store record (§4). Estimates are stored as a low/high
+ * pair with unit "usd-est"; the 1.2× rule applies at render.
+ */
+export interface SnapshotRecord {
+  /** ISO timestamp of the observation (its original date, for backfill). */
+  ts: string;
+  serviceId: string;
+  metricId: string;
+  value: number | { low: number; high: number };
+  unit: "pct" | "usd" | "count" | "gb" | "tokens" | "usd-est";
+  limit?: number | null;
+  resetsAt?: string | null;
+  source: UsageSourceClass;
+  observedBy: string;
+}
+
+/** The hub's family-2 + PAYG + charges model, served by Source.usage(). */
+export interface UsageView {
+  services: SaasService[];
+  payg: PaygLine[];
+  charges: ChargeRow[];
+  /** Set when no charge evidence could be derived — the strip explains itself. */
+  chargesNote?: string;
+  attention: AttentionFlag[];
+  /** Domains summary from the feed's dns section (§1.4: link, don't fork). */
+  domains: { totalAnnualUsd: number; nextRenewal: string | null; domainCount: number } | null;
+  /** Flat/renewal-only rows for the subscriptions strip (Q5 default). */
+  subscriptions: { name: string; plan: string; renewsAt: string | null }[];
+  /** Snapshot history per service id, from the §4 store (may be empty). */
+  history: Record<string, SnapshotRecord[]>;
 }

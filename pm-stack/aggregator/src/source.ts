@@ -10,6 +10,7 @@ import type {
   Provenance,
   QuotaView,
   RefKey,
+  UsageView,
   RoadmapRow,
   SessionFeedEntry,
   SessionRecord,
@@ -27,6 +28,9 @@ export interface Source {
   comments(refs: RefKey[]): Promise<Comment[]>;
   /** Quota + throughput view (#851). */
   quota(): Promise<QuotaView>;
+  /** Usage & billing hub view: family-2 SaaS services, PAYG lines,
+   * charges evidence, bubble flags, and snapshot history (hub §3). */
+  usage(): Promise<UsageView>;
   /** Raw session feed for the "needs you" view (#852), pre-classification. */
   attention(): Promise<SessionFeedEntry[]>;
   /** The orchestration job's latest section (#899); null = not measured yet. */
