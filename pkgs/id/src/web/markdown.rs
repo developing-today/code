@@ -308,7 +308,17 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
                 mark_type: "link",
                 attrs: Some(attrs),
             });
-            json!(collect_inline_children(node, &marks))
+            let children = collect_inline_children(node, &marks);
+            if children.is_empty() {
+                // #996: an empty-text link has no inline children to
+                // carry the link mark, so without this the mark — and
+                // the href — vanish and save emits nothing. Synthesize
+                // an empty text node carrying the mark; the save side
+                // wraps it back into a Link node (create_marked_text),
+                // so `[](url)` round-trips.
+                return json!(vec![text_node_with_marks("", &marks)]);
+            }
+            json!(children)
         }
 
         NodeValue::Image(image) => {
@@ -535,7 +545,10 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
 /// Create a text node with the given marks.
 fn text_node_with_marks(text: &str, marks: &[Mark]) -> Value {
-    if text.is_empty() {
+    // An empty text node with no marks carries nothing and is dropped,
+    // but an empty text node WITH marks is information-bearing: it is
+    // the only representation of an empty-text link (#996).
+    if text.is_empty() && marks.is_empty() {
         return json!(null);
     }
 
@@ -1638,6 +1651,33 @@ mod tests {
             .find(|m| m["type"] == "link")
             .unwrap();
         assert_eq!(link_mark["attrs"]["href"], "https://example.com");
+    }
+
+    #[test]
+    fn test_empty_link_roundtrips() {
+        // #996: an empty-text link has no child text node to carry the
+        // link mark; the codec synthesizes an empty marked text node so
+        // the href is present in the PM doc and survives save.
+        let doc = markdown_to_prosemirror("[](https://e.com)");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        assert_eq!(para_content.len(), 1);
+        assert_eq!(para_content[0]["type"], "text");
+        assert_eq!(para_content[0]["text"], "");
+        let mark = &para_content[0]["marks"][0];
+        assert_eq!(mark["type"], "link");
+        assert_eq!(mark["attrs"]["href"], "https://e.com");
+
+        // Byte-identical round-trips, alone, mid-paragraph, and with a
+        // title; the second save is a stable fixpoint.
+        for original in [
+            "[](https://e.com)\n",
+            "before [](https://e.com) after\n",
+            "[](https://e.com \"T\")\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "first save for {original:?}");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
     }
 
     #[test]
