@@ -10,9 +10,9 @@ issues:   dezren39/nix#817 #818 #819 (design source, consolidated here) ·
 code:     pkgs/mcpx at the merge commit of this record's PR
 ```
 
-> mcpx scopes already decide *which* process serves a caller, resolving the
-> caller's cwd to a git root to do it. But nothing tells that process *where
-> the caller is*: the child spawns in the daemon's cwd, argv and env are the
+> mcpx scopes already decide _which_ process serves a caller, resolving the
+> caller's cwd to a git root to do it. But nothing tells that process _where
+> the caller is_: the child spawns in the daemon's cwd, argv and env are the
 > config's static strings, and the initialize handshake carries no workspace.
 > Three issues in dezren39/nix (#817, #818, #819) proposed the three halves
 > of one fix from a single design note (2026-10-25). This record consolidates
@@ -40,7 +40,7 @@ code:     pkgs/mcpx at the merge commit of this record's PR
   the key. `startLane` → `dial()` builds
   `StdioOptions{Cwd: p.cfg.Cwd}` verbatim (`internal/mcpclient/stdio.go`
   sets `cmd.Dir = opts.Cwd`). A `repo`- or `worktree`-scoped server
-  therefore still *runs* in the daemon's cwd.
+  therefore still _runs_ in the daemon's cwd.
 - `internal/config/config.go` — the `Server` struct holds
   `Command`/`Args`/`Env`/`Cwd` with no placeholders; there is no templating
   anywhere in `internal/config` or `internal/pool`.
@@ -101,13 +101,13 @@ func (s Scope) Resolve(ctx CallContext) ResolvedScope
 `Key()` becomes `Resolve(ctx).Key` so there is one resolution path, not
 two. Root semantics per scope:
 
-| scope | Root |
-| --- | --- |
-| `worktree` | the caller's checkout top-level (`gitWhere.worktree`) |
-| `repo` | the main worktree: the parent directory of the common dir, **only** when the common dir's base name is `.git`; otherwise `""` (bare repos and submodule-style common dirs whose parent is not a worktree root get no root — never guess) |
-| `cwd` | the caller's cwd, canonicalized exactly as the `cwd:` key canonicalizes it |
-| `worktree`/`repo` degraded to a `cwd:` key (outside a repo, unreadable repo) | that same cwd — the instance is effectively per-cwd, so rooting it there is consistent, and the degradation is still logged as today |
-| `global`, `session`, `psession`, `pid`, `call`, and any fallback key | `""` — these scopes have no meaningful root, and an empty root is what keeps `global` instances from fabricating one |
+| scope                                                                        | Root                                                                                                                                                                                                                                     |
+| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `worktree`                                                                   | the caller's checkout top-level (`gitWhere.worktree`)                                                                                                                                                                                    |
+| `repo`                                                                       | the main worktree: the parent directory of the common dir, **only** when the common dir's base name is `.git`; otherwise `""` (bare repos and submodule-style common dirs whose parent is not a worktree root get no root — never guess) |
+| `cwd`                                                                        | the caller's cwd, canonicalized exactly as the `cwd:` key canonicalizes it                                                                                                                                                               |
+| `worktree`/`repo` degraded to a `cwd:` key (outside a repo, unreadable repo) | that same cwd — the instance is effectively per-cwd, so rooting it there is consistent, and the degradation is still logged as today                                                                                                     |
+| `global`, `session`, `psession`, `pid`, `call`, and any fallback key         | `""` — these scopes have no meaningful root, and an empty root is what keeps `global` instances from fabricating one                                                                                                                     |
 
 Root is a pure function of the key for `repo`/`worktree`/`cwd` scopes,
 which is what makes the plumbing in §2 safe: two callers who share a key
@@ -135,7 +135,7 @@ HTTP/SSE servers have no process cwd and are unaffected.
 
 ### 4. Substitution (from #818)
 
-At spawn time only, on the *effective* spawn definition, in `Args`, every
+At spawn time only, on the _effective_ spawn definition, in `Args`, every
 `Env` value, and `Cwd`:
 
 - `${mcpx.root}` → the instance's resolved root;
@@ -191,7 +191,7 @@ server (a pure function of scope + CallContext + config cwd).
 
 Decided, closing the open question from the 2026-10-25 design note:
 **one shared codedb, `global` scope, is the fleet design and stays.**
-codedb and codebase-memory are multi-project *inside* one process —
+codedb and codebase-memory are multi-project _inside_ one process —
 their indexes are keyed by project path and the project is a per-call
 argument — so per-project instances would duplicate indexes and buy
 nothing. This decision is about the default, not a limitation: §4 is
