@@ -78,6 +78,10 @@ cold-store status                                     # counts, cold bytes, last
                                                       # 700 GB/day hard-stop + 3 TiB budget checks
 cold-store sync-manifest                              # push the local manifest into D1
 cold-store sync-manifest --dry-run                    # ... or just print the statement counts
+cold-store backup-d1                                  # export the D1 manifest DB into db-backups/d1/
+cold-store prune-backups                              # retention plan (dry-run)
+cold-store prune-backups --apply                      # ... and trash the excess
+cold-store get-backup d1 <name> ./restored.sql        # download one backup in full
 ```
 
 ## DB backups (design section 5)
@@ -93,11 +97,61 @@ idempotently). Files land with dated names —
 cold-store put-backup supabase pgdump-2026-10-26.sql.zst   # prints the Drive file id
 cold-store list-backups                                    # all DBs, newest first
 cold-store list-backups --db turso
+cold-store backup-d1                                       # export the D1 manifest DB itself
+                                                           # (REST query API) and file it under d1/
+cold-store get-backup d1 d1-<...>-cold-store-manifest-export.sql ./restored.sql
 ```
 
-**Retention is NOT enforced yet**: the design's 30 daily / 12 weekly /
-12 monthly policy (trash, not delete) is pending a later version. Until
-then, backups accumulate and pruning is manual.
+### Retention (design section 5)
+
+`prune-backups [--db <db>] [--apply]` enforces **30 daily / 12 weekly /
+12 monthly**, per DB folder, as a pure function of the folder listing —
+never of the wall clock. For each `db-backups/<db>/` folder it lists the
+files (already-trashed files are excluded), parses the timestamp out of
+each dated filename (`<db>-<YYYYMMDDTHHMMSSZ>-<basename>`; names that do
+not parse are **never** pruned, only reported as skipped-unparseable),
+and computes the keep set as the union of:
+
+- the newest backup of each of the **last 30 distinct calendar days**
+  present in the folder,
+- the newest backup of each of the **last 12 distinct ISO weeks**
+  present,
+- the newest backup of each of the **last 12 distinct calendar months**
+  present.
+
+Everything else is a prune candidate. The default is a dry run: the
+plan is printed with a reason per file (`daily` / `weekly` / `monthly`
+for keepers, `excess` for candidates). With `--apply`, each candidate
+is **trashed** via `files.update {trashed: true}` — never permanently
+deleted, so Drive's own trash grace applies — and one `transfer_ledger`
+row per file is written (`direction='trash'`, `kind='backup-prune'`,
+`ref=<filename>`).
+
+One migration caveat: the `'trash'` ledger direction is a schema v1.1
+extension (see `schema.sql`). Local manifests are migrated in place on
+first open, but the **D1 copy of the schema needs the same one-line
+CHECK change** before prune rows can sync — until then `sync-manifest`
+fails on the `transfer_ledger` statement with D1's own error text.
+
+### Scripts
+
+`scripts/` holds the two operator entry points (bash, `set -euo
+pipefail`, no secrets stored or echoed — credentials arrive via the
+environment only):
+
+- `scripts/nightly-backup.sh` — the nightly run: `backup-d1`, then
+  `prune-backups --apply`, then `sync-manifest`, then `status`. Any
+  failing step aborts the run non-zero. Requires `CLOUDFLARE_API_TOKEN`
+  in the environment (materialize from Bitwarden into the cron env).
+- `scripts/restore-drill.sh` — the quarterly restore drill (design
+  section 8): picks 3 pseudo-random cold objects from the local
+  manifest, fetches each through the rehydrator Worker and verifies its
+  sha256, then downloads the newest d1 backup with `get-backup`, loads
+  it into in-memory SQLite, and compares per-table row counts against
+  live D1 (falling back to the local manifest if D1 is unreachable).
+  Prints `DRILL PASS`/`DRILL FAIL` per item and a final verdict; exits
+  non-zero on any failure. Requires `REHYDRATOR_API_KEY` and
+  `CLOUDFLARE_API_TOKEN` in the environment.
 
 ## Manifest sync → D1
 
