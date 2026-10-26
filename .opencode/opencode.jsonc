@@ -5135,6 +5135,7 @@
         "name": "GPT Luna - plan providers",
         "targets": [
           "openai/gpt-6-luna",
+          "openai.alternate/gpt-6-luna",
           "opendesign/gpt-6-luna",
           "opencode-go.lab/gpt-5.6-luna",
           "opencode-go.personal/gpt-5.6-luna"
@@ -5180,6 +5181,7 @@
         "name": "GPT Sol - plan providers",
         "targets": [
           "openai/gpt-6.1-sol",
+          "openai.alternate/gpt-6.1-sol",
           "opencode-go.lab/gpt-5.6-sol",
           "opencode-go.personal/gpt-5.6-sol"
         ],
