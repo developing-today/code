@@ -96,7 +96,12 @@ export class SnapshotStore {
     const valid = records.filter(isSnapshotRecord);
     if (!valid.length) return 0;
     const seen = new Set((await this.readAll()).map(snapshotKey));
-    const fresh = valid.filter((r) => !seen.has(snapshotKey(r)));
+    const fresh = valid.filter((r) => {
+      const k = snapshotKey(r);
+      if (seen.has(k)) return false; // stored already, or earlier in this batch
+      seen.add(k);
+      return true;
+    });
     if (!fresh.length) return 0;
     await mkdir(this.dir, { recursive: true });
     const byFile = new Map<string, SnapshotRecord[]>();
