@@ -68,6 +68,8 @@
         # Pre-fetch cargo dependencies for sandbox builds (no network access)
         cargoDeps = pkgs.rustPlatform.importCargoLock {
           lockFile = ./Cargo.lock;
+          # Keyed by crate name-version, not rev: a p2panda rev bump keeps the
+          # key, so these hashes (and default.nix's) must be updated by hand (#643).
           outputHashes = {
             "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
           };
@@ -316,6 +318,12 @@
           test = mkCheck "test" "test-sandbox";
           test-unit = mkCheck "test-unit" "test-unit";
           test-int = mkCheck "test-int" "test-int-sandbox";
+          # PR-gate shards of the integration suite (#869): the three
+          # shards together run every target test-sandbox runs, in
+          # parallel jobs instead of one serial ~25-minute check.
+          test-shard-0 = mkCheck "test-shard-0" "test-shard-sandbox 0 3";
+          test-shard-1 = mkCheck "test-shard-1" "test-shard-sandbox 1 3";
+          test-shard-2 = mkCheck "test-shard-2" "test-shard-sandbox 2 3";
           test-web = mkCheck "test-web" "test-web-sandbox";
           test-web-unit = mkCheck "test-web-unit" "test-web-unit";
           test-web-typecheck = mkCheck "test-web-typecheck" "test-web-typecheck";

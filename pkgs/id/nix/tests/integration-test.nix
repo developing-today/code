@@ -24,7 +24,10 @@
     virtualisation.cores = 2;
   };
 
-  globalTimeout = 300; # 5 minutes
+  # The complete cli_integration binary runs roughly 134 tests with two
+  # workers, and individual child processes may wait up to three minutes.
+  # Five minutes is enough for the VM to boot but not for the full suite.
+  globalTimeout = 1200; # 20 minutes for the full integration suite
 
   testScript = ''
     ID_BIN = "${idPackage}/bin/id"

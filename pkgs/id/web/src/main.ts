@@ -9,6 +9,7 @@ import "./world";
 import "./world";
 import { type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
+import { identityNeedsRefresh } from "./identity-refresh";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
 /** Result from saveFile() for AutoSaveManager to process */
@@ -289,10 +290,11 @@ function updateStoredName(name: string | null): void {
 
 /** Check if the identity token needs refreshing (older than 24h). */
 function needsRefresh(): boolean {
-  const refreshedAt = localStorage.getItem(IDENTITY_REFRESHED_AT_KEY);
-  if (!refreshedAt) return true;
-  const elapsed = Date.now() - Number(refreshedAt);
-  return elapsed >= IDENTITY_REFRESH_INTERVAL_MS;
+  return identityNeedsRefresh(
+    localStorage.getItem(IDENTITY_REFRESHED_AT_KEY),
+    Date.now(),
+    IDENTITY_REFRESH_INTERVAL_MS,
+  );
 }
 
 /**

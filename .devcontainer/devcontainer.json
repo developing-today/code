@@ -1,0 +1,19 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["mkhl.direnv", "jnoortheen.nix-ide", "golang.Go"]
+    }
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.25"
+    }
+  },
+  "name": "devtoday-code",
+  "postCreateCommand": "bash -lc 'direnv allow . ; go version ; nix --version ; git --version'",
+  "remoteUser": "vscode"
+}
