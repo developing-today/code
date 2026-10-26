@@ -5,7 +5,9 @@ Run:  python3 -m unittest discover -s pkgs/cold-store-reaper/tests -v
   or: python3 pkgs/cold-store-reaper/tests/test_cold_store.py
 """
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -18,7 +20,7 @@ import tempfile
 import threading
 import unittest
 import urllib.parse
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -495,6 +497,178 @@ def make_d1_handler(fake: FakeD1):
     return Handler
 
 
+# -------------------------------------------------------------------- fake S3
+class FakeS3:
+    """In-memory state for the fake R2 S3 endpoint.
+
+    Listings are served in pages of `page_size` objects no matter what
+    the client asks for, so pagination is always exercised. A key in
+    `truncate_once` gets one response whose body stops halfway while
+    its Content-Length promises the whole object — the truncated-read
+    case the real client must retry.
+    """
+
+    BUCKET = "supabase-backups"
+
+    def __init__(self):
+        self.objects = {}  # key -> {"body": bytes, "last_modified": str}
+        self.deleted = []  # keys, in DELETE order
+        self.requests = []  # {"method", "path", "query", "headers"}
+        self.truncate_once = set()
+        self._truncated = set()
+        self.page_size = 2
+
+    def put(self, key, body: bytes, last_modified: str):
+        self.objects[key] = {"body": body, "last_modified": last_modified}
+
+    def get_requests(self, key):
+        return [
+            r
+            for r in self.requests
+            if r["method"] == "GET" and r["path"].endswith("/" + key)
+        ]
+
+
+def make_s3_handler(fake: FakeS3):
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):  # silence
+            pass
+
+        def _record(self):
+            parsed = urllib.parse.urlparse(self.path)
+            fake.requests.append(
+                {
+                    "method": self.command,
+                    "path": parsed.path,
+                    "query": urllib.parse.parse_qs(parsed.query),
+                    "headers": {k.lower(): v for k, v in self.headers.items()},
+                }
+            )
+            return parsed
+
+        def _send(self, code, body=b"", ctype="application/xml"):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def _error(self, code, message):
+            body = (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                f"<Error><Code>NoSuchKey</Code><Message>{message}</Message></Error>"
+            ).encode()
+            self._send(code, body)
+
+        def do_GET(self):
+            parsed = self._record()
+            qs = urllib.parse.parse_qs(parsed.query)
+            rest = parsed.path.lstrip("/").split("/", 1)
+            if len(rest) == 1:  # bucket root: ListObjectsV2
+                start = int(qs.get("continuation-token", ["0"])[0])
+                keys = sorted(fake.objects)
+                page = keys[start : start + fake.page_size]
+                truncated = start + fake.page_size < len(keys)
+                contents = "".join(
+                    f"<Contents><Key>{k}</Key>"
+                    f"<LastModified>{fake.objects[k]['last_modified']}</LastModified>"
+                    f"<Size>{len(fake.objects[k]['body'])}</Size></Contents>"
+                    for k in page
+                )
+                token = (
+                    f"<NextContinuationToken>{start + fake.page_size}"
+                    "</NextContinuationToken>"
+                    if truncated
+                    else ""
+                )
+                body = (
+                    '<?xml version="1.0" encoding="UTF-8"?>'
+                    '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                    f"<Name>{FakeS3.BUCKET}</Name>"
+                    f"<IsTruncated>{str(truncated).lower()}</IsTruncated>"
+                    f"{contents}{token}</ListBucketResult>"
+                ).encode()
+                self._send(200, body)
+                return
+            key = urllib.parse.unquote(rest[1])
+            obj = fake.objects.get(key)
+            if obj is None:
+                self._error(404, "The specified key does not exist.")
+                return
+            body = obj["body"]
+            if key in fake.truncate_once and key not in fake._truncated:
+                fake._truncated.add(key)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body[: len(body) // 2])
+                self.close_connection = True
+                return
+            self._send(200, body, ctype="application/octet-stream")
+
+        def do_DELETE(self):
+            parsed = self._record()
+            rest = parsed.path.lstrip("/").split("/", 1)
+            key = urllib.parse.unquote(rest[1])
+            if key not in fake.objects:
+                self._error(404, "The specified key does not exist.")
+                return
+            del fake.objects[key]
+            fake.deleted.append(key)
+            self._send(204)
+
+    return Handler
+
+
+class S3TestBase(ColdStoreTestBase):
+    """ColdStoreTestBase plus a fake S3 endpoint wired into the store,
+    with dummy R2 credentials in the environment (values are fake; the
+    real ones are operator-supplied from Bitwarden, never stored)."""
+
+    R2_ENV = {
+        "R2_ACCESS_KEY_ID": "test-access-key",
+        "R2_SECRET_ACCESS_KEY": "test-secret-key",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.s3 = FakeS3()
+        self.s3_server = ThreadingHTTPServer(("127.0.0.1", 0), make_s3_handler(self.s3))
+        self.s3_thread = threading.Thread(
+            target=self.s3_server.serve_forever, daemon=True
+        )
+        self.s3_thread.start()
+        self.s3_base_url = f"http://127.0.0.1:{self.s3_server.server_address[1]}"
+        self.store.s3_base = self.s3_base_url
+        self._r2_env = mock.patch.dict(os.environ, self.R2_ENV)
+        self._r2_env.start()
+
+    def tearDown(self):
+        self._r2_env.stop()
+        self.s3_server.shutdown()
+        self.s3_server.server_close()
+        super().tearDown()
+
+    @staticmethod
+    def key_for(obj_hash):
+        return f"pg/muse-dev/2026/10/{obj_hash}.api.jsonl.zst"
+
+    def make_cold(self, contents: dict) -> dict:
+        """Pack {name: bytes} into one bundle and upload it against the
+        fake Drive: every object ends up cold in a verified bundle.
+        Returns {name: sha256}."""
+        files = [str(self.write_src(name, data)) for name, data in contents.items()]
+        packed = self.store.pack(files)
+        self.store.upload(packed["bundle_id"])
+        return {
+            name: hashlib.sha256(data).hexdigest() for name, data in contents.items()
+        }
+
+
 class TestBackups(ColdStoreTestBase):
     def test_ensure_folders_creates_backup_subfolders_once(self):
         first = self.store.ensure_folders()
@@ -899,6 +1073,301 @@ class TestBackupD1(ColdStoreTestBase):
         with mock.patch.dict(os.environ, env, clear=True):
             with self.assertRaises(cold_store.ColdStoreError):
                 self.store.backup_d1()
+
+
+class TestS3Client(S3TestBase):
+    def test_sigv4_header_shape(self):
+        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-01T00:00:00.000Z")
+        self.store.s3_list_objects("supabase-backups")
+        req = self.s3.requests[0]
+        auth = req["headers"]["authorization"]
+        self.assertIsNotNone(
+            re.fullmatch(
+                r"AWS4-HMAC-SHA256 Credential=test-access-key/\d{8}"
+                r"/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256"
+                r";x-amz-date, Signature=[0-9a-f]{64}",
+                auth,
+            ),
+            auth,
+        )
+        # GET signs the empty-payload hash
+        self.assertEqual(
+            req["headers"]["x-amz-content-sha256"], hashlib.sha256(b"").hexdigest()
+        )
+        self.assertRegex(req["headers"]["x-amz-date"], r"^\d{8}T\d{6}Z$")
+        self.assertEqual(req["query"]["list-type"], ["2"])
+
+    def test_list_pagination(self):
+        for i in range(5):
+            self.s3.put(f"pg/muse-dev/k{i}.bin", b"x", "2026-10-01T00:00:00.000Z")
+        objects = self.store.s3_list_objects("supabase-backups")
+        self.assertEqual([o["key"] for o in objects], sorted(self.s3.objects))
+        list_calls = [r for r in self.s3.requests if r["path"] == "/supabase-backups"]
+        self.assertEqual(len(list_calls), 3)  # fake pages are 2, 2, 1
+        self.assertNotIn("continuation-token", list_calls[0]["query"])
+        self.assertEqual(list_calls[1]["query"]["continuation-token"], ["2"])
+        self.assertEqual(list_calls[2]["query"]["continuation-token"], ["4"])
+        for o in objects:
+            self.assertEqual(o["size"], 1)
+            self.assertIsNotNone(o["last_modified"])
+
+    def test_missing_credentials_error(self):
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY")
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_list_objects("supabase-backups")
+        self.assertIn("R2_ACCESS_KEY_ID", str(ctx.exception))
+
+
+class TestBackupSupabase(S3TestBase):
+    def test_files_newest_non_manifest_with_truncation_retry(self):
+        older = b"older backup " * 40
+        newest = b"newest backup payload " * 60
+        old_key = self.key_for(hashlib.sha256(older).hexdigest())
+        new_key = self.key_for(hashlib.sha256(newest).hexdigest())
+        self.s3.put(old_key, older, "2026-10-20T02:00:00.000Z")
+        self.s3.put(new_key, newest, "2026-10-21T02:00:00.000Z")
+        # the bucket manifest is newer still — and is never a dump filing
+        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
+        # the first GET of the newest object arrives truncated (the
+        # live proxy failure mode); the client must retry the whole GET
+        self.s3.truncate_once.add(new_key)
+        result = self.store.backup_supabase()
+        self.assertEqual(result["source_key"], new_key)
+        self.assertRegex(
+            result["name"],
+            r"^supabase-\d{8}T\d{6}Z-" + re.escape(new_key.rsplit("/", 1)[-1]) + r"$",
+        )
+        self.assertEqual(result["sha256"], hashlib.sha256(newest).hexdigest())
+        folders = self.store.ensure_folders()
+        meta = self.fake.file_meta[result["drive_file_id"]]
+        self.assertEqual(meta["parents"], [folders["db-backups/supabase"]])
+        # byte-count verification did its job: the filed copy is the
+        # whole object, not the truncated first response
+        self.assertEqual(self.fake.files[result["drive_file_id"]], newest)
+        self.assertGreaterEqual(len(self.s3.get_requests(new_key)), 2)
+
+    def test_no_backup_objects_errors(self):
+        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.backup_supabase()
+
+
+class EvictTestBase(S3TestBase):
+    """One bucket holding every eviction verdict at once.
+
+    LastModified order (newest first): young (now-1d), oldtimer
+    (2026-06), evict2, evict1, unknown, not-in-manifest, unverified —
+    with keep_newest=2 the protected pair is {young, oldtimer}; age is
+    checked before position, so young reports too-young and oldtimer
+    (old enough on its own) is the isolated kept-newest case.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.h = self.make_cold(
+            {
+                "young.bin": b"young object " * 30,
+                "oldtimer.bin": b"oldtimer object " * 30,
+                "evict1.bin": b"evict me one " * 30,
+                "evict2.bin": b"evict me two " * 30,
+            }
+        )
+        self.keys = {
+            "young": self.key_for(self.h["young.bin"]),
+            "oldtimer": self.key_for(self.h["oldtimer.bin"]),
+            "evict1": self.key_for(self.h["evict1.bin"]),
+            "evict2": self.key_for(self.h["evict2.bin"]),
+            "unverified": self.key_for("d" * 64),
+            "not-in-manifest": self.key_for("e" * 64),
+            "unknown": "pg/muse-dev/2026/01/random-file.bin",
+            "manifest": "pg/muse-dev/manifest.json",
+        }
+        # a cold object whose only bundle was never verified
+        conn = self.store.db()
+        with conn:
+            conn.execute(
+                "INSERT INTO objects (hash, size, state) VALUES (?, ?, 'cold')",
+                ("d" * 64, 123),
+            )
+            conn.execute(
+                "INSERT INTO bundles (bundle_id, sha256, bytes, state)"
+                " VALUES ('b_unverified00', ?, 123, 'sealed')",
+                ("f" * 64,),
+            )
+            conn.execute(
+                "INSERT INTO members (bundle_id, object_hash, offset, length)"
+                " VALUES ('b_unverified00', ?, 0, 10)",
+                ("d" * 64,),
+            )
+        conn.close()
+        young_lm = (datetime.now(timezone.utc) - timedelta(days=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        self.s3.put(self.keys["manifest"], b"{}", "2026-10-25T00:00:00.000Z")
+        self.s3.put(self.keys["young"], b"y", young_lm)
+        self.s3.put(self.keys["oldtimer"], b"o", "2026-06-01T00:00:00.000Z")
+        self.s3.put(self.keys["evict1"], b"1", "2026-01-05T00:00:00.000Z")
+        self.s3.put(self.keys["evict2"], b"2", "2026-01-06T00:00:00.000Z")
+        self.s3.put(self.keys["unverified"], b"u", "2026-01-02T00:00:00.000Z")
+        self.s3.put(self.keys["not-in-manifest"], b"n", "2026-01-03T00:00:00.000Z")
+        self.s3.put(self.keys["unknown"], b"?", "2026-01-04T00:00:00.000Z")
+
+    def scan_by_key(self, **kwargs):
+        kwargs.setdefault("min_age_days", 14)
+        kwargs.setdefault("keep_newest", 2)
+        return {e["key"]: e for e in self.store.evict_scan(**kwargs)}
+
+
+class TestEvictScan(EvictTestBase):
+    def test_verdict_matrix(self):
+        scan = self.scan_by_key()
+        self.assertEqual(len(scan), 7)  # manifest.json is excluded
+        self.assertNotIn(self.keys["manifest"], scan)
+        self.assertEqual(scan[self.keys["young"]]["verdict"], "too-young")
+        self.assertEqual(scan[self.keys["oldtimer"]]["verdict"], "kept-newest")
+        self.assertEqual(scan[self.keys["evict1"]]["verdict"], "evictable")
+        self.assertEqual(scan[self.keys["evict2"]]["verdict"], "evictable")
+        self.assertEqual(scan[self.keys["unverified"]]["verdict"], "bundle-unverified")
+        self.assertEqual(
+            scan[self.keys["not-in-manifest"]]["verdict"], "not-in-manifest"
+        )
+        self.assertEqual(scan[self.keys["unknown"]]["verdict"], "hash-unknown")
+        # a scan is a dry run: nothing deleted, nothing mutated
+        self.assertEqual(self.s3.deleted, [])
+        self.assertIn(self.keys["evict1"], self.s3.objects)
+
+
+class TestEvictApply(EvictTestBase):
+    def test_apply_deletes_only_evictable_and_records(self):
+        scan = self.store.evict_scan(min_age_days=14, keep_newest=2)
+        outcomes = self.store.evict_apply("supabase-backups", scan)
+        self.assertEqual(
+            {o["key"] for o in outcomes if o["outcome"] == "evicted"},
+            {self.keys["evict1"], self.keys["evict2"]},
+        )
+        self.assertEqual(
+            sorted(self.s3.deleted),
+            sorted([self.keys["evict1"], self.keys["evict2"]]),
+        )
+        for name in ("young", "oldtimer", "unverified", "not-in-manifest", "unknown"):
+            self.assertIn(self.keys[name], self.s3.objects)
+        conn = self.store.db()
+        states = {
+            r["hash"]: r["state"]
+            for r in conn.execute("SELECT hash, state FROM objects")
+        }
+        rows = conn.execute(
+            "SELECT * FROM transfer_ledger WHERE kind='evict'"
+        ).fetchall()
+        conn.close()
+        self.assertEqual(states[self.h["evict1.bin"]], "evicted")
+        self.assertEqual(states[self.h["evict2.bin"]], "evicted")
+        self.assertEqual(states[self.h["young.bin"]], "cold")
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            {r["ref"] for r in rows}, {self.keys["evict1"], self.keys["evict2"]}
+        )
+        for r in rows:
+            self.assertEqual(r["direction"], "trash")
+
+    def test_apply_reverifies_and_skips_changed_object(self):
+        scan = self.store.evict_scan(min_age_days=14, keep_newest=2)
+        # between scan and apply the object stops being cold — the
+        # deletion-time re-verification must refuse to delete it
+        conn = self.store.db()
+        with conn:
+            conn.execute(
+                "UPDATE objects SET state='hot' WHERE hash=?",
+                (self.h["evict1.bin"],),
+            )
+        conn.close()
+        outcomes = {
+            o["key"]: o for o in self.store.evict_apply("supabase-backups", scan)
+        }
+        self.assertEqual(outcomes[self.keys["evict1"]]["outcome"], "skipped")
+        self.assertEqual(outcomes[self.keys["evict2"]]["outcome"], "evicted")
+        self.assertEqual(self.s3.deleted, [self.keys["evict2"]])
+        self.assertIn(self.keys["evict1"], self.s3.objects)
+
+    def test_cli_refuses_without_apply(self):
+        env = dict(self.R2_ENV)
+        env["COLD_STORE_S3_BASE"] = self.s3_base_url
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, env):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = cold_store.main(
+                    [
+                        "--home",
+                        str(self.home),
+                        "evict",
+                        "--bucket",
+                        "supabase-backups",
+                        "--min-age-days",
+                        "14",
+                        "--keep-newest",
+                        "2",
+                    ]
+                )
+        self.assertEqual(rc, 1)
+        self.assertIn("--apply", err.getvalue())
+        self.assertIn("evictable", out.getvalue())  # the scan still printed
+        self.assertEqual(self.s3.deleted, [])
+
+
+class TestObjectsEvictedMigration(ColdStoreTestBase):
+    def test_pre_v4_manifest_gains_evicted_state(self):
+        # Rebuild a manifest exactly as a pre-v4 home has it (objects
+        # CHECK without 'evicted'), with a cold object in a verified
+        # bundle, then open it via a store: the migration must admit
+        # 'evicted' and preserve the member row that references the
+        # rebuilt table.
+        legacy_home = Path(self.tmp.name) / "legacy-home-v4"
+        legacy_home.mkdir()
+        legacy_schema = cold_store.SCHEMA_PATH.read_text().replace(",'evicted')", ")")
+        self.assertIn(
+            "CHECK (state IN ('hot','staging','cold','rehydrating','gone'))",
+            legacy_schema,
+        )
+        conn = sqlite3.connect(legacy_home / "manifest.sqlite")
+        conn.executescript(legacy_schema)
+        conn.execute(
+            "INSERT INTO objects (hash, size, state) VALUES (?, 10, 'cold')",
+            ("a" * 64,),
+        )
+        conn.execute(
+            "INSERT INTO bundles (bundle_id, sha256, bytes, state)"
+            " VALUES ('b_legacy', ?, 10, 'verified')",
+            ("b" * 64,),
+        )
+        conn.execute(
+            "INSERT INTO members (bundle_id, object_hash, offset, length)"
+            " VALUES ('b_legacy', ?, 0, 10)",
+            ("a" * 64,),
+        )
+        conn.commit()
+        conn.close()
+        base = self.store.drive_base.rsplit("/drive/v3", 1)[0]
+        legacy = ColdStore(
+            legacy_home,
+            token_url=base + "/token",
+            drive_base=self.store.drive_base,
+            upload_base=base,
+        )
+        conn = legacy.db()
+        with conn:
+            conn.execute("UPDATE objects SET state='evicted' WHERE hash=?", ("a" * 64,))
+        row = conn.execute(
+            "SELECT state FROM objects WHERE hash=?", ("a" * 64,)
+        ).fetchone()
+        members = conn.execute("SELECT count(*) n FROM members").fetchone()
+        conn.close()
+        self.assertEqual(row["state"], "evicted")
+        self.assertEqual(members["n"], 1)
 
 
 class TestDrillCompare(ColdStoreTestBase):

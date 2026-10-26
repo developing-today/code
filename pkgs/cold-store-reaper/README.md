@@ -79,6 +79,9 @@ cold-store status                                     # counts, cold bytes, last
 cold-store sync-manifest                              # push the local manifest into D1
 cold-store sync-manifest --dry-run                    # ... or just print the statement counts
 cold-store backup-d1                                  # export the D1 manifest DB into db-backups/d1/
+cold-store backup-supabase                            # file the newest Supabase dump from R2 into db-backups/supabase/
+cold-store evict-scan                                 # dry-run: which R2 objects are safe to evict? (never deletes)
+cold-store evict --apply                              # delete the evictable ones (each re-verified first)
 cold-store prune-backups                              # retention plan (dry-run)
 cold-store prune-backups --apply                      # ... and trash the excess
 cold-store get-backup d1 <name> ./restored.sql        # download one backup in full
@@ -99,8 +102,14 @@ cold-store list-backups                                    # all DBs, newest fir
 cold-store list-backups --db turso
 cold-store backup-d1                                       # export the D1 manifest DB itself
                                                            # (REST query API) and file it under d1/
+cold-store backup-supabase                                 # file the newest R2 Supabase dump
+                                                           # under supabase/ (see "R2" below)
 cold-store get-backup d1 d1-<...>-cold-store-manifest-export.sql ./restored.sql
 ```
+
+The `turso/` folder exists (created by `ensure-folders` like the
+others) but has **no filing command yet**: there is no Turso export
+source wired into the reaper, so nothing files there until one exists.
 
 ### Retention (design section 5)
 
@@ -140,9 +149,13 @@ pipefail`, no secrets stored or echoed — credentials arrive via the
 environment only):
 
 - `scripts/nightly-backup.sh` — the nightly run: `backup-d1`, then
+  `backup-supabase` (only when both R2 credentials are set; a skip
+  notice is printed otherwise — never an error), then
   `prune-backups --apply`, then `sync-manifest`, then `status`. Any
   failing step aborts the run non-zero. Requires `CLOUDFLARE_API_TOKEN`
-  in the environment (materialize from Bitwarden into the cron env).
+  in the environment (materialize from Bitwarden into the cron env);
+  `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` are optional (they gate
+  the Supabase step).
 - `scripts/restore-drill.sh` — the quarterly restore drill (design
   section 8): picks 3 pseudo-random cold objects from the local
   manifest, fetches each through the rehydrator Worker and verifies its
@@ -158,6 +171,80 @@ environment only):
   is the local manifest. Prints `DRILL PASS`/`DRILL FAIL` per item
   and a final verdict; exits non-zero on any failure. Requires
   `REHYDRATOR_API_KEY` and `CLOUDFLARE_API_TOKEN` in the environment.
+
+## R2: Supabase filings and the eviction trial
+
+The `supabase-backups` R2 bucket is wired in both directions: the
+nightly job files its newest dump into Drive, and the reaper can evict
+bucket objects the cold store provably holds. Access is a minimal
+stdlib S3 client (SigV4) at the account's R2 host, with bucket-scoped
+credentials from the environment only — materialize from Bitwarden,
+never store:
+
+```sh
+R2_ACCESS_KEY_ID=<from Bitwarden: cloudflare.r2-backups-access-key-id> \
+R2_SECRET_ACCESS_KEY=<from Bitwarden: cloudflare.r2-backups-secret-access-key> \
+  cold-store backup-supabase
+```
+
+The host defaults to the account's `*.r2.cloudflarestorage.com`
+endpoint (override with `COLD_STORE_R2_HOST`; tests stub the whole
+base with `COLD_STORE_S3_BASE`).
+
+### backup-supabase
+
+Lists the bucket (paginated ListObjectsV2), picks the **newest backup
+object by LastModified** — `pg/muse-dev/manifest.json` excluded; it is
+the backup system's own index, not a dump — downloads it, and files it
+via `put-backup` as a `supabase` backup. The download is verified
+against the response's Content-Length, and a truncated body (observed
+live through this sandbox's egress proxy) retries the whole GET, up
+to 3 attempts. Filing is point-in-time, like `backup-d1`: unchanged
+content is filed again, and the command prints the content sha256 so
+the duplication is visible rather than silent.
+
+### Eviction
+
+```sh
+cold-store evict-scan                              # verdicts only, never deletes
+cold-store evict-scan --min-age-days 30 --keep-newest 5
+cold-store evict --apply                           # delete the evictable, re-verified
+```
+
+`evict-scan` prints one verdict per bucket object (`manifest.json`
+excluded). An object is **evictable** only if _all_ of these hold:
+
+- **(a) hash known** — the key is content-addressed
+  (`<sha256>.api.jsonl.zst`), so the manifest can be consulted at all;
+- **(b) cold in a verified bundle** — the manifest has the object
+  `state='cold'` and a member of a bundle whose state is `verified`
+  (Drive upload MD5-checked at ingest);
+- **(c) old enough** — LastModified at least `--min-age-days` ago
+  (default 14);
+- **(d) not protected** — not among the `--keep-newest` newest objects
+  in the bucket (default 3).
+
+Every other object gets the first failing reason: `hash-unknown`,
+`not-in-manifest`, `bundle-unverified`, `too-young`, `kept-newest`
+(age is checked before position — a young object always carries one
+of the newest LastModified stamps, so position-first would mask the
+age verdict). The scan is a pure read: it never deletes.
+
+`evict` recomputes the scan and, without `--apply`, prints it and
+exits non-zero — deletion requires the literal flag. With `--apply`,
+each evictable object is **re-verified against the manifest at
+deletion time** (the scan may be stale; nothing is deleted on a stale
+verdict), then deleted via S3, marked `state='evicted'` in the
+manifest, and recorded in the ledger (`direction='trash'`,
+`kind='evict'`, `ref=<R2 key>`). One object's failure is reported and
+does not abort the rest.
+
+The `'evicted'` state is a schema v1.2 extension (see `schema.sql`):
+local manifests are migrated in place on first open, but the **D1
+copy of the schema needs the same one-line CHECK change** before
+evicted rows can sync — until then `sync-manifest` fails on the
+`objects` statement with D1's own error text (the same caveat the
+v1.1 `'trash'` direction had).
 
 ## Manifest sync → D1
 
@@ -193,20 +280,23 @@ API-driven deploy procedure.
 
 ## Configuration
 
-| Knob                                 | Default                                                                                                                                                         |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Home dir                             | `$COLD_STORE_HOME` or `~/.config/cold-store` (or `--home`)                                                                                                      |
-| Bundle target size (design constant) | 8 GiB (`pack` packs what it is given)                                                                                                                           |
-| Upload chunk size                    | 8 MiB                                                                                                                                                           |
-| Endpoints                            | Google; overridable via `COLD_STORE_TOKEN_URL`, `COLD_STORE_DRIVE_BASE`, `COLD_STORE_UPLOAD_BASE` (used by tests)                                               |
-| D1 sync                              | `CLOUDFLARE_API_TOKEN` from env only; account/db via `COLD_STORE_CF_ACCOUNT_ID` / `COLD_STORE_CF_D1_DATABASE_ID` or `state.json`; base via `COLD_STORE_D1_BASE` |
-| zstd binary                          | `/usr/local/bin/zstd`, or `$COLD_STORE_ZSTD`                                                                                                                    |
+| Knob                                 | Default                                                                                                                                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Home dir                             | `$COLD_STORE_HOME` or `~/.config/cold-store` (or `--home`)                                                                                                               |
+| Bundle target size (design constant) | 8 GiB (`pack` packs what it is given)                                                                                                                                    |
+| Upload chunk size                    | 8 MiB                                                                                                                                                                    |
+| Endpoints                            | Google; overridable via `COLD_STORE_TOKEN_URL`, `COLD_STORE_DRIVE_BASE`, `COLD_STORE_UPLOAD_BASE` (used by tests)                                                        |
+| D1 sync                              | `CLOUDFLARE_API_TOKEN` from env only; account/db via `COLD_STORE_CF_ACCOUNT_ID` / `COLD_STORE_CF_D1_DATABASE_ID` or `state.json`; base via `COLD_STORE_D1_BASE`          |
+| R2 (S3)                              | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` from env only; host via `COLD_STORE_R2_HOST`, whole base via `COLD_STORE_S3_BASE` (tests); default bucket `supabase-backups` |
+| zstd binary                          | `/usr/local/bin/zstd`, or `$COLD_STORE_ZSTD`                                                                                                                             |
 
 ## Tests
 
 Stdlib `unittest`, no network, no credentials — a fake Drive HTTP server
 (token endpoint, folder create/list, resumable upload sessions with 308
-resume, `files.get`, Range downloads) runs in a thread:
+resume, `files.get`, Range downloads), a stubbed D1 REST endpoint, and a
+fake S3 endpoint (SigV4 capture, paginated listings, a truncate-once
+download mode) run in threads:
 
 ```sh
 python3 -m unittest discover -s pkgs/cold-store-reaper/tests -v
