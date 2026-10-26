@@ -2,7 +2,9 @@
 """cold-store reaper v1: archive files into Google Drive as immutable,
 content-addressed bundles of concatenated per-object zstd frames.
 
-Stdlib only. Compression/decompression is delegated to the `zstd` CLI.
+Stdlib only. Compression/decompression is delegated to the `zstd` CLI,
+and S3 downloads that urllib cannot deliver whole fall back to the
+`curl` CLI (see s3_get_object).
 
 Identity model (see README.md): the OAuth app holds ONLY the drive.file
 scope, so it can see nothing but files/folders it creates itself. On first
@@ -75,6 +77,10 @@ DEFAULT_R2_HOST = "234b866b99ce2b142d7963d8d139cbfa.r2.cloudflarestorage.com"
 DEFAULT_R2_BUCKET = "supabase-backups"
 R2_SIGNING_REGION = "auto"  # R2 is region-agnostic; SigV4 still needs one
 S3_GET_ATTEMPTS = 3
+# The curl fallback for S3 downloads (s3_get_object) is a last resort
+# for objects urllib cannot deliver whole; it gets one attempt and a
+# generous timeout — the objects it exists for are the large ones.
+S3_CURL_TIMEOUT_SECONDS = 900
 # Transport-level retries inside the S3 layer (LIST/GET/DELETE are all
 # idempotent). Through some egress proxies, urllib responses are
 # intermittently truncated mid-body or the connection drops outright;
@@ -105,6 +111,17 @@ def s3_error_message(body: bytes) -> str:
         return m.group(1).decode("utf-8", "replace")
     text = (body or b"").decode("utf-8", "replace").strip()
     return text[:200] if text else "no error detail in response body"
+
+
+def _scrub_secrets(text: str, *values: str) -> str:
+    """Replace credential values in text destined for an error
+    message. The curl fallback passes credentials in argv (visible in
+    the local process list, like any CLI); they must still never land
+    in logs or error text."""
+    for v in values:
+        if v:
+            text = text.replace(v, "***")
+    return text
 
 
 def _header_value(headers: dict, name: str):
@@ -260,6 +277,7 @@ class ColdStore:
         zstd=None,
         d1_base=None,
         s3_base=None,
+        curl=None,
     ):
         self.home = Path(home)
         self.credentials_path = self.home / "credentials.json"
@@ -287,6 +305,9 @@ class ColdStore:
         if not Path(candidate).exists():
             candidate = "zstd"  # fall back to PATH lookup
         self.zstd = candidate
+        # curl is the S3 download fallback of last resort
+        # (s3_get_object); PATH lookup unless overridden, like zstd.
+        self.curl = curl or os.environ.get("COLD_STORE_CURL") or "curl"
         self._access_token = None
         # Injectable so tests can zero it: transport-retry backoff for
         # the S3 layer (see _s3_request).
@@ -1424,12 +1445,25 @@ class ColdStore:
             if not truncated:
                 return out
 
-    def s3_get_object(self, bucket: str, key: str) -> bytes:
+    def s3_get_object(
+        self, bucket: str, key: str, expected_size: int | None = None
+    ) -> bytes:
         """Download one object, verifying the received byte count
         against Content-Length. A truncated body — seen live through
         this sandbox's egress proxy, where urllib surfaces it as an
         http.client.IncompleteRead (an HTTPException) or a short read —
-        retries the whole GET, up to S3_GET_ATTEMPTS attempts."""
+        retries the whole GET, up to S3_GET_ATTEMPTS attempts.
+
+        If urllib ultimately cannot deliver the object whole, fall
+        back to ONE curl attempt (_s3_get_via_curl): small responses
+        truncate intermittently and retries absorb them, but
+        multi-megabyte responses truncate systematically through this
+        proxy (every attempt cut at the same byte count), while curl
+        is immune — the same reason the Supabase backup tooling
+        replays downloads with curl. `expected_size`, when the caller
+        knows it (backup-supabase has it from the listing), is the
+        byte count the curl body is verified against.
+        """
         problem = "no attempt made"
         for _attempt in range(S3_GET_ATTEMPTS):
             try:
@@ -1443,9 +1477,91 @@ class ColdStore:
                 problem = f"truncated body: got {len(resp)} of {expected} bytes"
                 continue
             return resp
-        raise ColdStoreError(
-            f"S3 GET {bucket}/{key} failed after {S3_GET_ATTEMPTS} attempts: {problem}"
-        )
+        try:
+            return self._s3_get_via_curl(bucket, key, expected_size=expected_size)
+        except ColdStoreError as e:
+            raise ColdStoreError(
+                f"S3 GET {bucket}/{key} failed after {S3_GET_ATTEMPTS} "
+                f"urllib attempts ({problem}); {e}"
+            ) from None
+
+    def _s3_get_via_curl(
+        self, bucket: str, key: str, expected_size: int | None = None
+    ) -> bytes:
+        """One curl download of one object, byte-count verified.
+
+        The expected size is the caller's when given, else a urllib
+        HEAD's Content-Length (HEAD has no body for the proxy to
+        truncate). A body whose length cannot be established is not
+        accepted: an unverifiable download is exactly what this path
+        exists to avoid. Errors are detail-only — the caller
+        (s3_get_object) names the operation, bucket and key.
+        """
+        access, secret = self._r2_credentials()
+        if expected_size is None:
+            try:
+                status, headers, _body = self._s3_request("HEAD", bucket, key=key)
+                if status == 200:
+                    length = _header_value(headers, "Content-Length")
+                    if length is not None:
+                        expected_size = int(length)
+            except ColdStoreError:
+                pass  # no size from HEAD either; handled below
+        if expected_size is None:
+            raise ColdStoreError(
+                "curl fallback could not determine the object's size "
+                "(no caller size, no HEAD Content-Length); refusing "
+                "an unverifiable download"
+            )
+        path = "/" + urllib.parse.quote(bucket, safe="")
+        path += "/" + urllib.parse.quote(key, safe="/")
+        body = self._curl_fetch(self.s3_base + path, access, secret)
+        if len(body) != expected_size:
+            raise ColdStoreError(
+                f"curl fallback delivered {len(body)} of {expected_size} "
+                "bytes (truncated)"
+            )
+        return body
+
+    def _curl_fetch(self, url: str, access: str, secret: str) -> bytes:
+        """GET `url` with curl, which does its own SigV4 signing
+        (--aws-sigv4) and reads the proxy from the environment itself.
+        Credentials travel in argv — the local process list sees them,
+        as with any credentialed CLI — but they are scrubbed from every
+        error this raises, and nothing here is logged.
+        """
+        argv = [
+            self.curl,
+            "-sS",
+            "--fail",
+            "--aws-sigv4",
+            "aws:amz:auto:s3",
+            "--user",
+            f"{access}:{secret}",
+            url,
+        ]
+        try:
+            proc = subprocess.run(
+                argv, capture_output=True, timeout=S3_CURL_TIMEOUT_SECONDS
+            )
+        except FileNotFoundError:
+            raise ColdStoreError(
+                f"curl binary not found (looked for {self.curl!r}) — "
+                "the S3 curl fallback needs curl on PATH"
+            ) from None
+        except subprocess.TimeoutExpired:
+            raise ColdStoreError(
+                f"curl fallback timed out after {S3_CURL_TIMEOUT_SECONDS}s"
+            ) from None
+        if proc.returncode != 0:
+            detail = _scrub_secrets(
+                proc.stderr.decode("utf-8", "replace").strip()[:200], access, secret
+            )
+            raise ColdStoreError(
+                f"curl fallback failed (exit {proc.returncode}): "
+                f"{detail or 'no error output'}"
+            )
+        return proc.stdout
 
     def s3_delete_object(self, bucket: str, key: str) -> None:
         status, _h, resp = self._s3_request("DELETE", bucket, key=key)
@@ -1472,7 +1588,7 @@ class ColdStore:
         if not objects:
             raise ColdStoreError(f"no backup objects found in R2 bucket {bucket}")
         newest = max(objects, key=lambda o: (o["last_modified"] or epoch, o["key"]))
-        data = self.s3_get_object(bucket, newest["key"])
+        data = self.s3_get_object(bucket, newest["key"], expected_size=newest["size"])
         staging = self.home / "staging"
         staging.mkdir(parents=True, exist_ok=True)
         path = staging / newest["key"].rsplit("/", 1)[-1]
