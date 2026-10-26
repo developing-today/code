@@ -748,6 +748,39 @@ export function extractCharges(doc: string, registryText = ""): ChargeRow[] {
       },
     );
   }
+  // Single dated Meta charge incidents recorded after the 2026-10-25
+  // pair: the registry's billing-incident bullets ("[observed — Gmail
+  // card alert, <date> …] Meta PAYG (METAPAY) — **$X charged …**
+  // (<Card> card ending NNNN …)") and the quota view's Meta section
+  // ("Newer dated charge (<date>): $X charged … on <Card> card ending
+  // NNNN"). The same charge is written in both records, so rows are
+  // deduped on date+amount+card — each incident appears exactly once,
+  // with its own date, amount, and payment method.
+  const seenIncidents = new Set(rows.map((r) => `${r.at}|${r.amountUsd}|${r.method}`));
+  const pushIncident = (at: string, amount: string, cardName: string, last4: string) => {
+    const row: ChargeRow = {
+      at,
+      label: "Meta PAYG spill",
+      amountUsd: Number(amount),
+      method: `${cardName.trim()} •${last4}`,
+      source: "Gmail card alert (registry billing incidents)",
+    };
+    const key = `${row.at}|${row.amountUsd}|${row.method}`;
+    if (!seenIncidents.has(key)) {
+      seenIncidents.add(key);
+      rows.push(row);
+    }
+  };
+  for (const m of both.matchAll(
+    /\[observed — Gmail card alert, (\d{4}-\d{2}-\d{2}) [^\]]*\] Meta PAYG \(METAPAY\) —\s*\*\*\$(\d+(?:\.\d+)?) charged[^*]*\*\* \(([A-Za-z ]+?) card ending (\d{4})/g,
+  )) {
+    pushIncident(m[1], m[2], m[3], m[4]);
+  }
+  for (const m of both.matchAll(
+    /Newer dated charge \((\d{4}-\d{2}-\d{2})\): \$(\d+(?:\.\d+)?) charged[^.]*?on ([A-Za-z ]+?) card ending (\d{4})/g,
+  )) {
+    pushIncident(m[1], m[2], m[3], m[4]);
+  }
   const cline = sectionOf(doc, /^### ClinePass/);
   const clineCharge = /Cline Bot Inc\., \*\*\$(\d+(?:\.\d+)?)\*\* via Link, invoice (\S+)/.exec(cline);
   if (clineCharge) {

@@ -57,6 +57,18 @@ describe("quota extractors", () => {
     expect(pools.filter((x) => x.provider.includes("Meta")).length).toBe(1);
   });
 
+  test("meta billing-blocked read walls the pool with a truthful note, even after the reset", () => {
+    const blockedView = VIEW.replace(
+      "weekly quota **46% used at 03:20 CDT**, then burned to empty by morning sessions and spilled to PAYG. **Weekly reset today 2026-10-25 19:00 CDT.**",
+      "**Freshest dated read (2026-10-26, laptop meta-provider probes 14:30–14:42Z): API returns 402 billing_not_configured (billing-verification wall) on all 11 probes — pool BLOCKED, no usable quota.** Weekly reset was today 2026-10-25 19:00 CDT (that reset has since passed).",
+    );
+    const p = extractQuotaPools(blockedView, new Date("2026-10-26T17:00:00Z")).find((x) => x.id === "meta:high-usage")!;
+    expect(p.state).toBe("walled");
+    expect(p.note).toContain("billing_not_configured");
+    expect(p.note).toContain("2026-10-26");
+    expect(p.wallLiftsAt).toBeUndefined();
+  });
+
   test("opencode go workspaces are separate pools in USD", () => {
     const personal = byId.get("opencode-go:personal")!;
     expect(personal.windows[0]).toMatchObject({ unit: "usd", limit: 60, used: 36 });

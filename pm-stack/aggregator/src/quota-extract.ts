@@ -113,6 +113,21 @@ const extractCodex: Extractor = (s, now) => {
 };
 
 const extractMeta: Extractor = (s, now) => {
+  // A dated billing-blocked read (402 billing_not_configured — the
+  // billing-verification wall) outranks every window/reset read: the
+  // pool is blocked at the account level, whatever the windows say.
+  // The 100% weekly window is the fleet's blocked-status mapping (it
+  // drives poolState → walled), NOT a measured consumption percentage;
+  // the note says so, and no reset is invented for when it lifts.
+  const blocked =
+    /(\d{4}-\d{2}-\d{2})[^\n]{0,200}?billing_not_configured/i.exec(s) ??
+    /billing_not_configured[^\n]{0,200}?(\d{4}-\d{2}-\d{2})/i.exec(s);
+  if (blocked) {
+    return {
+      windows: [pctWindow("weekly", 100, null)],
+      note: `BLOCKED ${blocked[1]} — API returns 402 billing_not_configured (billing-verification wall); laptop meta-provider probes all walled, stewardship measurement gate closed. The 100% weekly window is a blocked-status mapping, not measured consumption.`,
+    };
+  }
   const reset = first(s, /[Ww]eekly reset (?:today )?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) CDT/);
   const resetIso = reset ? dateTimeCDT(reset[1], reset[2]) : null;
   const burned = /burned to empty/i.test(s);
