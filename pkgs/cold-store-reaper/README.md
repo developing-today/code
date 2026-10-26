@@ -49,7 +49,8 @@ them into a local file only on the machine that runs the reaper:
 ```
 $COLD_STORE_HOME/            # default: ~/.config/cold-store/
   credentials.json           # mode 600: {client_id, client_secret, refresh_token}
-  state.json                 # folder IDs + cached access token (no secrets)
+  state.json                 # mode 600: folder IDs + D1 pointers — no tokens
+                             # (access tokens are kept in memory only)
   manifest.sqlite            # local manifest (schema.sql)
   bundles/                   # locally packed .csb bundles awaiting upload
 ```
@@ -75,7 +76,7 @@ cold-store pack backup-2026-10-25.sql photos.tar      # -> bundles/b_<...>.csb, 
 cold-store upload b_<...>                              # resumable upload + verify + ledger
 cold-store fetch <object-sha256> ./restored.sql       # range-pull one object back
 cold-store status                                     # counts, cold bytes, last-24h transfers,
-                                                      # 700 GB/day hard-stop + 3 TiB budget checks
+                                                      # 700 GB/day hard stop + 3 TiB budget (see below)
 cold-store sync-manifest                              # push the local manifest into D1
 cold-store sync-manifest --dry-run                    # ... or just print the statement counts
 cold-store backup-d1                                  # export the D1 manifest DB into db-backups/d1/
@@ -86,6 +87,25 @@ cold-store prune-backups                              # retention plan (dry-run)
 cold-store prune-backups --apply                      # ... and trash the excess
 cold-store get-backup d1 <name> ./restored.sql        # download one backup in full
 ```
+
+### Upload guardrails (enforced, not just reported)
+
+`upload` and `put-backup` refuse **before any bytes are sent** when the
+transfer would cross either limit in the manifest's `meta` table, using
+the same ledger/meta accounting as `status` (one shared implementation,
+so the readout and the refusal can never disagree):
+
+- **Daily upload hard stop** — rolling-24h `transfer_ledger` upload
+  bytes + this transfer > `daily_upload_hard_stop_bytes`
+  (700,000,000,000 B = 700 GB, sized to stay under Google Drive's own
+  ~750 GB/user/day upload ceiling).
+- **Project budget** — verified cold bytes in Drive (sum of verified
+  bundles) + this transfer > `project_budget_bytes`
+  (3,298,534,883,328 B = 3 TiB).
+
+A refusal is a `ColdStoreError` naming the limit, the current usage,
+and the refused transfer size; nothing is uploaded and the bundle is
+not marked `uploading`.
 
 ## DB backups (design section 5)
 
