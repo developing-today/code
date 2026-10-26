@@ -21,6 +21,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -236,7 +237,35 @@ class ColdStore:
         if not self.manifest_path.exists() or self._schema_missing(conn):
             conn.executescript(SCHEMA_PATH.read_text())
             conn.commit()
+        self._migrate_ledger_trash(conn)
         return conn
+
+    @staticmethod
+    def _migrate_ledger_trash(conn) -> None:
+        """Let pre-v3 manifests record prune rows: rebuild transfer_ledger
+        with the current schema.sql definition if its CHECK predates the
+        'trash' direction. No-op for fresh or already-migrated databases."""
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='transfer_ledger'"
+        ).fetchone()
+        if row is None or "trash" in (row["sql"] or ""):
+            return
+        text = SCHEMA_PATH.read_text()
+        create = re.search(
+            r"CREATE TABLE IF NOT EXISTS transfer_ledger \(.*?\);", text, re.S
+        )
+        index = re.search(r"CREATE INDEX IF NOT EXISTS idx_ledger_ts[^;]*;", text)
+        if create is None or index is None:
+            raise ColdStoreError("schema.sql is missing the transfer_ledger definition")
+        conn.execute("ALTER TABLE transfer_ledger RENAME TO transfer_ledger_pre_trash")
+        conn.execute(create.group(0))
+        conn.execute(
+            "INSERT INTO transfer_ledger (id, ts, direction, bytes, kind, ref)"
+            " SELECT id, ts, direction, bytes, kind, ref FROM transfer_ledger_pre_trash"
+        )
+        conn.execute("DROP TABLE transfer_ledger_pre_trash")
+        conn.execute(index.group(0))
+        conn.commit()
 
     @staticmethod
     def _schema_missing(conn) -> bool:
@@ -674,8 +703,8 @@ class ColdStore:
 
         The Drive name is dated (<db>-<YYYYMMDDTHHMMSSZ>-<basename>) so a
         folder listing is already a chronological catalogue. Retention
-        enforcement (30 daily / 12 weekly / 12 monthly, trash-not-delete) is
-        NOT implemented yet — see README.
+        (30 daily / 12 weekly / 12 monthly, trash-not-delete) is enforced
+        separately by `prune-backups`.
         """
         if db_name not in BACKUP_DBS:
             raise ColdStoreError(
@@ -740,7 +769,218 @@ class ColdStore:
         out.sort(key=lambda r: r["created_time"], reverse=True)
         return out
 
+    # ------------------------------------------------- backup retention
+    @staticmethod
+    def _parse_backup_stamp(db_name: str, name: str) -> datetime | None:
+        """Timestamp embedded in a dated backup name, or None if the name
+        does not follow <db>-<YYYYMMDDTHHMMSSZ>-<basename> for this db."""
+        m = re.fullmatch(re.escape(db_name) + r"-(\d{8}T\d{6}Z)-.+", name)
+        if not m:
+            return None
+        try:
+            return datetime.strptime(m.group(1), "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _retention_plan(files: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+        """Split one db's backup listing into (keep, prune, unparseable).
+
+        `files` are list_backups rows for a single db, each with a parsed
+        `stamp` (datetime) or None. The keep set is the union of: the
+        newest backup of each of the last 30 distinct calendar days
+        present, the newest of each of the last 12 distinct ISO weeks
+        present, and the newest of each of the last 12 distinct calendar
+        months present — "present" and "newest" are read off the file set
+        itself (filename timestamps, newest-first), never the wall clock,
+        so the plan is a pure function of the folder contents. Kept rows
+        gain a `reasons` list (daily/weekly/monthly); pruned rows are the
+        parseable remainder (reason: excess); unparseable names are never
+        pruned, only reported.
+        """
+        parseable = [f for f in files if f["stamp"] is not None]
+        unparseable = [f for f in files if f["stamp"] is None]
+        parseable.sort(key=lambda f: (f["stamp"], f["name"]), reverse=True)
+
+        def newest_per(keyfn, limit):
+            seen: dict = {}
+            for f in parseable:
+                key = keyfn(f["stamp"])
+                if key not in seen and len(seen) < limit:
+                    seen[key] = f
+            return seen.values()
+
+        reasons: dict[str, set] = {}
+
+        def mark(kept, reason):
+            for f in kept:
+                reasons.setdefault(f["id"], set()).add(reason)
+
+        mark(newest_per(lambda ts: ts.date(), 30), "daily")
+        mark(newest_per(lambda ts: ts.isocalendar()[:2], 12), "weekly")
+        mark(newest_per(lambda ts: (ts.year, ts.month), 12), "monthly")
+        keep, prune = [], []
+        for f in parseable:
+            if f["id"] in reasons:
+                keep.append({**f, "reasons": sorted(reasons[f["id"]])})
+            else:
+                prune.append({**f, "reasons": ["excess"]})
+        return keep, prune, unparseable
+
+    def prune_backups(
+        self, db_name: str | None = None, apply: bool = False
+    ) -> list[dict]:
+        """Enforce backup retention (DESIGN section 5): 30 daily /
+        12 weekly / 12 monthly, trash-not-delete.
+
+        Dry-run by default: compute and return the plan without touching
+        Drive. With apply=True, each prune candidate is trashed via
+        files.update {trashed: true} (never permanently deleted) and one
+        transfer_ledger row per file is written (direction 'trash',
+        kind 'backup-prune', ref = filename).
+        """
+        if db_name is not None and db_name not in BACKUP_DBS:
+            raise ColdStoreError(
+                f"unknown backup db {db_name!r} — expected one of {', '.join(BACKUP_DBS)}"
+            )
+        dbs = [db_name] if db_name else list(BACKUP_DBS)
+        plans = []
+        for db in dbs:
+            rows = self.list_backups(db)
+            for r in rows:
+                r["stamp"] = self._parse_backup_stamp(db, r["name"])
+            keep, prune, unparseable = self._retention_plan(rows)
+            plans.append(
+                {
+                    "db": db,
+                    "keep": keep,
+                    "prune": prune,
+                    "unparseable": unparseable,
+                    "applied": apply,
+                }
+            )
+        if apply:
+            conn = self.db()
+            with conn:
+                for plan in plans:
+                    for f in plan["prune"]:
+                        status, _h, _resp = http_request(
+                            "PATCH",
+                            self.drive_base + f"/files/{f['id']}",
+                            headers=self._auth_headers(
+                                {"Content-Type": "application/json"}
+                            ),
+                            data=json.dumps({"trashed": True}).encode(),
+                        )
+                        if status != 200:
+                            raise ColdStoreError(
+                                f"trash failed for backup {f['name']} (HTTP {status})"
+                            )
+                        self.ledger_add(
+                            conn, "trash", f["size"], "backup-prune", f["name"]
+                        )
+            conn.close()
+        for plan in plans:
+            for f in plan["keep"] + plan["prune"]:
+                del f["stamp"]
+            for f in plan["unparseable"]:
+                del f["stamp"]
+        return plans
+
+    def get_backup(self, db_name: str, name: str, out_path: str) -> dict:
+        """Download one backup file, in full, by its exact Drive name."""
+        if db_name not in BACKUP_DBS:
+            raise ColdStoreError(
+                f"unknown backup db {db_name!r} — expected one of {', '.join(BACKUP_DBS)}"
+            )
+        if "'" in name:
+            raise ColdStoreError("backup name must not contain a single quote")
+        folder_id = self._folder_id(f"db-backups/{db_name}")
+        q = f"'{folder_id}' in parents and name = '{name}' and trashed = false"
+        url = (
+            self.drive_base
+            + "/files?"
+            + urllib.parse.urlencode({"q": q, "fields": "files(id,name,size)"})
+        )
+        status, _h, resp = http_request("GET", url, headers=self._auth_headers())
+        if status != 200:
+            raise ColdStoreError(f"files.list for get-backup failed (HTTP {status})")
+        files = json.loads(resp).get("files", [])
+        if not files:
+            raise ColdStoreError(f"backup not found: {db_name}/{name}")
+        file_id = files[0]["id"]
+        status, _h, resp = http_request(
+            "GET",
+            self.drive_base + f"/files/{file_id}?alt=media",
+            headers=self._auth_headers(),
+        )
+        if status != 200:
+            raise ColdStoreError(f"backup download failed (HTTP {status})")
+        Path(out_path).write_bytes(resp)
+        digest = hashlib.sha256(resp).hexdigest()
+        return {
+            "db": db_name,
+            "name": name,
+            "drive_file_id": file_id,
+            "out": out_path,
+            "bytes": len(resp),
+            "sha256": digest,
+        }
+
     # --------------------------------------------------------- manifest sync
+    def _d1_endpoint(self) -> tuple[str, str]:
+        """Resolve (bearer token, query URL) for the D1 manifest database.
+
+        The token comes from the environment only; account/database IDs
+        fall back env -> state.json -> the cold-store defaults.
+        """
+        token = os.environ.get("CLOUDFLARE_API_TOKEN")
+        if not token:
+            raise ColdStoreError(
+                "CLOUDFLARE_API_TOKEN is not set — materialize it from "
+                "Bitwarden into the environment first (it is never stored)"
+            )
+        state = self.load_state()
+        account_id = (
+            os.environ.get("COLD_STORE_CF_ACCOUNT_ID")
+            or state.get("cf_account_id")
+            or DEFAULT_CF_ACCOUNT_ID
+        )
+        database_id = (
+            os.environ.get("COLD_STORE_CF_D1_DATABASE_ID")
+            or state.get("cf_d1_database_id")
+            or DEFAULT_CF_D1_DATABASE_ID
+        )
+        url = f"{self.d1_base}/accounts/{account_id}/d1/database/{database_id}/query"
+        return token, url
+
+    def _d1_select(self, sql: str) -> list[dict]:
+        """Run one read query against D1 and return its result rows."""
+        token, url = self._d1_endpoint()
+        status, _h, resp = http_request(
+            "POST",
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            data=json.dumps({"sql": sql}).encode(),
+        )
+        if status != 200:
+            raise ColdStoreError(
+                f"D1 query failed (HTTP {status}): {d1_error_message(resp)}"
+            )
+        payload = json.loads(resp) if resp else {}
+        if payload and not payload.get("success", True):
+            errors = payload.get("errors") or [{}]
+            raise ColdStoreError(
+                f"D1 query rejected: {errors[0].get('message', 'unknown error')}"
+            )
+        results = (payload.get("result") or [{}])[0].get("results") or []
+        return results
+
     @staticmethod
     def _table_shape(conn, table: str) -> tuple[list[str], list[str]]:
         rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -814,24 +1054,7 @@ class ColdStore:
         }
         if dry_run:
             return total
-        token = os.environ.get("CLOUDFLARE_API_TOKEN")
-        if not token:
-            raise ColdStoreError(
-                "CLOUDFLARE_API_TOKEN is not set — materialize it from "
-                "Bitwarden into the environment first (it is never stored)"
-            )
-        state = self.load_state()
-        account_id = (
-            os.environ.get("COLD_STORE_CF_ACCOUNT_ID")
-            or state.get("cf_account_id")
-            or DEFAULT_CF_ACCOUNT_ID
-        )
-        database_id = (
-            os.environ.get("COLD_STORE_CF_D1_DATABASE_ID")
-            or state.get("cf_d1_database_id")
-            or DEFAULT_CF_D1_DATABASE_ID
-        )
-        url = f"{self.d1_base}/accounts/{account_id}/d1/database/{database_id}/query"
+        token, url = self._d1_endpoint()
         for stmt in statements:
             status, _h, resp = http_request(
                 "POST",
@@ -858,6 +1081,66 @@ class ColdStore:
                     f"{errors[0].get('message', 'unknown error')}"
                 )
         return total
+
+    # ------------------------------------------------------------- backup-d1
+    @staticmethod
+    def _sql_literal(value) -> str:
+        """Render one D1 JSON value as a deterministic SQL literal:
+        NULL bare, numbers bare, strings single-quoted with '' escaping."""
+        if value is None:
+            return "NULL"
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, float):
+            return repr(value)
+        return "'" + str(value).replace("'", "''") + "'"
+
+    def render_d1_export(self) -> tuple[str, list[str], int]:
+        """Export the whole D1 manifest database as deterministic SQL text.
+
+        User tables are enumerated via sqlite_master (sqlite_% and _cf_%
+        excluded), columns via pragma_table_info, rows in rowid order.
+        Returns (sql_text, table_names, total_rows).
+        """
+        tables = [
+            r["name"]
+            for r in self._d1_select(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+                " AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'"
+                " ORDER BY name"
+            )
+        ]
+        lines = [
+            "-- cold-store-manifest D1 export (via REST query API)",
+            f"-- tables: {', '.join(tables)}",
+        ]
+        total = 0
+        for t in tables:
+            cols = [
+                r["name"]
+                for r in self._d1_select(f"SELECT name FROM pragma_table_info('{t}')")
+            ]
+            rows = self._d1_select(f'SELECT * FROM "{t}" ORDER BY rowid')
+            for row in rows:
+                vals = ", ".join(self._sql_literal(row[c]) for c in cols)
+                lines.append(f'INSERT INTO "{t}" ({", ".join(cols)}) VALUES ({vals});')
+            total += len(rows)
+        return "\n".join(lines) + "\n", tables, total
+
+    def backup_d1(self) -> dict:
+        """Export the D1 cold-store-manifest database and file it as a
+        d1 backup (DESIGN section 5), via the put-backup machinery."""
+        text, tables, total = self.render_d1_export()
+        staging = self.home / "staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        path = staging / "cold-store-manifest-export.sql"
+        path.write_text(text)
+        result = self.put_backup("d1", str(path))
+        result["tables"] = tables
+        result["rows"] = total
+        return result
 
     # ---------------------------------------------------------------- status
     def status_data(self) -> dict:
@@ -970,6 +1253,26 @@ def main(argv=None) -> int:
         action="store_true",
         help="print statement counts only; contact nothing",
     )
+    p_prune = sub.add_parser(
+        "prune-backups",
+        help="enforce backup retention (30 daily / 12 weekly / 12 monthly, trash-not-delete); dry-run unless --apply",
+    )
+    p_prune.add_argument("--db", choices=BACKUP_DBS, default=None)
+    p_prune.add_argument(
+        "--apply",
+        action="store_true",
+        help="actually trash the prune candidates (default: print the plan only)",
+    )
+    p_get_backup = sub.add_parser(
+        "get-backup", help="download one backup file in full by its exact name"
+    )
+    p_get_backup.add_argument("db", choices=BACKUP_DBS)
+    p_get_backup.add_argument("name")
+    p_get_backup.add_argument("out_path")
+    sub.add_parser(
+        "backup-d1",
+        help="export the D1 cold-store-manifest database and file it as a d1 backup",
+    )
     args = parser.parse_args(argv)
     store = build_store(args)
     try:
@@ -1054,6 +1357,35 @@ def main(argv=None) -> int:
             print(
                 f"total: {verb} {result['statements']} statement(s), "
                 f"{result['rows']} row(s)"
+            )
+        elif args.cmd == "prune-backups":
+            plans = store.prune_backups(args.db, apply=args.apply)
+            for plan in plans:
+                mode = "applied" if plan["applied"] else "dry-run"
+                print(
+                    f"{plan['db']}: keep {len(plan['keep'])}, "
+                    f"prune {len(plan['prune'])}, "
+                    f"skipped-unparseable {len(plan['unparseable'])} ({mode})"
+                )
+                for f in plan["keep"]:
+                    print(f"  keep   {f['name']} [{', '.join(f['reasons'])}]")
+                for f in plan["prune"]:
+                    verb = "trashed" if plan["applied"] else "prune "
+                    print(f"  {verb} {f['name']} [excess]")
+                for f in plan["unparseable"]:
+                    print(f"  skip   {f['name']} [unparseable]")
+        elif args.cmd == "get-backup":
+            result = store.get_backup(args.db, args.name, args.out_path)
+            print(
+                f"backup {result['db']}/{result['name']} -> {result['out']}: "
+                f"{_human(result['bytes'])}, sha256 {result['sha256']}"
+            )
+        elif args.cmd == "backup-d1":
+            result = store.backup_d1()
+            print(
+                f"backup {result['name']}: {_human(result['bytes'])}, "
+                f"uploaded to Drive as {result['drive_file_id']} "
+                f"({result['rows']} row(s) across {len(result['tables'])} table(s))"
             )
     except ColdStoreError as e:
         print(f"error: {e}", file=sys.stderr)
