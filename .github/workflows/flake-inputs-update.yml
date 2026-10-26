@@ -182,7 +182,48 @@ jobs:
             echo '~~~'
             echo
           } > "${entry_file}"
-          body_file="$RUNNER_TEMP/issue-body.md"
+          # Bound the carried-over history (#947): keep only the newest
+          # entries that fit within 10 entries AND 30,000 chars, dropping
+          # the oldest first. Without this the body grows ~5,300 chars per
+          # failed attempt and passes GitHub's 65,536-char issue-body
+          # limit after roughly a dozen attempts, after which
+          # `gh issue edit` is rejected and this issue silently freezes.
+          # Attempts / First failure above are parsed from the header
+          # block, not the history, so trimming cannot corrupt them.
+          previously_trimmed=$(sed -n 's/^_\([0-9][0-9]*\) earlier attempt.*/\1/p' "${history_file}" | head -n 1)
+          previously_trimmed=${previously_trimmed:-0}
+          combined_file="$RUNNER_TEMP/history-combined.md"
+          cat "${history_file}" "${entry_file}" > "${combined_file}"
+          entries_dir="$RUNNER_TEMP/history-entries"
+          mkdir -p "${entries_dir}"
+          (cd "${entries_dir}" && csplit -s -f entry- -b '%04d.md' "${combined_file}" '/^### Attempt /' '{*}' || true)
+          entry_files=()
+          for f in "${entries_dir}"/entry-*.md; do
+            [ -f "$f" ] || continue
+            if head -n 1 "$f" | grep -q '^### Attempt '; then
+              entry_files+=("$f")
+            fi
+          done
+          total_entries=${#entry_files[@]}
+          # Select the newest contiguous entries within both bounds; the
+          # newest entry is always kept.
+          kept_start=$total_entries
+          kept_chars=0
+          kept_count=0
+          i=$((total_entries - 1))
+          while [ "$i" -ge 0 ]; do
+            entry_size=$(wc -c < "${entry_files[$i]}")
+            if [ "$kept_count" -gt 0 ]; then
+              if [ $((kept_count + 1)) -gt 10 ]; then break; fi
+              if [ $((kept_chars + entry_size)) -gt 30000 ]; then break; fi
+            fi
+            kept_chars=$((kept_chars + entry_size))
+            kept_count=$((kept_count + 1))
+            kept_start=$i
+            i=$((i - 1))
+          done
+          trimmed_count=$((previously_trimmed + kept_start))
+          header_file="$RUNNER_TEMP/issue-header.md"
           {
             echo "<!-- automated-failure-issue: flake-inputs-update -->"
             echo "Automated openchamber+opencode input updates are currently failing. This issue is maintained by the \`flake-inputs-update\` workflow: one issue per workflow, edited in place on every failed attempt, and closed by the next successful update."
@@ -194,9 +235,31 @@ jobs:
             echo "Latest run: ${RUN_URL}"
             echo
             echo "## Failure history"
-            cat "${history_file}"
-            cat "${entry_file}"
-          } > "${body_file}"
+          } > "${header_file}"
+          body_file="$RUNNER_TEMP/issue-body.md"
+          assemble_body() {
+            {
+              cat "${header_file}"
+              if [ "${trimmed_count}" -gt 0 ]; then
+                echo "_${trimmed_count} earlier attempt(s) trimmed to keep this issue under GitHub's body limit._"
+                echo
+              fi
+              j=$kept_start
+              while [ "$j" -lt "$total_entries" ]; do
+                cat "${entry_files[$j]}"
+                j=$((j + 1))
+              done
+            } > "${body_file}"
+          }
+          assemble_body
+          # Final safety net: if the assembled body still exceeds 60,000
+          # chars, drop the oldest remaining history entries until it fits
+          # (always keeping the newest entry).
+          while [ "$(wc -c < "${body_file}")" -gt 60000 ] && [ $((total_entries - kept_start)) -gt 1 ]; do
+            kept_start=$((kept_start + 1))
+            trimmed_count=$((trimmed_count + 1))
+            assemble_body
+          done
           if [ -n "${EXISTING_NUMBER}" ]; then
             gh issue edit "${EXISTING_NUMBER}" --body-file "${body_file}"
             echo "Updated failure issue #${EXISTING_NUMBER} (attempt ${attempts})."
