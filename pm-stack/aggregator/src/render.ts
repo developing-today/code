@@ -31,7 +31,9 @@ import {
   type DnsEntry,
   type DnsSection,
   type GhItem,
+  type OrchestrationSection,
   type PaygLine,
+  type ProjectPoolItem,
   type Provenance,
   type QuotaView,
   type RefKey,
@@ -50,6 +52,7 @@ import {
   refUrl,
 } from "./model.ts";
 import { PAGES } from "./pages.ts";
+import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import { type AuthorIdentity } from "./registry.ts";
 
 export function esc(s: unknown): string {
@@ -1066,4 +1069,60 @@ export function renderDiscuss(
   }</p>
 ${commentThreadHtml(objectRef, comments, opts)}`;
   return layout(title, body, provenance, "", COMMENT_SCRIPT);
+}
+
+// --- Projects page (#910 stage 5: the live GitHub Project pool) ------------
+// New function only (parallel agents own the other render functions).
+// Renders the feed's Project pool; where the Project Status and the
+// derived state (see src/projects.ts derivedProjectState) disagree,
+// BOTH are shown — neither side is silently preferred.
+
+export function renderProjects(
+  pool: ProjectPoolItem[],
+  provenance: Provenance,
+  opts: { area?: string | null; orchestration?: OrchestrationSection | null } = {},
+): string {
+  const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
+  const area = opts.area && areas.includes(opts.area) ? opts.area : null;
+  const shown = area ? pool.filter((p) => p.area === area) : pool;
+  const chips = [
+    `<a href="/projects"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
+    ...areas.map(
+      (a) =>
+        `<a href="/projects?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
+    ),
+  ].join("");
+  if (!pool.length) {
+    return layout(
+      "Projects",
+      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>`,
+      provenance,
+      "/projects",
+    );
+  }
+  const cards = shown
+    .map((p) => {
+      const derived = derivedProjectState(p, opts.orchestration);
+      const clash = projectDisagreement(p, opts.orchestration);
+      const clashBadge = clash
+        ? ` <span class="badge stale" title="The Project Status and the state the rest of the dashboard derives disagree — both are shown, neither is preferred">⚠ project: ${esc(clash.project)} · derived: ${esc(clash.derived)}</span>`
+        : "";
+      const statusBadge = p.status
+        ? `<span class="badge ${p.status === "Done" ? "merged" : p.status === "Todo" ? "closed" : "implementing"}">${esc(p.status)}</span>`
+        : `<span class="badge">no status</span>`;
+      const meta = [
+        p.area ? `<span class="badge src">${esc(p.area)}</span>` : "",
+        p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
+        p.kind ? `<span class="badge src">${esc(p.kind)}</span>` : "",
+        `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
+        `<span class="badge src">derived: ${esc(derived)}</span>`,
+      ].join(" ");
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span></div>`;
+    })
+    .join("");
+  const body = `<h1>Projects — GitHub Project pool</h1>
+<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
+<div class="chips">${chips}</div>
+${cards || '<p class="muted">No items in this area.</p>'}`;
+  return layout("Projects", body, provenance, "/projects");
 }

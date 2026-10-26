@@ -16,6 +16,7 @@ import {
   renderDns,
   renderItem,
   renderPages,
+  renderProjects,
   renderQuota,
   renderRoadmap,
   renderServiceDetail,
@@ -230,6 +231,18 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/registry.json") {
     const records = await source.registry();
     return json({ records, identities: identitiesFromRecords(records) });
+  }
+
+  if (path === "/projects") {
+    const [pool, orchestration] = await Promise.all([
+      source.projects().catch(() => []),
+      source.orchestration().catch(() => null),
+    ]);
+    return html(renderProjects(pool, prov(), { area: url.searchParams.get("area"), orchestration }));
+  }
+  if (path === "/api/projects.json") {
+    const pool = await source.projects().catch(() => []);
+    return json({ project: "developing-today#4", items: pool });
   }
 
   if (path === "/pages") {
