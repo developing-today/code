@@ -100,7 +100,7 @@ class PackageHasNoStaleCopyAndIsGated(unittest.TestCase):
         gate = src.index("isAuthorized(request, env)")
         self.assertGreater(gate, -1)
         # 503 when the secret is unset — fail closed, not open.
-        self.assertIn('if (!env.API_TOKEN)', src)
+        self.assertIn("if (!env.API_TOKEN)", src)
         self.assertIn("503", src)
         # Every container forward happens after the gate.
         for marker in ("CRAWLER_PROBE", "HELLO_CONTAINER", "HELLO_LITE"):
