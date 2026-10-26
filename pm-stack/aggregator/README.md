@@ -245,6 +245,18 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   from the §4 store; older feeds without the sections fall back to a
   direct read of the two source documents. Seed the store once with
   `bun run scripts/backfill-usage-snapshots.ts` (idempotent).
+- **Snapshot writers (hub §4)** — history accumulates three ways, all
+  riding the feed: the collector derives records from its own hub
+  sections (`src/snapshot-records.ts`) and embeds them in the feed's
+  `snapshots` field; stewardship-cycle (after a quota-view refresh)
+  and the keeper's check-usage append records to
+  `usage-snapshot-outbox.jsonl` beside the keeper state — via
+  `bun run scripts/append-usage-snapshots.ts` (add
+  `--from-provider-usage` for the keeper snapshot) or, for
+  check-usage, from Python directly — and the collector drains the
+  outbox into the same field. `Source.usage()` ingests feed records
+  into the local store; dedupe on (service, metric, timestamp, value)
+  makes every writer safe to re-run.
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
   mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with
   parent/agent/outcome; keeper supervision entries from
