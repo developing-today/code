@@ -422,6 +422,105 @@ class TestStatus(ColdStoreTestBase):
         conn.close()
 
 
+class TestUploadLimits(ColdStoreTestBase):
+    """#938: upload / put-backup enforce the daily hard stop and the
+    project budget BEFORE any bytes move, using status's accounting."""
+
+    def set_meta(self, key, value):
+        conn = self.store.db()
+        with conn:
+            conn.execute("UPDATE meta SET value=? WHERE key=?", (str(value), key))
+        conn.close()
+
+    def test_upload_refused_at_daily_stop_no_drive_writes(self):
+        src = self.write_src("a.txt", b"limit data " * 20)
+        packed = self.store.pack([str(src)])
+        # rolling-24h uploads (0) + this bundle would cross the stop
+        self.set_meta("daily_upload_hard_stop_bytes", packed["bytes"] - 1)
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.upload(packed["bundle_id"])
+        self.assertIn("daily upload hard stop", str(ctx.exception))
+        # refused before uploading: no session, no file, no folder, and
+        # the bundle was never marked uploading
+        self.assertEqual(self.fake.sessions, {})
+        self.assertEqual(self.fake.files, {})
+        self.assertEqual(self.fake.folders, [])
+        conn = self.store.db()
+        brow = conn.execute(
+            "SELECT state FROM bundles WHERE bundle_id=?", (packed["bundle_id"],)
+        ).fetchone()
+        self.assertEqual(brow["state"], "sealed")
+        conn.close()
+
+    def test_upload_refused_when_ledger_alone_crosses_stop(self):
+        src = self.write_src("a.txt", b"limit data " * 20)
+        packed = self.store.pack([str(src)])
+        self.set_meta("daily_upload_hard_stop_bytes", packed["bytes"] + 10)
+        conn = self.store.db()
+        with conn:  # 20 B already uploaded inside the rolling window
+            self.store.ledger_add(conn, "upload", 20, "bundle", "b_earlier")
+        conn.close()
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.upload(packed["bundle_id"])
+        self.assertIn("daily upload hard stop", str(ctx.exception))
+        self.assertEqual(self.fake.sessions, {})
+
+    def test_put_backup_refused_at_project_budget(self):
+        self.set_meta("project_budget_bytes", 10)
+        src = self.write_src("dump.sql", b"x" * 100)
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.put_backup("d1", str(src))
+        self.assertIn("project budget", str(ctx.exception))
+        # refused before the folder lookup could create anything
+        self.assertEqual(self.fake.sessions, {})
+        self.assertEqual(self.fake.files, {})
+        self.assertEqual(self.fake.folders, [])
+
+    def test_just_under_limits_succeeds(self):
+        src = self.write_src("a.txt", b"limit data " * 20)
+        packed = self.store.pack([str(src)])
+        self.set_meta("daily_upload_hard_stop_bytes", packed["bytes"] + 1000)
+        self.set_meta("project_budget_bytes", packed["bytes"] + 1000)
+        uploaded = self.store.upload(packed["bundle_id"])
+        self.assertTrue(uploaded["verified"])
+        # put-backup also fits: ledger/cold totals grow by the bundle,
+        # so widen both limits by the backup size plus headroom
+        backup = self.write_src("dump.sql", b"y" * 100)
+        self.set_meta("daily_upload_hard_stop_bytes", packed["bytes"] + 100 + 1000)
+        self.set_meta("project_budget_bytes", packed["bytes"] + 100 + 1000)
+        result = self.store.put_backup("d1", str(backup))
+        self.assertTrue(result["drive_file_id"])
+        self.assertEqual(result["bytes"], 100)
+
+
+class TestStateHygiene(ColdStoreTestBase):
+    """#940: the access token is never persisted; state.json is 0600."""
+
+    def test_access_token_never_persisted_and_state_is_0600(self):
+        token = self.store.access_token()
+        self.assertEqual(token, "fake-access")
+        # in-memory reuse — the second call needs no new grant
+        self.assertEqual(self.store.access_token(), "fake-access")
+        self.store.ensure_folders()  # an auth-touching op that saves state
+        raw = self.store.state_path.read_bytes()
+        self.assertNotIn(b"fake-access", raw)
+        state = json.loads(raw)
+        self.assertNotIn("access_token", state)
+        self.assertIn("folders", state)
+        mode = stat.S_IMODE(self.store.state_path.stat().st_mode)
+        self.assertEqual(mode, 0o600)
+
+    def test_legacy_token_in_state_is_purged_on_save(self):
+        state = self.store.load_state()
+        state["access_token"] = "fake-access"  # as a pre-#940 file held it
+        self.store.save_state(state)
+        raw = self.store.state_path.read_bytes()
+        self.assertNotIn(b"fake-access", raw)
+        self.assertNotIn("access_token", json.loads(raw))
+        mode = stat.S_IMODE(self.store.state_path.stat().st_mode)
+        self.assertEqual(mode, 0o600)
+
+
 # ------------------------------------------------------------------ fake D1
 class FakeD1:
     """Captures D1 REST query calls; can be told to fail.
