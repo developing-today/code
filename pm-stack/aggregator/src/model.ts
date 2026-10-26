@@ -111,6 +111,9 @@ export interface Provenance {
   comments: string;
   quota: string;
   attention: string;
+  orchestration: string;
+  dns: string;
+  registry: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,9 +189,28 @@ export type AttentionState =
   | "stalled-on-cli"
   | "stuck-retrying";
 
+/** Which runtime a session belongs to (slice 2, #898 §5). */
+export type SessionSource = "opencode-sandbox" | "opencode-laptop" | "jules" | "claude-code";
+
+export const SESSION_SOURCE_LABELS: Record<SessionSource, string> = {
+  "opencode-sandbox": "OpenCode · sandbox",
+  "opencode-laptop": "OpenCode · laptop",
+  jules: "Jules",
+  "claude-code": "Muse",
+};
+
 /** The raw feed entry for one session, as the projector / watch cron emits. */
 export interface SessionFeedEntry {
   sessionId: string;
+  /** Owning runtime; feed entries default to the sandbox server. */
+  source?: SessionSource;
+  /** Parent session id for sub-sessions (OpenCode `parentID`), else null/absent. */
+  parentId?: string | null;
+  /** Subagent name when the session is a spawned sub-session (e.g. "explore"). */
+  agent?: string;
+  /** Run outcome when the runtime reports one (succeeded/failed/interrupted). */
+  outcome?: string | null;
+  createdAt?: string;
   title?: string;
   directory?: string;
   branch?: string;
@@ -206,6 +228,9 @@ export interface SessionFeedEntry {
   /** Count of consecutive identical errors (retry-loop detection). */
   repeatedErrorCount?: number;
   pr?: string | null;
+  /** Keeper/supervision annotation for this session, when one exists
+   *  (jules-review-state.json supervision entries mentioning the id). */
+  supervisionNote?: string;
 }
 
 /** One classified session, with the evidence for its state inline. */
@@ -213,6 +238,44 @@ export interface AttentionEntry extends SessionFeedEntry {
   state: AttentionState;
   order: number; // lower = more urgent
   evidence: string;
+}
+
+/**
+ * Slice 2 tiers (#898 §2): who has to act on a session. NEEDS DREW is the
+ * default view and only holds items with an explainable `drewReason`;
+ * everything else the fleet can work itself is NEEDS ORCHESTRATOR.
+ */
+export type AttentionTier = "needs-drew" | "needs-orchestrator" | "in-motion";
+
+export interface TieredEntry extends AttentionEntry {
+  tier: AttentionTier;
+  /** Why this needs Drew — present iff tier is "needs-drew". */
+  drewReason?: string;
+  /** What the fleet will do with it — present iff tier is "needs-orchestrator". */
+  orchestratorNote?: string;
+}
+
+/** One session source's wiring status, for the coverage note (#898 §5). */
+export interface SourceCoverage {
+  source: SessionSource;
+  label: string;
+  wired: boolean;
+  detail: string;
+}
+
+/** Keeper run totals for Jules, parsed from jules-review-state.json. */
+export interface JulesSummary {
+  /** When the keeper last ran (its `last_run`). */
+  at: string | null;
+  /** Sessions the keeper currently tracks in its `items` map. */
+  tracked: number;
+  /** Totals from the keeper's freshest run note, when it parses. */
+  total?: number;
+  completed?: number;
+  failed?: number;
+  inProgress?: number;
+  awaitingFeedback?: number;
+  awaitingPlan?: number;
 }
 
 export function refKey(ref: GhRef): RefKey {
@@ -237,4 +300,222 @@ export function refsInText(text: string): RefKey[] {
 export function refUrl(key: RefKey, kind: GhKind = "issue"): string {
   const { repo, number } = parseRef(key);
   return `https://github.com/${repo}/${kind === "pr" ? "pull" : "issues"}/${number}`;
+}
+
+// ---------------------------------------------------------------------------
+// Orchestration section (#899): the recurring orchestration job's output,
+// carried in the fleet feed and served at /api/orchestration.json. The
+// dashboard's today view (#898) consumes it: tiered needs-you items with
+// per-item reasons, a flat dependency view, and per-goal measurements.
+// The orchestrator republishes the whole section every run; an item
+// absent from the newest section has expired out.
+// ---------------------------------------------------------------------------
+
+/** Assignment/measurement horizon buckets (the #899 priority ladder). */
+export type Horizon = "today" | "tomorrow" | "next-3-days" | "longer" | "incoming";
+
+export type TierName = "needs-drew" | "needs-orchestrator";
+
+/** Where a queue item came from — same source labels as the session feed. */
+export type OrchestrationSource =
+  | "opencode-sandbox"
+  | "opencode-laptop"
+  | "jules"
+  | "claude"
+  | "backlog"
+  | "tracked"
+  | "github";
+
+/** A prerequisite: "blocked by X; X is being worked by session S". */
+export interface DependencyRef {
+  /** Human label of the prerequisite task. */
+  task: string;
+  /** "owner/repo#123" when the prerequisite is a GitHub item. */
+  ref?: RefKey;
+  status: "in-progress" | "queued" | "stalled" | "done" | "unknown";
+  /** Session working the blocker, when one is. */
+  workerSessionId?: string;
+  /** Human label for the worker, e.g. "opencode-laptop · Jules 4259…". */
+  workerLabel?: string;
+}
+
+/** One classified queue item in a needs-* tier. */
+export interface TierItem {
+  /** sessionId | "owner/repo#123" | "jules:<id>" | tracked goal id. */
+  id: string;
+  kind: "session" | "decision" | "task" | "gap";
+  title: string;
+  source: OrchestrationSource;
+  /** AttentionState for sessions; a free label otherwise. */
+  state?: string;
+  /** One line: why this item sits in this tier. */
+  reason: string;
+  /** ISO: first classified into this tier. */
+  since: string;
+  /** ISO: most recent orchestrator run that still observed the item. */
+  lastSeenAt: string;
+  ref?: RefKey;
+  sessionId?: string;
+  /** The pending question, trimmed, for question-stopped items. */
+  question?: string;
+  /** Task items: ladder bucket. */
+  horizon?: Horizon;
+  blockedBy?: DependencyRef[];
+  /** The orchestrator's recorded resolution or handoff note. */
+  recommendedAction?: string;
+}
+
+/** One task lined up under a goal, with its ladder bucket. */
+export interface LinedUpTask {
+  title: string;
+  ref?: RefKey;
+  status: "in-progress" | "queued" | "blocked" | "done-recently";
+  horizon: Horizon;
+  /** Why this bucket (due date, Drew's pick, NEXT marker, …). */
+  horizonWhy: string;
+  blockedBy?: DependencyRef[];
+}
+
+/** The orchestrator's measurement of one of Drew's top goals. */
+export interface GoalMeasurement {
+  /** Tracked/user goal id when known. */
+  goalId: string | null;
+  goal: string;
+  momentum: "moving" | "stalled" | "blocked" | "no-work-lined-up";
+  /** One line. */
+  summary: string;
+  linedUp: LinedUpTask[];
+  /** What progressed since the previous orchestrator run, as evidence lines. */
+  progressedSinceLastRun: string[];
+  stalled: { title: string; since: string; blocker?: string }[];
+  /** Findings, e.g. "goal has no tasks lined up". */
+  gaps: string[];
+}
+
+/** The whole orchestration section, as embedded in the fleet feed. */
+export interface OrchestrationSection {
+  version: 1;
+  /** ISO timestamp of the orchestrator run that produced this section. */
+  generatedAt: string;
+  /** "orch-<ISO>" — the producing run. */
+  runId: string;
+  /** Sources + run, human-readable (the section's own provenance). */
+  provenance: string;
+  tiers: { needsDrew: TierItem[]; needsOrchestrator: TierItem[] };
+  /** Flat cross-item dependency view for one-place rendering. */
+  dependencies: (DependencyRef & { taskRef?: RefKey })[];
+  goals: GoalMeasurement[];
+  /** What the producing run pushed back into motion. */
+  actions: { at: string; kind: string; target: string; summary: string }[];
+}
+
+// ---------------------------------------------------------------------------
+// Slice 3 (#906): pluggable pages, dashboard comments, the DNS register
+// view, and the agent/session identity registry.
+// ---------------------------------------------------------------------------
+
+/** One row of the DNS/domain register (#902's register file, parsed). */
+export interface DnsEntry {
+  domain: string;
+  registrar: string;
+  dnsHost: string;
+  /** Next renewal date, "YYYY-MM-DD". */
+  renewal: string;
+  /** "ON" | "OFF" | "unknown" — as the register states it. */
+  autoRenew: string;
+  /** List renewal price in USD, when the register names one. */
+  priceUsd: number | null;
+  priorYearCost: string;
+  /** The register's "Where it's used" evidence cell. */
+  used: string;
+  /** The register's "Plan / status" cell. */
+  plan: string;
+  /** The register's "Review?" cell. */
+  review: string;
+  /** Derived from `plan`: in use, earmarked for a project, or unused. */
+  status: "active" | "earmarked" | "unused";
+}
+
+/** The register as the collector embeds it in the fleet feed. */
+export interface DnsSection {
+  /** ISO timestamp of the collector run that parsed the register. */
+  generatedAt: string;
+  /** Where the register came from (file + pipeline owner). */
+  source: string;
+  /** Sum of list renewal prices across the register, USD/yr. */
+  totalAnnualListUsd: number;
+  entries: DnsEntry[];
+}
+
+/**
+ * A dashboard comment (#906 §2). Distinct from the projector's `Comment`
+ * (GitHub's own stream): these are written ON the dashboard, keyed by a
+ * stable object ref — "gh:<owner/repo#N>" for GitHub-backed objects,
+ * "orch:<tier item id>", "session:<sessionId>", a board item id
+ * ("kaneo:…"/"gh:…"), or a roadmap subject ("grist:…") — so threads
+ * survive feed republishes.
+ */
+export type DashCommentKind = "message" | "note" | "github";
+
+/** Who wrote a dashboard comment. No anonymous comments exist. */
+export interface DashAuthor {
+  kind: "drew" | "muse" | "agent";
+  /** Stable identity id ("drew", "muse", a registry/session id, …). */
+  id: string;
+  /** Human display name, rendered verbatim. */
+  label: string;
+  /** For agent authors: the session the comment came from, when known. */
+  sessionId?: string;
+}
+
+export interface DashComment {
+  id: string;
+  /** The object ref the thread hangs on (see above). */
+  objectRef: string;
+  kind: DashCommentKind;
+  author: DashAuthor;
+  body: string;
+  createdAt: string;
+  /** kind "message": the orchestrator's triage state. */
+  triageState?: "new" | "triaged";
+  /** kind "github": the explicit target issue/PR the comment posts to. */
+  githubRef?: RefKey;
+  /** kind "github": pending until a fleet poster lands it, then posted. */
+  githubState?: "pending" | "posted" | "failed";
+  /** kind "github", once posted: the live comment URL. */
+  githubUrl?: string;
+}
+
+/** Runtime families the session registry tracks. */
+export type RegistrySource = SessionSource | "cron";
+
+/**
+ * One session in the identity registry (#906 §3): a stable id, a human
+ * label, the agent identity it ran as, its parent (sub-sessions), its
+ * lifecycle, its token totals where the source reports them, and the
+ * task refs it is loosely linked to (from its PR/title/launch record).
+ */
+export interface SessionRecord {
+  /** The session's own stable id (OpenCode ses_…, Jules id, launch id). */
+  id: string;
+  source: RegistrySource;
+  /** Human display name (session title, or a launch-record label). */
+  label: string;
+  /** Agent identity: "opencode:main", "opencode:<subagent>", "claude-code", "jules", "cron:<job>", … */
+  agentId: string;
+  /** Display name for the agent identity. */
+  agentLabel: string;
+  /** Parent session id for sub-sessions, else null. */
+  parentId: string | null;
+  startedAt?: string;
+  lastSeenAt?: string;
+  /** Runtime-reported outcome or lifecycle label ("in-progress", …). */
+  status: string;
+  model?: string;
+  title?: string;
+  directory?: string;
+  /** Cumulative tokens (input+output+reasoning), when reported. */
+  tokensTotal?: number;
+  /** Loose task linkage: GitHub refs this session is working. */
+  taskRefs: RefKey[];
 }

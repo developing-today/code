@@ -9,6 +9,7 @@ import seed from "../../../grist/seed/roadmap.json" with { type: "json" };
 import {
   type BoardItem,
   type Comment,
+  type DnsSection,
   type GhItem,
   type Link,
   type Provenance,
@@ -16,9 +17,12 @@ import {
   type RefKey,
   type RoadmapRow,
   type SessionFeedEntry,
+  type SessionRecord,
+  type SourceCoverage,
   refsInText,
   refUrl,
 } from "../model.ts";
+import { recordFromSessionEntry } from "../registry.ts";
 import type { Source } from "../source.ts";
 
 const GRIST_DOC = "czYHYKgG9SHcm9CPwiKEq1"; // "Program roadmap"
@@ -436,28 +440,50 @@ export const FIXTURE_QUOTA: QuotaView = {
 };
 
 // "Needs you" view (#852). One entry per state so the classifier's ordering
-// is exercised; values are illustrative.
+// is exercised; values are illustrative. Timestamps are relative to load
+// time so the slice-2 freshness expiry behaves the same whenever the
+// fixtures render: current entries are minutes old, the finished probe
+// is 30 h old and expires out.
+const ago = (h: number): string => new Date(Date.now() - h * 3_600_000).toISOString();
 export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   {
     sessionId: "ses_k_wip",
+    source: "opencode-laptop",
     title: "pm wave K — aggregator UI",
     directory: "/home/user/work/id-train/pm-aggregator-ui",
     branch: "pm/aggregator-ui",
     model: "deepseek-v4-pro",
     provider: "cloudflare-gateway",
-    lastActivityAt: "2026-10-25T02:45:00Z",
+    lastActivityAt: ago(0.4),
     messageCount: 41,
     messageDelta: 3,
     activeToolCalls: 1,
   },
   {
+    // A sub-session of ses_k_wip: collapses under its parent (slice 2).
+    sessionId: "ses_k_wip_explore",
+    source: "opencode-laptop",
+    parentId: "ses_k_wip",
+    agent: "explore",
+    outcome: "interrupted",
+    title: "Explore: locate the projector schema",
+    directory: "/home/user/work/id-train/pm-aggregator-ui",
+    model: "deepseek-v4-flash",
+    provider: "opencode-go",
+    lastActivityAt: ago(0.5),
+    messageCount: 6,
+    messageDelta: 0,
+    activeToolCalls: 0,
+  },
+  {
     sessionId: "ses_h_connect",
+    source: "opencode-laptop",
     title: "pm wave H — connect repos",
     directory: "/home/user/work/id-train/pm-connect-repos",
     branch: "pm/connect-repos",
     model: "claude-opus-5-5",
     provider: "claude-code",
-    lastActivityAt: "2026-10-25T02:30:00Z",
+    lastActivityAt: ago(0.6),
     messageCount: 88,
     messageDelta: 0,
     activeToolCalls: 0,
@@ -465,12 +491,13 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   },
   {
     sessionId: "ses_i_kaneo",
+    source: "opencode-sandbox",
     title: "pm wave I — Kaneo fork",
     directory: "/home/user/work/kaneo-fork",
     branch: "main",
     model: "muse-wonder-1.0",
     provider: "muse",
-    lastActivityAt: "2026-10-25T02:20:00Z",
+    lastActivityAt: ago(0.8),
     messageCount: 19,
     messageDelta: 0,
     activeToolCalls: 0,
@@ -478,30 +505,141 @@ export const FIXTURE_ATTENTION: SessionFeedEntry[] = [
   },
   {
     sessionId: "ses_j_proj",
+    source: "opencode-laptop",
     title: "pm wave J — projector",
     directory: "/home/user/work/id-train/pm-projector",
     branch: "pm/projector",
     model: "claude-opus-5-5",
     provider: "claude-code",
-    lastActivityAt: "2026-10-25T02:10:00Z",
+    lastActivityAt: ago(1),
     messageCount: 55,
     messageDelta: 0,
     activeToolCalls: 1,
-    longRunningCall: { command: "cargo build --release", startedAt: "2026-10-25T01:40:00Z" },
+    longRunningCall: { command: "cargo build --release", startedAt: ago(1.8) },
   },
   {
     sessionId: "ses_f_phase13",
+    source: "opencode-sandbox",
     title: "id train F — Phase 13",
     directory: "/home/user/work/id-train/phase-13-impl",
     branch: "phase-13-impl",
     model: "claude-opus-5-5",
     provider: "claude-code",
-    lastActivityAt: "2026-10-25T01:55:00Z",
+    lastActivityAt: ago(1.2),
     messageCount: 102,
     messageDelta: 0,
     activeToolCalls: 0,
     repeatedErrorCount: 4,
     lastTurnError: "claude_session_limit (retry)",
+  },
+  {
+    // Jules, wired via the keeper's state in slice 2.
+    sessionId: "4259424002214698449",
+    source: "jules",
+    title: "Fix #811: id phase-9: a joiner's resize (up to 500x200) can permanently…",
+    directory: "developing-today/code",
+    createdAt: ago(5),
+    lastActivityAt: ago(0.2),
+    messageCount: 0,
+    activeToolCalls: 0,
+    awaitingQuestion: "Does this look good, and should I proceed?",
+    supervisionNote: "Jules AWAITING_USER_FEEDBACK · keeper: replied",
+  },
+  {
+    // A finished one-shot probe: expires out of the view (slice 2).
+    sessionId: "ses_old_probe",
+    source: "opencode-sandbox",
+    outcome: "succeeded",
+    title: "one-shot probe: GEMINI LIVE",
+    directory: "/home/hatch/tmp/gemini-probe",
+    model: "gemini-3.8-flash",
+    provider: "google",
+    lastActivityAt: ago(30),
+    messageCount: 2,
+    messageDelta: 0,
+    activeToolCalls: 0,
+  },
+];
+
+// DNS register (#906 §1): real rows from #902's first-pass register
+// (2026-10-25) — one per status class, so the register page's three
+// views all render in fixture mode.
+export const FIXTURE_DNS: DnsSection = {
+  generatedAt: "2026-10-25T17:00:00Z",
+  source: "fixtures (rows from the #902 register, 2026-10-25)",
+  totalAnnualListUsd: 595.62,
+  entries: [
+    {
+      domain: "1110x.de",
+      registrar: "Porkbun",
+      dnsHost: "Porkbun",
+      renewal: "2027-02-09",
+      autoRenew: "ON",
+      priceUsd: 4.07,
+      priorYearCost: "unknown",
+      used: "No public-facing use found — Porkbun defaults only",
+      plan: "Unused — `0x111` dev-identity family (earmark inferred)",
+      review: "REVIEW — auto-renews despite no found use",
+      status: "earmarked",
+    },
+    {
+      domain: "security.cab",
+      registrar: "Porkbun",
+      dnsHost: "Cloudflare",
+      renewal: "2027-02-24",
+      autoRenew: "ON",
+      priceUsd: 29.35,
+      priorYearCost: "unknown",
+      used: "Active, recorded: kaneo.security.cab (PM board tunnel), agents.security.cab (agent-inbox email routing)",
+      plan: "Active — fleet infrastructure",
+      review: "Settled — in use",
+      status: "active",
+    },
+    {
+      domain: "grandnag.us",
+      registrar: "Porkbun",
+      dnsHost: "Porkbun",
+      renewal: "2027-02-23",
+      autoRenew: "ON",
+      priceUsd: 7.0,
+      priorYearCost: "unknown",
+      used: "No public-facing use found — Porkbun defaults only",
+      plan: "Unused — purpose unknown",
+      review: "REVIEW",
+      status: "unused",
+    },
+    {
+      domain: "drewrypope.com",
+      registrar: "Porkbun (other account)",
+      dnsHost: "Porkbun",
+      renewal: "2028-06-14",
+      autoRenew: "unknown",
+      priceUsd: 11.08,
+      priorYearCost: "unknown",
+      used: "Active, recorded: www + zettel.drewrypope.com → GitHub Pages (personal site + notes)",
+      plan: "Active",
+      review: "Settled — in use; identify which account holds it",
+      status: "active",
+    },
+  ],
+};
+
+// Identity registry fixtures (#906 §3): the attention fixtures as
+// records (with token totals on two), plus one Muse launch
+// record so the claude-code source renders in fixture mode.
+export const FIXTURE_REGISTRY: SessionRecord[] = [
+  ...FIXTURE_ATTENTION.map((e, i) => recordFromSessionEntry(e, i === 0 ? 3_412_000 : i === 2 ? 1_208_500 : undefined)),
+  {
+    id: "claude-2026-10-25-slice2-review",
+    source: "claude-code",
+    label: "Dashboard slice-2 review (main chat subagent)",
+    agentId: "claude-code",
+    agentLabel: "Muse",
+    parentId: null,
+    startedAt: "2026-10-25T14:02:00Z",
+    lastSeenAt: "2026-10-25T14:31:00Z",
+    status: "succeeded",
+    taskRefs: [`${CODE}#898`],
   },
 ];
 
@@ -514,6 +652,9 @@ export function fixtureSource(): Source {
     comments: "fixtures",
     quota: "fixtures",
     attention: "fixtures",
+    orchestration: "fixtures",
+    dns: "fixtures",
+    registry: "fixtures",
   };
   return {
     board: async () => FIXTURE_BOARD,
@@ -525,6 +666,38 @@ export function fixtureSource(): Source {
     },
     quota: async () => FIXTURE_QUOTA,
     attention: async () => FIXTURE_ATTENTION,
+    // Fixtures carry no orchestration section: "not measured" is the
+    // honest fixture state for a job that only runs live (#899).
+    orchestration: async () => null,
+    dns: async () => FIXTURE_DNS,
+    registry: async () => FIXTURE_REGISTRY,
+    coverage: async (): Promise<SourceCoverage[]> => [
+      {
+        source: "opencode-sandbox",
+        label: "OpenCode · sandbox server",
+        wired: true,
+        detail: "fixtures",
+      },
+      {
+        source: "opencode-laptop",
+        label: "OpenCode · laptop server",
+        wired: true,
+        detail: "fixtures",
+      },
+      {
+        source: "jules",
+        label: "Jules",
+        wired: true,
+        detail: "fixtures (keeper state)",
+      },
+      {
+        source: "claude-code",
+        label: "Muse",
+        wired: false,
+        detail:
+          "Not wired — Muse subagents run inside the assistant runtime, which exposes no session registry for the aggregator to read. Gap tracked in #898.",
+      },
+    ],
     provenance: () => provenance,
   };
 }

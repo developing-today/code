@@ -1,0 +1,390 @@
+import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import { spawn, type Subprocess } from "bun";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommentsStore, validateNewComment } from "../src/comments.ts";
+import { dnsSectionFromRegister, parseDnsRegister, summarizeDns } from "../src/dns.ts";
+import type { SessionFeedEntry } from "../src/model.ts";
+import { PAGES } from "../src/pages.ts";
+import { agentIdentityOf, mergeRecords, parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
+import { renderBoard, renderDns, renderPages, renderSessions } from "../src/render.ts";
+import { FIXTURE_BOARD, FIXTURE_DNS, FIXTURE_ITEMS, FIXTURE_REGISTRY, fixtureSource } from "../src/sources/fixtures.ts";
+
+// --- DNS register parsing (#906 §1, register format from #902) --------------
+
+const REGISTER_MD = `# DNS / Domain Register
+
+Prose with a | pipe | table-ish line that is not the register.
+
+| Domain | Registrar | DNS hosted at | Next renewal | Auto-renew | Renewal price (list) | Prior-year cost | Where it's used | Plan / status | Review? |
+|---|---|---|---|---|---|---|---|---|---|
+| later.dev | Porkbun | Porkbun | 2027-05-01 | ON | $12.87 | unknown | No public-facing use found | Unused — purpose unknown | REVIEW |
+| first.de | Porkbun | Porkbun | 2027-02-09 | ON | $4.07 | unknown | No public-facing use found | Unused — \`0x111\` family (earmark inferred) | REVIEW |
+| active.example | Porkbun | **Cloudflare** | 2027-02-24 | ON | $29.35 | unknown | Active, recorded: something real | **Active** — fleet infrastructure | Settled — in use |
+| noprice.example | Porkbun | Porkbun | 2028-01-01 | unknown | — | unknown | Parked | Parked — namesake brand (earmark inferred) | REVIEW |
+`;
+
+describe("dns register parser", () => {
+  test("parses the register table, renewal-sorted, bold cells cleaned", () => {
+    const entries = parseDnsRegister(REGISTER_MD);
+    expect(entries.length).toBe(4);
+    expect(entries[0].domain).toBe("first.de");
+    expect(entries[0].priceUsd).toBe(4.07);
+    const active = entries.find((e) => e.domain === "active.example");
+    expect(active?.dnsHost).toBe("Cloudflare");
+    expect(active?.plan).toBe("Active — fleet infrastructure");
+    expect(active?.status).toBe("active");
+    expect(entries.find((e) => e.domain === "noprice.example")?.priceUsd).toBeNull();
+  });
+
+  test("classifies active / earmarked / unused from the plan cell", () => {
+    const entries = parseDnsRegister(REGISTER_MD);
+    const byStatus = (s: string) => entries.filter((e) => e.status === s).map((e) => e.domain);
+    expect(byStatus("active")).toEqual(["active.example"]);
+    expect(byStatus("earmarked").sort()).toEqual(["first.de", "noprice.example"]);
+    expect(byStatus("unused")).toEqual(["later.dev"]);
+  });
+
+  test("section totals + summary views", () => {
+    const section = dnsSectionFromRegister(REGISTER_MD, "2026-10-25T00:00:00Z", "test");
+    expect(section).not.toBeNull();
+    expect(section?.totalAnnualListUsd).toBe(46.29);
+    const summary = summarizeDns(section!, new Date("2026-12-28T00:00:00Z"), 45);
+    expect(summary.nextRenewal?.domain).toBe("first.de");
+    expect(summary.renewingSoon.map((e) => e.domain)).toEqual(["first.de"]);
+  });
+
+  test("a file without the register table parses to nothing (fail-soft)", () => {
+    expect(parseDnsRegister("# nothing here\n")).toEqual([]);
+    expect(dnsSectionFromRegister("# nothing\n", "2026-10-25T00:00:00Z", "test")).toBeNull();
+  });
+});
+
+// --- Identity registry (#906 §3) ---------------------------------------------
+
+const entry = (over: Partial<SessionFeedEntry>): SessionFeedEntry => ({
+  sessionId: "ses_x",
+  source: "opencode-sandbox",
+  lastActivityAt: "2026-10-25T15:00:00Z",
+  ...over,
+});
+
+describe("session registry", () => {
+  test("records carry identity, parent, tokens, and task refs from the title", () => {
+    const rec = recordFromSessionEntry(
+      entry({
+        parentId: "ses_parent",
+        agent: "explore",
+        title: "Work on https://github.com/developing-today/code/issues/906 today",
+        outcome: null,
+        activeToolCalls: 1,
+      }),
+      1234,
+    );
+    expect(rec.agentId).toBe("opencode:explore");
+    expect(rec.parentId).toBe("ses_parent");
+    expect(rec.tokensTotal).toBe(1234);
+    expect(rec.taskRefs).toEqual(["developing-today/code#906"]);
+    expect(rec.status).toBe("in-progress");
+    expect(agentIdentityOf(entry({ source: "jules" })).agentId).toBe("jules");
+  });
+
+  test("launch records parse; torn lines are skipped", () => {
+    const records = parseLaunchRecords(
+      [
+        JSON.stringify({ id: "claude-1", label: "Builder", taskRefs: ["developing-today/code#906"] }),
+        "{torn",
+        JSON.stringify({ id: "claude-2", label: "Reviewer", parentId: "claude-1" }),
+      ].join("\n"),
+    );
+    expect(records.length).toBe(2);
+    expect(records[0].source).toBe("claude-code");
+    expect(records[1].parentId).toBe("claude-1");
+  });
+
+  test("merge keeps the record, maxes cumulative tokens, unions task refs", () => {
+    const a = recordFromSessionEntry(entry({ sessionId: "ses_m", title: "t" }), 100);
+    const b = { ...a, tokensTotal: 250, taskRefs: ["developing-today/code#1"], lastSeenAt: "2026-10-25T16:00:00Z" };
+    const merged = mergeRecords([a], [b]);
+    expect(merged.length).toBe(1);
+    expect(merged[0].tokensTotal).toBe(250);
+    expect(merged[0].taskRefs).toEqual(["developing-today/code#1"]);
+    // A later merge with fewer tokens never lowers the cumulative total.
+    expect(mergeRecords(merged, [a])[0].tokensTotal).toBe(250);
+  });
+});
+
+// --- Comments store (#906 §2) ------------------------------------------------
+
+describe("dashboard comments", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agg-comments-"));
+  const file = join(dir, "comments.json");
+  const drew = { kind: "drew" as const, id: "drew", label: "Drew" };
+  const agent = { kind: "agent" as const, id: "ses_a", label: "OpenCode · main (laptop)", sessionId: "ses_a" };
+
+  test("add/list/counts, triage, github result, persistence", async () => {
+    const store = new CommentsStore(file);
+    const note = await store.add({
+      objectRef: "gh:developing-today/code#906",
+      kind: "note",
+      author: drew,
+      body: "a note",
+    });
+    const msg = await store.add({
+      objectRef: "gh:developing-today/code#906",
+      kind: "message",
+      author: drew,
+      body: "please do X",
+    });
+    const gh = await store.add({
+      objectRef: "gh:developing-today/code#906",
+      kind: "github",
+      author: agent,
+      body: "posting this",
+      githubRef: "developing-today/code#906",
+    });
+    expect(note.triageState).toBeUndefined();
+    expect(msg.triageState).toBe("new");
+    expect(gh.githubState).toBe("pending");
+    expect((await store.counts()).get("gh:developing-today/code#906")).toBe(3);
+    expect(await store.markTriaged([msg.id])).toBe(1);
+    expect(await store.markTriaged([msg.id])).toBe(0); // idempotent
+    const posted = await store.markGithubResult(gh.id, { url: "https://github.com/x#issuecomment-1" });
+    expect(posted?.githubState).toBe("posted");
+    // A fresh store over the same file sees the same state.
+    const reloaded = new CommentsStore(file);
+    expect((await reloaded.all()).length).toBe(3);
+    expect((await reloaded.all()).find((c) => c.id === gh.id)?.githubUrl).toContain("issuecomment-1");
+  });
+
+  test("validation rejects anonymous authors, empty bodies, targetless github comments", () => {
+    expect(validateNewComment({ objectRef: "x", kind: "note", body: "hi" }).ok).toBe(false);
+    expect(validateNewComment({ objectRef: "x", kind: "note", author: drew, body: "  " }).ok).toBe(false);
+    expect(validateNewComment({ objectRef: "x", kind: "github", author: drew, body: "hi" }).ok).toBe(false);
+    expect(
+      validateNewComment({
+        objectRef: "x",
+        kind: "github",
+        author: drew,
+        body: "hi",
+        githubRef: "developing-today/code#906",
+      }).ok,
+    ).toBe(true);
+    // Drew's authorship from a raw string author is never accepted.
+    expect(validateNewComment({ objectRef: "x", kind: "note", author: "drew", body: "hi" }).ok).toBe(false);
+  });
+});
+
+// --- Pages manifest + renders --------------------------------------------------
+
+describe("pages manifest + slice-3 renders", () => {
+  test("manifest registers dns + sessions; routes unique", () => {
+    const routes = PAGES.map((p) => p.route);
+    expect(new Set(routes).size).toBe(routes.length);
+    expect(PAGES.find((p) => p.id === "dns")?.route).toBe("/dns");
+    expect(PAGES.find((p) => p.id === "sessions")?.api).toBe("/api/registry.json");
+  });
+
+  test("nav + dropdown render from the manifest", async () => {
+    const src = fixtureSource();
+    const refs = [...FIXTURE_ITEMS.values()].map((i) => i.ref);
+    const html = renderBoard(FIXTURE_BOARD, await src.items(refs), src.provenance());
+    expect(html).toContain("Pages ▾");
+    expect(html).toContain('value="/dns"');
+    expect(html).toContain('value="/sessions"');
+    expect(html).toContain("DNS register");
+  });
+
+  test("dns page renders the three views + next renewal", () => {
+    const html = renderDns(FIXTURE_DNS, fixtureSource().provenance());
+    expect(html).toContain("Next renewal");
+    expect(html).toContain("1110x.de");
+    expect(html).toContain("Unused but earmarked");
+    expect(html).toContain("Completely unused");
+    expect(html).toContain("grandnag.us");
+    expect(html).toContain("security.cab");
+  });
+
+  test("dns page without a section says so honestly", () => {
+    const html = renderDns(null, fixtureSource().provenance());
+    expect(html).toContain("has not reached the dashboard yet");
+  });
+
+  test("sessions page renders identities, parents, tokens", () => {
+    const html = renderSessions(FIXTURE_REGISTRY, fixtureSource().provenance());
+    expect(html).toContain("identity registry");
+    expect(html).toContain("Muse");
+    expect(html).toContain("claude-2026-10-25-slice2-review");
+    expect(html).toContain("tok");
+  });
+
+  test("pages page lists the manifest", () => {
+    const html = renderPages(fixtureSource().provenance());
+    expect(html).toContain("/api/registry.json");
+    expect(html).toContain("All pages");
+  });
+});
+
+// --- OpenCode session-identity tool ---------------------------------------------
+
+describe("opencode session-identity tool", () => {
+  test("payload carries session id, parent, agent", async () => {
+    mock.module("@opencode-ai/plugin", () => ({ tool: (def: unknown) => def }));
+    const mod = await import("../opencode-tools/session-identity.ts");
+    const payload = mod.identityPayload(
+      { sessionID: "ses_1", agent: "explore", directory: "/work", worktree: "/work" },
+      "ses_0",
+    );
+    expect(payload).toEqual({
+      sessionId: "ses_1",
+      parentId: "ses_0",
+      agent: "explore",
+      directory: "/work",
+      worktree: "/work",
+    });
+    const def = mod.default as { execute: (a: object, c: object) => Promise<string> };
+    const out = JSON.parse(await def.execute({}, { sessionID: "ses_9", agent: "main" }));
+    expect(out.sessionId).toBe("ses_9");
+    expect(out.parentId).toBeNull(); // no server env in tests — fail-soft
+  });
+});
+
+// --- Boot: slice-3 routes over HTTP ----------------------------------------------
+
+let proc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
+let port = 0;
+const tmp = mkdtempSync(join(tmpdir(), "agg-slice3-"));
+
+beforeAll(async () => {
+  port = 5200 + Math.floor(Math.random() * 800);
+  const commentsFile = join(tmp, "comments.json");
+  writeFileSync(commentsFile, JSON.stringify({ version: 1, comments: [] }));
+  proc = spawn({
+    cmd: ["bun", "run", "src/server.ts"],
+    cwd: import.meta.dir + "/..",
+    env: {
+      ...Bun.env,
+      PM_AGG_PORT: String(port),
+      PM_AGG_SOURCE: "fixtures",
+      PM_AGG_COMMENTS_FILE: commentsFile,
+      PM_AGG_REGISTRY_FILE: join(tmp, "registry.json"),
+    },
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  const deadline = Date.now() + 8000;
+  let ready = false;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+      if (res.ok) {
+        ready = true;
+        break;
+      }
+    } catch {
+      /* not up yet */
+    }
+    await Bun.sleep(120);
+  }
+  expect(ready).toBe(true);
+});
+
+afterAll(() => {
+  proc?.kill();
+});
+
+describe("slice-3 routes", () => {
+  test("dns + sessions + pages routes serve", async () => {
+    const dns = await (await fetch(`http://127.0.0.1:${port}/dns`)).text();
+    expect(dns).toContain("DNS / domain register");
+    const dnsJson = (await (await fetch(`http://127.0.0.1:${port}/api/dns.json`)).json()) as {
+      entries: unknown[];
+      totalAnnualListUsd: number;
+    };
+    expect(dnsJson.entries.length).toBe(4);
+    expect(dnsJson.totalAnnualListUsd).toBe(595.62);
+    const sessions = await (await fetch(`http://127.0.0.1:${port}/sessions`)).text();
+    expect(sessions).toContain("identity registry");
+    const registry = (await (await fetch(`http://127.0.0.1:${port}/api/registry.json`)).json()) as {
+      records: { source: string }[];
+      identities: { kind: string }[];
+    };
+    expect(registry.records.some((r) => r.source === "claude-code")).toBe(true);
+    expect(registry.identities.some((i) => i.kind === "drew")).toBe(true);
+    const pages = await (await fetch(`http://127.0.0.1:${port}/pages`)).text();
+    expect(pages).toContain("All pages");
+  });
+
+  test("comments round-trip: post both kinds + github, triage, result", async () => {
+    const post = (body: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const author = { kind: "drew", id: "drew", label: "Drew" };
+    const ref = "gh:developing-today/code#906";
+    const note = await post({ objectRef: ref, kind: "note", author, body: "a plain note" });
+    expect(note.status).toBe(201);
+    const msg = await post({ objectRef: ref, kind: "message", author, body: "Muse: please check X" });
+    const msgBody = (await msg.json()) as { comment: { id: string } };
+    const ghRes = await post({
+      objectRef: ref,
+      kind: "github",
+      author,
+      body: "for the issue",
+      githubRef: "developing-today/code#906",
+    });
+    const ghBody = (await ghRes.json()) as { comment: { id: string } };
+
+    const list = (await (await fetch(`http://127.0.0.1:${port}/api/comments.json?kind=message&state=new`)).json()) as {
+      comments: unknown[];
+      pending: { messages: number; github: number };
+    };
+    expect(list.comments.length).toBe(1);
+    expect(list.pending.messages).toBe(1);
+    expect(list.pending.github).toBe(1);
+
+    const triage = (await (
+      await fetch(`http://127.0.0.1:${port}/api/comments/triage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids: [msgBody.comment.id] }),
+      })
+    ).json()) as { triaged: number };
+    expect(triage.triaged).toBe(1);
+
+    const result = (await (
+      await fetch(`http://127.0.0.1:${port}/api/comments/github-result`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: ghBody.comment.id,
+          url: "https://github.com/developing-today/code/issues/906#issuecomment-1",
+        }),
+      })
+    ).json()) as { comment: { githubState: string } };
+    expect(result.comment.githubState).toBe("posted");
+
+    // Anonymous authorship is refused.
+    const anon = await post({ objectRef: ref, kind: "note", body: "no author" });
+    expect(anon.status).toBe(400);
+
+    // The discuss page renders the thread + the form.
+    const discuss = await (await fetch(`http://127.0.0.1:${port}/discuss/${encodeURIComponent(ref)}`)).text();
+    expect(discuss).toContain("a plain note");
+    expect(discuss).toContain("message to Muse");
+    expect(discuss).toContain("Post as GitHub comment");
+  });
+
+  test("item page carries the dashboard comments form + kinds explainer", async () => {
+    const board = (await (await fetch(`http://127.0.0.1:${port}/api/board.json`)).json()) as {
+      board: { id: string }[];
+    };
+    const id = encodeURIComponent(board.board[0].id);
+    const html = await (await fetch(`http://127.0.0.1:${port}/item/${id}`)).text();
+    expect(html).toContain("Dashboard comments");
+    expect(html).toContain("cform");
+  });
+});
