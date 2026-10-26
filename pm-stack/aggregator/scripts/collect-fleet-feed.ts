@@ -21,8 +21,11 @@
 // Env overrides: QUOTA_VIEW_PATH, JULES_STATE_PATH, SANDBOX_OPENCODE_URL,
 // OPENCODE_SERVER_PASSWORD_FILE, ORCHESTRATION_PATH, DNS_REGISTER_PATH,
 // CLAUDE_LAUNCH_RECORDS_PATH, QUOTA_REGISTRY_PATH (the hub's PAYG/charges
-// sections read the provider registry's billing incidents, fail-soft).
-import { readFile, writeFile } from "node:fs/promises";
+// sections read the provider registry's billing incidents, fail-soft),
+// USAGE_SNAPSHOT_OUTBOX_PATH (the §4 writers' outbox JSONL — stewardship
+// and check-usage append records there; each collection drains it into
+// the feed's snapshots field for the laptop store to ingest).
+import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,7 +42,9 @@ import type {
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
-import type { ChargeRow, PaygLine, SaasService } from "../src/model.ts";
+import type { ChargeRow, PaygLine, SaasService, SnapshotRecord } from "../src/model.ts";
+import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from "../src/snapshot-records.ts";
+import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
 import { parseLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
@@ -63,6 +68,8 @@ const dnsRegisterPath =
   join(HOME, "workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md");
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
+const snapshotOutboxPath =
+  process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
   process.env.OPENCODE_SERVER_PASSWORD_FILE ?? join(HOME, "tools/secrets.d/opencode-server-password");
@@ -113,6 +120,41 @@ async function supervisionNotes(): Promise<Map<string, string>> {
     /* annotations are best-effort */
   }
   return notes;
+}
+
+/**
+ * Drain the §4 writers' outbox: records appended by stewardship-cycle
+ * (scripts/append-usage-snapshots.ts) and the keeper's check-usage.
+ * Rename-then-read so a writer appending mid-collection lands in the
+ * fresh file for the next run — nothing is lost, and the laptop store
+ * dedupes anything forwarded twice.
+ */
+async function drainSnapshotOutbox(): Promise<SnapshotRecord[]> {
+  const drainPath = `${snapshotOutboxPath}.drain-${process.pid}`;
+  try {
+    await rename(snapshotOutboxPath, drainPath);
+  } catch {
+    return []; // no outbox yet — the normal state until a writer runs
+  }
+  try {
+    const text = await readFile(drainPath, "utf8");
+    const out: SnapshotRecord[] = [];
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const parsed: unknown = JSON.parse(line);
+        if (isSnapshotRecord(parsed)) out.push(parsed);
+      } catch {
+        // one bad line never blocks the drain
+      }
+    }
+    return out;
+  } catch (err) {
+    console.error(`collector: snapshot outbox drain failed (${err}); records stay for the next run`);
+    return [];
+  } finally {
+    await unlink(drainPath).catch(() => {});
+  }
 }
 
 async function main(): Promise<void> {
@@ -238,6 +280,36 @@ async function main(): Promise<void> {
     // pre-#899 state — omit the section silently.
   }
 
+  // --- usage snapshot records (hub §4 writers) ---------------------------
+  // Writer (a): records derived from this run's own hub sections. Each
+  // carries its read's own date, so an unchanged read re-derives the
+  // identical record and the laptop store dedupes it — only genuinely
+  // new observations grow the history. Writers (b)/(c) arrive via the
+  // outbox drain and ride the same field.
+  const snapshotRecords: SnapshotRecord[] = [];
+  if (saas) snapshotRecords.push(...recordsFromSaasServices(saas, "fleet-feed-collector"));
+  if (payg) snapshotRecords.push(...recordsFromPaygLines(payg, "fleet-feed-collector"));
+  if (dns) {
+    try {
+      const registerStat = await stat(dnsRegisterPath);
+      snapshotRecords.push(...recordsFromDns(dns, registerStat.mtime.toISOString(), "fleet-feed-collector"));
+    } catch {
+      console.error("collector: DNS register stat failed; dns snapshot records omitted this run");
+    }
+  }
+  snapshotRecords.push(...(await drainSnapshotOutbox()));
+  const dedupedSnapshots: SnapshotRecord[] = [];
+  {
+    const seen = new Set<string>();
+    for (const r of snapshotRecords) {
+      const k = snapshotKey(r);
+      if (!seen.has(k)) {
+        seen.add(k);
+        dedupedSnapshots.push(r);
+      }
+    }
+  }
+
   const feed: FleetFeed = {
     version: 1,
     generatedAt: now.toISOString(),
@@ -251,6 +323,7 @@ async function main(): Promise<void> {
     ...(payg ? { payg } : {}),
     ...(charges ? { charges } : {}),
     ...(subscriptions ? { subscriptions } : {}),
+    ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
   };
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   const withReads = pools.filter((p) => p.windows.length > 0).length;
@@ -261,6 +334,7 @@ async function main(): Promise<void> {
       (saas
         ? `, hub ${saas.length} services / ${payg?.length ?? 0} payg / ${charges?.length ?? 0} charges`
         : ", no hub sections") +
+      (dedupedSnapshots.length ? `, snapshots ${dedupedSnapshots.length} records` : "") +
       `, registry ${registry.length} records`,
   );
 }

@@ -523,10 +523,16 @@ export function liveSource(cfg: Config): Source {
       // collector extracts Part (b) on the sandbox, where the sources
       // of record live); when an older feed has none, extract directly
       // from the quota view + registry files; fixtures only when
-      // neither exists. Snapshot history always comes from the local
-      // store (§4) — the aggregator reads it, writers live elsewhere.
+      // neither exists. Snapshot history comes from the local store
+      // (§4): the feed carries the writers' records (collector-derived
+      // plus the stewardship / check-usage outbox), and ingesting them
+      // here — append with dedupe — is the one write this reader makes.
       const feed = await getFeed();
-      const history = await new SnapshotStore(cfg.snapshotsDir).byService().catch(() => ({}));
+      const store = new SnapshotStore(cfg.snapshotsDir);
+      if (feed?.snapshots?.length) {
+        await store.append(feed.snapshots).catch(() => 0);
+      }
+      const history = await store.byService().catch(() => ({}));
       const domains =
         feed?.dns && isDnsSection(feed.dns)
           ? {

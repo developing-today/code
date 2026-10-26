@@ -14,6 +14,7 @@ import type {
   SaasService,
   SessionFeedEntry,
   SessionRecord,
+  SnapshotRecord,
 } from "./model.ts";
 
 export interface FleetFeed {
@@ -40,6 +41,12 @@ export interface FleetFeed {
   charges?: ChargeRow[];
   /** Hub subscriptions strip rows (Q5: renewal-only). */
   subscriptions?: { name: string; plan: string; renewsAt: string | null }[];
+  /** Usage snapshot records (hub §4 writers): derived by the collector
+   * from this feed's own hub sections plus the writers' outbox, for
+   * the laptop aggregator to ingest into its local snapshot store.
+   * Absent in older feeds; the store dedupes, so republication of the
+   * same observations appends nothing. */
+  snapshots?: SnapshotRecord[];
 }
 
 /**
