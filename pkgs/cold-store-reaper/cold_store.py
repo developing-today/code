@@ -53,7 +53,34 @@ DEFAULT_D1_BASE = "https://api.cloudflare.com/client/v4"
 DEFAULT_CF_ACCOUNT_ID = "234b866b99ce2b142d7963d8d139cbfa"
 DEFAULT_CF_D1_DATABASE_ID = "15d5f460-835c-4f24-b229-222908a5b30c"
 MANIFEST_TABLES = ("objects", "bundles", "members", "transfer_ledger", "meta")
-D1_SYNC_BATCH_ROWS = 50
+# D1 allows at most 100 bound parameters per query. A sync statement batches
+# whole rows, so it costs rows x columns parameters: a flat row batch (50
+# rows x 8 columns for objects = 400 params) is rejected once a table grows.
+# Batch size is therefore computed per table from its column count against
+# a 90-parameter budget, keeping headroom under the hard limit.
+D1_MAX_PARAMS_PER_QUERY = 100
+D1_SYNC_PARAM_BUDGET = 90
+
+
+def d1_sync_batch_rows(ncols: int) -> int:
+    """Rows per sync statement for a table with ncols columns."""
+    return max(1, D1_SYNC_PARAM_BUDGET // ncols)
+
+
+def d1_error_message(resp: bytes) -> str:
+    """Best-effort extraction of the D1 API's own error text from a
+    response body, so a sync failure is diagnosable from the CLI output
+    alone instead of just an HTTP status."""
+    try:
+        payload = json.loads(resp) if resp else {}
+    except (ValueError, TypeError):
+        payload = {}
+    errors = payload.get("errors") or []
+    if errors and errors[0].get("message"):
+        return str(errors[0]["message"])
+    text = (resp or b"").decode("utf-8", "replace").strip()
+    return text[:200] if text else "no error detail in response body"
+
 
 # Design constant: bundles are sealed at this size in the full reaper;
 # `pack` packs exactly what it is given regardless of size.
@@ -742,9 +769,11 @@ class ColdStore:
         """Read the local manifest and build batched D1 upsert statements.
 
         Returns (statements, per-table {"rows": n, "statements": m}). Each
-        statement carries at most D1_SYNC_BATCH_ROWS row-groups so a re-sync
-        is a handful of HTTP calls, and every statement is an idempotent
-        upsert keyed by the table's primary key from schema.sql.
+        table's batch is sized by d1_sync_batch_rows(len(cols)) so a
+        statement's bound parameters (rows x columns) stay within
+        D1_SYNC_PARAM_BUDGET, under D1's per-query limit. Every statement
+        is an idempotent upsert keyed by the table's primary key from
+        schema.sql, so a re-sync is a handful of HTTP calls.
         """
         conn = self.db()
         statements: list[dict] = []
@@ -755,9 +784,10 @@ class ColdStore:
             rows = conn.execute(
                 f"SELECT {', '.join(cols)} FROM {table} ORDER BY {order}"
             ).fetchall()
+            batch_rows = d1_sync_batch_rows(len(cols))
             table_statements = 0
-            for i in range(0, len(rows), D1_SYNC_BATCH_ROWS):
-                chunk = rows[i : i + D1_SYNC_BATCH_ROWS]
+            for i in range(0, len(rows), batch_rows):
+                chunk = rows[i : i + batch_rows]
                 params: list = []
                 for row in chunk:
                     params.extend(row[c] for c in cols)
@@ -816,8 +846,9 @@ class ColdStore:
             )
             if status != 200:
                 raise ColdStoreError(
-                    f"D1 sync failed (HTTP {status}) on table {stmt['table']} — "
-                    "statements already sent are idempotent upserts, re-run to resume"
+                    f"D1 sync failed (HTTP {status}) on table {stmt['table']}: "
+                    f"{d1_error_message(resp)} — statements already sent are "
+                    "idempotent upserts, re-run to resume"
                 )
             payload = json.loads(resp) if resp else {}
             if payload and not payload.get("success", True):
