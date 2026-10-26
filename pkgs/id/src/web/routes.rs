@@ -2057,8 +2057,15 @@ fn extract_plain_text(doc: &serde_json::Value) -> String {
 /// Extract raw text from a `ProseMirror` doc with `code_block` nodes.
 ///
 /// Used for code and config files where the content is a single `code_block`.
+///
+/// Text nodes within one `code_block` are concatenated with NO separator:
+/// the editor and collab layer split a block's text into multiple nodes
+/// (at cursor/selection boundaries, marks, or peer edit points), and those
+/// splits are not line breaks — joining them with "\n" inserted spurious
+/// lines on Raw-mode save (#932). A single "\n" separates distinct
+/// `code_block`s, matching how the blocks were authored.
 fn extract_raw_text(doc: &serde_json::Value) -> String {
-    let mut parts = Vec::new();
+    let mut blocks = Vec::new();
 
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
         for node in content {
@@ -2066,16 +2073,18 @@ fn extract_raw_text(doc: &serde_json::Value) -> String {
             if node_type == "code_block"
                 && let Some(inline_content) = node.get("content").and_then(|c| c.as_array())
             {
+                let mut block = String::new();
                 for inline in inline_content {
                     if let Some(text) = inline.get("text").and_then(|t| t.as_str()) {
-                        parts.push(text.to_owned());
+                        block.push_str(text);
                     }
                 }
+                blocks.push(block);
             }
         }
     }
 
-    parts.join("\n")
+    blocks.join("\n")
 }
 
 /// Archive the original tag by creating a timestamped copy.
@@ -2707,6 +2716,59 @@ async fn identity_update_name_handler(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    fn raw_doc(blocks: &[&[&str]]) -> serde_json::Value {
+        let content: Vec<serde_json::Value> = blocks
+            .iter()
+            .map(|nodes| {
+                let inline: Vec<serde_json::Value> = nodes
+                    .iter()
+                    .map(|t| serde_json::json!({"type": "text", "text": t}))
+                    .collect();
+                serde_json::json!({"type": "code_block", "content": inline})
+            })
+            .collect();
+        serde_json::json!({"type": "doc", "content": content})
+    }
+
+    #[test]
+    fn test_extract_raw_text_single_node() {
+        let doc = raw_doc(&[&["let x = 42;"]]);
+        assert_eq!(extract_raw_text(&doc), "let x = 42;");
+    }
+
+    #[test]
+    fn test_extract_raw_text_split_mid_line_no_separator() {
+        // Regression (#932): editor/collab text-node splits inside one
+        // code_block are not line breaks.
+        let doc = raw_doc(&[&["let x = ", "42;"]]);
+        assert_eq!(extract_raw_text(&doc), "let x = 42;");
+    }
+
+    #[test]
+    fn test_extract_raw_text_split_inside_string_literal() {
+        let doc = raw_doc(&[&["let s = \"hel", "lo\";"]]);
+        assert_eq!(extract_raw_text(&doc), "let s = \"hello\";");
+    }
+
+    #[test]
+    fn test_extract_raw_text_split_doc_byte_identical_to_single_node() {
+        let split = raw_doc(&[&["fn main() {", "\n    println!(\"hi\");", "\n}"]]);
+        let single = raw_doc(&[&["fn main() {\n    println!(\"hi\");\n}"]]);
+        assert_eq!(extract_raw_text(&split), extract_raw_text(&single));
+    }
+
+    #[test]
+    fn test_extract_raw_text_multiple_blocks_single_newline() {
+        let doc = raw_doc(&[&["first"], &["second"]]);
+        assert_eq!(extract_raw_text(&doc), "first\nsecond");
+    }
+
+    #[test]
+    fn test_extract_raw_text_multiple_blocks_with_splits() {
+        let doc = raw_doc(&[&["fir", "st"], &["sec", "ond"]]);
+        assert_eq!(extract_raw_text(&doc), "first\nsecond");
+    }
 
     #[test]
     fn test_classify_tag_primary() {
