@@ -341,18 +341,20 @@ describe("explorer points (charts + perspectives)", () => {
       rankings,
       thresholds: [],
       configs: [],
-      testRuns: rows.map((r, i): AaTestRun => ({
-        testRunKey: `k${i}`,
-        modelVariantKey: `k${i}`,
-        snapshotDate: "2026-09-28",
-        intelligence: r.score,
-        costPerTaskUsd: r.cost,
-        outputSpeedTps: 100,
-        ttftSeconds: 5,
-        firstAnswerSeconds: null,
-        e2e500Seconds: null,
-        timePerTaskSeconds: r.time,
-      })),
+      testRuns: rows.map(
+        (r, i): AaTestRun => ({
+          testRunKey: `k${i}`,
+          modelVariantKey: `k${i}`,
+          snapshotDate: "2026-09-28",
+          intelligence: r.score,
+          costPerTaskUsd: r.cost,
+          outputSpeedTps: 100,
+          ttftSeconds: 5,
+          firstAnswerSeconds: null,
+          e2e500Seconds: null,
+          timePerTaskSeconds: r.time,
+        }),
+      ),
     };
   }
 
