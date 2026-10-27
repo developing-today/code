@@ -25,6 +25,14 @@
 #                             nightly run, but the skip is never silent.
 #   TURSO_ORG                 optional; the Turso organization slug
 #                             (default dezren39).
+#   TURSO_DUMP_MAX_TIME_SECONDS
+#                             optional; curl --max-time for one
+#                             database's /dump download (default
+#                             1800). Large databases (atlas is
+#                             ~500 MB of SQL) outgrow the old fixed
+#                             300 s cap; the download also gets one
+#                             whole-request retry on transport
+#                             failure. Small databases are unaffected.
 #   TURSO_API_BASE            optional; Platform API base URL
 #                             (default https://api.turso.tech).
 #                             Test seam, mirrors COLD_STORE_S3_BASE.
@@ -47,6 +55,14 @@ if [[ -z ${TURSO_PLATFORM_API_TOKEN:-} ]]; then
 fi
 
 ORG="${TURSO_ORG:-dezren39}"
+DUMP_MAX_TIME="${TURSO_DUMP_MAX_TIME_SECONDS:-1800}"
+case "${DUMP_MAX_TIME}" in
+  '' | *[!0-9]*)
+    echo "turso export: ERROR: TURSO_DUMP_MAX_TIME_SECONDS must be a positive integer (got '${DUMP_MAX_TIME}')" >&2
+    exit 1
+    ;;
+  *) ;;
+esac
 API_BASE="${TURSO_API_BASE:-https://api.turso.tech}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COLD_STORE="${COLD_STORE_BIN:-${SCRIPT_DIR}/../cold-store}"
@@ -129,7 +145,8 @@ PY
   else
     dump_url="https://${hostname}/dump"
   fi
-  if ! curl_auth "${jwt}" -fsS --max-time 300 \
+  if ! curl_auth "${jwt}" -fsS --max-time "${DUMP_MAX_TIME}" \
+    --retry 1 --retry-all-errors \
     "${dump_url}" -o "${dump_sql}"; then
     echo "turso export: ERROR: ${name}: dump download failed (${dump_url})" >&2
     return 1
