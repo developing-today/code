@@ -942,8 +942,16 @@ enum Placement {
 
 fn placement_of(node_type: &str) -> Option<Placement> {
     match node_type {
-        "paragraph" | "heading" | "blockquote" | "code_block" | "horizontal_rule" | "bullet_list"
-        | "ordered_list" | "task_list" | "table" | "footnote_definition" => Some(Placement::Block),
+        "paragraph"
+        | "heading"
+        | "blockquote"
+        | "code_block"
+        | "horizontal_rule"
+        | "bullet_list"
+        | "ordered_list"
+        | "task_list"
+        | "table"
+        | "footnote_definition" => Some(Placement::Block),
         "text" | "image" | "hard_break" | "html_inline" | "footnote_reference" => {
             Some(Placement::Inline)
         }
