@@ -743,6 +743,62 @@ export interface AaTestRun {
 }
 
 /**
+ * One Coding Agent Index row of ainventory.benchmark_results (the
+ * workbook's Coding_Agent_Results import): a model + effort + agent
+ * harness observation, kept strictly separate from the AA Intelligence
+ * Index — no score conversion between the indexes (the ChatGPT
+ * explorers' cross-benchmark rule). Component scores are the published
+ * fractions (0–1) of DeepSWE v1.1 / Terminal-Bench 4.0 / SWE-Atlas-QnA;
+ * the page renders them as percents.
+ */
+export interface AaCaiRow {
+  /** Model name as reported, effort included, e.g. "GPT-6.1 Sol (xhigh)". */
+  modelName: string;
+  /** Family display name: modelName with the trailing "(effort)" removed. */
+  family: string;
+  /** Creator display name, mapped from the observation key's creator slug. */
+  creator: string;
+  /** Effort label as reported ("not stated" stays "not stated"). */
+  effort: string | null;
+  /** Benchmark version, e.g. "v1.5" (one historical "v1.4" row rides along). */
+  version: string | null;
+  /** Coding Agent Index score (0–100 scale of that index). */
+  score: number | null;
+  /** Published cost per coding task, USD; null = not published/comparable. */
+  cost: number | null;
+  /** Average agent wall time per task, seconds. */
+  wallSec: number | null;
+  /** Total token usage per task. */
+  tokensPerTask: number | null;
+  /** Agent harness the observation ran under, e.g. "Codex". */
+  harness: string | null;
+  deepSwe: number | null;
+  terminalBench: number | null;
+  sweAtlas: number | null;
+  snapshotDate: string | null;
+  sourceUrl: string | null;
+}
+
+/**
+ * One current token price from the ainventory event log
+ * (v_current_prices — the #1248 append-only price events, resolved to
+ * current): USD per 1M tokens for one model id (models.dev-style
+ * "provider/model"), one context band, one rate window. windowKind is
+ * "flat" unless the provider runs a time-of-day schedule.
+ */
+export interface AaPrice {
+  /** Models.dev-style id the price is recorded under. */
+  modelName: string;
+  inputPer1M: number | null;
+  outputPer1M: number | null;
+  cacheReadPer1M: number | null;
+  cacheWritePer1M: number | null;
+  contextMinTokens: number | null;
+  contextMaxTokens: number | null;
+  windowKind: string | null;
+}
+
+/**
  * Pool/catalog coverage, computed by the collector from the repo's
  * .opencode/opencode.jsonc (provider catalog + model_routes leaves,
  * nested routes expanded) against the AA-measured model names.
@@ -791,6 +847,13 @@ export interface AaPoint {
   scorePerSecond: number | null;
   eligible: boolean;
   qualStatus: string | null;
+  /** Agent harness (CAI points only; null on AA points). */
+  harness: string | null;
+  /** Total tokens per task (CAI points only; the workbook's AA rows
+   * do not carry a per-task token count). */
+  tokensPerTask: number | null;
+  /** CAI component scores as published fractions (CAI points only). */
+  components: { deepSwe: number | null; terminalBench: number | null; sweAtlas: number | null } | null;
   /** On the cost×score Pareto frontier (cheaper-or-equal, smarter-or-equal unbeaten). */
   frontierCost: boolean;
   /** On the time×score Pareto frontier. */
@@ -845,6 +908,29 @@ export interface AaCatalogEntry {
   aaCostPerTask: number | null;
   /** Fastest measured time/task among the family's ranked rows. */
   aaTimePerTask: number | null;
+  /**
+   * Current token rates (USD per 1M) from the ainventory price event
+   * log, when a price is recorded for this model — the Model Explorer's
+   * task-projection calculator prices from these, and only these.
+   * `bands` are the recorded context bands (the projection picks the
+   * band the task's per-turn input falls in, like Site 2's long-tier
+   * rule); `windowed` marks a provider with a time-of-day schedule
+   * (the projection's DeepSeek peak/off-peak toggle reads it).
+   */
+  rate?: {
+    bands: {
+      minTokens: number | null;
+      maxTokens: number | null;
+      input: number | null;
+      output: number | null;
+      cacheRead: number | null;
+      cacheWrite: number | null;
+      /** Rate window of the price row: "flat", or a time-of-day window
+       * ("peak" / "offpeak") for scheduled providers (DeepSeek). */
+      window: string | null;
+    }[];
+    windowed: boolean;
+  } | null;
 }
 
 /** The AA explorer section as the collector embeds it in the fleet feed. */
@@ -864,6 +950,13 @@ export interface AaSection {
   /** The fleet catalog for the Model Explorer tab, from the same
    * config read as coverage; absent on the same condition. */
   catalog?: AaCatalogEntry[];
+  /** Coding Agent Index rows of the same batch (separate benchmark
+   * family — the explorer's "Coding agents" perspective); absent when
+   * the collector's payload predates them. */
+  cai?: AaCaiRow[];
+  /** Current token prices from the ainventory price event log
+   * (v_current_prices); absent on the same condition as cai. */
+  prices?: AaPrice[];
 }
 
 /** The section's degraded form: the collector could not reach Supabase

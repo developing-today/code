@@ -9,8 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   aaAbsent,
+  aaCaiPoints,
   aaCatalogFromConfig,
   aaPoints,
+  caiFamily,
   aaSectionFromSupabase,
   computeAaCoverage,
   isAaSection,
@@ -24,7 +26,7 @@ import {
 import { PAGES } from "../src/pages.ts";
 import { renderAa } from "../src/render.ts";
 import { FIXTURE_AA, fixtureSource } from "../src/sources/fixtures.ts";
-import type { AaRanking, AaSection, AaTestRun, Provenance } from "../src/model.ts";
+import type { AaCaiRow, AaPrice, AaRanking, AaSection, AaTestRun, Provenance } from "../src/model.ts";
 
 const PROV: Provenance = {
   board: "x",
@@ -461,6 +463,105 @@ describe("fleet catalog (Model Explorer)", () => {
   });
 });
 
+describe("Coding Agent Index points (Coding agents perspective)", () => {
+  const row = (over: Partial<AaCaiRow>): AaCaiRow => ({
+    modelName: "GPT-6.1 Sol (xhigh)",
+    family: "GPT-6.1 Sol",
+    creator: "OpenAI",
+    effort: "xhigh",
+    version: "v1.5",
+    score: 63,
+    cost: 1.04,
+    wallSec: 931.2,
+    tokensPerTask: 3212528,
+    harness: "Codex",
+    deepSwe: null,
+    terminalBench: null,
+    sweAtlas: null,
+    snapshotDate: "2026-10-17",
+    sourceUrl: null,
+    ...over,
+  });
+
+  test("caiFamily strips only the row's own effort suffix", () => {
+    expect(caiFamily("GPT-6.1 Sol (xhigh)", "xhigh")).toBe("GPT-6.1 Sol");
+    expect(caiFamily("Beam 1.0", "not stated")).toBe("Beam 1.0");
+    expect(caiFamily("Model (Special Edition)", "low")).toBe("Model (Special Edition)");
+    expect(caiFamily("No Suffix", null)).toBe("No Suffix");
+  });
+
+  test("points keep the CAI measures and compute frontiers inside the CAI population only", () => {
+    const pts = aaCaiPoints([
+      row({}),
+      row({
+        modelName: "Muse Wonder Full (max)",
+        family: "Muse Wonder Full",
+        creator: "Meta",
+        effort: "max",
+        score: 68,
+        cost: null,
+        wallSec: 1725.6,
+        harness: "Muse Code",
+        tokensPerTask: null,
+      }),
+      row({
+        modelName: "DeepSeek V4 Flash 0731 (max)",
+        family: "DeepSeek V4 Flash 0731",
+        creator: "DeepSeek",
+        effort: "max",
+        score: 39,
+        cost: 0.0851,
+        wallSec: 1096.8,
+        harness: "Codex",
+      }),
+    ]);
+    expect(pts.length).toBe(3);
+    const sol = pts[0];
+    expect(sol.score).toBe(63);
+    expect(sol.time).toBe(931.2); // agent wall time rides the time slot
+    expect(sol.tps).toBeNull(); // CAI publishes no decode speed — never invented
+    expect(sol.harness).toBe("Codex");
+    expect(sol.benchmark).toBe("Coding Agent Index v1.5");
+    // Sol is beaten on all three axes by nobody here (Wonder has no cost).
+    expect(sol.frontierCost).toBe(true);
+    expect(sol.beatenBy).toEqual([]);
+    const wonder = pts[1];
+    expect(wonder.frontierCost).toBe(false); // no published cost -> no cost frontier
+    const flash = pts[2];
+    expect(flash.frontierCostTime).toBe(true); // cheapest, and nothing is cheaper+faster
+  });
+
+  test("catalog prices carry their rate window (peak/off-peak stay separate bands)", () => {
+    const prices: AaPrice[] = [
+      {
+        modelName: "openai/gpt-6-luna",
+        inputPer1M: 1.4,
+        outputPer1M: 8,
+        cacheReadPer1M: 0.14,
+        cacheWritePer1M: null,
+        contextMinTokens: null,
+        contextMaxTokens: null,
+        windowKind: "peak",
+      },
+      {
+        modelName: "openai/gpt-6-luna",
+        inputPer1M: 0.7,
+        outputPer1M: 4,
+        cacheReadPer1M: 0.07,
+        cacheWritePer1M: null,
+        contextMinTokens: null,
+        contextMaxTokens: null,
+        windowKind: "offpeak",
+      },
+    ];
+    const catalog = aaCatalogFromConfig(CONFIG_SNIPPET, { configs: [], rankings: [] }, prices);
+    const luna = catalog!.find((e) => e.id === "openai/gpt-6-luna")!;
+    expect(luna.rate?.windowed).toBe(true);
+    expect(luna.rate?.bands.map((b) => b.window).sort()).toEqual(["offpeak", "peak"]);
+    expect(luna.rate?.bands.find((b) => b.window === "offpeak")?.input).toBe(0.7);
+  });
+});
+
 describe("aa-explorer manifest + render", () => {
   test("PAGES carries the aa-explorer page with unique routes", () => {
     const page = PAGES.find((p) => p.id === "aa-explorer");
@@ -502,6 +603,26 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain("not measured"); // the fixture's unmeasured flash row
     expect(html).toContain("commandcode/reflection/beam:free");
     expect(html).toContain("claude-code/claude-haiku-5-5"); // catalog entry, disabled door
+    expect(html).toContain('data-persp="cai"'); // Coding agents perspective
+    expect(html).toContain("caiPoints"); // the CAI point set rides the embedded JSON
+    expect(html).toContain("GPT-6.1 Sol"); // a CAI family, in the observations table
+    expect(html).toContain("Coding Agent Index observations");
+    expect(html).toContain('id="xpl-pf-score"'); // Pareto frontier tables
+    expect(html).toContain('id="xpl-pf-price"');
+    expect(html).toContain('id="xf-pfcut"');
+    expect(html).toContain('id="xpl-recs"'); // recommendations engine
+    expect(html).toContain('data-rec="speedPriority"');
+    expect(html).toContain('data-recpreset="fast"');
+    expect(html).toContain('id="xpl-bandgroups"'); // band comparisons
+    expect(html).toContain('id="xf-bandscale"');
+    expect(html).toContain('data-pj="inputTokens"'); // task-assumptions projection
+    expect(html).toContain('data-pjpreset="repo"');
+    expect(html).toContain("Proj. $/task");
+    expect(html).toContain('id="xf-ineq-mode"'); // inequality filters with Pareto gaps
+    expect(html).toContain('id="xf-ineq-conds"');
+    expect(html).toContain('id="xf-setup-list"'); // saved setups
+    expect(html).toContain('id="xf-dl-json"'); // joined-data download
+    expect(html).toContain('id="xf-dl-csv"');
     expect(html).toContain("8152e746"); // batch provenance
     expect(html).toContain("/api/aa.json");
   });

@@ -28,11 +28,12 @@ import {
   proposalIdentity,
 } from "./tier-items.ts";
 import { githubCommentUrl } from "./comments.ts";
-import { aaPoints, summarizeAa } from "./aa.ts";
+import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
 import type { HealthView } from "./health.ts";
 import {
+  type AaCaiRow,
   type AaConfig,
   type AaFeedSection,
   type AaRanking,
@@ -2023,12 +2024,16 @@ const AA_EXPLORER_SCRIPT = `<script>
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
   var DATA = JSON.parse(dataEl.textContent);
-  var POINTS = DATA.points || [];
+  var AA_POINTS = DATA.points || [];
+  var CAI_POINTS = DATA.caiPoints || [];
   var CATALOG = DATA.catalog || null;
+  var POINTS = AA_POINTS;
   var PALETTE = ["#58a6ff","#3fb950","#e3b341","#f778ba","#bc8cff","#ffa657","#79c0ff","#56d364","#ff7b72","#a5d6ff","#7ee787","#f0883e","#d2a8ff","#e67e22","#2166ac","#b2182b","#1a9850","#386cb0","#7570b3","#66a61e","#e7298a","#bf812d","#0891b2","#ec4899","#2f9e6e","#d97706","#3b82f6","#a855f7","#94a3b8"];
   var famColor = {};
   var famList = [];
-  POINTS.forEach(function (p) {
+  // Colors are assigned over the union of both benchmark families so a
+  // family keeps its color when the perspective switches.
+  AA_POINTS.concat(CAI_POINTS).forEach(function (p) {
     if (!(p.family in famColor)) { famColor[p.family] = PALETTE[famList.length % PALETTE.length]; famList.push(p.family); }
   });
   var EORD = { "non-reasoning": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5, "reasoning": 6 };
@@ -2075,8 +2080,46 @@ const AA_EXPLORER_SCRIPT = `<script>
     if (b == null) return -1;
     return a - b;
   }
+  // --- benchmark perspective helpers -------------------------------------
+  // The two benchmark families (AA Intelligence Index / Coding Agent
+  // Index) are never converted into each other; the perspective only
+  // swaps which point set is active and what its score is called.
+  function scoreWord() { return S.persp === "cai" ? "CAI score" : "Intelligence"; }
+  function scoreAxis() { return S.persp === "cai" ? "Coding Agent Index" : "Intelligence Index"; }
+  function timeWord() { return S.persp === "cai" ? "agent wall time" : "time"; }
+  /** Percentile rank of v within vals (100 = best). higherBetter picks
+   * the direction; ties split. Null when the population is too small. */
+  function pctRank(vals, v, higherBetter) {
+    var xs = vals.filter(function (x) { return x != null; });
+    if (xs.length < 2 || v == null) return null;
+    var worse = 0, ties = 0;
+    xs.forEach(function (x) {
+      if (x === v) ties++;
+      else if (higherBetter ? x < v : x > v) worse++;
+    });
+    return Math.round((100 * (worse + 0.5 * (ties - 1))) / (xs.length - 1));
+  }
+  /** Non-dominated subset: dims are {get, better:"high"|"low"}; a point
+   * is kept unless another is at least as good on every dim and strictly
+   * better on one. Points missing any dim are excluded. */
+  function paretoSet(rows, dims) {
+    var pool = rows.filter(function (p) { return dims.every(function (d) { return d.get(p) != null; }); });
+    return pool.filter(function (p) {
+      return !pool.some(function (q) {
+        if (q === p) return false;
+        var allGe = true, anyGt = false;
+        dims.forEach(function (d) {
+          var a = d.get(q), b = d.get(p);
+          if (d.better === "high") { if (a < b) allGe = false; if (a > b) anyGt = true; }
+          else { if (a > b) allGe = false; if (a < b) anyGt = true; }
+        });
+        return allGe && anyGt;
+      });
+    });
+  }
   var S = {
     tab: location.hash === "#models" ? "models" : "aa",
+    persp: "aa",
     xp: "api",
     q: "",
     creator: "",
@@ -2094,13 +2137,19 @@ const AA_EXPLORER_SCRIPT = `<script>
     sizeBy: {},
     tasksMode: "per",
     baseline: "",
+    pfCut: "50",
+    bandCount: 3,
+    bandScale: 1,
+    rec: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
+    pj: { turns: 3, inputTokens: 20000, answerTokens: 2000, thinkingTokens: 4000, cacheReadPct: 50, writesPct: 0, overheadSec: 10, window: "peak" },
+    ineq: { mode: "off", combine: "and", conds: [{ metric: "score", op: ">=", value: "" }, { metric: "cost", op: "<=", value: "" }, { metric: "time", op: "<=", value: "" }] },
   };
   var XP_NOTES = {
     plan: "Plan perspective — plan quotas are sunk cost, so dollars are ignored: ranked on intelligence per second (speed + intelligence). Cost columns hidden.",
     api: "API perspective — ranked on intelligence per dollar and cost per task; the cost × score frontier is the value curve.",
     pertask: "Per-task perspective — ranked on total time and total cost to finish one task (the workbook's measured per-task figures, TTFT shown where timed).",
   };
-  function visPoints() {
+  function basePoints() {
     return POINTS.filter(function (p) {
       if (S.q && (p.family + " " + (p.effort || "") + " " + p.creator).toLowerCase().indexOf(S.q) < 0) return false;
       if (S.creator && p.creator !== S.creator) return false;
@@ -2111,6 +2160,61 @@ const AA_EXPLORER_SCRIPT = `<script>
       if (S.off[p.family]) return false;
       if (S.hidden.indexOf(p.key) >= 0) return false;
       return true;
+    });
+  }
+  // --- inequality filters with Pareto-gap metrics (Site 1) ---------------
+  // Gaps are measured against the observed frontier of the current scope
+  // (all other filters applied): score gap = best score at or below this
+  // cost minus this score; price premium = this cost over the cheapest
+  // cost at or above this score; speed gap = score gap against time.
+  function gapMetrics(rows) {
+    var map = {};
+    rows.forEach(function (p) {
+      var g = { score: p.score, cost: p.cost, time: p.time, tps: p.tps, gapScore: null, gapCost: null, gapSpeed: null };
+      if (p.cost != null && p.score != null) {
+        var best = null, minCost = null;
+        rows.forEach(function (q) {
+          if (q.cost == null || q.score == null) return;
+          if (q.cost <= p.cost && (best == null || q.score > best)) best = q.score;
+          if (q.score >= p.score && (minCost == null || q.cost < minCost)) minCost = q.cost;
+        });
+        if (best != null) g.gapScore = best - p.score;
+        if (minCost != null && minCost > 0) g.gapCost = p.cost / minCost;
+      }
+      if (p.time != null && p.score != null) {
+        var bestT = null;
+        rows.forEach(function (q) {
+          if (q.time == null || q.score == null) return;
+          if (q.time <= p.time && (bestT == null || q.score > bestT)) bestT = q.score;
+        });
+        if (bestT != null) g.gapSpeed = bestT - p.score;
+      }
+      map[p.key] = g;
+    });
+    return map;
+  }
+  var INEQ_OPS = {
+    "<": function (a, b) { return a < b; },
+    "<=": function (a, b) { return a <= b; },
+    "=": function (a, b) { return a === b; },
+    ">=": function (a, b) { return a >= b; },
+    ">": function (a, b) { return a > b; },
+  };
+  function visPoints() {
+    var base = basePoints();
+    if (S.ineq.mode === "off") return base;
+    var active = S.ineq.conds.filter(function (c) { return c.value !== "" && !isNaN(Number(c.value)); });
+    if (!active.length) return base;
+    var gaps = gapMetrics(base);
+    return base.filter(function (p) {
+      var g = gaps[p.key];
+      var results = active.map(function (c) {
+        var v = g ? g[c.metric] : null;
+        if (v == null || !INEQ_OPS[c.op]) return false;
+        return INEQ_OPS[c.op](v, Number(c.value));
+      });
+      var match = S.ineq.combine === "or" ? results.some(function (x) { return x; }) : results.every(function (x) { return x; });
+      return S.ineq.mode === "reject" ? !match : match;
     });
   }
   function visCatalog() {
@@ -2226,7 +2330,7 @@ const AA_EXPLORER_SCRIPT = `<script>
       }
     });
     g += '<text x="' + (ML + PW / 2) + '" y="' + (H - 4) + '" font-size="10.5" fill="#8b949e" text-anchor="middle">' + cfg.xlabel + "</text>";
-    g += '<text x="12" y="' + (MT + PH / 2) + '" font-size="10.5" fill="#8b949e" text-anchor="middle" transform="rotate(-90 12 ' + (MT + PH / 2) + ')">' + cfg.ylabel + "</text>";
+    g += '<text x="12" y="' + (MT + PH / 2) + '" font-size="10.5" fill="#8b949e" text-anchor="middle" transform="rotate(-90 12 ' + (MT + PH / 2) + ')">' + cfg.ylabel.replace("Intelligence Index", scoreAxis()) + "</text>";
     // effort ladder lines per family (kept readable: only when few points show)
     if (rows.length <= 60) {
       famList.forEach(function (fam) {
@@ -2265,7 +2369,7 @@ const AA_EXPLORER_SCRIPT = `<script>
       var col = famColor[p.family];
       var r = radius(p, onF);
       var hollow = p.benchmark && p.benchmark.indexOf("AA") !== 0;
-      var tip = p.family + " " + (p.effort || "") + " — Intelligence " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + "/task" + (p.tps != null ? " · " + p.tps + " tok/s" : "") + (hollow ? " · " + p.benchmark + " basis" : "");
+      var tip = p.family + " " + (p.effort || "") + " — " + scoreWord() + " " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + "/task" + (p.tps != null ? " · " + p.tps + " tok/s" : "") + (hollow ? " · " + p.benchmark + " basis" : "");
       g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) + '" fill="' + (onF ? col : "#9aa0a6") + '" fill-opacity="' + (hollow ? 0.25 : onF ? 0.9 : 0.5) + '" stroke="' + (S.sel === p.key ? "#fff" : onF ? col : "#6b7075") + '" stroke-width="' + (S.sel === p.key ? 2 : 1) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
       if (onF || S.sel === p.key) {
         var anchorEnd = cx > ML + PW * 0.78;
@@ -2302,6 +2406,15 @@ const AA_EXPLORER_SCRIPT = `<script>
     drawTasks();
     drawMultiples();
     drawScores();
+  }
+  function downloadFile(name, text, type) {
+    var blob = new Blob([text], { type: type || "text/plain" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.download = name;
+    a.href = url;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 500);
   }
   function downloadPng(svgId) {
     var svg = document.getElementById(svgId);
@@ -2384,7 +2497,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     pts.forEach(function (t) {
       var p = t.p, cx = X(t.tasks), cy = Y(t.y), col = famColor[p.family];
       var hollow = p.benchmark && p.benchmark.indexOf("AA") !== 0;
-      var tip = shortLabel(p) + " — $" + t.budget + " nominal → " + t.tasks + " tasks · " + fmtT(p.time) + "/task · " + fmt$(p.cost) + "/task · Intelligence " + fmtN(p.score, 1) + (t.goTasks ? " · published Go cap buys " + fmtInt(t.goTasks) + " tasks" : "");
+      var tip = shortLabel(p) + " — $" + t.budget + " nominal → " + t.tasks + " tasks · " + fmtT(p.time) + "/task · " + fmt$(p.cost) + "/task · " + scoreWord() + " " + fmtN(p.score, 1) + (t.goTasks ? " · published Go cap buys " + fmtInt(t.goTasks) + " tasks" : "");
       g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="5.5" fill="' + col + '" fill-opacity="' + (hollow ? 0.25 : 0.9) + '" stroke="' + (S.sel === p.key ? "#fff" : col) + '" stroke-width="' + (S.sel === p.key ? 2 : 1.5) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
       if (t.goTasks) {
         var gx = X(t.goTasks), gy = Y(t.goY);
@@ -2429,7 +2542,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     var rows = base ? all.filter(function (p) { return p.cost != null && p.time != null && p.score != null; }) : [];
     if (note) {
       note.textContent = base
-        ? "Baseline: " + shortLabel(base) + " = 1× on all three measures (" + fmt$(base.cost) + "/task, " + fmtT(base.time) + "/task, Intelligence " + fmtN(base.score, 1) + "). " + rows.length + " of " + all.length + " configurations have all three measures."
+        ? "Baseline: " + shortLabel(base) + " = 1× on all three measures (" + fmt$(base.cost) + "/task, " + fmtT(base.time) + "/task, " + scoreWord() + " " + fmtN(base.score, 1) + "). " + rows.length + " of " + all.length + " configurations have all three measures."
         : "No configuration with cost, time and score is visible — the multiples view needs all three.";
     }
     renderMultTable(base, rows);
@@ -2457,7 +2570,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     pts.forEach(function (t) {
       var p = t.p, cx = X(t.cx), cy = Y(t.ty), col = famColor[p.family];
       var hollow = p.benchmark && p.benchmark.indexOf("AA") !== 0;
-      var tip = shortLabel(p) + " — costs " + fmtN(t.cx, 2) + "× baseline (" + fmt$(p.cost) + "/task), takes " + fmtN(t.ty, 2) + "× as long (" + fmtT(p.time) + "/task), scores " + fmtN(t.sx, 2) + "× (Intelligence " + fmtN(p.score, 1) + ")";
+      var tip = shortLabel(p) + " — costs " + fmtN(t.cx, 2) + "× baseline (" + fmt$(p.cost) + "/task), takes " + fmtN(t.ty, 2) + "× as long (" + fmtT(p.time) + "/task), scores " + fmtN(t.sx, 2) + "× (" + scoreWord() + " " + fmtN(p.score, 1) + ")";
       g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="5.5" fill="' + col + '" fill-opacity="' + (hollow ? 0.25 : 0.9) + '" stroke="' + (S.sel === p.key ? "#fff" : col) + '" stroke-width="' + (S.sel === p.key ? 2 : 1.5) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
       if (p.key === base.key) g += '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="10" fill="none" stroke="#58a6ff" stroke-width="1.5"/>';
       if (p.frontierCostTime || S.sel === p.key || p.key === base.key) {
@@ -2507,7 +2620,7 @@ const AA_EXPLORER_SCRIPT = `<script>
       var col = famColor[p.family];
       var label = shortLabel(p) + (p.cost == null ? " (cost n/a)" : "");
       g += '<text data-key="' + esc(p.key) + '" x="' + (labelW - 6) + '" y="' + (y + 11) + '" font-size="9.5" fill="#c9d1d9" text-anchor="end" style="cursor:pointer">' + esc(label) + "</text>";
-      g += '<rect data-key="' + esc(p.key) + '" x="' + labelW + '" y="' + (y + 2) + '" width="' + w.toFixed(1) + '" height="11" fill="' + col + '" fill-opacity="' + (S.sel === p.key ? 1 : 0.75) + '" style="cursor:pointer"><title>' + esc(shortLabel(p) + " — Intelligence " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + "/task") + "</title></rect>";
+      g += '<rect data-key="' + esc(p.key) + '" x="' + labelW + '" y="' + (y + 2) + '" width="' + w.toFixed(1) + '" height="11" fill="' + col + '" fill-opacity="' + (S.sel === p.key ? 1 : 0.75) + '" style="cursor:pointer"><title>' + esc(shortLabel(p) + " — " + scoreWord() + " " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + "/task") + "</title></rect>";
       g += '<text x="' + (labelW + w + 5) + '" y="' + (y + 11) + '" font-size="9.5" fill="#8b949e">' + fmtN(p.score, 1) + "</text>";
     });
     svg.innerHTML = g;
@@ -2578,11 +2691,19 @@ const AA_EXPLORER_SCRIPT = `<script>
     var goLine = cap && p.cost
       ? '<br><span class="muted">Published OpenCode Go cap for this model: $' + cap + "/mo → ~" + fmtInt(Math.floor(cap / p.cost)) + " tasks at this AA cost (docs reading — the fleet's workspaces appear to meter pooled).</span>"
       : "";
+    var caiLine = "";
+    if (p.harness != null || p.components) {
+      var pct = function (v) { return v == null ? "—" : fmtN(v * 100, 1) + "%"; };
+      caiLine = "<br>" +
+        (p.harness ? "Harness: " + esc(p.harness) + " · " : "") +
+        (p.tokensPerTask != null ? fmtInt(p.tokensPerTask) + " tokens/task" : "") +
+        (p.components ? "<br>Components: DeepSWE " + pct(p.components.deepSwe) + " · Terminal-Bench " + pct(p.components.terminalBench) + " · SWE-Atlas-QnA " + pct(p.components.sweAtlas) : "");
+    }
     showDetail(
       "<strong>" + esc(p.family) + " — " + esc(p.effort || "—") + "</strong> <span class='muted'>" + esc(p.creator) + "</span><br>" +
-      "Intelligence " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + " per task" +
+      scoreWord() + " " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + " per task" +
       (p.ttft != null ? " · TTFT " + fmtT(p.ttft) : "") + (p.tps != null ? " · " + p.tps + " tok/s" : "") + budgets + "<br>" +
-      '<span class="muted">Beaten on score + cost + time at once by: ' + esc(beaten) + "</span>" + goLine +
+      '<span class="muted">Beaten on score + cost + time at once by: ' + esc(beaten) + "</span>" + caiLine + goLine +
       '<br><button type="button" id="xpl-hide" class="xpl-ctl-btn">Hide this configuration</button>',
     );
     var hideBtn = document.getElementById("xpl-hide");
@@ -2607,7 +2728,13 @@ const AA_EXPLORER_SCRIPT = `<script>
       (e.planNote ? '<span class="muted">' + esc(e.planNote) + "</span><br>" : "") +
       "Pool seats: " + (e.routes.length ? e.routes.map(function (r) { return "<code>" + esc(r) + "</code>"; }).join(" ") : '<span class="muted">none — no route sends it work</span>') +
       (e.goCapUsd != null && e.aaCostPerTask ? '<br><span class="muted">Published OpenCode Go cap: $' + e.goCapUsd + "/mo → ~" + fmtInt(Math.floor(e.goCapUsd / e.aaCostPerTask)) + " AA tasks at the measured cost (docs reading — the fleet's workspaces appear to meter pooled).</span>" : "") +
-      (e.disabled ? '<br><span class="muted">Provider is disabled in the fleet config — catalogued but not callable.</span>' : ""),
+      (e.disabled ? '<br><span class="muted">Provider is disabled in the fleet config — catalogued but not callable.</span>' : "") +
+      (function () {
+        var proj = project(e);
+        if (!proj.band) return "";
+        var P = S.pj;
+        return '<br><span class="muted">Your projected task (ESTIMATED, NOT MEASURED): ' + P.turns + " turns × " + fmtInt(Number(P.inputTokens) || 0) + " input + " + fmtInt(Number(P.answerTokens) || 0) + " answer + " + fmtInt(Number(P.thinkingTokens) || 0) + " thinking tokens/turn · " + P.cacheReadPct + "% cache reads · rate window: " + esc(proj.band.window || "flat") + " (" + fmt$(proj.band.input) + " in / " + fmt$(proj.band.output) + " out per 1M) → " + (proj.cost != null ? "~" + fmt$(proj.cost) + "/task" : "cost unknown — a required rate is not recorded") + (proj.time != null ? " · ~" + fmtT(proj.time) + "/task" : "") + ".</span>";
+      })(),
     );
     markSelectedRow();
   }
@@ -2616,10 +2743,411 @@ const AA_EXPLORER_SCRIPT = `<script>
       tr.style.background = tr.getAttribute("data-sel") === S.sel ? "#1f6feb22" : "";
     });
   }
+  // --- Pareto frontier tables (Site 1's Pareto frontiers tab) ------------
+  // Each list keeps variants not dominated on its named dimensions;
+  // percentile ranks use the current filtered population (100% = best).
+  function pfBind(tb) {
+    if (!tb) return;
+    tb.querySelectorAll("tr").forEach(function (tr) {
+      tr.addEventListener("click", function () { selectPoint(tr.getAttribute("data-key")); });
+    });
+  }
+  function pfMetricCell(v, pct, fmt) {
+    return v == null ? "—" : fmt(v) + (pct != null ? ' <span class="muted">· ' + pct + "%</span>" : "");
+  }
+  function pfNameCell(p) {
+    return '<td><strong>' + esc(p.family) + '</strong> <span class="muted">' + esc(p.effort || "") + (p.harness ? " · " + esc(p.harness) : "") + "</span></td>";
+  }
+  function renderPareto() {
+    var rows = visPoints();
+    var scores = rows.map(function (p) { return p.score; });
+    var times = rows.map(function (p) { return p.time; });
+    var costs = rows.map(function (p) { return p.cost; });
+    function stdRow(p) {
+      return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '">' + pfNameCell(p) +
+        '<td class="num">' + pfMetricCell(p.score, pctRank(scores, p.score, true), function (v) { return fmtN(v, 1); }) + "</td>" +
+        '<td class="num">' + pfMetricCell(p.time, pctRank(times, p.time, false), fmtT) + "</td>" +
+        '<td class="num xpl-costcol">' + pfMetricCell(p.cost, pctRank(costs, p.cost, false), fmt$) + "</td></tr>";
+    }
+    var gScore = function (p) { return p.score; }, gTime = function (p) { return p.time; }, gCost = function (p) { return p.cost; };
+    var ssFrontier = paretoSet(rows, [{ get: gScore, better: "high" }, { get: gTime, better: "low" }]);
+    var byScore = ssFrontier.slice().sort(function (a, b) { return cmpDesc(a.score, b.score) || cmpAsc(a.time, b.time); });
+    var bySpeed = ssFrontier.slice().sort(function (a, b) { return cmpAsc(a.time, b.time) || cmpDesc(a.score, b.score); });
+    var cut = Number(S.pfCut || 50);
+    var three = paretoSet(rows, [{ get: gScore, better: "high" }, { get: gCost, better: "low" }, { get: gTime, better: "low" }])
+      .filter(function (p) {
+        if (!cut) return true;
+        var ps = pctRank(scores, p.score, true), pt = pctRank(times, p.time, false);
+        return ps != null && pt != null && ps >= cut && pt >= cut;
+      })
+      .sort(function (a, b) { return cmpAsc(a.cost, b.cost) || cmpDesc(a.score, b.score); });
+    var psFrontier = paretoSet(rows, [{ get: gCost, better: "low" }, { get: gTime, better: "low" }])
+      .sort(function (a, b) { return cmpAsc(a.cost, b.cost) || cmpAsc(a.time, b.time); });
+    var tb;
+    tb = document.getElementById("xpl-pf-score"); if (tb) { tb.innerHTML = byScore.map(stdRow).join(""); pfBind(tb); }
+    tb = document.getElementById("xpl-pf-speed"); if (tb) { tb.innerHTML = bySpeed.map(stdRow).join(""); pfBind(tb); }
+    tb = document.getElementById("xpl-pf-price"); if (tb) { tb.innerHTML = three.map(stdRow).join(""); pfBind(tb); }
+    tb = document.getElementById("xpl-pf-ps");
+    if (tb) {
+      tb.innerHTML = psFrontier.map(function (p) {
+        return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '">' + pfNameCell(p) +
+          '<td class="num">' + pfMetricCell(p.time, pctRank(times, p.time, false), fmtT) + "</td>" +
+          '<td class="num xpl-costcol">' + pfMetricCell(p.cost, pctRank(costs, p.cost, false), fmt$) + "</td>" +
+          '<td class="num">' + (p.score == null ? "—" : fmtN(p.score, 1)) + "</td></tr>";
+      }).join("");
+      pfBind(tb);
+    }
+    var note = document.getElementById("xpl-pf-count");
+    if (note) {
+      note.textContent = "Score–speed frontier: " + ssFrontier.length + " variants · three-way frontier" +
+        (cut ? " (score and speed at or above the " + cut + "th percentile)" : " (no percentile cutoff)") + ": " + three.length +
+        " · price–speed trade-offs: " + psFrontier.length + ". Missing measures are excluded only from a frontier that needs them.";
+    }
+    markSelectedRow();
+  }
+  // --- Recommendations (Site 1's shortlist builder) ------------------------
+  // Score bands are non-overlapping, from the visible population, before
+  // tradeoff limits. Within a band: absolute limits first, then relative
+  // price/speed limits against the cheapest and fastest near-top models;
+  // survivors rank by (relative time)^speed-weight x (relative
+  // price)^(1-speed-weight); scores inside the window break ties.
+  function computeRecs() {
+    var R = S.rec;
+    var rows = visPoints();
+    var scored = rows.filter(function (p) { return p.score != null; });
+    if (!scored.length) return { bands: [], empty: "No scored configurations are visible under the current filters." };
+    var lo = Math.min.apply(null, scored.map(function (p) { return p.score; }));
+    var hi = Math.max.apply(null, scored.map(function (p) { return p.score; }));
+    var n = Math.max(2, Math.min(8, Number(S.bandCount) || 3));
+    var w = (hi - lo) / n || 1;
+    var bands = [];
+    for (var i = 0; i < n; i++) {
+      var bLo = lo + i * w, bHi = i === n - 1 ? hi : lo + (i + 1) * w;
+      var members = scored.filter(function (p) { return p.score >= bLo && (i === n - 1 ? p.score <= bHi : p.score < bHi); });
+      if (!members.length) continue;
+      var best = Math.max.apply(null, members.map(function (p) { return p.score; }));
+      var decision = {};
+      var candidates = [];
+      members.forEach(function (p) {
+        if (p.cost == null || p.time == null) decision[p.key] = "Missing selected cost or speed";
+        else candidates.push(p);
+      });
+      var ref = candidates.slice().sort(function (a, b) { return cmpDesc(a.score, b.score) || cmpAsc(a.cost, b.cost); })[0] || null;
+      var maxCost = R.maxCost === "" || R.maxCost == null ? null : Number(R.maxCost);
+      var maxTime = R.maxSec === "" || R.maxSec == null ? null : Number(R.maxSec);
+      var nearTop = [];
+      candidates.forEach(function (p) {
+        if (p.score < best - Number(R.allow)) decision[p.key] = "Below near-top score floor";
+        else if (maxCost != null && p.cost > maxCost) decision[p.key] = "Above the absolute price limit";
+        else if (maxTime != null && p.time > maxTime) decision[p.key] = "Above the absolute time limit";
+        else nearTop.push(p);
+      });
+      var picks = [];
+      var cheapest = null, fastest = null, priceCeil = null, timeCeil = null;
+      if (nearTop.length) {
+        cheapest = Math.min.apply(null, nearTop.map(function (p) { return p.cost; }));
+        fastest = Math.min.apply(null, nearTop.map(function (p) { return p.time; }));
+        priceCeil = cheapest * (1 + Number(R.priceAllow) / 100);
+        timeCeil = fastest * Number(R.slowAllow);
+        var survivors = [];
+        nearTop.forEach(function (p) {
+          if (p.cost > priceCeil) decision[p.key] = "Above relative price allowance";
+          else if (p.time > timeCeil) decision[p.key] = "Slower than relative speed limit";
+          else survivors.push(p);
+        });
+        var kept = survivors.filter(function (p) {
+          if (R.dominance === "none") return true;
+          var dominated = survivors.some(function (q) {
+            if (q === p) return false;
+            if (R.dominance === "lab" && q.creator !== p.creator) return false;
+            return q.score >= p.score && q.cost <= p.cost && q.time <= p.time && (q.score > p.score || q.cost < p.cost || q.time < p.time);
+          });
+          if (dominated) decision[p.key] = R.dominance === "lab" ? "Dominated within its lab" : "Dominated on score, price and speed";
+          return !dominated;
+        });
+        var sw = Number(R.speedPriority) / 100;
+        var ranked = kept.map(function (p) {
+          return { p: p, factor: Math.pow(p.time / fastest, sw) * Math.pow(p.cost / cheapest, 1 - sw) };
+        }).sort(function (a, b) { return a.factor - b.factor || cmpDesc(a.p.score, b.p.score); });
+        var bestFactor = ranked.length ? ranked[0].factor : null;
+        var pickedLabs = {};
+        var passes = R.diversity === "labsfirst" ? 2 : 1;
+        for (var pass = 0; pass < passes && picks.length < Number(R.perBand); pass++) {
+          ranked.forEach(function (r) {
+            if (picks.length >= Number(R.perBand)) return;
+            if (picks.some(function (x) { return x.p.key === r.p.key; })) return;
+            if (bestFactor != null && r.factor > bestFactor * Number(R.altWindow)) return;
+            if (R.diversity === "lab" && pickedLabs[r.p.creator]) return;
+            if (R.diversity === "labsfirst" && pass === 0 && pickedLabs[r.p.creator]) return;
+            picks.push(r);
+            pickedLabs[r.p.creator] = true;
+          });
+        }
+        ranked.forEach(function (r) {
+          if (picks.some(function (x) { return x.p.key === r.p.key; })) { decision[r.p.key] = "Recommended"; return; }
+          if (decision[r.p.key]) return;
+          if (bestFactor != null && r.factor > bestFactor * Number(R.altWindow)) decision[r.p.key] = "Outside the alternative window";
+          else if (R.diversity === "lab" && pickedLabs[r.p.creator]) decision[r.p.key] = "Not selected — one choice per lab";
+          else decision[r.p.key] = "Not selected — band cap reached";
+        });
+      }
+      bands.push({
+        label: "Score band " + (bands.length + 1) + " · " + scoreWord() + " " + fmtN(bLo, 2) + (i === n - 1 ? " to ≤ " : " to < ") + fmtN(bHi, 2),
+        members: members, best: best, ref: ref, picks: picks, decision: decision,
+        priceCeil: priceCeil, timeCeil: timeCeil, floor: best - Number(R.allow),
+      });
+    }
+    return { bands: bands, empty: null };
+  }
+  function bandScatter(band) {
+    var pts = band.members.filter(function (p) { return p.cost != null && p.time != null; });
+    if (pts.length < 2) return "";
+    var pickKeys = {};
+    band.picks.forEach(function (r) { pickKeys[r.p.key] = true; });
+    var bw = 330, bh = 180, ml = 44, mr = 8, mt = 8, mb = 24, pw = bw - ml - mr, ph = bh - mt - mb;
+    var xs = pts.map(function (p) { return p.cost; }), ys = pts.map(function (p) { return p.time; });
+    var xlo = Math.pow(10, Math.floor(Math.log10(Math.min.apply(null, xs)) * 2) / 2) / 1.4, xhi = Math.max.apply(null, xs) * 1.5;
+    var ylo = Math.pow(10, Math.floor(Math.log10(Math.min.apply(null, ys)) * 2) / 2) / 1.4, yhi = Math.max.apply(null, ys) * 1.5;
+    // Faster is DOWN: screen y grows with time (no inversion).
+    var X = function (v) { return ml + logPos(v, xlo, xhi) * pw; };
+    var Y = function (v) { return mt + logPos(v, ylo, yhi) * ph; };
+    var g = '<svg viewBox="0 0 ' + bw + " " + bh + '" role="img" aria-label="Price versus speed in this score band" style="max-width:340px;width:100%">';
+    g += '<line x1="' + ml + '" y1="' + (mt + ph) + '" x2="' + (ml + pw) + '" y2="' + (mt + ph) + '" stroke="#30363d"/><line x1="' + ml + '" y1="' + mt + '" x2="' + ml + '" y2="' + (mt + ph) + '" stroke="#30363d"/>';
+    g += '<text x="' + (ml + pw / 2) + '" y="' + (bh - 4) + '" font-size="9" fill="#8b949e" text-anchor="middle">USD / task (log) — cheaper is left</text>';
+    g += '<text x="10" y="' + (mt + ph / 2) + '" font-size="9" fill="#8b949e" text-anchor="middle" transform="rotate(-90 10 ' + (mt + ph / 2) + ')">time — faster is down</text>';
+    pts.forEach(function (p) {
+      var on = !!pickKeys[p.key], col = famColor[p.family];
+      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + X(p.cost).toFixed(1) + '" cy="' + Y(p.time).toFixed(1) + '" r="' + (on ? 5 : 3.6) + '" fill="' + (on ? col : "#9aa0a6") + '" fill-opacity="' + (on ? 0.95 : 0.35) + '" stroke="' + (on ? "#fff" : "#6b7075") + '" stroke-width="' + (on ? 1.4 : 0.7) + '"><title>' + esc(shortLabel(p) + " — " + fmt$(p.cost) + "/task · " + fmtT(p.time)) + "</title></circle>";
+    });
+    return g + "</svg>";
+  }
+  function renderRecs() {
+    var wrap = document.getElementById("xpl-recs");
+    if (!wrap) return;
+    var out = computeRecs();
+    if (out.empty) { wrap.innerHTML = '<p class="muted">' + esc(out.empty) + "</p>"; return; }
+    var R = S.rec;
+    var summary = document.getElementById("xpl-rec-summary");
+    var totalPicks = out.bands.reduce(function (a, b) { return a + b.picks.length; }, 0);
+    var labs = {};
+    out.bands.forEach(function (b) { b.picks.forEach(function (r) { labs[r.p.creator] = true; }); });
+    if (summary) {
+      summary.textContent = totalPicks + " choices across " + out.bands.length + " score bands · " + Object.keys(labs).length + " labs. Near-top: " + R.allow +
+        " points · Speed priority: " + R.speedPriority + "% · At most " + R.slowAllow + "× slower · Price allowance: +" + R.priceAllow + "% · " +
+        (R.diversity === "lab" ? "One per lab" : R.diversity === "labsfirst" ? "Different labs first" : "No lab grouping") + ".";
+    }
+    wrap.innerHTML = out.bands.map(function (band, bi) {
+      var ref = band.ref;
+      var cards = band.picks.map(function (r, ri) {
+        var p = r.p;
+        var vsRef = "";
+        if (ref && ref.key !== p.key) {
+          var dt = ref.time ? Math.round((1 - p.time / ref.time) * 1000) / 10 : null;
+          var dc = ref.cost ? Math.round((1 - p.cost / ref.cost) * 1000) / 10 : null;
+          vsRef = '<br><span class="muted">vs band-best ' + esc(shortLabel(ref)) + ': ' +
+            (dt != null ? (dt >= 0 ? dt + "% less time" : Math.abs(dt) + "% more time") : "") +
+            (dt != null && dc != null ? " · " : "") +
+            (dc != null ? (dc >= 0 ? dc + "% less cost" : Math.abs(dc) + "% more cost") : "") + "</span>";
+        } else if (ref) {
+          vsRef = '<br><span class="muted">The top-scoring reference for this band.</span>';
+        }
+        var bestFactor = band.picks.length ? band.picks[0].factor : 1;
+        return '<div class="card"><span class="badge ' + (ri === 0 ? "open" : "src") + '">' + (ri === 0 ? "Best fit" : p.creator === band.picks[0].p.creator ? "Alternative" : "Alternative lab") + "</span> " +
+          '<button type="button" class="xpl-linkbtn" data-pick="' + esc(p.key) + '"><strong>' + esc(shortLabel(p)) + "</strong></button>" +
+          '<span class="muted"> · ' + esc(p.creator) + (p.harness ? " · " + esc(p.harness) : "") + "</span><br>" +
+          scoreWord() + " " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + "/task · " +
+          fmtN(band.best - p.score, 1) + " below band best · " + fmtN(r.factor / bestFactor, 2) + "× best tradeoff" + vsRef + "</div>";
+      }).join("");
+      var counts = {};
+      band.members.forEach(function (p) { var d = band.decision[p.key] || "Not selected"; counts[d] = (counts[d] || 0) + 1; });
+      var whyRows = band.members.slice().sort(function (a, b) {
+        var ra = band.decision[a.key] === "Recommended" ? 0 : 1, rb = band.decision[b.key] === "Recommended" ? 0 : 1;
+        return ra - rb || cmpDesc(a.score, b.score);
+      }).map(function (p) {
+        return '<tr data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + '</strong> <span class="muted">' + esc(p.effort || "") + '</span></td><td>' + esc(p.creator) + "</td><td>" + esc(band.decision[p.key] || "Not selected") + "</td></tr>";
+      }).join("");
+      var whyCounts = Object.keys(counts).map(function (k) { return counts[k] + " · " + k; }).join(" &nbsp;·&nbsp; ");
+      return "<h3>" + esc(band.label) + " · " + band.members.length + " variants</h3>" +
+        '<p class="muted">Require score ≥ ' + fmtN(band.floor, 1) + " (band best " + fmtN(band.best, 1) + ", allowance " + R.allow + " points)" +
+        (band.priceCeil != null ? " · Relative price ceiling " + fmt$(band.priceCeil) + " · Relative time ceiling " + fmtT(band.timeCeil) : " · no candidate carries all three measures") + "</p>" +
+        bandScatter(band) +
+        '<div class="board">' + (cards || '<p class="muted">No recommendation survives the limits of this band.</p>') + "</div>" +
+        '<details><summary>Why these choices?</summary><p class="muted">' + whyCounts + '</p><div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th>Lab</th><th>Decision</th></tr></thead><tbody>' + whyRows + "</tbody></table></div></details>";
+    }).join("");
+    wrap.querySelectorAll("[data-pick]").forEach(function (b) {
+      b.addEventListener("click", function () { selectPoint(b.getAttribute("data-pick")); });
+    });
+    wrap.querySelectorAll("tbody tr").forEach(function (tr) {
+      tr.addEventListener("click", function () { selectPoint(tr.getAttribute("data-key")); });
+    });
+    wrap.querySelectorAll("svg [data-key]").forEach(function (el) {
+      el.addEventListener("click", function () { selectPoint(el.getAttribute("data-key")); });
+    });
+    markSelectedRow();
+  }
+  // --- Band comparisons (Site 1's six banded shortlists) -------------------
+  // Near-leader windows at 1x: score within 2 points, time within 10%,
+  // price within 25% of the band leader; the scale select multiplies all
+  // three. Tables only — Site 1's lane charts are noted as a follow-up.
+  function logEdges(vals, n) {
+    var xs = vals.filter(function (v) { return v != null && v > 0; });
+    if (!xs.length) return [];
+    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
+    if (mn === mx) return [mn, mx];
+    var edges = [];
+    for (var i = 0; i <= n; i++) edges.push(mn * Math.pow(mx / mn, i / n));
+    return edges;
+  }
+  function scoreEdges(rows, n) {
+    var xs = rows.map(function (p) { return p.score; }).filter(function (v) { return v != null; });
+    if (!xs.length) return [];
+    var mn = Math.min.apply(null, xs), mx = Math.max.apply(null, xs);
+    var edges = [];
+    for (var i = 0; i <= n; i++) edges.push(mn + ((mx - mn) * i) / n);
+    return edges;
+  }
+  function bandIndex(v, edges) {
+    for (var i = 0; i < edges.length - 1; i++) {
+      if (v >= edges[i] && (i === edges.length - 2 ? v <= edges[i + 1] : v < edges[i + 1])) return i;
+    }
+    return -1;
+  }
+  function chipFor(p, leader) {
+    var notes = [];
+    if (leader && leader.key !== p.key) {
+      var better = [];
+      if (p.score != null && leader.score != null && p.score > leader.score) better.push("higher score");
+      if (p.cost != null && leader.cost != null && p.cost < leader.cost) better.push("lower price");
+      if (p.time != null && leader.time != null && p.time < leader.time) better.push("faster");
+      if (better.length) notes.push("Better at: " + better.join(", "));
+    }
+    return '<button type="button" class="xchip" data-pick="' + esc(p.key) + '">' + esc(shortLabel(p)) + " — " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + " · " + fmtT(p.time) + (notes.length ? ' <span class="muted">(' + esc(notes.join("; ")) + ")</span>" : "") + "</button>";
+  }
+  function bandRangeLine(members) {
+    var withScore = members.filter(function (p) { return p.score != null; });
+    var withTime = members.filter(function (p) { return p.time != null; });
+    var parts = [];
+    if (withScore.length) {
+      var sMin = withScore.reduce(function (a, b) { return b.score < a.score ? b : a; });
+      var sMax = withScore.reduce(function (a, b) { return b.score > a.score ? b : a; });
+      parts.push("score " + fmtN(sMin.score, 1) + " (" + shortLabel(sMin) + ") – " + fmtN(sMax.score, 1) + " (" + shortLabel(sMax) + ")");
+    }
+    if (withTime.length) {
+      var tMin = withTime.reduce(function (a, b) { return b.time < a.time ? b : a; });
+      var tMax = withTime.reduce(function (a, b) { return b.time > a.time ? b : a; });
+      parts.push("time " + fmtT(tMin.time) + " (" + shortLabel(tMin) + ") – " + fmtT(tMax.time) + " (" + shortLabel(tMax) + ")");
+    }
+    return parts.join(" · ");
+  }
+  function bandGroup(title, blurb, bands) {
+    var rowsHtml = bands.map(function (b) {
+      var leader = b.choices.length ? b.choices[0] : null;
+      return "<tr><td><strong>" + esc(b.label) + '</strong><br><span class="muted">' + b.choices.length + " near-leading · " + esc(bandRangeLine(b.members)) + "</span></td><td>" +
+        (b.choices.length ? b.choices.map(function (p) { return chipFor(p, leader); }).join(" ") : '<span class="muted">No model meets the window of this band.</span>') + "</td></tr>";
+    }).join("");
+    return "<h3>" + esc(title) + '</h3><p class="muted">' + esc(blurb) + '</p><div class="tblwrap"><table class="xpl-table"><tbody>' + rowsHtml + "</tbody></table></div>";
+  }
+  function renderBandComparisons() {
+    var wrap = document.getElementById("xpl-bandgroups");
+    if (!wrap) return;
+    var rows = visPoints();
+    var n = Math.max(2, Math.min(8, Number(S.bandCount) || 3));
+    var scale = Number(S.bandScale) || 1;
+    var scoreWin = 2 * scale, timeWin = 0.10 * scale, priceWin = 0.25 * scale;
+    var costEdges = logEdges(rows.map(function (p) { return p.cost; }), n);
+    var timeEdges = logEdges(rows.map(function (p) { return p.time; }), n);
+    var sEdges = scoreEdges(rows, n);
+    function groupBy(edges, get) {
+      var out = [];
+      for (var i = 0; i < edges.length - 1; i++) out.push([]);
+      rows.forEach(function (p) {
+        var v = get(p);
+        if (v == null) return;
+        var idx = bandIndex(v, edges);
+        if (idx >= 0) out[idx].push(p);
+      });
+      return out;
+    }
+    function costLabel(i) { return (i === 0 ? "≥ " : "> ") + fmt$(costEdges[i]) + " · ≤ " + fmt$(costEdges[i + 1]); }
+    function timeLabel(i) { return fmtT(timeEdges[i]) + " – " + fmtT(timeEdges[i + 1]); }
+    function scoreLabel(i) { return fmtN(sEdges[i], 1) + (i === sEdges.length - 2 ? " – ≤ " : " – < ") + fmtN(sEdges[i + 1], 1); }
+    var html = "";
+    // 1. Smartest within each cost band
+    if (costEdges.length > 1) {
+      var g1 = groupBy(costEdges, function (p) { return p.cost; }).map(function (members, i) {
+        var scored = members.filter(function (p) { return p.score != null; });
+        var lead = scored.length ? Math.max.apply(null, scored.map(function (p) { return p.score; })) : null;
+        var choices = scored.filter(function (p) { return lead != null && p.score >= lead - scoreWin; }).sort(function (a, b) { return cmpDesc(a.score, b.score); });
+        return { label: "Cost band " + (i + 1) + " · " + costLabel(i), members: members, choices: choices };
+      });
+      var h1 = bandGroup("Smartest within each task-cost band", "Highest scores only within each listed task-cost range; near-leaders sit within " + fmtN(scoreWin, 2) + " points of the band's best score.", g1);
+      // 5. Fastest within each cost band
+      var g5 = groupBy(costEdges, function (p) { return p.cost; }).map(function (members, i) {
+        var timed = members.filter(function (p) { return p.time != null; });
+        var lead = timed.length ? Math.min.apply(null, timed.map(function (p) { return p.time; })) : null;
+        var choices = timed.filter(function (p) { return lead != null && p.time <= lead * (1 + timeWin); }).sort(function (a, b) { return cmpAsc(a.time, b.time); });
+        return { label: "Cost band " + (i + 1) + " · " + costLabel(i), members: members, choices: choices };
+      });
+      var h5 = bandGroup("Fastest within each task-cost band", "Disjoint task-cost tiers; near-leaders are within " + Math.round(timeWin * 100) + "% of the band's fastest time.", g5);
+    }
+    if (sEdges.length > 1) {
+      // 2. Lowest cost within each score band
+      var g2 = groupBy(sEdges, function (p) { return p.score; }).map(function (members, i) {
+        var priced = members.filter(function (p) { return p.cost != null; });
+        var lead = priced.length ? Math.min.apply(null, priced.map(function (p) { return p.cost; })) : null;
+        var choices = priced.filter(function (p) { return lead != null && p.cost <= lead * (1 + priceWin); }).sort(function (a, b) { return cmpAsc(a.cost, b.cost); });
+        return { label: scoreWord() + " band " + (i + 1) + " · " + scoreLabel(i), members: members, choices: choices };
+      });
+      var h2 = bandGroup("Lowest task cost within each score band", "Bands split the selected score range evenly; each model appears in one score band; near-price window " + Math.round(priceWin * 100) + "%.", g2);
+      // 3. Fastest within each score band
+      var g3 = groupBy(sEdges, function (p) { return p.score; }).map(function (members, i) {
+        var timed = members.filter(function (p) { return p.time != null; });
+        var lead = timed.length ? Math.min.apply(null, timed.map(function (p) { return p.time; })) : null;
+        var choices = timed.filter(function (p) { return lead != null && p.time <= lead * (1 + timeWin); }).sort(function (a, b) { return cmpAsc(a.time, b.time); });
+        return { label: scoreWord() + " band " + (i + 1) + " · " + scoreLabel(i), members: members, choices: choices };
+      });
+      var h3 = bandGroup("Fastest within each score band", "Within " + Math.round(timeWin * 100) + "% of the band's speed leader.", g3);
+    }
+    if (timeEdges.length > 1) {
+      // 4. Smartest within each speed band (slowest first, as Site 1)
+      var g4raw = groupBy(timeEdges, function (p) { return p.time; });
+      var g4 = g4raw.map(function (members, i) {
+        var scored = members.filter(function (p) { return p.score != null; });
+        var lead = scored.length ? Math.max.apply(null, scored.map(function (p) { return p.score; })) : null;
+        var choices = scored.filter(function (p) { return lead != null && p.score >= lead - scoreWin; }).sort(function (a, b) { return cmpDesc(a.score, b.score); });
+        return { label: (i === g4raw.length - 1 ? "Slowest speed band" : i === 0 ? "Fastest speed band" : "Speed band " + (i + 1)) + " · " + timeLabel(i), members: members, choices: choices };
+      }).reverse();
+      var h4 = bandGroup("Smartest within each speed band", "Selected speed values split into ordered, non-overlapping bands from slowest to fastest; near-leaders within the score window.", g4);
+      // 6. Lowest price within each speed target
+      var timedAll = rows.filter(function (p) { return p.time != null; }).map(function (p) { return p.time; }).sort(function (a, b) { return a - b; });
+      var tiers = [];
+      for (var ti = 0; ti < costEdges.length - 1; ti++) tiers.push(ti);
+      var targetRows = [50, 75, 90, 100].map(function (q) {
+        var thr = timedAll.length ? timedAll[Math.min(timedAll.length - 1, Math.ceil((q / 100) * timedAll.length) - 1)] : null;
+        var cells = tiers.map(function (ci) {
+          var qual = rows.filter(function (p) { return p.cost != null && p.time != null && thr != null && p.time <= thr && bandIndex(p.cost, costEdges) === ci; });
+          if (!qual.length) return '<span class="muted">No model meets this target in this band.</span>';
+          var cheapest = qual.slice().sort(function (a, b) { return cmpAsc(a.cost, b.cost); })[0];
+          var near = qual.filter(function (p) { return p.cost <= cheapest.cost * (1 + priceWin); }).sort(function (a, b) { return cmpAsc(a.cost, b.cost); });
+          return near.map(function (p) { return chipFor(p, cheapest); }).join(" ");
+        });
+        return "<tr><td><strong>" + (q === 100 ? "Fastest available (100th percentile)" : "At least " + q + "th percentile") + '</strong><br><span class="muted">time ≤ ' + fmtT(thr) + "</span></td>" + cells.map(function (c) { return "<td>" + c + "</td>"; }).join("") + "</tr>";
+      }).join("");
+      var h6 = '<h3>Lowest price within each speed target</h3><p class="muted">Each speed target is split into the selected number of log-spaced task-cost bands; nearby options within ' + Math.round(priceWin * 100) + "% of the tier's cheapest.</p>" +
+        '<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Speed target</th>' + tiers.map(function (ci) { return "<th>Tier " + (ci + 1) + " · " + esc(costLabel(ci)) + "</th>"; }).join("") + "</tr></thead><tbody>" + targetRows + "</tbody></table></div>";
+    }
+    html = (typeof h1 !== "undefined" ? h1 : "") + (typeof h2 !== "undefined" ? h2 : "") + (typeof h3 !== "undefined" ? h3 : "") + (typeof h4 !== "undefined" ? h4 : "") + (typeof h5 !== "undefined" ? h5 : "") + (typeof h6 !== "undefined" ? h6 : "");
+    wrap.innerHTML = html || '<p class="muted">No banded comparisons can be built — the visible configurations lack the measures they need.</p>';
+    wrap.querySelectorAll("[data-pick]").forEach(function (b) {
+      b.addEventListener("click", function () { selectPoint(b.getAttribute("data-pick")); });
+    });
+  }
   function renderAaTable() {
     var tb = document.getElementById("xpl-rows");
     if (!tb) return;
     var rows = sortPoints(visPoints());
+    var scoreHead = document.getElementById("xpl-scorehead");
+    if (scoreHead) scoreHead.textContent = S.persp === "cai" ? "CAI score" : "Intelligence";
     document.getElementById("xpl-count").textContent =
       rows.length + " of " + POINTS.length + " ranked configurations · sorted by the " + S.xp + " perspective · solid dots in the charts sit on that chart's frontier, gray are beaten on its axes";
     tb.innerHTML = rows.map(function (p) {
@@ -2629,6 +3157,58 @@ const AA_EXPLORER_SCRIPT = `<script>
       tr.addEventListener("click", function () { selectPoint(tr.getAttribute("data-key")); });
     });
     markSelectedRow();
+  }
+  // --- task-assumptions projection (Site 2, in the Model Explorer) -------
+  // ESTIMATED, NOT MEASURED: priced only from the token rates recorded
+  // in the ainventory price event log (the catalog's rate bands). A
+  // missing required rate yields an unknown cost, never a guess.
+  // cost = turns x [uncached input + cache reads + cache writes +
+  // (answer + thinking) output]; time = turns x (measured TTFT +
+  // answer / measured throughput + tool overhead), borrowing the
+  // family timing from either benchmark point set.
+  function pjBand(e) {
+    if (!e.rate || !e.rate.bands.length) return null;
+    var bands = e.rate.bands;
+    var win = bands.filter(function (b) { return b.window === S.pj.window; });
+    var pool = win.length ? win : bands.filter(function (b) { return b.window == null || b.window === "flat"; });
+    if (!pool.length) pool = bands;
+    var input = Number(S.pj.inputTokens) || 0;
+    for (var i = 0; i < pool.length; i++) {
+      var b = pool[i];
+      if ((b.minTokens == null || input >= b.minTokens) && (b.maxTokens == null || input < b.maxTokens)) return b;
+    }
+    return pool[pool.length - 1];
+  }
+  function pjTiming(e) {
+    var norm = normName(e.name);
+    var sets = [AA_POINTS, CAI_POINTS];
+    for (var si = 0; si < sets.length; si++) {
+      var cands = sets[si].filter(function (p) { return normName(p.family) === norm; });
+      for (var i = 0; i < cands.length; i++) if (cands[i].tps != null) return { tps: cands[i].tps, ttft: cands[i].ttft };
+    }
+    return null;
+  }
+  function project(e) {
+    var band = pjBand(e);
+    if (!band) return { cost: null, time: null, band: null };
+    var P = S.pj;
+    var input = Number(P.inputTokens) || 0, answer = Number(P.answerTokens) || 0, thinking = Number(P.thinkingTokens) || 0;
+    var turns = Number(P.turns) || 0;
+    var cacheShare = (Number(P.cacheReadPct) || 0) / 100;
+    var writesShare = (Number(P.writesPct) || 0) / 100;
+    var uncached = input * (1 - cacheShare);
+    var reads = input * cacheShare;
+    var writes = uncached * writesShare;
+    var missing = band.input == null || band.output == null || (reads > 0 && band.cacheRead == null) || (writes > 0 && band.cacheWrite == null);
+    var cost = null;
+    if (!missing) {
+      var perTurn = (uncached * band.input + reads * (band.cacheRead || 0) + writes * (band.cacheWrite || 0) + (answer + thinking) * band.output) / 1000000;
+      cost = turns * perTurn;
+    }
+    var timing = pjTiming(e);
+    var time = null;
+    if (timing && timing.tps) time = turns * ((timing.ttft || 0) + answer / timing.tps + (Number(P.overheadSec) || 0));
+    return { cost: cost, time: time, band: band };
   }
   function renderModels() {
     var tb = document.getElementById("xpl-mrows");
@@ -2640,12 +3220,14 @@ const AA_EXPLORER_SCRIPT = `<script>
       (S.xp === "api" ? " (effective $/task = AA list $/task ÷ the plan's multiplier, where the registry records one)" : "");
     tb.innerHTML = rows.map(function (e) {
       var ec = effCost(e);
+      var proj = project(e);
       return '<tr data-sel="' + esc(e.id) + '" data-mid="' + esc(e.id) + '"><td><strong>' + esc(e.name) + '</strong><br><span class="muted"><code>' + esc(e.id) + "</code></span></td>" +
         "<td>" + esc(e.providerName) + (e.plan ? '<br><span class="badge src">' + esc(e.plan) + "</span>" : "") + (e.disabled ? ' <span class="badge stale">disabled</span>' : "") + '</td>' +
         '<td class="num">' + fmtCtx(e.contextLimit) + "</td>" +
         "<td>" + (e.variants.length ? esc(e.variants.join(", ")) : "—") + "</td>" +
         "<td>" + (e.routes.length ? e.routes.map(function (r) { return '<span class="badge open">' + esc(r) + "</span>"; }).join(" ") : '<span class="muted">—</span>') + "</td>" +
-        '<td class="num">' + fmtN(e.aaScore, 1) + '</td><td class="num xpl-costcol">' + fmt$(e.aaCostPerTask) + '</td><td class="num xpl-costcol">' + (ec != null ? fmt$(ec) : "—") + '</td><td class="num">' + fmtT(e.aaTimePerTask) + "</td></tr>";
+        '<td class="num">' + fmtN(e.aaScore, 1) + '</td><td class="num xpl-costcol">' + fmt$(e.aaCostPerTask) + '</td><td class="num xpl-costcol">' + (ec != null ? fmt$(ec) : "—") + '</td><td class="num">' + fmtT(e.aaTimePerTask) + '</td>' +
+        '<td class="num xpl-costcol">' + (proj.cost != null ? "~" + fmt$(proj.cost) : "—") + '</td><td class="num">' + (proj.time != null ? "~" + fmtT(proj.time) : "—") + '</td><td class="num xpl-costcol">' + (e.aaScore != null && proj.cost ? fmtN(e.aaScore / proj.cost, 1) : "—") + "</td></tr>";
     }).join("");
     tb.querySelectorAll("tr").forEach(function (tr) {
       tr.addEventListener("click", function () { selectCatalog(tr.getAttribute("data-mid")); });
@@ -2717,8 +3299,17 @@ const AA_EXPLORER_SCRIPT = `<script>
     document.querySelectorAll("[data-xp]").forEach(function (b) {
       b.classList.toggle("active", b.getAttribute("data-xp") === S.xp);
     });
+    document.querySelectorAll("[data-persp]").forEach(function (b) {
+      b.classList.toggle("active", b.getAttribute("data-persp") === S.persp);
+    });
+    var pnote = document.getElementById("xpl-persp-note");
+    if (pnote) {
+      pnote.textContent = S.persp === "cai"
+        ? "Coding agents perspective — the Coding Agent Index observations (model + effort + agent harness): score is the CAI score, cost the published cost per coding task, time the average agent wall time per task. Kept separate from the Intelligence Index; the two are never converted."
+        : "Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the workbook's per-task figures (time excludes TTFT).";
+    }
     applyTab();
-    if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderAaTable(); }
+    if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
     else renderModels();
   }
   document.querySelectorAll("[data-xtab]").forEach(function (b) {
@@ -2732,6 +3323,102 @@ const AA_EXPLORER_SCRIPT = `<script>
   document.querySelectorAll("[data-xp]").forEach(function (b) {
     b.addEventListener("click", function () { S.xp = b.getAttribute("data-xp"); render(); });
   });
+  function setPerspective(persp) {
+    if (S.persp === persp) return;
+    S.persp = persp;
+    POINTS = persp === "cai" ? CAI_POINTS : AA_POINTS;
+    S.creator = ""; S.fam = ""; S.bench = ""; S.effortAny = false; S.efforts = {};
+    S.off = {}; S.hidden = []; S.sel = null; S.baseline = "";
+    showDetail(null);
+    buildFilterOptions();
+    buildBaselineOptions();
+    render();
+  }
+  document.querySelectorAll("[data-persp]").forEach(function (b) {
+    b.addEventListener("click", function () { setPerspective(b.getAttribute("data-persp")); });
+  });
+  var pfCutEl = document.getElementById("xf-pfcut");
+  if (pfCutEl) pfCutEl.addEventListener("change", function (ev) { S.pfCut = ev.target.value; renderPareto(); });
+  var bandsEl = document.getElementById("xf-bands");
+  if (bandsEl) bandsEl.addEventListener("change", function (ev) { S.bandCount = Number(ev.target.value); renderRecs(); renderBandComparisons(); });
+  var bandScaleEl = document.getElementById("xf-bandscale");
+  if (bandScaleEl) bandScaleEl.addEventListener("change", function (ev) { S.bandScale = Number(ev.target.value); renderBandComparisons(); });
+  function syncRecInputs() {
+    document.querySelectorAll("[data-rec]").forEach(function (el) {
+      var f = el.getAttribute("data-rec");
+      if (S.rec[f] != null) el.value = S.rec[f];
+    });
+    var sp = document.getElementById("rec-speedpriority-val");
+    if (sp) sp.textContent = S.rec.speedPriority + "% speed";
+  }
+  document.querySelectorAll("[data-rec]").forEach(function (el) {
+    el.addEventListener("input", function () {
+      S.rec[el.getAttribute("data-rec")] = el.value;
+      syncRecInputs();
+      renderRecs();
+    });
+    el.addEventListener("change", function () {
+      S.rec[el.getAttribute("data-rec")] = el.value;
+      renderRecs();
+    });
+  });
+  var REC_PRESETS = {
+    fast: { allow: 5, speedPriority: 95, priceAllow: 200, slowAllow: 1.5, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3 },
+    balanced: { allow: 5, speedPriority: 50, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3 },
+    diversity: { allow: 7, speedPriority: 60, priceAllow: 500, slowAllow: 2.5, altWindow: 3, diversity: "labsfirst", dominance: "lab", perBand: 4 },
+    budget: { allow: 5, speedPriority: 15, priceAllow: 100, slowAllow: 3, altWindow: 2, diversity: "lab", dominance: "all", perBand: 3 },
+    reset: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
+  };
+  document.querySelectorAll("[data-recpreset]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var preset = REC_PRESETS[b.getAttribute("data-recpreset")];
+      if (!preset) return;
+      Object.keys(preset).forEach(function (k) { S.rec[k] = preset[k]; });
+      syncRecInputs();
+      renderRecs();
+    });
+  });
+  function syncPjInputs() {
+    document.querySelectorAll("[data-pj]").forEach(function (el) {
+      var f = el.getAttribute("data-pj");
+      if (S.pj[f] != null) el.value = S.pj[f];
+    });
+    var cv = document.getElementById("pj-cacheread-val");
+    if (cv) cv.textContent = S.pj.cacheReadPct + "%";
+  }
+  document.querySelectorAll("[data-pj]").forEach(function (el) {
+    var on = function () { S.pj[el.getAttribute("data-pj")] = el.value; syncPjInputs(); if (S.tab === "models") renderModels(); };
+    el.addEventListener("input", on);
+    el.addEventListener("change", on);
+  });
+  var PJ_PRESETS = {
+    small: { turns: 2, inputTokens: 8000, answerTokens: 1200, thinkingTokens: 2000, cacheReadPct: 60, writesPct: 0, overheadSec: 8 },
+    feature: { turns: 4, inputTokens: 25000, answerTokens: 3000, thinkingTokens: 6000, cacheReadPct: 50, writesPct: 5, overheadSec: 10 },
+    repo: { turns: 8, inputTokens: 60000, answerTokens: 4000, thinkingTokens: 8000, cacheReadPct: 70, writesPct: 5, overheadSec: 15 },
+  };
+  document.querySelectorAll("[data-pjpreset]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var preset = PJ_PRESETS[b.getAttribute("data-pjpreset")];
+      if (!preset) return;
+      Object.keys(preset).forEach(function (k) { S.pj[k] = preset[k]; });
+      syncPjInputs();
+      if (S.tab === "models") renderModels();
+    });
+  });
+  var recExport = document.getElementById("xpl-rec-export");
+  if (recExport) {
+    recExport.addEventListener("click", function () {
+      var out = computeRecs();
+      var lines = ["band,rank,model,effort,lab,harness,score,cost_per_task,time_per_task_s,tradeoff_multiple"];
+      out.bands.forEach(function (band) {
+        var bestFactor = band.picks.length ? band.picks[0].factor : 1;
+        band.picks.forEach(function (r, ri) {
+          lines.push([band.label, ri + 1, r.p.family, r.p.effort || "", r.p.creator, r.p.harness || "", r.p.score, r.p.cost, r.p.time, (r.factor / bestFactor).toFixed(2)].map(function (v) { return '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"'; }).join(","));
+        });
+      });
+      downloadFile("cost-explorer-shortlist.csv", lines.join("\\n"), "text/csv");
+    });
+  }
   document.getElementById("xf-q").addEventListener("input", function (ev) { S.q = ev.target.value.trim().toLowerCase(); render(); });
   document.getElementById("xf-creator").addEventListener("change", function (ev) { S.creator = ev.target.value; render(); });
   document.getElementById("xf-fam").addEventListener("change", function (ev) { S.fam = ev.target.value; render(); });
@@ -2751,6 +3438,146 @@ const AA_EXPLORER_SCRIPT = `<script>
   });
   var baselineSel = document.getElementById("xf-baseline");
   if (baselineSel) baselineSel.addEventListener("change", function (ev) { S.baseline = ev.target.value; drawCharts(); });
+  // --- inequality filter rows ---------------------------------------------
+  var INEQ_METRICS = [["score", "Score"], ["cost", "Task cost"], ["time", "Selected speed (time / task)"], ["tps", "Output speed (tok/s)"], ["gapScore", "Pareto gap: score gap (vs cost frontier)"], ["gapCost", "Pareto gap: price premium (vs score)"], ["gapSpeed", "Pareto gap: speed gap (vs time frontier)"]];
+  function renderIneqConds() {
+    var wrap = document.getElementById("xf-ineq-conds");
+    if (!wrap) return;
+    wrap.innerHTML = S.ineq.conds.map(function (c, i) {
+      var metricOpts = INEQ_METRICS.map(function (m) { return '<option value="' + m[0] + '"' + (c.metric === m[0] ? " selected" : "") + ">" + m[1] + "</option>"; }).join("");
+      var opOpts = ["<", "<=", "=", ">=", ">"].map(function (o) { return '<option value="' + o + '"' + (c.op === o ? " selected" : "") + ">" + o + "</option>"; }).join("");
+      return '<span class="xpl-ineq-row"><label>Condition ' + (i + 1) + ' <select data-ineq-metric="' + i + '">' + metricOpts + '</select></label> <select data-ineq-op="' + i + '" aria-label="Operator">' + opOpts + '</select> <input type="number" step="any" data-ineq-value="' + i + '" value="' + esc(c.value) + '" style="width:7em"> <button type="button" class="xpl-ctl-btn" data-ineq-remove="' + i + '">Remove</button></span>';
+    }).join("");
+    wrap.querySelectorAll("[data-ineq-metric]").forEach(function (el) { el.addEventListener("change", function () { S.ineq.conds[Number(el.getAttribute("data-ineq-metric"))].metric = el.value; render(); }); });
+    wrap.querySelectorAll("[data-ineq-op]").forEach(function (el) { el.addEventListener("change", function () { S.ineq.conds[Number(el.getAttribute("data-ineq-op"))].op = el.value; render(); }); });
+    wrap.querySelectorAll("[data-ineq-value]").forEach(function (el) { el.addEventListener("input", function () { S.ineq.conds[Number(el.getAttribute("data-ineq-value"))].value = el.value; render(); }); });
+    wrap.querySelectorAll("[data-ineq-remove]").forEach(function (el) { el.addEventListener("click", function () { S.ineq.conds.splice(Number(el.getAttribute("data-ineq-remove")), 1); renderIneqConds(); render(); }); });
+  }
+  var ineqModeEl = document.getElementById("xf-ineq-mode");
+  if (ineqModeEl) ineqModeEl.addEventListener("change", function (ev) { S.ineq.mode = ev.target.value; render(); });
+  var ineqCombineEl = document.getElementById("xf-ineq-combine");
+  if (ineqCombineEl) ineqCombineEl.addEventListener("change", function (ev) { S.ineq.combine = ev.target.value; render(); });
+  var ineqAddEl = document.getElementById("xf-ineq-add");
+  if (ineqAddEl) ineqAddEl.addEventListener("click", function () { S.ineq.conds.push({ metric: "score", op: ">=", value: "" }); renderIneqConds(); });
+  // --- saved setups + downloads ---------------------------------------------
+  function captureSetup() {
+    return JSON.parse(JSON.stringify({
+      tab: S.tab, persp: S.persp, xp: S.xp, q: S.q, creator: S.creator, fam: S.fam, bench: S.bench,
+      effortAny: S.effortAny, efforts: S.efforts, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
+      measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy,
+      tasksMode: S.tasksMode, baseline: S.baseline, pfCut: S.pfCut, bandCount: S.bandCount,
+      bandScale: S.bandScale, rec: S.rec, pj: S.pj, ineq: S.ineq,
+    }));
+  }
+  function syncStaticControls() {
+    var q = document.getElementById("xf-q"); if (q) q.value = S.q;
+    var elig = document.getElementById("xf-elig"); if (elig) elig.checked = S.elig;
+    var pooled = document.getElementById("xf-pooled"); if (pooled) pooled.checked = S.pooledOnly;
+    var meas = document.getElementById("xf-measured"); if (meas) meas.checked = S.measuredOnly;
+    var nodis = document.getElementById("xf-nodis"); if (nodis) nodis.checked = S.hideDisabled;
+    var pf = document.getElementById("xf-pfcut"); if (pf) pf.value = S.pfCut;
+    var bd = document.getElementById("xf-bands"); if (bd) bd.value = String(S.bandCount);
+    var bs = document.getElementById("xf-bandscale"); if (bs) bs.value = String(S.bandScale);
+    if (ineqModeEl) ineqModeEl.value = S.ineq.mode;
+    if (ineqCombineEl) ineqCombineEl.value = S.ineq.combine;
+    document.querySelectorAll("[data-tmode]").forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tmode") === S.tasksMode); });
+    document.querySelectorAll("[data-sizeby]").forEach(function (cb) { cb.checked = !!S.sizeBy[cb.getAttribute("data-sizeby")]; });
+  }
+  function applySetup(st) {
+    if (!st || typeof st !== "object") return;
+    ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["efforts", "off", "hidden", "sizeBy", "rec", "pj", "ineq"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    POINTS = S.persp === "cai" ? CAI_POINTS : AA_POINTS;
+    S.sel = null;
+    showDetail(null);
+    buildFilterOptions();
+    buildBaselineOptions();
+    syncRecInputs();
+    syncPjInputs();
+    renderIneqConds();
+    syncStaticControls();
+    render();
+  }
+  function loadSetups() {
+    try { return JSON.parse(localStorage.getItem("xpl-setups-v1") || "{}"); } catch (e) { return {}; }
+  }
+  function storeSetups(obj) {
+    try { localStorage.setItem("xpl-setups-v1", JSON.stringify(obj)); } catch (e) { /* storage unavailable: setups stay session-only */ }
+  }
+  function refreshSetupList(selected) {
+    var sel = document.getElementById("xf-setup-list");
+    if (!sel) return;
+    var names = Object.keys(loadSetups()).sort();
+    sel.innerHTML = names.length ? names.map(function (n) { return '<option value="' + esc(n) + '"' + (n === selected ? " selected" : "") + ">" + esc(n) + "</option>"; }).join("") : '<option value="">(none saved)</option>';
+  }
+  var setupSaveEl = document.getElementById("xf-setup-save");
+  if (setupSaveEl) setupSaveEl.addEventListener("click", function () {
+    var nameEl = document.getElementById("xf-setup-name");
+    var name = nameEl && nameEl.value.trim() ? nameEl.value.trim() : "Setup " + (Object.keys(loadSetups()).length + 1);
+    var all = loadSetups();
+    all[name] = captureSetup();
+    storeSetups(all);
+    refreshSetupList(name);
+  });
+  var setupLoadEl = document.getElementById("xf-setup-load");
+  if (setupLoadEl) setupLoadEl.addEventListener("click", function () {
+    var sel = document.getElementById("xf-setup-list");
+    if (sel && sel.value) applySetup(loadSetups()[sel.value]);
+  });
+  var setupExportEl = document.getElementById("xf-setup-export");
+  if (setupExportEl) setupExportEl.addEventListener("click", function () { downloadFile("cost-explorer-setups.json", JSON.stringify(loadSetups(), null, 2), "application/json"); });
+  var setupImportEl = document.getElementById("xf-setup-import");
+  if (setupImportEl) setupImportEl.addEventListener("change", function () {
+    var file = setupImportEl.files && setupImportEl.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        var parsed = JSON.parse(String(reader.result));
+        if (parsed && typeof parsed === "object") {
+          var all = loadSetups();
+          Object.keys(parsed).forEach(function (k) { all[k] = parsed[k]; });
+          storeSetups(all);
+          refreshSetupList();
+        }
+      } catch (e) { /* unreadable file: nothing imported */ }
+    };
+    reader.readAsText(file);
+  });
+  var setupResetEl = document.getElementById("xf-setup-reset");
+  if (setupResetEl) setupResetEl.addEventListener("click", function () {
+    applySetup({
+      tab: "aa", persp: "aa", xp: "api", q: "", creator: "", fam: "", bench: "", effortAny: false, efforts: {}, off: {},
+      elig: false, pooledOnly: false, measuredOnly: false, hideDisabled: false, hidden: [], sizeBy: {}, tasksMode: "per",
+      baseline: "", pfCut: "50", bandCount: 3, bandScale: 1,
+      rec: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
+      pj: { turns: 3, inputTokens: 20000, answerTokens: 2000, thinkingTokens: 4000, cacheReadPct: 50, writesPct: 0, overheadSec: 10, window: "peak" },
+      ineq: { mode: "off", combine: "and", conds: [{ metric: "score", op: ">=", value: "" }, { metric: "cost", op: "<=", value: "" }, { metric: "time", op: "<=", value: "" }] },
+    });
+  });
+  function csvCell(v) { return '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"'; }
+  var dlJsonEl = document.getElementById("xf-dl-json");
+  if (dlJsonEl) dlJsonEl.addEventListener("click", function () { downloadFile("cost-explorer-data.json", JSON.stringify(DATA, null, 2), "application/json"); });
+  var dlCsvEl = document.getElementById("xf-dl-csv");
+  if (dlCsvEl) dlCsvEl.addEventListener("click", function () {
+    var lines = [];
+    if (S.tab === "models") {
+      lines.push(["model_id", "name", "provider", "plan", "context", "aa_score", "aa_cost_per_task", "proj_cost_per_task", "proj_time_per_task_s"].join(","));
+      sortCatalog(visCatalog()).forEach(function (e) {
+        var proj = project(e);
+        lines.push([e.id, e.name, e.providerName, e.plan || "", e.contextLimit, e.aaScore, e.aaCostPerTask, proj.cost, proj.time].map(csvCell).join(","));
+      });
+      downloadFile("cost-explorer-models-visible.csv", lines.join("\\n"), "text/csv");
+    } else {
+      lines.push(["family", "effort", "creator", "benchmark", "harness", "score", "cost_per_task", "time_per_task_s", "ttft_s", "tokens_per_second", "tokens_per_task"].join(","));
+      sortPoints(visPoints()).forEach(function (p) {
+        lines.push([p.family, p.effort || "", p.creator, p.benchmark || "", p.harness || "", p.score, p.cost, p.time, p.ttft, p.tps, p.tokensPerTask].map(csvCell).join(","));
+      });
+      downloadFile("cost-explorer-configurations-visible.csv", lines.join("\\n"), "text/csv");
+    }
+  });
+  renderIneqConds();
+  refreshSetupList();
   buildFilterOptions();
   buildBaselineOptions();
   render();
@@ -2795,6 +3622,19 @@ function aaConfigsTable(configs: AaConfig[]): string {
     )
     .join("");
   return `<div class="tblwrap"><table><tr><th>Model</th><th>Effort (workbook label)</th><th>Intelligence</th><th>$/task</th><th>Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
+}
+
+function aaCaiTable(rowsIn: AaCaiRow[]): string {
+  const pct = (v: number | null): string => (v == null ? "—" : `${Number((v * 100).toFixed(1))}%`);
+  const rows = rowsIn
+    .map(
+      (r) =>
+        `<tr><td><strong>${esc(r.family)}</strong><br><span class="muted">${esc(r.creator)}${r.snapshotDate ? ` · ${esc(r.snapshotDate)}` : ""}</span></td><td>${esc(r.effort ?? "—")}</td><td>${esc(r.harness ?? "—")}</td><td>${esc(r.version ?? "—")}</td><td>${r.score ?? "—"}</td><td>${pct(r.deepSwe)}</td><td>${pct(r.terminalBench)}</td><td>${pct(r.sweAtlas)}</td><td>${fmtCost(r.cost)}</td><td>${fmtTimed(r.wallSec)}</td><td>${r.tokensPerTask != null ? Math.round(r.tokensPerTask).toLocaleString("en-US") : "—"}</td></tr>`,
+    )
+    .join("");
+  return `<h2>Coding Agent Index observations</h2>
+<p class="muted">The workbook's Coding Agent Index rows — a model plus its agent harness and settings, checked as published. Kept strictly separate from the AA Intelligence Index rows above: no score is converted between the indexes. "Not published" costs stay blank rather than estimated. These rows power the explorer's Coding agents perspective.</p>
+<div class="tblwrap"><table><tr><th>Model</th><th>Effort</th><th>Harness</th><th>Version</th><th>CAI score</th><th>DeepSWE v1.1</th><th>Terminal-Bench 4.0</th><th>SWE-Atlas-QnA</th><th>$/task</th><th>Agent wall time / task</th><th>Tokens / task</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaNameList(names: string[]): string {
@@ -2852,9 +3692,11 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <div class="card"><strong>${catalog.filter((e) => e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured<br><span class="muted">Pooled = at least one route sends it work; measured = the workbook has an intelligence score for its name</span></div>
 </div>`
     : `<div class="banner">The collector has not carried the fleet catalog yet — it is built from the same <code>.opencode/opencode.jsonc</code> read as the coverage section and appears once a collector build that knows it has run. No catalog is shown rather than a stale one.</div>`;
-  const explorerJson = jsonForScript(JSON.stringify({ points: aaPoints(s), catalog: catalog ?? null }));
+  const explorerJson = jsonForScript(
+    JSON.stringify({ points: aaPoints(s), caiPoints: s.cai ? aaCaiPoints(s.cai) : [], catalog: catalog ?? null }),
+  );
   const body = `<h1>Cost Explorer</h1>
-<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
+<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${s.cai ? ` · ${s.cai.length} Coding Agent Index observations` : ""}${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
 <div class="card"><strong>Provenance</strong><br>
 <span class="muted">These are the workbook snapshot's figures (AA Intelligence Index v4.3.2), not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A workbook refresh (the coding-plan-watch import) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change.</span>
 <ul>${sourcesHtml || '<li class="muted">source files not recorded for this batch</li>'}</ul></div>
@@ -2865,8 +3707,28 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <label><span id="xf-fam-label">Family</span> <select id="xf-fam"></select></label>
 <label data-tabaa>Benchmark <select id="xf-bench"></select></label>
 <span class="xp-seg" role="group" aria-label="Efficiency perspective"><button type="button" data-xp="plan">Plan</button><button type="button" data-xp="api">API</button><button type="button" data-xp="pertask">Per-task</button></span>
+<span class="xp-seg" role="group" aria-label="Benchmark perspective" data-tabaa><button type="button" data-persp="aa">Intelligence &amp; decode</button><button type="button" data-persp="cai">Coding agents</button></span>
+<p class="muted" id="xpl-persp-note" data-tabaa style="flex-basis:100%;margin:2px 0 0"></p>
 <div data-tabaa style="flex-basis:100%"><span class="muted">Efforts:</span> <span id="xf-efforts"></span> <label style="margin-left:10px"><input type="checkbox" id="xf-elig"> Eligible only</label></div>
 <div data-tabmodels hidden style="flex-basis:100%"><label><input type="checkbox" id="xf-pooled"> Pooled only</label> <label><input type="checkbox" id="xf-measured"> AA-measured only</label> <label><input type="checkbox" id="xf-nodis"> Hide disabled providers</label></div>
+<div data-tabaa style="flex-basis:100%"><details><summary>Model selection and advanced filters — inequality conditions</summary>
+<label>Filter mode <select id="xf-ineq-mode"><option value="off" selected>Off</option><option value="keep">Keep matching models</option><option value="reject">Keep only rejected models</option></select></label>
+<label>Combine conditions <select id="xf-ineq-combine"><option value="and" selected>Match all (AND)</option><option value="or">Match any (OR)</option></select></label>
+<span class="muted">Pareto-gap metrics compare against the observed frontier of the current scope: score gap (score vs cost), price premium (cost vs score), speed gap (score vs time).</span>
+<div id="xf-ineq-conds"></div>
+<button type="button" class="xpl-ctl-btn" id="xf-ineq-add">+ Add condition</button>
+</details></div>
+<div style="flex-basis:100%">
+<label>Settings name <input type="text" id="xf-setup-name" placeholder="Name this setup"></label>
+<button type="button" class="xpl-ctl-btn" id="xf-setup-save">Save setup</button>
+<label>Saved setups <select id="xf-setup-list"></select></label>
+<button type="button" class="xpl-ctl-btn" id="xf-setup-load">Load</button>
+<button type="button" class="xpl-ctl-btn" id="xf-setup-export">Export settings</button>
+<label class="xpl-ctl-btn">Import <input type="file" id="xf-setup-import" accept="application/json" hidden></label>
+<button type="button" class="xpl-ctl-btn" id="xf-setup-reset">Reset all settings</button>
+<button type="button" class="xpl-ctl-btn" id="xf-dl-json">Download joined data (JSON)</button>
+<button type="button" class="xpl-ctl-btn" id="xf-dl-csv">Download visible CSV</button>
+</div>
 <p class="muted" id="xp-note" style="flex-basis:100%;margin:2px 0 0"></p>
 </div>
 <div class="card xpl-detail" id="xpl-detail"></div>
@@ -2887,20 +3749,70 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Effort</th><th class="num">Score</th><th class="num">Score ×</th><th class="num xpl-costcol">Cost/task</th><th class="num xpl-costcol">Cost ×</th><th class="num">Time/task</th><th class="num">Time ×</th><th>Benchmark</th></tr></thead><tbody id="xpl-mtrows"></tbody></table></div>
 <h2>Configurations</h2>
 <p class="muted" id="xpl-count"></p>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Effort</th><th class="num">Intelligence</th><th class="num xpl-costcol">$/task</th><th class="num">Time/task</th><th class="num">TTFT</th><th class="num">Speed (t/s)</th><th class="num xpl-costcol">Score / $</th><th class="num">Score / s</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Effort</th><th class="num" id="xpl-scorehead">Intelligence</th><th class="num xpl-costcol">$/task</th><th class="num">Time/task</th><th class="num">TTFT</th><th class="num">Speed (t/s)</th><th class="num xpl-costcol">Score / $</th><th class="num">Score / s</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
+<h2>Pareto frontiers</h2>
+<p class="muted">Each list keeps variants that are not dominated on its named dimensions: another variant cannot be at least as good on every dimension and strictly better on one. The first two lists are the same score–speed frontier in different priority orders. Percentile ranks use the current filtered models; 100% is best. Missing measures are excluded only from a frontier that needs them.</p>
+<label>Minimum score and speed percentile in the price shortlist <select id="xf-pfcut"><option value="50" selected>At least median · 50th percentile</option><option value="60">At least 60th percentile</option><option value="75">Top quarter · 75th percentile</option><option value="0">No cutoff · full Pareto frontier</option></select></label>
+<p class="muted" id="xpl-pf-count"></p>
+<h3>Score first, with competitive time</h3>
+<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Score · value / percentile</th><th class="num">Time / task · value / percentile</th><th class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-score"></tbody></table></div>
+<h3>Time first, with competitive score</h3>
+<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Score · value / percentile</th><th class="num">Time / task · value / percentile</th><th class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-speed"></tbody></table></div>
+<h3>Price first, strong in score and time</h3>
+<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Score · value / percentile</th><th class="num">Time / task · value / percentile</th><th class="num xpl-costcol">Cost / task · value / percentile</th></tr></thead><tbody id="xpl-pf-price"></tbody></table></div>
+<h3>Price–speed trade-offs</h3>
+<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model / effort</th><th class="num">Time / task</th><th class="num xpl-costcol">Cost / task</th><th class="num">Score · context</th></tr></thead><tbody id="xpl-pf-ps"></tbody></table></div>
+<h2>Recommendations</h2>
+<p class="muted">Build a useful shortlist: first require a near-top score in each band, then trade price against speed and choose distinct labs. Score bands are non-overlapping and calculated from the filtered population before tradeoff limits; absolute limits apply first, then relative price/speed limits against the cheapest and fastest near-top models passing them. Unknown selected values cannot be recommended.</p>
+<div class="card xpl-filters">
+<span role="group" aria-label="Recommendation presets"><button type="button" class="xpl-ctl-btn" data-recpreset="fast">Fast near-top</button><button type="button" class="xpl-ctl-btn" data-recpreset="balanced">Balanced</button><button type="button" class="xpl-ctl-btn" data-recpreset="diversity">More lab diversity</button><button type="button" class="xpl-ctl-btn" data-recpreset="budget">Tight budget</button><button type="button" class="xpl-ctl-btn" data-recpreset="reset">Reset tradeoffs</button></span>
+<label>Score bands <select id="xf-bands"><option value="2">2 tiers</option><option value="3" selected>3 tiers</option><option value="4">4 tiers</option><option value="5">5 tiers</option><option value="6">6 tiers</option><option value="8">8 tiers</option></select></label>
+<label>Allow score below band best <input type="number" data-rec="allow" value="5" min="0" step="1" style="width:4em"> points</label>
+<label>Favor price ← → favor speed <input type="range" data-rec="speedPriority" min="0" max="100" step="5" value="85"> <span id="rec-speedpriority-val">85% speed</span></label>
+<label>Extra price above cheapest near-top <input type="number" data-rec="priceAllow" value="500" min="0" step="50" style="width:5em"> %</label>
+<label>Slowest allowed vs fastest near-top <input type="number" data-rec="slowAllow" value="2" min="1" step="0.1" style="width:4em"> ×</label>
+<label>Allow alternatives within <input type="number" data-rec="altWindow" value="2" min="1" step="0.1" style="width:4em"> × best tradeoff</label>
+<label>Lab diversity <select data-rec="diversity"><option value="lab" selected>One choice per lab</option><option value="labsfirst">Different labs first</option><option value="none">No lab grouping</option></select></label>
+<label>Remove dominated models <select data-rec="dominance"><option value="lab" selected>Within each lab</option><option value="all">Across all labs · strict Pareto</option><option value="none">Do not remove</option></select></label>
+<label>At most per band <select data-rec="perBand"><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option></select></label>
+<label>Maximum USD / task <input type="number" data-rec="maxCost" placeholder="none" min="0" step="0.1" style="width:5em"></label>
+<label>Maximum seconds / task <input type="number" data-rec="maxSec" placeholder="none" min="0" step="10" style="width:5em"></label>
+<button type="button" class="xpl-ctl-btn" id="xpl-rec-export">Export shortlist CSV</button>
+</div>
+<p class="muted" id="xpl-rec-summary"></p>
+<div id="xpl-recs"></div>
+<h2>Band comparisons</h2>
+<p class="muted">Best choices within each score and cost band; shortlists follow the current model and effort filters. Each band row shows the observed range of its other two measures with the endpoint configurations named.</p>
+<label>Near-leader window <select id="xf-bandscale"><option value="0.5">0.5× · Very tight</option><option value="0.75">0.75× · Tight</option><option value="1" selected>1× · Standard (score ±2 · time within 10% · price within 25%)</option><option value="1.5">1.5× · Generous</option><option value="2">2× · Wide</option><option value="3">3× · Broad</option></select></label>
+<div id="xpl-bandgroups"></div>
 <h2>Timing — Test_Runs</h2>
 <p class="muted">Per-configuration timing from the workbook's Test_Runs sheet. "Not measured" means the workbook carries no value for that cell — nothing is estimated.</p>
 ${aaTimingsTable(s.testRuns)}
 <h2>Measured configurations</h2>
 <p class="muted">The AA Intelligence Index rows of the latest import batch, effort labels verbatim from the workbook.</p>
 ${aaConfigsTable(s.configs)}
+${s.cai ? aaCaiTable(s.cai) : ""}
 </section>
 <section id="xtab-models" hidden>
 <h2>The fleet's model universe</h2>
 <p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the workbook has one. Click a row for the plan note.</p>
 ${modelCards}
+<h3>Task projection — estimated, not measured</h3>
+<p class="muted">The task-assumptions projection from the ChatGPT coding explorer: set the shape of a task and every model with a recorded token rate gets an estimated cost and time, marked ~. Prices come only from the ainventory price event log joined onto this catalog (the band your per-turn input falls in); a model with no recorded rate — or missing a rate the assumptions need — shows —, never a guess. Time borrows the family's measured TTFT and throughput. Cache-storage hours are not modelled: the price log carries no storage rate.</p>
+<div class="card xpl-filters">
+<span role="group" aria-label="Task presets"><button type="button" class="xpl-ctl-btn" data-pjpreset="small">Small patch</button><button type="button" class="xpl-ctl-btn" data-pjpreset="feature">Feature</button><button type="button" class="xpl-ctl-btn" data-pjpreset="repo">Repo task</button></span>
+<label>Turns <input type="number" data-pj="turns" value="3" min="1" style="width:4em"></label>
+<label>Input / turn <input type="number" data-pj="inputTokens" value="20000" step="1000" style="width:6em"></label>
+<label>Answer / turn <input type="number" data-pj="answerTokens" value="2000" step="500" style="width:5em"></label>
+<label>Thinking / turn <input type="number" data-pj="thinkingTokens" value="4000" step="500" style="width:5em"></label>
+<label>Cache read share <input type="range" data-pj="cacheReadPct" min="0" max="100" step="5" value="50"> <span id="pj-cacheread-val">50%</span></label>
+<label>Writes / uncached <input type="number" data-pj="writesPct" value="0" min="0" max="100" style="width:4em"> %</label>
+<label>Tool overhead / turn <input type="number" data-pj="overheadSec" value="10" min="0" style="width:4em"> s</label>
+<label>Rate window <select data-pj="window"><option value="peak" selected>Peak (conservative)</option><option value="offpeak">Off-peak</option></select></label>
+<span class="muted">The window applies to scheduled rates only (DeepSeek halves every token rate off-peak).</span>
+</div>
 <p class="muted" id="xpl-mcount"></p>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Provider / plan</th><th class="num">Context</th><th>Variants</th><th>Pool seats</th><th class="num">AA score</th><th class="num xpl-costcol">AA $/task</th><th class="num xpl-costcol">Eff. $/task</th><th class="num">AA time/task</th></tr></thead><tbody id="xpl-mrows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Provider / plan</th><th class="num">Context</th><th>Variants</th><th>Pool seats</th><th class="num">AA score</th><th class="num xpl-costcol">AA $/task</th><th class="num xpl-costcol">Eff. $/task</th><th class="num">AA time/task</th><th class="num xpl-costcol">Proj. $/task ~</th><th class="num">Proj. time/task ~</th><th class="num xpl-costcol">AA score / proj. $</th></tr></thead><tbody id="xpl-mrows"></tbody></table></div>
 </section>
 ${coverageHtml}
 <script type="application/json" id="xpl-data">${explorerJson}</script>`;
