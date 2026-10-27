@@ -2004,11 +2004,53 @@ class FakeTurso:
     )
     # Well-formed and committed, but carries no user tables at all.
     EMPTY_SQL = "PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\nCOMMIT;\n"
+    # The atlas shape (#1391): an FTS5 external-content table whose
+    # CREATE carries single quotes. libsql registers it inside a
+    # writable_schema block with the embedded SQL verbatim — quotes
+    # NOT doubled — so the literal terminates early and stock parsers
+    # fail with: near "chunks": syntax error. The shadow tables and
+    # the FTS index rows (real bytes from a live FTS5 index holding
+    # the seeded row) follow as ordinary statements, as in a real
+    # dump.
+    FTS_SQL = (
+        "PRAGMA foreign_keys=OFF;\n"
+        "BEGIN TRANSACTION;\n"
+        "CREATE TABLE chunks (id INTEGER PRIMARY KEY, text TEXT);\n"
+        "INSERT INTO chunks VALUES(1,'hello fts world');\n"
+        "PRAGMA writable_schema=ON;\n"
+        "INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+        " VALUES('table','chunks_fts','chunks_fts',0,"
+        "'CREATE VIRTUAL TABLE chunks_fts\n"
+        "      USING fts5(text, content='chunks', content_rowid='id')');\n"
+        "PRAGMA writable_schema=OFF;\n"
+        "CREATE TABLE 'chunks_fts_data'(id INTEGER PRIMARY KEY, block BLOB);\n"
+        "CREATE TABLE 'chunks_fts_idx'(segid, term, pgno,"
+        " PRIMARY KEY(segid, term)) WITHOUT ROWID;\n"
+        "CREATE TABLE 'chunks_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB);\n"
+        "CREATE TABLE 'chunks_fts_config'(k PRIMARY KEY, v) WITHOUT ROWID;\n"
+        "INSERT INTO chunks_fts_data VALUES(1, X'0103');\n"
+        "INSERT INTO chunks_fts_data VALUES(10, X'000000000101010001010101');\n"
+        "INSERT INTO chunks_fts_data VALUES(137438953473,"
+        " X'000000200430667473010203010568656C6C6F0102020105776F726C6401020404080A');\n"
+        "INSERT INTO chunks_fts_idx VALUES(1, X'', 2);\n"
+        "INSERT INTO chunks_fts_docsize VALUES(1, X'03');\n"
+        "INSERT INTO chunks_fts_config VALUES('version', 4);\n"
+        "COMMIT;\n"
+    )
+    # The same dump with the schema literal correctly escaped ('' in
+    # place of each embedded quote): the repair filter must pass it
+    # through byte-identical, so the registered SQL stays exactly as
+    # authored.
+    ESCAPED_SQL = FTS_SQL.replace("content='chunks'", "content=''chunks''").replace(
+        "content_rowid='id'", "content_rowid=''id''"
+    )
 
     def __init__(self):
         self.failing_dumps = set()
         self.truncated_dumps = set()
         self.empty_dumps = set()
+        self.fts_dumps = set()
+        self.escaped_dumps = set()
         self.dump_accept_encodings = {}
         self.databases = [
             {"Name": "fake-one", "Hostname": "fake-one.example.invalid"},
@@ -2051,6 +2093,10 @@ def make_turso_handler(fake: FakeTurso):
                     return self._send(200, FakeTurso.TRUNCATED_SQL, "text/plain")
                 if name in fake.empty_dumps:
                     return self._send(200, FakeTurso.EMPTY_SQL, "text/plain")
+                if name in fake.fts_dumps:
+                    return self._send(200, FakeTurso.FTS_SQL, "text/plain")
+                if name in fake.escaped_dumps:
+                    return self._send(200, FakeTurso.ESCAPED_SQL, "text/plain")
                 return self._send(200, FakeTurso.DUMP_SQL, "text/plain")
             return self._send(404, {"error": "not found"})
 
@@ -2208,6 +2254,51 @@ class TestTursoExportScript(unittest.TestCase):
         self.assertIn("no user tables", proc.stderr)
         self.assertTrue((self.captured / "fake-one.db.gz").is_file())
         self.assertFalse((self.captured / "fake-two.db.gz").exists())
+
+    def check_fts_export(self, name):
+        """The filed export of the FTS fixture: virtual table registered
+        with its SQL exactly as authored, MATCH serving the seeded row."""
+        raw = gzip.decompress((self.captured / f"{name}.db.gz").read_bytes())
+        check = self.tmp / f"check-{name}.db"
+        check.write_bytes(raw)
+        con = sqlite3.connect(str(check))
+        try:
+            self.assertEqual(con.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(
+                con.execute(
+                    "SELECT sql FROM sqlite_master WHERE name='chunks_fts'"
+                ).fetchone()[0],
+                "CREATE VIRTUAL TABLE chunks_fts\n"
+                "      USING fts5(text, content='chunks', content_rowid='id')",
+            )
+            self.assertEqual(
+                con.execute(
+                    "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'hello'"
+                ).fetchall(),
+                [(1,)],
+            )
+        finally:
+            con.close()
+
+    def test_unescaped_virtual_table_dump_is_repaired_and_files(self):
+        # #1391: the mis-escaped writable_schema INSERT would kill the
+        # sqlite3 -bail rebuild with a syntax error; the repair filter
+        # must rewrite it so the database files, FTS index intact.
+        self.fake.fts_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("turso export: all 2 database(s) filed", proc.stdout)
+        self.check_fts_export("fake-two")
+
+    def test_escaped_virtual_table_dump_files_unchanged(self):
+        # A correctly-escaped schema INSERT needs no repair; if the
+        # filter touched it (e.g. doubled the quotes again) the
+        # registered SQL would differ from what was authored.
+        self.fake.escaped_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("turso export: all 2 database(s) filed", proc.stdout)
+        self.check_fts_export("fake-two")
 
     def test_rebuild_streams_through_sqlite3_cli(self):
         # SQLITE3_BIN is the rebuild seam: a recording shim that

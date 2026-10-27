@@ -9,9 +9,13 @@
 # database: mint a token (POST .../databases/<name>/auth/tokens, with
 # the platform token), download /dump with curl (--compressed: the
 # uncompressed stream is large enough to be cut mid-transfer in the
-# sandbox; compression shrinks the wire size several-fold), require
-# the dump to end in COMMIT; (a truncated dump otherwise rebuilds
-# into an integrity-clean but partial database), stream it through
+# sandbox; compression shrinks the wire size several-fold), run the
+# dump through scripts/repair_dump.py (libsql does not escape single
+# quotes inside the sqlite_schema INSERTs that register virtual
+# tables, so FTS5 databases are otherwise unparseable — #1391),
+# require the filtered dump to end in COMMIT; (a truncated dump
+# otherwise rebuilds into an integrity-clean but partial database),
+# stream it through
 # the sqlite3 CLI to rebuild a standalone SQLite file — constant
 # memory at any dump size, unlike reading it into python — require
 # PRAGMA integrity_check = ok and at least one user table, gzip -6,
@@ -129,6 +133,7 @@ fi
 export_one() {
   local name="$1" hostname="$2"
   local dump_sql="${WORK}/${name}.sql" db_file="${WORK}/${name}.db"
+  local filtered_sql="${WORK}/${name}.filtered.sql"
   local jwt dump_url
 
   # Mint a per-database auth token (the value is never printed).
@@ -169,20 +174,34 @@ PY
   fi
   unset jwt
 
-  # Truncation guard: a dump cut mid-stream ends inside its open
-  # transaction, yet rebuilds into a database whose integrity_check
+  # Repair pass (#1391): libsql registers virtual tables with an
+  # INSERT INTO sqlite_schema whose embedded SQL is emitted verbatim
+  # — single quotes inside it (an FTS5 content='...' table is the
+  # common case) are not doubled, so the literal terminates early and
+  # the rebuild below dies with a syntax error. repair_dump.py
+  # streams the dump (constant memory, one statement buffered) and
+  # rewrites only verifiably mis-escaped schema literals with proper
+  # '' doubling; everything else passes through byte-identical.
+  if ! python3 "${SCRIPT_DIR}/repair_dump.py" <"${dump_sql}" >"${filtered_sql}"; then
+    echo "turso export: ERROR: ${name}: dump repair filter failed" >&2
+    return 1
+  fi
+
+  # Truncation guard, applied to the filtered stream: a dump cut
+  # mid-stream ends inside its open transaction, yet rebuilds into
+  # a database whose integrity_check
   # still says ok (the uncommitted tail silently rolls back). A
   # complete libsql dump's last non-empty line is its COMMIT. The
   # scan streams (awk holds one line), so this is safe at any size.
   local last_line
-  last_line="$(awk 'NF { line = $0 } END { print line }' "${dump_sql}")"
+  last_line="$(awk 'NF { line = $0 } END { print line }' "${filtered_sql}")"
   if [[ ${last_line} != "COMMIT;" ]]; then
     echo "turso export: ERROR: ${name}: dump appears truncated (last non-empty line is not COMMIT;)" >&2
     return 1
   fi
 
-  # Rebuild by streaming the dump through the sqlite3 CLI — constant
-  # memory, unlike the previous python3 path which read the whole
+  # Rebuild by streaming the filtered dump through the sqlite3 CLI —
+  # constant memory, unlike the previous python3 path which read the whole
   # dump into RAM and was OOM-killed on GB-class dumps. -bail makes
   # any bad statement a hard failure. If the CLI is missing this
   # database fails loudly; there is deliberately no fallback.
@@ -190,7 +209,7 @@ PY
     echo "turso export: ERROR: ${name}: sqlite3 CLI not found (SQLITE3_BIN=${SQLITE3}); cannot rebuild the export" >&2
     return 1
   fi
-  if ! "${SQLITE3}" -bail "${db_file}" <"${dump_sql}"; then
+  if ! "${SQLITE3}" -bail "${db_file}" <"${filtered_sql}"; then
     echo "turso export: ERROR: ${name}: dump did not rebuild into a SQLite file" >&2
     return 1
   fi
