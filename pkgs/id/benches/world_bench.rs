@@ -65,7 +65,7 @@ fn chat_event(sequence: u64, text: &str) -> WorldEvent {
 }
 
 fn median(mut samples: Vec<f64>) -> f64 {
-    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    samples.sort_by(|a, b| a.total_cmp(b));
     samples[samples.len() / 2]
 }
 
