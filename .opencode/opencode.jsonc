@@ -5299,27 +5299,45 @@
         // leaf on every door has wired (Flash/GLM are overpowered for this tier at any rung:
         // AA v4.3.2 Flash max 45, GLM max 42 vs Haiku low 29). Flash addresses the PLAN pool
         // directly so routine traffic can never reach the PAYG tail on the parent route.
+        // 2026-10-26 pass 3.1: Beam joins as a direct leaf — Reflection Beam 1.0 via the
+        // Command Code proxy (AA v4.3.2: II 30, TTFT 0.59s, ~385 t/s decode, :free variant).
+        // The door was probe-verified live 2026-10-26 (chat completion answered), so the
+        // registry's "no API access" note is stale for the proxy path. Caveats: the proxy
+        // injects its own ~21k-token agent prompt per call, and the free tier's rate
+        // limits are unmeasured — automatic quota demotion bounds the blast radius.
         "targets": [
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/glm-flash-plan#low",
-          "opencode-route/haiku-plan#low"
+          "opencode-route/haiku-plan#low",
+          "commandcode/reflection/beam:free"
         ],
         "selection": "round-robin",
         "autonomy": "rules"
       },
       "workhorse": {
         "name": "Workhorse - standard work: fast and smart across plan pools",
-        // 2026-10-26: Haiku at #xhigh (AA 41 vs 38 at high; real on both doors — claude-code
-        // has a wired xhigh body, OpenDesign remaps xhigh -> high). Spark runs the contributor
-        // model at #xhigh (AA 45, fastest seat in the pool) — contributor ids are always the
-        // cheaper seat on the Meta plan; #low was rejected on the data (AA publishes Spark's
-        // capability at xhigh/max, and xhigh matches this tier's top band). Weights burn the
-        // small soon-expiring plans fastest and the OpenAI final reserve (Luna) slowest.
+        // 2026-10-26 pass 3 (balance pass — intelligence vs time-to-first-token vs cost,
+        // AA v4.3.2 pages read 2026-10-26): Flash #high ~45 / TTFT ~1s / 170 t/s; Spark
+        // contributor #xhigh 45 / 19.1s / 303 t/s (contributor ids are always the cheaper
+        // seat on the Meta plan); Haiku #high 38 / 26.7s / 185 t/s — down from #xhigh
+        // (41, but a 67.4s TTFT made it the pool's slowest starter); Luna #xhigh 35 /
+        // 24.2s / 126 t/s — down from #max (38, but a 93.8s TTFT on the pool's lowest
+        // intelligence: slower AND dumber is the combination the balance rule removes;
+        // Luna stays as the pool's cheapest seat, weighted last as the OpenAI final
+        // reserve). Weights burn the small soon-expiring plans fastest.
+        // 2026-10-26 (Drew, cross-rung review): Sol #low joins — II 42 / TTFT 2.9s /
+        // $0.13 per task. A higher family's low rung beats the lower family's high
+        // rungs on intelligence and speed at once (it dominates the Luna #xhigh seat
+        // below on both axes), and OpenAI is our largest quota, so it will be spent
+        // regardless — better on the family's elbow rung than its slow tail. Luna
+        // keeps its #xhigh seat for now as the second OpenAI door; per Drew's
+        // standing guidance, anywhere Flash is available it covers Luna's niche.
         "targets": [
           "opencode-route/deepseek-flash#high",
-          "opencode-route/luna-plan#max",
-          "opencode-route/haiku-plan#xhigh",
-          "meta/muse-spark-1.3-contributor#xhigh"
+          "opencode-route/luna-plan#xhigh",
+          "opencode-route/haiku-plan#high",
+          "meta/muse-spark-1.3-contributor#xhigh",
+          "opencode-route/sol-plan#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -5327,20 +5345,23 @@
           "opencode-route/deepseek-flash": 3,
           "opencode-route/haiku-plan": 2,
           "meta/muse-spark-1.3-contributor": 2,
+          "opencode-route/sol-plan": 2,
           "opencode-route/luna-plan": 1
         }
       },
       "specialist": {
         "name": "Specialist - hard work: quality first, Claude then Meta Spark then OpenAI, Luna relief, DeepSeek Pro last",
-        // 2026-10-26 (pool remap review, AA v4.3.2): Sonnet #high 47, Spark contributor #max 48
-        // (~3x Sol medium's speed at under half its shadow price; single Meta door is the
-        // caveat), Sol #medium 48, Luna #max 38 (relief), Pro #high <=36 last — Luna outranks
-        // Pro on capability, speed and leaf diversity alike.
+        // 2026-10-26 pass 3 (AA v4.3.2, pages read 2026-10-26): Sonnet #high 47 / TTFT ~12s /
+        // $0.88 per task (AA's Oct-26 cache-weighted costing; the Sep $1.08 figure is stale),
+        // Spark contributor #max 48 / 42.0s / 176 t/s (single Meta door is the caveat), Sol
+        // #medium 48 / 4.4s / $0.21 — that family's elbow and this chain's value star, Pro
+        // #high <=36 last (TTFT ~2s class; fires only when every seat above is walled).
+        // Luna #max REMOVED in pass 3: at 38 it sat 10 points under the pool's band with a
+        // 93.8s TTFT — the balance rule's remove case; Sol already covers the OpenAI door.
         "targets": [
           "opencode-route/sonnet-plan#high",
           "meta/muse-spark-1.3-contributor#max",
           "opencode-route/sol-plan#medium",
-          "opencode-route/luna-plan#max",
           "opencode-route/deepseek-pro-plan#high"
         ],
         "selection": "ordered",
@@ -5360,23 +5381,39 @@
       },
       "speed": {
         "name": "Speed - fastest seats at or above the Haiku bar, for latency-bound work",
-        // 2026-10-26 (pool remap review): AA v4.3.2 intelligence / output speed — Spark
-        // contributor #xhigh 45 at ~301 t/s, Flash #max 45 at ~200, Haiku #xhigh 41 at ~189,
-        // Luna #max 38 at ~129. Flash addresses the plan pool directly (no PAYG tail).
+        // 2026-10-26 pass 3 (AA v4.3.2, pages read 2026-10-26): a latency pool is judged on
+        // time-to-first-token as much as decode — Spark contributor #xhigh 45 / TTFT 19.1s /
+        // 303 t/s, Flash #max 45 / 1.1s / 170 t/s (plan pool addressed directly, no PAYG
+        // tail), Haiku #medium 34 / 11.9s / 174 t/s (the pool's minimum-bar seat, kept for
+        // its speed; #xhigh's 67.4s TTFT failed the pool's purpose). Luna REMOVED: its #max
+        // paired the pool's slowest decode (~127 t/s) with a 93.8s TTFT.
         "targets": [
           "meta/muse-spark-1.3-contributor#xhigh",
           "opencode-route/deepseek-flash-plan#max",
-          "opencode-route/haiku-plan#xhigh",
-          "opencode-route/luna-plan#max"
+          "opencode-route/haiku-plan#medium"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "meta/muse-spark-1.3-contributor": 3,
           "opencode-route/deepseek-flash-plan": 2,
-          "opencode-route/haiku-plan": 2,
-          "opencode-route/luna-plan": 1
+          "opencode-route/haiku-plan": 2
         }
+      },
+      "luna-haiku-100k": {
+        "name": "Luna + Haiku under 100k - value pool capped below the 100k context cliff",
+        // 2026-10-26: both members price much cheaper below 100k context. The route's
+        // context cap (developing-today/opencode#554) presents a 100k limit, so sessions
+        // pinned here compact before crossing the cliff. On fork builds predating #554
+        // the decoder strips the unknown limit key and the pool simply runs uncapped.
+        // AA v4.3.2: Haiku #high 38, Luna #xhigh 35 (TTFT 24.2s; #max would be 93.8s).
+        "targets": [
+          "opencode-route/haiku-plan#high",
+          "opencode-route/luna-plan#xhigh"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "limit": { "context": 100000 }
       }
     }
   }

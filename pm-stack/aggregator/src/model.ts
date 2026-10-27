@@ -446,14 +446,30 @@ export interface GoalMeasurement {
 }
 
 /** The whole orchestration section, as embedded in the fleet feed. */
+/**
+ * The orchestration section's own provenance (#1110): the sources the
+ * producing run read, as the orchestration job publishes them. The
+ * object form is the contract — the publisher has always emitted it,
+ * and it is strictly richer than a joined string. The aggregator's
+ * feed boundary also accepts the legacy plain-string form older runs
+ * published and normalizes it to this shape (see feed.ts), so every
+ * consumer sees exactly this type.
+ */
+export interface OrchestrationProvenance {
+  /** One human-readable note per source the run read. */
+  sources: string[];
+  /** The producing run, when the publisher records it here too. */
+  runId?: string;
+}
+
 export interface OrchestrationSection {
   version: 1;
   /** ISO timestamp of the orchestrator run that produced this section. */
   generatedAt: string;
   /** "orch-<ISO>" — the producing run. */
   runId: string;
-  /** Sources + run, human-readable (the section's own provenance). */
-  provenance: string;
+  /** What the producing run read (the section's own provenance). */
+  provenance: OrchestrationProvenance;
   tiers: { needsDrew: TierItem[]; needsOrchestrator: TierItem[] };
   /** Flat cross-item dependency view for one-place rendering. */
   dependencies: (DependencyRef & { taskRef?: RefKey })[];

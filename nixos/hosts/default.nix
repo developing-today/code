@@ -57,6 +57,7 @@ in
       # KRdp remote desktop for this laptop (user service + package);
       # see the file for the one-time on-machine credential setup.
       ./amd-krdp.nix
+      ./amd-ipv4-preference.nix
       ./amd-openclaw-secrets.nix
     ];
   };
