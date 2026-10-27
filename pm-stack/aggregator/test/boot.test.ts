@@ -52,6 +52,16 @@ describe("server boots from fixtures", () => {
     expect(html).toContain("Cross-repo WIP board");
   });
 
+  test("sw.js serves the self-unregistering kill switch", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/sw.js`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("javascript");
+    expect(res.headers.get("cache-control")).toBe("no-cache");
+    const body = await res.text();
+    expect(body).toContain("skipWaiting");
+    expect(body).toContain("registration.unregister()");
+  });
+
   test("roadmap page renders", async () => {
     const res = await fetch(`http://127.0.0.1:${port}/roadmap`);
     expect(res.status).toBe(200);

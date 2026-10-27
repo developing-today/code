@@ -189,6 +189,28 @@ function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
+// Self-unregistering service worker, served at /sw.js on purpose. Until
+// 2026-10-27 this origin (the laptop's tailnet-serve address) fronted the
+// opencode web app, which registered a Workbox service worker that keeps
+// serving the opencode shell from cache even though the origin now serves
+// the dashboard. Browsers holding that registration pick this script up
+// on their next update check: it installs, unregisters itself, and
+// reloads open tabs into the dashboard. Harmless for fresh browsers --
+// it removes itself immediately.
+const SW_KILL_SWITCH = `self.addEventListener('install', () => { self.skipWaiting(); });
+self.addEventListener('activate', async () => {
+  try { await self.registration.unregister(); } catch {}
+  const cs = await self.clients.matchAll({ type: 'window' });
+  for (const c of cs) { try { c.navigate(c.url); } catch {} }
+});
+`;
+
+function serviceWorkerKillSwitch(): Response {
+  return new Response(SW_KILL_SWITCH, {
+    headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
+  });
+}
+
 async function boardContext() {
   const board = await source.board();
   const refs = allRefs(board);
@@ -569,6 +591,11 @@ async function handler(req: Request): Promise<Response> {
     // means "not measured yet" — never an empty queue.
     const section = await source.orchestration();
     return json(section ?? { status: "absent", reason: "no orchestration run has published yet" });
+  }
+  if (path === "/sw.js") {
+    // Kill switch for the opencode service worker stranded on this
+    // origin (see SW_KILL_SWITCH above) -- never a real worker here.
+    return serviceWorkerKillSwitch();
   }
   if (path === "/api/health") {
     // #1267: prime first — health's answer must not depend on
