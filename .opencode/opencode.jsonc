@@ -5976,7 +5976,8 @@
     "model_routes": {
       // Route pools built 2026-10-25. Design: doc/2026-10-25T21-11-31Z_design_route-pools/
       // Per-model pools join every plan provider serving a model; tier pools nest them.
-      // Plan routes only — the one exception is the DeepSeek PAYG reserve, last in its ordered pool.
+      // Plan routes only. (The DeepSeek PAYG reserve that used to tail the
+      // deepseek-flash route was removed 2026-10-27 — see that route.)
       "deepseek-flash-plan": {
         "name": "DeepSeek Flash - plan providers",
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
@@ -6000,19 +6001,22 @@
         "autonomy": "rules"
       },
       "deepseek-flash": {
-        "name": "DeepSeek Flash - plan first, PAYG reserve last",
-        "targets": [
-          "opencode-route/deepseek-flash-plan",
-          {
-            "model": "deepseek/deepseek-chat",
-            "variants": { "medium": "high", "xhigh": "max" }
-          }
-        ],
+        "name": "DeepSeek Flash - plan providers only",
+        // 2026-10-27 pool-coverage audit: the PAYG tail (deepseek/deepseek-chat)
+        // is REMOVED. The registry's NEVER FUNDS rule (Drew, 2026-10-25) states
+        // supervised sessions run on plan quotas only and a funds error is a
+        // wall — rotate or stop — and it explicitly supersedes older orderings.
+        // This route was the route set's only remaining funds exposure: when
+        // every plan Flash leaf walled, workhorse traffic spilled silently to
+        // metered DeepSeek billing. Scout and speed already address the plan
+        // pool directly for exactly this reason. The route name is kept so
+        // workhorse's reference is untouched; if the plan pool is down the
+        // target simply yields nothing ready and the wall protocol applies.
+        // To restore the old reserve: re-add the deepseek-chat leaf as a
+        // second target (one block).
+        "targets": ["opencode-route/deepseek-flash-plan"],
         "selection": "ordered",
-        "autonomy": "rules",
-        "weights": {
-          "opencode-route/deepseek-flash-plan": 100
-        }
+        "autonomy": "rules"
       },
       "deepseek-pro-plan": {
         "name": "DeepSeek V4 Pro - plan providers",
@@ -6043,6 +6047,17 @@
       },
       "luna-plan": {
         "name": "GPT Luna - plan providers",
+        // 2026-10-27 pool-coverage audit: burn-by-expiry weights. Both
+        // OpenCode Go workspaces are CANCELLED and their paid periods end
+        // inside two weeks (Personal 2026-11-02, monthly 80% used; Lab
+        // 2026-11-06, 62% used) — unspent Go quota evaporates, with no
+        // rollover and no renewal. Equal round-robin gave each Go leaf the
+        // same share as the non-expiring ChatGPT doors, stranding that
+        // quota. Weights now burn Go first (Personal ahead of Lab: sooner
+        // deadline), the ChatGPT doors stay at the default as the OpenAI
+        // reserve, and OpenDesign's small short-window plan keeps the
+        // default too. When a Go leaf walls, quota demotion + the remaining
+        // leaves carry the pool as before.
         "targets": [
           "openai/gpt-6-luna",
           "openai.alternate/gpt-6-luna",
@@ -6054,7 +6069,11 @@
           "opencode-go.personal/gpt-5.6-luna"
         ],
         "selection": "round-robin",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        "weights": {
+          "opencode-go.personal/gpt-5.6-luna": 3,
+          "opencode-go.lab/gpt-5.6-luna": 2
+        }
       },
       "glm-flash-plan": {
         "name": "GLM Flash - plan providers",
@@ -6110,12 +6129,18 @@
       },
       "sol-plan": {
         "name": "GPT Sol - plan providers",
-        "targets": [
-          "openai/gpt-6.1-sol",
-          "openai.alternate/gpt-6.1-sol",
-          "opencode-go.lab/gpt-5.6-sol",
-          "opencode-go.personal/gpt-5.6-sol"
-        ],
+        // 2026-10-27 pool-coverage audit: the two opencode-go leaves are
+        // REMOVED. They pointed at gpt-5.6-sol, which OpenCode Go does not
+        // list — verified in the #1249 recheck (models.dev's opencode-go
+        // catalog, 37 models: the only GPT entries are gpt-5.6-luna and
+        // gpt-6-luna; OpenCode's Go docs agree). No GPT-6.1 of any kind
+        // rides Go either. Dead leaves cannot burn quota; keeping them
+        // only distorted the pool's real mix (the ChatGPT doors were
+        // carrying Sol traffic the leaf list claimed was shared four
+        // ways). Go quota burns exclusively through luna-plan's
+        // gpt-5.6-luna leaves. Re-add a Go leaf here only when Go's own
+        // catalog lists a Sol-class model.
+        "targets": ["openai/gpt-6.1-sol", "openai.alternate/gpt-6.1-sol"],
         "selection": "round-robin",
         "autonomy": "rules"
       },
