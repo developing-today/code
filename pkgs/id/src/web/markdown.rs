@@ -1709,9 +1709,70 @@ fn insert_marked_chain<'a>(
 /// segments. Pure mark chains go through the #968 tail insertion
 /// (`insert_marked_chain`), which handles the #953 merge as its
 /// shared-mark case; non-chain children keep the original merge.
+
+/// #1412: adopt trailing `html_inline` atoms into the tail mark
+/// wrapper when a marked chain that shares that wrapper's mark is
+/// about to be inserted. The parse direction emits `html_inline`
+/// atoms markless (see the `NodeValue::HtmlInline` arm of
+/// `convert_node`), so a mark spanning an atom reaches the save
+/// direction as marked run, bare atom, marked run. Appending the
+/// atom as a sibling severs the tail wrapper: the next run opens a
+/// NEW wrapper and the span fragments (`[a <b>x</b> c](/y)` saved as
+/// `[a ](/y)<b>[x](/y)</b>[ c](/y)`, with `&#32;` leaks at emphasis
+/// seams). When the incoming chain shares a mark with the wrapper
+/// before the atoms, the atoms belong to that span: move them inside
+/// the wrapper (recursing along the chain's shared marks, mirroring
+/// `insert_marked_chain`'s descent, so nested spans adopt at the
+/// deepest shared level), after which the chain insertion merges
+/// into the same wrapper as usual. Atoms not followed by a chain
+/// sharing the preceding wrapper's mark keep their legacy sibling
+/// placement, so unmarked HTML and atoms after a finished span are
+/// unchanged. Extending the atom predicate (e.g. to images, #1407)
+/// generalizes this to the other atom kinds.
+fn adopt_trailing_html_atoms<'a>(parent: &'a AstNode<'a>, wrappers: &[NodeValue]) {
+    let children: Vec<&'a AstNode<'a>> = parent.children().collect();
+    let mut split = children.len();
+    while split > 0
+        && matches!(
+            children[split - 1].data.borrow().value,
+            NodeValue::HtmlInline(..)
+        )
+    {
+        split -= 1;
+    }
+    if split == children.len() || split == 0 {
+        return;
+    }
+    let tail = children[split - 1];
+    let tail_value = tail.data.borrow().value.clone();
+    if !is_mark_wrapper(&tail_value) {
+        return;
+    }
+    let Some(shared) = wrappers
+        .iter()
+        .position(|wrapper| same_mark_wrapper(wrapper, &tail_value))
+    else {
+        return;
+    };
+    for atom in &children[split..] {
+        atom.detach();
+        tail.append(atom);
+    }
+    let rest: Vec<NodeValue> = wrappers
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != shared)
+        .map(|(_, wrapper)| wrapper.clone())
+        .collect();
+    adopt_trailing_html_atoms(tail, &rest);
+}
+
 fn append_inline_child<'a>(arena: &'a Arena<'a>, parent: &'a AstNode<'a>, child: &'a AstNode<'a>) {
     if let Some((wrappers, leaf)) = peel_mark_chain(child) {
         leaf.detach();
+        // #1412: html_inline atoms sitting between this chain and the
+        // tail mark wrapper join the span before the chain merges in.
+        adopt_trailing_html_atoms(parent, &wrappers);
         insert_marked_chain(arena, parent, &wrappers, leaf);
         return;
     }
@@ -3608,5 +3669,69 @@ mod tests {
         assert!(first.contains("</span>"), "span close survives: {first}");
         assert!(!first.contains("\\<"), "no escaping: {first}");
         assert_eq!(first, second, "fixpoint");
+    }
+    #[test]
+    fn test_marks_spanning_inline_html_roundtrip() {
+        // #1412: a mark spanning an html_inline atom must save as ONE
+        // span containing the tags, not fragmented per text run, and
+        // emphasis forms must not leak &#32; entities at the seams.
+        for md in [
+            "[a <b>x</b> c](/y)\n",
+            "[a <sup>2</sup> c](/y)\n",
+            "*a <b>x</b> c*\n",
+            "**a <b>x</b> c**\n",
+            "~~a <b>x</b> c~~\n",
+            "*a <b><i>x</i></b> c*\n",
+        ] {
+            let (first, second) = two_saves(md);
+            assert_eq!(first, md, "round-trip for {md:?}");
+            assert_eq!(first, second, "fixpoint for {md:?}");
+            assert!(
+                !first.contains("&#32;"),
+                "no entity leak for {md:?}: {first}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_marks_spanning_inline_html_pm_to_md() {
+        // #1412, save direction alone: PM text runs carrying a link
+        // mark, separated by markless html_inline atoms, emit a single
+        // link span containing the tags.
+        let pm_json = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "a ", "marks": [{"type": "link", "attrs": {"href": "/y"}}]},
+                    {"type": "html_inline", "attrs": {"html": "<b>"}},
+                    {"type": "text", "text": "x", "marks": [{"type": "link", "attrs": {"href": "/y"}}]},
+                    {"type": "html_inline", "attrs": {"html": "</b>"}},
+                    {"type": "text", "text": " c", "marks": [{"type": "link", "attrs": {"href": "/y"}}]}
+                ]
+            }]
+        });
+        let md = prosemirror_to_markdown(&pm_json).unwrap();
+        assert_eq!(md.trim(), "[a <b>x</b> c](/y)", "single link span: {md}");
+    }
+
+    #[test]
+    fn test_inline_html_outside_marks_stays_outside() {
+        // #1412 controls: atoms that do NOT sit between same-mark runs
+        // keep their legacy placement outside any mark span.
+        for md in ["a <b>x</b> c\n", "*a* <b>x</b>\n"] {
+            let (first, second) = two_saves(md);
+            assert_eq!(first, md, "round-trip for {md:?}");
+            assert_eq!(first, second, "fixpoint for {md:?}");
+        }
+        // Single-run form ([<b>x</b>](/y)): the save form may differ
+        // textually but must re-parse to the identical PM structure.
+        let (first, second) = two_saves("[<b>x</b>](/y)\n");
+        assert_eq!(first, second, "fixpoint for single-run form: {first}");
+        assert_eq!(
+            markdown_to_prosemirror(&first),
+            markdown_to_prosemirror("[<b>x</b>](/y)\n"),
+            "same PM structure for single-run form"
+        );
     }
 }
