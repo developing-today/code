@@ -57,11 +57,11 @@ fi
 ORG="${TURSO_ORG:-dezren39}"
 DUMP_MAX_TIME="${TURSO_DUMP_MAX_TIME_SECONDS:-1800}"
 case "${DUMP_MAX_TIME}" in
-  '' | *[!0-9]*)
-    echo "turso export: ERROR: TURSO_DUMP_MAX_TIME_SECONDS must be a positive integer (got '${DUMP_MAX_TIME}')" >&2
-    exit 1
-    ;;
-  *) ;;
+'' | *[!0-9]*)
+  echo "turso export: ERROR: TURSO_DUMP_MAX_TIME_SECONDS must be a positive integer (got '${DUMP_MAX_TIME}')" >&2
+  exit 1
+  ;;
+*) ;;
 esac
 API_BASE="${TURSO_API_BASE:-https://api.turso.tech}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
