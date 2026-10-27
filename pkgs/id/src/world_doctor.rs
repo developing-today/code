@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::world::JOURNAL_VERSION;
+use crate::world::{JOURNAL_VERSION, MAX_JOURNAL_VERSION};
 use crate::world_limits::WorldExecutionProfile;
 
 /// How bad a finding is.
@@ -380,8 +380,8 @@ pub fn validate_journal_file(path: &Path) -> Result<(usize, u32)> {
                     index + 1
                 );
                 anyhow::ensure!(
-                    *created_version <= JOURNAL_VERSION,
-                    "journal format version {created_version} is newer than this binary supports ({JOURNAL_VERSION})"
+                    *created_version <= MAX_JOURNAL_VERSION,
+                    "journal format version {created_version} is newer than this binary supports ({MAX_JOURNAL_VERSION})"
                 );
                 version = Some(*created_version);
             }
@@ -537,7 +537,7 @@ mod tests {
         let future = serde_json::json!({
             "entry": "created",
             "world_id": "w",
-            "version": JOURNAL_VERSION + 1,
+            "version": MAX_JOURNAL_VERSION + 1,
         });
         std::fs::write(&path, format!("{future}\n")).unwrap();
         assert!(validate_journal_file(&path).is_err());

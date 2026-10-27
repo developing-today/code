@@ -149,7 +149,7 @@ impl WorldCore {
                     core.world_id
                 );
                 ensure!(
-                    version == JOURNAL_VERSION,
+                    (JOURNAL_VERSION..=MAX_JOURNAL_VERSION).contains(&version),
                     "unsupported world journal version {version}"
                 );
             }
@@ -531,6 +531,18 @@ impl WorldCore {
             snapshot,
             events: self.events.iter().cloned().collect(),
         });
+        // The compacted journal keeps the rollback contract (see
+        // `JOURNAL_VERSION`): when the checkpoint re-emits an entry a
+        // version-1 binary cannot read, the new header must say so, or the
+        // old binary would accept the header and fail mid-read.
+        let required = entries
+            .iter()
+            .map(journal_version_required_by)
+            .max()
+            .unwrap_or(JOURNAL_VERSION);
+        if let Some(JournalEntry::Created { version, .. }) = entries.first_mut() {
+            *version = required;
+        }
         Ok(entries)
     }
 
