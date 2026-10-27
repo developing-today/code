@@ -8,35 +8,35 @@ The earlier v1.9-era Talos test cluster (the layout in [`doc/talos-addresses.md`
 
 ## Now
 
-| Title                                       | Status   | Intent                                                                                                                   | Links             |
-| ------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------- |
-| Hardware inventory and first-node selection | proposed | Gather hardware stats for all ~12 machines and pick the first 3–5 cluster nodes.                                         | Epics being filed |
-| Firmware, BIOS and BMC audit                | proposed | Confirm firmware versions and every setting are identical across the core machines, verified by routine KVM screenshots. | Epics being filed |
-| Basement power and space                    | proposed | Dedicated 20A circuits, cleanup and rack layout, so the first nodes can actually run.                                    | Epics being filed |
+| Title                                       | Status  | Intent                                                                                                                   | Links |
+| ------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------ | ----- |
+| Hardware inventory and first-node selection | planned | Gather hardware stats for all ~12 machines and pick the first 3–5 cluster nodes.                                         | #1080 |
+| Firmware, BIOS and BMC audit                | planned | Confirm firmware versions and every setting are identical across the core machines, verified by routine KVM screenshots. | #1081 |
+| Basement power and space                    | planned | Dedicated 20A circuits, cleanup and rack layout, so the first nodes can actually run.                                    | #1083 |
 
 ## Next
 
-| Title                                  | Status   | Intent                                                                                        | Links             |
-| -------------------------------------- | -------- | --------------------------------------------------------------------------------------------- | ----------------- |
-| Network fabric                         | proposed | Switching and a new addressing plan, replacing the torn-down 01b.us test layout.              | Epics being filed |
-| Storage assembly and design validation | proposed | Build the HDD RAID 10 pools and NVMe tiers, validated against per-drive records.              | Epics being filed |
-| TALM and Talos bootstrap               | planned  | Prove the declarative bootstrap flow, including per-machine drives that are all different.    | Epics being filed |
-| Cloud extension                        | proposed | The OCI always-free fleet, egress offload, and cold tiering to R2 alongside the home cluster. | Epics being filed |
+| Title                                  | Status  | Intent                                                                                        | Links |
+| -------------------------------------- | ------- | --------------------------------------------------------------------------------------------- | ----- |
+| Network fabric                         | planned | Switching and a new addressing plan, replacing the torn-down 01b.us test layout.              | #1084 |
+| Storage assembly and design validation | planned | Build the HDD RAID 10 pools and NVMe tiers, validated against per-drive records.              | #1085 |
+| TALM and Talos bootstrap               | planned | Prove the declarative bootstrap flow, including per-machine drives that are all different.    | #1086 |
+| Cloud extension                        | planned | The OCI always-free fleet, egress offload, and cold tiering to R2 alongside the home cluster. | #1091 |
 
 ## Later
 
-| Title                              | Status   | Intent                                                                                                        | Links                                  |
-| ---------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| Cozystack platform                 | proposed | Install Cozystack on the Talos cluster and settle its upgrade path.                                           | Epics being filed                      |
-| Platform services                  | proposed | CNPG Postgres, RustFS (against Cozystack's bundled SeaweedFS), NATS, FluxCD, Cloudflare tunnel and Tailscale. | Epics being filed                      |
-| Observability, backup and recovery | proposed | Metrics, an etcd and TALM recovery vault, restore drills, and a power-return boot order.                      | Epics being filed                      |
-| First workload: the ID app         | proposed | Run the `id` app on FluxCD as the cluster's first real workload.                                              | Epics being filed; [id roadmap](id.md) |
+| Title                              | Status   | Intent                                                                                                        | Links                      |
+| ---------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Cozystack platform                 | proposed | Install Cozystack on the Talos cluster and settle its upgrade path.                                           | #1087                      |
+| Platform services                  | proposed | CNPG Postgres, RustFS (against Cozystack's bundled SeaweedFS), NATS, FluxCD, Cloudflare tunnel and Tailscale. | #1088                      |
+| Observability, backup and recovery | proposed | Metrics, an etcd and TALM recovery vault, restore drills, and a power-return boot order.                      | #1090                      |
+| First workload: the ID app         | proposed | Run the `id` app on FluxCD as the cluster's first real workload.                                              | #1092; [id roadmap](id.md) |
 
 ## Ideas
 
-| Title      | Status | Intent                                                                                                             | Links             |
-| ---------- | ------ | ------------------------------------------------------------------------------------------------------------------ | ----------------- |
-| ESP32 wing | idea   | A low-end section of ESP32 sensors and LoRa alongside the compute fleet. A side project of a side project for now. | Epics being filed |
+| Title      | Status | Intent                                                                                                             | Links |
+| ---------- | ------ | ------------------------------------------------------------------------------------------------------------------ | ----- |
+| ESP32 wing | idea   | A low-end section of ESP32 sensors and LoRa alongside the compute fleet. A side project of a side project for now. | #1093 |
 
 ## Done
 
