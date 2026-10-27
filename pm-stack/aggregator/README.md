@@ -290,6 +290,52 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
   outbox into the same field. `Source.usage()` ingests feed records
   into the local store; dedupe on (service, metric, timestamp, value)
   makes every writer safe to re-run.
+
+## The quota gatherer (Stage 2 — #1151)
+
+`scripts/gather-quota.ts` is the quota plane's 15-minute tick. It
+runs on the **laptop** (nothing executes on the sandbox), as the
+`quota-gatherer` systemd **user** timer (units in this package's
+`systemd/`, installed by `install.sh`; linger keeps it
+boot-persistent). The unit runs the script from the laptop's repo
+clone (`~/git/code`) — package re-deploys replace the deployed
+`scripts/` wholesale and must not be able to vanish the gatherer —
+with its outputs pinned by env to the deployed aggregator dir
+`~/pm-stack/aggregator`.
+
+Each tick:
+
+- imports the OpenChamber quota module in-process (from the laptop's
+  OpenChamber checkout) and fetches every configured provider
+  per-credential, with credentials read **directly from OpenCode's
+  credential store** (`opencode.db`, read-only) — no OpenCode server
+  needs to be listening. One provider failing or exceeding the 15s
+  cap degrades only its own rows.
+- ingests laptop **file exports** in the Meta Phase-1 convention
+  (#1301): a producer's `latest.json` (today: Meta,
+  `~/atlas/meta-quota-export/latest.json`) maps onto the same
+  contract; a failure-status document or a file older than 30
+  minutes is an error entry, never zeros.
+- writes **`quota-current.json`** — the latest-state contract
+  (`QuotaCurrentFile` in `src/model.ts`: per provider/credential,
+  windows carrying value, % of limit, reset, measured-at, source,
+  state) — and `quota-gatherer-heartbeat.json` (tick time,
+  per-provider state/duration; the heartbeat also rides inside
+  quota-current.json), both in the deployed aggregator dir beside
+  `fleet-feed.json`.
+- appends §4 snapshot records for windows whose value **moved**
+  since the last appended record, directly to the snapshot store
+  (`SnapshotStore.append` dedupes; change-tracking state in
+  `quota-gatherer-state.json`). Setting `USAGE_SNAPSHOT_OUTBOX_PATH`
+  reroutes records to the writers' outbox instead.
+
+Fail-soft: a module-import or credential-store failure writes a
+heartbeat with the error, exits non-zero, and leaves the previous
+`quota-current.json` untouched. **Remaining hop:** the aggregator
+does not read `quota-current.json` yet — `Source` pickup (freshness
+rendering, lazy pull on page load) is the follow-up that makes the
+tick visible on /quota.
+
 - **Sandbox attention** — sessions mapped by the shared OpenCode v2
   mapper (`src/sources/opencode.ts`), stamped `opencode-sandbox` with
   parent/agent/outcome; keeper supervision entries from
