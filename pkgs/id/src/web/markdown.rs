@@ -17,7 +17,7 @@
 //! - `bullet_list`: Unordered list with `tight` attribute
 //! - `ordered_list`: Ordered list with `order` and `tight` attributes
 //! - `list_item`: List item containing blocks
-//! - `task_list`: Task list (GFM `- [ ]`/`- [x]` items)
+//! - `task_list`: Task list (GFM `- [ ]`/`- [x]` items); ordered task lists carry an `order` attribute
 //! - `task_list_item`: Task list item with `checked` attribute
 //! - `image`: Inline image with `src`, `alt`, `title` attributes
 //! - `hard_break`: Hard line break
@@ -213,10 +213,25 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
             if is_task_list {
                 let content = collect_list_items(node);
-                json!({
-                    "type": "task_list",
-                    "content": content
-                })
+                // #997: an ordered task list carries its start in
+                // `attrs.order`, mirroring `ordered_list` below, or the
+                // ordering is lost on save. Bullet task lists keep
+                // emitting no attrs, preserving their current JSON shape.
+                match list.list_type {
+                    ListType::Ordered => {
+                        json!({
+                            "type": "task_list",
+                            "attrs": {"order": list.start},
+                            "content": content
+                        })
+                    }
+                    ListType::Bullet => {
+                        json!({
+                            "type": "task_list",
+                            "content": content
+                        })
+                    }
+                }
             } else {
                 let content = collect_list_items(node);
                 let tight = list.tight;
@@ -1030,13 +1045,25 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "list_item" => NodeValue::Item(comrak::nodes::NodeList::default()),
 
         "task_list" => {
-            // Task list is a bullet list whose children are TaskItems
-            NodeValue::List(comrak::nodes::NodeList {
-                list_type: ListType::Bullet,
-                tight: true,
-                bullet_char: b'-',
-                ..Default::default()
-            })
+            // Task list is a list whose children are TaskItems. #997: when
+            // the parse side stored `attrs.order`, rebuild an ordered list
+            // with that start; without it, a bullet list as before.
+            #[allow(clippy::cast_possible_truncation)] // order is typically small
+            let order = json["attrs"]["order"].as_u64().map(|o| o as usize);
+            match order {
+                Some(start) => NodeValue::List(comrak::nodes::NodeList {
+                    list_type: ListType::Ordered,
+                    start,
+                    tight: true,
+                    ..Default::default()
+                }),
+                None => NodeValue::List(comrak::nodes::NodeList {
+                    list_type: ListType::Bullet,
+                    tight: true,
+                    bullet_char: b'-',
+                    ..Default::default()
+                }),
+            }
         }
 
         "task_list_item" => {
@@ -2231,6 +2258,32 @@ mod tests {
         // Second item: checked
         assert_eq!(items[1]["type"], "task_list_item");
         assert_eq!(items[1]["attrs"]["checked"], true);
+    }
+
+    #[test]
+    fn test_ordered_task_list_roundtrips() {
+        // #997: an ordered task list must keep its ordering and start on
+        // save instead of being rewritten as a bullet task list.
+        let doc = markdown_to_prosemirror("1. [ ] todo\n2. [x] done\n");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "task_list");
+        assert_eq!(content[0]["attrs"]["order"], 1);
+
+        let doc5 = markdown_to_prosemirror("5. [ ] five\n6. [x] six\n");
+        assert_eq!(doc5["content"][0]["attrs"]["order"], 5);
+
+        // Byte-identical round-trips at start 1 and start >1; the second
+        // save is a stable fixpoint.
+        for original in ["1. [ ] todo\n2. [x] done\n", "5. [ ] five\n6. [x] six\n"] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "first save for {original:?}");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+
+        // A bullet task list keeps its current PM shape: no attrs at all.
+        let bullet = markdown_to_prosemirror("- [ ] todo\n");
+        assert_eq!(bullet["content"][0]["type"], "task_list");
+        assert!(bullet["content"][0]["attrs"].is_null());
     }
 
     #[test]
