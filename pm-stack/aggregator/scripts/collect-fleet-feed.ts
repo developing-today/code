@@ -30,8 +30,10 @@
 //     section and logs only that it was omitted.
 //   - the AA cost explorer data — Supabase `ainventory` (the AA
 //     workbook import: v_rankings, v_threshold_metrics,
-//     benchmark_results, the Test_Runs sheet), read through
-//     v_latest_workbook_batch via the Management API SQL endpoint.
+//     benchmark_results — both the AA Intelligence Index rows and the
+//     Coding Agent Index rows, kept as separate benchmark families —
+//     the Test_Runs sheet, and the price event log's v_current_prices),
+//     read through v_latest_workbook_batch via the Management API SQL endpoint.
 //     Token plumbing mirrors the Projects read: the Bitwarden secret
 //     named `supabase.access-token-muse-cli` (the sbp_ management
 //     token), resolved by resolveBwsSecret and sent only to
@@ -289,6 +291,33 @@ select jsonb_build_object(
     from ainventory.sheet_rows sr
     where sr.import_batch = (select import_batch from ainventory.v_latest_workbook_batch)
       and sr.sheet_name = 'Test_Runs'
+  ), '[]'::jsonb),
+  'cai', coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'modelName', model_name, 'effort', effort, 'version', raw->>'benchmark_version',
+      'score', value_num, 'cost', cost_per_task_usd,
+      'wallSec', nullif(raw->>'time_per_task_seconds', '')::numeric,
+      'tokensPerTask', nullif(raw->>'token_usage_per_task', '')::numeric,
+      'harness', raw->>'agent_harness',
+      'creatorSlug', split_part(raw->>'observation_key', '|', 3),
+      'deepSwe', nullif(raw->>'deep_swe_v1_1_pct', '')::numeric,
+      'terminalBench', nullif(raw->>'terminal_bench_4_0_pct', '')::numeric,
+      'sweAtlas', nullif(raw->>'swe_atlas_qna_pct', '')::numeric,
+      'snapshotDate', nullif(raw->>'snapshot_date', ''), 'sourceUrl', nullif(raw->>'source_url', '')
+    ) order by value_num desc nulls last, model_name)
+    from ainventory.benchmark_results br
+    where br.import_batch = (select import_batch from ainventory.v_latest_workbook_batch)
+      and br.benchmark like 'Artificial Analysis Coding Agent Index%'
+      and br.metric = 'cai_index_score'
+  ), '[]'::jsonb),
+  'prices', coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'modelName', model_name, 'inputPer1M', input_usd_per_1m, 'outputPer1M', output_usd_per_1m,
+      'cacheReadPer1M', cached_input_usd_per_1m, 'cacheWritePer1M', cache_write_usd_per_1m,
+      'contextMinTokens', context_min_tokens, 'contextMaxTokens', context_max_tokens,
+      'windowKind', window_kind
+    ) order by model_name, context_min_tokens nulls first)
+    from ainventory.v_current_prices
   ), '[]'::jsonb)
 ) as aa`;
 
