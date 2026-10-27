@@ -12,6 +12,7 @@ A row here records intent. It does not settle a product question and it is not a
 | `mcpx`, the MCP gateway and Code Mode runner   | [mcpx](planning/roadmaps/mcpx.md)                       | The only copy of the code; how downstream flakes consume it, and darwin takeover tests                   |
 | The NixOS flake and infra manifests            | [nixos-and-infra](planning/roadmaps/nixos-and-infra.md) | Inputs kept current by a daily job. No open work items of its own                                        |
 | Repo-wide CI and automation                    | [repo-and-ci](planning/roadmaps/repo-and-ci.md)         | One Jules workflow, the Go build cache, and stale PR triage                                              |
+| The basement home cluster (Talos, Cozystack)   | [basement-cluster](planning/roadmaps/basement-cluster.md) | Nothing built yet; research and planning done, hardware inventory and power come first                 |
 
 ## Now, across the repo
 
