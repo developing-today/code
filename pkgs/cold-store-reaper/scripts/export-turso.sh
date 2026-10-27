@@ -176,7 +176,7 @@ PY
   # scan streams (awk holds one line), so this is safe at any size.
   local last_line
   last_line="$(awk 'NF { line = $0 } END { print line }' "${dump_sql}")"
-  if [[ "${last_line}" != "COMMIT;" ]]; then
+  if [[ ${last_line} != "COMMIT;" ]]; then
     echo "turso export: ERROR: ${name}: dump appears truncated (last non-empty line is not COMMIT;)" >&2
     return 1
   fi
@@ -200,14 +200,14 @@ PY
   # transaction tail is integrity-clean but empty.
   local integrity
   if ! integrity="$("${SQLITE3}" -readonly "${db_file}" "PRAGMA integrity_check;")" ||
-    [[ "${integrity}" != "ok" ]]; then
+    [[ ${integrity} != "ok" ]]; then
     echo "turso export: ERROR: ${name}: rebuilt file failed integrity_check (${integrity:-unreadable})" >&2
     return 1
   fi
   local user_tables
   if ! user_tables="$("${SQLITE3}" -readonly "${db_file}" \
     "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';")" ||
-    [[ ! "${user_tables}" =~ ^[0-9]+$ ]] || [[ "${user_tables}" -lt 1 ]]; then
+    [[ ! ${user_tables} =~ ^[0-9]+$ ]] || [[ ${user_tables} -lt 1 ]]; then
     echo "turso export: ERROR: ${name}: rebuilt file has no user tables (dump may be truncated or empty)" >&2
     return 1
   fi

@@ -2042,9 +2042,7 @@ def make_turso_handler(fake: FakeTurso):
                 return self._send(200, json.dumps({"databases": fake.databases}))
             if len(parts) == 2 and parts[1] == "dump":
                 name = parts[0]
-                fake.dump_accept_encodings[name] = self.headers.get(
-                    "Accept-Encoding"
-                )
+                fake.dump_accept_encodings[name] = self.headers.get("Accept-Encoding")
                 if self.headers.get("Authorization") != f"Bearer fake-jwt-{name}":
                     return self._send(401, {"error": "bad db token"})
                 if name in fake.failing_dumps:
@@ -2186,9 +2184,7 @@ class TestTursoExportScript(unittest.TestCase):
         # get cut mid-stream by the sandbox proxy).
         proc = self.run_export()
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(
-            set(self.fake.dump_accept_encodings), {"fake-one", "fake-two"}
-        )
+        self.assertEqual(set(self.fake.dump_accept_encodings), {"fake-one", "fake-two"})
         for name, encoding in self.fake.dump_accept_encodings.items():
             self.assertIn("gzip", encoding or "", name)
 
@@ -2238,9 +2234,7 @@ class TestTursoExportScript(unittest.TestCase):
         check.write_bytes(raw)
         con = sqlite3.connect(str(check))
         try:
-            self.assertEqual(
-                con.execute("PRAGMA integrity_check").fetchone()[0], "ok"
-            )
+            self.assertEqual(con.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(
                 con.execute("SELECT body FROM notes WHERE id=1").fetchone()[0],
                 "hello",
