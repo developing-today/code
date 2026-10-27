@@ -389,11 +389,28 @@
               # causing it to hang on launch in the nix sandbox.
               unset LD_LIBRARY_PATH
 
-              # Run Playwright E2E tests
+              # Run Playwright E2E tests — one invocation per spec file (#229).
+              # playwright.config.ts starts ONE ephemeral server per browser
+              # project for the whole invocation, so a single full-suite run
+              # lets every spec observe the files/state earlier specs created
+              # on that shared server (the Firefox shared-state failure
+              # cluster: e.g. basic.spec's "empty state" test ran after
+              # autosave.spec had already created files). A fresh invocation
+              # per spec file gives each file a fresh ephemeral server.
+              # All files run even if one fails, so one run reports every
+              # failing file; the check fails if any file failed.
               # TODO: Switch to `bunx playwright test` once Bun's ESM loader supports
               # Playwright's .esm.preflight virtual imports for TypeScript config loading.
               # Tracking: https://github.com/oven-sh/bun/pull/28610
-              (cd e2e && node node_modules/@playwright/test/cli.js test)
+              (
+                cd e2e
+                e2e_status=0
+                for spec in tests/*.spec.ts; do
+                  echo "=== test-e2e isolated per-spec run: $spec ==="
+                  node node_modules/@playwright/test/cli.js test "$spec" || e2e_status=1
+                done
+                exit $e2e_status
+              )
             '';
             installPhase = ''
               mkdir -p $out

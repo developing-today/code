@@ -305,20 +305,26 @@ alias nix-check := test-nix
 # E2E Tests (Playwright - requires built web variant + network)
 # =============================================================================
 
+# E2E recipes run one Playwright invocation per spec file (#229): each
+# invocation gets a fresh ephemeral server from playwright.config.ts, so
+# specs cannot observe state created by other spec files. Note: if you
+# already have an id server running on the test ports, Playwright reuses
+# it (reuseExistingServer) and isolation does not apply — stop it first.
+
 # [bun] Run Playwright E2E tests (both chromium and firefox)
 [group('e2e')]
 test-e2e: build
-    cd e2e && bun install --frozen-lockfile && bunx playwright test
+    cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test "$spec" || exit 1; done
 
 # [bun] Run Playwright E2E tests (chromium only)
 [group('e2e')]
 test-e2e-chromium: build
-    cd e2e && bun install --frozen-lockfile && bunx playwright test --project=chromium
+    cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test --project=chromium "$spec" || exit 1; done
 
 # [bun] Run Playwright E2E tests (firefox only)
 [group('e2e')]
 test-e2e-firefox: build
-    cd e2e && bun install --frozen-lockfile && bunx playwright test --project=firefox
+    cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test --project=firefox "$spec" || exit 1; done
 
 # [bun] Show Playwright test report
 [group('e2e')]

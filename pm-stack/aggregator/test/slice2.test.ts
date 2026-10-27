@@ -38,7 +38,7 @@ const section = (over: Partial<OrchestrationSection>): OrchestrationSection => (
   version: 1,
   generatedAt: iso(NOW),
   runId: "orch-test",
-  provenance: "test run",
+  provenance: { sources: ["test run"] },
   tiers: { needsDrew: [], needsOrchestrator: [] },
   dependencies: [],
   goals: [],

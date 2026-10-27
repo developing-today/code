@@ -58,7 +58,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister } from "../src/dns.ts";
 import { aaAbsent, aaSectionFromSupabase, type AaRawPayload } from "../src/aa.ts";
-import { isOrchestrationSection, type FleetFeed } from "../src/feed.ts";
+import { normalizeOrchestrationSection, orchestrationSectionProblem, type FleetFeed } from "../src/feed.ts";
 import type {
   AaFeedSection,
   DnsSection,
@@ -445,10 +445,16 @@ async function main(): Promise<void> {
   let orchestration: OrchestrationSection | undefined;
   try {
     const parsed: unknown = JSON.parse(await readFile(orchestrationPath, "utf8"));
-    if (isOrchestrationSection(parsed)) {
-      orchestration = parsed;
+    // Embed the normalized form (#1110): the feed carries the section
+    // in the one canonical shape the aggregator serves, whatever
+    // provenance form the publisher emitted.
+    const normalized = normalizeOrchestrationSection(parsed);
+    if (normalized) {
+      orchestration = normalized;
     } else {
-      console.error("collector: orchestration.json failed its structural check; section omitted");
+      console.error(
+        `collector: orchestration.json failed its structural check (${orchestrationSectionProblem(parsed)}); section omitted`,
+      );
     }
   } catch {
     // No orchestration file yet (the job has not run) is the normal

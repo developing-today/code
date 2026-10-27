@@ -10,6 +10,7 @@ import type {
   DnsSection,
   GoalMeasurement,
   JulesSummary,
+  OrchestrationProvenance,
   OrchestrationSection,
   PaygLine,
   ProjectPoolItem,
@@ -89,23 +90,66 @@ function isGoalMeasurement(v: unknown): boolean {
   );
 }
 
-export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
+/**
+ * The section's provenance (#1110). The contract is the publisher's
+ * object form — `{ sources: string[], runId?: string }` — which every
+ * orchestration run actually emits. The legacy plain-string form is
+ * also accepted here and normalized at the boundary (see
+ * normalizeOrchestrationSection), the same string-or-richer tolerance
+ * derive.ts gives `progressedSinceLastRun`. Anything else — a number,
+ * an object without a sources array, non-string sources — fails.
+ */
+function isProvenance(v: unknown): boolean {
+  if (typeof v === "string") return v.length > 0;
   if (typeof v !== "object" || v === null) return false;
-  const s = v as Partial<OrchestrationSection>;
+  const p = v as { sources?: unknown; runId?: unknown };
   return (
-    s.version === 1 &&
-    typeof s.generatedAt === "string" &&
-    typeof s.runId === "string" &&
-    typeof s.provenance === "string" &&
-    typeof s.tiers === "object" &&
-    s.tiers !== null &&
-    Array.isArray(s.tiers.needsDrew) &&
-    Array.isArray(s.tiers.needsOrchestrator) &&
-    Array.isArray(s.dependencies) &&
-    Array.isArray(s.goals) &&
-    s.goals.every(isGoalMeasurement) &&
-    Array.isArray(s.actions)
+    Array.isArray(p.sources) &&
+    p.sources.every((x) => typeof x === "string") &&
+    (p.runId === undefined || typeof p.runId === "string")
   );
+}
+
+/**
+ * The first structural check an orchestration section fails, as a short
+ * field name — or null when the section is valid (#1140: a present-but-
+ * invalid section must be diagnosable, not silently "absent"). This is
+ * the single source of truth behind isOrchestrationSection, so the
+ * diagnosis can never drift from the gate itself.
+ */
+export function orchestrationSectionProblem(v: unknown): string | null {
+  if (typeof v !== "object" || v === null) return "not an object";
+  const s = v as Partial<OrchestrationSection>;
+  if (s.version !== 1) return "version";
+  if (typeof s.generatedAt !== "string") return "generatedAt";
+  if (typeof s.runId !== "string") return "runId";
+  if (!isProvenance(s.provenance)) return "provenance";
+  if (typeof s.tiers !== "object" || s.tiers === null) return "tiers";
+  if (!Array.isArray(s.tiers.needsDrew)) return "tiers.needsDrew";
+  if (!Array.isArray(s.tiers.needsOrchestrator)) return "tiers.needsOrchestrator";
+  if (!Array.isArray(s.dependencies)) return "dependencies";
+  if (!Array.isArray(s.goals)) return "goals";
+  if (!s.goals.every(isGoalMeasurement)) return "goals (per-goal shape)";
+  if (!Array.isArray(s.actions)) return "actions";
+  return null;
+}
+
+export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
+  return orchestrationSectionProblem(v) === null;
+}
+
+/**
+ * A valid section with its provenance in the canonical object form:
+ * a legacy plain-string provenance becomes `{ sources: [it] }`.
+ * Returns null for anything isOrchestrationSection rejects. The
+ * collector embeds this normalized form in the feed and the live
+ * source serves it, so downstream consumers see exactly one shape.
+ */
+export function normalizeOrchestrationSection(v: unknown): OrchestrationSection | null {
+  if (!isOrchestrationSection(v)) return null;
+  const s = v as OrchestrationSection & { provenance: OrchestrationProvenance | string };
+  if (typeof s.provenance !== "string") return s;
+  return { ...s, provenance: { sources: [s.provenance] } };
 }
 
 export function isFleetFeed(v: unknown): v is FleetFeed {
