@@ -9,17 +9,21 @@ import type { Config } from "../config.ts";
 import { isAaSection } from "../aa.ts";
 import { isDnsSection } from "../dns.ts";
 import {
+  diagnoseOrchestrationSection,
   feedAgeText,
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
   loadFeed,
   type FleetFeed,
+  type SectionDiagnosis,
 } from "../feed.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
 import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
+import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
+import { overlayQuotaCurrent, parseQuotaCurrent } from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
@@ -33,6 +37,8 @@ import {
   type OrchestrationSection,
   type ProjectPoolItem,
   type Provenance,
+  type ProvenanceDetail,
+  type ProvenanceFacet,
   type QuotaView,
   type RefKey,
   type RoadmapRow,
@@ -467,7 +473,14 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
 
 // --- Composition ----------------------------------------------------------
 
-export function liveSource(cfg: Config): Source {
+/**
+ * The fleet's own staleness line for the feed itself (#1148's
+ * watchdog threshold): a feed-backed facet older than this renders
+ * its freshness chip as stale, however live its last read was.
+ */
+const FEED_STALE_MS = 15 * 60_000;
+
+export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<boolean> }): Source {
   const fix = fixtureSource();
   const provenance: Provenance = {
     board: "fixtures",
@@ -482,6 +495,16 @@ export function liveSource(cfg: Config): Source {
     registry: "fixtures",
     aa: "fixtures",
   };
+
+  // #1139/#1140: the last orchestration diagnosis, recomputed on every
+  // orchestration() read from the raw feed value — the honesty
+  // surfaces (Source.diagnostics) read it from here, never from a
+  // null section, so absent/invalid/stale stay distinguishable.
+  let lastOrchestrationDiagnosis: SectionDiagnosis = { state: "absent" };
+  // #1138: the merged registry total from the last registry() read —
+  // the freshness chip counts THIS (the same number /sessions renders
+  // in its header), never the per-read incoming batch.
+  let lastRegistryMergedCount: number | null = null;
 
   async function kaneoCookieHeader(): Promise<string> {
     if (!cfg.kaneo.email || !cfg.kaneo.password) throw new Error("no kaneo credentials");
@@ -667,6 +690,12 @@ export function liveSource(cfg: Config): Source {
             : "");
       } else if (projectorServed) {
         provenance.items = "live (projector)";
+      } else if (pool.length > 0 && feed) {
+        // No refs were resolved this call (e.g. the /api/health
+        // provenance prime, #1267): the facet is pool-backed all the
+        // same — say so rather than leaving the fixture default
+        // standing for a facet nobody happened to exercise yet.
+        provenance.items = `live (project pool · fleet feed · ${feedAgeText(feed.generatedAt)})`;
       }
       return out;
     },
@@ -689,13 +718,31 @@ export function liveSource(cfg: Config): Source {
       // on the sandbox by scripts/collect-fleet-feed.ts. A stale feed
       // keeps rendering, with its age in provenance; fixtures only when
       // no feed exists at all.
+      // Stage 2 (#1151): the quota gatherer's quota-current.json —
+      // written into this aggregator's own data dir on a 15-minute
+      // tick — overlays the dated-read pools: fresh reads win, error /
+      // stale reads surface as the pool's state. Fail-soft: a missing
+      // or malformed file leaves the base view untouched.
       const feed = await getFeed();
+      let view: QuotaView;
       if (feed) {
         provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
-        return feed.quota;
+        view = feed.quota;
+      } else {
+        provenance.quota = "fixtures (no fleet feed file yet)";
+        view = await fix.quota();
       }
-      provenance.quota = "fixtures (no fleet feed file yet)";
-      return fix.quota();
+      try {
+        const raw = await readFile(cfg.quotaCurrentFile, "utf8");
+        const file = parseQuotaCurrent(JSON.parse(raw));
+        if (file) {
+          provenance.quota += ` · gatherer ${file.generatedAt}`;
+          return overlayQuotaCurrent(view, file);
+        }
+      } catch {
+        /* no gatherer file (or unreadable): base view stands */
+      }
+      return view;
     },
     async usage(): Promise<UsageView> {
       // Usage & billing hub (design §3): feed sections first (the
@@ -807,11 +854,29 @@ export function liveSource(cfg: Config): Source {
       // the normalized contract shape, #1110), invalid (a section is
       // present but failed validation: name the failed check, never
       // claim the job "has not published"), absent (no section key).
+      // #1139 adds the fourth — stale — tracked as a diagnosis on the
+      // source so the attention/today surfaces can banner it.
       const feed = await getFeed();
+      lastOrchestrationDiagnosis = diagnoseOrchestrationSection(feed?.orchestration ?? null);
       if (feed?.orchestration) {
         const section = normalizeOrchestrationSection(feed.orchestration);
         if (section) {
           provenance.orchestration = `live (orchestration section ${section.runId} · ${feedAgeText(section.generatedAt)})`;
+          // #1290: the per-item extension seam. The section gate above
+          // never learns the extension fields; each tier item's
+          // extensions are validated here, fail-soft (a malformed
+          // extension drops, never the item or the section), and
+          // needs-user items gain their contract fallbacks (whyUser,
+          // ifIgnored, the standing-toggle delegation default).
+          const standingAuto = opts?.standingAuto
+            ? await opts.standingAuto().catch(() => INITIAL_STANDING_AUTO)
+            : INITIAL_STANDING_AUTO;
+          section.tiers = {
+            needsDrew: section.tiers.needsDrew.map((item) =>
+              withUserFallbacks(sanitizeTierItemExtensions(item), section.generatedAt, standingAuto),
+            ),
+            needsOrchestrator: section.tiers.needsOrchestrator.map((item) => sanitizeTierItemExtensions(item)),
+          };
           return section;
         }
         const problem = orchestrationSectionProblem(feed.orchestration);
@@ -876,11 +941,20 @@ export function liveSource(cfg: Config): Source {
         /* laptop part fails soft, like attention */
       }
       if (incoming.length > 0) {
-        provenance.registry = `live (${incoming.length} records merged · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})`;
-        return mergeIntoRegistry(incoming);
+        const merged = await mergeIntoRegistry(incoming);
+        lastRegistryMergedCount = merged.length;
+        // #1138: the headline number is the MERGED total — the same
+        // count the /sessions header renders — with the latest feed's
+        // contribution labelled as what it is. (This string used to
+        // headline the incoming batch, so one page carried two counts
+        // for "records" with nothing explaining the difference.)
+        provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})`;
+        return merged;
       }
+      const store = await loadRegistryStore();
+      lastRegistryMergedCount = store.length;
       provenance.registry = "store only (no live registry source reachable)";
-      return loadRegistryStore();
+      return store;
     },
     async coverage(): Promise<SourceCoverage[]> {
       const feed = lastFeed ?? (await getFeed());
@@ -930,6 +1004,58 @@ export function liveSource(cfg: Config): Source {
       return out;
     },
     provenance: () => provenance,
+    diagnostics: () => ({ orchestration: lastOrchestrationDiagnosis }),
+    provenanceDetail: (): ProvenanceDetail => {
+      // #1138: facet state derives from the facet's own string (the
+      // strings are the contract every facet already maintains),
+      // plus two facts strings can't carry: the orchestration
+      // diagnosis (stale/invalid precision) and the feed's age (a
+      // "live" string over a dead feed is stale, #1148's threshold).
+      const feedAgeMs = lastFeed ? Math.max(0, Date.now() - Date.parse(lastFeed.generatedAt)) : undefined;
+      const facet = (key: keyof Provenance): ProvenanceFacet => {
+        const text = provenance[key];
+        let state: ProvenanceFacet["state"];
+        if (text.startsWith("live")) state = "live";
+        else if (text.startsWith("invalid")) state = "invalid";
+        else if (text.startsWith("none yet") || text.startsWith("not collected yet")) state = "absent";
+        else if (text.startsWith("store only")) state = "live";
+        else state = "fixtures";
+        const feedBacked = text.includes("fleet feed");
+        if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs > FEED_STALE_MS) {
+          state = "stale";
+        }
+        const out: ProvenanceFacet = { text, state };
+        if (key === "orchestration") {
+          if (lastOrchestrationDiagnosis.state === "stale" && state === "live") out.state = "stale";
+          if (lastOrchestrationDiagnosis.state === "invalid") out.state = "invalid";
+          if (lastOrchestrationDiagnosis.ageMs !== undefined) out.ageMs = lastOrchestrationDiagnosis.ageMs;
+        } else if (feedBacked && feedAgeMs !== undefined) {
+          out.ageMs = feedAgeMs;
+        }
+        if (key === "registry" && lastRegistryMergedCount !== null) {
+          out.count = lastRegistryMergedCount;
+          out.countLabel = "session records";
+          if (feedAgeMs !== undefined) {
+            out.ageMs = feedAgeMs;
+            if (out.state === "live" && feedAgeMs > FEED_STALE_MS) out.state = "stale";
+          }
+        }
+        return out;
+      };
+      return {
+        board: facet("board"),
+        roadmap: facet("roadmap"),
+        items: facet("items"),
+        comments: facet("comments"),
+        quota: facet("quota"),
+        usage: facet("usage"),
+        attention: facet("attention"),
+        orchestration: facet("orchestration"),
+        dns: facet("dns"),
+        registry: facet("registry"),
+        aa: facet("aa"),
+      };
+    },
   };
 }
 

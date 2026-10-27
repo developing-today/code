@@ -34,7 +34,7 @@ export const PAGES: PageDef[] = [
     title: "Needs you",
     route: "/attention",
     api: "/api/attention.json",
-    blurb: "NEEDS DREW vs NEEDS ORCHESTRATOR, and every live session.",
+    blurb: "NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.",
   },
   { id: "board", title: "Board", route: "/", api: "/api/board.json", blurb: "The curated cross-repo WIP board." },
   {
@@ -60,11 +60,11 @@ export const PAGES: PageDef[] = [
   },
   {
     id: "aa-explorer",
-    title: "AA Cost Explorer",
+    title: "Cost Explorer",
     route: "/aa",
     api: "/api/aa.json",
     blurb:
-      "Artificial Analysis workbook data: per-config intelligence, cost, timing — and which measured models no pool uses.",
+      "Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).",
   },
   {
     id: "sessions",
@@ -87,6 +87,14 @@ export const PAGES: PageDef[] = [
     api: "/api/program.json",
     blurb:
       "The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.",
+  },
+  {
+    id: "health",
+    title: "Health",
+    route: "/health",
+    api: "/api/health",
+    blurb:
+      "Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).",
   },
   {
     id: "pages",

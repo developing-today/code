@@ -139,6 +139,44 @@ export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
 }
 
 /**
+ * A section older than this at the hourly cadence is stale (#1139,
+ * #1148's threshold): still served, but every surface that renders its
+ * numbers must say the data is old instead of presenting it as current.
+ */
+export const ORCHESTRATION_STALE_MS = 90 * 60_000;
+
+/**
+ * The diagnosis behind the honesty surfaces (#1139/#1140): a section
+ * the aggregator holds is in exactly one of these states. "invalid"
+ * names the failing checks (from orchestrationSectionProblem — the
+ * gate itself, so the diagnosis can never drift from the validation)
+ * and is never collapsed into "absent": a publisher whose section is
+ * being rejected has a bug to fix, not a run that never happened.
+ */
+export interface SectionDiagnosis {
+  state: "live" | "absent" | "invalid" | "stale";
+  generatedAt?: string;
+  runId?: string;
+  ageMs?: number;
+  /** Names of the failing structural checks; never values. */
+  failedChecks?: string[];
+}
+
+export function diagnoseOrchestrationSection(v: unknown, now = Date.now()): SectionDiagnosis {
+  if (v === null || v === undefined) return { state: "absent" };
+  const problem = orchestrationSectionProblem(v);
+  if (problem !== null) return { state: "invalid", failedChecks: [problem] };
+  const s = v as OrchestrationSection;
+  const ageMs = Math.max(0, now - Date.parse(s.generatedAt));
+  return {
+    state: ageMs > ORCHESTRATION_STALE_MS ? "stale" : "live",
+    generatedAt: s.generatedAt,
+    runId: s.runId,
+    ageMs,
+  };
+}
+
+/**
  * A valid section with its provenance in the canonical object form:
  * a legacy plain-string provenance becomes `{ sources: [it] }`.
  * Returns null for anything isOrchestrationSection rejects. The
@@ -174,11 +212,16 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
   }
 }
 
+/** "3m old", "2h old", "fresh" — for an age in milliseconds. */
+export function ageMsText(ageMs: number): string {
+  const ms = Math.max(0, ageMs);
+  if (ms < 90_000) return "fresh";
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m old`;
+  if (ms < 86_400_000) return `${(ms / 3_600_000).toFixed(1)}h old`;
+  return `${Math.round(ms / 86_400_000)}d old`;
+}
+
 /** "3m old", "2h old", "fresh" — for provenance strings. */
 export function feedAgeText(generatedAt: string, now = Date.now()): string {
-  const ageMs = Math.max(0, now - Date.parse(generatedAt));
-  if (ageMs < 90_000) return "fresh";
-  if (ageMs < 3_600_000) return `${Math.round(ageMs / 60_000)}m old`;
-  if (ageMs < 86_400_000) return `${(ageMs / 3_600_000).toFixed(1)}h old`;
-  return `${Math.round(ageMs / 86_400_000)}d old`;
+  return ageMsText(now - Date.parse(generatedAt));
 }

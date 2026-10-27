@@ -15,6 +15,8 @@ export interface Config {
   feedFile: string;
   /** Dashboard comments store (#906 §2) — the aggregator's own writable data. */
   commentsFile: string;
+  /** Dashboard actions store (#1152/#1154/#1156) — triage write path. */
+  actionsFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
   /** Usage snapshot store (hub §4): a directory of monthly JSONL files. */
@@ -25,6 +27,9 @@ export interface Config {
   /** The provider quota registry; the hub's second dated-read source
    * (billing incidents) for the same fallback path. */
   quotaRegistryFile: string;
+  /** The quota gatherer's latest-state file (#1151), written into the
+   * aggregator's own data dir by scripts/gather-quota.ts. */
+  quotaCurrentFile: string;
   /** OpenChamber managed-opencode state file (laptop attention source). */
   openchamberStateFile: string;
   kaneo: {
@@ -42,6 +47,15 @@ export interface Config {
   projector: {
     baseUrl: string | null;
   };
+  /** Probe targets for the /health page (#1147): the stack services the
+   * aggregator does not otherwise read. Kaneo/Grist/projector targets
+   * already live in their own sections above. */
+  pad: {
+    baseUrl: string;
+  };
+  readyForAgent: {
+    baseUrl: string;
+  };
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -54,6 +68,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       .filter(Boolean),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
+    actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
     registryFile: s(env.PM_AGG_REGISTRY_FILE, join(process.cwd(), "registry.json")),
     snapshotsDir: s(env.PM_AGG_SNAPSHOTS_DIR, join(process.cwd(), "snapshots")),
     quotaViewFile: s(
@@ -67,6 +82,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_QUOTA_REGISTRY,
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
     ),
+    quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
       join(homedir(), ".config", "openchamber", "managed-opencode", "state.json"),
@@ -91,6 +107,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         env.PM_PROJECTOR_URL === "off" || env.PM_PROJECTOR_URL === "none"
           ? null
           : s(env.PM_PROJECTOR_URL, "http://127.0.0.1:7801"),
+    },
+    pad: {
+      baseUrl: s(env.PM_AGG_PAD_URL, "http://127.0.0.1:7777"),
+    },
+    readyForAgent: {
+      baseUrl: s(env.PM_AGG_RFA_URL, "http://127.0.0.1:6056"),
     },
   };
 }

@@ -1,10 +1,19 @@
 // The aggregator's HTTP server. Read-mostly: pages are server-rendered
 // HTML and /api/*.json serve the same data machine-first. Slice 3 (#906)
 // adds the app's first writes — dashboard comments (POST /api/comments
-// and its triage/github-result companions); everything underneath
-// (GitHub, Kaneo, Grist) stays read-only from here.
+// and its triage/github-result companions); the triage write path
+// (#1152/#1154/#1156) adds dashboard actions (POST /api/actions and
+// its result companion) on the same pattern. Everything underneath
+// (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
+// apply actions; the dashboard only records them.
+import { stat } from "node:fs/promises";
+import { ActionsStore, validateNewAction } from "./actions.ts";
+import { checkActionAgainstItem, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
+import { loadFeed } from "./feed.ts";
+import { buildHealth, recordRender, type HealthView } from "./health.ts";
+import { PAGES } from "./pages.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import type { DashComment, RefKey } from "./model.ts";
 import { buildProgramData, programRefs } from "./program.ts";
@@ -23,6 +32,7 @@ import {
   renderBoard,
   renderDiscuss,
   renderDns,
+  renderHealth,
   renderItem,
   renderPages,
   renderProgram,
@@ -39,14 +49,90 @@ import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
 
+const cfg = loadConfig();
+const commentsStore = new CommentsStore(cfg.commentsFile);
+const actionsStore = new ActionsStore(cfg.actionsFile);
+
 function pickSource(): Source {
-  const cfg = loadConfig();
-  return cfg.source === "live" ? liveSource(cfg) : fixtureSource();
+  // #1290: the live source reads the standing delegation default from
+  // the actions store's preference records when it stamps the
+  // needs-user fallbacks onto tier items.
+  return cfg.source === "live"
+    ? liveSource(cfg, {
+        standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
+      })
+    : fixtureSource();
 }
 
 const source = pickSource();
-const cfg = loadConfig();
-const commentsStore = new CommentsStore(cfg.commentsFile);
+
+/**
+ * #1267: the live source populates its provenance strings lazily, one
+ * facet per method call — so a consumer that reads provenance()
+ * without exercising the facets (exactly what /api/health did)
+ * reports "fixtures" for facets that are really live, and its answer
+ * depends on which pages were visited since boot. Health therefore
+ * exercises every facet method before reading provenance. Priming is
+ * cached for 60 s (the #1147 probe-cache cadence): facet reads are
+ * mostly cache- or file-backed, and a watchdog polling health must
+ * not fan out to every upstream on every hit. Facet failures never
+ * fail health — a failed facet keeps its honest fallback string,
+ * which is precisely what health exists to report.
+ */
+let lastPrimedAt = 0;
+let priming: Promise<void> | null = null;
+async function ensureProvenancePrimed(): Promise<void> {
+  if (Date.now() - lastPrimedAt < 60_000) return;
+  priming ??= (async () => {
+    try {
+      const { items } = await boardContext();
+      const refs = [...items.keys()];
+      await Promise.allSettled([
+        source.roadmap(),
+        source.comments(refs),
+        source.quota(),
+        source.usage(),
+        source.attention(),
+        source.orchestration(),
+        source.dns(),
+        source.aa(),
+        source.registry(),
+        source.projects(),
+      ]);
+    } catch {
+      /* facets that failed keep their fallback strings — health reports those */
+    }
+    lastPrimedAt = Date.now();
+    priming = null;
+  })();
+  await priming;
+}
+
+/**
+ * The one health assembly behind both /health and /api/health
+ * (#1147): primed provenance first (so facet truth never depends on
+ * request order, #1267), then the feed snapshot the section ages and
+ * job lines are measured from, then buildHealth's probes (cached
+ * 60 s inside health.ts). Page and API read this same view, so they
+ * cannot disagree.
+ */
+async function healthContext(): Promise<HealthView> {
+  await ensureProvenancePrimed();
+  const [feed, feedFileMtimeMs] = await Promise.all([
+    loadFeed(cfg.feedFile).catch(() => null),
+    stat(cfg.feedFile)
+      .then((s) => s.mtimeMs)
+      .catch(() => null),
+  ]);
+  return buildHealth({
+    mode: cfg.source,
+    cfg,
+    feed,
+    feedFileMtimeMs,
+    diagnosis: source.diagnostics?.().orchestration,
+    detail: source.provenanceDetail?.(),
+  });
+}
 
 /** Author identities for the comment form: standing + registry sessions. */
 async function commentFormOpts(githubRefs: RefKey[] = []): Promise<CommentFormOpts> {
@@ -119,7 +205,10 @@ async function roadmapContext() {
 
 async function attentionContext() {
   const [feed, summary, coverage] = await Promise.all([source.attention(), source.orchestration(), source.coverage()]);
-  return { view: buildAttention(feed, summary), coverage };
+  // Read the diagnosis AFTER orchestration() has run: the live source
+  // recomputes it on every orchestration read (#1139).
+  const diagnosis = source.diagnostics?.().orchestration;
+  return { view: buildAttention(feed, summary, Date.now(), diagnosis), coverage };
 }
 
 async function todayContext() {
@@ -130,7 +219,8 @@ async function todayContext() {
     source.quota(),
     source.orchestration(),
   ]);
-  return { today: deriveToday(board, rows, items, summary), view, coverage, quota };
+  const diagnosis = source.diagnostics?.().orchestration;
+  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
 }
 
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
@@ -139,6 +229,7 @@ async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const prov = () => source.provenance();
+  const provDetail = () => source.provenanceDetail?.();
 
   // --- Dashboard comment writes (#906 §2) --------------------------------
   if (req.method === "POST" && path === "/api/comments") {
@@ -173,6 +264,67 @@ async function handler(req: Request): Promise<Response> {
       return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
     }
   }
+  // --- Dashboard action writes (#1152/#1154/#1156) -----------------------
+  // The triage write path: forms POST DashActions here; the fleet
+  // consumers (orchestration pass, Jules keeper) poll state=new and
+  // report outcomes to /api/actions/result. The dashboard itself never
+  // writes GitHub, the Project, or a session server.
+  if (req.method === "POST" && path === "/api/actions") {
+    try {
+      const parsed = validateNewAction(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1291/#1293: checks that need the currently published item —
+      // option/survey membership, required-question coverage, proposal
+      // identity, the access/policy auto ban. Enforced only when the
+      // aggregator actually holds a section; with none, the store
+      // stays the permissive boundary of the triage slice and the
+      // consumer rejects what it cannot apply.
+      if (parsed.value.kind === "triage") {
+        const section = await source.orchestration().catch(() => null);
+        if (section) {
+          const problem = checkActionAgainstItem(
+            parsed.value,
+            findTierItem(section, parsed.value.objectRef),
+            Date.now(),
+          );
+          if (problem) return json({ error: problem }, 400);
+        }
+      }
+      const { action, created } = await actionsStore.add(parsed.value);
+      return json(created ? { action } : { action, deduped: true }, created ? 201 : 200);
+    } catch (err) {
+      return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/actions/result") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown; outcome?: unknown; byRun?: unknown; note?: unknown };
+      if (typeof body.id !== "string") return json({ error: "id required" }, 400);
+      if (body.outcome !== "applied" && body.outcome !== "rejected") {
+        return json({ error: 'outcome must be "applied" | "rejected"' }, 400);
+      }
+      if (typeof body.byRun !== "string" || body.byRun.trim() === "") return json({ error: "byRun required" }, 400);
+      const updated = await actionsStore.markResult(body.id, {
+        outcome: body.outcome,
+        byRun: body.byRun,
+        note: typeof body.note === "string" ? body.note : undefined,
+      });
+      return updated ? json({ action: updated }) : json({ error: "no such action" }, 404);
+    } catch (err) {
+      return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (path === "/api/actions.json") {
+    const object = url.searchParams.get("object");
+    const kind = url.searchParams.get("kind");
+    const state = url.searchParams.get("state");
+    let list = await actionsStore.all();
+    if (object) list = list.filter((a) => a.objectRef === object);
+    if (kind) list = list.filter((a) => a.kind === kind);
+    if (state) list = list.filter((a) => a.state === state);
+    return json({ actions: list, pending: await actionsStore.pendingCounts() });
+  }
+
   if (path === "/api/comments.json") {
     const object = url.searchParams.get("object");
     const kind = url.searchParams.get("kind");
@@ -193,31 +345,42 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/" || path === "/board") {
     const { board, items } = await boardContext();
-    return html(renderBoard(board, items, prov(), await commentsStore.counts()));
+    const [pool, formOpts, actionsByObject] = await Promise.all([
+      source.projects().catch(() => []),
+      commentFormOpts(),
+      actionsStore.byObject(),
+    ]);
+    return html(
+      renderBoard(board, items, prov(), await commentsStore.counts(), provDetail(), {
+        actionsByObject,
+        poolByRef: new Map(pool.map((p) => [p.ref, p])),
+        identities: formOpts.identities,
+      }),
+    );
   }
 
   if (path === "/today") {
     const { today, view, coverage, quota } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov()));
+    return html(renderToday(today, view, quota, coverage, prov(), provDetail()));
   }
 
   if (path === "/roadmap") {
     const { rows, items } = await roadmapContext();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
-    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts()));
+    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail()));
   }
 
   if (path === "/quota") {
     const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
-    return html(renderQuota(quota, prov(), usage));
+    return html(renderQuota(quota, prov(), usage, provDetail()));
   }
 
   const serviceMatch = /^\/quota\/service\/([\w-]+)$/.exec(path);
   if (serviceMatch) {
     const usage = await source.usage();
     const svc = usage.services.find((s) => s.id === serviceMatch[1]);
-    if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov()));
+    if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov(), provDetail()));
     return html(
       `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${serviceMatch[1]}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
     );
@@ -225,11 +388,17 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/attention") {
     const { view, coverage } = await attentionContext();
-    return html(renderAttention(view, coverage, prov(), await commentsStore.counts()));
+    const [formOpts, actionsByObject] = await Promise.all([commentFormOpts(), actionsStore.byObject()]);
+    return html(
+      renderAttention(view, coverage, prov(), await commentsStore.counts(), provDetail(), {
+        actionsByObject,
+        identities: formOpts.identities,
+      }),
+    );
   }
 
   if (path === "/dns") {
-    return html(renderDns(await source.dns(), prov()));
+    return html(renderDns(await source.dns(), prov(), provDetail()));
   }
   if (path === "/api/dns.json") {
     const section = await source.dns();
@@ -245,7 +414,13 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/sessions") {
-    return html(renderSessions(await source.registry(), prov()));
+    const records = await source.registry();
+    return html(
+      renderSessions(records, prov(), provDetail(), {
+        actionsByObject: await actionsStore.byObject(),
+        identities: identitiesFromRecords(records),
+      }),
+    );
   }
   if (path === "/api/registry.json") {
     const records = await source.registry();
@@ -253,11 +428,21 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/projects") {
-    const [pool, orchestration] = await Promise.all([
+    const [pool, orchestration, formOpts, actionsByObject] = await Promise.all([
       source.projects().catch(() => []),
       source.orchestration().catch(() => null),
+      commentFormOpts(),
+      actionsStore.byObject(),
     ]);
-    return html(renderProjects(pool, prov(), { area: url.searchParams.get("area"), orchestration }));
+    return html(
+      renderProjects(pool, prov(), {
+        area: url.searchParams.get("area"),
+        orchestration,
+        detail: provDetail(),
+        actionsByObject,
+        identities: formOpts.identities,
+      }),
+    );
   }
   if (path === "/api/projects.json") {
     const pool = await source.projects().catch(() => []);
@@ -281,7 +466,7 @@ async function handler(req: Request): Promise<Response> {
       projects: buildProjectSummaries(PROJECT_CONFIGS, pool, rows),
     };
     if (path === "/api/program.json") return json(data);
-    return html(renderProgram(data, items, prov()));
+    return html(renderProgram(data, items, prov(), provDetail()));
   }
 
   const programProjectMatch = /^\/program\/([\w-]+)$/.exec(path);
@@ -298,7 +483,7 @@ async function handler(req: Request): Promise<Response> {
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
     ]);
-    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov()));
+    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail()));
   }
   if (path === "/api/program-project.json") {
     const id = url.searchParams.get("id") ?? "";
@@ -310,6 +495,11 @@ async function handler(req: Request): Promise<Response> {
       source.roadmap().catch(() => []),
     ]);
     return json(buildProjectDetail(config, items, pool, rows));
+  }
+
+  if (path === "/health") {
+    const view = await healthContext();
+    return html(renderHealth(view, prov()));
   }
 
   if (path === "/pages") {
@@ -381,7 +571,28 @@ async function handler(req: Request): Promise<Response> {
     return json(section ?? { status: "absent", reason: "no orchestration run has published yet" });
   }
   if (path === "/api/health") {
-    return json({ status: "ok", source: prov() });
+    // #1267: prime first — health's answer must not depend on
+    // request order. `sections` carries the structured diagnosis
+    // (#1140) beside the provenance strings for machine consumers.
+    // #1147 extends the shape in place (services/feed/pages/jobs
+    // added from the same assembly /health renders; the existing
+    // status/source/sections keys are unchanged).
+    const view = await healthContext();
+    const body: Record<string, unknown> = { status: "ok", source: prov() };
+    const diag = source.diagnostics?.();
+    if (diag) body.sections = diag;
+    body.services = view.services.map((s) => ({
+      id: s.def.id,
+      state: s.state,
+      ok: s.ok,
+      detail: s.detail,
+      ...(s.probedAt ? { probedAt: s.probedAt } : {}),
+    }));
+    body.feed = { generatedAt: view.feed.generatedAt, fileMtime: view.feed.fileMtime };
+    body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
+    body.jobs = view.jobs;
+    body.degraded = view.degraded;
+    return json(body);
   }
 
   const itemMatch = /^\/item\/(.+)$/.exec(path);
@@ -394,22 +605,37 @@ async function handler(req: Request): Promise<Response> {
       const links = subject.links;
       const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
-      const [items, comments, allComments, records] = await Promise.all([
+      const [items, comments, allComments, records, pool, allActions] = await Promise.all([
         source.items(refs),
         source.comments(refs),
         commentsStore.all(),
         source.registry().catch(() => []),
+        source.projects().catch(() => []),
+        actionsStore.all(),
       ]);
       // Dashboard comments for this item live on its own subject ref
       // and on each linked GitHub ref (gh:<ref>) — one merged thread.
       const wanted = new Set([id, ...refs.map((r) => ghObjectRef(r))]);
       const dashComments = allComments.filter((c) => wanted.has(c.objectRef));
       const sessions = records.filter((r) => r.taskRefs.some((ref) => refs.includes(ref)));
+      // #1154: when one of the item's refs is in the Project pool, the
+      // item page carries the status-request control for that pool item.
+      const pooled = pool.find((p) => refs.includes(p.ref));
       const extras = {
         dashComments,
         formRef: id,
         formOpts: await commentFormOpts(refs),
         sessions,
+        actions: allActions.filter((a) => wanted.has(a.objectRef)),
+        ...(pooled
+          ? {
+              statusRequest: {
+                objectRef: ghObjectRef(pooled.ref),
+                targetRef: pooled.ref,
+                currentStatus: pooled.status ?? null,
+              },
+            }
+          : {}),
       };
       return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
     }
@@ -419,6 +645,31 @@ async function handler(req: Request): Promise<Response> {
   return json({ error: "not found", path }, 404);
 }
 
+/**
+ * #1147's render registry: every successful HTML page render is
+ * recorded against its manifest route (subroutes count toward their
+ * parent page), so /health can report each page's real last-render
+ * time — measured from actual traffic, never self-probed.
+ */
+function manifestRouteFor(path: string): string | null {
+  const exact = PAGES.find((p) => p.route === path);
+  if (exact) return exact.route;
+  if (path.startsWith("/program/")) return "/program";
+  if (path.startsWith("/quota/service/")) return "/quota";
+  return null;
+}
+
+async function fetchHandler(req: Request): Promise<Response> {
+  const res = await handler(req);
+  if (req.method === "GET") {
+    const route = manifestRouteFor(new URL(req.url).pathname);
+    if (route && (res.headers.get("content-type") ?? "").includes("text/html")) {
+      recordRender(route, res.status < 400);
+    }
+  }
+  return res;
+}
+
 // One server per bind address (PM_AGG_HOSTS). Deployment on the
 // laptop binds loopback + the tailnet address, like Pad/Grist — no
 // public route (Drew, 2026-10-25: public only behind a password).
@@ -426,7 +677,7 @@ const servers = cfg.hosts.map((hostname) =>
   Bun.serve({
     hostname,
     port: cfg.port,
-    fetch: handler,
+    fetch: fetchHandler,
   }),
 );
 

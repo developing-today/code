@@ -3,6 +3,7 @@ import {
   attentionSorted,
   buildAttention,
   classifyAttention,
+  deriveToday,
   executionStrip,
   laneFor,
   timeline,
@@ -15,6 +16,7 @@ import {
   refUrl,
   type BoardItem,
   type GhItem,
+  type ProvenanceDetail,
   type RefKey,
   type RoadmapRow,
   type SessionFeedEntry,
@@ -26,7 +28,15 @@ import {
   FIXTURE_ROADMAP,
   fixtureSource,
 } from "../src/sources/fixtures.ts";
-import { renderAttention, renderBoard, renderItem, renderQuota, renderRoadmap } from "../src/render.ts";
+import {
+  renderAttention,
+  renderBoard,
+  renderItem,
+  renderQuota,
+  renderRoadmap,
+  renderSessions,
+  renderToday,
+} from "../src/render.ts";
 
 const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
 
@@ -212,9 +222,64 @@ describe("render smoke (fixtures)", () => {
     const view = buildAttention(await src.attention(), await src.orchestration());
     const html = renderAttention(view, await src.coverage(), src.provenance());
     expect(html).toContain("Needs you");
-    expect(html).toContain("Needs Drew");
-    expect(html).toContain("Needs orchestrator");
+    expect(html).toContain("Needs User");
+    expect(html).toContain("Needs Orchestrator");
+    // No orchestration section in fixtures: the honesty banner shows
+    // and the tier heading reports "unknown", not a number (#1139).
+    expect(html).toContain("Tier source missing");
+    expect(html).toContain("Needs User (unknown)");
+    expect(html).not.toContain("Needs User (0)");
     expect(html).toContain("waiting for an answer");
     expect(html).toContain("Waiting on:");
+  });
+});
+
+describe("freshness chips (#1138)", () => {
+  const detail: ProvenanceDetail = {
+    board: { text: "fixtures", state: "fixtures" },
+    roadmap: { text: "fixtures", state: "fixtures" },
+    items: { text: "fixtures", state: "fixtures" },
+    comments: { text: "fixtures", state: "fixtures" },
+    quota: { text: "live (fleet feed)", state: "live", ageMs: 120_000 },
+    usage: { text: "fixtures", state: "fixtures" },
+    attention: { text: "live (laptop live)", state: "live" },
+    orchestration: { text: "live (orchestration section orch-x)", state: "live", ageMs: 600_000 },
+    dns: { text: "fixtures", state: "fixtures" },
+    registry: {
+      text: "live (221 session records · 61 from the latest feed)",
+      state: "live",
+      ageMs: 180_000,
+      count: 221,
+      countLabel: "session records",
+    },
+    aa: { text: "fixtures", state: "fixtures" },
+  };
+
+  test("sessions chip carries the merged count with its noun; footer detail is collapsed", async () => {
+    const src = fixtureSource();
+    const html = renderSessions(await src.registry(), src.provenance(), detail);
+    expect(html).toContain('class="fchip live"');
+    expect(html).toContain("registry · live · 221 session records");
+    // The ten-string provenance line survives, inside <details>.
+    expect(html).toContain("<details");
+    expect(html).toContain("source detail");
+    expect(html).toContain("board: fixtures");
+  });
+
+  test("today renders chips for its own sources only", async () => {
+    const src = fixtureSource();
+    const today = deriveToday(FIXTURE_BOARD, FIXTURE_ROADMAP, items, null);
+    const attention = buildAttention(await src.attention(), null);
+    const html = renderToday(today, attention, await src.quota(), await src.coverage(), src.provenance(), detail);
+    expect(html).toContain("orchestration · live");
+    expect(html).toContain("quota · live");
+    expect(html).not.toContain("dns · fixtures");
+    expect(html).not.toContain("registry · live");
+  });
+
+  test("no detail, no chips — older callers render as before", async () => {
+    const src = fixtureSource();
+    const html = renderSessions(await src.registry(), src.provenance());
+    expect(html).not.toContain('class="fchip');
   });
 });

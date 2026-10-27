@@ -170,13 +170,34 @@ export interface Provenance {
   aa: string;
 }
 
+/**
+ * One facet's freshness, structured (#1138): the human string above,
+ * plus the machine state the freshness chips render. `count` always
+ * ships with its noun (`countLabel`) so a chip can never show a bare
+ * number that contradicts a page header counting the same thing.
+ */
+export interface ProvenanceFacet {
+  /** The provenance string, unchanged — also the chip's tooltip. */
+  text: string;
+  state: "live" | "fixtures" | "stale" | "absent" | "invalid";
+  ageMs?: number;
+  count?: number;
+  countLabel?: string;
+}
+
+/** Per-facet freshness detail, keyed exactly like Provenance. */
+export type ProvenanceDetail = Record<keyof Provenance, ProvenanceFacet>;
+
 // ---------------------------------------------------------------------------
 // Quota + throughput view (#851). Machine-first: the same shapes the API
 // returns are what the GUI renders. No code from the CCC reference design
 // (FSL-1.1-MIT) is vendored — this is the data model only.
 // ---------------------------------------------------------------------------
 
-export type QuotaState = "healthy" | "near" | "walled";
+/** "error"/"stale" are gatherer-overlay states (#1151): the gatherer
+ * could not read the pool, or its read is past the freshness bound.
+ * They are never rendered as healthy, and never as zero usage. */
+export type QuotaState = "healthy" | "near" | "walled" | "error" | "stale";
 
 /** One usage window a provider exposes (5-hour, weekly, monthly, ...). */
 export interface QuotaWindow {
@@ -205,6 +226,40 @@ export interface QuotaPool {
   burnTokensPerMin?: number;
   /** Sessions currently burning this pool, with cumulative tokens. */
   activeSessions?: { session: string; model: string; tokens: number }[];
+  /** Gatherer freshness for this pool (#1151), set when
+   * quota-current.json carried an entry for it. */
+  freshness?: PoolFreshness;
+}
+
+/** Per-pool freshness from the quota gatherer (#1151). */
+export interface PoolFreshness {
+  measuredAt: string;
+  source: string;
+  state: "ok" | "stale" | "error";
+  /** Why the gatherer could not read the pool, when state is "error". */
+  error?: string;
+}
+
+/** One provider's freshness in the gatherer summary. */
+export interface GathererProviderFreshness {
+  providerId: string;
+  serviceId: string;
+  credentialLabel?: string;
+  state: "ok" | "stale" | "error";
+  measuredAt: string;
+  source: string;
+  error?: string;
+}
+
+/** The gatherer's presence in the quota payload (#1151): tick time,
+ * health, and every provider it read — including providers with no
+ * pool on the page (OpenCode Go workspaces, Antigravity models). */
+export interface GathererSummary {
+  generatedAt: string;
+  source: string;
+  tickAt: string | null;
+  ok: boolean;
+  providers: GathererProviderFreshness[];
 }
 
 /** Historical burn between resets, so headroom is projected, not observed. */
@@ -218,6 +273,9 @@ export interface BurnSegment {
 
 export interface QuotaView {
   pools: QuotaPool[];
+  /** Gatherer overlay provenance (#1151); absent when no
+   * quota-current.json was read. Additive for existing consumers. */
+  gatherer?: GathererSummary;
   burn: BurnSegment[];
   /** Guidance for choosing the next pool (burn order + reset rules). */
   choices: {
@@ -417,6 +475,82 @@ export interface TierItem {
   blockedBy?: DependencyRef[];
   /** The orchestrator's recorded resolution or handoff note. */
   recommendedAction?: string;
+  /** #1290 extension fields — all optional, validated per item fail-soft
+   *  in the live source (src/tier-items.ts); the section gate in feed.ts
+   *  never learns them, so a malformed extension drops, never the item. */
+  whyUser?: WhyUserClass;
+  /** 1–3 sentence plain-language version of the item. */
+  summary?: string;
+  /** What happens if this sits unanswered. When the publisher omits it,
+   *  the live source computes the fallback from `since`. */
+  ifIgnored?: string;
+  options?: TierItemOption[];
+  questions?: TierItemQuestion[];
+  delegation?: TierItemDelegation;
+}
+
+/** Why an item needs the user, per the #1290 contract. Naming is
+ *  role-based (2026-10-27 decision): no new Drew-named identifiers — the
+ *  legacy `needsDrew` tier array name is the published shape and stays. */
+export type WhyUserClass = "decision" | "missing-info" | "approval" | "access" | "policy";
+
+/** A publisher-offered answer option on a needs-user item (#1290).
+ *  Picking one posts the `answer` verb with the option's id. */
+export interface TierItemOption {
+  id: string;
+  label: string;
+  description?: string;
+  /** Predicted effect of picking this option, shown under its button. */
+  effect?: string;
+}
+
+export type TierItemQuestionType = "single" | "multi" | "text" | "yesno";
+
+/** One survey question on a needs-user item (#1290). `covers` names the
+ *  decision the answer settles; it is mandatory, so a survey can never
+ *  be decoration. */
+export interface TierItemQuestion {
+  id: string;
+  prompt: string;
+  type: TierItemQuestionType;
+  options?: { id: string; label: string }[];
+  /** The sanitizer defaults an absent flag to true. */
+  required: boolean;
+  covers: string;
+}
+
+export type DelegationMode = "user" | "first-pass" | "auto";
+export type DelegationStatus = "idle" | "working" | "proposal-ready" | "unable" | "done";
+
+/** A drafted, NOT-yet-applied first-pass proposal (#1290/#1293). Present
+ *  exactly when the delegation status is `proposal-ready`. Proposal
+ *  identity is (item id, delegation runId, delegation updatedAt). */
+export interface DelegationProposal {
+  summary: string;
+  detail?: string;
+  proposedChanges?: string[];
+  at: string;
+}
+
+/** The structured inability record — the ONLY way a delegated item comes
+ *  back to the user (#1292). Present exactly when status is `unable`. */
+export interface DelegationUnable {
+  reason: string;
+  whatItTried: string[];
+  whatItNeeds: string;
+  at: string;
+}
+
+/** Delegation state for a needs-user item (#1290), validated as a unit
+ *  by the per-item sanitizer: any inconsistency drops the whole field,
+ *  never the item. */
+export interface TierItemDelegation {
+  mode: DelegationMode;
+  status: DelegationStatus;
+  updatedAt: string;
+  runId?: string;
+  proposal?: DelegationProposal;
+  unable?: DelegationUnable;
 }
 
 /** One task lined up under a goal, with its ladder bucket. */
@@ -629,6 +763,90 @@ export interface AaCoverage {
   catalogNotPooledUnmeasured: string[];
 }
 
+/**
+ * One explorer data point: a rankings row joined with its Test_Runs
+ * timing row (same testRunKey) and enriched with the derived values
+ * the Cost Explorer's charts and perspectives plot — per-dollar and
+ * per-second intelligence, Pareto-frontier flags for each chart's axis
+ * pair, and the 3-axis dominators ("beaten by") list in the reference
+ * design's sense. Built by aaPoints() in src/aa.ts; null always means
+ * "not measured", never an estimate.
+ */
+export interface AaPoint {
+  key: string;
+  family: string;
+  creator: string;
+  effort: string | null;
+  benchmark: string | null;
+  score: number | null;
+  cost: number | null;
+  time: number | null;
+  tps: number | null;
+  ttft: number | null;
+  pointsPerDollar: number | null;
+  pointsPerSecond: number | null;
+  /** score / cost, computed when the workbook's own column is absent. */
+  scorePerDollar: number | null;
+  /** score / time, computed when the workbook's own column is absent. */
+  scorePerSecond: number | null;
+  eligible: boolean;
+  qualStatus: string | null;
+  /** On the cost×score Pareto frontier (cheaper-or-equal, smarter-or-equal unbeaten). */
+  frontierCost: boolean;
+  /** On the time×score Pareto frontier. */
+  frontierTime: boolean;
+  /** On the cost×time Pareto frontier (lower-left unbeaten). */
+  frontierCostTime: boolean;
+  /** "Family effort" labels beating this point on score + cost + time at once. */
+  beatenBy: string[];
+}
+
+/**
+ * One model in the fleet's own catalog (the Model Explorer tab): a
+ * provider/model entry from .opencode/opencode.jsonc, its pool seats
+ * (route ids whose expanded leaves include it), the plan the provider
+ * door belongs to (collector-carried registry facts — see
+ * AA_PLAN_FACTS in src/aa.ts), and its best AA measurement when the
+ * workbook measured a model of the same normalized name. Assembled by
+ * aaCatalogFromConfig() in src/aa.ts.
+ */
+export interface AaCatalogEntry {
+  /** Full catalog id, "provider/model…" (model part may contain /). */
+  id: string;
+  provider: string;
+  /** The provider's display name in the config, else its id. */
+  providerName: string;
+  model: string;
+  /** The model's display name in the config, else the model id part. */
+  name: string;
+  contextLimit: number | null;
+  outputLimit: number | null;
+  /** Effort variant ids the config defines for this model, ladder order. */
+  variants: string[];
+  /** Route ids seating this model (nested routes expanded). */
+  routes: string[];
+  /** The provider sits in the config's disabled_providers — catalogued but not callable. */
+  disabled: boolean;
+  /** Plan label from the collector's registry facts, when one is recorded. */
+  plan: string | null;
+  /** Effective value multiplier of the plan (list-rate dollars per $1), when recorded. */
+  multiplier: number | null;
+  /** Short plan note (caps, expiries, caveats), when recorded. */
+  planNote: string | null;
+  /**
+   * The model's published OpenCode Go monthly cap in USD, where Go lists
+   * one (docs reading, AA value report 2026-10-20) — per-model caps, not
+   * a shared pool; the fleet's older workspaces may meter pooled.
+   */
+  goCapUsd: number | null;
+  /** Best AA intelligence measured for this model name, when measured. */
+  aaScore: number | null;
+  /** $/task of that best-scoring AA measurement. */
+  aaCostPerTask: number | null;
+  /** Fastest measured time/task among the family's ranked rows. */
+  aaTimePerTask: number | null;
+}
+
 /** The AA explorer section as the collector embeds it in the fleet feed. */
 export interface AaSection {
   status: "ok";
@@ -643,6 +861,9 @@ export interface AaSection {
   testRuns: AaTestRun[];
   /** Absent when the collector could not read .opencode/opencode.jsonc. */
   coverage?: AaCoverage;
+  /** The fleet catalog for the Model Explorer tab, from the same
+   * config read as coverage; absent on the same condition. */
+  catalog?: AaCatalogEntry[];
 }
 
 /** The section's degraded form: the collector could not reach Supabase
@@ -874,6 +1095,65 @@ export interface AttentionFlag {
   href: string;
   /** Percent (over-limit) or counted dollars (payg-unbilled); worst first. */
   severity: number;
+}
+
+/**
+ * The quota plane's latest-state contract (Stage 2, #1151): one entry
+ * per provider credential the gatherer read this tick, each window
+ * carrying the hub's {value, pctOfLimit, resetsAt, measuredAt, source,
+ * state} shape. Written by scripts/gather-quota.ts to
+ * quota-current.json beside fleet-feed.json; the collector embeds it
+ * in the feed as `quotaCurrent` for the laptop aggregator.
+ */
+export interface QuotaCurrentWindow {
+  /** Window key from the provider result (e.g. "weekly", "5h", "credits_balance"). */
+  name: string;
+  /** Used value in the window's own unit: percent for plan windows, null for label-only rows. */
+  value: number | null;
+  /** Used percent of the window's limit, or null when the provider reports no percent. */
+  pctOfLimit: number | null;
+  /** Human label for non-percent values (e.g. a balance "¥44.29"), or null. */
+  valueLabel: string | null;
+  windowSeconds: number | null;
+  resetsAt: string | null;
+  measuredAt: string;
+  source: string;
+  state: "ok" | "error";
+}
+
+export interface QuotaCurrentEntry {
+  providerId: string;
+  providerName: string;
+  /** Hub snapshot/pool service id this provider's records land under. */
+  serviceId: string;
+  credentialId?: string;
+  credentialLabel?: string;
+  planLabel?: string;
+  state: "ok" | "error" | "unconfigured";
+  measuredAt: string;
+  source: string;
+  error?: string;
+  windows: QuotaCurrentWindow[];
+  /** The provider result's raw usage object, kept for fidelity until consumers settle. */
+  usage?: unknown;
+}
+
+/** One gatherer tick's health record, embedded in quota-current.json and kept standalone. */
+export interface QuotaGatherHeartbeat {
+  tickAt: string;
+  ok: boolean;
+  durationMs: number;
+  perProvider: Record<string, { state: "ok" | "error"; ms: number; rows: number; error?: string }>;
+  /** Set when the tick itself failed before any provider ran (import / credential store). */
+  error?: string;
+}
+
+export interface QuotaCurrentFile {
+  version: 1;
+  generatedAt: string;
+  source: string;
+  heartbeat: QuotaGatherHeartbeat;
+  providers: QuotaCurrentEntry[];
 }
 
 /**

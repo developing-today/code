@@ -63,7 +63,11 @@ describe("server boots from fixtures", () => {
     const attention = await (await fetch(`http://127.0.0.1:${port}/attention`)).text();
     expect(quota.includes("Usage &amp; billing")).toBe(true); // the hub retitle (design 2026-10-25 §1.1)
     expect(attention.includes("Needs you")).toBe(true);
-    expect(attention.includes("Needs Drew")).toBe(true);
+    expect(attention.includes("Needs User")).toBe(true);
+    // Fixtures carry no orchestration section, so the tier honesty
+    // banner renders and the tier counts are "unknown", never 0 (#1139).
+    expect(attention.includes("Tier source missing")).toBe(true);
+    expect(attention.includes("Needs User (unknown)")).toBe(true);
     expect(attention.includes("Session coverage")).toBe(true);
     expect(attention.includes("amd-6.raptor-pumpkinseed.ts.net")).toBe(true);
   });

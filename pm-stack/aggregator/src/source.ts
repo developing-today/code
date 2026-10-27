@@ -1,6 +1,7 @@
 // The one interface every data source implements. The views never know
 // whether they are looking at fixtures or live readers — swapping one for
 // the other is a config change (PM_AGG_SOURCE), not a code change.
+import type { SectionDiagnosis } from "./feed.ts";
 import type {
   AaFeedSection,
   BoardItem,
@@ -10,6 +11,7 @@ import type {
   OrchestrationSection,
   ProjectPoolItem,
   Provenance,
+  ProvenanceDetail,
   QuotaView,
   RefKey,
   UsageView,
@@ -50,4 +52,18 @@ export interface Source {
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;
+  /**
+   * Structured per-section diagnosis (#1139/#1140): the honesty
+   * surfaces read the orchestration section's state from here instead
+   * of inferring it from a null section — absent, invalid, and stale
+   * are different failures with different remedies. Optional so test
+   * doubles and older sources keep working; absent = unmeasured.
+   */
+  diagnostics?(): { orchestration: SectionDiagnosis };
+  /**
+   * Structured per-facet freshness for the chips (#1138). Optional for
+   * the same reason as diagnostics(); when a source does not provide
+   * it, pages render without chips rather than with invented states.
+   */
+  provenanceDetail?(): ProvenanceDetail;
 }
