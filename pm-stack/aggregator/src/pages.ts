@@ -78,7 +78,7 @@ export const PAGES: PageDef[] = [
     route: "/program",
     api: "/api/program.json",
     blurb:
-      "What this dashboard is, what's built, what's next, and the long-term roadmap — fed from the tracked issues and the Project pool.",
+      "The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.",
   },
   {
     id: "pages",
