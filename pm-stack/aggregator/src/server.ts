@@ -18,6 +18,7 @@ import {
 import { identitiesFromRecords } from "./registry.ts";
 import {
   ghObjectRef,
+  renderAa,
   renderAttention,
   renderBoard,
   renderDiscuss,
@@ -98,8 +99,8 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function html(body: string): Response {
-  return new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
+function html(body: string, status = 200): Response {
+  return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
 async function boardContext() {
@@ -235,6 +236,14 @@ async function handler(req: Request): Promise<Response> {
     return json(section ?? { status: "absent", reason: "no DNS register section in the fleet feed yet" });
   }
 
+  if (path === "/aa") {
+    return html(renderAa(await source.aa(), prov()));
+  }
+  if (path === "/api/aa.json") {
+    const section = await source.aa();
+    return json(section ?? { status: "absent", reason: "no AA explorer section in the fleet feed yet" });
+  }
+
   if (path === "/sessions") {
     return html(renderSessions(await source.registry(), prov()));
   }
@@ -281,6 +290,7 @@ async function handler(req: Request): Promise<Response> {
     if (!config) {
       return html(
         `<h1>Not found</h1><p class="muted">no project with id <code>${programProjectMatch[1]}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
+        404,
       );
     }
     const [items, pool, rows] = await Promise.all([

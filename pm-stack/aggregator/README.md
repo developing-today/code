@@ -93,8 +93,10 @@ project (target: under 30 minutes):
    `null` — the page then states honestly that it has no dedicated
    Area yet), `roadmapArea` (its Grist Program-roadmap area, or
    `null`), `homeDoc` (its `planning/roadmaps/<project>.md` home, as
-   `{ repo, path, url }`), `dashboardLinks`, and `trackedRefs` (the
-   issues whose live state the page resolves).
+   `{ repo, path, url }`), an optional `statusReport` (`{ label, url }`
+   for the latest dated status report), `dashboardLinks` (dashboard
+   routes or https source-doc URLs, with an optional `note` caveat),
+   and `trackedRefs` (the issues whose live state the page resolves).
 2. Optionally add `editorial` sections (`done` / `next` / `longTerm` /
    `gaps`, `ProgramEntry[]` — every entry should carry its tracker
    refs) and, for a program-level doc like pm-dashboard's,
@@ -106,8 +108,9 @@ project (target: under 30 minutes):
 
 Validation is fail-soft at render and strict in tests:
 `validateProjectConfigs` (duplicate ids, duplicate pool/roadmap
-areas, malformed slugs/refs, unusable home-doc URLs) is asserted
-clean over the shipped registry in `test/program.test.ts`.
+areas, malformed slugs/refs, unusable home-doc / status-report /
+dashboard-link URLs) is asserted clean over the shipped registry in
+`test/program.test.ts`.
 
 ### Dashboard comments (slice 3, #906)
 

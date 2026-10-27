@@ -102,6 +102,17 @@ describe("server boots from fixtures", () => {
     expect(attention.length).toBeGreaterThan(0);
   });
 
+  test("unknown project page is a styled 404; a known project stays 200 (#1186)", async () => {
+    const missing = await fetch(`http://127.0.0.1:${port}/program/nope`);
+    expect(missing.status).toBe(404);
+    const missingHtml = await missing.text();
+    expect(missingHtml).toContain("Not found");
+    expect(missingHtml).toContain("no project with id");
+    const known = await fetch(`http://127.0.0.1:${port}/program/id`);
+    expect(known.status).toBe(200);
+    expect(await known.text()).toContain("id platform");
+  });
+
   test("item drill-down resolves a board card", async () => {
     const board = (await (await fetch(`http://127.0.0.1:${port}/api/board.json`)).json()) as {
       board: { id: string }[];
