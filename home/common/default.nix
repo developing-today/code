@@ -803,10 +803,14 @@ in
   # transient fps-commandcode-proxy unit) so laptop/sandbox env handling
   # and the MAX_TURNS pins live in exactly one place:
   # bin/commandcode-proxy-start.sh.
-  # NOT YET DEPLOYED: host builds for another change are in flight — run a
-  # NixOS/home-manager rebuild + switch to activate, then
-  #   systemctl --user status commandcode-proxy
-  # Until then the supervisor-owned transient unit serves the port.
+  #
+  # This unit originally landed (169d594e) WITH an Install.WantedBy and a
+  # "not yet deployed" note, breaking the fleet pattern below: the first
+  # home-manager activation that included it (2026-10-26, the T3 switch)
+  # started it against the supervisor's already-running transient unit,
+  # and it crash-looped on the taken port (44 restarts in an evening).
+  # The supervisor has served this port continuously since 2026-10-24;
+  # the unit is the manual fallback, like every other proxy here.
   systemd.user.services.commandcode-proxy = {
     Unit = {
       Description = "Command Code CLI Local Proxy Bridge for OpenCode";
@@ -824,7 +828,8 @@ in
         "COMMANDCODE_PROXY_AGENCY_MAX_TURNS=8"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install.WantedBy: the proxy-supervisor (above) owns the proxy
+    # processes. These per-proxy units remain for manual one-off starts.
   };
 
   systemd.user.services.sync-models = {
