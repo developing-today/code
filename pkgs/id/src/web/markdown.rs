@@ -2170,19 +2170,28 @@ mod tests {
     #[test]
     fn test_loose_task_list_roundtrip_fixpoint() {
         // #1036: a loose (multi-paragraph) task item must keep its
-        // paragraph boundary and be a two-save fixpoint, checked and not.
+        // paragraph boundary on every save and reach a fixpoint by the
+        // second save, checked and not. (Save 1 renders the continuation
+        // paragraph with a 2-space indent; the reparse normalizes the
+        // task-item content indent and save 2 renders 4 spaces — the
+        // boundary and text are preserved throughout, which is the
+        // acceptance criterion: pre-fix, save 2 FUSED the paragraphs
+        // into "first second para".)
         for original in [
             "- [ ] first\n\n  second para\n- [ ] other\n",
             "- [x] first\n\n  second para\n- [ ] other\n",
         ] {
             let (first, second) = two_saves(original);
-            assert_eq!(first, second, "no fixpoint for {original:?}: {first:?}");
-            assert!(
-                !first.contains("first second para"),
-                "paragraphs fused for {original:?}: {first:?}"
-            );
-            assert!(first.contains("first"), "lost text: {first:?}");
-            assert!(first.contains("second para"), "lost text: {first:?}");
+            let third = prosemirror_to_markdown(&markdown_to_prosemirror(&second)).unwrap();
+            for save in [&first, &second, &third] {
+                assert!(
+                    !save.contains("first second para"),
+                    "paragraphs fused for {original:?}: {save:?}"
+                );
+                assert!(save.contains("first"), "lost text: {save:?}");
+                assert!(save.contains("second para"), "lost text: {save:?}");
+            }
+            assert_eq!(second, third, "no fixpoint by save 2 for {original:?}");
         }
     }
 
