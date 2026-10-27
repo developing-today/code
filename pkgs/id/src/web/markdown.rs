@@ -1221,9 +1221,30 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     if node_type != "code_block"
         && let Some(content) = json["content"].as_array()
     {
+        // #1032: coalesce consecutive bullet_list siblings into the first
+        // list. The PM model has no bullet-marker attribute, so adjacent
+        // lists that differed only by marker (- / + / *) are one list in
+        // every way the model can express — but as separate comrak List
+        // nodes the CommonMark renderer separates them with
+        // <!-- end list --> comments, which reparse as ```html fences
+        // and grow the file on every save. Move each later list's items
+        // into the first list (the first list's tight wins).
+        // ordered_list is NOT merged (it carries restart numbering) and
+        // task_list is a distinct PM node type, so neither is affected.
+        let mut prev_bullet_list: Option<&AstNode<'a>> = None;
         for child_json in content {
+            let is_bullet_list = child_json["type"].as_str() == Some("bullet_list");
             let child = json_to_ast(arena, child_json)?;
+            if is_bullet_list && let Some(list_node) = prev_bullet_list {
+                let items: Vec<&AstNode<'a>> = child.children().collect();
+                for item in items {
+                    item.detach();
+                    list_node.append(item);
+                }
+                continue;
+            }
             append_inline_child(ast_node, child);
+            prev_bullet_list = if is_bullet_list { Some(child) } else { None };
         }
     }
 
@@ -1668,6 +1689,73 @@ mod tests {
         let items = content[0]["content"].as_array().unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["type"], "list_item");
+    }
+
+    #[test]
+    fn test_adjacent_bullet_lists_mixed_markers_fixpoint() {
+        // #1032: "- a\n+ b\n* c" parses to three adjacent bullet_list
+        // nodes (the PM model has no marker attr). Saving must coalesce
+        // them into one comrak list: separate adjacent lists make the
+        // renderer emit <!-- end list --> comments, which reparse as
+        // ```html fences and grow the file on every save.
+        let first = prosemirror_to_markdown(&markdown_to_prosemirror("- a\n+ b\n* c\n")).unwrap();
+        let second = prosemirror_to_markdown(&markdown_to_prosemirror(&first)).unwrap();
+        let third = prosemirror_to_markdown(&markdown_to_prosemirror(&second)).unwrap();
+        assert_eq!(first, "- a\n- b\n- c\n", "coalesced single list: {first:?}");
+        assert!(
+            !first.contains("end list"),
+            "no end-list artefact: {first:?}"
+        );
+        assert!(
+            !first.contains("```html"),
+            "no html-fence artefact: {first:?}"
+        );
+        assert_eq!(first, second, "second save is a fixpoint");
+        assert_eq!(second, third, "third save is a fixpoint");
+    }
+
+    #[test]
+    fn test_adjacent_bullet_lists_in_blockquote_fixpoint() {
+        // #1032: coalescing applies at any parent, e.g. inside a
+        // blockquote, not just at doc level.
+        let (first, second) = two_saves("> - a\n> + b\n");
+        assert!(
+            !first.contains("end list"),
+            "no end-list artefact: {first:?}"
+        );
+        assert!(
+            !first.contains("```html"),
+            "no html-fence artefact: {first:?}"
+        );
+        for needle in ["a", "b"] {
+            assert!(first.contains(needle), "item {needle} preserved: {first:?}");
+        }
+        assert_eq!(first, second, "blockquote lists are a fixpoint");
+    }
+
+    #[test]
+    fn test_adjacent_bullet_lists_first_tight_wins() {
+        // #1032: when adjacent bullet lists differ in tight, the merged
+        // list keeps the FIRST list's tight (here tight=true, so items
+        // render with no blank lines between them; the second list's
+        // tight=false must not loosen the merged list).
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "a"}]}
+                    ]}
+                ]},
+                {"type": "bullet_list", "attrs": {"tight": false}, "content": [
+                    {"type": "list_item", "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "b"}]}
+                    ]}
+                ]}
+            ]
+        });
+        let md = prosemirror_to_markdown(&doc).expect("adjacent bullet lists convert");
+        assert_eq!(md, "- a\n- b\n", "first list's tight wins: {md:?}");
     }
 
     #[test]
