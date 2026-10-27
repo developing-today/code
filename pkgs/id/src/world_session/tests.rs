@@ -190,6 +190,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn metrics_frame_reports_each_host_metric_after_a_scripted_session() {
+        // F11.7 slice 1: after a scripted session (invite, join, input),
+        // the `metrics` frame reads back every host metric `id world
+        // stats` surfaces.
+        let svc = service(Some("admin"));
+        let mut host = Peer::connect(svc.clone(), SessionConfig::default());
+        host.say(serde_json::json!({
+            "type": "invite",
+            "admin_token": "admin",
+            "display_name": "player",
+            "role": "player",
+        }))
+        .await;
+        let capability = host.next().await.unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // A capability that does not join is refused, like `info`.
+        let mut stranger = Peer::connect(svc.clone(), SessionConfig::default());
+        stranger
+            .say(serde_json::json!({"type":"metrics","capability":"bogus"}))
+            .await;
+        assert_eq!(stranger.next().await.unwrap()["type"], "error");
+
+        let mut player = Peer::connect(svc.clone(), SessionConfig::default());
+        player
+            .say(serde_json::json!({"type":"join","capability":capability}))
+            .await;
+        assert_eq!(player.next().await.unwrap()["type"], "snapshot");
+        player
+            .say(serde_json::json!({"type":"input","data_hex":"6c"}))
+            .await;
+        let _ = player.next().await;
+
+        let mut reader = Peer::connect(svc.clone(), SessionConfig::default());
+        reader
+            .say(serde_json::json!({"type":"metrics","capability":capability}))
+            .await;
+        let reply = reader.next().await.unwrap();
+        assert_eq!(reply["type"], "metrics", "{reply}");
+        let metrics = &reply["metrics"];
+        assert!(
+            metrics["commands_total"].as_u64().unwrap() > 0,
+            "actor commands were handled: {metrics}"
+        );
+        assert_eq!(
+            metrics["command_latency"]["count"],
+            metrics["commands_total"],
+            "every handled command lands in the latency histogram: {metrics}"
+        );
+        // This world is in-memory: no journal, so appends and checkpoints
+        // read as a present, empty metric rather than a missing one.
+        assert_eq!(metrics["journal_appends_total"], 0, "{metrics}");
+        assert_eq!(metrics["journal_append_latency"]["count"], 0, "{metrics}");
+        assert_eq!(metrics["checkpoints_total"], 0, "{metrics}");
+        assert_eq!(metrics["checkpoint_duration"]["count"], 0, "{metrics}");
+        assert!(
+            metrics["frame_bytes_total"].as_u64().unwrap() > 0,
+            "session frames were metered: {metrics}"
+        );
+        assert_eq!(
+            metrics["sessions"], 1,
+            "the joined player is one live session: {metrics}"
+        );
+        assert!(metrics["actor_queue_depth"].is_u64(), "{metrics}");
+        assert!(metrics["actor_queue_depth_max"].is_u64(), "{metrics}");
+    }
+
+    #[tokio::test]
     async fn caps_ceiling_is_admin_only_and_applies_at_once() {
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let service = WorldService::new(world.clone(), Some("admin".to_owned()));

@@ -155,6 +155,11 @@ pub(crate) enum WorldCommand {
     PolicyInfo {
         reply: oneshot::Sender<WorldPolicy>,
     },
+    /// Read this world's host metrics (F11.7): counters and histograms
+    /// recorded by the actor, the journal path, and the session layer.
+    Metrics {
+        reply: oneshot::Sender<MetricsSnapshot>,
+    },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
@@ -189,6 +194,9 @@ pub(crate) struct WorldActor {
     pub(crate) auth: crate::directory_auth::DirectoryAuth,
     pub(crate) program: Box<dyn WorldProgram>,
     pub(crate) journal: Option<Box<dyn WorldJournal>>,
+    /// Host metrics registry (F11.7), shared with the handle and the
+    /// session layer; see [`WorldMetrics`].
+    pub(crate) metrics: WorldMetrics,
     pub(crate) storage_failed: bool,
     pub(crate) program_healthy: bool,
     /// Times a `view` or `layout` call trapped. Counted for `id world stats`
@@ -243,7 +251,11 @@ impl WorldActor {
                 }
                 break;
             }
+            self.metrics
+                .record_queue_depth(receiver.len() as u64);
+            let started = std::time::Instant::now();
             self.handle(command).await;
+            self.metrics.record_command(started.elapsed());
             self.after_change().await;
             self.acting = None;
         }
@@ -303,12 +315,16 @@ impl WorldActor {
             !self.storage_failed,
             "world storage failed; the world is read-only"
         );
-        if let Some(journal) = self.journal.as_mut()
-            && let Err(error) = journal.append(&entry)
-        {
-            self.storage_failed = true;
-            tracing::error!("world journal append failed: {error:#}");
-            return Err(error.context("world storage failed; the world is read-only"));
+        if let Some(journal) = self.journal.as_mut() {
+            // The append includes its fsync, so this is the full durable
+            // cost of the entry (F11.7 journal append + fsync latency).
+            let started = std::time::Instant::now();
+            if let Err(error) = journal.append(&entry) {
+                self.storage_failed = true;
+                tracing::error!("world journal append failed: {error:#}");
+                return Err(error.context("world storage failed; the world is read-only"));
+            }
+            self.metrics.record_journal_append(started.elapsed());
         }
         Ok(())
     }
@@ -1301,6 +1317,10 @@ impl WorldActor {
             WorldCommand::PolicyInfo { reply } => {
                 let _ = reply.send(self.core.policy());
             }
+            WorldCommand::Metrics { reply } => {
+                let sessions = self.presence.values().sum::<usize>() as u64;
+                let _ = reply.send(self.metrics.snapshot(sessions));
+            }
             WorldCommand::CapsInfo { reply } => {
                 let _ = reply.send(self.caps_report());
             }
@@ -1321,8 +1341,9 @@ impl WorldActor {
         let Some(journal) = self.journal.as_mut() else {
             return;
         };
+        let started = std::time::Instant::now();
         match compact_journal(&mut self.core, self.program.as_mut(), journal.as_mut()) {
-            Ok(true) => {}
+            Ok(true) => self.metrics.record_checkpoint(started.elapsed()),
             Ok(false) => self.compaction_off = true,
             Err(error) => {
                 // The journal is still complete; just do not retry until
@@ -1384,6 +1405,7 @@ impl WorldActor {
             overdue_at_open,
             acting: None,
             auth: crate::directory_auth::DirectoryAuth::default(),
+            metrics: WorldMetrics::default(),
         }
     }
 }

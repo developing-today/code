@@ -601,6 +601,9 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 let info = client.info_details(&capability).await?;
                 let caps = client.caps(&capability).await?;
                 let profile = client.execution_profile(None, Some(&capability)).await?;
+                // Host metrics (F11.7) ride along when the host knows the
+                // metrics frame; an older host simply omits the object.
+                let metrics = client.metrics(&capability).await.ok();
                 Ok::<serde_json::Value, anyhow::Error>(serde_json::json!({
                     "world_id": info.world_id,
                     "active_module_hash": info.active_module_hash,
@@ -608,6 +611,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     "current_sequence": info.current_sequence,
                     "caps": caps,
                     "profile": profile,
+                    "metrics": metrics,
                 }))
             }
             .await;

@@ -7,7 +7,8 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::directory_auth::Signed;
 use crate::world::{
-    CapabilityBounds, FileScope, Isolation, WorldEvent, WorldHandle, WorldPolicy, WorldSnapshot,
+    CapabilityBounds, FileScope, Isolation, MetricsSnapshot, WorldEvent, WorldHandle, WorldMetrics,
+    WorldPolicy, WorldSnapshot,
 };
 use crate::world_compile::Compiler;
 use crate::world_hub::WorldInfo;
@@ -79,6 +80,11 @@ pub(crate) enum ClientFrame {
         after: Option<u64>,
     },
     Info {
+        capability: String,
+    },
+    /// Read the world's host metrics (F11.7): the same snapshot
+    /// `id world stats` prints under `metrics`.
+    Metrics {
         capability: String,
     },
     /// Page through the world's structured records.
@@ -251,6 +257,10 @@ pub(crate) enum ServerFrame<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         active_module_provenance: Option<crate::world::ModuleProvenance>,
         current_sequence: u64,
+    },
+    /// The world's host metrics snapshot (F11.7).
+    Metrics {
+        metrics: MetricsSnapshot,
     },
     /// One page of structured records, with the sequence they were read at.
     Records {
@@ -436,6 +446,9 @@ pub struct WorldService {
     pub(crate) mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
     pub(crate) outbox: Option<Arc<Mutex<crate::envelope_outbox::Outbox>>>,
     pub(crate) profile_operation: Arc<Mutex<()>>,
+    /// The world's host metrics registry (F11.7), shared with the actor:
+    /// the session layer records the frame bytes it sends into it.
+    pub(crate) metrics: WorldMetrics,
 }
 
 impl std::fmt::Debug for WorldService {
