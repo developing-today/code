@@ -23,7 +23,15 @@ export interface ProjectHomeDoc {
 
 export interface ProjectDashboardLink {
   label: string;
+  /** A dashboard route ("/quota") or an absolute https URL (a source doc). */
   route: string;
+  /** Optional caveat rendered beside the link (source-doc warnings). */
+  note?: string;
+}
+
+export interface ProjectStatusReport {
+  label: string;
+  url: string;
 }
 
 export interface ProjectEditorial {
@@ -44,6 +52,8 @@ export interface ProjectConfig {
   /** Grist "Program roadmap" area value (RoadmapRow.area); null = none yet. */
   roadmapArea: string | null;
   homeDoc?: ProjectHomeDoc;
+  /** Latest dated status report (spec layer 2), when one exists. */
+  statusReport?: ProjectStatusReport;
   dashboardLinks?: ProjectDashboardLink[];
   /** Issues whose live state the page resolves via Source.items(). */
   trackedRefs: RefKey[];
@@ -55,6 +65,7 @@ export interface ProjectConfig {
 const CODE = "developing-today/code";
 const NIX = "dezren39/nix";
 const blob = (path: string): string => `https://github.com/${CODE}/blob/main/${path}`;
+const tree = (path: string): string => `https://github.com/${CODE}/tree/main/${path}`;
 const home = (path: string): ProjectHomeDoc => ({ repo: CODE, path, url: blob(path) });
 const ref = (repo: string, n: number): RefKey => `${repo}#${n}`;
 const code = (n: number): RefKey => ref(CODE, n);
@@ -86,6 +97,10 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
     poolArea: "lab-cluster",
     roadmapArea: "Basement cluster",
     homeDoc: home("planning/roadmaps/basement-cluster.md"),
+    statusReport: {
+      label: "Status report — 2026-10-27",
+      url: tree("doc/2026-10-27T03-14-08Z_status_basement-cluster"),
+    },
     dashboardLinks: [{ label: "Projects pool (lab-cluster)", route: "/projects?area=lab-cluster" }],
     trackedRefs: [
       code(1080),
@@ -168,6 +183,12 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
             "Basement power and space block the full fleet; the target is 3–5 machines first. All current progress is design, inventory, and preparation.",
         },
         {
+          title: "OCI tenancy stuck in provisioning",
+          detail:
+            "The OCI tenancy has been stuck in provisioning since 2026-10-21 under Oracle ticket CPCOE-29381. That external blocker gates the cloud-extension epic until Oracle finishes provisioning or resolves the ticket.",
+          refs: [code(1091)],
+        },
+        {
           title: "ESP32 wing is deliberately an idea",
           detail:
             "A low-end section of ESP32 sensors and LoRa alongside the compute fleet — a side project of a side project for now.",
@@ -184,15 +205,43 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
     poolArea: "id-train",
     roadmapArea: "id",
     homeDoc: home("planning/roadmaps/id.md"),
-    dashboardLinks: [{ label: "Projects pool (id-train)", route: "/projects?area=id-train" }],
-    trackedRefs: [code(534), code(796), code(1075), code(807), code(557), code(806), code(812), code(793)],
+    dashboardLinks: [
+      { label: "Projects pool (id-train)", route: "/projects?area=id-train" },
+      {
+        label: "pkgs/id/ARCHITECTURE.md",
+        route: blob("pkgs/id/ARCHITECTURE.md"),
+        note: "source caveat: it still frames id mainly as a file-sharing CLI; the worlds platform is barely covered",
+      },
+      { label: "pkgs/id/README.md", route: blob("pkgs/id/README.md") },
+      {
+        label: "pkgs/id/TODO.md",
+        route: blob("pkgs/id/TODO.md"),
+        note: "the file itself warns that it is idle planning — do not decide from it",
+      },
+    ],
+    trackedRefs: [
+      code(534),
+      code(796),
+      code(1075),
+      code(1076),
+      code(1077),
+      code(1078),
+      code(807),
+      code(557),
+      code(806),
+      code(812),
+      code(793),
+      code(1235),
+      code(1239),
+      code(1240),
+    ],
     editorial: {
       done: [
         {
-          title: "Phases 9–11 delivered",
+          title: "Phases 9–11 delivered; validation in progress",
           detail:
-            "The worlds platform foundations shipped — faster than they were verified. Dedicated validation tasks now audit each delivered phase against its plan, with a tracked issue for every gap found.",
-          refs: [code(796), code(1075)],
+            "The home doc's careful wording is the status: Phases 9 and 10 were delivered faster than they were verified, and several Phase 11 items are claimed done on contradictory records. Dedicated validation audits (#1075–#1078, under umbrella #796) are in progress — delivered does not yet mean validated.",
+          refs: [code(796), code(1075), code(1076), code(1077), code(1078)],
         },
         {
           title: "Phase 13 shells started",
@@ -205,8 +254,8 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
         {
           title: "The path to Phase 12 (Now)",
           detail:
-            "A CI signal that can be trusted, validation of the delivered phases, journal format management (must land before any new journal entry type), cost visibility baselines, and the Phase 12 designs run through the research workflow.",
-          refs: [code(229), code(1075), code(534)],
+            "A CI signal that can be trusted, validation of the delivered phases, journal format management (must land before any new journal entry type), cost visibility baselines, and the Phase 12 designs run through the research workflow. The ordered prerequisite queue is #1235.",
+          refs: [code(229), code(1075), code(534), code(1235)],
         },
         {
           title: "Phase 12 — platform flexibility (Next)",
@@ -252,7 +301,21 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
       { label: "Needs you", route: "/attention" },
       { label: "Projects pool (fleet-ops)", route: "/projects?area=fleet-ops" },
     ],
-    trackedRefs: [code(911), code(899), code(287), code(288), code(257), code(292)],
+    trackedRefs: [
+      code(911),
+      code(899),
+      code(287),
+      code(288),
+      code(1233),
+      code(1130),
+      code(1131),
+      code(1234),
+      code(1185),
+      code(1187),
+      code(1190),
+      code(310),
+      code(311),
+    ],
     editorial: {
       done: [
         {
@@ -260,6 +323,12 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
           detail:
             "Issue sweeps across all four repos, the hourly orchestration pass (queue triage, goal measurement, Project reconciliation), and the Jules keeper all run on schedule.",
           refs: [code(899)],
+        },
+        {
+          title: "Two earlier CI items are closed",
+          detail:
+            "The intermittent nix flake check out-of-disk failure (#257) and the roughly two-hour id workflow gate (#292) are closed in GitHub. They are recorded here as completed work, not presented as upcoming; keeping the id gate fast is now a standing measurement watch.",
+          refs: [code(257), code(292)],
         },
       ],
       next: [
@@ -270,20 +339,38 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
           refs: [code(911)],
         },
         {
-          title: "CI hygiene (from the repo-and-ci roadmap)",
+          title: "CI hygiene and stale-PR triage (from the repo-and-ci roadmap)",
           detail:
-            "Three Jules workflow files become one; cache the Go build by go.sum hash; fix nix flake check dying out-of-disk in id-test/id-ci; triage stale PRs.",
-          refs: [code(287), code(288), code(257)],
+            "Three Jules workflow files become one and the Go build cache is keyed by go.sum hash; in the same program, triage the overlapping Jules Bolt/Palette drafts and the stale Renovate/platform PRs instead of letting them age in place.",
+          refs: [code(287), code(288), code(310), code(311)],
+        },
+        {
+          title: "Queue fleet reliability",
+          detail:
+            "Give every repo queue lane-style long-budget shifts, and certify shift completion from queue state rather than run self-report, so the fleet can run without operator repairs.",
+          refs: [code(1233), code(1130), code(1131)],
+        },
+        {
+          title: "OpenChamber session dispatch + babysitter",
+          detail:
+            "Run larger code tasks as OpenChamber sessions on plan pools, with admission control, hand-backs, stall nudges, and harvesting; one babysitter watches sessions, and the OpenClaw comment loop is the pilot for session control by issue comment.",
+          refs: [code(1234), code(1185), code(1187), code(1190)],
         },
       ],
       longTerm: [
         {
-          title: "The id workflow gate stays under 15 minutes",
-          detail: "The gate once took about two hours; it is fast now. Keep it that way — and measure it.",
-          refs: [code(292)],
+          title: "Fleet health judged from published state",
+          detail:
+            "The long-term direction is a fleet whose queue reliability, lifecycle labels, and sweep outcomes are visible from published queue and orchestration state — the same data this dashboard consumes — rather than from job self-reports.",
+          refs: [code(1233), code(1131)],
         },
       ],
       gaps: [
+        {
+          title: "The pool is a fleet-level slice, not the fleet backlog (2026-10-27)",
+          detail:
+            "As of 2026-10-27, this page's fleet-ops pool carries 4 items, while GitHub issue search counts 665 open issues across the four repos (developing-today/code 372, developing-today/opencode 51, developing-today/openchamber 64, dezren39/nix 178). Most work stays in each repo's own backlog; this page tracks the fleet-level program only.",
+        },
         {
           title: "Home doc scope is CI/automation only",
           detail:
@@ -357,7 +444,7 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
     intro:
       "Every cloud account, plan, and subscription the fleet runs on — Cloudflare, Turso, OCI, the AI plans — and what each costs against its allotment. The Usage & billing hub renders the master tracker (workspace: ai-subscriptions) with dated reads and pace verdicts; the account-connection campaign wired API/OAuth access for nearly everything. The standing aim is ~100% of paid allotments, with pricing revalidated against official docs.",
     poolArea: null,
-    roadmapArea: null,
+    roadmapArea: "Cloud program",
     dashboardLinks: [
       { label: "Usage & billing", route: "/quota" },
       { label: "DNS register", route: "/dns" },
@@ -394,9 +481,9 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
       ],
       gaps: [
         {
-          title: "No Project Area or roadmap area",
+          title: "No Project Area yet",
           detail:
-            "This program is tracked in the ai-subscriptions workspace tracker and its hub epic, not in the org Project pool or the Grist roadmap — so this page's live pool/roadmap sections are honestly empty.",
+            "This program has a Grist roadmap area (its rows render in the live roadmap section above), but it is not in the org Project pool under its own Area yet — its work is tracked in the ai-subscriptions workspace tracker and its hub epic, so this page's live pool section is honestly empty.",
         },
         {
           title: "Plaid / Citi still not linked",
@@ -433,8 +520,9 @@ function checkEntries(entries: ProgramEntry[] | undefined, errors: string[], whe
 
 /** Validate a registry: returns human-readable errors (empty = valid).
  * Catches duplicate ids, duplicate pool/roadmap areas, malformed slugs
- * and refs, and home docs without a usable URL. Pure — the shipped
- * registry is asserted valid in tests. */
+ * and refs, home docs / status reports without a usable URL, and
+ * dashboard links that are neither routes nor https URLs. Pure — the
+ * shipped registry is asserted valid in tests. */
 export function validateProjectConfigs(configs: ProjectConfig[]): string[] {
   const errors: string[] = [];
   const seenIds = new Map<string, number>();
@@ -457,6 +545,15 @@ export function validateProjectConfigs(configs: ProjectConfig[]): string[] {
     if (!c.title.trim()) errors.push(`${where}: title is empty`);
     if (!c.intro.trim()) errors.push(`${where}: intro is empty`);
     if (c.homeDoc && !/^https:\/\//.test(c.homeDoc.url)) errors.push(`${where}: homeDoc.url is not an https URL`);
+    if (c.statusReport) {
+      if (!c.statusReport.label.trim()) errors.push(`${where}: statusReport.label is empty`);
+      if (!/^https:\/\//.test(c.statusReport.url)) errors.push(`${where}: statusReport.url is not an https URL`);
+    }
+    for (const l of c.dashboardLinks ?? []) {
+      if (!l.label.trim()) errors.push(`${where}: dashboardLinks label is empty`);
+      if (!l.route.startsWith("/") && !/^https:\/\//.test(l.route))
+        errors.push(`${where}: dashboardLinks route "${l.route}" is neither a dashboard route nor an https URL`);
+    }
     checkRefs(c.trackedRefs, errors, where);
     checkEntries(c.architecture, errors, where);
     checkEntries(c.editorial?.done, errors, where);

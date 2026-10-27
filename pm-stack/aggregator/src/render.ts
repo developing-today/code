@@ -1272,8 +1272,13 @@ export function renderProgramProject(
   } else {
     linkBits.push(`<span class="muted">No home doc configured for this project yet.</span>`);
   }
+  if (config.statusReport) {
+    linkBits.push(`Status report: <a href="${esc(config.statusReport.url)}">${esc(config.statusReport.label)}</a>`);
+  }
   for (const l of config.dashboardLinks ?? []) {
-    linkBits.push(`<a href="${esc(l.route)}">${esc(l.label)}</a>`);
+    linkBits.push(
+      `<a href="${esc(l.route)}">${esc(l.label)}</a>${l.note ? ` <span class="muted">(${esc(l.note)})</span>` : ""}`,
+    );
   }
   linkBits.push(`<a href="/api/program-project.json?id=${encodeURIComponent(config.id)}">JSON twin</a>`);
 
