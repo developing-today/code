@@ -51,7 +51,7 @@ describe("dashboard actions store", () => {
       }),
     );
     expect(status.created).toBe(true);
-    expect(await store.pendingCounts()).toEqual({ triage: 1, statusRequests: 1, session: 0 });
+    expect(await store.pendingCounts()).toEqual({ triage: 1, statusRequests: 1, session: 0, preference: 0 });
     expect((await store.byObject()).get("orch:item-1")?.length).toBe(1);
     expect((await store.forObject("gh:developing-today/code#1154")).length).toBe(1);
     // A fresh store over the same file sees the same state.
@@ -531,9 +531,9 @@ describe("actions HTTP round-trip (fixture consumer)", () => {
     expect(html).toContain("/api/actions");
     const list = (await (await fetch(`http://127.0.0.1:${port}/api/actions.json`)).json()) as {
       actions: DashAction[];
-      pending: { triage: number; statusRequests: number; session: number };
+      pending: { triage: number; statusRequests: number; session: number; preference: number };
     };
     expect(list.actions.length).toBeGreaterThanOrEqual(1);
-    expect(list.pending).toEqual({ triage: 0, statusRequests: 0, session: 0 });
+    expect(list.pending).toEqual({ triage: 0, statusRequests: 0, session: 0, preference: 0 });
   });
 });

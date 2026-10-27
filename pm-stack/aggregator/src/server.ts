@@ -8,6 +8,7 @@
 // apply actions; the dashboard only records them.
 import { stat } from "node:fs/promises";
 import { ActionsStore, validateNewAction } from "./actions.ts";
+import { checkActionAgainstItem, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
 import { loadFeed } from "./feed.ts";
@@ -48,15 +49,22 @@ import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
 
-function pickSource(): Source {
-  const cfg = loadConfig();
-  return cfg.source === "live" ? liveSource(cfg) : fixtureSource();
-}
-
-const source = pickSource();
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
 const actionsStore = new ActionsStore(cfg.actionsFile);
+
+function pickSource(): Source {
+  // #1290: the live source reads the standing delegation default from
+  // the actions store's preference records when it stamps the
+  // needs-user fallbacks onto tier items.
+  return cfg.source === "live"
+    ? liveSource(cfg, {
+        standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
+      })
+    : fixtureSource();
+}
+
+const source = pickSource();
 
 /**
  * #1267: the live source populates its provenance strings lazily, one
@@ -265,6 +273,23 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewAction(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1291/#1293: checks that need the currently published item —
+      // option/survey membership, required-question coverage, proposal
+      // identity, the access/policy auto ban. Enforced only when the
+      // aggregator actually holds a section; with none, the store
+      // stays the permissive boundary of the triage slice and the
+      // consumer rejects what it cannot apply.
+      if (parsed.value.kind === "triage") {
+        const section = await source.orchestration().catch(() => null);
+        if (section) {
+          const problem = checkActionAgainstItem(
+            parsed.value,
+            findTierItem(section, parsed.value.objectRef),
+            Date.now(),
+          );
+          if (problem) return json({ error: problem }, 400);
+        }
+      }
       const { action, created } = await actionsStore.add(parsed.value);
       return json(created ? { action } : { action, deduped: true }, created ? 201 : 200);
     } catch (err) {
