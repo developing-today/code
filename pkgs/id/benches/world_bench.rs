@@ -72,7 +72,10 @@ fn median(mut samples: Vec<f64>) -> f64 {
 fn report(name: &str, unit: &str, samples: Vec<f64>) {
     let med = median(samples.clone());
     let min = samples.iter().copied().fold(f64::INFINITY, f64::min);
-    println!("bench {name} unit={unit} median={med:.3} min={min:.3} reps={}", samples.len());
+    println!(
+        "bench {name} unit={unit} median={med:.3} min={min:.3} reps={}",
+        samples.len()
+    );
 }
 
 fn bench_journal_append(dir: &PathBuf, entries: u64, reps: usize) -> Result<Vec<f64>> {
@@ -124,7 +127,7 @@ fn bench_guest_replay(events: u64, reps: usize) -> Result<Vec<f64>> {
     let mut core = WorldCore::new("bench-replay", WorldLimits::default())?;
     let (participant, _token) = core.issue_capability(
         "bench",
-        WorldScopes::JOIN | WorldScopes::CHAT,
+        WorldScopes::JOIN.union(WorldScopes::CHAT),
         CapabilityBounds {
             expires_at: None,
             uses: None,
@@ -144,7 +147,7 @@ fn bench_guest_replay(events: u64, reps: usize) -> Result<Vec<f64>> {
     journal.push(JournalEntry::Issued {
         participant,
         digest: "0".repeat(64),
-        scopes: (WorldScopes::JOIN | WorldScopes::CHAT).bits(),
+        scopes: (WorldScopes::JOIN.union(WorldScopes::CHAT)).bits(),
         parent: None,
         expires_at: None,
         uses: None,
@@ -186,7 +189,7 @@ fn bench_fanout(clients: usize, rounds: u64, reps: usize) -> Result<Vec<f64>> {
             let mut core = WorldCore::new("bench-fanout", WorldLimits::default())?;
             let (_participant, token) = core.issue_capability(
                 "bench",
-                WorldScopes::JOIN | WorldScopes::CHAT,
+                WorldScopes::JOIN.union(WorldScopes::CHAT),
                 CapabilityBounds {
                     expires_at: None,
                     uses: None,
@@ -196,7 +199,9 @@ fn bench_fanout(clients: usize, rounds: u64, reps: usize) -> Result<Vec<f64>> {
             let mut receivers: Vec<_> = (0..clients).map(|_| handle.subscribe()).collect();
             let start = Instant::now();
             for round in 0..rounds {
-                handle.chat(token.clone(), format!("fanout {round}")).await?;
+                handle
+                    .chat(token.clone(), format!("fanout {round}"))
+                    .await?;
                 for receiver in &mut receivers {
                     let event = receiver.recv().await.context("fanout recv")?;
                     black_box(event.sequence);
@@ -245,7 +250,11 @@ fn main() -> Result<()> {
         );
     }
     if run("guest_replay") {
-        report("guest_replay", "us_per_event", bench_guest_replay(events, reps)?);
+        report(
+            "guest_replay",
+            "us_per_event",
+            bench_guest_replay(events, reps)?,
+        );
     }
     if run("session_fanout") {
         report(
