@@ -106,6 +106,41 @@ mod tests {
     }
 
     #[test]
+    fn restore_accepts_v1_and_v2_headers_and_refuses_newer_at_the_header() {
+        // The issue-#227 rollback contract: this binary reads versions
+        // 1..=MAX, and anything newer is refused at the header check —
+        // which is exactly where a version-1 binary refuses a version-2
+        // journal, before any entry is applied.
+        for version in [JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE] {
+            let restored = WorldCore::restore(
+                "w",
+                WorldLimits::default(),
+                [JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version,
+                }],
+            )
+            .unwrap();
+            assert_eq!(restored.core.world_id, "w");
+        }
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: MAX_JOURNAL_VERSION + 1,
+            }],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported world journal version"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn execution_profile_survives_checkpoint_compaction_and_restore() {
         let profile = crate::world_limits::WorldExecutionProfile {
             wasm_fuel: Some(1234),
@@ -116,6 +151,15 @@ mod tests {
         core.execution_profile = profile;
         core.active_module_hash = Some("h".to_owned());
         let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        // The checkpoint re-emits the profile entry, so the compacted
+        // journal's header must carry the version it requires (#227).
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                ..
+            }
+        ));
         let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
         assert_eq!(restored.core.execution_profile(), profile);
     }
