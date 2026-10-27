@@ -186,6 +186,48 @@ describe("project registry", () => {
     expect(projectConfigById("nope")).toBeUndefined();
   });
 
+  test("researched editorial slices are in the shipped registry (#1124/#1125/#1126/#1128)", () => {
+    const lab = projectConfigById("lab-cluster")!;
+    expect(lab.statusReport?.label).toContain("2026-10-27");
+    expect(lab.statusReport?.url).toContain("doc/2026-10-27T03-14-08Z_status_basement-cluster");
+    const labGaps = (lab.editorial?.gaps ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(labGaps).toContain("CPCOE-29381");
+    expect(labGaps).toContain("2026-10-21");
+    expect(lab.editorial?.gaps.some((e) => (e.refs ?? []).includes("developing-today/code#1091"))).toBe(true);
+
+    const id = projectConfigById("id")!;
+    for (const n of [1076, 1077, 1078, 1235, 1239, 1240]) {
+      expect(id.trackedRefs).toContain(`developing-today/code#${n}`);
+    }
+    const idLinks = (id.dashboardLinks ?? []).map((l) => l.route);
+    for (const doc of ["ARCHITECTURE.md", "README.md", "TODO.md"]) {
+      expect(idLinks.some((r) => r.endsWith(`pkgs/id/${doc}`))).toBe(true);
+    }
+    expect((id.editorial?.done ?? []).map((e) => e.title).join("\n")).toContain("validation in progress");
+    expect((id.editorial?.done ?? []).map((e) => e.title)).not.toContain("Phases 9–11 delivered");
+
+    const fleet = projectConfigById("repo-fleet")!;
+    const fleetUpcoming = [...(fleet.editorial?.next ?? []), ...(fleet.editorial?.longTerm ?? [])];
+    const fleetUpcomingText = fleetUpcoming.map((e) => `${e.title} ${e.detail}`).join("\n");
+    for (const n of [1233, 1130, 1131, 1234, 1185, 1187, 1190, 310, 311]) {
+      expect(fleet.trackedRefs).toContain(`developing-today/code#${n}`);
+    }
+    expect(fleetUpcomingText).toContain("Queue fleet reliability");
+    expect(fleetUpcomingText).toContain("OpenChamber session dispatch + babysitter");
+    expect(fleetUpcomingText).toContain("stale-PR triage");
+    // Closed #257/#292 are recorded as done, never presented as upcoming.
+    expect(fleetUpcoming.flatMap((e) => e.refs ?? [])).not.toContain("developing-today/code#257");
+    expect(fleetUpcoming.flatMap((e) => e.refs ?? [])).not.toContain("developing-today/code#292");
+    const fleetDone = (fleet.editorial?.done ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(fleetDone).toContain("closed in GitHub");
+    const fleetGaps = (fleet.editorial?.gaps ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
+    expect(fleetGaps).toContain("2026-10-27");
+    expect(fleetGaps).toContain("665 open issues");
+
+    const cloud = projectConfigById("cloud-program")!;
+    expect(cloud.roadmapArea).toBe("Cloud program");
+  });
+
   test("validation catches duplicates and malformed entries", () => {
     const base: ProjectConfig = {
       id: "x-proj",
@@ -205,6 +247,17 @@ describe("project registry", () => {
     ]);
     expect(bad.some((e) => e.includes("not a slug"))).toBe(true);
     expect(bad.some((e) => e.includes("malformed ref"))).toBe(true);
+    const badLinks = validateProjectConfigs([
+      {
+        ...base,
+        statusReport: { label: " ", url: "http://example.com/report" },
+        dashboardLinks: [{ label: "", route: "example.com/doc" }],
+      },
+    ]);
+    expect(badLinks.some((e) => e.includes("statusReport.label is empty"))).toBe(true);
+    expect(badLinks.some((e) => e.includes("statusReport.url is not an https URL"))).toBe(true);
+    expect(badLinks.some((e) => e.includes("dashboardLinks label is empty"))).toBe(true);
+    expect(badLinks.some((e) => e.includes("dashboardLinks route"))).toBe(true);
   });
 
   test("summaries derive pool/roadmap counts per project; unset is counted once", () => {
@@ -223,9 +276,13 @@ describe("project registry", () => {
     expect(byId.get("id")?.roadmapRows).toBe(7); // fixture seed area "id"
     expect(byId.get("repo-fleet")?.roadmapRows).toBe(4);
     expect(byId.get("lab-cluster")?.roadmapRows).toBe(6);
-    // Null-area projects claim nothing, however much pool exists.
+    // A null pool Area claims no pool items, however much pool exists.
     expect(byId.get("mcpx")?.poolTotal).toBe(0);
-    expect(byId.get("cloud-program")?.roadmapRows).toBe(0);
+    expect(byId.get("mcpx")?.roadmapRows).toBe(0);
+    // cloud-program has no pool Area, but its Grist area exists (#1128):
+    // the fixture seed's one "Cloud program" row counts.
+    expect(byId.get("cloud-program")?.poolTotal).toBe(0);
+    expect(byId.get("cloud-program")?.roadmapRows).toBe(1);
     expect(unsetPoolCount(pool)).toBe(1);
   });
 
@@ -264,6 +321,27 @@ describe("renderProgramProject", () => {
     const cloudHtml = renderProgramProject(buildProjectDetail(cloud, items, pool, rows), items, PROV);
     expect(cloudHtml).toContain("No home doc configured");
     expect(cloudHtml).toContain("/quota");
+    // Its Grist area exists (#1128): the seed's OCI row renders.
+    expect(cloudHtml).toContain("OCI Always Free — run the technical maximum");
+    expect(cloudHtml).not.toContain("No Grist roadmap area yet");
+
+    const lab = projectConfigById("lab-cluster")!;
+    const labHtml = renderProgramProject(buildProjectDetail(lab, items, pool, rows), items, PROV);
+    expect(labHtml).toContain("Status report:");
+    expect(labHtml).toContain("doc/2026-10-27T03-14-08Z_status_basement-cluster");
+    expect(labHtml).toContain("CPCOE-29381");
+
+    const id = projectConfigById("id")!;
+    const idHtml = renderProgramProject(buildProjectDetail(id, items, pool, rows), items, PROV);
+    expect(idHtml).toContain("pkgs/id/ARCHITECTURE.md");
+    expect(idHtml).toContain("pkgs/id/TODO.md");
+    expect(idHtml).toContain("idle planning");
+    expect(idHtml).toContain("Phases 9–11 delivered; validation in progress");
+
+    const fleet = projectConfigById("repo-fleet")!;
+    const fleetHtml = renderProgramProject(buildProjectDetail(fleet, items, pool, rows), items, PROV);
+    expect(fleetHtml).toContain("Queue fleet reliability");
+    expect(fleetHtml).toContain("665 open issues");
   });
 
   test("pm-dashboard page retains the full #1046 document", async () => {
