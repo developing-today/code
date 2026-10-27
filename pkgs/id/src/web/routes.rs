@@ -1971,7 +1971,8 @@ async fn hard_delete_handler(
 /// The format is determined by the file name extension:
 /// - `.pm.json` → `ProseMirror` JSON (serialized as-is)
 /// - `.md` → Markdown (via `prosemirror_to_markdown`)
-/// - `.txt` → Plain text (extracted from paragraphs)
+/// - `.txt` → Plain text (loss-free recursive extraction; see
+///   `extract_plain_text` for the per-block rendering policy)
 /// - Other text files → Raw text (extracted from `code_block` nodes)
 fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, String> {
     let mode = detect_mode(name);
@@ -1988,7 +1989,7 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
             Ok(markdown.into_bytes())
         }
         ContentMode::Plain => {
-            // .txt files: extract plain text from paragraphs
+            // .txt files: loss-free plain-text extraction (#1306)
             let text = extract_plain_text(doc);
             Ok(text.into_bytes())
         }
@@ -2003,55 +2004,106 @@ fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Result<Vec<u8>, 
     }
 }
 
-/// Extract plain text from a `ProseMirror` doc with paragraph nodes.
+/// Extract plain text from a `ProseMirror` doc — loss-free (#1306).
 ///
-/// Joins paragraphs with newlines, preserving `hard_break` as newlines.
+/// Plain-text rendering policy (also documented on `convert_doc_to_bytes`):
+/// every block contributes its text, one block per line, joined with
+/// `"\n"`:
+///
+/// - `paragraph` / `heading`: their inline text (see
+///   `extract_inline_text`); byte-identical to the pre-#1306 output for
+///   docs containing only paragraphs and headings.
+/// - Lists (`bullet_list` / `ordered_list` / `task_list`): each item
+///   contributes its blocks, one item per line for the usual
+///   single-paragraph item; nested lists recurse the same way.
+/// - `blockquote`: its blocks, recursively.
+/// - `code_block`: its raw text verbatim (internal newlines preserved).
+/// - `table`: each cell contributes one line, row-major (rows in order,
+///   cells in order within a row); a multi-block cell joins its blocks
+///   with a single space so the one-line-per-cell shape holds.
+/// - `horizontal_rule`: no text — contributes one empty line, acting as
+///   a separator between the blocks around it.
+/// - Any other block type: recursed into rather than dropped, so new
+///   node types degrade to their text instead of vanishing.
+///
+/// Inline content keeps `text` and `hard_break` (as a newline) and
+/// recurses into any other inline node's `content` rather than
+/// dropping it. The pre-#1306 version handled only top-level
+/// paragraphs/headings and silently deleted everything else on save.
 fn extract_plain_text(doc: &serde_json::Value) -> String {
     let mut lines = Vec::new();
-
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
-        for node in content {
-            let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            match node_type {
-                "paragraph" => {
-                    let mut line = String::new();
-                    if let Some(inline_content) = node.get("content").and_then(|c| c.as_array()) {
-                        for inline in inline_content {
-                            let inline_type =
-                                inline.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            match inline_type {
-                                "text" => {
-                                    if let Some(text) = inline.get("text").and_then(|t| t.as_str())
-                                    {
-                                        line.push_str(text);
-                                    }
+        collect_plain_text_lines(content, &mut lines);
+    }
+    lines.join("\n")
+}
+
+/// Append the plain-text lines for a list of block nodes to `lines`.
+fn collect_plain_text_lines(nodes: &[serde_json::Value], lines: &mut Vec<String>) {
+    for node in nodes {
+        let node_type = node.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let content = node.get("content").and_then(|c| c.as_array());
+        match node_type {
+            "paragraph" | "heading" => lines.push(extract_inline_text(node)),
+            "code_block" => lines.push(extract_inline_text(node)),
+            "horizontal_rule" => lines.push(String::new()),
+            "table" => {
+                if let Some(rows) = content {
+                    for row in rows {
+                        if let Some(cells) = row.get("content").and_then(|c| c.as_array()) {
+                            for cell in cells {
+                                let mut cell_lines = Vec::new();
+                                if let Some(blocks) = cell.get("content").and_then(|c| c.as_array())
+                                {
+                                    collect_plain_text_lines(blocks, &mut cell_lines);
                                 }
-                                "hard_break" => {
-                                    line.push('\n');
-                                }
-                                _ => {}
+                                lines.push(cell_lines.join(" "));
                             }
                         }
                     }
-                    lines.push(line);
                 }
-                "heading" => {
-                    let mut text = String::new();
-                    if let Some(inline_content) = node.get("content").and_then(|c| c.as_array()) {
-                        for inline in inline_content {
-                            if let Some(t) = inline.get("text").and_then(|t| t.as_str()) {
-                                text.push_str(t);
-                            }
-                        }
+            }
+            // Lists, list items, blockquote, table rows/cells reached
+            // outside a table, and every other container block: recurse
+            // into the block content so nothing is dropped.
+            _ => {
+                if let Some(blocks) = content {
+                    if blocks.iter().any(|b| {
+                        b.get("text").is_some()
+                            || b.get("type").and_then(|t| t.as_str()) == Some("hard_break")
+                    }) {
+                        lines.push(extract_inline_text(node));
+                    } else {
+                        collect_plain_text_lines(blocks, lines);
                     }
-                    lines.push(text);
+                } else if let Some(text) = node.get("text").and_then(|t| t.as_str()) {
+                    lines.push(text.to_owned());
                 }
-                _ => {}
             }
         }
     }
+}
 
-    lines.join("\n")
+/// Extract the inline text of one node: `text` verbatim, `hard_break`
+/// as a newline, and any other inline node recursed into (its own
+/// inline content contributes its text instead of being dropped).
+fn extract_inline_text(node: &serde_json::Value) -> String {
+    let mut out = String::new();
+    if let Some(content) = node.get("content").and_then(|c| c.as_array()) {
+        for inline in content {
+            let inline_type = inline.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match inline_type {
+                "text" => {
+                    if let Some(text) = inline.get("text").and_then(|t| t.as_str()) {
+                        out.push_str(text);
+                    }
+                }
+                "hard_break" => out.push('\n'),
+                _ => out.push_str(&extract_inline_text(inline)),
+            }
+        }
+    }
+    out
 }
 
 /// Extract raw text from a `ProseMirror` doc with `code_block` nodes.
@@ -2768,6 +2820,86 @@ mod tests {
     fn test_extract_raw_text_multiple_blocks_with_splits() {
         let doc = raw_doc(&[&["fir", "st"], &["sec", "ond"]]);
         assert_eq!(extract_raw_text(&doc), "first\nsecond");
+    }
+
+    fn plain_doc(content: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({"type": "doc", "content": content})
+    }
+
+    fn para(text: &str) -> serde_json::Value {
+        serde_json::json!({"type": "paragraph", "content": [{"type": "text", "text": text}]})
+    }
+
+    #[test]
+    fn test_extract_plain_text_paragraph_heading_byte_identical() {
+        // Pre-#1306 behaviour for paragraph/heading-only docs is unchanged.
+        let doc = plain_doc(vec![
+            serde_json::json!({"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "Title"}]}),
+            para("intro"),
+            para("outro"),
+        ]);
+        assert_eq!(extract_plain_text(&doc), "Title\nintro\noutro");
+    }
+
+    #[test]
+    fn test_extract_plain_text_bullet_list_items_survive() {
+        let doc = plain_doc(vec![
+            para("intro"),
+            serde_json::json!({"type": "bullet_list", "content": [
+                {"type": "list_item", "content": [para("apples")]},
+                {"type": "list_item", "content": [para("pears")]}
+            ]}),
+            para("outro"),
+        ]);
+        assert_eq!(extract_plain_text(&doc), "intro\napples\npears\noutro");
+    }
+
+    #[test]
+    fn test_extract_plain_text_blockquote_survives() {
+        let doc = plain_doc(vec![
+            serde_json::json!({"type": "blockquote", "content": [para("quoted words")]}),
+        ]);
+        assert_eq!(extract_plain_text(&doc), "quoted words");
+    }
+
+    #[test]
+    fn test_extract_plain_text_code_block_survives() {
+        let doc = plain_doc(vec![
+            para("before"),
+            serde_json::json!({"type": "code_block", "attrs": {"params": "rust"}, "content": [{"type": "text", "text": "fn main() {}\n"}]}),
+            para("after"),
+        ]);
+        let out = extract_plain_text(&doc);
+        assert!(out.contains("fn main() {}"), "out: {out}");
+        assert!(out.starts_with("before\n"), "out: {out}");
+        assert!(out.ends_with("\nafter"), "out: {out}");
+    }
+
+    #[test]
+    fn test_extract_plain_text_table_cells_survive_row_major() {
+        let cell = |t: &str| serde_json::json!({"type": "table_cell", "content": [para(t)]});
+        let doc = plain_doc(vec![serde_json::json!({"type": "table", "content": [
+            {"type": "table_row", "content": [cell("a1"), cell("b1")]},
+            {"type": "table_row", "content": [cell("a2"), cell("b2")]}
+        ]})]);
+        assert_eq!(extract_plain_text(&doc), "a1\nb1\na2\nb2");
+    }
+
+    #[test]
+    fn test_extract_plain_text_mixed_doc_loses_nothing() {
+        // The #1306 repro shape: paragraph/list/blockquote/code/table/paragraph.
+        let doc = plain_doc(vec![
+            para("intro"),
+            serde_json::json!({"type": "bullet_list", "content": [{"type": "list_item", "content": [para("item")]}]}),
+            serde_json::json!({"type": "blockquote", "content": [para("quote")]}),
+            serde_json::json!({"type": "code_block", "content": [{"type": "text", "text": "code"}]}),
+            serde_json::json!({"type": "table", "content": [{"type": "table_row", "content": [{"type": "table_cell", "content": [para("cell")]}]}]}),
+            para("outro"),
+        ]);
+        assert_eq!(
+            extract_plain_text(&doc),
+            "intro\nitem\nquote\ncode\ncell\noutro"
+        );
     }
 
     #[test]
