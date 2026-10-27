@@ -1130,6 +1130,90 @@ fn is_block_node(node: &AstNode<'_>) -> bool {
 }
 
 /// Convert `ProseMirror` JSON to comrak AST.
+/// Whether a JSON node is a `text` node carrying no marks (#1420).
+/// Marked runs protect their edge spaces with the marked-span mechanism
+/// (#1418); unmarked runs have no such protection, so the save direction
+/// normalizes their edge whitespace instead (see
+/// `normalize_inline_child_json`).
+fn is_unmarked_text_json(node: &Value) -> bool {
+    node["type"].as_str() == Some("text")
+        && node["marks"].as_array().is_none_or(|marks| marks.is_empty())
+}
+
+/// Whether a JSON node is a `hard_break` — the boundary between two
+/// rendered lines inside one block (#1420).
+fn is_hard_break_json(node: &Value) -> bool {
+    node["type"].as_str() == Some("hard_break")
+}
+
+/// Whether an unmarked text node renders as nothing but edge whitespace
+/// (empty, or spaces/tabs only). Such a node never shields a neighbour's
+/// edge from the line boundary: at a line edge its own whitespace is
+/// normalized away too, and mid-line it is a separator either way (#1420).
+fn is_whitespace_only_text_json(node: &Value) -> bool {
+    is_unmarked_text_json(node)
+        && node["text"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .all(|c| c == ' ' || c == '\t')
+}
+
+/// Whether scanning `siblings` (in render order) reaches a line edge —
+/// the start/end of the block or a `hard_break` — before any content
+/// that renders something (#1420).
+fn reaches_line_edge(siblings: impl Iterator<Item = Value>) -> bool {
+    for sibling in siblings {
+        if is_hard_break_json(&sibling) {
+            return true;
+        }
+        if !is_whitespace_only_text_json(&sibling) {
+            return false;
+        }
+    }
+    true
+}
+
+/// #1420: normalize one inline child of a block before conversion.
+///
+/// Unmarked text runs are written verbatim on save, but CommonMark
+/// reparse strips edge whitespace (up to 3 leading spaces per line,
+/// trailing spaces ignored) and deletes a whitespace-only paragraph
+/// outright, so the saved file and the reopened doc disagreed. The
+/// pinned policy is normalize-at-save: trim an unmarked run's leading
+/// spaces when it sits at a line start (block start or just after a
+/// `hard_break`) and its trailing spaces when it sits at a line end
+/// (block end or just before a `hard_break`), so the first saved file
+/// is already the fixpoint. A whitespace-only run at a line edge
+/// becomes an empty text node, so a whitespace-only paragraph saves as
+/// an EMPTY paragraph instead of vanishing text. Interior runs (word
+/// separators between words/marks) and marked runs are untouched.
+fn normalize_inline_child_json(content: &[Value], idx: usize) -> std::borrow::Cow<'_, Value> {
+    let child = &content[idx];
+    if !is_unmarked_text_json(child) {
+        return std::borrow::Cow::Borrowed(child);
+    }
+    let trim_start = reaches_line_edge(content[..idx].iter().rev().cloned());
+    let trim_end = reaches_line_edge(content[idx + 1..].iter().cloned());
+    if !trim_start && !trim_end {
+        return std::borrow::Cow::Borrowed(child);
+    }
+    let text = child["text"].as_str().unwrap_or("");
+    let mut normalized = text;
+    if trim_start {
+        normalized = normalized.trim_start_matches([' ', '\t']);
+    }
+    if trim_end {
+        normalized = normalized.trim_end_matches([' ', '\t']);
+    }
+    if normalized == text {
+        return std::borrow::Cow::Borrowed(child);
+    }
+    let mut owned = child.clone();
+    owned["text"] = json!(normalized);
+    std::borrow::Cow::Owned(owned)
+}
+
 fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>, ConversionError> {
     let node_type = json["type"].as_str().ok_or(ConversionError::MissingType)?;
 
@@ -1403,17 +1487,19 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     // ProseMirror wraps cell content in paragraphs, so we unwrap them here.
     if node_type == "table_header" || node_type == "table_cell" {
         if let Some(content) = json["content"].as_array() {
-            for child_json in content {
+            for (idx, child_json) in content.iter().enumerate() {
                 if child_json["type"].as_str() == Some("paragraph") {
                     // Unwrap: add paragraph's inline children directly to cell
                     if let Some(para_content) = child_json["content"].as_array() {
-                        for inline_json in para_content {
-                            let inline_node = json_to_ast(arena, inline_json)?;
+                        for (inline_idx, _inline_json) in para_content.iter().enumerate() {
+                            let normalized = normalize_inline_child_json(para_content, inline_idx);
+                            let inline_node = json_to_ast(arena, &normalized)?;
                             append_table_cell_child(arena, ast_node, inline_node);
                         }
                     }
                 } else {
-                    let child = json_to_ast(arena, child_json)?;
+                    let normalized = normalize_inline_child_json(content, idx);
+                    let child = json_to_ast(arena, &normalized)?;
                     append_table_cell_child(arena, ast_node, child);
                 }
             }
@@ -1431,8 +1517,9 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     if node_type == "footnote_definition" {
         if let Some(content) = json["content"].as_array() {
             let mut paragraph: Option<&AstNode<'a>> = None;
-            for child_json in content {
-                let child = json_to_ast(arena, child_json)?;
+            for (idx, _child_json) in content.iter().enumerate() {
+                let normalized = normalize_inline_child_json(content, idx);
+                let child = json_to_ast(arena, &normalized)?;
                 if is_block_node(child) {
                     paragraph = None;
                     ast_node.append(child);
@@ -1472,9 +1559,10 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         // ordered_list is NOT merged (it carries restart numbering) and
         // task_list is a distinct PM node type, so neither is affected.
         let mut prev_bullet_list: Option<&AstNode<'a>> = None;
-        for child_json in content {
+        for (idx, child_json) in content.iter().enumerate() {
             let is_bullet_list = child_json["type"].as_str() == Some("bullet_list");
-            let child = json_to_ast(arena, child_json)?;
+            let normalized = normalize_inline_child_json(content, idx);
+            let child = json_to_ast(arena, &normalized)?;
             if is_bullet_list && let Some(list_node) = prev_bullet_list {
                 let items: Vec<&AstNode<'a>> = child.children().collect();
                 for item in items {
@@ -3446,6 +3534,103 @@ mod tests {
                 ]
             }]
         })
+    }
+
+    #[test]
+    fn test_unmarked_leading_spaces_trimmed_at_save() {
+        // #1420: "  leading spaces" was written verbatim on save but
+        // stripped on reopen. Normalize-at-save makes the first save
+        // the fixpoint.
+        let doc = json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "  leading spaces"}]}]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(md, "leading spaces\n");
+        let reopened = markdown_to_prosemirror(&md);
+        assert_eq!(
+            reopened,
+            json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "leading spaces"}]}]})
+        );
+        assert_eq!(prosemirror_to_markdown(&reopened).expect("reconverts"), md);
+    }
+
+    #[test]
+    fn test_unmarked_trailing_spaces_trimmed_at_save() {
+        // #1420: trailing spaces of a block-final run.
+        let doc = json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "foo   "}]}]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(md, "foo\n");
+        let reopened = markdown_to_prosemirror(&md);
+        assert_eq!(prosemirror_to_markdown(&reopened).expect("reconverts"), md);
+    }
+
+    #[test]
+    fn test_unmarked_spaces_around_hard_break_trimmed_at_save() {
+        // #1420: a hard_break starts a new rendered line, so leading
+        // spaces after it (and trailing spaces before it) are line-edge
+        // whitespace and normalize away.
+        let doc = json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+            {"type": "text", "text": "foo  "},
+            {"type": "hard_break"},
+            {"type": "text", "text": "  bar"}
+        ]}]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(md, "foo\\\nbar\n");
+        let reopened = markdown_to_prosemirror(&md);
+        assert_eq!(prosemirror_to_markdown(&reopened).expect("reconverts"), md);
+    }
+
+    #[test]
+    fn test_unmarked_table_cell_padding_trimmed_at_save() {
+        // #1420: cell content is single-line; padding around a cell's
+        // text is line-edge whitespace.
+        let doc = table_doc_with_cell(json!([{
+            "type": "paragraph",
+            "content": [{"type": "text", "text": " x "}]
+        }]));
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert!(md.contains("| x |"), "cell text trimmed: {md:?}");
+        let reopened = markdown_to_prosemirror(&md);
+        assert_eq!(prosemirror_to_markdown(&reopened).expect("reconverts"), md);
+    }
+
+    #[test]
+    fn test_whitespace_only_paragraph_saves_as_empty_paragraph() {
+        // #1420: a whitespace-only paragraph used to be written as
+        // "   " and deleted outright on reopen. It now saves as an
+        // empty paragraph: alone it reopens as exactly one empty
+        // paragraph, and the saved file is a fixpoint from the first
+        // save even alongside other paragraphs.
+        let doc = json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "   "}]}]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(md, "");
+        assert_eq!(
+            markdown_to_prosemirror(&md),
+            json!({"type": "doc", "content": [{"type": "paragraph"}]})
+        );
+
+        let doc = json!({"type": "doc", "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "   "}]},
+            {"type": "paragraph", "content": [{"type": "text", "text": "x"}]}
+        ]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(md, "x\n", "no whitespace text is written: {md:?}");
+        let reopened = markdown_to_prosemirror(&md);
+        assert_eq!(prosemirror_to_markdown(&reopened).expect("reconverts"), md);
+    }
+
+    #[test]
+    fn test_unmarked_interior_spaces_next_to_marks_preserved() {
+        // #1420 guard: interior unmarked runs are word separators and
+        // DO survive reparse — trimming them would fuse words into the
+        // neighbouring mark. Marked runs keep their #1418 entity
+        // protection untouched.
+        let doc = json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+            {"type": "text", "text": "a "},
+            {"type": "text", "text": " b ", "marks": [{"type": "em"}]},
+            {"type": "text", "text": " c"}
+        ]}]});
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert_eq!(md, "a *&#32;b&#32;* c\n");
+        assert_eq!(markdown_to_prosemirror(&md), doc);
     }
 
     #[test]
