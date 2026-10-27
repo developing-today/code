@@ -52,6 +52,7 @@ import {
   refUrl,
 } from "./model.ts";
 import { PAGES } from "./pages.ts";
+import type { ProgramData, ProgramEntry } from "./program.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import { type AuthorIdentity } from "./registry.ts";
 
@@ -1156,4 +1157,65 @@ export function renderProjects(
 <div class="chips">${chips}</div>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
   return layout("Projects", body, provenance, "/projects");
+}
+
+// --- Program status page (#1046: the dashboard documents itself) ------------
+// Editorial sections come from src/program.ts (the PROGRAM object — the
+// one file to edit when the program changes); the live-status section is
+// derived from the Source at request time by buildProgramLive, so its
+// claims cannot drift from the tracked issues / Project pool /
+// orchestrator they describe. Unresolvable refs render as "unresolved".
+
+function programEntryHtml(e: ProgramEntry, items: Map<RefKey, GhItem>): string {
+  const refs = (e.refs ?? [])
+    .map((r) => {
+      const item = items.get(r);
+      return item ? itemBadge(item) : `<span class="badge closed" title="The current source cannot resolve this ref">unresolved ${esc(r)}</span>`;
+    })
+    .join(" ");
+  const links = (e.links ?? []).map((l) => `<a href="${esc(l.url)}">${esc(l.label)}</a>`).join(" · ");
+  const meta = [refs, links].filter(Boolean).join(" ");
+  return `<div class="card"><strong>${esc(e.title)}</strong><br>${esc(e.detail)}${meta ? `<br>${meta}` : ""}</div>`;
+}
+
+function programEntries(entries: ProgramEntry[], items: Map<RefKey, GhItem>): string {
+  return entries.map((e) => programEntryHtml(e, items)).join("");
+}
+
+export function renderProgram(data: ProgramData, items: Map<RefKey, GhItem>, provenance: Provenance): string {
+  const { program, live } = data;
+  const trackedRows = live.tracked
+    .map(({ ref, item }) =>
+      item
+        ? `<tr><td>${itemBadge(item)}</td><td>${esc(item.title)}</td><td><span class="badge ${item.state === "open" ? "open" : item.state === "merged" ? "merged" : "closed"}">${esc(item.state)}</span></td><td>${fmtDate(item.updatedAt)}</td></tr>`
+        : `<tr><td><span class="badge closed">unresolved</span></td><td><code>${esc(ref)}</code></td><td><span class="muted">unresolved — the current source cannot resolve this ref</span></td><td>—</td></tr>`,
+    )
+    .join("");
+  const countList = (list: { name: string; count: number }[]) =>
+    list.length ? list.map((c) => `${esc(c.name)}: ${c.count}`).join(" · ") : '<span class="muted">none</span>';
+  const poolHtml = live.pool.total
+    ? `<div class="card"><strong><a href="/projects">${live.pool.total} items</a></strong> in the org Project pool<br><span class="muted">By status — ${countList(live.pool.byStatus)}</span><br><span class="muted">By area — ${countList(live.pool.byArea)}</span></div>`
+    : `<div class="banner">No Project pool in the current feed — the collector embeds it from the org Project when a Projects token is available. The pool summary appears here when it lands; the tracked issues above still resolve through the projector/fixtures chain.</div>`;
+  const orchHtml = live.orchestration
+    ? `<div class="card"><strong>Orchestrator</strong> — latest run <code>${esc(live.orchestration.runId)}</code>, published ${fmtDate(live.orchestration.generatedAt)}.<br><span class="muted">The tiers and goal measurements it publishes are on <a href="/attention">Needs you</a> and <a href="/today">Today</a>.</span></div>`
+    : `<div class="card"><strong>Orchestrator</strong> — <span class="muted">no orchestration section in the current feed yet (not measured). The Today view derives and labels itself until one lands.</span></div>`;
+  const body = `<h1>Program status — what this dashboard is</h1>
+<p class="muted">${esc(program.intro)}</p>
+<p class="muted">Source of truth: the <a href="${esc(program.designRecordUrl)}">design record</a> in developing-today/code · the org Project <a href="${esc(program.projectUrl)}">Developing Today (#4)</a> · Machine-first: <a href="/api/program.json">/api/program.json</a>.</p>
+<h2>What this is — architecture</h2>
+${programEntries(program.architecture, items)}
+<h2>Live status</h2>
+<p class="muted">Derived at request time from the tracked issues, the Project pool, and the latest orchestration section — not written by hand. A ref the current source cannot resolve says so.</p>
+<div class="tblwrap"><table><tr><th>Tracked issue</th><th>Title</th><th>State</th><th>Updated</th></tr>${trackedRows}</table></div>
+${poolHtml}
+${orchHtml}
+<h2>What's built</h2>
+${programEntries(program.done, items)}
+<h2>What's next</h2>
+${programEntries(program.next, items)}
+<h2>Long-term roadmap</h2>
+${programEntries(program.longTerm, items)}
+<h2>Known gaps</h2>
+${programEntries(program.gaps, items)}`;
+  return layout("Program status", body, provenance, "/program");
 }

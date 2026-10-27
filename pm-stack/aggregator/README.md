@@ -24,6 +24,7 @@ Design record (source of truth):
 | `/quota`          | **Usage & billing** (hub, design 2026-10-25; pools from #851) — needs-attention strip (bubble rules: >80% of a limit, >$5 projected unbilled PAYG), token-quota pools + PAYG dollars card, SaaS service cards grouped by kind with highlight metrics, charges evidence strip. Per-service detail: `/quota/service/<id>`. | `/api/quota.json` (extended: `saas`/`payg`/`charges`/…), `/api/quota/service.json?id=` |
 | `/dns`            | **DNS / domain register** (slice 3, #906; data owned by #902) — the register rendered next-renewal-first: renewing-soon spend, then in-use / unused-but-earmarked / completely-unused views and the full table.                                                                                                            | `/api/dns.json`                             |
 | `/sessions`       | **Sessions** (slice 3, #906) — the identity registry: every known session with its stable id, agent identity, parent, task refs, and token total, grouped by source.                                                                                                                                                       | `/api/registry.json`                        |
+| `/program`        | **Program status** (#1046) — the dashboard documents itself: what the PM stack is (architecture), what's built, what's next, the long-term roadmap, and known gaps. Editorial content lives in `src/program.ts`; the live-status section (tracked-issue states #898/#899/#902/#906/#910/#911, Project pool counts, orchestration freshness) is derived from the Source at request time so it cannot drift. | `/api/program.json`                         |
 | `/pages`          | **All pages** — the page manifest rendered: every registered page, its route, and its JSON twin.                                                                                                                                                                                                                           | — (the manifest is `src/pages.ts`)          |
 | `/discuss/<ref>`  | **Comment thread** for one object ref (a `gh:` ref, an `orch:` tier item, a `session:` id, a board item, a roadmap subject) — dashboard comments + the post form.                                                                                                                                                          | `/api/comments.json?object=<ref>`           |
 | `/item/<subject>` | Drill-down for one board card or roadmap row: linked refs + a unified comment stream, plus its dashboard comments and the sessions that worked it.                                                                                                                                                                         | —                                           |
@@ -362,6 +363,8 @@ src/
                 dns, comments, registry)
   source.ts     the one Source interface
   pages.ts      the page manifest — nav, dropdown, /pages (#906)
+  program.ts    the /program page's editorial record + live-data
+                builder (tracked issues, pool summary, freshness) (#1046)
   derive.ts     execution strip, timeline lanes, quota/attention rules
   render.ts     pure HTML rendering of every view
   server.ts     Bun HTTP server (pages, JSON twins, comment writes)
@@ -396,4 +399,6 @@ test/
                     grains, today derivation, slice-2 render smoke
   slice3.test.ts    dns parser, registry normalization, comment store,
                     page manifest, slice-3 renders + HTTP flows
+  program.test.ts   /program manifest entry, live-data builder
+                    (empty/absent/null inputs), render smoke (#1046)
 ```

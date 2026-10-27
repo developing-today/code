@@ -7,6 +7,7 @@ import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import type { DashComment, RefKey } from "./model.ts";
+import { buildProgramData, programRefs } from "./program.ts";
 import { identitiesFromRecords } from "./registry.ts";
 import {
   ghObjectRef,
@@ -16,6 +17,7 @@ import {
   renderDns,
   renderItem,
   renderPages,
+  renderProgram,
   renderProjects,
   renderQuota,
   renderRoadmap,
@@ -243,6 +245,21 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/projects.json") {
     const pool = await source.projects().catch(() => []);
     return json({ project: "developing-today#4", items: pool });
+  }
+
+  if (path === "/program" || path === "/api/program.json") {
+    // #1046: the dashboard documents itself. Editorial content from
+    // src/program.ts; the live half derived from the same Source the
+    // other views read (items / projects / orchestration), each facet
+    // failing soft on its own.
+    const [items, pool, orchestration] = await Promise.all([
+      source.items(programRefs()).catch(() => new Map()),
+      source.projects().catch(() => []),
+      source.orchestration().catch(() => null),
+    ]);
+    const data = buildProgramData(items, pool, orchestration);
+    if (path === "/api/program.json") return json(data);
+    return html(renderProgram(data, items, prov()));
   }
 
   if (path === "/pages") {
