@@ -147,6 +147,7 @@ describe("renderBoard in-flight lane", () => {
     orchestration: "fixtures",
     dns: "fixtures",
     registry: "fixtures",
+    aa: "fixtures",
   } as Provenance;
 
   test("lane renders first, visibly sourced and dated, with direct GitHub links", () => {

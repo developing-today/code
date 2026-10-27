@@ -87,6 +87,7 @@ const PROV = {
   orchestration: "x",
   dns: "x",
   registry: "x",
+  aa: "x",
 };
 
 describe("collector projects parsing (GraphQL -> feed section)", () => {

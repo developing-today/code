@@ -5,6 +5,7 @@
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
 import type {
+  AaFeedSection,
   ChargeRow,
   DnsSection,
   GoalMeasurement,
@@ -54,6 +55,12 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
+  /** AA cost explorer section: the ainventory (AA workbook) data read
+   * by the collector from Supabase, plus pool/catalog coverage computed
+   * against the repo's opencode config. Present-but-absent
+   * ({status:"absent", reason}) when Supabase was unreachable — the
+   * section degrades, the feed never fails over it. */
+  aa?: AaFeedSection;
 }
 
 /**
