@@ -52,6 +52,12 @@
       "opens": "query",
       "fields": { "capability": "string" }
     },
+    "metrics": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": { "capability": "string" }
+    },
     "records": {
       "class": "query",
       "phases": ["opening", "query", "joined"],
@@ -263,6 +269,10 @@
         "active_module_provenance": "object?",
         "current_sequence": "u64"
       }
+    },
+    "metrics": {
+      "class": "reply",
+      "fields": { "metrics": "object" }
     },
     "records": {
       "class": "reply",

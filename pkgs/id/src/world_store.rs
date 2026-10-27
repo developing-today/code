@@ -1489,6 +1489,43 @@ mod tests {
         assert_eq!(reread[1..], written);
     }
 
+    #[tokio::test]
+    async fn durable_world_metrics_count_journal_appends() {
+        // F11.7 slice 1: on a journaled world, the actor's metrics count
+        // every durable append (fsync included) — the journal half of the
+        // registry the session test cannot reach with an in-memory world.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (journal, entries) = FileJournal::open(&path, "lobby").unwrap();
+        let core = WorldCore::restore("lobby", WorldLimits::default(), entries)
+            .unwrap()
+            .core;
+        let world = WorldHandle::spawn_durable(
+            core,
+            Box::<crate::world::EmptyWorldProgram>::default(),
+            Some(Box::new(journal)),
+        );
+        world
+            .set_isolation(
+                crate::world::Authority::Admin,
+                crate::world::Isolation::Unisolated,
+            )
+            .await
+            .unwrap();
+        let metrics = world.metrics().await.unwrap();
+        assert!(
+            metrics.journal_appends_total >= 1,
+            "the isolation change was journaled: {metrics:?}"
+        );
+        assert_eq!(
+            metrics.journal_append_latency.count, metrics.journal_appends_total,
+            "every append lands in the latency histogram: {metrics:?}"
+        );
+        assert!(metrics.commands_total >= 1, "{metrics:?}");
+        assert_eq!(metrics.command_latency.count, metrics.commands_total);
+        world.shutdown().await.unwrap();
+    }
+
     #[test]
     fn first_execution_profile_append_bumps_the_journal_header() {
         // Cross-version fixture for the issue-#227 contract: a version-1
