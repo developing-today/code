@@ -17,6 +17,7 @@ the session cookie and leave from the laptop's egress/device. The
 cookie value never enters the exporter process, a file, or a log.
 
 Endpoints read per tick (both cookie-auth GETs, JSON):
+
 - `/api/portal/teams/{team_id}/subscription-quota` — both windows
   (weighted used/limit + reset epochs; % = used/limit).
 - `/api/portal/teams/{team_id}/billing-banner` — remaining free
@@ -39,13 +40,20 @@ this exporter defines it; #1151 should adopt it as-is:
 - Success document:
 
 ```json
-{ "service": "meta", "source": "file-export/meta-laptop",
-  "status": "ok", "measuredAt": "<ISO run time>",
+{
+  "service": "meta",
+  "source": "file-export/meta-laptop",
+  "status": "ok",
+  "measuredAt": "<ISO run time>",
   "consoleAsOf": "<ISO from payload as_of>",
   "tier": "Muse Code High Usage",
-  "windows": [ { "name": "5h", "usedPct": 1.02, "resetAt": "<ISO>" },
-               { "name": "weekly", "usedPct": 8.83, "resetAt": "<ISO>" } ],
-  "freeCreditsUsd": 148.57, "paygBalanceUsd": 0 }
+  "windows": [
+    { "name": "5h", "usedPct": 1.02, "resetAt": "<ISO>" },
+    { "name": "weekly", "usedPct": 8.83, "resetAt": "<ISO>" }
+  ],
+  "freeCreditsUsd": 148.57,
+  "paygBalanceUsd": 0
+}
 ```
 
 ## Failure states (fail-closed)
@@ -55,13 +63,13 @@ A failed tick writes a failure document to `latest.json` (and
 `measuredAt: null` — and **no** windows or values, so nothing stale
 can render as a current reading:
 
-| status | meaning | exit |
-|---|---|---|
-| `session-expired` | API answered 401/403 or bounced to auth — laptop session needs a human re-login | 3 |
-| `cdp-unavailable` | browser debug port did not answer | 4 |
-| `no-console-page` | browser up, no dev.meta.ai tab open | 5 |
-| `unparseable` | endpoint answered an unrecognised shape | 6 |
-| `fetch-failed` | network/other error inside the page | 7 |
+| status            | meaning                                                                         | exit |
+| ----------------- | ------------------------------------------------------------------------------- | ---- |
+| `session-expired` | API answered 401/403 or bounced to auth — laptop session needs a human re-login | 3    |
+| `cdp-unavailable` | browser debug port did not answer                                               | 4    |
+| `no-console-page` | browser up, no dev.meta.ai tab open                                             | 5    |
+| `unparseable`     | endpoint answered an unrecognised shape                                         | 6    |
+| `fetch-failed`    | network/other error inside the page                                             | 7    |
 
 `laptop-unreachable` is a consumer-side derivation, by design: if the
 laptop is down nothing runs, so the gatherer/hub treats a
