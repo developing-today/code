@@ -618,6 +618,11 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('data-pj="inputTokens"'); // task-assumptions projection
     expect(html).toContain('data-pjpreset="repo"');
     expect(html).toContain("Proj. $/task");
+    expect(html).toContain('id="xf-ineq-mode"'); // inequality filters with Pareto gaps
+    expect(html).toContain('id="xf-ineq-conds"');
+    expect(html).toContain('id="xf-setup-list"'); // saved setups
+    expect(html).toContain('id="xf-dl-json"'); // joined-data download
+    expect(html).toContain('id="xf-dl-csv"');
     expect(html).toContain("8152e746"); // batch provenance
     expect(html).toContain("/api/aa.json");
   });

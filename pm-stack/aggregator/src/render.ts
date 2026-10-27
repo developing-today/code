@@ -2142,13 +2142,14 @@ const AA_EXPLORER_SCRIPT = `<script>
     bandScale: 1,
     rec: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
     pj: { turns: 3, inputTokens: 20000, answerTokens: 2000, thinkingTokens: 4000, cacheReadPct: 50, writesPct: 0, overheadSec: 10, window: "peak" },
+    ineq: { mode: "off", combine: "and", conds: [{ metric: "score", op: ">=", value: "" }, { metric: "cost", op: "<=", value: "" }, { metric: "time", op: "<=", value: "" }] },
   };
   var XP_NOTES = {
     plan: "Plan perspective — plan quotas are sunk cost, so dollars are ignored: ranked on intelligence per second (speed + intelligence). Cost columns hidden.",
     api: "API perspective — ranked on intelligence per dollar and cost per task; the cost × score frontier is the value curve.",
     pertask: "Per-task perspective — ranked on total time and total cost to finish one task (the workbook's measured per-task figures, TTFT shown where timed).",
   };
-  function visPoints() {
+  function basePoints() {
     return POINTS.filter(function (p) {
       if (S.q && (p.family + " " + (p.effort || "") + " " + p.creator).toLowerCase().indexOf(S.q) < 0) return false;
       if (S.creator && p.creator !== S.creator) return false;
@@ -2159,6 +2160,61 @@ const AA_EXPLORER_SCRIPT = `<script>
       if (S.off[p.family]) return false;
       if (S.hidden.indexOf(p.key) >= 0) return false;
       return true;
+    });
+  }
+  // --- inequality filters with Pareto-gap metrics (Site 1) ---------------
+  // Gaps are measured against the observed frontier of the current scope
+  // (all other filters applied): score gap = best score at or below this
+  // cost minus this score; price premium = this cost over the cheapest
+  // cost at or above this score; speed gap = score gap against time.
+  function gapMetrics(rows) {
+    var map = {};
+    rows.forEach(function (p) {
+      var g = { score: p.score, cost: p.cost, time: p.time, tps: p.tps, gapScore: null, gapCost: null, gapSpeed: null };
+      if (p.cost != null && p.score != null) {
+        var best = null, minCost = null;
+        rows.forEach(function (q) {
+          if (q.cost == null || q.score == null) return;
+          if (q.cost <= p.cost && (best == null || q.score > best)) best = q.score;
+          if (q.score >= p.score && (minCost == null || q.cost < minCost)) minCost = q.cost;
+        });
+        if (best != null) g.gapScore = best - p.score;
+        if (minCost != null && minCost > 0) g.gapCost = p.cost / minCost;
+      }
+      if (p.time != null && p.score != null) {
+        var bestT = null;
+        rows.forEach(function (q) {
+          if (q.time == null || q.score == null) return;
+          if (q.time <= p.time && (bestT == null || q.score > bestT)) bestT = q.score;
+        });
+        if (bestT != null) g.gapSpeed = bestT - p.score;
+      }
+      map[p.key] = g;
+    });
+    return map;
+  }
+  var INEQ_OPS = {
+    "<": function (a, b) { return a < b; },
+    "<=": function (a, b) { return a <= b; },
+    "=": function (a, b) { return a === b; },
+    ">=": function (a, b) { return a >= b; },
+    ">": function (a, b) { return a > b; },
+  };
+  function visPoints() {
+    var base = basePoints();
+    if (S.ineq.mode === "off") return base;
+    var active = S.ineq.conds.filter(function (c) { return c.value !== "" && !isNaN(Number(c.value)); });
+    if (!active.length) return base;
+    var gaps = gapMetrics(base);
+    return base.filter(function (p) {
+      var g = gaps[p.key];
+      var results = active.map(function (c) {
+        var v = g ? g[c.metric] : null;
+        if (v == null || !INEQ_OPS[c.op]) return false;
+        return INEQ_OPS[c.op](v, Number(c.value));
+      });
+      var match = S.ineq.combine === "or" ? results.some(function (x) { return x; }) : results.every(function (x) { return x; });
+      return S.ineq.mode === "reject" ? !match : match;
     });
   }
   function visCatalog() {
@@ -3382,6 +3438,146 @@ const AA_EXPLORER_SCRIPT = `<script>
   });
   var baselineSel = document.getElementById("xf-baseline");
   if (baselineSel) baselineSel.addEventListener("change", function (ev) { S.baseline = ev.target.value; drawCharts(); });
+  // --- inequality filter rows ---------------------------------------------
+  var INEQ_METRICS = [["score", "Score"], ["cost", "Task cost"], ["time", "Selected speed (time / task)"], ["tps", "Output speed (tok/s)"], ["gapScore", "Pareto gap: score gap (vs cost frontier)"], ["gapCost", "Pareto gap: price premium (vs score)"], ["gapSpeed", "Pareto gap: speed gap (vs time frontier)"]];
+  function renderIneqConds() {
+    var wrap = document.getElementById("xf-ineq-conds");
+    if (!wrap) return;
+    wrap.innerHTML = S.ineq.conds.map(function (c, i) {
+      var metricOpts = INEQ_METRICS.map(function (m) { return '<option value="' + m[0] + '"' + (c.metric === m[0] ? " selected" : "") + ">" + m[1] + "</option>"; }).join("");
+      var opOpts = ["<", "<=", "=", ">=", ">"].map(function (o) { return '<option value="' + o + '"' + (c.op === o ? " selected" : "") + ">" + o + "</option>"; }).join("");
+      return '<span class="xpl-ineq-row"><label>Condition ' + (i + 1) + ' <select data-ineq-metric="' + i + '">' + metricOpts + '</select></label> <select data-ineq-op="' + i + '" aria-label="Operator">' + opOpts + '</select> <input type="number" step="any" data-ineq-value="' + i + '" value="' + esc(c.value) + '" style="width:7em"> <button type="button" class="xpl-ctl-btn" data-ineq-remove="' + i + '">Remove</button></span>';
+    }).join("");
+    wrap.querySelectorAll("[data-ineq-metric]").forEach(function (el) { el.addEventListener("change", function () { S.ineq.conds[Number(el.getAttribute("data-ineq-metric"))].metric = el.value; render(); }); });
+    wrap.querySelectorAll("[data-ineq-op]").forEach(function (el) { el.addEventListener("change", function () { S.ineq.conds[Number(el.getAttribute("data-ineq-op"))].op = el.value; render(); }); });
+    wrap.querySelectorAll("[data-ineq-value]").forEach(function (el) { el.addEventListener("input", function () { S.ineq.conds[Number(el.getAttribute("data-ineq-value"))].value = el.value; render(); }); });
+    wrap.querySelectorAll("[data-ineq-remove]").forEach(function (el) { el.addEventListener("click", function () { S.ineq.conds.splice(Number(el.getAttribute("data-ineq-remove")), 1); renderIneqConds(); render(); }); });
+  }
+  var ineqModeEl = document.getElementById("xf-ineq-mode");
+  if (ineqModeEl) ineqModeEl.addEventListener("change", function (ev) { S.ineq.mode = ev.target.value; render(); });
+  var ineqCombineEl = document.getElementById("xf-ineq-combine");
+  if (ineqCombineEl) ineqCombineEl.addEventListener("change", function (ev) { S.ineq.combine = ev.target.value; render(); });
+  var ineqAddEl = document.getElementById("xf-ineq-add");
+  if (ineqAddEl) ineqAddEl.addEventListener("click", function () { S.ineq.conds.push({ metric: "score", op: ">=", value: "" }); renderIneqConds(); });
+  // --- saved setups + downloads ---------------------------------------------
+  function captureSetup() {
+    return JSON.parse(JSON.stringify({
+      tab: S.tab, persp: S.persp, xp: S.xp, q: S.q, creator: S.creator, fam: S.fam, bench: S.bench,
+      effortAny: S.effortAny, efforts: S.efforts, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
+      measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy,
+      tasksMode: S.tasksMode, baseline: S.baseline, pfCut: S.pfCut, bandCount: S.bandCount,
+      bandScale: S.bandScale, rec: S.rec, pj: S.pj, ineq: S.ineq,
+    }));
+  }
+  function syncStaticControls() {
+    var q = document.getElementById("xf-q"); if (q) q.value = S.q;
+    var elig = document.getElementById("xf-elig"); if (elig) elig.checked = S.elig;
+    var pooled = document.getElementById("xf-pooled"); if (pooled) pooled.checked = S.pooledOnly;
+    var meas = document.getElementById("xf-measured"); if (meas) meas.checked = S.measuredOnly;
+    var nodis = document.getElementById("xf-nodis"); if (nodis) nodis.checked = S.hideDisabled;
+    var pf = document.getElementById("xf-pfcut"); if (pf) pf.value = S.pfCut;
+    var bd = document.getElementById("xf-bands"); if (bd) bd.value = String(S.bandCount);
+    var bs = document.getElementById("xf-bandscale"); if (bs) bs.value = String(S.bandScale);
+    if (ineqModeEl) ineqModeEl.value = S.ineq.mode;
+    if (ineqCombineEl) ineqCombineEl.value = S.ineq.combine;
+    document.querySelectorAll("[data-tmode]").forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tmode") === S.tasksMode); });
+    document.querySelectorAll("[data-sizeby]").forEach(function (cb) { cb.checked = !!S.sizeBy[cb.getAttribute("data-sizeby")]; });
+  }
+  function applySetup(st) {
+    if (!st || typeof st !== "object") return;
+    ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["efforts", "off", "hidden", "sizeBy", "rec", "pj", "ineq"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    POINTS = S.persp === "cai" ? CAI_POINTS : AA_POINTS;
+    S.sel = null;
+    showDetail(null);
+    buildFilterOptions();
+    buildBaselineOptions();
+    syncRecInputs();
+    syncPjInputs();
+    renderIneqConds();
+    syncStaticControls();
+    render();
+  }
+  function loadSetups() {
+    try { return JSON.parse(localStorage.getItem("xpl-setups-v1") || "{}"); } catch (e) { return {}; }
+  }
+  function storeSetups(obj) {
+    try { localStorage.setItem("xpl-setups-v1", JSON.stringify(obj)); } catch (e) { /* storage unavailable: setups stay session-only */ }
+  }
+  function refreshSetupList(selected) {
+    var sel = document.getElementById("xf-setup-list");
+    if (!sel) return;
+    var names = Object.keys(loadSetups()).sort();
+    sel.innerHTML = names.length ? names.map(function (n) { return '<option value="' + esc(n) + '"' + (n === selected ? " selected" : "") + ">" + esc(n) + "</option>"; }).join("") : '<option value="">(none saved)</option>';
+  }
+  var setupSaveEl = document.getElementById("xf-setup-save");
+  if (setupSaveEl) setupSaveEl.addEventListener("click", function () {
+    var nameEl = document.getElementById("xf-setup-name");
+    var name = nameEl && nameEl.value.trim() ? nameEl.value.trim() : "Setup " + (Object.keys(loadSetups()).length + 1);
+    var all = loadSetups();
+    all[name] = captureSetup();
+    storeSetups(all);
+    refreshSetupList(name);
+  });
+  var setupLoadEl = document.getElementById("xf-setup-load");
+  if (setupLoadEl) setupLoadEl.addEventListener("click", function () {
+    var sel = document.getElementById("xf-setup-list");
+    if (sel && sel.value) applySetup(loadSetups()[sel.value]);
+  });
+  var setupExportEl = document.getElementById("xf-setup-export");
+  if (setupExportEl) setupExportEl.addEventListener("click", function () { downloadFile("cost-explorer-setups.json", JSON.stringify(loadSetups(), null, 2), "application/json"); });
+  var setupImportEl = document.getElementById("xf-setup-import");
+  if (setupImportEl) setupImportEl.addEventListener("change", function () {
+    var file = setupImportEl.files && setupImportEl.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        var parsed = JSON.parse(String(reader.result));
+        if (parsed && typeof parsed === "object") {
+          var all = loadSetups();
+          Object.keys(parsed).forEach(function (k) { all[k] = parsed[k]; });
+          storeSetups(all);
+          refreshSetupList();
+        }
+      } catch (e) { /* unreadable file: nothing imported */ }
+    };
+    reader.readAsText(file);
+  });
+  var setupResetEl = document.getElementById("xf-setup-reset");
+  if (setupResetEl) setupResetEl.addEventListener("click", function () {
+    applySetup({
+      tab: "aa", persp: "aa", xp: "api", q: "", creator: "", fam: "", bench: "", effortAny: false, efforts: {}, off: {},
+      elig: false, pooledOnly: false, measuredOnly: false, hideDisabled: false, hidden: [], sizeBy: {}, tasksMode: "per",
+      baseline: "", pfCut: "50", bandCount: 3, bandScale: 1,
+      rec: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
+      pj: { turns: 3, inputTokens: 20000, answerTokens: 2000, thinkingTokens: 4000, cacheReadPct: 50, writesPct: 0, overheadSec: 10, window: "peak" },
+      ineq: { mode: "off", combine: "and", conds: [{ metric: "score", op: ">=", value: "" }, { metric: "cost", op: "<=", value: "" }, { metric: "time", op: "<=", value: "" }] },
+    });
+  });
+  function csvCell(v) { return '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"'; }
+  var dlJsonEl = document.getElementById("xf-dl-json");
+  if (dlJsonEl) dlJsonEl.addEventListener("click", function () { downloadFile("cost-explorer-data.json", JSON.stringify(DATA, null, 2), "application/json"); });
+  var dlCsvEl = document.getElementById("xf-dl-csv");
+  if (dlCsvEl) dlCsvEl.addEventListener("click", function () {
+    var lines = [];
+    if (S.tab === "models") {
+      lines.push(["model_id", "name", "provider", "plan", "context", "aa_score", "aa_cost_per_task", "proj_cost_per_task", "proj_time_per_task_s"].join(","));
+      sortCatalog(visCatalog()).forEach(function (e) {
+        var proj = project(e);
+        lines.push([e.id, e.name, e.providerName, e.plan || "", e.contextLimit, e.aaScore, e.aaCostPerTask, proj.cost, proj.time].map(csvCell).join(","));
+      });
+      downloadFile("cost-explorer-models-visible.csv", lines.join("\\n"), "text/csv");
+    } else {
+      lines.push(["family", "effort", "creator", "benchmark", "harness", "score", "cost_per_task", "time_per_task_s", "ttft_s", "tokens_per_second", "tokens_per_task"].join(","));
+      sortPoints(visPoints()).forEach(function (p) {
+        lines.push([p.family, p.effort || "", p.creator, p.benchmark || "", p.harness || "", p.score, p.cost, p.time, p.ttft, p.tps, p.tokensPerTask].map(csvCell).join(","));
+      });
+      downloadFile("cost-explorer-configurations-visible.csv", lines.join("\\n"), "text/csv");
+    }
+  });
+  renderIneqConds();
+  refreshSetupList();
   buildFilterOptions();
   buildBaselineOptions();
   render();
@@ -3515,6 +3711,24 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <p class="muted" id="xpl-persp-note" data-tabaa style="flex-basis:100%;margin:2px 0 0"></p>
 <div data-tabaa style="flex-basis:100%"><span class="muted">Efforts:</span> <span id="xf-efforts"></span> <label style="margin-left:10px"><input type="checkbox" id="xf-elig"> Eligible only</label></div>
 <div data-tabmodels hidden style="flex-basis:100%"><label><input type="checkbox" id="xf-pooled"> Pooled only</label> <label><input type="checkbox" id="xf-measured"> AA-measured only</label> <label><input type="checkbox" id="xf-nodis"> Hide disabled providers</label></div>
+<div data-tabaa style="flex-basis:100%"><details><summary>Model selection and advanced filters — inequality conditions</summary>
+<label>Filter mode <select id="xf-ineq-mode"><option value="off" selected>Off</option><option value="keep">Keep matching models</option><option value="reject">Keep only rejected models</option></select></label>
+<label>Combine conditions <select id="xf-ineq-combine"><option value="and" selected>Match all (AND)</option><option value="or">Match any (OR)</option></select></label>
+<span class="muted">Pareto-gap metrics compare against the observed frontier of the current scope: score gap (score vs cost), price premium (cost vs score), speed gap (score vs time).</span>
+<div id="xf-ineq-conds"></div>
+<button type="button" class="xpl-ctl-btn" id="xf-ineq-add">+ Add condition</button>
+</details></div>
+<div style="flex-basis:100%">
+<label>Settings name <input type="text" id="xf-setup-name" placeholder="Name this setup"></label>
+<button type="button" class="xpl-ctl-btn" id="xf-setup-save">Save setup</button>
+<label>Saved setups <select id="xf-setup-list"></select></label>
+<button type="button" class="xpl-ctl-btn" id="xf-setup-load">Load</button>
+<button type="button" class="xpl-ctl-btn" id="xf-setup-export">Export settings</button>
+<label class="xpl-ctl-btn">Import <input type="file" id="xf-setup-import" accept="application/json" hidden></label>
+<button type="button" class="xpl-ctl-btn" id="xf-setup-reset">Reset all settings</button>
+<button type="button" class="xpl-ctl-btn" id="xf-dl-json">Download joined data (JSON)</button>
+<button type="button" class="xpl-ctl-btn" id="xf-dl-csv">Download visible CSV</button>
+</div>
 <p class="muted" id="xp-note" style="flex-basis:100%;margin:2px 0 0"></p>
 </div>
 <div class="card xpl-detail" id="xpl-detail"></div>
