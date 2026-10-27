@@ -2058,10 +2058,11 @@ mod tests {
             ),
         ];
         for (name, doc) in cases {
-            match prosemirror_to_markdown(doc) {
-                Err(ConversionError::MisplacedNode { .. }) => {}
-                other => panic!("{name}: expected MisplacedNode error, got {other:?}"),
-            }
+            let result = prosemirror_to_markdown(doc);
+            assert!(
+                matches!(result, Err(ConversionError::MisplacedNode { .. })),
+                "{name}: expected MisplacedNode error, got {result:?}"
+            );
         }
 
         // Unknown types keep their existing error (validation must not
