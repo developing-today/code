@@ -294,7 +294,10 @@ a file. `scripts/collect-fleet-feed.ts` runs on the sandbox:
 runs on the **laptop** (nothing executes on the sandbox), as the
 `quota-gatherer` systemd **user** timer (units in this package's
 `systemd/`, installed by `install.sh`; linger keeps it
-boot-persistent), from the deployed package dir
+boot-persistent). The unit runs the script from the laptop's repo
+clone (`~/git/code`) — package re-deploys replace the deployed
+`scripts/` wholesale and must not be able to vanish the gatherer —
+with its outputs pinned by env to the deployed aggregator dir
 `~/pm-stack/aggregator`.
 
 Each tick:
