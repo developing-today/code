@@ -2202,7 +2202,16 @@ mod tests {
         let original = "- [ ] item\n\n  ```\n  code\n  ```\n- [ ] other\n";
         let (first, second) = two_saves(original);
         assert_eq!(first, second, "no fixpoint: {first:?}");
-        assert!(first.contains("```"), "code fence lost: {first:?}");
+        // The code block must survive as a code block. Its spelling is
+        // comrak's choice: an info-less code block inside a loose list
+        // item renders as an indented code block, not a fence — what
+        // matters is that it is not inlined into the paragraph (checked
+        // below) and reparses as a code_block (checked at the end).
+        assert!(first.contains("code"), "code content lost: {first:?}");
+        assert!(
+            first.contains("- [ ] other"),
+            "trailing item lost: {first:?}"
+        );
         assert!(
             !first.contains("item code"),
             "code block inlined: {first:?}"
