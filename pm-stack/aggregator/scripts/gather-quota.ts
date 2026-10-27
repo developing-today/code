@@ -56,12 +56,7 @@ import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/pr
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-  QuotaCurrentEntry,
-  QuotaCurrentFile,
-  QuotaGatherHeartbeat,
-  SnapshotRecord,
-} from "../src/model.ts";
+import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, SnapshotRecord } from "../src/model.ts";
 import {
   GATHERER_SOURCE,
   entryFromResult,
@@ -342,8 +337,8 @@ async function main(): Promise<number> {
       await new SnapshotStore(snapshotsDir).append(fresh);
     }
     for (const [k, v] of appended) lastAppended.set(k, v);
-    await writeAtomic(statePath, JSON.stringify(Object.fromEntries(lastAppended), null, 2) + "\n").catch(
-      (err) => console.error(`quota-gatherer: state write failed (${err}); next tick may re-append`),
+    await writeAtomic(statePath, JSON.stringify(Object.fromEntries(lastAppended), null, 2) + "\n").catch((err) =>
+      console.error(`quota-gatherer: state write failed (${err}); next tick may re-append`),
     );
   }
   const okCount = runs.filter((r) => r.state === "ok").length;

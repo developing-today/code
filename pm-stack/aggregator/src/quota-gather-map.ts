@@ -12,11 +12,7 @@
 // function of that shape, so a provider adding windows needs no
 // gatherer change; a provider whose usage is not window-shaped keeps
 // its raw usage on the entry and yields no windows (never zeros).
-import type {
-  QuotaCurrentEntry,
-  QuotaCurrentWindow,
-  SnapshotRecord,
-} from "./model.ts";
+import type { QuotaCurrentEntry, QuotaCurrentWindow, SnapshotRecord } from "./model.ts";
 
 /** The subset of a quota-module result the mapper reads. */
 export interface QuotaProviderResult {
@@ -39,8 +35,7 @@ interface RawWindow {
   valueLabel?: unknown;
 }
 
-const num = (v: unknown): number | null =>
-  typeof v === "number" && Number.isFinite(v) ? v : null;
+const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
 /** Provider reset stamps arrive as epoch ms (or s); normalize to ISO. */
 export function normalizeResetAt(v: unknown): string | null {
