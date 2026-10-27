@@ -79,7 +79,7 @@ describe("server boots from fixtures", () => {
     // in from the fragment endpoints. The honesty assertions (#1139)
     // now run against the header fragment that carries them.
     expect(attention.includes("/assets/datastar.js")).toBe(true);
-    expect(attention.includes('data-on-load="@get(\'/frag/attention/header\')"')).toBe(true);
+    expect(attention.includes("data-on-load=\"@get('/frag/attention/header')\"")).toBe(true);
     const header = await (await fetch(`http://127.0.0.1:${port}/frag/attention/header`)).text();
     // Fixtures carry no orchestration section, so the tier honesty
     // banner renders and the tier counts are "unknown", never 0 (#1139).

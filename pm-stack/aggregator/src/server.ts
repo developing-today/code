@@ -8,12 +8,7 @@
 // apply actions; the dashboard only records them.
 import { stat } from "node:fs/promises";
 import { ActionsStore, validateNewAction } from "./actions.ts";
-import {
-  checkActionAgainstItem,
-  effectiveNeedsOrder,
-  effectiveStandingAuto,
-  findTierItem,
-} from "./tier-items.ts";
+import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
 import { loadFeed } from "./feed.ts";

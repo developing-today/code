@@ -94,8 +94,7 @@ describe("action boundary additions (#1449/#1450/#1456)", () => {
     });
     expect(bogus.ok).toBe(false);
     expect(
-      validateNewAction({ ...base, kind: "preference", verb: "set-needs-order", payload: { needsOrder: "newest" } })
-        .ok,
+      validateNewAction({ ...base, kind: "preference", verb: "set-needs-order", payload: { needsOrder: "newest" } }).ok,
     ).toBe(true);
   });
 });
@@ -118,8 +117,7 @@ describe("card-state derivation (#1443/#1450)", () => {
     );
     expect(cardState([mkAction({ verb: "mark-done" })], NOW).suppressed?.kind).toBe("done");
     expect(
-      cardState([mkAction({ verb: "dismiss", state: "rejected", payload: { reason: "Duplicate" } })], NOW)
-        .suppressed,
+      cardState([mkAction({ verb: "dismiss", state: "rejected", payload: { reason: "Duplicate" } })], NOW).suppressed,
     ).toBeNull();
   });
   test("restore cancels even an APPLIED dismiss; the item is back with its history", () => {
@@ -207,7 +205,13 @@ describe("quick actions, detail, comments (#1449/#1445/#1446)", () => {
     const item: TierItem = {
       ...BASE,
       questions: [
-        { id: "more-institutions", prompt: "More institutions to link?", type: "text", required: true, covers: "whether Plaid is done" },
+        {
+          id: "more-institutions",
+          prompt: "More institutions to link?",
+          type: "text",
+          required: true,
+          covers: "whether Plaid is done",
+        },
       ],
     };
     const answer = mkAction({
@@ -229,12 +233,14 @@ describe("quick actions, detail, comments (#1449/#1445/#1446)", () => {
     expect(htmlRef).toContain('data-ghref="developing-today/code#2001"');
     const htmlBare = await page([BASE]);
     expect(htmlBare).toContain("the comment stays internal");
-    expect(htmlBare).not.toContain('data-ghref=');
+    expect(htmlBare).not.toContain("data-ghref=");
   });
   test("a gh: card title links to the GitHub issue", async () => {
     const withRef: TierItem = { ...BASE, id: "x1", ref: "developing-today/code#2001" };
     const html = await page([withRef]);
-    expect(html).toContain('<a href="https://github.com/developing-today/code/issues/2001">Link the Citi accounts in Plaid</a>');
+    expect(html).toContain(
+      '<a href="https://github.com/developing-today/code/issues/2001">Link the Citi accounts in Plaid</a>',
+    );
   });
 });
 
