@@ -1893,6 +1893,32 @@ pub enum WorldCommand {
         #[arg(long)]
         allow_partial: bool,
     },
+    /// Verify a recorded fixture's determinism: replay it twice offline
+    /// through a module and compare the records after every event. Prints a
+    /// verdict line first; exits nonzero at the first divergence.
+    ///
+    /// Verification covers the fixture's recorded events only. Host-originated
+    /// events are not retained in the event stream (#242), so a live recording
+    /// never contains them: a guest whose live behaviour depended on host
+    /// events is outside what verify can check.
+    #[cfg(feature = "sandbox")]
+    Verify {
+        /// The Wasm module the fixture was recorded under.
+        #[arg(long, value_name = "FILE")]
+        module: PathBuf,
+        /// Fixture written by `id world record`.
+        #[arg(long, value_name = "FILE")]
+        fixture: PathBuf,
+        /// Seed the module was installed with. The admin supplied it at install
+        /// time; the fixture does not carry it.
+        #[arg(long)]
+        seed: u64,
+        /// Replay a window that does not start at sequence 1. Its records are
+        /// not compared against the fixture's header, but the two replays are
+        /// still compared against each other.
+        #[arg(long)]
+        allow_partial: bool,
+    },
     /// List the worlds a host serves (needs the host's admin token).
     List {
         /// The host's node ID (64 hex characters).
@@ -4171,6 +4197,52 @@ mod tests {
             ])
             .is_err(),
             "a replay needs the seed the module was installed with"
+        );
+    }
+
+    #[cfg(feature = "sandbox")]
+    #[test]
+    fn test_cli_parse_world_verify() {
+        let cli = Cli::parse_from([
+            "id",
+            "world",
+            "verify",
+            "--module",
+            "game.wasm",
+            "--fixture",
+            "run.jsonl",
+            "--seed",
+            "7",
+        ]);
+        match cli.command {
+            Some(Command::World(cmd)) => match *cmd {
+                WorldCommand::Verify {
+                    module,
+                    fixture,
+                    seed,
+                    allow_partial,
+                } => {
+                    assert_eq!(module, PathBuf::from("game.wasm"));
+                    assert_eq!(fixture, PathBuf::from("run.jsonl"));
+                    assert_eq!(seed, 7);
+                    assert!(!allow_partial);
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from([
+                "id",
+                "world",
+                "verify",
+                "--module",
+                "game.wasm",
+                "--fixture",
+                "run.jsonl",
+            ])
+            .is_err(),
+            "a verify needs the seed the module was installed with"
         );
     }
 
