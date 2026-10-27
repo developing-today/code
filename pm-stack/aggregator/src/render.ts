@@ -21,6 +21,12 @@ import {
   windowPercent,
 } from "./derive.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
+import {
+  DELEGATION_DEFAULT_OBJECT_REF,
+  effectiveStandingAuto,
+  proposalExpired,
+  proposalIdentity,
+} from "./tier-items.ts";
 import { githubCommentUrl } from "./comments.ts";
 import { aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
@@ -37,6 +43,7 @@ import {
   type Comment,
   type DashAuthor,
   type DashComment,
+  type DelegationMode,
   type DnsEntry,
   type DnsSection,
   type GhItem,
@@ -54,8 +61,10 @@ import {
   type SourceCoverage,
   type TieredEntry,
   type TierItem,
+  type TierItemQuestion,
   type UsageMetric,
   type UsageView,
+  type WhyUserClass,
   SAAS_GROUP_LABELS,
   SESSION_SOURCE_LABELS,
   countedEstimate,
@@ -182,6 +191,15 @@ meter { width: 140px; height: 14px; }
 .badge.act-applied { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
 .badge.act-rejected { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.act-snoozed { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
+.badge.whyuser { background: #d2992233; border-color: #d29922; color: #e3b341; }
+.badge.whyuser.access, .badge.whyuser.policy { background: #f8514933; border-color: #f85149; color: #f85149; }
+.propbox { border: 1px solid #2ea043; background: #2ea04311; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.propbox.expired { border-color: #8b949e; background: #8b949e11; }
+.unablebox { border: 1px solid #f85149; background: #f8514911; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.qblock { border-top: 1px solid #21262d; padding: 6px 0 2px; margin-top: 6px; }
+.qblock .qopts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 4px 0; }
+.qblock label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 32px; }
+.optform .effect { color: #8b949e; font-size: 12px; flex-basis: 100%; }
 nav select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; margin-left: auto; max-width: 45vw; }
 .foot { margin-top: 40px; border-top: 1px solid #30363d; padding-top: 10px; color: #8b949e; font-size: 12px; }
 .card.stale { opacity: .55; }
@@ -298,10 +316,21 @@ document.addEventListener("submit", async (ev) => {
   const [akind, aid, asession] = authorRaw.split("|");
   const labelEl = box ? box.querySelector('option[value="' + CSS.escape(authorRaw) + '"]') : null;
   const payload = {};
-  for (const name of ["text", "reason", "status", "tier", "mode", "optionId"]) {
+  for (const name of ["text", "reason", "status", "tier", "mode", "optionId", "proposalRunId", "proposalUpdatedAt"]) {
     const v = data.get(name);
     if (v) payload[name] = String(v);
   }
+  const standingAuto = data.get("standingAuto");
+  if (standingAuto) payload.standingAuto = standingAuto === "true";
+  const answersByQuestion = {};
+  for (const el of form.querySelectorAll("[name^='answers:']")) {
+    const qid = el.name.slice("answers:".length);
+    if (el.type === "checkbox") { if (el.checked) (answersByQuestion[qid] = answersByQuestion[qid] || []).push(el.value); }
+    else if (el.type === "radio") { if (el.checked) answersByQuestion[qid] = el.value; }
+    else if (el.value) answersByQuestion[qid] = el.value;
+  }
+  const answerList = Object.keys(answersByQuestion).map((questionId) => ({ questionId, value: answersByQuestion[questionId] }));
+  if (answerList.length) payload.answers = answerList;
   const untilCustom = data.get("untilCustom");
   const untilPreset = data.get("untilPreset");
   if (untilCustom) payload.until = new Date(String(untilCustom)).toISOString();
@@ -500,6 +529,7 @@ const VERB_BADGE_LABELS: Record<string, string> = {
   "approve-proposal": "approve proposal",
   "reject-proposal": "reject proposal",
   "request-status": "status change",
+  "set-delegation-default": "standing default",
   poke: "poke",
   stop: "stop",
 };
@@ -564,6 +594,10 @@ export function actionBadgesHtml(actions: DashAction[] | undefined, now = Date.n
   if (delegation?.state === "applied") {
     badges.push(
       `<span class="badge act-applied">✓ delegated (${esc(delegation.payload.mode ?? "")}) · ${esc(relTime(delegation.appliedAt ?? delegation.createdAt, now))}</span>`,
+    );
+  } else if (delegation?.state === "rejected") {
+    badges.push(
+      `<span class="badge act-rejected" title="${esc(delegation.resultNote ?? "")}">✗ delegate rejected${delegation.resultNote ? ` — ${esc(delegation.resultNote)}` : ""}</span>`,
     );
   }
   return badges.length ? ` <span class="actbadges">${badges.join(" ")}</span>` : "";
@@ -647,6 +681,7 @@ export function triageActionsHtml(
   objectRef: string,
   tier: "needs-drew" | "needs-orchestrator",
   opts: ActionFormOpts,
+  extraForms = "",
 ): string {
   const move =
     tier === "needs-drew"
@@ -677,7 +712,256 @@ export function triageActionsHtml(
     }),
     move,
   ].join("");
-  return actboxHtml(opts, forms);
+  return actboxHtml(opts, forms + extraForms);
+}
+
+// --- Needs-user action layer (#1291) ---------------------------------------
+// Everything in this block renders ONLY what the published item and
+// the actions store actually say — why-class, options, survey,
+// delegation state, proposal, inability. No decorative states: a
+// control exists exactly when its verb can be posted and consumed.
+
+const WHY_USER_LABELS: Record<WhyUserClass, string> = {
+  decision: "Decision",
+  "missing-info": "Missing Info",
+  approval: "Approval",
+  access: "Access",
+  policy: "Policy",
+};
+
+const DELEGATION_MODE_LABELS: Record<DelegationMode, string> = {
+  user: "With You",
+  "first-pass": "First Pass",
+  auto: "Auto",
+};
+
+export function whyUserBadge(item: TierItem): string {
+  if (!item.whyUser) return "";
+  return ` <span class="badge whyuser ${esc(item.whyUser)}" title="Why this needs the user: ${esc(WHY_USER_LABELS[item.whyUser])}">${esc(WHY_USER_LABELS[item.whyUser])}</span>`;
+}
+
+function questionFieldHtml(q: TierItemQuestion): string {
+  const name = `answers:${q.id}`;
+  let field: string;
+  if (q.type === "single" || q.type === "yesno") {
+    const opts = q.options ?? [
+      { id: "yes", label: "Yes" },
+      { id: "no", label: "No" },
+    ];
+    field = `<span class="qopts">${opts
+      .map(
+        (o) =>
+          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${q.required ? " required" : ""}> ${esc(o.label)}</label>`,
+      )
+      .join("")}</span>`;
+  } else if (q.type === "multi") {
+    field = `<span class="qopts">${(q.options ?? [])
+      .map((o) => `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"> ${esc(o.label)}</label>`)
+      .join("")}</span>`;
+  } else {
+    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}"${q.required ? " required" : ""}>`;
+  }
+  return `<div class="qblock"><strong>${esc(q.prompt)}</strong>${q.required ? "" : ` <span class="muted">(optional)</span>`}<br>${field}<br><span class="muted">Needed: ${esc(q.covers)}</span></div>`;
+}
+
+/** The latest applied reject-proposal on an item, when one exists —
+ *  its reason rides the next proposal's box (#1293). */
+function lastRejection(actions: DashAction[] | undefined): DashAction | undefined {
+  return (actions ?? []).filter((a) => a.verb === "reject-proposal" && a.state === "applied").at(-1);
+}
+
+/**
+ * The needs-user body block for one card: summary, the what-happens-
+ * if-this-sits line, the delegation status line, and the proposal /
+ * inability boxes (#1291/#1293). Pure content — the forms live in
+ * needsUserFormsHtml, inside the card's actbox.
+ */
+export function needsUserBodyHtml(item: TierItem, actions: DashAction[] | undefined, now = Date.now()): string {
+  const parts: string[] = [];
+  if (item.summary) parts.push(`<br><span>${esc(item.summary)}</span>`);
+  if (item.ifIgnored)
+    parts.push(`<br><span class="muted"><strong>If nothing happens:</strong> ${esc(item.ifIgnored)}</span>`);
+  const d = item.delegation;
+  if (d) {
+    const rejected = lastRejection(actions);
+    const statusBits = [
+      `Delegation: <strong>${esc(DELEGATION_MODE_LABELS[d.mode])}</strong>`,
+      d.status === "idle"
+        ? "not started"
+        : d.status === "working"
+          ? "the orchestrator is working it"
+          : d.status === "proposal-ready"
+            ? "proposal ready for your review"
+            : d.status === "unable"
+              ? "returned — the orchestrator could not resolve it"
+              : "done",
+      d.runId ? `run ${esc(d.runId)}` : "",
+      `updated ${esc(relTime(d.updatedAt, now))}`,
+    ].filter(Boolean);
+    parts.push(`<br><span class="muted">${statusBits.join(" · ")}</span>`);
+    if (rejected && d.mode === "first-pass" && d.status !== "proposal-ready")
+      parts.push(
+        `<br><span class="muted">Previous proposal rejected: ${esc(rejected.payload.reason ?? "")} — a new first pass must differ materially or say why it cannot.</span>`,
+      );
+    if (d.status === "proposal-ready" && d.proposal) {
+      if (proposalExpired(d, now)) {
+        parts.push(
+          `<div class="propbox expired"><strong>Proposal expired</strong> — drafted ${esc(fmtDate(d.proposal.at))} by run ${esc(d.runId ?? "unknown")}; it is no longer actionable. Delegate a fresh first pass below.<br><strong>${esc(d.proposal.summary)}</strong></div>`,
+        );
+      } else {
+        parts.push(
+          `<div class="propbox"><strong>First-pass proposal</strong>${rejected ? ` — second first pass; previous rejected: ${esc(rejected.payload.reason ?? "")}` : ""}<br><strong>${esc(d.proposal.summary)}</strong>${
+            d.proposal.detail ? `<br>${esc(d.proposal.detail)}` : ""
+          }${
+            d.proposal.proposedChanges?.length
+              ? `<br>Proposed changes:<ul>${d.proposal.proposedChanges.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`
+              : ""
+          }<span class="muted">Drafted ${esc(fmtDate(d.proposal.at))} — nothing is applied unless you approve; approval takes effect on the next orchestration pass.</span></div>`,
+        );
+      }
+    }
+    if (d.status === "unable" && d.unable) {
+      parts.push(
+        `<div class="unablebox"><strong>The orchestrator could not resolve this</strong> — ${esc(d.unable.reason)}<br>Tried:<ul>${d.unable.whatItTried.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>Needs: ${esc(d.unable.whatItNeeds)}<br><span class="muted">Declared ${esc(fmtDate(d.unable.at))} by run ${esc(d.runId ?? "unknown")}.</span></div>`,
+      );
+    }
+  }
+  // #1293: a pending approve/reject whose proposal has since changed
+  // renders as no longer applicable, not as a live request.
+  const pendingProposalAction = (actions ?? []).some(
+    (a) => a.state === "new" && (a.verb === "approve-proposal" || a.verb === "reject-proposal"),
+  );
+  if (pendingProposalAction) {
+    const live = proposalIdentity(item);
+    const stillLive = (actions ?? []).some(
+      (a) =>
+        a.state === "new" &&
+        (a.verb === "approve-proposal" || a.verb === "reject-proposal") &&
+        live !== null &&
+        a.payload.proposalRunId === live.runId &&
+        a.payload.proposalUpdatedAt === live.updatedAt,
+    );
+    if (!stillLive)
+      parts.push(
+        `<br><span class="muted">⏳ A pending proposal action is no longer applicable — the proposal changed since it was recorded; the pass will reject it with that note.</span>`,
+      );
+  }
+  return parts.join("");
+}
+
+/**
+ * The needs-user forms for one card (they join the card's actbox):
+ * the item's own options as answer buttons, the survey as one answer
+ * form, a free-text answer when the item offers neither, delegation
+ * mode controls, proposal approve/reject, and dismiss (#1291).
+ */
+export function needsUserFormsHtml(item: TierItem, objectRef: string, now = Date.now()): string {
+  const forms: string[] = [];
+  for (const opt of item.options ?? []) {
+    forms.push(
+      aformHtml({
+        kind: "triage",
+        verb: "answer",
+        objectRef,
+        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary">${esc(opt.label)}</button>${
+          opt.description ? `<span class="why">${esc(opt.description)}</span>` : ""
+        }${opt.effect ? `<span class="effect">Effect: ${esc(opt.effect)}</span>` : ""}`,
+      }),
+    );
+  }
+  if (item.questions?.length) {
+    forms.push(
+      aformHtml({
+        kind: "triage",
+        verb: "answer",
+        objectRef,
+        inner: `${item.questions.map((q) => questionFieldHtml(q)).join("")}<button type="submit" class="primary">Submit answers</button><span class="why">Required questions are enforced when this posts — an incomplete survey comes back with a legible error, nothing is recorded.</span>`,
+      }),
+    );
+  }
+  if (!item.options?.length && !item.questions?.length) {
+    forms.push(
+      aformHtml({
+        kind: "triage",
+        verb: "answer",
+        objectRef,
+        inner: `<input type="text" name="text" placeholder="Your answer / decision" aria-label="Answer" required><button type="submit" class="primary">Answer</button>`,
+      }),
+    );
+  }
+  const d = item.delegation;
+  if (d) {
+    const autoBlocked = item.whyUser === "access" || item.whyUser === "policy";
+    const expired = proposalExpired(d, now);
+    const modeButton = (mode: DelegationMode, label: string) => {
+      if (mode === "auto" && autoBlocked)
+        return `<span class="aform"><button type="button" disabled>Delegate: Auto</button><span class="why">${esc(WHY_USER_LABELS[item.whyUser!])} items can never be auto-delegated — they stay with you.</span></span>`;
+      const current = d.mode === mode && !(expired && mode === "first-pass");
+      return aformHtml({
+        kind: "triage",
+        verb: "delegate",
+        objectRef,
+        inner: `<input type="hidden" name="mode" value="${esc(mode)}"><button type="submit"${current ? " disabled" : ""}>${esc(label)}${current ? " (current)" : ""}</button>`,
+      });
+    };
+    forms.push(
+      modeButton(
+        "first-pass",
+        expired && d.mode === "first-pass" ? "Delegate: First Pass (fresh draft)" : "Delegate: First Pass",
+      ),
+      modeButton("auto", "Delegate: Auto"),
+      modeButton("user", "Bring Back to Me"),
+    );
+    if (d.status === "proposal-ready" && d.proposal && !expired && d.runId) {
+      const identity =
+        `<input type="hidden" name="proposalRunId" value="${esc(d.runId)}">` +
+        `<input type="hidden" name="proposalUpdatedAt" value="${esc(d.updatedAt)}">`;
+      forms.push(
+        aformHtml({
+          kind: "triage",
+          verb: "approve-proposal",
+          objectRef,
+          inner: `${identity}<button type="submit" class="primary">Approve Proposal</button><span class="why">The pass applies it on its next run and reports the application.</span>`,
+        }),
+        aformHtml({
+          kind: "triage",
+          verb: "reject-proposal",
+          objectRef,
+          inner: `${identity}<input type="text" name="reason" placeholder="Reason (required)" aria-label="Rejection reason" required><button type="submit">Reject Proposal</button>`,
+        }),
+      );
+    }
+  }
+  forms.push(
+    aformHtml({
+      kind: "triage",
+      verb: "dismiss",
+      objectRef,
+      inner: `<input type="text" name="reason" placeholder="Reason (required)" aria-label="Dismiss reason" required><button type="submit">Dismiss</button><span class="why">Dismissed items stay out of the queue unless a new material fact appears — then they resurface with the fact cited.</span>`,
+    }),
+  );
+  // A pending delegation action supersedes the stamped mode display:
+  // the badges already say so; nothing extra to render here.
+  return forms.join("");
+}
+
+/** The standing delegation-default toggle (#1290/#1291): the current
+ *  effective value from the preference records, with the change form. */
+export function delegationDefaultHtml(records: DashAction[] | undefined, opts: ActionFormOpts): string {
+  const eff = effectiveStandingAuto(records ?? []);
+  const state = eff.standingAuto
+    ? `<strong>On</strong> — Decision, Missing Info, and Approval items delegate to Auto by default`
+    : `<strong>Off</strong> — items stay with you unless you delegate them per item`;
+  const pending = eff.pending
+    ? ` <span class="badge act-pending">⏳ change pending — applies on the next orchestration pass</span>`
+    : "";
+  const form = aformHtml({
+    kind: "preference",
+    verb: "set-delegation-default",
+    objectRef: DELEGATION_DEFAULT_OBJECT_REF,
+    inner: `<label>Standing auto <select name="standingAuto"><option value="true"${eff.standingAuto ? " selected" : ""}>On</option><option value="false"${eff.standingAuto ? "" : " selected"}>Off</option></select></label><button type="submit">Save standing default</button><span class="why">Access and Policy items never auto, whatever this says. Per-item delegation always overrides the default. Initial record: the user's decision, 2026-10-27.</span>`,
+  });
+  return `<div class="card"><strong>Standing delegation default</strong> — ${state}.${pending}${actboxHtml(opts, form)}</div>`;
 }
 
 /** The Project Status values a status request may target (#910 field). */
@@ -1455,16 +1739,29 @@ function tierItemCard(
   const ref = item.ref ? `<br><a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : "";
   const cmt = counts ? commentBadge(tierItemObjectRef(item), counts) : "";
   const badges = actionBadgesHtml(act?.actions);
+  // #1291: on Needs User cards, the item's own contract renders — the
+  // why-class badge in the header, the summary / if-ignored /
+  // delegation / proposal / inability block in the body, and the
+  // options / survey / delegation / dismiss forms in the actbox.
+  const isUserTier = whyLabel === "Why you";
+  const objectRef = tierItemObjectRef(item);
+  const extBody = isUserTier ? needsUserBodyHtml(item, act?.actions) : "";
+  const extForms = isUserTier ? needsUserFormsHtml(item, objectRef) : "";
   // #1152: the triage control set. Section-derived items disable with
   // the reason when the tier source is absent/invalid (#1139 state) —
   // the item may not exist in the publisher's current view.
   const controls = act?.identities
-    ? triageActionsHtml(tierItemObjectRef(item), whyLabel === "Why you" ? "needs-drew" : "needs-orchestrator", {
-        identities: act.identities,
-        ...(act.disabledReason ? { disabledReason: act.disabledReason } : {}),
-      })
+    ? triageActionsHtml(
+        objectRef,
+        isUserTier ? "needs-drew" : "needs-orchestrator",
+        {
+          identities: act.identities,
+          ...(act.disabledReason ? { disabledReason: act.disabledReason } : {}),
+        },
+        extForms,
+      )
     : "";
-  return `<div class="card"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span> <strong>${esc(item.title)}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${ref}${controls}</div>`;
+  return `<div class="card"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""} <strong>${esc(item.title)}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}</div>`;
 }
 
 export function renderAttention(
@@ -1515,6 +1812,14 @@ export function renderAttention(
     identities: act?.identities,
     ...(sectionDisabledReason ? { disabledReason: sectionDisabledReason } : {}),
   });
+  // #1290/#1291: the standing delegation-default toggle — a dashboard
+  // preference, so it renders whenever the action surface is up; its
+  // state comes from the preference records in the store.
+  const delegationDefault = act?.identities
+    ? delegationDefaultHtml(act.actionsByObject?.get(DELEGATION_DEFAULT_OBJECT_REF), {
+        identities: act.identities,
+      })
+    : "";
   const drewCards =
     [
       ...view.drew.map((e) => sessionCard(e, children, 0, counts, act)),
@@ -1566,7 +1871,7 @@ export function renderAttention(
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>.</p>
 ${tierBanner}${chips}
 ${coverageHtml(coverage)}
-<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
+${delegationDefault}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
 ${snoozedStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}
 <h2 id="sessions">All sessions (${roots.length})</h2><p class="muted">Every current session with its source and state; sub-sessions collapse under their parent.</p>${sessionCards}
 ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale ${view.expiredCount === 1 ? "entry" : "entries"} expired out of this view.</p>` : ""}`,
