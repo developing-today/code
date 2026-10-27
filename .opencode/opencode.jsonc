@@ -5325,11 +5325,19 @@
         // intelligence: slower AND dumber is the combination the balance rule removes;
         // Luna stays as the pool's cheapest seat, weighted last as the OpenAI final
         // reserve). Weights burn the small soon-expiring plans fastest.
+        // 2026-10-26 (Drew, cross-rung review): Sol #low joins — II 42 / TTFT 2.9s /
+        // $0.13 per task. A higher family's low rung beats the lower family's high
+        // rungs on intelligence and speed at once (it dominates the Luna #xhigh seat
+        // below on both axes), and OpenAI is our largest quota, so it will be spent
+        // regardless — better on the family's elbow rung than its slow tail. Luna
+        // keeps its #xhigh seat for now as the second OpenAI door; per Drew's
+        // standing guidance, anywhere Flash is available it covers Luna's niche.
         "targets": [
           "opencode-route/deepseek-flash#high",
           "opencode-route/luna-plan#xhigh",
           "opencode-route/haiku-plan#high",
-          "meta/muse-spark-1.3-contributor#xhigh"
+          "meta/muse-spark-1.3-contributor#xhigh",
+          "opencode-route/sol-plan#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -5337,6 +5345,7 @@
           "opencode-route/deepseek-flash": 3,
           "opencode-route/haiku-plan": 2,
           "meta/muse-spark-1.3-contributor": 2,
+          "opencode-route/sol-plan": 2,
           "opencode-route/luna-plan": 1
         }
       },
