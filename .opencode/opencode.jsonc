@@ -8,6 +8,15 @@
   // - THE Antigravity provider is "antigravity-ls" (warm language-server
   //   route). "antigravity-agy" (CLI spawn route) is disabled, earmarked as
   //   the fallback if the language server ever becomes unavailable.
+  // - "claude-code" is TEMPORARILY disabled (2026-10-27, Drew): the Claude
+  //   plan is on the FREE tier for now and the API may be down. The setup
+  //   itself is confirmed working — the proxy (:18749) is live and serves
+  //   claude-haiku-5-5 (verified 2026-10-27) — this is a config-level pause
+  //   only: the proxy, its catalog entries, and every route that references
+  //   it stay in place. Claude MODELS via other plans (antigravity-ls,
+  //   cline-pass, opendesign leaves in haiku/sonnet/opus-plan) are NOT the
+  //   Claude plan and are unaffected. To re-enable: delete "claude-code"
+  //   from disabled_providers and restore the "default" below.
   // To re-enable a provider: delete its id from disabled_providers.
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": true,
@@ -29,9 +38,14 @@
     "cloudflare-workers-ai",
     "code-design",
     "design-code",
-    "open-design"
+    "open-design",
+    "claude-code"
   ],
-  "default": "claude-code/claude-haiku-5-5",
+  // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
+  // pause (see the header note). Workhorse is the fleet's standard tier and
+  // what agent configs already default to; restore the Haiku default when
+  // claude-code is re-enabled.
+  "default": "opencode-route/workhorse",
   "provider": {
     "claude-code": {
       "npm": "@ai-sdk/openai-compatible",
@@ -6117,10 +6131,17 @@
         // AA v4.3.2 (launch day): low 36.2 / medium 41.3 / high 43.9 / xhigh 45.4 /
         // max 48.1; $1 in / $5 out per 1M — exactly half of Sol; >272k input tokens
         // bills the whole request at 2x input / 1.5x output.
+        // 2026-10-27 door correction: the original leaves openai-codex + chatgpt
+        // (both front the codex proxy :18744) sit in disabled_providers — they
+        // entered that list in a bulk working-tree commit (f5749275), so whether
+        // the disable is policy or debris is an open question (filed as an
+        // issue). Until it is answered, terra-plan mirrors luna-plan/sol-plan's
+        // door structure: the openai provider + openai.alternate (which resolves
+        // Terra through the fork's refreshed built-in catalog, PR opencode#563).
+        // The codex-door entries added in #1296 stay in their catalogs.
         "targets": [
           "openai/gpt-6.1-terra",
-          "openai-codex/gpt-6.1-terra",
-          "chatgpt/gpt-6.1-terra"
+          "openai.alternate/gpt-6.1-terra"
         ],
         "selection": "round-robin",
         "autonomy": "rules"
