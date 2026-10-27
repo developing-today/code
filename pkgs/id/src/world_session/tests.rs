@@ -237,8 +237,7 @@ mod tests {
             "actor commands were handled: {metrics}"
         );
         assert_eq!(
-            metrics["command_latency"]["count"],
-            metrics["commands_total"],
+            metrics["command_latency"]["count"], metrics["commands_total"],
             "every handled command lands in the latency histogram: {metrics}"
         );
         // This world is in-memory: no journal, so appends and checkpoints

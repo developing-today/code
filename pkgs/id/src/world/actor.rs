@@ -251,8 +251,7 @@ impl WorldActor {
                 }
                 break;
             }
-            self.metrics
-                .record_queue_depth(receiver.len() as u64);
+            self.metrics.record_queue_depth(receiver.len() as u64);
             let started = std::time::Instant::now();
             self.handle(command).await;
             self.metrics.record_command(started.elapsed());

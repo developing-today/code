@@ -767,10 +767,7 @@ impl WorldClient {
     ///
     /// Fails with the host's message if the capability is refused, or if
     /// the host is too old to know the `metrics` frame.
-    pub async fn metrics(
-        &mut self,
-        capability: &str,
-    ) -> Result<crate::world::MetricsSnapshot> {
+    pub async fn metrics(&mut self, capability: &str) -> Result<crate::world::MetricsSnapshot> {
         self.send_json(&serde_json::json!({
             "type": "metrics",
             "capability": capability,
