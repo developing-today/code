@@ -60,11 +60,11 @@ export const PAGES: PageDef[] = [
   },
   {
     id: "aa-explorer",
-    title: "AA Cost Explorer",
+    title: "Cost Explorer",
     route: "/aa",
     api: "/api/aa.json",
     blurb:
-      "Artificial Analysis workbook data: per-config intelligence, cost, timing — and which measured models no pool uses.",
+      "Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).",
   },
   {
     id: "sessions",
