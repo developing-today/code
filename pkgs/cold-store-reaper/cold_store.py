@@ -470,12 +470,33 @@ class ColdStore:
         cold_bytes = conn.execute(
             "SELECT coalesce(sum(bytes),0) n FROM bundles WHERE state='verified'"
         ).fetchone()["n"]
+        # #1028: backups live unbundled in Drive and never enter the
+        # bundles table, so bundle bytes alone leave the project budget
+        # blind to the one class that grows nightly. The transfer
+        # ledger records both sides of that flow — every put_backup
+        # writes an upload/backup-upload row and prune_backups writes a
+        # trash/backup-prune row per trashed file — so backup bytes in
+        # Drive are the all-time difference (the ledger is never
+        # pruned; only the daily hard stop above uses a 24h window).
+        # A backup trashed manually in Drive, outside prune-backups,
+        # is not decremented: the total then overcounts and the budget
+        # refuses earlier, never later.
+        backup_uploaded = conn.execute(
+            "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
+            " WHERE direction='upload' AND kind='backup-upload'"
+        ).fetchone()["n"]
+        backup_pruned = conn.execute(
+            "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
+            " WHERE direction='trash' AND kind='backup-prune'"
+        ).fetchone()["n"]
+        backup_bytes = max(0, backup_uploaded - backup_pruned)
         meta = {
             r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")
         }
         return {
             "uploads_24h_bytes": up_24h,
             "cold_bytes": cold_bytes,
+            "backup_bytes": backup_bytes,
             "daily_upload_hard_stop_bytes": int(
                 meta.get("daily_upload_hard_stop_bytes", "700000000000")
             ),
@@ -485,9 +506,9 @@ class ColdStore:
     def _check_upload_limits(self, conn, nbytes: int, what: str) -> None:
         """Refuse a transfer BEFORE any bytes are uploaded when it would
         cross the daily upload hard stop (rolling-24h ledger uploads +
-        this transfer) or the project budget (verified cold bytes + this
-        transfer). Raises ColdStoreError naming the limit, the current
-        usage, and the refused size."""
+        this transfer) or the project budget (verified cold bytes +
+        backup bytes (#1028) + this transfer). Raises ColdStoreError
+        naming the limit, the current usage, and the refused size."""
         acct = self._upload_accounting(conn)
         up_24h = acct["uploads_24h_bytes"]
         hard_stop = acct["daily_upload_hard_stop_bytes"]
@@ -498,11 +519,13 @@ class ColdStore:
                 f"{hard_stop} B daily_upload_hard_stop_bytes limit"
             )
         cold_bytes = acct["cold_bytes"]
+        backup_bytes = acct["backup_bytes"]
         budget = acct["project_budget_bytes"]
-        if budget and cold_bytes + nbytes > budget:
+        if budget and cold_bytes + backup_bytes + nbytes > budget:
             raise ColdStoreError(
                 f"{what} refused: project budget — {cold_bytes} B verified "
-                f"cold in Drive + this {nbytes} B transfer would cross the "
+                f"cold in Drive + {backup_bytes} B backups in Drive + this "
+                f"{nbytes} B transfer would cross the "
                 f"{budget} B project_budget_bytes limit"
             )
 
@@ -1809,6 +1832,7 @@ class ColdStore:
         ).fetchone()["n"]
         acct = self._upload_accounting(conn)
         cold_bytes = acct["cold_bytes"]
+        backup_bytes = acct["backup_bytes"]
         up_24h = acct["uploads_24h_bytes"]
         down_24h = conn.execute(
             "SELECT coalesce(sum(bytes),0) n FROM transfer_ledger"
@@ -1823,12 +1847,13 @@ class ColdStore:
             "bundles_total": bundles_total,
             "bundles_verified": bundles_verified,
             "cold_bytes": cold_bytes,
+            "backup_bytes": backup_bytes,
             "uploads_24h_bytes": up_24h,
             "downloads_24h_bytes": down_24h,
             "daily_upload_hard_stop_bytes": hard_stop,
             "hard_stop_ok": up_24h < hard_stop,
             "project_budget_bytes": budget,
-            "within_budget": cold_bytes <= budget if budget else True,
+            "within_budget": cold_bytes + backup_bytes <= budget if budget else True,
         }
 
 
@@ -2014,7 +2039,9 @@ def main(argv=None) -> int:
                 f"bundles: {d['bundles_total']} total, {d['bundles_verified']} verified"
             )
             print(
-                f"cold bytes in Drive: {_human(d['cold_bytes'])} of budget {_human(d['project_budget_bytes'])}"
+                f"cold bytes in Drive: {_human(d['cold_bytes'])}"
+                f" + backup bytes {_human(d['backup_bytes'])}"
+                f" of budget {_human(d['project_budget_bytes'])}"
                 f" ({'within' if d['within_budget'] else 'OVER'} budget)"
             )
             print(
