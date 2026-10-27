@@ -14,12 +14,13 @@ The roadmap is the top level. An item can sit there as one line with no details,
 
 The repo holds several projects that move on their own schedules, so each has its own roadmap file. [`ROADMAP.md`](../ROADMAP.md) at the repo root is the overall view and links to them.
 
-| Project                                        | File                                                         | Code                       |
-| ---------------------------------------------- | ------------------------------------------------------------ | -------------------------- |
-| `id`, the peer-to-peer CLI and worlds platform | [`roadmaps/id.md`](roadmaps/id.md)                           | `pkgs/id`                  |
-| `mcpx`, the MCP gateway and Code Mode runner   | [`roadmaps/mcpx.md`](roadmaps/mcpx.md)                       | `pkgs/mcpx`                |
-| The NixOS flake and the infra manifests        | [`roadmaps/nixos-and-infra.md`](roadmaps/nixos-and-infra.md) | `nixos/`, `lib/`, `infra/` |
-| Repo-wide CI and automation                    | [`roadmaps/repo-and-ci.md`](roadmaps/repo-and-ci.md)         | `.github/`                 |
+| Project                                        | File                                                           | Code                       |
+| ---------------------------------------------- | -------------------------------------------------------------- | -------------------------- |
+| `id`, the peer-to-peer CLI and worlds platform | [`roadmaps/id.md`](roadmaps/id.md)                             | `pkgs/id`                  |
+| `mcpx`, the MCP gateway and Code Mode runner   | [`roadmaps/mcpx.md`](roadmaps/mcpx.md)                         | `pkgs/mcpx`                |
+| The NixOS flake and the infra manifests        | [`roadmaps/nixos-and-infra.md`](roadmaps/nixos-and-infra.md)   | `nixos/`, `lib/`, `infra/` |
+| Repo-wide CI and automation                    | [`roadmaps/repo-and-ci.md`](roadmaps/repo-and-ci.md)           | `.github/`                 |
+| The basement home cluster (Talos, Cozystack)   | [`roadmaps/basement-cluster.md`](roadmaps/basement-cluster.md) | `infra/talos/`, `doc/`     |
 
 Each roadmap file groups its items by horizon.
 

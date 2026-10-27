@@ -101,7 +101,9 @@ export const richSchema = new Schema({
         // #1036: tight/loose carried for the markdown codec, mirroring
         // the #881 table-alignments pattern; absent/loose rendering
         // depends on it so multi-block task items do not fuse on save.
-        attrs: { tight: { default: true } },
+        // #997: ordered task lists carry their start in `order` (null for
+        // bullet task lists), mirroring the markdown codec's attrs.order.
+        attrs: { tight: { default: true }, order: { default: null } },
         parseDOM: [
           {
             tag: "ul",
@@ -115,8 +117,25 @@ export const richSchema = new Schema({
               return false;
             },
           },
+          {
+            tag: "ol",
+            getAttrs(dom) {
+              // Match <ol class=contains-task-list> (ordered task list);
+              // its start is the list's order.
+              const el = dom as HTMLOListElement;
+              if (el.classList.contains("contains-task-list")) return { order: el.start };
+              const firstLi = el.querySelector("li");
+              if (firstLi?.querySelector('input[type="checkbox"]')) return { order: el.start };
+              return false;
+            },
+          },
         ],
-        toDOM() {
+        toDOM(node) {
+          if (node.attrs.order != null) {
+            const attrs: Record<string, string> = { class: "contains-task-list" };
+            if (node.attrs.order !== 1) attrs.start = String(node.attrs.order);
+            return ["ol", attrs, 0];
+          }
           return ["ul", { class: "contains-task-list" }, 0];
         },
       },

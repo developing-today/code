@@ -7,6 +7,14 @@ import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import type { DashComment, RefKey } from "./model.ts";
+import { buildProgramData, programRefs } from "./program.ts";
+import {
+  PROJECT_CONFIGS,
+  allProjectRefs,
+  buildProjectDetail,
+  buildProjectSummaries,
+  projectConfigById,
+} from "./project-config.ts";
 import { identitiesFromRecords } from "./registry.ts";
 import {
   ghObjectRef,
@@ -16,6 +24,8 @@ import {
   renderDns,
   renderItem,
   renderPages,
+  renderProgram,
+  renderProgramProject,
   renderProjects,
   renderQuota,
   renderRoadmap,
@@ -243,6 +253,53 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/projects.json") {
     const pool = await source.projects().catch(() => []);
     return json({ project: "developing-today#4", items: pool });
+  }
+
+  if (path === "/program" || path === "/api/program.json") {
+    // #1046 + #1121: /program is the projects index. Editorial content
+    // from src/program.ts (the pm-dashboard doc) and the project
+    // registry in src/project-config.ts; the live half derived from
+    // the same Source the other views read (items / projects /
+    // roadmap / orchestration), each facet failing soft on its own.
+    const [items, pool, rows, orchestration] = await Promise.all([
+      source.items(programRefs()).catch(() => new Map()),
+      source.projects().catch(() => []),
+      source.roadmap().catch(() => []),
+      source.orchestration().catch(() => null),
+    ]);
+    const data = {
+      ...buildProgramData(items, pool, orchestration),
+      projects: buildProjectSummaries(PROJECT_CONFIGS, pool, rows),
+    };
+    if (path === "/api/program.json") return json(data);
+    return html(renderProgram(data, items, prov()));
+  }
+
+  const programProjectMatch = /^\/program\/([\w-]+)$/.exec(path);
+  if (programProjectMatch) {
+    const config = projectConfigById(programProjectMatch[1]);
+    if (!config) {
+      return html(
+        `<h1>Not found</h1><p class="muted">no project with id <code>${programProjectMatch[1]}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
+      );
+    }
+    const [items, pool, rows] = await Promise.all([
+      source.items(allProjectRefs()).catch(() => new Map()),
+      source.projects().catch(() => []),
+      source.roadmap().catch(() => []),
+    ]);
+    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov()));
+  }
+  if (path === "/api/program-project.json") {
+    const id = url.searchParams.get("id") ?? "";
+    const config = projectConfigById(id);
+    if (!config) return json({ error: "unknown project", id }, 404);
+    const [items, pool, rows] = await Promise.all([
+      source.items(allProjectRefs()).catch(() => new Map()),
+      source.projects().catch(() => []),
+      source.roadmap().catch(() => []),
+    ]);
+    return json(buildProjectDetail(config, items, pool, rows));
   }
 
   if (path === "/pages") {
