@@ -22,22 +22,22 @@ You are in autoresearch mode.
 const SENTINEL_FILE = ".autoresearch-off";
 
 export const AutoresearchContextPlugin: Plugin = async ({ directory }) => {
-  return {
-    "experimental.chat.system.transform": async (_input, output) => {
-      // Check if sentinel file exists — if so, skip injection
-      const sentinelPath = join(directory, SENTINEL_FILE);
-      if (existsSync(sentinelPath)) {
-        return;
-      }
+	return {
+		"experimental.chat.system.transform": async (_input, output) => {
+			// Check if sentinel file exists — if so, skip injection
+			const sentinelPath = join(directory, SENTINEL_FILE);
+			if (existsSync(sentinelPath)) {
+				return;
+			}
 
-      // Check if autoresearch.md command file exists
-      const commandPath = join(directory, "autoresearch.md");
-      if (!existsSync(commandPath)) {
-        return;
-      }
+			// Check if autoresearch.md command file exists
+			const commandPath = join(directory, "autoresearch.md");
+			if (!existsSync(commandPath)) {
+				return;
+			}
 
-      // Append autoresearch context to the system prompt
-      output.system.push(CONTEXT_INJECTION);
-    },
-  };
+			// Append autoresearch context to the system prompt
+			output.system.push(CONTEXT_INJECTION);
+		},
+	};
 };

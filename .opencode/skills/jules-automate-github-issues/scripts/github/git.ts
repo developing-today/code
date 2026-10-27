@@ -61,7 +61,7 @@ export function parseGitRemoteUrl(remoteUrl: string): GitRepoInfo {
     return {
       owner,
       repo: repo.replace(/\.git$/, ""),
-      fullName: `${owner}/${repo.replace(/\.git$/, "")}`,
+      fullName: `${owner}/${repo.replace(/\.git$/, "")}`
     };
   }
 
@@ -72,7 +72,7 @@ export function parseGitRemoteUrl(remoteUrl: string): GitRepoInfo {
     return {
       owner,
       repo: repo.replace(/\.git$/, ""),
-      fullName: `${owner}/${repo.replace(/\.git$/, "")}`,
+      fullName: `${owner}/${repo.replace(/\.git$/, "")}`
     };
   }
 

@@ -1,4 +1,0 @@
-## 2025-05-18 - Accessibility and Keyboard Support for Image Browser Dialog
-
-**Learning:** In dynamically constructed DOM dialogs/overlays (like `openImageBrowser`), custom card elements and icon buttons lack inherent accessibility semantics. Datastar's global type definitions in this project also override `Document.dispatchEvent` types in TypeScript, requiring casting (`EventTarget`) when dispatching standard `KeyboardEvent`s in Vitest.
-**Action:** Always attach `role="dialog"`, `aria-modal="true"`, and `aria-label` to dialog containers, `aria-label` to icon-only buttons, and `role="button"` + `tabindex="0"` + `Enter`/`Space` keydown handlers to interactive cards.

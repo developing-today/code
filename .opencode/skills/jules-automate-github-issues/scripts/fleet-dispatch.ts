@@ -25,12 +25,12 @@ const date = new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit
 const root = path.dirname(findUpSync(".git")!);
 const fleetDir = path.join(root, ".fleet", date);
 const tasksPath = path.join(fleetDir, "issue_tasks.json");
-const analysis = (await Bun.file(tasksPath).json()) as IssueAnalysis;
+const analysis = await Bun.file(tasksPath).json() as IssueAnalysis;
 const { tasks } = analysis;
 
 // Resolve repo info dynamically from git remote
 const repoInfo = await getGitRepoInfo();
-const baseBranch = process.env.FLEET_BASE_BRANCH ?? (await getCurrentBranch());
+const baseBranch = process.env.FLEET_BASE_BRANCH ?? await getCurrentBranch();
 
 // Pre-dispatch ownership validation
 function validateOwnership(analysis: IssueAnalysis): void {
@@ -41,7 +41,7 @@ function validateOwnership(analysis: IssueAnalysis): void {
       const existing = claimed.get(file);
       if (existing) {
         throw new Error(
-          `Ownership conflict: "${file}" claimed by both "${existing}" and "${task.id}". These tasks must be merged.`,
+          `Ownership conflict: "${file}" claimed by both "${existing}" and "${task.id}". These tasks must be merged.`
         );
       }
       claimed.set(file, task.id);
@@ -52,13 +52,13 @@ function validateOwnership(analysis: IssueAnalysis): void {
 validateOwnership(analysis);
 console.log(`✅ Ownership validated: ${analysis.tasks.length} tasks, no conflicts.`);
 
-const sessions = await jules.all(tasks, (task) => ({
+const sessions = await jules.all(tasks, task => ({
   prompt: task.prompt,
   source: {
     github: repoInfo.fullName,
     baseBranch,
-  },
-}));
+  }
+}))
 
 const sessionResults: Array<{ taskId: string; sessionId: string }> = [];
 for await (const session of sessions) {

@@ -14,7 +14,10 @@
 
 import type { AnalyzeIssuesPromptOptions } from "../types.js";
 
-export function analyzeIssuesPrompt({ issuesMarkdown, repoFullName }: AnalyzeIssuesPromptOptions): string {
+export function analyzeIssuesPrompt({
+  issuesMarkdown,
+  repoFullName,
+}: AnalyzeIssuesPromptOptions): string {
   const now = new Date();
   const YYYY_MM_DD = `${now.getFullYear()}_${String(now.getMonth() + 1).padStart(2, "0")}_${String(now.getDate()).padStart(2, "0")}`;
 

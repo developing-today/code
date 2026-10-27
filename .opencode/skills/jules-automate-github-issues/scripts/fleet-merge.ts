@@ -50,10 +50,10 @@ const root = path.dirname(findUpSync(".git")!);
 const fleetDir = path.join(root, ".fleet", date);
 
 // Load task ordering (already sorted by risk in the analysis phase)
-const analysis = (await Bun.file(path.join(fleetDir, "issue_tasks.json")).json()) as IssueAnalysis;
+const analysis = await Bun.file(path.join(fleetDir, "issue_tasks.json")).json() as IssueAnalysis;
 
 // Load session mapping written by fleet-dispatch.ts
-const sessions = (await Bun.file(path.join(fleetDir, "sessions.json")).json()) as Array<{
+const sessions = await Bun.file(path.join(fleetDir, "sessions.json")).json() as Array<{
   taskId: string;
   sessionId: string;
 }>;
@@ -71,8 +71,9 @@ async function findFleetPRs() {
 
   const prMap = new Map<string, GitHubPR>();
   for (const session of sessions) {
-    const matchingPR = pulls.find(
-      (pr: GitHubPR) => pr.head.ref.includes(session.sessionId) || pr.body?.includes(session.sessionId),
+    const matchingPR = pulls.find((pr: GitHubPR) =>
+      pr.head.ref.includes(session.sessionId) ||
+      pr.body?.includes(session.sessionId)
     );
     if (matchingPR) {
       prMap.set(session.taskId, matchingPR);
@@ -105,22 +106,25 @@ async function waitForCI(prNumber: number, maxWaitMs = 10 * 60 * 1000): Promise<
     }
 
     const allComplete = data.check_runs.every((run: CheckRun) => run.status === "completed");
-    const allPassed = data.check_runs.every(
-      (run: CheckRun) => run.conclusion === "success" || run.conclusion === "skipped",
+    const allPassed = data.check_runs.every((run: CheckRun) =>
+      run.conclusion === "success" || run.conclusion === "skipped"
     );
 
     if (allComplete && allPassed) return true;
     if (allComplete && !allPassed) return false;
 
     console.log(`  ⏳ CI still running for PR #${prNumber}... waiting 30s`);
-    await new Promise((r) => setTimeout(r, 30_000));
+    await new Promise(r => setTimeout(r, 30_000));
   }
   console.log(`  ⏰ CI timeout for PR #${prNumber}`);
   return false;
 }
 
 // Re-dispatch a task as a new Jules session against current main
-async function redispatchTask(task: Task, oldPr: GitHubPR): Promise<GitHubPR> {
+async function redispatchTask(
+  task: Task,
+  oldPr: GitHubPR,
+): Promise<GitHubPR> {
   // Close the conflicting PR
   console.log(`  🔒 Closing conflicting PR #${oldPr.number}...`);
   await fetch(`${API}/pulls/${oldPr.number}`, {
@@ -144,7 +148,7 @@ async function redispatchTask(task: Task, oldPr: GitHubPR): Promise<GitHubPR> {
   console.log(`  📝 New session: ${session.id}`);
 
   // Update sessions.json with new session ID
-  const sessionEntry = sessions.find((s) => s.taskId === task.id);
+  const sessionEntry = sessions.find(s => s.taskId === task.id);
   if (sessionEntry) {
     sessionEntry.sessionId = session.id;
     const sessionsPath = path.join(fleetDir, "sessions.json");
@@ -155,10 +159,14 @@ async function redispatchTask(task: Task, oldPr: GitHubPR): Promise<GitHubPR> {
   console.log(`  ⏳ Waiting for new PR from session ${session.id}...`);
   const start = Date.now();
   while (Date.now() - start < PR_POLL_TIMEOUT_MS) {
-    await new Promise((r) => setTimeout(r, PR_POLL_INTERVAL_MS));
+    await new Promise(r => setTimeout(r, PR_POLL_INTERVAL_MS));
     const res = await fetch(`${API}/pulls?state=open&per_page=100`, { headers });
     const pulls = (await res.json()) as GitHubPR[];
-    const newPr = pulls.find((pr: GitHubPR) => pr.head.ref.includes(session.id) || pr.body?.includes(session.id));
+    const newPr = pulls.find(
+      (pr: GitHubPR) =>
+        pr.head.ref.includes(session.id) ||
+        pr.body?.includes(session.id)
+    );
     if (newPr) {
       console.log(`  ✅ New PR #${newPr.number} found (${newPr.head.ref})`);
       return newPr;
@@ -177,9 +185,7 @@ for (const [taskId, pr] of prMap) {
 }
 
 if (prMap.size !== analysis.tasks.length) {
-  console.error(
-    `❌ Expected ${analysis.tasks.length} PRs but found ${prMap.size}. Waiting for all PRs before merging.`,
-  );
+  console.error(`❌ Expected ${analysis.tasks.length} PRs but found ${prMap.size}. Waiting for all PRs before merging.`);
   process.exit(1);
 }
 
@@ -194,9 +200,7 @@ for (const task of analysis.tasks) {
   let merged = false;
 
   while (!merged) {
-    console.log(
-      `\n📦 Processing Task "${task.id}" → PR #${pr!.number}${retryCount > 0 ? ` (retry ${retryCount})` : ""}`,
-    );
+    console.log(`\n📦 Processing Task "${task.id}" → PR #${pr!.number}${retryCount > 0 ? ` (retry ${retryCount})` : ""}`);
 
     // Update branch from base before merging (skip for first PR on first attempt)
     if (analysis.tasks.indexOf(task) > 0 || retryCount > 0) {
@@ -221,7 +225,7 @@ for (const task of analysis.tasks) {
         throw new Error(`Update branch failed (${updateRes.status}): ${body}`);
       }
       // Wait for the update to propagate
-      await new Promise((r) => setTimeout(r, 5_000));
+      await new Promise(r => setTimeout(r, 5_000));
     }
 
     // Wait for CI to pass
