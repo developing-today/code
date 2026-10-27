@@ -687,6 +687,90 @@ export interface AaCoverage {
   catalogNotPooledUnmeasured: string[];
 }
 
+/**
+ * One explorer data point: a rankings row joined with its Test_Runs
+ * timing row (same testRunKey) and enriched with the derived values
+ * the Cost Explorer's charts and perspectives plot — per-dollar and
+ * per-second intelligence, Pareto-frontier flags for each chart's axis
+ * pair, and the 3-axis dominators ("beaten by") list in the reference
+ * design's sense. Built by aaPoints() in src/aa.ts; null always means
+ * "not measured", never an estimate.
+ */
+export interface AaPoint {
+  key: string;
+  family: string;
+  creator: string;
+  effort: string | null;
+  benchmark: string | null;
+  score: number | null;
+  cost: number | null;
+  time: number | null;
+  tps: number | null;
+  ttft: number | null;
+  pointsPerDollar: number | null;
+  pointsPerSecond: number | null;
+  /** score / cost, computed when the workbook's own column is absent. */
+  scorePerDollar: number | null;
+  /** score / time, computed when the workbook's own column is absent. */
+  scorePerSecond: number | null;
+  eligible: boolean;
+  qualStatus: string | null;
+  /** On the cost×score Pareto frontier (cheaper-or-equal, smarter-or-equal unbeaten). */
+  frontierCost: boolean;
+  /** On the time×score Pareto frontier. */
+  frontierTime: boolean;
+  /** On the cost×time Pareto frontier (lower-left unbeaten). */
+  frontierCostTime: boolean;
+  /** "Family effort" labels beating this point on score + cost + time at once. */
+  beatenBy: string[];
+}
+
+/**
+ * One model in the fleet's own catalog (the Model Explorer tab): a
+ * provider/model entry from .opencode/opencode.jsonc, its pool seats
+ * (route ids whose expanded leaves include it), the plan the provider
+ * door belongs to (collector-carried registry facts — see
+ * AA_PLAN_FACTS in src/aa.ts), and its best AA measurement when the
+ * workbook measured a model of the same normalized name. Assembled by
+ * aaCatalogFromConfig() in src/aa.ts.
+ */
+export interface AaCatalogEntry {
+  /** Full catalog id, "provider/model…" (model part may contain /). */
+  id: string;
+  provider: string;
+  /** The provider's display name in the config, else its id. */
+  providerName: string;
+  model: string;
+  /** The model's display name in the config, else the model id part. */
+  name: string;
+  contextLimit: number | null;
+  outputLimit: number | null;
+  /** Effort variant ids the config defines for this model, ladder order. */
+  variants: string[];
+  /** Route ids seating this model (nested routes expanded). */
+  routes: string[];
+  /** The provider sits in the config's disabled_providers — catalogued but not callable. */
+  disabled: boolean;
+  /** Plan label from the collector's registry facts, when one is recorded. */
+  plan: string | null;
+  /** Effective value multiplier of the plan (list-rate dollars per $1), when recorded. */
+  multiplier: number | null;
+  /** Short plan note (caps, expiries, caveats), when recorded. */
+  planNote: string | null;
+  /**
+   * The model's published OpenCode Go monthly cap in USD, where Go lists
+   * one (docs reading, AA value report 2026-10-20) — per-model caps, not
+   * a shared pool; the fleet's older workspaces may meter pooled.
+   */
+  goCapUsd: number | null;
+  /** Best AA intelligence measured for this model name, when measured. */
+  aaScore: number | null;
+  /** $/task of that best-scoring AA measurement. */
+  aaCostPerTask: number | null;
+  /** Fastest measured time/task among the family's ranked rows. */
+  aaTimePerTask: number | null;
+}
+
 /** The AA explorer section as the collector embeds it in the fleet feed. */
 export interface AaSection {
   status: "ok";
@@ -701,6 +785,9 @@ export interface AaSection {
   testRuns: AaTestRun[];
   /** Absent when the collector could not read .opencode/opencode.jsonc. */
   coverage?: AaCoverage;
+  /** The fleet catalog for the Model Explorer tab, from the same
+   * config read as coverage; absent on the same condition. */
+  catalog?: AaCatalogEntry[];
 }
 
 /** The section's degraded form: the collector could not reach Supabase
