@@ -170,6 +170,24 @@ export interface Provenance {
   aa: string;
 }
 
+/**
+ * One facet's freshness, structured (#1138): the human string above,
+ * plus the machine state the freshness chips render. `count` always
+ * ships with its noun (`countLabel`) so a chip can never show a bare
+ * number that contradicts a page header counting the same thing.
+ */
+export interface ProvenanceFacet {
+  /** The provenance string, unchanged — also the chip's tooltip. */
+  text: string;
+  state: "live" | "fixtures" | "stale" | "absent" | "invalid";
+  ageMs?: number;
+  count?: number;
+  countLabel?: string;
+}
+
+/** Per-facet freshness detail, keyed exactly like Provenance. */
+export type ProvenanceDetail = Record<keyof Provenance, ProvenanceFacet>;
+
 // ---------------------------------------------------------------------------
 // Quota + throughput view (#851). Machine-first: the same shapes the API
 // returns are what the GUI renders. No code from the CCC reference design

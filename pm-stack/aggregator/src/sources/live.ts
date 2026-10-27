@@ -9,11 +9,13 @@ import type { Config } from "../config.ts";
 import { isAaSection } from "../aa.ts";
 import { isDnsSection } from "../dns.ts";
 import {
+  diagnoseOrchestrationSection,
   feedAgeText,
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
   loadFeed,
   type FleetFeed,
+  type SectionDiagnosis,
 } from "../feed.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
@@ -33,6 +35,8 @@ import {
   type OrchestrationSection,
   type ProjectPoolItem,
   type Provenance,
+  type ProvenanceDetail,
+  type ProvenanceFacet,
   type QuotaView,
   type RefKey,
   type RoadmapRow,
@@ -467,6 +471,13 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
 
 // --- Composition ----------------------------------------------------------
 
+/**
+ * The fleet's own staleness line for the feed itself (#1148's
+ * watchdog threshold): a feed-backed facet older than this renders
+ * its freshness chip as stale, however live its last read was.
+ */
+const FEED_STALE_MS = 15 * 60_000;
+
 export function liveSource(cfg: Config): Source {
   const fix = fixtureSource();
   const provenance: Provenance = {
@@ -482,6 +493,16 @@ export function liveSource(cfg: Config): Source {
     registry: "fixtures",
     aa: "fixtures",
   };
+
+  // #1139/#1140: the last orchestration diagnosis, recomputed on every
+  // orchestration() read from the raw feed value — the honesty
+  // surfaces (Source.diagnostics) read it from here, never from a
+  // null section, so absent/invalid/stale stay distinguishable.
+  let lastOrchestrationDiagnosis: SectionDiagnosis = { state: "absent" };
+  // #1138: the merged registry total from the last registry() read —
+  // the freshness chip counts THIS (the same number /sessions renders
+  // in its header), never the per-read incoming batch.
+  let lastRegistryMergedCount: number | null = null;
 
   async function kaneoCookieHeader(): Promise<string> {
     if (!cfg.kaneo.email || !cfg.kaneo.password) throw new Error("no kaneo credentials");
@@ -667,6 +688,12 @@ export function liveSource(cfg: Config): Source {
             : "");
       } else if (projectorServed) {
         provenance.items = "live (projector)";
+      } else if (pool.length > 0 && feed) {
+        // No refs were resolved this call (e.g. the /api/health
+        // provenance prime, #1267): the facet is pool-backed all the
+        // same — say so rather than leaving the fixture default
+        // standing for a facet nobody happened to exercise yet.
+        provenance.items = `live (project pool · fleet feed · ${feedAgeText(feed.generatedAt)})`;
       }
       return out;
     },
@@ -807,7 +834,10 @@ export function liveSource(cfg: Config): Source {
       // the normalized contract shape, #1110), invalid (a section is
       // present but failed validation: name the failed check, never
       // claim the job "has not published"), absent (no section key).
+      // #1139 adds the fourth — stale — tracked as a diagnosis on the
+      // source so the attention/today surfaces can banner it.
       const feed = await getFeed();
+      lastOrchestrationDiagnosis = diagnoseOrchestrationSection(feed?.orchestration ?? null);
       if (feed?.orchestration) {
         const section = normalizeOrchestrationSection(feed.orchestration);
         if (section) {
@@ -876,11 +906,20 @@ export function liveSource(cfg: Config): Source {
         /* laptop part fails soft, like attention */
       }
       if (incoming.length > 0) {
-        provenance.registry = `live (${incoming.length} records merged · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})`;
-        return mergeIntoRegistry(incoming);
+        const merged = await mergeIntoRegistry(incoming);
+        lastRegistryMergedCount = merged.length;
+        // #1138: the headline number is the MERGED total — the same
+        // count the /sessions header renders — with the latest feed's
+        // contribution labelled as what it is. (This string used to
+        // headline the incoming batch, so one page carried two counts
+        // for "records" with nothing explaining the difference.)
+        provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})`;
+        return merged;
       }
+      const store = await loadRegistryStore();
+      lastRegistryMergedCount = store.length;
       provenance.registry = "store only (no live registry source reachable)";
-      return loadRegistryStore();
+      return store;
     },
     async coverage(): Promise<SourceCoverage[]> {
       const feed = lastFeed ?? (await getFeed());
@@ -930,6 +969,58 @@ export function liveSource(cfg: Config): Source {
       return out;
     },
     provenance: () => provenance,
+    diagnostics: () => ({ orchestration: lastOrchestrationDiagnosis }),
+    provenanceDetail: (): ProvenanceDetail => {
+      // #1138: facet state derives from the facet's own string (the
+      // strings are the contract every facet already maintains),
+      // plus two facts strings can't carry: the orchestration
+      // diagnosis (stale/invalid precision) and the feed's age (a
+      // "live" string over a dead feed is stale, #1148's threshold).
+      const feedAgeMs = lastFeed ? Math.max(0, Date.now() - Date.parse(lastFeed.generatedAt)) : undefined;
+      const facet = (key: keyof Provenance): ProvenanceFacet => {
+        const text = provenance[key];
+        let state: ProvenanceFacet["state"];
+        if (text.startsWith("live")) state = "live";
+        else if (text.startsWith("invalid")) state = "invalid";
+        else if (text.startsWith("none yet") || text.startsWith("not collected yet")) state = "absent";
+        else if (text.startsWith("store only")) state = "live";
+        else state = "fixtures";
+        const feedBacked = text.includes("fleet feed");
+        if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs > FEED_STALE_MS) {
+          state = "stale";
+        }
+        const out: ProvenanceFacet = { text, state };
+        if (key === "orchestration") {
+          if (lastOrchestrationDiagnosis.state === "stale" && state === "live") out.state = "stale";
+          if (lastOrchestrationDiagnosis.state === "invalid") out.state = "invalid";
+          if (lastOrchestrationDiagnosis.ageMs !== undefined) out.ageMs = lastOrchestrationDiagnosis.ageMs;
+        } else if (feedBacked && feedAgeMs !== undefined) {
+          out.ageMs = feedAgeMs;
+        }
+        if (key === "registry" && lastRegistryMergedCount !== null) {
+          out.count = lastRegistryMergedCount;
+          out.countLabel = "session records";
+          if (feedAgeMs !== undefined) {
+            out.ageMs = feedAgeMs;
+            if (out.state === "live" && feedAgeMs > FEED_STALE_MS) out.state = "stale";
+          }
+        }
+        return out;
+      };
+      return {
+        board: facet("board"),
+        roadmap: facet("roadmap"),
+        items: facet("items"),
+        comments: facet("comments"),
+        quota: facet("quota"),
+        usage: facet("usage"),
+        attention: facet("attention"),
+        orchestration: facet("orchestration"),
+        dns: facet("dns"),
+        registry: facet("registry"),
+        aa: facet("aa"),
+      };
+    },
   };
 }
 

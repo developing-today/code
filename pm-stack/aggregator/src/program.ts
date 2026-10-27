@@ -121,7 +121,7 @@ export const PROGRAM: ProgramDoc = {
     {
       title: "Slice 2 — mobile, tiers, horizons, Today",
       detail:
-        "Mobile-first views; NEEDS DREW vs NEEDS ORCHESTRATOR with a why-you reason and staleness expiry; roadmap horizons quarter/month/week/3-day/today; the /today view rendering the orchestrator's goal measurements; session source labels (OpenCode sandbox/laptop, Jules).",
+        "Mobile-first views; NEEDS USER vs NEEDS ORCHESTRATOR with a why-you reason and staleness expiry; roadmap horizons quarter/month/week/3-day/today; the /today view rendering the orchestrator's goal measurements; session source labels (OpenCode sandbox/laptop, Jules).",
       refs: [issue(898)],
       links: [prLink(901)],
     },

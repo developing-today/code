@@ -1246,5 +1246,25 @@ export function fixtureSource(): Source {
       },
     ],
     provenance: () => provenance,
+    // Fixtures carry no orchestration section (see orchestration()
+    // above), so the honest diagnosis is absent — the honesty
+    // surfaces banner it exactly like a live source with no run yet.
+    diagnostics: () => ({ orchestration: { state: "absent" as const } }),
+    provenanceDetail: () => {
+      const facet = (text: string) => ({ text, state: "fixtures" as const });
+      return {
+        board: facet(provenance.board),
+        roadmap: facet(provenance.roadmap),
+        items: facet(provenance.items),
+        comments: facet(provenance.comments),
+        quota: facet(provenance.quota),
+        usage: facet(provenance.usage),
+        attention: facet(provenance.attention),
+        orchestration: facet(provenance.orchestration),
+        dns: facet(provenance.dns),
+        registry: facet(provenance.registry),
+        aa: facet(provenance.aa),
+      };
+    },
   };
 }

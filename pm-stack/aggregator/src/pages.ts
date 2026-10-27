@@ -34,7 +34,7 @@ export const PAGES: PageDef[] = [
     title: "Needs you",
     route: "/attention",
     api: "/api/attention.json",
-    blurb: "NEEDS DREW vs NEEDS ORCHESTRATOR, and every live session.",
+    blurb: "NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.",
   },
   { id: "board", title: "Board", route: "/", api: "/api/board.json", blurb: "The curated cross-repo WIP board." },
   {
