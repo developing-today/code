@@ -45,8 +45,10 @@ done
 body=""
 case "${url}" in
   */auth/tokens) body='{"jwt":"__JWT__"}' ;;
-  */dump) body='CREATE TABLE t (x INTEGER);
+  */dump) body='BEGIN TRANSACTION;
+CREATE TABLE t (x INTEGER);
 INSERT INTO t VALUES (1);
+COMMIT;
 ' ;;
   *) body='{"databases":[{"Name":"db1","Hostname":"db1.example.test"}]}' ;;
 esac
@@ -144,6 +146,13 @@ class TestExportTursoArgv(unittest.TestCase):
         self.assertEqual(lines[lines.index("--max-time") + 1], "1800")
         self.assertEqual(lines[lines.index("--retry") + 1], "1")
         self.assertIn("--retry-all-errors", lines)
+
+    def test_dump_requests_compression(self):
+        # --compressed keeps GB-class dumps under the sandbox proxy's
+        # mid-stream cut: the wire size shrinks several-fold.
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--compressed", self.dump_argv_lines())
 
     def test_dump_max_time_env_override_is_honored(self):
         env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "42"}

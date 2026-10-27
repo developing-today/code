@@ -7,9 +7,15 @@
 # database's own libsql endpoint serves one: GET https://<hostname>/dump
 # with a per-database auth token returns the complete SQL dump. So per
 # database: mint a token (POST .../databases/<name>/auth/tokens, with
-# the platform token), download /dump with curl, rebuild a standalone
-# SQLite file with python3, require PRAGMA integrity_check = ok,
-# gzip -6, and file it with `cold-store put-backup turso`.
+# the platform token), download /dump with curl (--compressed: the
+# uncompressed stream is large enough to be cut mid-transfer in the
+# sandbox; compression shrinks the wire size several-fold), require
+# the dump to end in COMMIT; (a truncated dump otherwise rebuilds
+# into an integrity-clean but partial database), stream it through
+# the sqlite3 CLI to rebuild a standalone SQLite file — constant
+# memory at any dump size, unlike reading it into python — require
+# PRAGMA integrity_check = ok and at least one user table, gzip -6,
+# and file it with `cold-store put-backup turso`.
 #
 # Databases are discovered from the Platform API
 # (GET .../organizations/<org>/databases — items carry Name and
@@ -40,6 +46,12 @@
 #                             from <TURSO_DUMP_BASE>/<name>/dump
 #                             instead of https://<hostname>/dump.
 #                             Test seam.
+#   SQLITE3_BIN               optional; the sqlite3 CLI used to
+#                             rebuild and verify each dump (default:
+#                             sqlite3 from PATH). The rebuild streams
+#                             the dump through this binary; if it is
+#                             missing, that database fails loudly —
+#                             there is no in-memory fallback.
 #   COLD_STORE_BIN            optional; the cold-store executable
 #                             (default: ../cold-store next to this
 #                             script).
@@ -66,6 +78,7 @@ esac
 API_BASE="${TURSO_API_BASE:-https://api.turso.tech}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COLD_STORE="${COLD_STORE_BIN:-${SCRIPT_DIR}/../cold-store}"
+SQLITE3="${SQLITE3_BIN:-sqlite3}"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
@@ -139,13 +152,16 @@ PY
   fi
 
   # Download the SQL dump from the database's own libsql endpoint
-  # (curl: the proxy-safe transport in the cron sandbox).
+  # (curl: the proxy-safe transport in the cron sandbox). --compressed
+  # is load-bearing for GB-class dumps: uncompressed, the atlas dump
+  # was cut mid-stream (~525 MB in); compressed its wire size drops to
+  # ~507 MB total and completes.
   if [[ -n ${TURSO_DUMP_BASE:-} ]]; then
     dump_url="${TURSO_DUMP_BASE}/${name}/dump"
   else
     dump_url="https://${hostname}/dump"
   fi
-  if ! curl_auth "${jwt}" -fsS --max-time "${DUMP_MAX_TIME}" \
+  if ! curl_auth "${jwt}" -fsS --compressed --max-time "${DUMP_MAX_TIME}" \
     --retry 1 --retry-all-errors \
     "${dump_url}" -o "${dump_sql}"; then
     echo "turso export: ERROR: ${name}: dump download failed (${dump_url})" >&2
@@ -153,26 +169,46 @@ PY
   fi
   unset jwt
 
-  # Rebuild a standalone SQLite file; integrity must check out.
-  if ! python3 - "${dump_sql}" "${db_file}" <<'PY'
-import sqlite3
-import sys
+  # Truncation guard: a dump cut mid-stream ends inside its open
+  # transaction, yet rebuilds into a database whose integrity_check
+  # still says ok (the uncommitted tail silently rolls back). A
+  # complete libsql dump's last non-empty line is its COMMIT. The
+  # scan streams (awk holds one line), so this is safe at any size.
+  local last_line
+  last_line="$(awk 'NF { line = $0 } END { print line }' "${dump_sql}")"
+  if [[ ${last_line} != "COMMIT;" ]]; then
+    echo "turso export: ERROR: ${name}: dump appears truncated (last non-empty line is not COMMIT;)" >&2
+    return 1
+  fi
 
-src, dst = sys.argv[1], sys.argv[2]
-with open(src) as fh:
-    sql = fh.read()
-con = sqlite3.connect(dst)
-try:
-    con.executescript(sql)
-    row = con.execute("PRAGMA integrity_check").fetchone()
-finally:
-    con.close()
-if row is None or row[0] != "ok":
-    print(f"integrity_check returned {row}", file=sys.stderr)
-    sys.exit(1)
-PY
-  then
-    echo "turso export: ERROR: ${name}: dump did not rebuild to an integrity-clean SQLite file" >&2
+  # Rebuild by streaming the dump through the sqlite3 CLI — constant
+  # memory, unlike the previous python3 path which read the whole
+  # dump into RAM and was OOM-killed on GB-class dumps. -bail makes
+  # any bad statement a hard failure. If the CLI is missing this
+  # database fails loudly; there is deliberately no fallback.
+  if ! command -v "${SQLITE3}" >/dev/null 2>&1; then
+    echo "turso export: ERROR: ${name}: sqlite3 CLI not found (SQLITE3_BIN=${SQLITE3}); cannot rebuild the export" >&2
+    return 1
+  fi
+  if ! "${SQLITE3}" -bail "${db_file}" <"${dump_sql}"; then
+    echo "turso export: ERROR: ${name}: dump did not rebuild into a SQLite file" >&2
+    return 1
+  fi
+  # Verify the finished file (the CLI reads it; the dump text is
+  # never loaded whole again): integrity_check must say ok, and the
+  # file must hold at least one user table — an export that lost its
+  # transaction tail is integrity-clean but empty.
+  local integrity
+  if ! integrity="$("${SQLITE3}" -readonly "${db_file}" "PRAGMA integrity_check;")" ||
+    [[ ${integrity} != "ok" ]]; then
+    echo "turso export: ERROR: ${name}: rebuilt file failed integrity_check (${integrity:-unreadable})" >&2
+    return 1
+  fi
+  local user_tables
+  if ! user_tables="$("${SQLITE3}" -readonly "${db_file}" \
+    "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';")" ||
+    [[ ! ${user_tables} =~ ^[0-9]+$ ]] || [[ ${user_tables} -lt 1 ]]; then
+    echo "turso export: ERROR: ${name}: rebuilt file has no user tables (dump may be truncated or empty)" >&2
     return 1
   fi
 
