@@ -232,12 +232,18 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
 }
 
 /**
- * Snapshot records for one tick: a pct record per window whose value
- * CHANGED since the gatherer last appended it (the state map is
- * serviceId|metricId -> "value|resetsAt"), so the store gains a point
- * when a reading moves, not every 15 minutes. Label-only windows
- * (balances) yield no record in v1 — the CNY balance case is #1052's
- * unit work; quota-current still carries the label.
+ * Snapshot records for one tick: a pct record per window whose VALUE
+ * changed since the gatherer last appended it (the state map is
+ * serviceId|metricId -> value), so the store gains a point when a
+ * reading moves, not every 15 minutes. The stamp is the value alone:
+ * several providers recompute the reset instant from a duration on
+ * every fetch (sub-second drift, or "now + window" for idle 5h
+ * windows), so keying on resetsAt would append noise points for
+ * readings that did not move. A window roll still shows up — as the
+ * value change it causes. The record itself carries the current
+ * resetsAt. Label-only windows (balances) yield no record in v1 —
+ * the CNY balance case is #1052's unit work; quota-current still
+ * carries the label.
  */
 export function recordsFromEntries(
   entries: QuotaCurrentEntry[],
@@ -251,7 +257,7 @@ export function recordsFromEntries(
     for (const w of entry.windows) {
       if (w.pctOfLimit == null) continue;
       const key = `${entry.serviceId}|${w.name}`;
-      const stamp = `${w.pctOfLimit}|${w.resetsAt ?? ""}`;
+      const stamp = `${w.pctOfLimit}`;
       if (lastAppended.get(key) === stamp) continue;
       appended.set(key, stamp);
       records.push({

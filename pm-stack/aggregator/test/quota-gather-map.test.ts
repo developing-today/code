@@ -133,6 +133,17 @@ describe("recordsFromEntries", () => {
     const third = recordsFromEntries([moved], state, "quota-gatherer");
     expect(third.records).toHaveLength(1);
     expect(third.records[0].value).toBe(31);
+    // A recomputed reset instant with the SAME value appends nothing
+    // (providers derive resetsAt from durations; it drifts per fetch).
+    const drifted = entryFromResult(
+      {
+        ...OK_RESULT,
+        usage: { windows: { weekly: { usedPercent: 31, windowSeconds: 604800, resetAt: 1793438427999 } } },
+      },
+      "2026-10-27T05:30:00.000Z",
+    );
+    const stateAfterMove = new Map([...state, ...third.appended]);
+    expect(recordsFromEntries([drifted], stateAfterMove, "quota-gatherer").records).toHaveLength(0);
   });
   test("error entries produce no records", () => {
     const err = entryFromResult(
