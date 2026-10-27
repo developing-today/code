@@ -842,173 +842,7 @@
             "context": 1050000,
             "output": 128000
           }
-        },
-        "deepseek/deepseek-v4-pro": {
-          "name": "DeepSeek V4 Pro (via AI Gateway)"
-        },
-        "minimax/m3.1-flash": {
-          "name": "MiniMax-M3.1-Flash (via AI Gateway)"
-        },
-        "alibaba/qwen3.8-max": {
-          "name": "Qwen3.8 Max (via AI Gateway)"
-        },
-        "alibaba/qwen3.5-397b-a17b": {
-          "name": "Qwen3.5 397B-A17B (via AI Gateway)"
-        },
-        "alibaba/qwen3.7-plus": {
-          "name": "Qwen3.7 Plus (via AI Gateway)"
-        },
-        "alibaba/qwen3-max": {
-          "name": "Qwen3 Max (via AI Gateway)"
-        },
-        "alibaba/qwen3.7-max": {
-          "name": "Qwen3.7 Max (via AI Gateway)"
-        },
-        "reflection-ai/beam-1.0-501b-a23b": {
-          "name": "Beam 1.0 501B A23B (via AI Gateway)"
-        },
-        "moonshotai/kimi-k3": {
-          "name": "Kimi K3 (via AI Gateway)"
-        },
-        "unbiased/pareto": {
-          "name": "Pareto (via AI Gateway)"
-        },
-        "openai/gpt-5.4-nano": {
-          "name": "GPT-5.4 nano (via AI Gateway)"
-        },
-        "openai/o4-mini": {
-          "name": "o4-mini (via AI Gateway)"
-        },
-        "openai/gpt-4.1-mini": {
-          "name": "GPT-4.1 mini (via AI Gateway)"
-        },
-        "openai/gpt-4.1-nano": {
-          "name": "GPT-4.1 nano (via AI Gateway)"
-        },
-        "openai/gpt-5-nano": {
-          "name": "GPT-5 Nano (via AI Gateway)"
-        },
-        "openai/gpt-5": {
-          "name": "GPT-5 (via AI Gateway)"
-        },
-        "openai/gpt-5.4-mini": {
-          "name": "GPT-5.4 mini (via AI Gateway)"
-        },
-        "openai/gpt-5.1": {
-          "name": "GPT-5.1 (via AI Gateway)"
-        },
-        "openai/gpt-4.1": {
-          "name": "GPT-4.1 (via AI Gateway)"
-        },
-        "openai/o3": {
-          "name": "o3 (via AI Gateway)"
-        },
-        "xai/grok-4.20-0309-reasoning": {
-          "name": "Grok 4.20 (Reasoning) (via AI Gateway)"
-        },
-        "xai/grok-4.7": {
-          "name": "Grok 4.7 (via AI Gateway)"
-        },
-        "xai/grok-4.6": {
-          "name": "Grok 4.6 (via AI Gateway)"
-        },
-        "xai/grok-4.3": {
-          "name": "Grok 4.3 (via AI Gateway)"
-        },
-        "xai/grok-4.5": {
-          "name": "Grok 4.5 (via AI Gateway)"
-        },
-        "xai/grok-4.20-0309-non-reasoning": {
-          "name": "Grok 4.20 (Non-Reasoning) (via AI Gateway)"
-        },
-        "fireworks/ember-1": {
-          "name": "Ember-1 (via AI Gateway)"
-        },
-        "meta/muse-spark-open": {
-          "name": "Muse Spark Open (via AI Gateway)"
-        },
-        "meta/muse-spark-1.3": {
-          "name": "Muse Spark 1.3 (via AI Gateway)"
-        },
-        "meta/muse-wonder-1.0": {
-          "name": "Muse Wonder (via AI Gateway)"
-        },
-        "meta/muse-spark-1.1": {
-          "name": "Muse Spark 1.1 (via AI Gateway)"
-        },
-        "meta/muse-spark-1.2": {
-          "name": "Muse Spark 1.2 (via AI Gateway)"
-        },
-        "google/gemini-3.1-pro": {
-          "name": "Gemini 3.1 Pro Preview (via AI Gateway)"
-        },
-        "google/gemini-2.5-flash": {
-          "name": "Gemini 2.5 Flash (via AI Gateway)"
-        },
-        "google/gemini-3.5-flash": {
-          "name": "Gemini 3.5 Flash (via AI Gateway)"
-        },
-        "google/gemini-4-argon": {
-          "name": "Gemini 4 Argon (via AI Gateway)"
-        },
-        "google/gemini-3.7-flash": {
-          "name": "Gemini 3.7 Flash (via AI Gateway)"
-        },
-        "google/gemini-3.1-flash-lite": {
-          "name": "Gemini 3.1 Flash Lite (via AI Gateway)"
-        },
-        "google/gemini-3-flash": {
-          "name": "Gemini 3 Flash Preview (via AI Gateway)"
-        },
-        "google/gemini-3.8-flash": {
-          "name": "Gemini 3.8 Flash (via AI Gateway)"
-        },
-        "google/gemini-3.5-flash-lite": {
-          "name": "Gemini 3.5 Flash Lite (via AI Gateway)"
-        },
-        "google/gemini-2.5-flash-lite": {
-          "name": "Gemini 2.5 Flash-Lite (via AI Gateway)"
-        },
-        "google/gemini-3.6-flash": {
-          "name": "Gemini 3.6 Flash (via AI Gateway)"
-        },
-        "google/gemini-2.5-pro": {
-          "name": "Gemini 2.5 Pro (via AI Gateway)"
-        },
-        "anthropic/claude-opus-4.5": {
-          "name": "Claude Opus 4.5 (latest) (via AI Gateway)"
-        },
-        "anthropic/claude-haiku-4.5": {
-          "name": "Claude Haiku 4.5 (latest) (via AI Gateway)"
-        },
-        "anthropic/claude-opus-4.6": {
-          "name": "Claude Opus 4.6 (via AI Gateway)"
-        },
-        "anthropic/claude-haiku-5.5": {
-          "name": "Claude Haiku 5.5 (via AI Gateway)"
-        },
-        "anthropic/claude-fable-5.1": {
-          "name": "Claude Fable 5.1 (via AI Gateway)"
-        },
-        "anthropic/claude-opus-4.8": {
-          "name": "Claude Opus 4.8 (via AI Gateway)"
-        },
-        "anthropic/claude-sonnet-4.6": {
-          "name": "Claude Sonnet 4.6 (via AI Gateway)"
-        },
-        "anthropic/claude-opus-4.7": {
-          "name": "Claude Opus 4.7 (via AI Gateway)"
-        },
-        "anthropic/claude-fable-5": {
-          "name": "Claude Fable 5 (via AI Gateway)"
-        },
-        "anthropic/claude-sonnet-5": {
-          "name": "Claude Sonnet 5 (via AI Gateway)"
-        },
-        "anthropic/claude-opus-5": {
-          "name": "Claude Opus 5 (via AI Gateway)"
         }
-
       }
     },
     "google": {
@@ -2297,71 +2131,7 @@
               }
             }
           }
-        },
-        "gemini-3.8-flash-low": {
-          "name": "Gemini 3.8 Flash Low (agy)"
-        },
-        "gemini-3.8-flash-medium": {
-          "name": "Gemini 3.8 Flash Medium (agy)"
-        },
-        "gemini-3.8-flash-high": {
-          "name": "Gemini 3.8 Flash High (agy)"
-        },
-        "gemini-3.7-flash": {
-          "name": "Gemini 3.7 Flash (agy)"
-        },
-        "gemini-3.7-flash-low": {
-          "name": "Gemini 3.7 Flash Low (agy)"
-        },
-        "gemini-3.7-flash-medium": {
-          "name": "Gemini 3.7 Flash Medium (agy)"
-        },
-        "gemini-3.7-flash-high": {
-          "name": "Gemini 3.7 Flash High (agy)"
-        },
-        "gemini-3.6-flash": {
-          "name": "Gemini 3.6 Flash (agy)"
-        },
-        "gemini-3.6-flash-low": {
-          "name": "Gemini 3.6 Flash Low (agy)"
-        },
-        "gemini-3.6-flash-medium": {
-          "name": "Gemini 3.6 Flash Medium (agy)"
-        },
-        "gemini-3.6-flash-high": {
-          "name": "Gemini 3.6 Flash High (agy)"
-        },
-        "gemini-3.1-pro": {
-          "name": "Gemini 3.1 Pro (agy)"
-        },
-        "gemini-3.1-pro-low": {
-          "name": "Gemini 3.1 Pro Low (agy)"
-        },
-        "gemini-3.1-pro-high": {
-          "name": "Gemini 3.1 Pro High (agy)"
-        },
-        "claude-sonnet-5-5-low": {
-          "name": "Claude Sonnet 5.5 Low (agy)"
-        },
-        "claude-sonnet-5-5-medium": {
-          "name": "Claude Sonnet 5.5 Medium (agy)"
-        },
-        "claude-sonnet-5-5-high": {
-          "name": "Claude Sonnet 5.5 High (agy)"
-        },
-        "claude-opus-5-5-low": {
-          "name": "Claude Opus 5.5 Low (agy)"
-        },
-        "claude-opus-5-5-medium": {
-          "name": "Claude Opus 5.5 Medium (agy)"
-        },
-        "claude-opus-5-5-high": {
-          "name": "Claude Opus 5.5 High (agy)"
-        },
-        "gpt-oss-120b-medium": {
-          "name": "GPT-OSS 120B Medium (agy)"
         }
-
       }
     },
     "antigravity-ls": {
@@ -2520,83 +2290,7 @@
               }
             }
           }
-        },
-        "gemini-3.8-flash-low": {
-          "name": "Gemini 3.8 Flash Low (Direct LS)"
-        },
-        "gemini-3.8-flash-medium": {
-          "name": "Gemini 3.8 Flash Medium (Direct LS)"
-        },
-        "gemini-3.8-flash-high": {
-          "name": "Gemini 3.8 Flash High (Direct LS)"
-        },
-        "gemini-3.7-flash": {
-          "name": "Gemini 3.7 Flash (Direct LS)"
-        },
-        "gemini-3.7-flash-low": {
-          "name": "Gemini 3.7 Flash Low (Direct LS)"
-        },
-        "gemini-3.7-flash-medium": {
-          "name": "Gemini 3.7 Flash Medium (Direct LS)"
-        },
-        "gemini-3.7-flash-high": {
-          "name": "Gemini 3.7 Flash High (Direct LS)"
-        },
-        "gemini-3.6-flash": {
-          "name": "Gemini 3.6 Flash (Direct LS)"
-        },
-        "gemini-3.6-flash-low": {
-          "name": "Gemini 3.6 Flash Low (Direct LS)"
-        },
-        "gemini-3.6-flash-medium": {
-          "name": "Gemini 3.6 Flash Medium (Direct LS)"
-        },
-        "gemini-3.6-flash-high": {
-          "name": "Gemini 3.6 Flash High (Direct LS)"
-        },
-        "gemini-3.1-pro": {
-          "name": "Gemini 3.1 Pro (Direct LS)"
-        },
-        "gemini-3.1-pro-low": {
-          "name": "Gemini 3.1 Pro Low (Direct LS)"
-        },
-        "gemini-3.1-pro-high": {
-          "name": "Gemini 3.1 Pro High (Direct LS)"
-        },
-        "claude-sonnet-5-5-low": {
-          "name": "Claude Sonnet 5.5 Low (Direct LS)"
-        },
-        "claude-sonnet-5-5-medium": {
-          "name": "Claude Sonnet 5.5 Medium (Direct LS)"
-        },
-        "claude-sonnet-5-5-high": {
-          "name": "Claude Sonnet 5.5 High (Direct LS)"
-        },
-        "claude-opus-5-5-low": {
-          "name": "Claude Opus 5.5 Low (Direct LS)"
-        },
-        "claude-opus-5-5-medium": {
-          "name": "Claude Opus 5.5 Medium (Direct LS)"
-        },
-        "claude-opus-5-5-high": {
-          "name": "Claude Opus 5.5 High (Direct LS)"
-        },
-        "gpt-oss-120b-medium": {
-          "name": "GPT-OSS 120B Medium (Direct LS)"
-        },
-        "chat_20706": {
-          "name": "chat_20706 (Direct LS)"
-        },
-        "chat_23310": {
-          "name": "chat_23310 (Direct LS)"
-        },
-        "tab_flash_lite_preview": {
-          "name": "tab_flash_lite_preview (Direct LS)"
-        },
-        "tab_jump_flash_lite_preview": {
-          "name": "tab_jump_flash_lite_preview (Direct LS)"
         }
-
       }
     },
     "openai": {
@@ -2680,12 +2374,6 @@
           }
         },
         "gpt-6.1-sol-fast": {
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-terra": {
           "limit": {
             "context": 1050000,
             "output": 128000
@@ -3256,6 +2944,31 @@
               }
             }
           }
+        },
+        "gpt-6.1-terra": {
+          "name": "GPT-6.1 Terra",
+          "limit": {
+            "context": 1050000,
+            "input": 922000,
+            "output": 128000
+          },
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          }
         }
       }
     },
@@ -3303,45 +3016,6 @@
           },
           "limit": {
             "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-terra": {
-          "name": "GPT-6.1 Terra (codex)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 500000,
             "output": 128000
           }
         },
@@ -3666,169 +3340,45 @@
             "output": 128000
           }
         },
-        "gpt-6.1-sol-low": {
-          "name": "GPT-6.1 Sol Low (codex)"
-        },
-        "gpt-6.1-sol-medium": {
-          "name": "GPT-6.1 Sol Medium (codex)"
-        },
-        "gpt-6.1-sol-high": {
-          "name": "GPT-6.1 Sol High (codex)"
-        },
-        "gpt-6.1-sol-xhigh": {
-          "name": "GPT-6.1 Sol XHigh (codex)"
-        },
-        "gpt-6.1-sol-max": {
-          "name": "GPT-6.1 Sol Max (codex)"
-        },
-        "gpt-6.1-sol-ultra": {
-          "name": "GPT-6.1 Sol Ultra (codex)"
-        },
-        "gpt-6-astra-low": {
-          "name": "GPT-6 Astra Low (codex)"
-        },
-        "gpt-6-astra-medium": {
-          "name": "GPT-6 Astra Medium (codex)"
-        },
-        "gpt-6-astra-high": {
-          "name": "GPT-6 Astra High (codex)"
-        },
-        "gpt-6-astra-xhigh": {
-          "name": "GPT-6 Astra XHigh (codex)"
-        },
-        "gpt-6-astra-max": {
-          "name": "GPT-6 Astra Max (codex)"
-        },
-        "gpt-6-astra-ultra": {
-          "name": "GPT-6 Astra Ultra (codex)"
-        },
-        "gpt-6-sol-low": {
-          "name": "GPT-6 Sol Low (codex)"
-        },
-        "gpt-6-sol-medium": {
-          "name": "GPT-6 Sol Medium (codex)"
-        },
-        "gpt-6-sol-high": {
-          "name": "GPT-6 Sol High (codex)"
-        },
-        "gpt-6-sol-xhigh": {
-          "name": "GPT-6 Sol XHigh (codex)"
-        },
-        "gpt-6-sol-max": {
-          "name": "GPT-6 Sol Max (codex)"
-        },
-        "gpt-6-sol-ultra": {
-          "name": "GPT-6 Sol Ultra (codex)"
-        },
-        "gpt-6-luna-low": {
-          "name": "GPT-6 Luna Low (codex)"
-        },
-        "gpt-6-luna-medium": {
-          "name": "GPT-6 Luna Medium (codex)"
-        },
-        "gpt-6-luna-high": {
-          "name": "GPT-6 Luna High (codex)"
-        },
-        "gpt-6-luna-xhigh": {
-          "name": "GPT-6 Luna XHigh (codex)"
-        },
-        "gpt-6-luna-max": {
-          "name": "GPT-6 Luna Max (codex)"
-        },
-        "gpt-5.6-sol-low": {
-          "name": "GPT-5.6 Sol Low (codex)"
-        },
-        "gpt-5.6-sol-medium": {
-          "name": "GPT-5.6 Sol Medium (codex)"
-        },
-        "gpt-5.6-sol-high": {
-          "name": "GPT-5.6 Sol High (codex)"
-        },
-        "gpt-5.6-sol-xhigh": {
-          "name": "GPT-5.6 Sol XHigh (codex)"
-        },
-        "gpt-5.6-sol-max": {
-          "name": "GPT-5.6 Sol Max (codex)"
-        },
-        "gpt-5.6-sol-ultra": {
-          "name": "GPT-5.6 Sol Ultra (codex)"
-        },
-        "gpt-5.6-terra-low": {
-          "name": "GPT-5.6 Terra Low (codex)"
-        },
-        "gpt-5.6-terra-medium": {
-          "name": "GPT-5.6 Terra Medium (codex)"
-        },
-        "gpt-5.6-terra-high": {
-          "name": "GPT-5.6 Terra High (codex)"
-        },
-        "gpt-5.6-terra-xhigh": {
-          "name": "GPT-5.6 Terra XHigh (codex)"
-        },
-        "gpt-5.6-terra-max": {
-          "name": "GPT-5.6 Terra Max (codex)"
-        },
-        "gpt-5.6-terra-ultra": {
-          "name": "GPT-5.6 Terra Ultra (codex)"
-        },
-        "gpt-5.6-luna-low": {
-          "name": "GPT-5.6 Luna Low (codex)"
-        },
-        "gpt-5.6-luna-medium": {
-          "name": "GPT-5.6 Luna Medium (codex)"
-        },
-        "gpt-5.6-luna-high": {
-          "name": "GPT-5.6 Luna High (codex)"
-        },
-        "gpt-5.6-luna-xhigh": {
-          "name": "GPT-5.6 Luna XHigh (codex)"
-        },
-        "gpt-5.6-luna-max": {
-          "name": "GPT-5.6 Luna Max (codex)"
-        },
-        "gpt-5.5-low": {
-          "name": "GPT-5.5 Low (codex)"
-        },
-        "gpt-5.5-medium": {
-          "name": "GPT-5.5 Medium (codex)"
-        },
-        "gpt-5.5-high": {
-          "name": "GPT-5.5 High (codex)"
-        },
-        "gpt-5.5-xhigh": {
-          "name": "GPT-5.5 XHigh (codex)"
-        },
-        "gpt-reserve-low": {
-          "name": "GPT Reserve Low (codex)"
-        },
-        "gpt-reserve-medium": {
-          "name": "GPT Reserve Medium (codex)"
-        },
-        "gpt-reserve-high": {
-          "name": "GPT Reserve High (codex)"
-        },
-        "gpt-reserve-xhigh": {
-          "name": "GPT Reserve XHigh (codex)"
-        },
-        "gpt-reserve-max": {
-          "name": "GPT Reserve Max (codex)"
-        },
-        "codex-auto-review-low": {
-          "name": "Codex Auto Review Low (codex)"
-        },
-        "codex-auto-review-medium": {
-          "name": "Codex Auto Review Medium (codex)"
-        },
-        "codex-auto-review-high": {
-          "name": "Codex Auto Review High (codex)"
-        },
-        "codex-auto-review-xhigh": {
-          "name": "Codex Auto Review XHigh (codex)"
-        },
-        "codex-auto-review-max": {
-          "name": "Codex Auto Review Max (codex)"
+        "gpt-6.1-terra": {
+          "name": "GPT-6.1 Terra (Codex CLI)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
         }
-
       }
     },
     "chatgpt": {
@@ -3875,45 +3425,6 @@
           },
           "limit": {
             "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-6.1-terra": {
-          "name": "GPT-6.1 Terra (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            },
-            "ultra": {
-              "options": {
-                "reasoning_effort": "ultra"
-              }
-            }
-          },
-          "limit": {
-            "context": 500000,
             "output": 128000
           }
         },
@@ -4169,238 +3680,7 @@
             "context": 1000000,
             "output": 128000
           }
-        },
-        "gpt-6.1-sol-low": {
-          "name": "GPT-6.1 Sol Low (ChatGPT)"
-        },
-        "gpt-6.1-sol-medium": {
-          "name": "GPT-6.1 Sol Medium (ChatGPT)"
-        },
-        "gpt-6.1-sol-high": {
-          "name": "GPT-6.1 Sol High (ChatGPT)"
-        },
-        "gpt-6.1-sol-xhigh": {
-          "name": "GPT-6.1 Sol XHigh (ChatGPT)"
-        },
-        "gpt-6.1-sol-max": {
-          "name": "GPT-6.1 Sol Max (ChatGPT)"
-        },
-        "gpt-6.1-sol-ultra": {
-          "name": "GPT-6.1 Sol Ultra (ChatGPT)"
-        },
-        "gpt-6-astra-low": {
-          "name": "GPT-6 Astra Low (ChatGPT)"
-        },
-        "gpt-6-astra-medium": {
-          "name": "GPT-6 Astra Medium (ChatGPT)"
-        },
-        "gpt-6-astra-high": {
-          "name": "GPT-6 Astra High (ChatGPT)"
-        },
-        "gpt-6-astra-xhigh": {
-          "name": "GPT-6 Astra XHigh (ChatGPT)"
-        },
-        "gpt-6-astra-max": {
-          "name": "GPT-6 Astra Max (ChatGPT)"
-        },
-        "gpt-6-astra-ultra": {
-          "name": "GPT-6 Astra Ultra (ChatGPT)"
-        },
-        "gpt-6-sol-low": {
-          "name": "GPT-6 Sol Low (ChatGPT)"
-        },
-        "gpt-6-sol-medium": {
-          "name": "GPT-6 Sol Medium (ChatGPT)"
-        },
-        "gpt-6-sol-high": {
-          "name": "GPT-6 Sol High (ChatGPT)"
-        },
-        "gpt-6-sol-xhigh": {
-          "name": "GPT-6 Sol XHigh (ChatGPT)"
-        },
-        "gpt-6-sol-max": {
-          "name": "GPT-6 Sol Max (ChatGPT)"
-        },
-        "gpt-6-sol-ultra": {
-          "name": "GPT-6 Sol Ultra (ChatGPT)"
-        },
-        "gpt-6-luna-low": {
-          "name": "GPT-6 Luna Low (ChatGPT)"
-        },
-        "gpt-6-luna-medium": {
-          "name": "GPT-6 Luna Medium (ChatGPT)"
-        },
-        "gpt-6-luna-high": {
-          "name": "GPT-6 Luna High (ChatGPT)"
-        },
-        "gpt-6-luna-xhigh": {
-          "name": "GPT-6 Luna XHigh (ChatGPT)"
-        },
-        "gpt-6-luna-max": {
-          "name": "GPT-6 Luna Max (ChatGPT)"
-        },
-        "gpt-5.6-sol-low": {
-          "name": "GPT-5.6 Sol Low (ChatGPT)"
-        },
-        "gpt-5.6-sol-medium": {
-          "name": "GPT-5.6 Sol Medium (ChatGPT)"
-        },
-        "gpt-5.6-sol-high": {
-          "name": "GPT-5.6 Sol High (ChatGPT)"
-        },
-        "gpt-5.6-sol-xhigh": {
-          "name": "GPT-5.6 Sol XHigh (ChatGPT)"
-        },
-        "gpt-5.6-sol-max": {
-          "name": "GPT-5.6 Sol Max (ChatGPT)"
-        },
-        "gpt-5.6-sol-ultra": {
-          "name": "GPT-5.6 Sol Ultra (ChatGPT)"
-        },
-        "gpt-5.6-terra-low": {
-          "name": "GPT-5.6 Terra Low (ChatGPT)"
-        },
-        "gpt-5.6-terra-medium": {
-          "name": "GPT-5.6 Terra Medium (ChatGPT)"
-        },
-        "gpt-5.6-terra-high": {
-          "name": "GPT-5.6 Terra High (ChatGPT)"
-        },
-        "gpt-5.6-terra-xhigh": {
-          "name": "GPT-5.6 Terra XHigh (ChatGPT)"
-        },
-        "gpt-5.6-terra-max": {
-          "name": "GPT-5.6 Terra Max (ChatGPT)"
-        },
-        "gpt-5.6-terra-ultra": {
-          "name": "GPT-5.6 Terra Ultra (ChatGPT)"
-        },
-        "gpt-5.6-luna-low": {
-          "name": "GPT-5.6 Luna Low (ChatGPT)"
-        },
-        "gpt-5.6-luna-medium": {
-          "name": "GPT-5.6 Luna Medium (ChatGPT)"
-        },
-        "gpt-5.6-luna-high": {
-          "name": "GPT-5.6 Luna High (ChatGPT)"
-        },
-        "gpt-5.6-luna-xhigh": {
-          "name": "GPT-5.6 Luna XHigh (ChatGPT)"
-        },
-        "gpt-5.6-luna-max": {
-          "name": "GPT-5.6 Luna Max (ChatGPT)"
-        },
-        "gpt-5.5-low": {
-          "name": "GPT-5.5 Low (ChatGPT)"
-        },
-        "gpt-5.5-medium": {
-          "name": "GPT-5.5 Medium (ChatGPT)"
-        },
-        "gpt-5.5-high": {
-          "name": "GPT-5.5 High (ChatGPT)"
-        },
-        "gpt-5.5-xhigh": {
-          "name": "GPT-5.5 XHigh (ChatGPT)"
-        },
-        "gpt-reserve": {
-          "name": "GPT Reserve (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "gpt-reserve-low": {
-          "name": "GPT Reserve Low (ChatGPT)"
-        },
-        "gpt-reserve-medium": {
-          "name": "GPT Reserve Medium (ChatGPT)"
-        },
-        "gpt-reserve-high": {
-          "name": "GPT Reserve High (ChatGPT)"
-        },
-        "gpt-reserve-xhigh": {
-          "name": "GPT Reserve XHigh (ChatGPT)"
-        },
-        "gpt-reserve-max": {
-          "name": "GPT Reserve Max (ChatGPT)"
-        },
-        "codex-auto-review": {
-          "name": "Codex Auto Review (ChatGPT)",
-          "variants": {
-            "low": {
-              "options": {
-                "reasoning_effort": "low"
-              }
-            },
-            "medium": {
-              "options": {
-                "reasoning_effort": "medium"
-              }
-            },
-            "high": {
-              "options": {
-                "reasoning_effort": "high"
-              }
-            },
-            "xhigh": {
-              "options": {
-                "reasoning_effort": "xhigh"
-              }
-            },
-            "max": {
-              "options": {
-                "reasoning_effort": "max"
-              }
-            }
-          },
-          "limit": {
-            "context": 1000000,
-            "output": 128000
-          }
-        },
-        "codex-auto-review-low": {
-          "name": "Codex Auto Review Low (ChatGPT)"
-        },
-        "codex-auto-review-medium": {
-          "name": "Codex Auto Review Medium (ChatGPT)"
-        },
-        "codex-auto-review-high": {
-          "name": "Codex Auto Review High (ChatGPT)"
-        },
-        "codex-auto-review-xhigh": {
-          "name": "Codex Auto Review XHigh (ChatGPT)"
-        },
-        "codex-auto-review-max": {
-          "name": "Codex Auto Review Max (ChatGPT)"
         }
-
       }
     },
     // NOTE (2026-10-25): design-code proxy block (one of three identical copies) - commented out per Drew; only the direct Open Design cloud provider ("opendesign") stays active. Preserved, not deleted.
@@ -4863,32 +4143,7 @@
         "qwen3.7-plus": {
           "id": "cline-pass/qwen3.7-plus",
           "name": "Qwen3.7 Plus (ClinePass)"
-        },
-        "glm-5.2": {
-          "id": "cline-pass/glm-5.2",
-          "name": "GLM-5.2 (ClinePass)"
-        },
-        "kimi-k2.6": {
-          "id": "cline-pass/kimi-k2.6",
-          "name": "Kimi K2.6 (ClinePass)"
-        },
-        "deepseek-v4-flash": {
-          "id": "cline-pass/deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash (ClinePass)"
-        },
-        "kimi-k2.7-code": {
-          "id": "cline-pass/kimi-k2.7-code",
-          "name": "Kimi K2.7 Code (ClinePass)"
-        },
-        "mimo-v2.6-flash": {
-          "id": "cline-pass/mimo-v2.6-flash",
-          "name": "MiMo-V2.6-Flash (ClinePass)"
-        },
-        "mimo-v2.6-pro": {
-          "id": "cline-pass/mimo-v2.6-pro",
-          "name": "MiMo-V2.6-Pro (ClinePass)"
         }
-
       }
     },
     "deepseek": {
@@ -4945,17 +4200,7 @@
               }
             }
           }
-        },
-        "deepseek-v4-flash-vision-exp": {
-          "name": "DeepSeek V4 Flash Vision Exp"
-        },
-        "deepseek-flash": {
-          "name": "DeepSeek V4.1 Flash 1017"
-        },
-        "deepseek-v4-flash": {
-          "name": "DeepSeek V4 Flash"
         }
-
       }
     },
     // DISABLED 2026-10-25 per Drew: "openrouter" provider section commented out + in disabled_providers (its configured :free models were retired 2026-10-22). Commented out per fleet rule, not deleted.
@@ -5002,44 +4247,7 @@
             "context": 131072,
             "output": 16384
           }
-        },
-        "whisper-large-v3": {
-          "name": "Whisper (Groq)"
-        },
-        "llama-3.3-70b-versatile": {
-          "name": "Llama 3.3 70B (Groq)"
-        },
-        "allam-2-7b": {
-          "name": "ALLaM-2-7b (Groq)"
-        },
-        "whisper-large-v3-turbo": {
-          "name": "Whisper Large V3 Turbo (Groq)"
-        },
-        "llama-3.1-8b-instant": {
-          "name": "Llama 3.1 8B (Groq)"
-        },
-        "qwen/qwen3.6-27b": {
-          "name": "Qwen 3.6 27B (Groq)"
-        },
-        "canopylabs/orpheus-arabic-saudi": {
-          "name": "Canopy Labs Orpheus Arabic Saudi (Groq)"
-        },
-        "canopylabs/orpheus-v1-english": {
-          "name": "Canopy Labs Orpheus V1 English (Groq)"
-        },
-        "openai/gpt-oss-20b": {
-          "name": "GPT OSS 20B (Groq)"
-        },
-        "openai/gpt-oss-safeguard-20b": {
-          "name": "Safety GPT OSS 20B (Groq)"
-        },
-        "meta-llama/llama-prompt-guard-2-86m": {
-          "name": "Prompt Guard 2 86M (Groq)"
-        },
-        "meta-llama/llama-prompt-guard-2-22m": {
-          "name": "Llama Prompt Guard 2 22M (Groq)"
         }
-
       }
     },
     "meta": {
@@ -5085,17 +4293,7 @@
         },
         "muse-spark-1.1": {
           "name": "Muse Spark 1.1"
-        },
-        "sam-3.1": {
-          "name": "SAM 3.1"
-        },
-        "muse-image-1.0": {
-          "name": "Muse Image 1.0"
-        },
-        "muse-voice-transcribe-1.0": {
-          "name": "Muse Voice Transcribe 1.0"
         }
-
       }
     },
 // DISABLED 2026-10-25 per Drew — NEVER route sessions to the "muse" provider. It is a second, wasteful door into the SAME single Meta pool as "meta" — the Muse API High Usage plan — reached through the muse terminal program's OAuth login via muse-proxy (the proxy strips META_API_KEY so calls take the OAuth plan route, not the PAYG key route). It is NOT the assistant Muse's Power subscription (the assistant exists only in the app/website and is never a session pool) and NOT a separate pool or "muse plan allowance". The ONLY door sessions may use into the High Usage pool is the "meta" provider. Commented out per fleet rule (disable, never delete).
@@ -5175,32 +4373,7 @@
         "qwen3.7-plus": {
           "id": "cline-pass/qwen3.7-plus",
           "name": "Qwen3.7 Plus (ClinePass)"
-        },
-        "glm-5.2": {
-          "id": "cline-pass/glm-5.2",
-          "name": "GLM-5.2 (ClinePass)"
-        },
-        "kimi-k2.6": {
-          "id": "cline-pass/kimi-k2.6",
-          "name": "Kimi K2.6 (ClinePass)"
-        },
-        "deepseek-v4-flash": {
-          "id": "cline-pass/deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash (ClinePass)"
-        },
-        "kimi-k2.7-code": {
-          "id": "cline-pass/kimi-k2.7-code",
-          "name": "Kimi K2.7 Code (ClinePass)"
-        },
-        "mimo-v2.6-flash": {
-          "id": "cline-pass/mimo-v2.6-flash",
-          "name": "MiMo-V2.6-Flash (ClinePass)"
-        },
-        "mimo-v2.6-pro": {
-          "id": "cline-pass/mimo-v2.6-pro",
-          "name": "MiMo-V2.6-Pro (ClinePass)"
         }
-
       }
     },
     // renamed to dot-style aliases 2026-10-25 (opencode-go.personal / opencode-go.lab); dash forms kept commented per the never-delete-config rule
@@ -6184,26 +5357,6 @@
         "selection": "round-robin",
         "autonomy": "rules"
       },
-      "terra-plan": {
-        "name": "GPT Terra - plan providers",
-        // 2026-10-26: GPT-6.1 Terra released today and PROBE-VERIFIED live the same
-        // evening — the laptop's Codex answered a gpt-6.1-terra call ("TERRA OK").
-        // It was in our world all along; our catalogs simply never listed it (the
-        // gap the provider-catalog completeness work closes). Doors: the OpenAI
-        // API door plus the two Codex/ChatGPT subscription doors, each given an
-        // explicit entry in this PR. openai.alternate is NOT a leaf yet: it
-        // resolves through the fork's built-in catalog, which predates Terra.
-        // AA v4.3.2 (launch day): low 36.2 / medium 41.3 / high 43.9 / xhigh 45.4 /
-        // max 48.1; $1 in / $5 out per 1M — exactly half of Sol; >272k input tokens
-        // bills the whole request at 2x input / 1.5x output.
-        "targets": [
-          "openai/gpt-6.1-terra",
-          "openai-codex/gpt-6.1-terra",
-          "chatgpt/gpt-6.1-terra"
-        ],
-        "selection": "round-robin",
-        "autonomy": "rules"
-      },
       "scout": {
         "name": "Scout - routine work: cheapest, fastest, smart enough",
         // 2026-10-26 (pool remap review): all three routes addressed at #low — the rung every
@@ -6243,17 +5396,12 @@
         // regardless — better on the family's elbow rung than its slow tail. Luna
         // keeps its #xhigh seat for now as the second OpenAI door; per Drew's
         // standing guidance, anywhere Flash is available it covers Luna's niche.
-        // 2026-10-26 (Drew): Terra #medium joins at weight 1 — AA launch-day II 41.3
-        // at $0.095/task, probe-verified live via Codex the evening of its release.
-        // Weight stays at 1 until AA publishes per-rung TTFT (only max's 78s is
-        // known tonight); issue #1249 tracks the missing numbers.
         "targets": [
           "opencode-route/deepseek-flash#high",
           "opencode-route/luna-plan#xhigh",
           "opencode-route/haiku-plan#high",
           "meta/muse-spark-1.3-contributor#xhigh",
-          "opencode-route/sol-plan#low",
-          "opencode-route/terra-plan#medium"
+          "opencode-route/sol-plan#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -6262,8 +5410,7 @@
           "opencode-route/haiku-plan": 2,
           "meta/muse-spark-1.3-contributor": 2,
           "opencode-route/sol-plan": 2,
-          "opencode-route/luna-plan": 1,
-          "opencode-route/terra-plan": 1
+          "opencode-route/luna-plan": 1
         }
       },
       "specialist": {
@@ -6275,17 +5422,10 @@
         // #high <=36 last (TTFT ~2s class; fires only when every seat above is walled).
         // Luna #max REMOVED in pass 3: at 38 it sat 10 points under the pool's band with a
         // 93.8s TTFT — the balance rule's remove case; Sol already covers the OpenAI door.
-        // 2026-10-26: Terra #medium (AA launch-day II 41.3 @ $0.095/task — its family's
-        // elbow and OpenAI's default rung) slots in above Pro: it out-scores Pro's <=36
-        // band at half of Sol's price. Per-rung TTFT is unpublished tonight (only max's
-        // 78s is known); acceptable risk in an ordered chain's relief seat, and issue
-        // #1249 tracks the missing numbers. Workhorse carries Terra #medium too, at
-        // weight 1 until the TTFT lands.
         "targets": [
           "opencode-route/sonnet-plan#high",
           "meta/muse-spark-1.3-contributor#max",
           "opencode-route/sol-plan#medium",
-          "opencode-route/terra-plan#medium",
           "opencode-route/deepseek-pro-plan#high"
         ],
         "selection": "ordered",
