@@ -20,6 +20,7 @@ import {
   timeline as buildTimeline,
   windowPercent,
 } from "./derive.ts";
+import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { githubCommentUrl } from "./comments.ts";
 import { summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
@@ -163,6 +164,24 @@ meter { width: 140px; height: 14px; }
 .cform .kinds label { display: inline-flex; gap: 5px; align-items: center; margin: 0; font-size: 13px; color: #e6edf3; }
 .cform button { margin-top: 10px; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
 .cform .err { color: #f85149; font-size: 12px; margin-top: 6px; }
+.actbox { border: 1px dashed #30363d; border-radius: 8px; padding: 8px 10px; margin: 10px 0 2px; background: #0d1117; }
+.actbox fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.actbox .ahead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+.actbox .ahead label { font-size: 12px; color: #8b949e; }
+.actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"] { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 44px; }
+.aform { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+.aform input[type="text"] { flex: 1 1 180px; }
+.aform button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; min-height: 44px; }
+.aform button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.aform button.danger { border-color: #f85149; color: #f85149; }
+.aform button:disabled, .actbox fieldset:disabled button { opacity: .45; cursor: not-allowed; }
+.aform .confirm { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 44px; }
+.aform .err { color: #f85149; font-size: 12px; flex-basis: 100%; }
+.aform .why { color: #8b949e; font-size: 12px; flex-basis: 100%; }
+.badge.act-pending { background: #d2992233; border-color: #d29922; color: #e3b341; }
+.badge.act-applied { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
+.badge.act-rejected { background: #f8514933; border-color: #f85149; color: #f85149; }
+.badge.act-snoozed { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
 nav select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; margin-left: auto; max-width: 45vw; }
 .foot { margin-top: 40px; border-top: 1px solid #30363d; padding-top: 10px; color: #8b949e; font-size: 12px; }
 .card.stale { opacity: .55; }
@@ -222,6 +241,58 @@ document.addEventListener("change", (ev) => {
   const form = t.closest(".cform");
   const wrap = form && form.querySelector(".ghtarget");
   if (wrap) wrap.style.display = t.value === "github" && t.checked ? "" : "none";
+});
+</script>`;
+
+/**
+ * The client side of the dashboard action forms (#1152/#1154/#1156):
+ * one delegated submit handler, exactly the COMMENT_SCRIPT pattern —
+ * POST /api/actions, reload on success, inline error on failure. The
+ * form's data-* attributes carry the envelope's fixed fields; named
+ * inputs carry the payload. A stop form must have its confirm box
+ * ticked before the script will send it (two-step confirm).
+ */
+const ACTION_SCRIPT = `<script>
+document.addEventListener("submit", async (ev) => {
+  const form = ev.target;
+  if (!(form instanceof HTMLFormElement) || !form.classList.contains("aform")) return;
+  ev.preventDefault();
+  const err = form.querySelector(".err");
+  const data = new FormData(form);
+  if (form.dataset.verb === "stop" && !data.get("confirm")) {
+    if (err) err.textContent = "Not sent: tick Confirm stop first — stopping ends the session's run.";
+    return;
+  }
+  const box = form.closest(".actbox");
+  const authorRaw = String((box && box.querySelector("select[name=author]") || {}).value || "drew|drew|");
+  const [akind, aid, asession] = authorRaw.split("|");
+  const labelEl = box ? box.querySelector('option[value="' + CSS.escape(authorRaw) + '"]') : null;
+  const payload = {};
+  for (const name of ["text", "reason", "status", "tier", "mode", "optionId"]) {
+    const v = data.get(name);
+    if (v) payload[name] = String(v);
+  }
+  const untilCustom = data.get("untilCustom");
+  const untilPreset = data.get("untilPreset");
+  if (untilCustom) payload.until = new Date(String(untilCustom)).toISOString();
+  else if (untilPreset) payload.until = String(untilPreset);
+  const body = {
+    clientToken: form.dataset.token,
+    kind: form.dataset.kind,
+    verb: form.dataset.verb,
+    objectRef: form.dataset.object,
+    author: { kind: akind, id: aid, label: labelEl ? labelEl.textContent : aid, ...(asession ? { sessionId: asession } : {}) },
+    payload,
+  };
+  if (form.dataset.targetRef) body.targetRef = form.dataset.targetRef;
+  if (form.dataset.sessionId) body.sessionId = form.dataset.sessionId;
+  if (form.dataset.sessionSource) body.sessionSource = form.dataset.sessionSource;
+  if (form.dataset.supersedes) body.supersedes = form.dataset.supersedes;
+  try {
+    const res = await fetch("/api/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
+    location.reload();
+  } catch (e) { if (err) err.textContent = "Not recorded: " + e.message; }
 });
 </script>`;
 
@@ -370,6 +441,324 @@ export function commentThreadHtml(
   return `<h2>${esc(heading)}</h2>${list}${commentFormHtml(objectRef, opts)}`;
 }
 
+// --- Dashboard actions (#1152/#1154/#1156) --------------------------------
+// Forms post DashActions to the actions store (src/actions.ts); the
+// fleet consumers apply them and report back. Nothing here writes
+// anywhere else — a control renders the REQUEST and the store's state
+// (pending / applied / rejected), never a pretend-completed change.
+
+/** "12m ago" style relative stamp for action badges. */
+export function relTime(iso: string, now = Date.now()): string {
+  const ms = now - Date.parse(iso);
+  if (Number.isNaN(ms)) return iso;
+  if (ms < 60_000) return "just now";
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+const VERB_BADGE_LABELS: Record<string, string> = {
+  acknowledge: "acknowledge",
+  snooze: "snooze",
+  escalate: "escalate",
+  "de-escalate": "de-escalate",
+  answer: "answer",
+  delegate: "delegate",
+  dismiss: "dismiss",
+  "approve-proposal": "approve proposal",
+  "reject-proposal": "reject proposal",
+  "request-status": "status change",
+  poke: "poke",
+  stop: "stop",
+};
+
+function pendingBadgeLabel(a: DashAction): string {
+  if (a.verb === "request-status") return `status → ${a.payload.status ?? "?"} requested`;
+  if (a.verb === "snooze") return `snooze until ${a.payload.until ? fmtDate(a.payload.until) : "?"} requested`;
+  if (a.verb === "delegate") return `delegate (${a.payload.mode ?? "?"}) requested`;
+  return `${VERB_BADGE_LABELS[a.verb] ?? a.verb} requested`;
+}
+
+/**
+ * The visible state of an object's actions: every still-pending action
+ * as a ⏳ badge, plus the latest applied/rejected outcome per verb
+ * family (snooze / status / acknowledge / tier / delegation) so the
+ * user can SEE that an action landed — or that it was rejected, with
+ * the consumer's note.
+ */
+export function actionBadgesHtml(actions: DashAction[] | undefined, now = Date.now()): string {
+  if (!actions?.length) return "";
+  const badges: string[] = [];
+  for (const a of actions) {
+    if (a.state === "new") {
+      badges.push(
+        `<span class="badge act-pending" title="Action ${esc(a.id)} — waiting for the consuming fleet job's next run">⏳ ${esc(pendingBadgeLabel(a))} · ${esc(relTime(a.createdAt, now))}</span>`,
+      );
+    }
+  }
+  const snooze = latestInFamily(actions, "snooze");
+  if (snooze?.state === "applied" && snooze.payload.until && Date.parse(snooze.payload.until) > now) {
+    badges.push(
+      `<span class="badge act-snoozed" title="Snooze applied by ${esc(snooze.appliedByRun ?? "a fleet run")}">💤 snoozed until ${esc(fmtDate(snooze.payload.until))}</span>`,
+    );
+  }
+  const status = latestInFamily(actions, "status");
+  if (status?.state === "applied") {
+    badges.push(
+      `<span class="badge act-applied">✓ status → ${esc(status.payload.status ?? "")} applied · ${esc(relTime(status.appliedAt ?? status.createdAt, now))}</span>`,
+    );
+  } else if (status?.state === "rejected") {
+    badges.push(
+      `<span class="badge act-rejected" title="${esc(status.resultNote ?? "")}">✗ status → ${esc(status.payload.status ?? "")} rejected${status.resultNote ? ` — ${esc(status.resultNote)}` : ""}</span>`,
+    );
+  }
+  const ack = latestInFamily(actions, "ack");
+  if (ack?.state === "applied") {
+    badges.push(
+      `<span class="badge act-applied">✓ acknowledged · ${esc(relTime(ack.appliedAt ?? ack.createdAt, now))}</span>`,
+    );
+  }
+  const tier = latestInFamily(actions, "tier");
+  if (tier?.state === "applied") {
+    badges.push(
+      `<span class="badge act-applied">✓ moved to ${tier.payload.tier === "needs-drew" ? "Needs User" : "Needs Orchestrator"} · ${esc(relTime(tier.appliedAt ?? tier.createdAt, now))}</span>`,
+    );
+  } else if (tier?.state === "rejected") {
+    badges.push(
+      `<span class="badge act-rejected" title="${esc(tier.resultNote ?? "")}">✗ ${esc(VERB_BADGE_LABELS[tier.verb] ?? tier.verb)} rejected${tier.resultNote ? ` — ${esc(tier.resultNote)}` : ""}</span>`,
+    );
+  }
+  const delegation = latestInFamily(actions, "delegation");
+  if (delegation?.state === "applied") {
+    badges.push(
+      `<span class="badge act-applied">✓ delegated (${esc(delegation.payload.mode ?? "")}) · ${esc(relTime(delegation.appliedAt ?? delegation.createdAt, now))}</span>`,
+    );
+  }
+  return badges.length ? ` <span class="actbadges">${badges.join(" ")}</span>` : "";
+}
+
+export interface ActionFormOpts {
+  /** Author identities for the picker (standing + registry sessions). */
+  identities: AuthorIdentity[];
+  /** When set, every control renders disabled with this reason shown. */
+  disabledReason?: string;
+}
+
+function authorSelectHtml(identities: AuthorIdentity[]): string {
+  const options = identities
+    .map(
+      (i) =>
+        `<option value="${esc(`${i.kind}|${i.id}|${i.sessionId ?? ""}`)}"${i.id === "drew" ? " selected" : ""}>${esc(i.label)}${i.kind === "agent" ? " (agent)" : ""}</option>`,
+    )
+    .join("");
+  return `<div class="ahead"><label>Act as</label><select name="author">${options}</select></div>`;
+}
+
+interface AFormSpec {
+  kind: DashAction["kind"];
+  verb: DashAction["verb"];
+  objectRef: string;
+  targetRef?: RefKey;
+  sessionId?: string;
+  sessionSource?: string;
+  supersedes?: string;
+  /** Inner controls (inputs/buttons), already escaped HTML. */
+  inner: string;
+}
+
+function aformHtml(spec: AFormSpec): string {
+  const data = [
+    `data-kind="${esc(spec.kind)}"`,
+    `data-verb="${esc(spec.verb)}"`,
+    `data-object="${esc(spec.objectRef)}"`,
+    `data-token="${esc(newClientToken())}"`,
+    spec.targetRef ? `data-target-ref="${esc(spec.targetRef)}"` : "",
+    spec.sessionId ? `data-session-id="${esc(spec.sessionId)}"` : "",
+    spec.sessionSource ? `data-session-source="${esc(spec.sessionSource)}"` : "",
+    spec.supersedes ? `data-supersedes="${esc(spec.supersedes)}"` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `<form class="aform" ${data}>${spec.inner}<div class="err"></div></form>`;
+}
+
+/** Wrap a card's action forms: one author picker + the disabled gate. */
+function actboxHtml(opts: ActionFormOpts, forms: string): string {
+  const inner = `${authorSelectHtml(opts.identities)}${forms}`;
+  return opts.disabledReason
+    ? `<div class="actbox"><p class="muted">⚠ Actions unavailable — ${esc(opts.disabledReason)}</p><fieldset disabled>${inner}</fieldset></div>`
+    : `<div class="actbox">${inner}</div>`;
+}
+
+function snoozeFieldsHtml(): string {
+  const now = new Date();
+  const tonight = new Date(now);
+  tonight.setHours(23, 59, 0, 0);
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(9, 0, 0, 0);
+  const nextWeek = new Date(now);
+  nextWeek.setDate(nextWeek.getDate() + 7);
+  nextWeek.setHours(9, 0, 0, 0);
+  return `<select name="untilPreset" aria-label="Snooze until"><option value="${tonight.toISOString()}">until tonight</option><option value="${tomorrow.toISOString()}">until tomorrow 9:00</option><option value="${nextWeek.toISOString()}">until next week</option></select><input type="datetime-local" name="untilCustom" aria-label="Snooze until (custom)">`;
+}
+
+/**
+ * The #1152 triage control set for one tier item: acknowledge (a
+ * non-resolving "seen" record), snooze (presets + custom), and the
+ * tier move toward the OTHER tier (de-escalate on Needs User cards,
+ * escalate on Needs Orchestrator cards), each with an optional reason.
+ * The answer control lives with the item's own surface (session cards
+ * carry the session answer; #1291 adds the tier answer row).
+ */
+export function triageActionsHtml(
+  objectRef: string,
+  tier: "needs-drew" | "needs-orchestrator",
+  opts: ActionFormOpts,
+): string {
+  const move =
+    tier === "needs-drew"
+      ? aformHtml({
+          kind: "triage",
+          verb: "de-escalate",
+          objectRef,
+          inner: `<input type="hidden" name="tier" value="needs-orchestrator"><input type="text" name="reason" placeholder="Reason (optional)" aria-label="De-escalate reason"><button type="submit">De-escalate to Needs Orchestrator</button>`,
+        })
+      : aformHtml({
+          kind: "triage",
+          verb: "escalate",
+          objectRef,
+          inner: `<input type="hidden" name="tier" value="needs-drew"><input type="text" name="reason" placeholder="Reason (optional)" aria-label="Escalate reason"><button type="submit">Escalate to Needs User</button>`,
+        });
+  const forms = [
+    aformHtml({
+      kind: "triage",
+      verb: "acknowledge",
+      objectRef,
+      inner: `<button type="submit" class="primary">Acknowledge</button><span class="why">Records that you have seen this — it stays until a resolving action or a new signal.</span>`,
+    }),
+    aformHtml({
+      kind: "triage",
+      verb: "snooze",
+      objectRef,
+      inner: `${snoozeFieldsHtml()}<button type="submit">Snooze</button>`,
+    }),
+    move,
+  ].join("");
+  return actboxHtml(opts, forms);
+}
+
+/** The Project Status values a status request may target (#910 field). */
+export const PROJECT_STATUS_VALUES = ["Todo", "In Progress", "In Review", "Done"] as const;
+
+/** The #1154 control: request a Project Status change (never a direct write). */
+export function statusRequestHtml(
+  objectRef: string,
+  targetRef: RefKey,
+  currentStatus: string | null,
+  opts: ActionFormOpts,
+): string {
+  const options = PROJECT_STATUS_VALUES.map(
+    (s) => `<option value="${esc(s)}"${s === currentStatus ? " selected" : ""}>${esc(s)}</option>`,
+  ).join("");
+  const form = aformHtml({
+    kind: "status-request",
+    verb: "request-status",
+    objectRef,
+    targetRef,
+    inner: `<label>Request status change to <select name="status">${options}</select></label><input type="text" name="reason" placeholder="Reason (optional)" aria-label="Status change reason"><button type="submit">Request status change</button><span class="why">A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.</span>`,
+  });
+  return actboxHtml(opts, form);
+}
+
+/** Which session verbs a source can support, and why not when it can't. */
+export function sessionVerbSupport(source: string): { verb: "poke" | "answer" | "stop"; reason?: string }[] {
+  if (source === "opencode-sandbox" || source === "opencode-laptop") {
+    return [{ verb: "poke" }, { verb: "answer" }, { verb: "stop" }];
+  }
+  if (source === "jules") {
+    return [
+      { verb: "poke", reason: "Jules sessions are keeper-mediated — answer only" },
+      { verb: "answer" },
+      { verb: "stop", reason: "Jules sessions are keeper-mediated — answer only" },
+    ];
+  }
+  if (source === "claude-code") {
+    const reason = "No live control channel for Muse sessions — launch records only";
+    return [
+      { verb: "poke", reason },
+      { verb: "answer", reason },
+      { verb: "stop", reason },
+    ];
+  }
+  return [];
+}
+
+/** The #1156 control set for one live session (merged registry identity). */
+export function sessionActionsHtml(sessionId: string, source: string, opts: ActionFormOpts): string {
+  const support = sessionVerbSupport(source);
+  if (!support.length) return "";
+  const objectRef = sessionObjectRef(sessionId);
+  const forms = support
+    .map(({ verb, reason }) => {
+      if (reason) {
+        return `<div class="aform"><button type="button" disabled>${esc(verb === "poke" ? "Poke" : verb === "answer" ? "Answer" : "Stop")}</button><span class="why">${esc(reason)}.</span></div>`;
+      }
+      if (verb === "poke") {
+        return aformHtml({
+          kind: "session",
+          verb,
+          objectRef,
+          sessionId,
+          sessionSource: source,
+          inner: `<button type="submit" class="primary">Poke</button><span class="why">Nudges the session via its owning server.</span>`,
+        });
+      }
+      if (verb === "answer") {
+        return aformHtml({
+          kind: "session",
+          verb,
+          objectRef,
+          sessionId,
+          sessionSource: source,
+          inner: `<input type="text" name="text" placeholder="Answer for the waiting session…" aria-label="Answer text" required><button type="submit">Answer</button>`,
+        });
+      }
+      return aformHtml({
+        kind: "session",
+        verb,
+        objectRef,
+        sessionId,
+        sessionSource: source,
+        inner: `<label class="confirm"><input type="checkbox" name="confirm" value="yes"> Confirm stop</label><button type="submit" class="danger">Stop session</button><span class="why">Two-step: tick Confirm stop, then Stop — the owning job terminates the run.</span>`,
+      });
+    })
+    .join("");
+  return actboxHtml(opts, forms);
+}
+
+/** Terminal registry statuses — a record in one of these is history, not live. */
+const TERMINAL_SESSION_STATUSES = new Set([
+  "completed",
+  "complete",
+  "done",
+  "failed",
+  "error",
+  "stopped",
+  "terminated",
+  "succeeded",
+  "cancelled",
+]);
+
+/** A registry record counts as live inside the attention currency window (2 h). */
+export function sessionRecordIsLive(r: SessionRecord, now = Date.now()): boolean {
+  if (TERMINAL_SESSION_STATUSES.has(r.status.toLowerCase())) return false;
+  if (!r.lastSeenAt) return false;
+  return now - Date.parse(r.lastSeenAt) < 2 * 60 * 60 * 1000;
+}
+
 export function coverageHtml(coverage: SourceCoverage[]): string {
   const rows = coverage
     .map(
@@ -415,6 +804,11 @@ export function renderBoard(
   provenance: Provenance,
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
+  act?: {
+    actionsByObject?: Map<string, DashAction[]>;
+    poolByRef?: Map<RefKey, ProjectPoolItem>;
+    identities?: AuthorIdentity[];
+  },
 ): string {
   const cols = new Map<string, BoardItem[]>();
   for (const item of board) {
@@ -447,7 +841,17 @@ export function renderBoard(
             return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}"><span class="badge implementing">orchestrator · in flight</span> ${esc(item.title)}</a>${cmt}<br>${status}${repo}${goal}${blocked}${refs}</div>`;
           }
           const src = item.source === "github" ? `<span class="badge open">gh-only</span> ` : "";
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${stripHtml(items, item.links)}</div>`;
+          // #1154: a card whose linked issue sits in the Project pool
+          // carries the status-request control for that pool item.
+          let statusCtl = "";
+          if (act?.identities && act.poolByRef) {
+            const pooled = item.links.map((l) => act.poolByRef!.get(l.ref)).find((p) => p !== undefined);
+            if (pooled) {
+              const objectRef = ghObjectRef(pooled.ref);
+              statusCtl = `${actionBadgesHtml(act.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, pooled.ref, pooled.status ?? null, { identities: act.identities })}`;
+            }
+          }
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${stripHtml(items, item.links)}${statusCtl}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
@@ -464,7 +868,7 @@ export function renderBoard(
     `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p><div class="board">${bodies}</div>`,
     provenance,
     "/",
-    "",
+    act?.identities ? ACTION_SCRIPT : "",
     detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
   );
 }
@@ -563,6 +967,10 @@ export interface ItemExtras {
   formOpts: CommentFormOpts;
   /** Registry sessions loosely linked to this item's refs (#906 §3). */
   sessions: SessionRecord[];
+  /** Dashboard actions across this item's object refs (#1152/#1154). */
+  actions?: DashAction[];
+  /** Set when one of the item's refs is in the Project pool (#1154). */
+  statusRequest?: { objectRef: string; targetRef: RefKey; currentStatus: string | null };
 }
 
 export function renderItem(
@@ -602,21 +1010,28 @@ export function renderItem(
     extras && extras.sessions.length
       ? `<h2>Sessions that worked this</h2>${extras.sessions.map((r) => sessionRecordLine(r)).join("")}`
       : "";
+  const statusSection =
+    extras?.statusRequest && extras.formOpts
+      ? `<h2>Request status change</h2>${actionBadgesHtml(extras.actions)}${statusRequestHtml(extras.statusRequest.objectRef, extras.statusRequest.targetRef, extras.statusRequest.currentStatus, { identities: extras.formOpts.identities })}`
+      : "";
   return layout(
     title,
     `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${stripHtml(items, links)}
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><tr><th>Ref</th><th>Title</th><th>Labels</th><th>Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><tr><th>When</th><th>Kind</th><th>Author</th><th>Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
-${sessionSection}${dashSection}`,
+${sessionSection}${statusSection}${dashSection}`,
     provenance,
     "/",
-    extras ? COMMENT_SCRIPT : "",
+    extras ? COMMENT_SCRIPT + (extras.statusRequest ? ACTION_SCRIPT : "") : "",
   );
 }
 
 /** One registry record as a compact line (item page, sessions page). */
-export function sessionRecordLine(r: SessionRecord): string {
+export function sessionRecordLine(
+  r: SessionRecord,
+  act?: { actions?: DashAction[]; identities?: AuthorIdentity[] },
+): string {
   const tokens = r.tokensTotal != null ? ` · ${r.tokensTotal.toLocaleString()} tok` : "";
   const parent = r.parentId
     ? ` · sub of <a href="/sessions#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
@@ -624,7 +1039,12 @@ export function sessionRecordLine(r: SessionRecord): string {
   const refs = r.taskRefs.length
     ? ` · ${r.taskRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(" ")}`
     : "";
-  return `<div class="card" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span><br><span class="muted">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span></div>`;
+  // #1156: live records carry the session action set on the merged
+  // registry identity; historical records render no controls.
+  const badges = actionBadgesHtml(act?.actions);
+  const controls =
+    act?.identities && sessionRecordIsLive(r) ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
+  return `<div class="card" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
 }
 
 // --- Quota view (#851) + Usage & billing hub (design 2026-10-25) -----------
@@ -944,6 +1364,7 @@ function sessionCard(
   children: Map<string, TieredEntry[]>,
   depth = 0,
   counts?: Map<string, number>,
+  act?: { actionsByObject?: Map<string, DashAction[]>; identities?: AuthorIdentity[] },
 ): string {
   const src = SESSION_SOURCE_LABELS[sourceOf(e)];
   const sub =
@@ -963,14 +1384,35 @@ function sessionCard(
   const orch = e.orchestratorNote ? `<div class="orch-note">${esc(e.orchestratorNote)}</div>` : "";
   const kids = children.get(e.sessionId) ?? [];
   const kidsHtml = kids.length
-    ? `<details class="kids"><summary>${kids.length} sub-session${kids.length === 1 ? "" : "s"}</summary>${kids.map((k) => sessionCard(k, children, depth + 1, counts)).join("")}</details>`
+    ? `<details class="kids"><summary>${kids.length} sub-session${kids.length === 1 ? "" : "s"}</summary>${kids.map((k) => sessionCard(k, children, depth + 1, counts, act)).join("")}</details>`
     : "";
   const cmt = counts ? commentBadge(sessionObjectRef(e.sessionId), counts) : "";
-  return `<div class="card"><strong>${esc(e.title ?? e.sessionId)}</strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${sub}${cmt}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${kidsHtml}</div>`;
+  // #1156 + #1152: session actions (poke/answer/stop by source support)
+  // and, for tiered entries, the triage set — session-derived items
+  // stay actionable even when the tier source is down (the session
+  // feed is live), so no disabledReason ever applies here.
+  const objectRef = sessionObjectRef(e.sessionId);
+  const own = act?.actionsByObject?.get(objectRef);
+  const badges = actionBadgesHtml(own);
+  let controls = "";
+  if (act?.identities) {
+    const sessionBox = sessionActionsHtml(e.sessionId, sourceOf(e), { identities: act.identities });
+    const triageBox =
+      e.tier === "needs-drew" || e.tier === "needs-orchestrator"
+        ? triageActionsHtml(objectRef, e.tier, { identities: act.identities })
+        : "";
+    controls = `${sessionBox}${triageBox}`;
+  }
+  return `<div class="card"><strong>${esc(e.title ?? e.sessionId)}</strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${kidsHtml}</div>`;
 }
 
 /** A #899 tier item that is not a live session — a decision, task, or gap. */
-function tierItemCard(item: TierItem, whyLabel: string, counts?: Map<string, number>): string {
+function tierItemCard(
+  item: TierItem,
+  whyLabel: string,
+  counts?: Map<string, number>,
+  act?: { actions?: DashAction[]; identities?: AuthorIdentity[]; disabledReason?: string },
+): string {
   const blocked = item.blockedBy?.length
     ? `<br><strong>Blocked by:</strong> ${item.blockedBy
         .map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`))
@@ -982,7 +1424,17 @@ function tierItemCard(item: TierItem, whyLabel: string, counts?: Map<string, num
     : "";
   const ref = item.ref ? `<br><a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : "";
   const cmt = counts ? commentBadge(tierItemObjectRef(item), counts) : "";
-  return `<div class="card"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span> <strong>${esc(item.title)}</strong>${cmt}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${ref}</div>`;
+  const badges = actionBadgesHtml(act?.actions);
+  // #1152: the triage control set. Section-derived items disable with
+  // the reason when the tier source is absent/invalid (#1139 state) —
+  // the item may not exist in the publisher's current view.
+  const controls = act?.identities
+    ? triageActionsHtml(tierItemObjectRef(item), whyLabel === "Why you" ? "needs-drew" : "needs-orchestrator", {
+        identities: act.identities,
+        ...(act.disabledReason ? { disabledReason: act.disabledReason } : {}),
+      })
+    : "";
+  return `<div class="card"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span> <strong>${esc(item.title)}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${ref}${controls}</div>`;
 }
 
 export function renderAttention(
@@ -991,6 +1443,7 @@ export function renderAttention(
   provenance: Provenance,
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
+  act?: { actionsByObject?: Map<string, DashAction[]>; identities?: AuthorIdentity[] },
 ): string {
   const children = sessionChildren(view.all);
   const roots = sessionRoots(view.all);
@@ -1018,24 +1471,65 @@ export function renderAttention(
   const drewCount = ts.present ? String(drewTotal) : "unknown";
   const orchCount = ts.present ? String(orchTotal) : "unknown";
   const chips = `<div class="chips"><a href="#drew">Needs User (${drewCount})</a><a href="#orchestrator">Needs Orchestrator (${orchCount})</a><a href="#sessions">All sessions (${roots.length})</a></div>`;
+  // #1152: section-derived items disable their controls whenever the
+  // tier source is not live — stale items come from the publisher's
+  // last section and may no longer exist in its current view (absent/
+  // invalid sources serve no section items at all). Session-derived
+  // items stay enabled: the session feed is live.
+  const sectionDisabledReason =
+    ts.state !== "live"
+      ? `the tier source is ${ts.state}, so this item cannot be confirmed against the orchestrator's current published queues`
+      : undefined;
+  const tierAct = (item: TierItem) => ({
+    actions: act?.actionsByObject?.get(tierItemObjectRef(item)),
+    identities: act?.identities,
+    ...(sectionDisabledReason ? { disabledReason: sectionDisabledReason } : {}),
+  });
   const drewCards =
     [
-      ...view.drew.map((e) => sessionCard(e, children, 0, counts)),
-      ...view.drewExtra.map((i) => tierItemCard(i, "Why you", counts)),
+      ...view.drew.map((e) => sessionCard(e, children, 0, counts, act)),
+      ...view.drewExtra.map((i) => tierItemCard(i, "Why you", counts, tierAct(i))),
     ].join("") ||
     (ts.present
       ? `<p class="muted">Nothing in the user queue right now.</p>`
       : `<p class="muted">Unknown — the tier source is missing, so this queue cannot be reported.</p>`);
   const orchCards =
     [
-      ...view.orchestrator.map((e) => sessionCard(e, children, 0, counts)),
-      ...view.orchestratorExtra.map((i) => tierItemCard(i, "Why the fleet", counts)),
+      ...view.orchestrator.map((e) => sessionCard(e, children, 0, counts, act)),
+      ...view.orchestratorExtra.map((i) => tierItemCard(i, "Why the fleet", counts, tierAct(i))),
     ].join("") ||
     (ts.present
       ? `<p class="muted">The fleet's queue is empty.</p>`
       : `<p class="muted">Unknown — the tier source is missing, so this queue cannot be reported.</p>`);
+  // The snoozed strip: an applied snooze makes the pass omit the item
+  // from the tiers, so the suppression is rendered HERE, from the
+  // actions store — visible, never silent (design Cluster 3).
+  const now = Date.now();
+  const snoozedEntries = [...(act?.actionsByObject?.entries() ?? [])]
+    .map(([objectRef, actions]) => ({ objectRef, snooze: latestInFamily(actions, "snooze") }))
+    .filter((x) => x.snooze?.state === "applied" && x.snooze.payload.until && Date.parse(x.snooze.payload.until) > now);
+  const snoozedStrip = snoozedEntries.length
+    ? `<h2 id="snoozed">Snoozed by you (${snoozedEntries.length})</h2><p class="muted">These items are out of the queues until their snooze expires — the orchestration pass omits them, and they resurface on their own. Unsnoozing records a superseding action.</p>${snoozedEntries
+        .map(({ objectRef, snooze }) => {
+          const unsnooze =
+            act?.identities && snooze
+              ? actboxHtml(
+                  { identities: act.identities },
+                  aformHtml({
+                    kind: "triage",
+                    verb: "snooze",
+                    objectRef,
+                    supersedes: snooze.id,
+                    inner: `<input type="hidden" name="untilPreset" value="${new Date(now).toISOString()}"><button type="submit">Unsnooze now</button>`,
+                  }),
+                )
+              : "";
+          return `<div class="card">💤 <a href="/discuss/${encodeURIComponent(objectRef)}"><code>${esc(objectRef)}</code></a> <span class="badge act-snoozed">snoozed until ${esc(fmtDate(snooze!.payload.until))}</span><br><span class="muted">applied by ${esc(snooze!.appliedByRun ?? "a fleet run")}${snooze!.resultNote ? ` — ${esc(snooze!.resultNote)}` : ""}</span>${unsnooze}</div>`;
+        })
+        .join("")}`
+    : "";
   const sessionCards = roots.length
-    ? roots.map((e) => sessionCard(e, children, 0, counts)).join("")
+    ? roots.map((e) => sessionCard(e, children, 0, counts, act)).join("")
     : `<p class="muted">No current sessions.</p>`;
   return layout(
     "Needs you",
@@ -1043,12 +1537,12 @@ export function renderAttention(
 ${tierBanner}${chips}
 ${coverageHtml(coverage)}
 <h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
-<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}
+${snoozedStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}
 <h2 id="sessions">All sessions (${roots.length})</h2><p class="muted">Every current session with its source and state; sub-sessions collapse under their parent.</p>${sessionCards}
 ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale ${view.expiredCount === 1 ? "entry" : "entries"} expired out of this view.</p>` : ""}`,
     provenance,
     "/attention",
-    "",
+    act?.identities ? ACTION_SCRIPT : "",
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
 }
@@ -1302,21 +1796,41 @@ ${coverageHtml}`;
 
 const REGISTRY_SOURCE_ORDER = ["opencode-laptop", "opencode-sandbox", "jules", "claude-code", "cron"];
 
-export function renderSessions(records: SessionRecord[], provenance: Provenance, detail?: ProvenanceDetail): string {
+export function renderSessions(
+  records: SessionRecord[],
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+  act?: { actionsByObject?: Map<string, DashAction[]>; identities?: AuthorIdentity[] },
+): string {
   const bySource = new Map<string, SessionRecord[]>();
   for (const r of records) bySource.set(r.source, [...(bySource.get(r.source) ?? []), r]);
   const totalTokens = records.reduce((sum, r) => sum + (r.tokensTotal ?? 0), 0);
   const groups = [...bySource.entries()]
     .sort((a, b) => REGISTRY_SOURCE_ORDER.indexOf(a[0]) - REGISTRY_SOURCE_ORDER.indexOf(b[0]))
     .map(
-      ([source, list]) => `<h2>${esc(source)} (${list.length})</h2>${list.map((r) => sessionRecordLine(r)).join("")}`,
+      ([source, list]) =>
+        `<h2>${esc(source)} (${list.length})</h2>${list
+          .map((r) =>
+            sessionRecordLine(r, {
+              actions: act?.actionsByObject?.get(sessionObjectRef(r.id)),
+              identities: act?.identities,
+            }),
+          )
+          .join("")}`,
     )
     .join("");
   const body = `<h1>Sessions — identity registry</h1>
 <p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records · ${totalTokens.toLocaleString()} tokens recorded. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
 <p class="muted">Coverage honesty: OpenCode sessions register from their servers; Jules from the keeper's state; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
 ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
-  return layout("Sessions", body, provenance, "/sessions", "", detail ? freshnessChips(detail, ["registry"]) : "");
+  return layout(
+    "Sessions",
+    body,
+    provenance,
+    "/sessions",
+    act?.identities ? ACTION_SCRIPT : "",
+    detail ? freshnessChips(detail, ["registry"]) : "",
+  );
 }
 
 // --- All pages (the manifest as a page) ---------------------------------------
@@ -1459,6 +1973,8 @@ export function renderProjects(
     area?: string | null;
     orchestration?: OrchestrationSection | null;
     detail?: ProvenanceDetail;
+    actionsByObject?: Map<string, DashAction[]>;
+    identities?: AuthorIdentity[];
   } = {},
 ): string {
   const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
@@ -1496,7 +2012,12 @@ export function renderProjects(
         `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
         `<span class="badge src">derived: ${esc(derived)}</span>`,
       ].join(" ");
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span></div>`;
+      // #1154: the status-request control + the store's visible state.
+      const objectRef = ghObjectRef(p.ref);
+      const statusCtl = opts.identities
+        ? `${actionBadgesHtml(opts.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, p.ref, p.status ?? null, { identities: opts.identities })}`
+        : "";
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${statusCtl}</div>`;
     })
     .join("");
   const body = `<h1>Projects — GitHub Project pool</h1>
@@ -1508,7 +2029,7 @@ ${cards || '<p class="muted">No items in this area.</p>'}`;
     body,
     provenance,
     "/projects",
-    "",
+    opts.identities ? ACTION_SCRIPT : "",
     opts.detail ? freshnessChips(opts.detail, ["items"]) : "",
   );
 }
