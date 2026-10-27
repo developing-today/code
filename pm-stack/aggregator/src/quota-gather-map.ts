@@ -196,21 +196,36 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
   if (result.error) entry.error = result.error;
   if (result.usage != null) entry.usage = result.usage;
 
-  const windows = (result.usage as { windows?: unknown } | null | undefined)?.windows;
-  if (typeof windows === "object" && windows !== null) {
-    for (const [name, raw] of Object.entries(windows as Record<string, RawWindow>)) {
-      const pct = num(raw?.usedPercent);
-      entry.windows.push({
-        name,
-        value: pct,
-        pctOfLimit: pct,
-        valueLabel: typeof raw?.valueLabel === "string" ? raw.valueLabel : null,
-        windowSeconds: num(raw?.windowSeconds),
-        resetsAt: normalizeResetAt(raw?.resetAt),
-        measuredAt,
-        source: GATHERER_SOURCE,
-        state: result.ok ? "ok" : "error",
-      });
+  const pushWindow = (name: string, raw: RawWindow | null | undefined): void => {
+    const pct = num(raw?.usedPercent);
+    entry.windows.push({
+      name,
+      value: pct,
+      pctOfLimit: pct,
+      valueLabel: typeof raw?.valueLabel === "string" ? raw.valueLabel : null,
+      windowSeconds: num(raw?.windowSeconds),
+      resetsAt: normalizeResetAt(raw?.resetAt),
+      measuredAt,
+      source: GATHERER_SOURCE,
+      state: result.ok ? "ok" : "error",
+    });
+  };
+  const usageObj = result.usage as { windows?: unknown; models?: unknown } | null | undefined;
+  if (typeof usageObj?.windows === "object" && usageObj.windows !== null) {
+    for (const [name, raw] of Object.entries(usageObj.windows as Record<string, RawWindow>)) {
+      pushWindow(name, raw);
+    }
+  }
+  // Per-model usage (Claude's model-scoped windows, Antigravity's
+  // whole shape): flatten to "<model>:<window>" so the data lands in
+  // the same contract. Pool attribution across models is the hub's
+  // modeling step, not the gatherer's.
+  if (typeof usageObj?.models === "object" && usageObj.models !== null) {
+    for (const [model, mu] of Object.entries(usageObj.models as Record<string, { windows?: unknown }>)) {
+      if (typeof mu?.windows !== "object" || mu.windows === null) continue;
+      for (const [name, raw] of Object.entries(mu.windows as Record<string, RawWindow>)) {
+        pushWindow(`${model}:${name}`, raw);
+      }
     }
   }
   return entry;

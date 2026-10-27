@@ -65,6 +65,29 @@ describe("entryFromResult", () => {
     expect(balance?.pctOfLimit).toBeNull();
     expect(balance?.valueLabel).toBe("12.50");
   });
+  test("per-model usage flattens to <model>:<window>", () => {
+    const entry = entryFromResult(
+      {
+        providerId: "antigravity",
+        providerName: "Antigravity",
+        ok: true,
+        configured: true,
+        fetchedAt: 1793075143879,
+        usage: {
+          models: {
+            "gemini-3.5-flash-lite": {
+              windows: { weekly: { usedPercent: 2, windowSeconds: 604800, resetAt: 1793452260000 } },
+            },
+          },
+        },
+      },
+      "2026-10-27T05:00:00.000Z",
+    );
+    expect(entry.windows).toHaveLength(1);
+    expect(entry.windows[0].name).toBe("gemini-3.5-flash-lite:weekly");
+    expect(entry.windows[0].pctOfLimit).toBe(2);
+    expect(entry.windows[0].resetsAt).toBe("2026-10-31T13:11:00.000Z");
+  });
   test("error and unconfigured states stay distinct", () => {
     const err = entryFromResult(
       { providerId: "claude", ok: false, configured: true, error: "session expired", usage: null },
