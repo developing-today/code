@@ -5,24 +5,12 @@
       "type": "Text"
     },
     {
-      "choices": [
-        "PM stack",
-        "Basement cluster",
-        "Cloud program",
-        "Repo fleet",
-        "id"
-      ],
+      "choices": ["PM stack", "Basement cluster", "Cloud program", "Repo fleet", "id"],
       "id": "Area",
       "type": "Choice"
     },
     {
-      "choices": [
-        "Idea",
-        "Planned",
-        "In progress",
-        "Blocked",
-        "Done"
-      ],
+      "choices": ["Idea", "Planned", "In progress", "Blocked", "Done"],
       "id": "Status",
       "type": "Choice"
     },
