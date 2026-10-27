@@ -59,6 +59,14 @@ export const PAGES: PageDef[] = [
     blurb: "Every domain: next renewal, unused, earmarked. (#902's register)",
   },
   {
+    id: "aa-explorer",
+    title: "AA Cost Explorer",
+    route: "/aa",
+    api: "/api/aa.json",
+    blurb:
+      "Artificial Analysis workbook data: per-config intelligence, cost, timing — and which measured models no pool uses.",
+  },
+  {
     id: "sessions",
     title: "Sessions",
     route: "/sessions",

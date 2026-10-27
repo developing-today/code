@@ -6,6 +6,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Config } from "../config.ts";
+import { isAaSection } from "../aa.ts";
 import { isDnsSection } from "../dns.ts";
 import {
   feedAgeText,
@@ -23,6 +24,7 @@ import { SnapshotStore } from "../snapshots.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
+  type AaFeedSection,
   type BoardItem,
   type Comment,
   type DnsSection,
@@ -478,6 +480,7 @@ export function liveSource(cfg: Config): Source {
     orchestration: "fixtures",
     dns: "fixtures",
     registry: "fixtures",
+    aa: "fixtures",
   };
 
   async function kaneoCookieHeader(): Promise<string> {
@@ -832,6 +835,24 @@ export function liveSource(cfg: Config): Source {
       }
       provenance.dns = feed
         ? "not collected yet — the collector has not embedded a register section"
+        : "fixtures (no fleet feed file yet)";
+      return null;
+    },
+    async aa(): Promise<AaFeedSection | null> {
+      // AA cost explorer: the section rides the fleet feed, read from
+      // Supabase ainventory by the collector. Its absent form is a real
+      // section (the page renders the reason); a missing section means
+      // the collector has not embedded one yet.
+      const feed = await getFeed();
+      if (feed?.aa && isAaSection(feed.aa)) {
+        provenance.aa =
+          feed.aa.status === "ok"
+            ? `live (fleet feed · ${feedAgeText(feed.generatedAt)} · ainventory batch ${feed.aa.batch.slice(0, 8)} · collected ${feed.aa.generatedAt})`
+            : `live (fleet feed · ${feedAgeText(feed.generatedAt)} · AA section absent: ${feed.aa.reason})`;
+        return feed.aa;
+      }
+      provenance.aa = feed
+        ? "not collected yet — the collector has not embedded an AA section"
         : "fixtures (no fleet feed file yet)";
       return null;
     },

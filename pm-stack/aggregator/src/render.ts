@@ -21,8 +21,14 @@ import {
   windowPercent,
 } from "./derive.ts";
 import { githubCommentUrl } from "./comments.ts";
+import { summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import {
+  type AaConfig,
+  type AaFeedSection,
+  type AaRanking,
+  type AaSection,
+  type AaTestRun,
   type BoardItem,
   type ChargeRow,
   type Comment,
@@ -219,7 +225,7 @@ function layout(title: string, body: string, provenance: Provenance, active: str
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><style>${CSS}</style></head>
 <body><nav>${links}${dropdown}</nav><main>${body}
-<div class="foot">board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)}<br>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
+<div class="foot">board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}<br>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main>${extra}</body></html>`;
 }
 
@@ -1038,6 +1044,124 @@ export function renderDns(section: DnsSection | null, provenance: Provenance): s
 <h2>Completely unused (${s.unused.length})</h2><p class="muted">Nothing but registrar defaults — each still auto-renews until someone decides otherwise.</p>${dnsTable(s.unused)}
 <details><summary>Full register (${section.entries.length})</summary>${dnsTable(section.entries)}</details>`;
   return layout("DNS register", body, provenance, "/dns");
+}
+
+// --- AA cost explorer page (ainventory workbook data via the fleet feed) -----
+
+function fmtCost(v: number | null): string {
+  return v == null ? "—" : `$${Number(v.toFixed(4))}`;
+}
+
+function fmtSec(v: number | null): string {
+  if (v == null) return "—";
+  if (v < 60) return `${Number(v.toFixed(1))}s`;
+  return `${Math.floor(v / 60)}m ${Math.round(v % 60)}s`;
+}
+
+function fmtTimed(v: number | null): string {
+  return v == null ? '<span class="muted">not measured</span>' : fmtSec(v);
+}
+
+function fmtVal(v: number | null): string {
+  return v == null ? "—" : Number(v.toFixed(3)).toString();
+}
+
+/** "openai|gpt-6-luna|max|reasoning|fallback-na" -> "gpt-6-luna · max". */
+function variantLabel(modelVariantKey: string): string {
+  const parts = modelVariantKey.split("|");
+  return parts.length >= 3 ? `${parts[1]} · ${parts[2]}` : modelVariantKey;
+}
+
+function aaRankingsTable(rankings: AaRanking[], usableUpTo: Map<string, number>): string {
+  const sorted = [...rankings].sort(
+    (a, b) => (a.rankBalanced ?? Number.MAX_SAFE_INTEGER) - (b.rankBalanced ?? Number.MAX_SAFE_INTEGER),
+  );
+  const rows = sorted
+    .map((r) => {
+      const usable = usableUpTo.get(r.testRunKey);
+      return `<tr><td>${r.rankBalanced ?? "—"}</td><td><strong>${esc(r.family)}</strong><br><span class="muted">${esc(r.creator)}${r.qualStatus ? ` · ${esc(r.qualStatus)}` : ""}</span></td><td>${esc(r.effort ?? "—")}</td><td>${r.adjustedScore ?? r.rawScore ?? "—"}</td><td>${fmtCost(r.costTask)}</td><td>${fmtSec(r.timeTaskSec)}</td><td>${r.speedTps ?? "—"}</td><td>${r.intelEffPerUsd == null ? "—" : Number(r.intelEffPerUsd.toFixed(2))}</td><td>${fmtVal(r.balancedValue)}</td><td>${usable == null ? "—" : `≥ ${usable}`}</td><td class="muted">intel #${r.rankIntelligence ?? "—"} · cost #${r.rankLowCost ?? "—"}</td></tr>`;
+    })
+    .join("");
+  return `<div class="tblwrap"><table><tr><th># balanced</th><th>Model</th><th>Effort</th><th>Intelligence</th><th>$/task</th><th>Time/task</th><th>Speed (t/s)</th><th>Intel / $</th><th>Balanced value</th><th>Usable up to</th><th>Ranks</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
+}
+
+function aaTimingsTable(testRuns: AaTestRun[]): string {
+  const rows = testRuns
+    .map(
+      (r) =>
+        `<tr><td><strong>${esc(variantLabel(r.modelVariantKey))}</strong><br><span class="muted">${esc(r.snapshotDate ?? "no snapshot date")}</span></td><td>${r.intelligence ?? "—"}</td><td>${fmtCost(r.costPerTaskUsd)}</td><td>${fmtTimed(r.ttftSeconds)}</td><td>${fmtTimed(r.firstAnswerSeconds)}</td><td>${fmtTimed(r.e2e500Seconds)}</td><td>${fmtTimed(r.timePerTaskSeconds)}</td><td>${r.outputSpeedTps ?? "—"}</td></tr>`,
+    )
+    .join("");
+  return `<div class="tblwrap"><table><tr><th>Configuration</th><th>Intelligence</th><th>$/task</th><th>TTFT</th><th>First answer</th><th>E2E (500 tok)</th><th>Time / task</th><th>Speed (t/s)</th></tr>${rows || '<tr><td colspan="8" class="muted">none</td></tr>'}</table></div>`;
+}
+
+function aaConfigsTable(configs: AaConfig[]): string {
+  const rows = configs
+    .map(
+      (c) =>
+        `<tr><td><strong>${esc(c.modelName)}</strong></td><td>${esc(c.effort ?? "—")}</td><td>${c.intelligence ?? "—"}</td><td>${fmtCost(c.costPerTaskUsd)}</td><td>${c.speedTps ?? "—"}</td></tr>`,
+    )
+    .join("");
+  return `<div class="tblwrap"><table><tr><th>Model</th><th>Effort (workbook label)</th><th>Intelligence</th><th>$/task</th><th>Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
+}
+
+function aaNameList(names: string[]): string {
+  return names.length
+    ? `<div class="strip">${names.map((n) => `<span class="badge src">${esc(n)}</span>`).join("")}</div>`
+    : '<p class="muted">none</p>';
+}
+
+export function renderAa(section: AaFeedSection | null, provenance: Provenance): string {
+  if (!section) {
+    return layout(
+      "AA Cost Explorer",
+      `<h1>AA Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory workbook import; this page only renders it.</div>`,
+      provenance,
+      "/aa",
+    );
+  }
+  if (section.status === "absent") {
+    return layout(
+      "AA Cost Explorer",
+      `<h1>AA Cost Explorer</h1><div class="banner">The collector could not build the AA section on its last run (${fmtDate(section.generatedAt)}): ${esc(section.reason)}. The page will fill in on the next successful collection — no stale numbers are shown in the meantime.</div>`,
+      provenance,
+      "/aa",
+    );
+  }
+  const s: AaSection = section;
+  const summary = summarizeAa(s);
+  const sourcesHtml = s.sources
+    .map(
+      (src) =>
+        `<li><code>${esc(src.name)}</code> (${esc(src.kind)}) — imported ${src.importedAt ? fmtDate(src.importedAt) : "—"} · file modified ${src.driveModifiedAt ? fmtDate(src.driveModifiedAt) : "—"}</li>`,
+    )
+    .join("");
+  const cov = s.coverage;
+  const coverageHtml = cov
+    ? `<h2>Coverage — measured but not pooled</h2>
+<p class="muted">The collector compares the AA-measured model names against the repo's <code>.opencode/opencode.jsonc</code>: the provider catalogs and every route pool's leaf targets (nested routes expanded). Matching is best-effort — normalization plus a small alias map in <code>src/aa.ts</code> — so a miss means "not matched", not "does not exist".</p>
+<h3>In a catalog, in no pool (${cov.catalogNotPooledMeasured.length})</h3>
+<p class="muted">Measured and reachable today, but no route sends them work — the actionable list.</p>${aaNameList(cov.catalogNotPooledMeasured)}
+<h3>Measured, in no catalog (${cov.measuredNotInCatalog.length})</h3>${aaNameList(cov.measuredNotInCatalog)}
+<details><summary>Catalog models with no AA measurement and no pool seat (${cov.catalogNotPooledUnmeasured.length})</summary>
+<p class="muted">Catalog ids verbatim from the config — this is where unmeasured newcomers (e.g. <code>commandcode/reflection/beam:free</code>, the Reflection Beam seat) sit until the workbook measures them.</p>${aaNameList(cov.catalogNotPooledUnmeasured)}</details>`
+    : `<h2>Coverage — measured but not pooled</h2><p class="muted">Coverage was not computed for this section — the collector could not read <code>.opencode/opencode.jsonc</code> on that run.</p>`;
+  const body = `<h1>AA Cost Explorer</h1>
+<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
+<div class="card"><strong>Provenance</strong><br>
+<span class="muted">These are the workbook snapshot's figures (AA Intelligence Index v4.3.2), not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A workbook refresh (the coding-plan-watch import) flips the batch; the feed collector picks it up within minutes.</span>
+<ul>${sourcesHtml || '<li class="muted">source files not recorded for this batch</li>'}</ul></div>
+<h2>Rankings</h2>
+<p class="muted">Every ranked configuration from the workbook's rankings view, best balanced value first. "Usable up to" is the highest target intelligence at which the threshold view still counts the configuration usable.</p>
+${aaRankingsTable(s.rankings, summary.usableUpTo)}
+<h2>Timing — Test_Runs</h2>
+<p class="muted">Per-configuration timing from the workbook's Test_Runs sheet. "Not measured" means the workbook carries no value for that cell — nothing is estimated.</p>
+${aaTimingsTable(s.testRuns)}
+<h2>Measured configurations</h2>
+<p class="muted">The AA Intelligence Index rows of the latest import batch, effort labels verbatim from the workbook.</p>
+${aaConfigsTable(s.configs)}
+${coverageHtml}`;
+  return layout("AA Cost Explorer", body, provenance, "/aa");
 }
 
 // --- Sessions / identity registry page (#906 §3) ------------------------------
