@@ -99,10 +99,8 @@ const dnsRegisterPath =
   join(HOME, "workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md");
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
-const snapshotOutboxPath =
-  process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
-const opencodeConfigPath =
-  process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
+const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
+const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
   process.env.OPENCODE_SERVER_PASSWORD_FILE ?? join(HOME, "tools/secrets.d/opencode-server-password");
@@ -199,8 +197,7 @@ async function drainSnapshotOutbox(): Promise<SnapshotRecord[]> {
  */
 async function resolveBwsSecret(key: string): Promise<string | null> {
   const bwsBin = process.env.BWS_BIN ?? join(HOME, "tools/bin/bws");
-  const accessTokenFile =
-    process.env.BWS_ACCESS_TOKEN_FILE ?? join(HOME, ".config/bitwarden/access-token");
+  const accessTokenFile = process.env.BWS_ACCESS_TOKEN_FILE ?? join(HOME, ".config/bitwarden/access-token");
   try {
     await access(bwsBin);
     const accessToken = (await readFile(accessTokenFile, "utf8")).trim();
@@ -329,7 +326,10 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   } catch {
     console.error("collector: opencode.jsonc unreadable; AA coverage omitted this run");
   }
-  return aaSectionFromSupabase(raw, configText, generatedAt) ?? aaAbsent("Supabase payload failed its structural check", generatedAt);
+  return (
+    aaSectionFromSupabase(raw, configText, generatedAt) ??
+    aaAbsent("Supabase payload failed its structural check", generatedAt)
+  );
 }
 
 async function main(): Promise<void> {
@@ -472,7 +472,9 @@ async function main(): Promise<void> {
       }
     }
   } catch (err) {
-    console.error(`collector: GitHub Project read failed (${err instanceof Error ? err.message : "error"}); projects section omitted`);
+    console.error(
+      `collector: GitHub Project read failed (${err instanceof Error ? err.message : "error"}); projects section omitted`,
+    );
     projects = undefined;
   }
 

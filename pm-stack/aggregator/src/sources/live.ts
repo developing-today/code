@@ -399,7 +399,11 @@ const slugify = (s: string): string =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60) || "task";
-const normTitle = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const normTitle = (s: string): string =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 
 /**
  * The synthetic in-flight entries for one orchestration section,
@@ -651,7 +655,9 @@ export function liveSource(cfg: Config): Source {
       if (poolServed > 0 && feed) {
         provenance.items =
           `live (project pool · fleet feed · ${feedAgeText(feed.generatedAt)})` +
-          (remaining.length ? ` + ${projectorServed ? "projector" : "fixtures"} for ${remaining.length} ref(s) outside the pool` : "");
+          (remaining.length
+            ? ` + ${projectorServed ? "projector" : "fixtures"} for ${remaining.length} ref(s) outside the pool`
+            : "");
       } else if (projectorServed) {
         provenance.items = "live (projector)";
       }
