@@ -23,6 +23,7 @@ in
       # "printing"
       "services/flatpak"
       "services/id-mail"
+      "services/pm-stack"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -53,6 +54,11 @@ in
           transport = "worker";
           workerUrl = "https://mail.security.cab";
         };
+      }
+      {
+        # PM dashboard stack (aggregator + projector, git-sync and
+        # quota-gatherer timers) as NixOS-managed user services.
+        services.pm-stack.enable = true;
       }
       # KRdp remote desktop for this laptop (user service + package);
       # see the file for the one-time on-machine credential setup.
