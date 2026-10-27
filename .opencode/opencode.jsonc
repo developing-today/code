@@ -2685,6 +2685,12 @@
             "output": 128000
           }
         },
+        "gpt-6.1-terra": {
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          }
+        },
         "gpt-6-luna": {
           "limit": {
             "context": 1050000,
@@ -3300,6 +3306,45 @@
             "output": 128000
           }
         },
+        "gpt-6.1-terra": {
+          "name": "GPT-6.1 Terra (codex)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
+            }
+          },
+          "limit": {
+            "context": 500000,
+            "output": 128000
+          }
+        },
         "gpt-6-astra": {
           "name": "GPT-6 Astra (codex)",
           "variants": {
@@ -3830,6 +3875,45 @@
           },
           "limit": {
             "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-6.1-terra": {
+          "name": "GPT-6.1 Terra (ChatGPT)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            },
+            "ultra": {
+              "options": {
+                "reasoning_effort": "ultra"
+              }
+            }
+          },
+          "limit": {
+            "context": 500000,
             "output": 128000
           }
         },
@@ -6002,6 +6086,26 @@
         "selection": "round-robin",
         "autonomy": "rules"
       },
+      "terra-plan": {
+        "name": "GPT Terra - plan providers",
+        // 2026-10-26: GPT-6.1 Terra released today and PROBE-VERIFIED live the same
+        // evening — the laptop's Codex answered a gpt-6.1-terra call ("TERRA OK").
+        // It was in our world all along; our catalogs simply never listed it (the
+        // gap the provider-catalog completeness work closes). Doors: the OpenAI
+        // API door plus the two Codex/ChatGPT subscription doors, each given an
+        // explicit entry in this PR. openai.alternate is NOT a leaf yet: it
+        // resolves through the fork's built-in catalog, which predates Terra.
+        // AA v4.3.2 (launch day): low 36.2 / medium 41.3 / high 43.9 / xhigh 45.4 /
+        // max 48.1; $1 in / $5 out per 1M — exactly half of Sol; >272k input tokens
+        // bills the whole request at 2x input / 1.5x output.
+        "targets": [
+          "openai/gpt-6.1-terra",
+          "openai-codex/gpt-6.1-terra",
+          "chatgpt/gpt-6.1-terra"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
       "scout": {
         "name": "Scout - routine work: cheapest, fastest, smart enough",
         // 2026-10-26 (pool remap review): all three routes addressed at #low — the rung every
@@ -6034,11 +6138,24 @@
         // intelligence: slower AND dumber is the combination the balance rule removes;
         // Luna stays as the pool's cheapest seat, weighted last as the OpenAI final
         // reserve). Weights burn the small soon-expiring plans fastest.
+        // 2026-10-26 (Drew, cross-rung review): Sol #low joins — II 42 / TTFT 2.9s /
+        // $0.13 per task. A higher family's low rung beats the lower family's high
+        // rungs on intelligence and speed at once (it dominates the Luna #xhigh seat
+        // below on both axes), and OpenAI is our largest quota, so it will be spent
+        // regardless — better on the family's elbow rung than its slow tail. Luna
+        // keeps its #xhigh seat for now as the second OpenAI door; per Drew's
+        // standing guidance, anywhere Flash is available it covers Luna's niche.
+        // 2026-10-26 (Drew): Terra #medium joins at weight 1 — AA launch-day II 41.3
+        // at $0.095/task, probe-verified live via Codex the evening of its release.
+        // Weight stays at 1 until AA publishes per-rung TTFT (only max's 78s is
+        // known tonight); issue #1249 tracks the missing numbers.
         "targets": [
           "opencode-route/deepseek-flash#high",
           "opencode-route/luna-plan#xhigh",
           "opencode-route/haiku-plan#high",
-          "meta/muse-spark-1.3-contributor#xhigh"
+          "meta/muse-spark-1.3-contributor#xhigh",
+          "opencode-route/sol-plan#low",
+          "opencode-route/terra-plan#medium"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -6046,7 +6163,9 @@
           "opencode-route/deepseek-flash": 3,
           "opencode-route/haiku-plan": 2,
           "meta/muse-spark-1.3-contributor": 2,
-          "opencode-route/luna-plan": 1
+          "opencode-route/sol-plan": 2,
+          "opencode-route/luna-plan": 1,
+          "opencode-route/terra-plan": 1
         }
       },
       "specialist": {
@@ -6058,10 +6177,17 @@
         // #high <=36 last (TTFT ~2s class; fires only when every seat above is walled).
         // Luna #max REMOVED in pass 3: at 38 it sat 10 points under the pool's band with a
         // 93.8s TTFT — the balance rule's remove case; Sol already covers the OpenAI door.
+        // 2026-10-26: Terra #medium (AA launch-day II 41.3 @ $0.095/task — its family's
+        // elbow and OpenAI's default rung) slots in above Pro: it out-scores Pro's <=36
+        // band at half of Sol's price. Per-rung TTFT is unpublished tonight (only max's
+        // 78s is known); acceptable risk in an ordered chain's relief seat, and issue
+        // #1249 tracks the missing numbers. Workhorse carries Terra #medium too, at
+        // weight 1 until the TTFT lands.
         "targets": [
           "opencode-route/sonnet-plan#high",
           "meta/muse-spark-1.3-contributor#max",
           "opencode-route/sol-plan#medium",
+          "opencode-route/terra-plan#medium",
           "opencode-route/deepseek-pro-plan#high"
         ],
         "selection": "ordered",
