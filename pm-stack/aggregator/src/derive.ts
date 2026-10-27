@@ -1,5 +1,6 @@
 // Pure derivations from the read model: the execution strip, the roadmap
 // timeline lanes, and the unified comment stream. No I/O here.
+import type { SectionDiagnosis } from "./feed.ts";
 import type { Comment, GhItem, Link, RefKey, RoadmapRow } from "./model.ts";
 
 export interface ExecutionStrip {
@@ -335,6 +336,22 @@ export function tierEntry(e: AttentionEntry, match?: SectionMatch | null): Tiere
   return { ...e, tier: "needs-orchestrator", orchestratorNote: ORCHESTRATOR_NOTES[e.state] };
 }
 
+/**
+ * Where the tiers came from, honestly (#1139): when the orchestration
+ * section is absent, invalid, or stale, the tier counts are not the
+ * orchestrator's published queues and the page must say so at the
+ * point of display instead of rendering a confident zero. `present`
+ * means a valid section was served (stale counts as present — its
+ * numbers render, badged old).
+ */
+export interface TierSourceInfo {
+  present: boolean;
+  state: SectionDiagnosis["state"];
+  runId?: string;
+  generatedAt?: string;
+  failedChecks?: string[];
+}
+
 export interface AttentionView {
   drew: TieredEntry[];
   orchestrator: TieredEntry[];
@@ -345,6 +362,8 @@ export interface AttentionView {
   all: TieredEntry[];
   /** Finished/stale entries dropped before display. */
   expiredCount: number;
+  /** The tier source's diagnosis (#1139); drives the banner + counts. */
+  tierSource: TierSourceInfo;
 }
 
 /** Classify, expire, and tier a raw session feed in one pass. */
@@ -352,7 +371,25 @@ export function buildAttention(
   feed: SessionFeedEntry[],
   section?: OrchestrationSection | null,
   now = Date.now(),
+  diagnosis?: SectionDiagnosis,
 ): AttentionView {
+  // The tier source's state (#1139): the caller's diagnosis when it
+  // has one (the live source tracks it in Source.diagnostics()); else
+  // derive the coarse form from the section itself — a served section
+  // is present, a missing one is absent. "invalid" can only come from
+  // a real diagnosis, since an invalid section never reaches here as
+  // a section.
+  const tierSource: TierSourceInfo = diagnosis
+    ? {
+        present: diagnosis.state === "live" || diagnosis.state === "stale",
+        state: diagnosis.state,
+        runId: diagnosis.runId,
+        generatedAt: diagnosis.generatedAt,
+        failedChecks: diagnosis.failedChecks,
+      }
+    : section
+      ? { present: true, state: "live", runId: section.runId, generatedAt: section.generatedAt }
+      : { present: false, state: "absent" };
   const { current, expired } = partitionFresh(feed, now);
   const bySession = new Map<string, SectionMatch>();
   if (section) {
@@ -392,6 +429,7 @@ export function buildAttention(
     orchestratorExtra: extras(section?.tiers.needsOrchestrator),
     all,
     expiredCount: expired.length,
+    tierSource,
   };
 }
 
@@ -580,6 +618,12 @@ export interface TodayView {
   generatedAt?: string;
   /** What the orchestrator pushed back into motion (section path only). */
   actions?: { at: string; kind: string; target: string; summary: string }[];
+  /**
+   * The orchestration section's diagnosis (#1139): the derived view's
+   * banner names the true state (absent vs invalid vs stale) instead
+   * of always claiming the job "has not published yet".
+   */
+  sectionDiagnosis?: SectionDiagnosis;
 }
 
 const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, normal: 2, medium: 2, low: 3 };
@@ -648,8 +692,17 @@ export function deriveToday(
   items: Map<RefKey, GhItem>,
   section: OrchestrationSection | null,
   now = new Date(),
+  diagnosis?: SectionDiagnosis,
 ): TodayView {
-  if (section) return todayFromSection(section);
+  if (section) {
+    const view = todayFromSection(section);
+    view.sectionDiagnosis = diagnosis ?? {
+      state: "live",
+      runId: section.runId,
+      generatedAt: section.generatedAt,
+    };
+    return view;
+  }
 
   // Derived until #899 lands: today's dated roadmap rows first, then the
   // board's in-progress work by priority, then what's in review.
@@ -707,7 +760,7 @@ export function deriveToday(
       detail: inProgress ? undefined : "nothing in progress on the board",
     });
   }
-  return { fromOrchestrator: false, objectives, momentum };
+  return { fromOrchestrator: false, objectives, momentum, sectionDiagnosis: diagnosis ?? { state: "absent" } };
 }
 
 // ---------------------------------------------------------------------------

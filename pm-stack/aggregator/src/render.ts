@@ -23,6 +23,7 @@ import {
 import { githubCommentUrl } from "./comments.ts";
 import { summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
+import { ageMsText, feedAgeText } from "./feed.ts";
 import {
   type AaConfig,
   type AaFeedSection,
@@ -41,6 +42,7 @@ import {
   type PaygLine,
   type ProjectPoolItem,
   type Provenance,
+  type ProvenanceDetail,
   type QuotaView,
   type RefKey,
   type RoadmapRow,
@@ -125,6 +127,13 @@ meter { width: 140px; height: 14px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
 .chips a { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; text-decoration: none; color: #e6edf3; background: #161b22; }
 .chips a.active { border-color: #1f6feb; background: #1f6feb33; color: #58a6ff; }
+.fchip { border: 1px solid #30363d; border-radius: 999px; padding: 5px 12px; color: #e6edf3; background: #161b22; font-size: 12.5px; }
+.fchip.live { border-color: #2ea04388; }
+.fchip.stale { border-color: #d29922; color: #e3b341; }
+.fchip.invalid { border-color: #f85149; color: #f85149; }
+.fchip.absent { border-color: #d29922; color: #e3b341; }
+.srcdetail { margin: 6px 0; }
+.srcdetail summary { cursor: pointer; }
 .reason { border-left: 3px solid #f85149; padding: 6px 10px; margin: 8px 0 2px; background: #f851490d; }
 .orch-note { border-left: 3px solid #1f6feb; padding: 6px 10px; margin: 8px 0 2px; background: #1f6feb0d; }
 .cov { border: 1px solid #30363d; border-radius: 8px; padding: 8px 12px; margin: 12px 0; background: #0d1117; }
@@ -209,7 +218,49 @@ document.addEventListener("change", (ev) => {
 });
 </script>`;
 
-function layout(title: string, body: string, provenance: Provenance, active: string, extra = ""): string {
+/** Facet labels for the freshness chips (#1138) — the footer nouns. */
+const FACET_LABELS: Record<keyof Provenance, string> = {
+  board: "board",
+  roadmap: "roadmap",
+  items: "items",
+  comments: "comments",
+  quota: "quota",
+  usage: "usage",
+  attention: "attention",
+  orchestration: "orchestration",
+  dns: "dns",
+  registry: "registry",
+  aa: "aa",
+};
+
+/**
+ * Per-source freshness chips (#1138): only the sources the page being
+ * rendered actually uses, each with its state word, its age when the
+ * source carries one, and any count WITH its noun — a chip count and
+ * a page header counting the same thing read the same variable, so
+ * the two can never disagree unexplained. The facet's full provenance
+ * string rides in the title attribute for whoever is debugging.
+ */
+export function freshnessChips(detail: ProvenanceDetail, keys: (keyof Provenance)[]): string {
+  const chips = keys
+    .map((key) => {
+      const facet = detail[key];
+      const count = facet.count !== undefined ? ` · ${facet.count} ${esc(facet.countLabel ?? "")}`.trimEnd() : "";
+      const age = facet.ageMs !== undefined && facet.state !== "fixtures" ? ` · ${ageMsText(facet.ageMs)}` : "";
+      return `<span class="fchip ${facet.state}" title="${esc(facet.text)}">${FACET_LABELS[key]} · ${facet.state}${count}${age}</span>`;
+    })
+    .join("");
+  return `<div class="chips fresh" aria-label="Source freshness">${chips}</div>`;
+}
+
+function layout(
+  title: string,
+  body: string,
+  provenance: Provenance,
+  active: string,
+  extra = "",
+  chipsHtml = "",
+): string {
   // Nav + the page dropdown both render from the manifest (#906 §1):
   // registering a page in src/pages.ts is the only step that puts it
   // in either.
@@ -224,8 +275,8 @@ function layout(title: string, body: string, provenance: Provenance, active: str
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><style>${CSS}</style></head>
-<body><nav>${links}${dropdown}</nav><main>${body}
-<div class="foot">board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}<br>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
+<body><nav>${links}${dropdown}</nav><main>${chipsHtml}${body}
+<div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main>${extra}</body></html>`;
 }
 
@@ -356,6 +407,7 @@ export function renderBoard(
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
   counts?: Map<string, number>,
+  detail?: ProvenanceDetail,
 ): string {
   const cols = new Map<string, BoardItem[]>();
   for (const item of board) {
@@ -405,6 +457,8 @@ export function renderBoard(
     `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p><div class="board">${bodies}</div>`,
     provenance,
     "/",
+    "",
+    detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
   );
 }
 
@@ -455,6 +509,7 @@ export function renderRoadmap(
   provenance: Provenance,
   grain: RoadmapGrain = "quarter",
   counts?: Map<string, number>,
+  detail?: ProvenanceDetail,
 ): string {
   const chips = GRAINS.map(
     ([g, label]) => `<a href="/roadmap?h=${g}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
@@ -486,6 +541,8 @@ export function renderRoadmap(
     `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${body}`,
     provenance,
     "/roadmap",
+    "",
+    detail ? freshnessChips(detail, ["roadmap", "items"]) : "",
   );
 }
 
@@ -679,7 +736,12 @@ function chargesStripHtml(usage: UsageView): string {
   return `<h2>Charges this period</h2><p class="muted">Evidence, not accounting — charges observed on cards/receipts in the local records (full balances stay in the finance tooling). Total observed: $${total.toFixed(2)}.</p><div class="tblwrap"><table><tr><th>Date</th><th>Charge</th><th>Amount</th><th>Method</th><th>Evidence</th></tr>${rows}</table></div>`;
 }
 
-export function renderQuota(view: QuotaView, provenance: Provenance, usage?: UsageView): string {
+export function renderQuota(
+  view: QuotaView,
+  provenance: Provenance,
+  usage?: UsageView,
+  detail?: ProvenanceDetail,
+): string {
   const pools = view.pools
     .map((p) => {
       const windows = p.windows
@@ -763,6 +825,8 @@ ${chargesStripHtml(usage)}
 ${burnAndChoices}`,
     provenance,
     "/quota",
+    "",
+    detail ? freshnessChips(detail, ["quota", "usage"]) : "",
   );
 }
 
@@ -804,7 +868,12 @@ export function historyChartHtml(records: SnapshotRecord[], metricId: string): s
   return `<div class="chart"><div class="muted">${esc(metricId)} · ${recs.length} snapshot${recs.length === 1 ? "" : "s"} · ${esc(first.ts.slice(0, 10))} → ${esc(last.ts.slice(0, 10))} · dashed amber = window reset, red = limit</div><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="history chart for ${esc(metricId)}">${markers}${limitLine}<path d="${line}" fill="none" stroke="#58a6ff" stroke-width="1.5"></path>${points}</svg></div>`;
 }
 
-export function renderServiceDetail(svc: SaasService, history: SnapshotRecord[], provenance: Provenance): string {
+export function renderServiceDetail(
+  svc: SaasService,
+  history: SnapshotRecord[],
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+): string {
   const f = freshness(svc.measuredAt, svc.cadenceDays);
   const metricRows = svc.metrics.length
     ? svc.metrics
@@ -848,7 +917,14 @@ ${paces ? `<h2>Pace projections</h2><div class="card">${paces}</div>` : ""}
 ${conflicts}
 <h2>Dated source reads</h2>${reads}
 <p class="muted">Machine-first: <a href="/api/quota/service.json?id=${encodeURIComponent(svc.id)}">/api/quota/service.json?id=${esc(svc.id)}</a></p>`;
-  return layout(`${svc.name} · usage`, body, provenance, "/quota");
+  return layout(
+    `${svc.name} · usage`,
+    body,
+    provenance,
+    "/quota",
+    "",
+    detail ? freshnessChips(detail, ["quota", "usage"]) : "",
+  );
 }
 
 // --- Attention view (#852, tiered in slice 2) -------------------------------
@@ -868,7 +944,7 @@ function sessionCard(
         : "";
   const tierBadge =
     e.tier === "needs-drew"
-      ? `<span class="badge drew">needs Drew</span>`
+      ? `<span class="badge drew">needs user</span>`
       : e.tier === "needs-orchestrator"
         ? `<span class="badge orch">needs orchestrator</span>`
         : "";
@@ -904,36 +980,66 @@ export function renderAttention(
   coverage: SourceCoverage[],
   provenance: Provenance,
   counts?: Map<string, number>,
+  detail?: ProvenanceDetail,
 ): string {
   const children = sessionChildren(view.all);
   const roots = sessionRoots(view.all);
   const drewTotal = view.drew.length + view.drewExtra.length;
   const orchTotal = view.orchestrator.length + view.orchestratorExtra.length;
-  const chips = `<div class="chips"><a href="#drew">Needs Drew (${drewTotal})</a><a href="#orchestrator">Needs orchestrator (${orchTotal})</a><a href="#sessions">All sessions (${roots.length})</a></div>`;
+  // #1139: the tier source's state decides what the counts may claim.
+  // Absent/invalid → the orchestrator's published queues are NOT
+  // reflected here, so the banner says so and the headings render
+  // "unknown" rather than a confident number; stale → the numbers
+  // render, badged with the section's age. This banner is also
+  // #1148's aggregator-side dead-man's switch: if the orchestration
+  // job dies, this is the surface that says so.
+  const ts = view.tierSource;
+  const tierBanner = !ts.present
+    ? ts.state === "invalid"
+      ? `<div class="banner">Tier source invalid — the orchestration section is present but failed validation (${esc((ts.failedChecks ?? []).join(", ") || "unknown check")}); showing session-derived items only — the orchestrator's published queues are NOT reflected in the counts below.</div>`
+      : `<div class="banner">Tier source missing — showing session-derived items only; the orchestrator's published queues are NOT reflected in the counts below.</div>`
+    : ts.state === "stale"
+      ? `<div class="banner">Tier source stale — the last orchestration section (${esc(ts.runId ?? "unknown run")}) is ${esc(ts.generatedAt ? feedAgeText(ts.generatedAt) : "old")}; the queues below are its last published state and may have moved since.</div>`
+      : "";
+  const sectionStamp =
+    ts.present && ts.runId
+      ? ` <span class="muted">· section ${esc(ts.runId)} · ${esc(ts.generatedAt ? feedAgeText(ts.generatedAt) : "")}</span>`
+      : "";
+  const drewCount = ts.present ? String(drewTotal) : "unknown";
+  const orchCount = ts.present ? String(orchTotal) : "unknown";
+  const chips = `<div class="chips"><a href="#drew">Needs user (${drewCount})</a><a href="#orchestrator">Needs orchestrator (${orchCount})</a><a href="#sessions">All sessions (${roots.length})</a></div>`;
   const drewCards =
     [
       ...view.drew.map((e) => sessionCard(e, children, 0, counts)),
       ...view.drewExtra.map((i) => tierItemCard(i, "Why you", counts)),
-    ].join("") || `<p class="muted">Nothing needs you right now.</p>`;
+    ].join("") ||
+    (ts.present
+      ? `<p class="muted">Nothing in the user queue right now.</p>`
+      : `<p class="muted">Unknown — the tier source is missing, so this queue cannot be reported.</p>`);
   const orchCards =
     [
       ...view.orchestrator.map((e) => sessionCard(e, children, 0, counts)),
       ...view.orchestratorExtra.map((i) => tierItemCard(i, "Why the fleet", counts)),
-    ].join("") || `<p class="muted">The fleet's queue is empty.</p>`;
+    ].join("") ||
+    (ts.present
+      ? `<p class="muted">The fleet's queue is empty.</p>`
+      : `<p class="muted">Unknown — the tier source is missing, so this queue cannot be reported.</p>`);
   const sessionCards = roots.length
     ? roots.map((e) => sessionCard(e, children, 0, counts)).join("")
     : `<p class="muted">No current sessions.</p>`;
   return layout(
     "Needs you",
-    `<h1>Needs you</h1><p class="muted">Only what genuinely requires Drew lands in NEEDS DREW — each with its reason. Everything else the fleet can work is the orchestrator's queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>.</p>
-${chips}
+    `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>.</p>
+${tierBanner}${chips}
 ${coverageHtml(coverage)}
-<h2 id="drew">Needs Drew (${drewTotal})</h2>${drewCards}
-<h2 id="orchestrator">Needs orchestrator (${orchTotal})</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates here only what truly needs Drew.</p>${orchCards}
+<h2 id="drew">Needs user (${drewCount})${sectionStamp}</h2>${drewCards}
+<h2 id="orchestrator">Needs orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}
 <h2 id="sessions">All sessions (${roots.length})</h2><p class="muted">Every current session with its source and state; sub-sessions collapse under their parent.</p>${sessionCards}
 ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale ${view.expiredCount === 1 ? "entry" : "entries"} expired out of this view.</p>` : ""}`,
     provenance,
     "/attention",
+    "",
+    detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
 }
 
@@ -945,13 +1051,14 @@ export function renderToday(
   quota: QuotaView,
   coverage: SourceCoverage[],
   provenance: Provenance,
+  detail?: ProvenanceDetail,
 ): string {
   const walled = quota.pools.filter((p) => p.state === "walled");
   const alerts: string[] = [];
   const drewTotal = attention.drew.length + attention.drewExtra.length;
   if (drewTotal) {
     alerts.push(
-      `<div class="banner drew"><strong>${drewTotal} item${drewTotal === 1 ? "" : "s"} need Drew</strong> — <a href="/attention#drew">review them</a></div>`,
+      `<div class="banner drew"><strong>${drewTotal} item${drewTotal === 1 ? "" : "s"} in the user queue</strong> — <a href="/attention#drew">review them</a></div>`,
     );
   }
   if (walled.length) {
@@ -959,9 +1066,21 @@ export function renderToday(
       `<div class="banner"><strong>Walled pools:</strong> ${walled.map((p) => esc(`${p.provider} (${p.plan})`)).join(", ")} — <a href="/quota">quota</a></div>`,
     );
   }
+  // #1139: the derived view's banner names the section's TRUE state —
+  // absent, invalid, and stale are different failures, and "has not
+  // published yet" is only honest for one of them.
+  const diag = today.sectionDiagnosis;
+  const staleBanner =
+    today.fromOrchestrator && diag?.state === "stale"
+      ? `<div class="banner">The orchestration section is stale — its last run (${esc(diag.runId ?? "unknown")}) is ${esc(diag.generatedAt ? feedAgeText(diag.generatedAt) : "old")}; the measurements below are its last published state, not a current reading.</div>`
+      : "";
   const provenanceLine = today.fromOrchestrator
-    ? `<p class="muted">From the orchestration job's goal measurements (section written ${fmtDate(today.generatedAt)}). Machine-first: <a href="/api/today.json">/api/today.json</a> · <a href="/api/orchestration.json">/api/orchestration.json</a>.</p>`
-    : `<div class="banner">Derived from the board, roadmap, and item activity — the orchestration job (#899) has not published a goal-measurement section yet, so this is the aggregator's own derivation, not the orchestrator's measurement.</div>`;
+    ? `<p class="muted">From the orchestration job's goal measurements (section written ${fmtDate(today.generatedAt)}). Machine-first: <a href="/api/today.json">/api/today.json</a> · <a href="/api/orchestration.json">/api/orchestration.json</a>.</p>${staleBanner}`
+    : diag?.state === "invalid"
+      ? `<div class="banner">Derived from the board, roadmap, and item activity — the orchestration section is present but failed validation (${esc((diag.failedChecks ?? []).join(", ") || "unknown check")}), so this is the aggregator's own derivation, not the orchestrator's measurement.</div>`
+      : diag?.state === "stale"
+        ? `<div class="banner">Derived from the board, roadmap, and item activity — the last orchestration section (${esc(diag.runId ?? "unknown run")}) is stale (${esc(diag.generatedAt ? feedAgeText(diag.generatedAt) : "old")}) and could not be used, so this is the aggregator's own derivation, not the orchestrator's measurement.</div>`
+        : `<div class="banner">Derived from the board, roadmap, and item activity — the orchestration job (#899) has not published a goal-measurement section yet, so this is the aggregator's own derivation, not the orchestrator's measurement.</div>`;
   const actions = today.actions?.length
     ? `<h2>Pushed back into motion</h2>${today.actions.map((a) => `<div class="card"><span class="badge">${esc(a.kind)}</span> <strong>${esc(a.target)}</strong><br>${esc(a.summary)}<br><span class="muted">${esc(fmtDate(a.at))}</span></div>`).join("")}`
     : "";
@@ -1000,6 +1119,8 @@ export function renderToday(
 ${actions}${coverageHtml(coverage)}`,
     provenance,
     "/today",
+    "",
+    detail ? freshnessChips(detail, ["orchestration", "quota", "attention"]) : "",
   );
 }
 
@@ -1015,13 +1136,16 @@ function dnsTable(entries: DnsEntry[]): string {
   return `<div class="tblwrap"><table><tr><th>Domain</th><th>Next renewal</th><th>Price (list)</th><th>Auto-renew</th><th>Plan / status</th><th>Review?</th></tr>${rows || '<tr><td colspan="6" class="muted">none</td></tr>'}</table></div>`;
 }
 
-export function renderDns(section: DnsSection | null, provenance: Provenance): string {
+export function renderDns(section: DnsSection | null, provenance: Provenance, detail?: ProvenanceDetail): string {
+  const chips = detail ? freshnessChips(detail, ["dns"]) : "";
   if (!section) {
     return layout(
       "DNS register",
       `<h1>DNS / domain register</h1><div class="banner">The register has not reached the dashboard yet — the fleet-feed collector embeds it from #902's register file, and no section is in the current feed. The register of record is the file the #902 pipeline maintains; this page only renders it.</div>`,
       provenance,
       "/dns",
+      "",
+      chips,
     );
   }
   const s = summarizeDns(section);
@@ -1043,7 +1167,7 @@ export function renderDns(section: DnsSection | null, provenance: Provenance): s
 <h2>Unused but earmarked (${s.earmarked.length})</h2><p class="muted">No public-facing use, but the name or plan ties them to a project family (earmark as recorded in the register).</p>${dnsTable(s.earmarked)}
 <h2>Completely unused (${s.unused.length})</h2><p class="muted">Nothing but registrar defaults — each still auto-renews until someone decides otherwise.</p>${dnsTable(s.unused)}
 <details><summary>Full register (${section.entries.length})</summary>${dnsTable(section.entries)}</details>`;
-  return layout("DNS register", body, provenance, "/dns");
+  return layout("DNS register", body, provenance, "/dns", "", chips);
 }
 
 // --- AA cost explorer page (ainventory workbook data via the fleet feed) -----
@@ -1168,7 +1292,7 @@ ${coverageHtml}`;
 
 const REGISTRY_SOURCE_ORDER = ["opencode-laptop", "opencode-sandbox", "jules", "claude-code", "cron"];
 
-export function renderSessions(records: SessionRecord[], provenance: Provenance): string {
+export function renderSessions(records: SessionRecord[], provenance: Provenance, detail?: ProvenanceDetail): string {
   const bySource = new Map<string, SessionRecord[]>();
   for (const r of records) bySource.set(r.source, [...(bySource.get(r.source) ?? []), r]);
   const totalTokens = records.reduce((sum, r) => sum + (r.tokensTotal ?? 0), 0);
@@ -1182,7 +1306,7 @@ export function renderSessions(records: SessionRecord[], provenance: Provenance)
 <p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records · ${totalTokens.toLocaleString()} tokens recorded. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
 <p class="muted">Coverage honesty: OpenCode sessions register from their servers; Jules from the keeper's state; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
 ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
-  return layout("Sessions", body, provenance, "/sessions");
+  return layout("Sessions", body, provenance, "/sessions", "", detail ? freshnessChips(detail, ["registry"]) : "");
 }
 
 // --- All pages (the manifest as a page) ---------------------------------------
@@ -1234,7 +1358,11 @@ ${commentThreadHtml(objectRef, comments, opts)}`;
 export function renderProjects(
   pool: ProjectPoolItem[],
   provenance: Provenance,
-  opts: { area?: string | null; orchestration?: OrchestrationSection | null } = {},
+  opts: {
+    area?: string | null;
+    orchestration?: OrchestrationSection | null;
+    detail?: ProvenanceDetail;
+  } = {},
 ): string {
   const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
   const area = opts.area && areas.includes(opts.area) ? opts.area : null;
@@ -1278,7 +1406,14 @@ export function renderProjects(
 <p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
-  return layout("Projects", body, provenance, "/projects");
+  return layout(
+    "Projects",
+    body,
+    provenance,
+    "/projects",
+    "",
+    opts.detail ? freshnessChips(opts.detail, ["items"]) : "",
+  );
 }
 
 // --- Program status page (#1046: the dashboard documents itself) ------------
@@ -1353,7 +1488,12 @@ function projectCard(s: ProjectSummary): string {
  * from #1046, and the unset-Area count as a visible gap. The full
  * pm-dashboard document moved to /program/pm-dashboard — every link
  * that pointed at /program still lands here. */
-export function renderProgram(data: ProgramData, items: Map<RefKey, GhItem>, provenance: Provenance): string {
+export function renderProgram(
+  data: ProgramData,
+  items: Map<RefKey, GhItem>,
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+): string {
   const { program, live } = data;
   const projects = data.projects ?? [];
   const unset = live.pool.byArea.find((c) => c.name === "(unset)")?.count ?? 0;
@@ -1375,7 +1515,14 @@ ${orchestrationHtml(live)}
 <h2>The PM dashboard's own record</h2>
 <p class="muted">This dashboard's architecture, what's built, what's next, and its long-term roadmap live on its project page: <a href="/program/pm-dashboard">PM dashboard →</a>. Its tracked issues, resolved live:</p>
 ${trackedTable(live.tracked)}`;
-  return layout("Program status", body, provenance, "/program");
+  return layout(
+    "Program status",
+    body,
+    provenance,
+    "/program",
+    "",
+    detail ? freshnessChips(detail, ["orchestration", "items", "roadmap"]) : "",
+  );
 }
 
 // --- Per-project page (#1121, registry in src/project-config.ts) -------------
@@ -1386,6 +1533,7 @@ export function renderProgramProject(
   detail: ProjectDetail,
   items: Map<RefKey, GhItem>,
   provenance: Provenance,
+  provDetail?: ProvenanceDetail,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -1472,5 +1620,12 @@ ${poolHtml}
 <h2>Roadmap — live</h2>
 ${roadmapHtml}
 ${editorialHtml}`;
-  return layout(config.title, body, provenance, "/program");
+  return layout(
+    config.title,
+    body,
+    provenance,
+    "/program",
+    "",
+    provDetail ? freshnessChips(provDetail, ["orchestration", "items", "roadmap"]) : "",
+  );
 }

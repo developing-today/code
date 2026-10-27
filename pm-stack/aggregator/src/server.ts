@@ -48,6 +48,48 @@ const source = pickSource();
 const cfg = loadConfig();
 const commentsStore = new CommentsStore(cfg.commentsFile);
 
+/**
+ * #1267: the live source populates its provenance strings lazily, one
+ * facet per method call — so a consumer that reads provenance()
+ * without exercising the facets (exactly what /api/health did)
+ * reports "fixtures" for facets that are really live, and its answer
+ * depends on which pages were visited since boot. Health therefore
+ * exercises every facet method before reading provenance. Priming is
+ * cached for 60 s (the #1147 probe-cache cadence): facet reads are
+ * mostly cache- or file-backed, and a watchdog polling health must
+ * not fan out to every upstream on every hit. Facet failures never
+ * fail health — a failed facet keeps its honest fallback string,
+ * which is precisely what health exists to report.
+ */
+let lastPrimedAt = 0;
+let priming: Promise<void> | null = null;
+async function ensureProvenancePrimed(): Promise<void> {
+  if (Date.now() - lastPrimedAt < 60_000) return;
+  priming ??= (async () => {
+    try {
+      const { items } = await boardContext();
+      const refs = [...items.keys()];
+      await Promise.allSettled([
+        source.roadmap(),
+        source.comments(refs),
+        source.quota(),
+        source.usage(),
+        source.attention(),
+        source.orchestration(),
+        source.dns(),
+        source.aa(),
+        source.registry(),
+        source.projects(),
+      ]);
+    } catch {
+      /* facets that failed keep their fallback strings — health reports those */
+    }
+    lastPrimedAt = Date.now();
+    priming = null;
+  })();
+  await priming;
+}
+
 /** Author identities for the comment form: standing + registry sessions. */
 async function commentFormOpts(githubRefs: RefKey[] = []): Promise<CommentFormOpts> {
   const records = await source.registry().catch(() => []);
@@ -119,7 +161,10 @@ async function roadmapContext() {
 
 async function attentionContext() {
   const [feed, summary, coverage] = await Promise.all([source.attention(), source.orchestration(), source.coverage()]);
-  return { view: buildAttention(feed, summary), coverage };
+  // Read the diagnosis AFTER orchestration() has run: the live source
+  // recomputes it on every orchestration read (#1139).
+  const diagnosis = source.diagnostics?.().orchestration;
+  return { view: buildAttention(feed, summary, Date.now(), diagnosis), coverage };
 }
 
 async function todayContext() {
@@ -130,7 +175,8 @@ async function todayContext() {
     source.quota(),
     source.orchestration(),
   ]);
-  return { today: deriveToday(board, rows, items, summary), view, coverage, quota };
+  const diagnosis = source.diagnostics?.().orchestration;
+  return { today: deriveToday(board, rows, items, summary, new Date(), diagnosis), view, coverage, quota };
 }
 
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
@@ -139,6 +185,7 @@ async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const prov = () => source.provenance();
+  const provDetail = () => source.provenanceDetail?.();
 
   // --- Dashboard comment writes (#906 §2) --------------------------------
   if (req.method === "POST" && path === "/api/comments") {
@@ -193,31 +240,31 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/" || path === "/board") {
     const { board, items } = await boardContext();
-    return html(renderBoard(board, items, prov(), await commentsStore.counts()));
+    return html(renderBoard(board, items, prov(), await commentsStore.counts(), provDetail()));
   }
 
   if (path === "/today") {
     const { today, view, coverage, quota } = await todayContext();
-    return html(renderToday(today, view, quota, coverage, prov()));
+    return html(renderToday(today, view, quota, coverage, prov(), provDetail()));
   }
 
   if (path === "/roadmap") {
     const { rows, items } = await roadmapContext();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
-    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts()));
+    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail()));
   }
 
   if (path === "/quota") {
     const [quota, usage] = await Promise.all([source.quota(), source.usage()]);
-    return html(renderQuota(quota, prov(), usage));
+    return html(renderQuota(quota, prov(), usage, provDetail()));
   }
 
   const serviceMatch = /^\/quota\/service\/([\w-]+)$/.exec(path);
   if (serviceMatch) {
     const usage = await source.usage();
     const svc = usage.services.find((s) => s.id === serviceMatch[1]);
-    if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov()));
+    if (svc) return html(renderServiceDetail(svc, usage.history[svc.id] ?? [], prov(), provDetail()));
     return html(
       `<h1>Not found</h1><p class="muted">no SaaS service with id <code>${serviceMatch[1]}</code> — <a href="/quota">back to Usage &amp; billing</a></p>`,
     );
@@ -225,11 +272,11 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/attention") {
     const { view, coverage } = await attentionContext();
-    return html(renderAttention(view, coverage, prov(), await commentsStore.counts()));
+    return html(renderAttention(view, coverage, prov(), await commentsStore.counts(), provDetail()));
   }
 
   if (path === "/dns") {
-    return html(renderDns(await source.dns(), prov()));
+    return html(renderDns(await source.dns(), prov(), provDetail()));
   }
   if (path === "/api/dns.json") {
     const section = await source.dns();
@@ -245,7 +292,7 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/sessions") {
-    return html(renderSessions(await source.registry(), prov()));
+    return html(renderSessions(await source.registry(), prov(), provDetail()));
   }
   if (path === "/api/registry.json") {
     const records = await source.registry();
@@ -257,7 +304,9 @@ async function handler(req: Request): Promise<Response> {
       source.projects().catch(() => []),
       source.orchestration().catch(() => null),
     ]);
-    return html(renderProjects(pool, prov(), { area: url.searchParams.get("area"), orchestration }));
+    return html(
+      renderProjects(pool, prov(), { area: url.searchParams.get("area"), orchestration, detail: provDetail() }),
+    );
   }
   if (path === "/api/projects.json") {
     const pool = await source.projects().catch(() => []);
@@ -281,7 +330,7 @@ async function handler(req: Request): Promise<Response> {
       projects: buildProjectSummaries(PROJECT_CONFIGS, pool, rows),
     };
     if (path === "/api/program.json") return json(data);
-    return html(renderProgram(data, items, prov()));
+    return html(renderProgram(data, items, prov(), provDetail()));
   }
 
   const programProjectMatch = /^\/program\/([\w-]+)$/.exec(path);
@@ -298,7 +347,7 @@ async function handler(req: Request): Promise<Response> {
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
     ]);
-    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov()));
+    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov(), provDetail()));
   }
   if (path === "/api/program-project.json") {
     const id = url.searchParams.get("id") ?? "";
@@ -381,7 +430,14 @@ async function handler(req: Request): Promise<Response> {
     return json(section ?? { status: "absent", reason: "no orchestration run has published yet" });
   }
   if (path === "/api/health") {
-    return json({ status: "ok", source: prov() });
+    // #1267: prime first — health's answer must not depend on
+    // request order. `sections` carries the structured diagnosis
+    // (#1140) beside the provenance strings for machine consumers.
+    await ensureProvenancePrimed();
+    const body: Record<string, unknown> = { status: "ok", source: prov() };
+    const diag = source.diagnostics?.();
+    if (diag) body.sections = diag;
+    return json(body);
   }
 
   const itemMatch = /^\/item\/(.+)$/.exec(path);

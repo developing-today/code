@@ -18,7 +18,7 @@ Design record (source of truth):
 | Route             | View                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Machine-first JSON                                                                     |
 | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `/today`          | **Today** (slice 2, #898) — the day's top objectives, prioritized, plus per-project momentum (moving / stalled / blocked-by-what, recent accomplishments). From the orchestration job's goal measurements (#899) when a section exists; derived from board + roadmap + item activity, and labelled as derived, until then.                                                                                                                                        | `/api/today.json`                                                                      |
-| `/attention`      | **Needs you** (#852, tiered in slice 2) — **NEEDS DREW** (default; only items that genuinely require Drew, each with its reason), **NEEDS ORCHESTRATOR** (the fleet's own queue), then every current session with source labels and plain-language states. Finished runs and stale items expire out.                                                                                                                                                              | `/api/attention.json`, `/api/coverage.json`                                            |
+| `/attention`      | **Needs you** (#852, tiered in slice 2) — **NEEDS USER** (default; the intake queue the orchestrator works first — only items it cannot resolve escalate here, each with its reason), **NEEDS ORCHESTRATOR** (the fleet's own queue), then every current session with source labels and plain-language states. Finished runs and stale items expire out.                                                                                                          | `/api/attention.json`, `/api/coverage.json`                                            |
 | `/`               | **Cross-repo WIP board** — the curated in-flight set across all four repos, with an execution strip per card (implementing → review → merged → queued).                                                                                                                                                                                                                                                                                                           | `/api/board.json`                                                                      |
 | `/roadmap`        | **Roadmap** — Grist's `Program roadmap` table as a timeline; `?h=` switches the horizon: `quarter` (default), `month`, `week`, `3d`, `today` — one data model at every grain.                                                                                                                                                                                                                                                                                     | `/api/roadmap.json`                                                                    |
 | `/quota`          | **Usage & billing** (hub, design 2026-10-25; pools from #851) — needs-attention strip (bubble rules: >80% of a limit, >$5 projected unbilled PAYG), token-quota pools + PAYG dollars card, SaaS service cards grouped by kind with highlight metrics, charges evidence strip. Per-service detail: `/quota/service/<id>`.                                                                                                                                          | `/api/quota.json` (extended: `saas`/`payg`/`charges`/…), `/api/quota/service.json?id=` |
@@ -40,7 +40,7 @@ that is plumbing, not links).
 ### Needs-you tiers + session clarity (slice 2, #898)
 
 - **Tiering** (`buildAttention` in `src/derive.ts`): every classified
-  session lands in NEEDS DREW (with an explainable `drewReason`),
+  session lands in NEEDS USER (with an explainable `drewReason`),
   NEEDS ORCHESTRATOR (with the fleet's next step), or in-motion. Drew
   rules, in order: the orchestration job's own classification (#899 —
   its tiers win for anything they name, reason verbatim) → a keeper
@@ -138,7 +138,7 @@ Two kinds, visually distinct everywhere they render:
 pass polls `GET /api/comments.json?kind=message&state=new` (and
 `?kind=github&state=new` for pending GitHub posts), triages each into
 its normal flow — update the item, queue work, escalate to Drew via
-the usual NEEDS DREW path; github-kind ones get posted and reported —
+the usual NEEDS USER path; github-kind ones get posted and reported —
 then marks them consumed with `POST /api/comments/triage { ids }`.
 Notes are never polled; they are read from
 `/api/comments.json?object=<ref>` when an item is picked up. Item
@@ -361,6 +361,35 @@ projector-ized live per-source feeds.
   the to-do backlog is excluded). Kaneo project slugs map to repos as
   in `pm-stack/kaneo-projects.json` (Session H): `code`, `opencode`,
   `openchamber` under `developing-today/`, `nix` under `dezren39/`.
+
+## Honesty + freshness (#1139, #1267, #1138)
+
+- **No silent zeros (#1139).** The orchestration section is
+  diagnosed on every read — live / stale (>90 min) / absent /
+  invalid (with the failing check named) — via
+  `diagnoseOrchestrationSection` in `src/feed.ts` and
+  `Source.diagnostics()`. `/attention` banners an absent, invalid, or
+  stale tier source at the point of display and renders the tier
+  counts as "unknown" rather than a confident 0 when the source is
+  missing; `/today`'s derived-view banner names the section's true
+  state. The stale/absent banner is also the aggregator-side
+  dead-man's switch for #1148: if the orchestration job dies, the
+  surfaces Drew reads say so. Visible tier wording is role-based —
+  NEEDS USER, not NEEDS DREW (Drew's 2026-10-27 direction; internal
+  field names and the orchestration contract are unchanged). The
+  NEEDS USER queue is an intake the orchestrator works first; only
+  items it cannot resolve escalate to the user.
+- **Health primes (#1267).** Provenance strings populate lazily, one
+  facet per method call, so `/api/health` exercises every facet
+  (60 s-cached) before answering — its report no longer depends on
+  which pages were visited since boot. The response also carries the
+  structured `sections` diagnosis beside the provenance strings.
+- **Freshness chips (#1138).** Pages render per-source chips
+  (source · state · age, counts always with their noun) for exactly
+  the sources they use, from `Source.provenanceDetail()`; the full
+  provenance line moves to a collapsed "source detail" disclosure in
+  the footer. The registry chip counts the merged store total — the
+  same number the /sessions header renders.
 
 ## Design notes — the two new views (#851, #852)
 

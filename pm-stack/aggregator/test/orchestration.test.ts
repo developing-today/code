@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { todayFromSection } from "../src/derive.ts";
 import {
+  diagnoseOrchestrationSection,
   isFleetFeed,
   isOrchestrationSection,
   normalizeOrchestrationSection,
@@ -271,5 +272,112 @@ describe("live source orchestration states (#1140)", () => {
     expect(section?.tiers.needsDrew.length).toBe(1);
     expect(section?.provenance.sources.length).toBe(3);
     expect(src.provenance().orchestration).toContain("live (orchestration section orch-2026-10-27T03:14:56Z");
+  });
+});
+
+describe("orchestration diagnosis (#1139)", () => {
+  test("absent: null and missing values diagnose as absent", () => {
+    expect(diagnoseOrchestrationSection(null).state).toBe("absent");
+    expect(diagnoseOrchestrationSection(undefined).state).toBe("absent");
+  });
+
+  test("invalid: a present-but-malformed section names the failing check", () => {
+    const bad = { ...SECTION, tiers: { needsOrchestrator: [] } };
+    const d = diagnoseOrchestrationSection(bad, Date.parse("2026-10-25T18:00:00.000Z"));
+    expect(d.state).toBe("invalid");
+    expect(d.failedChecks).toContain("tiers.needsDrew");
+  });
+
+  test("live: a fresh valid section diagnoses live with run id and age", () => {
+    const d = diagnoseOrchestrationSection(SECTION, Date.parse("2026-10-25T17:50:00.000Z"));
+    expect(d.state).toBe("live");
+    expect(d.runId).toBe("orch-2026-10-25T17:20:00.000Z");
+    expect(d.ageMs).toBe(30 * 60_000);
+  });
+
+  test("stale: a valid section older than the 90m threshold diagnoses stale", () => {
+    const d = diagnoseOrchestrationSection(SECTION, Date.parse("2026-10-25T19:00:00.000Z"));
+    expect(d.state).toBe("stale");
+    expect(d.ageMs).toBe(100 * 60_000);
+  });
+});
+
+describe("live source diagnostics + provenance detail (#1139/#1138)", () => {
+  async function sourceWithFeed(over: Record<string, unknown>): Promise<ReturnType<typeof liveSource>> {
+    const dir = await mkdtemp(join(tmpdir(), "pm-diag-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const now = new Date().toISOString();
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: now,
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        ...over,
+      }),
+    );
+    const cfg = loadConfig({
+      ...Bun.env,
+      PM_AGG_SOURCE: "live",
+      PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+      PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),
+      PM_AGG_SNAPSHOTS_DIR: join(dir, "snapshots"),
+      PM_AGG_OPENCHAMBER_STATE: join(dir, "no-state.json"),
+      PM_PROJECTOR_URL: "off",
+      KANEO_ADMIN_EMAIL: "",
+      KANEO_ADMIN_PASSWORD: "",
+      GRIST_API_KEY: "",
+    });
+    return liveSource(cfg);
+  }
+
+  const liveSection = () => ({
+    ...SECTION,
+    generatedAt: new Date().toISOString(),
+    runId: "orch-diag-live",
+    provenance: { sources: ["test"], runId: "orch-diag-live" },
+  });
+
+  test("diagnostics reflects the section the source actually holds", async () => {
+    const ok = await sourceWithFeed({ orchestration: liveSection() });
+    await ok.orchestration();
+    expect(ok.diagnostics?.().orchestration.state).toBe("live");
+    expect(ok.diagnostics?.().orchestration.runId).toBe("orch-diag-live");
+    expect(ok.provenanceDetail?.().orchestration.state).toBe("live");
+
+    const missing = await sourceWithFeed({});
+    await missing.orchestration();
+    expect(missing.diagnostics?.().orchestration.state).toBe("absent");
+
+    const invalidSrc = await sourceWithFeed({
+      orchestration: {
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        runId: "x",
+        tiers: { needsDrew: [], needsOrchestrator: [] },
+      },
+    });
+    await invalidSrc.orchestration();
+    const d = invalidSrc.diagnostics?.().orchestration;
+    expect(d?.state).toBe("invalid");
+    expect(d?.failedChecks).toContain("provenance");
+    expect(invalidSrc.provenanceDetail?.().orchestration.state).toBe("invalid");
+  });
+
+  test("registry facet counts the MERGED total, with its noun (#1138)", async () => {
+    const src = await sourceWithFeed({
+      orchestration: liveSection(),
+      registry: [{ id: "ses-diag-1", source: "opencode-sandbox", label: "Diag session" }],
+    });
+    const records = await src.registry();
+    expect(records.length).toBe(1);
+    expect(src.provenance().registry).toContain("1 session records");
+    expect(src.provenance().registry).toContain("1 from the latest feed");
+    const facet = src.provenanceDetail?.().registry;
+    expect(facet?.count).toBe(1);
+    expect(facet?.countLabel).toBe("session records");
+    expect(facet?.state).toBe("live");
   });
 });

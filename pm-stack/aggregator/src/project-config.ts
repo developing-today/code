@@ -488,7 +488,7 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
         {
           title: "Plaid / Citi still not linked",
           detail:
-            "Plaid blocks Muse's browser, so linking Citi (Costco, Diamond, Double Cash) needs Drew's own browser session. Several vendor meters are also console-only, so some /quota numbers are dated manual reads rather than live meters.",
+            "Plaid blocks Muse's browser, so linking Citi (Costco, Diamond, Double Cash) needs the user's own browser session. Several vendor meters are also console-only, so some /quota numbers are dated manual reads rather than live meters.",
         },
       ],
     },
