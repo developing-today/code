@@ -130,6 +130,28 @@ class TestExportTursoArgv(unittest.TestCase):
         # behaviour unchanged: the export was filed with cold-store
         self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
 
+    def dump_argv_lines(self):
+        for argv_log in sorted(self.capture.glob("argv-*.log")):
+            lines = argv_log.read_text().splitlines()
+            if any("dump.test" in line for line in lines):
+                return lines
+        self.fail("no dump invocation recorded by the stub curl")
+
+    def test_dump_uses_default_max_time_and_one_retry(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.dump_argv_lines()
+        self.assertEqual(lines[lines.index("--max-time") + 1], "1800")
+        self.assertEqual(lines[lines.index("--retry") + 1], "1")
+        self.assertIn("--retry-all-errors", lines)
+
+    def test_dump_max_time_env_override_is_honored(self):
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "42"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.dump_argv_lines()
+        self.assertEqual(lines[lines.index("--max-time") + 1], "42")
+
     def test_skip_when_token_unset(self):
         env = {k: v for k, v in self.env.items() if k != "TURSO_PLATFORM_API_TOKEN"}
         result = self.run_script(env=env)

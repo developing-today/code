@@ -1,9 +1,14 @@
 // The aggregator's HTTP server. Read-mostly: pages are server-rendered
 // HTML and /api/*.json serve the same data machine-first. Slice 3 (#906)
 // adds the app's first writes — dashboard comments (POST /api/comments
-// and its triage/github-result companions); everything underneath
-// (GitHub, Kaneo, Grist) stays read-only from here.
+// and its triage/github-result companions); the triage write path
+// (#1152/#1154/#1156) adds dashboard actions (POST /api/actions and
+// its result companion) on the same pattern. Everything underneath
+// (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
+// apply actions; the dashboard only records them.
 import { stat } from "node:fs/promises";
+import { ActionsStore, validateNewAction } from "./actions.ts";
+import { checkActionAgainstItem, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
 import { loadFeed } from "./feed.ts";
@@ -44,14 +49,22 @@ import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
 
+const cfg = loadConfig();
+const commentsStore = new CommentsStore(cfg.commentsFile);
+const actionsStore = new ActionsStore(cfg.actionsFile);
+
 function pickSource(): Source {
-  const cfg = loadConfig();
-  return cfg.source === "live" ? liveSource(cfg) : fixtureSource();
+  // #1290: the live source reads the standing delegation default from
+  // the actions store's preference records when it stamps the
+  // needs-user fallbacks onto tier items.
+  return cfg.source === "live"
+    ? liveSource(cfg, {
+        standingAuto: async () => effectiveStandingAuto(await actionsStore.all()).standingAuto,
+      })
+    : fixtureSource();
 }
 
 const source = pickSource();
-const cfg = loadConfig();
-const commentsStore = new CommentsStore(cfg.commentsFile);
 
 /**
  * #1267: the live source populates its provenance strings lazily, one
@@ -251,6 +264,67 @@ async function handler(req: Request): Promise<Response> {
       return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
     }
   }
+  // --- Dashboard action writes (#1152/#1154/#1156) -----------------------
+  // The triage write path: forms POST DashActions here; the fleet
+  // consumers (orchestration pass, Jules keeper) poll state=new and
+  // report outcomes to /api/actions/result. The dashboard itself never
+  // writes GitHub, the Project, or a session server.
+  if (req.method === "POST" && path === "/api/actions") {
+    try {
+      const parsed = validateNewAction(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      // #1291/#1293: checks that need the currently published item —
+      // option/survey membership, required-question coverage, proposal
+      // identity, the access/policy auto ban. Enforced only when the
+      // aggregator actually holds a section; with none, the store
+      // stays the permissive boundary of the triage slice and the
+      // consumer rejects what it cannot apply.
+      if (parsed.value.kind === "triage") {
+        const section = await source.orchestration().catch(() => null);
+        if (section) {
+          const problem = checkActionAgainstItem(
+            parsed.value,
+            findTierItem(section, parsed.value.objectRef),
+            Date.now(),
+          );
+          if (problem) return json({ error: problem }, 400);
+        }
+      }
+      const { action, created } = await actionsStore.add(parsed.value);
+      return json(created ? { action } : { action, deduped: true }, created ? 201 : 200);
+    } catch (err) {
+      return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/actions/result") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown; outcome?: unknown; byRun?: unknown; note?: unknown };
+      if (typeof body.id !== "string") return json({ error: "id required" }, 400);
+      if (body.outcome !== "applied" && body.outcome !== "rejected") {
+        return json({ error: 'outcome must be "applied" | "rejected"' }, 400);
+      }
+      if (typeof body.byRun !== "string" || body.byRun.trim() === "") return json({ error: "byRun required" }, 400);
+      const updated = await actionsStore.markResult(body.id, {
+        outcome: body.outcome,
+        byRun: body.byRun,
+        note: typeof body.note === "string" ? body.note : undefined,
+      });
+      return updated ? json({ action: updated }) : json({ error: "no such action" }, 404);
+    } catch (err) {
+      return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (path === "/api/actions.json") {
+    const object = url.searchParams.get("object");
+    const kind = url.searchParams.get("kind");
+    const state = url.searchParams.get("state");
+    let list = await actionsStore.all();
+    if (object) list = list.filter((a) => a.objectRef === object);
+    if (kind) list = list.filter((a) => a.kind === kind);
+    if (state) list = list.filter((a) => a.state === state);
+    return json({ actions: list, pending: await actionsStore.pendingCounts() });
+  }
+
   if (path === "/api/comments.json") {
     const object = url.searchParams.get("object");
     const kind = url.searchParams.get("kind");
@@ -271,7 +345,18 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/" || path === "/board") {
     const { board, items } = await boardContext();
-    return html(renderBoard(board, items, prov(), await commentsStore.counts(), provDetail()));
+    const [pool, formOpts, actionsByObject] = await Promise.all([
+      source.projects().catch(() => []),
+      commentFormOpts(),
+      actionsStore.byObject(),
+    ]);
+    return html(
+      renderBoard(board, items, prov(), await commentsStore.counts(), provDetail(), {
+        actionsByObject,
+        poolByRef: new Map(pool.map((p) => [p.ref, p])),
+        identities: formOpts.identities,
+      }),
+    );
   }
 
   if (path === "/today") {
@@ -303,7 +388,13 @@ async function handler(req: Request): Promise<Response> {
 
   if (path === "/attention") {
     const { view, coverage } = await attentionContext();
-    return html(renderAttention(view, coverage, prov(), await commentsStore.counts(), provDetail()));
+    const [formOpts, actionsByObject] = await Promise.all([commentFormOpts(), actionsStore.byObject()]);
+    return html(
+      renderAttention(view, coverage, prov(), await commentsStore.counts(), provDetail(), {
+        actionsByObject,
+        identities: formOpts.identities,
+      }),
+    );
   }
 
   if (path === "/dns") {
@@ -323,7 +414,13 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/sessions") {
-    return html(renderSessions(await source.registry(), prov(), provDetail()));
+    const records = await source.registry();
+    return html(
+      renderSessions(records, prov(), provDetail(), {
+        actionsByObject: await actionsStore.byObject(),
+        identities: identitiesFromRecords(records),
+      }),
+    );
   }
   if (path === "/api/registry.json") {
     const records = await source.registry();
@@ -331,12 +428,20 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/projects") {
-    const [pool, orchestration] = await Promise.all([
+    const [pool, orchestration, formOpts, actionsByObject] = await Promise.all([
       source.projects().catch(() => []),
       source.orchestration().catch(() => null),
+      commentFormOpts(),
+      actionsStore.byObject(),
     ]);
     return html(
-      renderProjects(pool, prov(), { area: url.searchParams.get("area"), orchestration, detail: provDetail() }),
+      renderProjects(pool, prov(), {
+        area: url.searchParams.get("area"),
+        orchestration,
+        detail: provDetail(),
+        actionsByObject,
+        identities: formOpts.identities,
+      }),
     );
   }
   if (path === "/api/projects.json") {
@@ -500,22 +605,37 @@ async function handler(req: Request): Promise<Response> {
       const links = subject.links;
       const notes = "repo" in subject ? subject.notes : undefined;
       const refs = allRefs([subject]);
-      const [items, comments, allComments, records] = await Promise.all([
+      const [items, comments, allComments, records, pool, allActions] = await Promise.all([
         source.items(refs),
         source.comments(refs),
         commentsStore.all(),
         source.registry().catch(() => []),
+        source.projects().catch(() => []),
+        actionsStore.all(),
       ]);
       // Dashboard comments for this item live on its own subject ref
       // and on each linked GitHub ref (gh:<ref>) — one merged thread.
       const wanted = new Set([id, ...refs.map((r) => ghObjectRef(r))]);
       const dashComments = allComments.filter((c) => wanted.has(c.objectRef));
       const sessions = records.filter((r) => r.taskRefs.some((ref) => refs.includes(ref)));
+      // #1154: when one of the item's refs is in the Project pool, the
+      // item page carries the status-request control for that pool item.
+      const pooled = pool.find((p) => refs.includes(p.ref));
       const extras = {
         dashComments,
         formRef: id,
         formOpts: await commentFormOpts(refs),
         sessions,
+        actions: allActions.filter((a) => wanted.has(a.objectRef)),
+        ...(pooled
+          ? {
+              statusRequest: {
+                objectRef: ghObjectRef(pooled.ref),
+                targetRef: pooled.ref,
+                currentStatus: pooled.status ?? null,
+              },
+            }
+          : {}),
       };
       return html(renderItem(title, id, links, notes, items, comments, prov(), extras));
     }

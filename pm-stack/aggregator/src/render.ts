@@ -20,8 +20,15 @@ import {
   timeline as buildTimeline,
   windowPercent,
 } from "./derive.ts";
+import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
+import {
+  DELEGATION_DEFAULT_OBJECT_REF,
+  effectiveStandingAuto,
+  proposalExpired,
+  proposalIdentity,
+} from "./tier-items.ts";
 import { githubCommentUrl } from "./comments.ts";
-import { summarizeAa } from "./aa.ts";
+import { aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
 import type { HealthView } from "./health.ts";
@@ -36,6 +43,7 @@ import {
   type Comment,
   type DashAuthor,
   type DashComment,
+  type DelegationMode,
   type DnsEntry,
   type DnsSection,
   type GhItem,
@@ -53,8 +61,10 @@ import {
   type SourceCoverage,
   type TieredEntry,
   type TierItem,
+  type TierItemQuestion,
   type UsageMetric,
   type UsageView,
+  type WhyUserClass,
   SAAS_GROUP_LABELS,
   SESSION_SOURCE_LABELS,
   countedEstimate,
@@ -163,6 +173,33 @@ meter { width: 140px; height: 14px; }
 .cform .kinds label { display: inline-flex; gap: 5px; align-items: center; margin: 0; font-size: 13px; color: #e6edf3; }
 .cform button { margin-top: 10px; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
 .cform .err { color: #f85149; font-size: 12px; margin-top: 6px; }
+.actbox { border: 1px dashed #30363d; border-radius: 8px; padding: 8px 10px; margin: 10px 0 2px; background: #0d1117; }
+.actbox fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.actbox .ahead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+.actbox .ahead label { font-size: 12px; color: #8b949e; }
+.actbox select, .aform select, .aform input[type="text"], .aform input[type="datetime-local"] { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 44px; }
+.aform { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+.aform input[type="text"] { flex: 1 1 180px; }
+.aform button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; min-height: 44px; }
+.aform button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.aform button.danger { border-color: #f85149; color: #f85149; }
+.aform button:disabled, .actbox fieldset:disabled button { opacity: .45; cursor: not-allowed; }
+.aform .confirm { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 44px; }
+.aform .err { color: #f85149; font-size: 12px; flex-basis: 100%; }
+.aform .why { color: #8b949e; font-size: 12px; flex-basis: 100%; }
+.badge.act-pending { background: #d2992233; border-color: #d29922; color: #e3b341; }
+.badge.act-applied { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
+.badge.act-rejected { background: #f8514933; border-color: #f85149; color: #f85149; }
+.badge.act-snoozed { background: #bc8cff33; border-color: #bc8cff; color: #bc8cff; }
+.badge.whyuser { background: #d2992233; border-color: #d29922; color: #e3b341; }
+.badge.whyuser.access, .badge.whyuser.policy { background: #f8514933; border-color: #f85149; color: #f85149; }
+.propbox { border: 1px solid #2ea043; background: #2ea04311; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.propbox.expired { border-color: #8b949e; background: #8b949e11; }
+.unablebox { border: 1px solid #f85149; background: #f8514911; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.qblock { border-top: 1px solid #21262d; padding: 6px 0 2px; margin-top: 6px; }
+.qblock .qopts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 4px 0; }
+.qblock label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; min-height: 32px; }
+.optform .effect { color: #8b949e; font-size: 12px; flex-basis: 100%; }
 nav select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; margin-left: auto; max-width: 45vw; }
 .foot { margin-top: 40px; border-top: 1px solid #30363d; padding-top: 10px; color: #8b949e; font-size: 12px; }
 .card.stale { opacity: .55; }
@@ -172,6 +209,36 @@ nav select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; bor
 .flag.payg { border-color: #d29922; background: #d2992211; }
 .svcgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; align-items: start; }
 .chart { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 8px; margin: 8px 0; overflow-x: auto; }
+.xtabs { display: flex; gap: 6px; margin: 12px 0 4px; border-bottom: 1px solid #30363d; }
+.xtab { background: none; border: 1px solid transparent; border-bottom: 0; color: #8b949e; font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 8px 8px 0 0; cursor: pointer; }
+.xtab:hover { color: #e6edf3; }
+.xtab.active { color: #e6edf3; background: #161b22; border-color: #30363d; }
+.xpl-filters { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.xpl-filters input[type="search"], .xpl-filters select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; font: inherit; }
+.xpl-filters input[type="search"] { min-width: 220px; flex: 1; }
+.xchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 3px 9px; border-radius: 999px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; cursor: pointer; font: inherit; }
+.xchip .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.xchip.off { opacity: .38; text-decoration: line-through; }
+.xp-seg { display: inline-flex; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
+.xp-seg button { background: #161b22; color: #8b949e; border: 0; font: inherit; font-weight: 600; padding: 6px 12px; cursor: pointer; }
+.xp-seg button.active { background: #1f6feb; color: #fff; }
+.xpl-charts { display: grid; grid-template-columns: 1fr; gap: 4px; }
+.xpl-charts .chart svg { width: 100%; height: auto; display: block; }
+.xpl-charts .chart.primary { border-color: #1f6feb; }
+circle.xpt { cursor: pointer; }
+.xpl-table td.num, .xpl-table th.num { text-align: right; }
+.xpl-table tr { cursor: pointer; }
+.xpl-table tr:hover td { background: #161b22; }
+.xpl-detail { display: none; }
+body.xp-plan .xpl-costcol { display: none; }
+.xpl-ctl { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 12px; margin: 2px 0 4px; }
+.xpl-ctl button { border: 1px solid #30363d; background: #161b22; color: #e6edf3; border-radius: 6px; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 11.5px; }
+.xpl-ctl button.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+.xpl-ctl select { background: #161b22; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 12px; }
+.chart h3 { display: inline-block; margin: 2px 10px 2px 0; font-size: 13.5px; }
+.hchip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; padding: 3px 6px 3px 9px; border-radius: 6px; background: #21262d; border: 1px solid #30363d; margin: 0 5px 5px 0; }
+.hchip button { border: none; background: none; cursor: pointer; font-size: 13px; line-height: 1; color: #e6edf3; padding: 2px 4px; }
+.xpl-ctl-btn { margin-top: 6px; border: 1px solid #30363d; background: #1f6feb; color: #fff; border-radius: 6px; padding: 5px 12px; cursor: pointer; font: inherit; font-size: 12px; }
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
   main { padding: 12px 10px 60px; }
@@ -222,6 +289,69 @@ document.addEventListener("change", (ev) => {
   const form = t.closest(".cform");
   const wrap = form && form.querySelector(".ghtarget");
   if (wrap) wrap.style.display = t.value === "github" && t.checked ? "" : "none";
+});
+</script>`;
+
+/**
+ * The client side of the dashboard action forms (#1152/#1154/#1156):
+ * one delegated submit handler, exactly the COMMENT_SCRIPT pattern —
+ * POST /api/actions, reload on success, inline error on failure. The
+ * form's data-* attributes carry the envelope's fixed fields; named
+ * inputs carry the payload. A stop form must have its confirm box
+ * ticked before the script will send it (two-step confirm).
+ */
+const ACTION_SCRIPT = `<script>
+document.addEventListener("submit", async (ev) => {
+  const form = ev.target;
+  if (!(form instanceof HTMLFormElement) || !form.classList.contains("aform")) return;
+  ev.preventDefault();
+  const err = form.querySelector(".err");
+  const data = new FormData(form);
+  if (form.dataset.verb === "stop" && !data.get("confirm")) {
+    if (err) err.textContent = "Not sent: tick Confirm stop first — stopping ends the session's run.";
+    return;
+  }
+  const box = form.closest(".actbox");
+  const authorRaw = String((box && box.querySelector("select[name=author]") || {}).value || "drew|drew|");
+  const [akind, aid, asession] = authorRaw.split("|");
+  const labelEl = box ? box.querySelector('option[value="' + CSS.escape(authorRaw) + '"]') : null;
+  const payload = {};
+  for (const name of ["text", "reason", "status", "tier", "mode", "optionId", "proposalRunId", "proposalUpdatedAt"]) {
+    const v = data.get(name);
+    if (v) payload[name] = String(v);
+  }
+  const standingAuto = data.get("standingAuto");
+  if (standingAuto) payload.standingAuto = standingAuto === "true";
+  const answersByQuestion = {};
+  for (const el of form.querySelectorAll("[name^='answers:']")) {
+    const qid = el.name.slice("answers:".length);
+    if (el.type === "checkbox") { if (el.checked) (answersByQuestion[qid] = answersByQuestion[qid] || []).push(el.value); }
+    else if (el.type === "radio") { if (el.checked) answersByQuestion[qid] = el.value; }
+    else if (el.value) answersByQuestion[qid] = el.value;
+  }
+  const answerList = Object.keys(answersByQuestion).map((questionId) => ({ questionId, value: answersByQuestion[questionId] }));
+  if (answerList.length) payload.answers = answerList;
+  const untilCustom = data.get("untilCustom");
+  const untilPreset = data.get("untilPreset");
+  if (untilCustom) payload.until = new Date(String(untilCustom)).toISOString();
+  else if (untilPreset) payload.until = String(untilPreset);
+  const body = {
+    clientToken: form.dataset.token,
+    kind: form.dataset.kind,
+    verb: form.dataset.verb,
+    objectRef: form.dataset.object,
+    author: { kind: akind, id: aid, label: labelEl ? labelEl.textContent : aid, ...(asession ? { sessionId: asession } : {}) },
+    payload,
+  };
+  if (form.dataset.targetRef) body.targetRef = form.dataset.targetRef;
+  if (form.dataset.sessionId) body.sessionId = form.dataset.sessionId;
+  if (form.dataset.sessionSource) body.sessionSource = form.dataset.sessionSource;
+  if (form.dataset.supersedes) body.supersedes = form.dataset.supersedes;
+  try {
+    const res = await fetch("/api/actions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || ("HTTP " + res.status)); }
+    location.reload();
+  } catch (e) { if (err) err.textContent = "Not recorded: " + e.message; }
 });
 </script>`;
 
@@ -370,6 +500,579 @@ export function commentThreadHtml(
   return `<h2>${esc(heading)}</h2>${list}${commentFormHtml(objectRef, opts)}`;
 }
 
+// --- Dashboard actions (#1152/#1154/#1156) --------------------------------
+// Forms post DashActions to the actions store (src/actions.ts); the
+// fleet consumers apply them and report back. Nothing here writes
+// anywhere else — a control renders the REQUEST and the store's state
+// (pending / applied / rejected), never a pretend-completed change.
+
+/** "12m ago" style relative stamp for action badges. */
+export function relTime(iso: string, now = Date.now()): string {
+  const ms = now - Date.parse(iso);
+  if (Number.isNaN(ms)) return iso;
+  if (ms < 60_000) return "just now";
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+const VERB_BADGE_LABELS: Record<string, string> = {
+  acknowledge: "acknowledge",
+  snooze: "snooze",
+  escalate: "escalate",
+  "de-escalate": "de-escalate",
+  answer: "answer",
+  delegate: "delegate",
+  dismiss: "dismiss",
+  "approve-proposal": "approve proposal",
+  "reject-proposal": "reject proposal",
+  "request-status": "status change",
+  "set-delegation-default": "standing default",
+  poke: "poke",
+  stop: "stop",
+};
+
+function pendingBadgeLabel(a: DashAction): string {
+  if (a.verb === "request-status") return `status → ${a.payload.status ?? "?"} requested`;
+  if (a.verb === "snooze") return `snooze until ${a.payload.until ? fmtDate(a.payload.until) : "?"} requested`;
+  if (a.verb === "delegate") return `delegate (${a.payload.mode ?? "?"}) requested`;
+  return `${VERB_BADGE_LABELS[a.verb] ?? a.verb} requested`;
+}
+
+/**
+ * The visible state of an object's actions: every still-pending action
+ * as a ⏳ badge, plus the latest applied/rejected outcome per verb
+ * family (snooze / status / acknowledge / tier / delegation) so the
+ * user can SEE that an action landed — or that it was rejected, with
+ * the consumer's note.
+ */
+export function actionBadgesHtml(actions: DashAction[] | undefined, now = Date.now()): string {
+  if (!actions?.length) return "";
+  const badges: string[] = [];
+  for (const a of actions) {
+    if (a.state === "new") {
+      badges.push(
+        `<span class="badge act-pending" title="Action ${esc(a.id)} — waiting for the consuming fleet job's next run">⏳ ${esc(pendingBadgeLabel(a))} · ${esc(relTime(a.createdAt, now))}</span>`,
+      );
+    }
+  }
+  const snooze = latestInFamily(actions, "snooze");
+  if (snooze?.state === "applied" && snooze.payload.until && Date.parse(snooze.payload.until) > now) {
+    badges.push(
+      `<span class="badge act-snoozed" title="Snooze applied by ${esc(snooze.appliedByRun ?? "a fleet run")}">💤 snoozed until ${esc(fmtDate(snooze.payload.until))}</span>`,
+    );
+  }
+  const status = latestInFamily(actions, "status");
+  if (status?.state === "applied") {
+    badges.push(
+      `<span class="badge act-applied">✓ status → ${esc(status.payload.status ?? "")} applied · ${esc(relTime(status.appliedAt ?? status.createdAt, now))}</span>`,
+    );
+  } else if (status?.state === "rejected") {
+    badges.push(
+      `<span class="badge act-rejected" title="${esc(status.resultNote ?? "")}">✗ status → ${esc(status.payload.status ?? "")} rejected${status.resultNote ? ` — ${esc(status.resultNote)}` : ""}</span>`,
+    );
+  }
+  const ack = latestInFamily(actions, "ack");
+  if (ack?.state === "applied") {
+    badges.push(
+      `<span class="badge act-applied">✓ acknowledged · ${esc(relTime(ack.appliedAt ?? ack.createdAt, now))}</span>`,
+    );
+  }
+  const tier = latestInFamily(actions, "tier");
+  if (tier?.state === "applied") {
+    badges.push(
+      `<span class="badge act-applied">✓ moved to ${tier.payload.tier === "needs-drew" ? "Needs User" : "Needs Orchestrator"} · ${esc(relTime(tier.appliedAt ?? tier.createdAt, now))}</span>`,
+    );
+  } else if (tier?.state === "rejected") {
+    badges.push(
+      `<span class="badge act-rejected" title="${esc(tier.resultNote ?? "")}">✗ ${esc(VERB_BADGE_LABELS[tier.verb] ?? tier.verb)} rejected${tier.resultNote ? ` — ${esc(tier.resultNote)}` : ""}</span>`,
+    );
+  }
+  const delegation = latestInFamily(actions, "delegation");
+  if (delegation?.state === "applied") {
+    badges.push(
+      `<span class="badge act-applied">✓ delegated (${esc(delegation.payload.mode ?? "")}) · ${esc(relTime(delegation.appliedAt ?? delegation.createdAt, now))}</span>`,
+    );
+  } else if (delegation?.state === "rejected") {
+    badges.push(
+      `<span class="badge act-rejected" title="${esc(delegation.resultNote ?? "")}">✗ delegate rejected${delegation.resultNote ? ` — ${esc(delegation.resultNote)}` : ""}</span>`,
+    );
+  }
+  return badges.length ? ` <span class="actbadges">${badges.join(" ")}</span>` : "";
+}
+
+export interface ActionFormOpts {
+  /** Author identities for the picker (standing + registry sessions). */
+  identities: AuthorIdentity[];
+  /** When set, every control renders disabled with this reason shown. */
+  disabledReason?: string;
+}
+
+function authorSelectHtml(identities: AuthorIdentity[]): string {
+  const options = identities
+    .map(
+      (i) =>
+        `<option value="${esc(`${i.kind}|${i.id}|${i.sessionId ?? ""}`)}"${i.id === "drew" ? " selected" : ""}>${esc(i.label)}${i.kind === "agent" ? " (agent)" : ""}</option>`,
+    )
+    .join("");
+  return `<div class="ahead"><label>Act as</label><select name="author">${options}</select></div>`;
+}
+
+interface AFormSpec {
+  kind: DashAction["kind"];
+  verb: DashAction["verb"];
+  objectRef: string;
+  targetRef?: RefKey;
+  sessionId?: string;
+  sessionSource?: string;
+  supersedes?: string;
+  /** Inner controls (inputs/buttons), already escaped HTML. */
+  inner: string;
+}
+
+function aformHtml(spec: AFormSpec): string {
+  const data = [
+    `data-kind="${esc(spec.kind)}"`,
+    `data-verb="${esc(spec.verb)}"`,
+    `data-object="${esc(spec.objectRef)}"`,
+    `data-token="${esc(newClientToken())}"`,
+    spec.targetRef ? `data-target-ref="${esc(spec.targetRef)}"` : "",
+    spec.sessionId ? `data-session-id="${esc(spec.sessionId)}"` : "",
+    spec.sessionSource ? `data-session-source="${esc(spec.sessionSource)}"` : "",
+    spec.supersedes ? `data-supersedes="${esc(spec.supersedes)}"` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `<form class="aform" ${data}>${spec.inner}<div class="err"></div></form>`;
+}
+
+/** Wrap a card's action forms: one author picker + the disabled gate. */
+function actboxHtml(opts: ActionFormOpts, forms: string): string {
+  const inner = `${authorSelectHtml(opts.identities)}${forms}`;
+  return opts.disabledReason
+    ? `<div class="actbox"><p class="muted">⚠ Actions unavailable — ${esc(opts.disabledReason)}</p><fieldset disabled>${inner}</fieldset></div>`
+    : `<div class="actbox">${inner}</div>`;
+}
+
+function snoozeFieldsHtml(): string {
+  const now = new Date();
+  const tonight = new Date(now);
+  tonight.setHours(23, 59, 0, 0);
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(9, 0, 0, 0);
+  const nextWeek = new Date(now);
+  nextWeek.setDate(nextWeek.getDate() + 7);
+  nextWeek.setHours(9, 0, 0, 0);
+  return `<select name="untilPreset" aria-label="Snooze until"><option value="${tonight.toISOString()}">until tonight</option><option value="${tomorrow.toISOString()}">until tomorrow 9:00</option><option value="${nextWeek.toISOString()}">until next week</option></select><input type="datetime-local" name="untilCustom" aria-label="Snooze until (custom)">`;
+}
+
+/**
+ * The #1152 triage control set for one tier item: acknowledge (a
+ * non-resolving "seen" record), snooze (presets + custom), and the
+ * tier move toward the OTHER tier (de-escalate on Needs User cards,
+ * escalate on Needs Orchestrator cards), each with an optional reason.
+ * The answer control lives with the item's own surface (session cards
+ * carry the session answer; #1291 adds the tier answer row).
+ */
+export function triageActionsHtml(
+  objectRef: string,
+  tier: "needs-drew" | "needs-orchestrator",
+  opts: ActionFormOpts,
+  extraForms = "",
+): string {
+  const move =
+    tier === "needs-drew"
+      ? aformHtml({
+          kind: "triage",
+          verb: "de-escalate",
+          objectRef,
+          inner: `<input type="hidden" name="tier" value="needs-orchestrator"><input type="text" name="reason" placeholder="Reason (optional)" aria-label="De-escalate reason"><button type="submit">De-escalate to Needs Orchestrator</button>`,
+        })
+      : aformHtml({
+          kind: "triage",
+          verb: "escalate",
+          objectRef,
+          inner: `<input type="hidden" name="tier" value="needs-drew"><input type="text" name="reason" placeholder="Reason (optional)" aria-label="Escalate reason"><button type="submit">Escalate to Needs User</button>`,
+        });
+  const forms = [
+    aformHtml({
+      kind: "triage",
+      verb: "acknowledge",
+      objectRef,
+      inner: `<button type="submit" class="primary">Acknowledge</button><span class="why">Records that you have seen this — it stays until a resolving action or a new signal.</span>`,
+    }),
+    aformHtml({
+      kind: "triage",
+      verb: "snooze",
+      objectRef,
+      inner: `${snoozeFieldsHtml()}<button type="submit">Snooze</button>`,
+    }),
+    move,
+  ].join("");
+  return actboxHtml(opts, forms + extraForms);
+}
+
+// --- Needs-user action layer (#1291) ---------------------------------------
+// Everything in this block renders ONLY what the published item and
+// the actions store actually say — why-class, options, survey,
+// delegation state, proposal, inability. No decorative states: a
+// control exists exactly when its verb can be posted and consumed.
+
+const WHY_USER_LABELS: Record<WhyUserClass, string> = {
+  decision: "Decision",
+  "missing-info": "Missing Info",
+  approval: "Approval",
+  access: "Access",
+  policy: "Policy",
+};
+
+const DELEGATION_MODE_LABELS: Record<DelegationMode, string> = {
+  user: "With You",
+  "first-pass": "First Pass",
+  auto: "Auto",
+};
+
+export function whyUserBadge(item: TierItem): string {
+  if (!item.whyUser) return "";
+  return ` <span class="badge whyuser ${esc(item.whyUser)}" title="Why this needs the user: ${esc(WHY_USER_LABELS[item.whyUser])}">${esc(WHY_USER_LABELS[item.whyUser])}</span>`;
+}
+
+function questionFieldHtml(q: TierItemQuestion): string {
+  const name = `answers:${q.id}`;
+  let field: string;
+  if (q.type === "single" || q.type === "yesno") {
+    const opts = q.options ?? [
+      { id: "yes", label: "Yes" },
+      { id: "no", label: "No" },
+    ];
+    field = `<span class="qopts">${opts
+      .map(
+        (o) =>
+          `<label><input type="radio" name="${esc(name)}" value="${esc(o.id)}"${q.required ? " required" : ""}> ${esc(o.label)}</label>`,
+      )
+      .join("")}</span>`;
+  } else if (q.type === "multi") {
+    field = `<span class="qopts">${(q.options ?? [])
+      .map((o) => `<label><input type="checkbox" name="${esc(name)}" value="${esc(o.id)}"> ${esc(o.label)}</label>`)
+      .join("")}</span>`;
+  } else {
+    field = `<input type="text" name="${esc(name)}" aria-label="${esc(q.prompt)}"${q.required ? " required" : ""}>`;
+  }
+  return `<div class="qblock"><strong>${esc(q.prompt)}</strong>${q.required ? "" : ` <span class="muted">(optional)</span>`}<br>${field}<br><span class="muted">Needed: ${esc(q.covers)}</span></div>`;
+}
+
+/** The latest applied reject-proposal on an item, when one exists —
+ *  its reason rides the next proposal's box (#1293). */
+function lastRejection(actions: DashAction[] | undefined): DashAction | undefined {
+  return (actions ?? []).filter((a) => a.verb === "reject-proposal" && a.state === "applied").at(-1);
+}
+
+/**
+ * The needs-user body block for one card: summary, the what-happens-
+ * if-this-sits line, the delegation status line, and the proposal /
+ * inability boxes (#1291/#1293). Pure content — the forms live in
+ * needsUserFormsHtml, inside the card's actbox.
+ */
+export function needsUserBodyHtml(item: TierItem, actions: DashAction[] | undefined, now = Date.now()): string {
+  const parts: string[] = [];
+  if (item.summary) parts.push(`<br><span>${esc(item.summary)}</span>`);
+  if (item.ifIgnored)
+    parts.push(`<br><span class="muted"><strong>If nothing happens:</strong> ${esc(item.ifIgnored)}</span>`);
+  const d = item.delegation;
+  if (d) {
+    const rejected = lastRejection(actions);
+    const statusBits = [
+      `Delegation: <strong>${esc(DELEGATION_MODE_LABELS[d.mode])}</strong>`,
+      d.status === "idle"
+        ? "not started"
+        : d.status === "working"
+          ? "the orchestrator is working it"
+          : d.status === "proposal-ready"
+            ? "proposal ready for your review"
+            : d.status === "unable"
+              ? "returned — the orchestrator could not resolve it"
+              : "done",
+      d.runId ? `run ${esc(d.runId)}` : "",
+      `updated ${esc(relTime(d.updatedAt, now))}`,
+    ].filter(Boolean);
+    parts.push(`<br><span class="muted">${statusBits.join(" · ")}</span>`);
+    if (rejected && d.mode === "first-pass" && d.status !== "proposal-ready")
+      parts.push(
+        `<br><span class="muted">Previous proposal rejected: ${esc(rejected.payload.reason ?? "")} — a new first pass must differ materially or say why it cannot.</span>`,
+      );
+    if (d.status === "proposal-ready" && d.proposal) {
+      if (proposalExpired(d, now)) {
+        parts.push(
+          `<div class="propbox expired"><strong>Proposal expired</strong> — drafted ${esc(fmtDate(d.proposal.at))} by run ${esc(d.runId ?? "unknown")}; it is no longer actionable. Delegate a fresh first pass below.<br><strong>${esc(d.proposal.summary)}</strong></div>`,
+        );
+      } else {
+        parts.push(
+          `<div class="propbox"><strong>First-pass proposal</strong>${rejected ? ` — second first pass; previous rejected: ${esc(rejected.payload.reason ?? "")}` : ""}<br><strong>${esc(d.proposal.summary)}</strong>${
+            d.proposal.detail ? `<br>${esc(d.proposal.detail)}` : ""
+          }${
+            d.proposal.proposedChanges?.length
+              ? `<br>Proposed changes:<ul>${d.proposal.proposedChanges.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>`
+              : ""
+          }<span class="muted">Drafted ${esc(fmtDate(d.proposal.at))} — nothing is applied unless you approve; approval takes effect on the next orchestration pass.</span></div>`,
+        );
+      }
+    }
+    if (d.status === "unable" && d.unable) {
+      parts.push(
+        `<div class="unablebox"><strong>The orchestrator could not resolve this</strong> — ${esc(d.unable.reason)}<br>Tried:<ul>${d.unable.whatItTried.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>Needs: ${esc(d.unable.whatItNeeds)}<br><span class="muted">Declared ${esc(fmtDate(d.unable.at))} by run ${esc(d.runId ?? "unknown")}.</span></div>`,
+      );
+    }
+  }
+  // #1293: a pending approve/reject whose proposal has since changed
+  // renders as no longer applicable, not as a live request.
+  const pendingProposalAction = (actions ?? []).some(
+    (a) => a.state === "new" && (a.verb === "approve-proposal" || a.verb === "reject-proposal"),
+  );
+  if (pendingProposalAction) {
+    const live = proposalIdentity(item);
+    const stillLive = (actions ?? []).some(
+      (a) =>
+        a.state === "new" &&
+        (a.verb === "approve-proposal" || a.verb === "reject-proposal") &&
+        live !== null &&
+        a.payload.proposalRunId === live.runId &&
+        a.payload.proposalUpdatedAt === live.updatedAt,
+    );
+    if (!stillLive)
+      parts.push(
+        `<br><span class="muted">⏳ A pending proposal action is no longer applicable — the proposal changed since it was recorded; the pass will reject it with that note.</span>`,
+      );
+  }
+  return parts.join("");
+}
+
+/**
+ * The needs-user forms for one card (they join the card's actbox):
+ * the item's own options as answer buttons, the survey as one answer
+ * form, a free-text answer when the item offers neither, delegation
+ * mode controls, proposal approve/reject, and dismiss (#1291).
+ */
+export function needsUserFormsHtml(item: TierItem, objectRef: string, now = Date.now()): string {
+  const forms: string[] = [];
+  for (const opt of item.options ?? []) {
+    forms.push(
+      aformHtml({
+        kind: "triage",
+        verb: "answer",
+        objectRef,
+        inner: `<input type="hidden" name="optionId" value="${esc(opt.id)}"><button type="submit" class="primary">${esc(opt.label)}</button>${
+          opt.description ? `<span class="why">${esc(opt.description)}</span>` : ""
+        }${opt.effect ? `<span class="effect">Effect: ${esc(opt.effect)}</span>` : ""}`,
+      }),
+    );
+  }
+  if (item.questions?.length) {
+    forms.push(
+      aformHtml({
+        kind: "triage",
+        verb: "answer",
+        objectRef,
+        inner: `${item.questions.map((q) => questionFieldHtml(q)).join("")}<button type="submit" class="primary">Submit answers</button><span class="why">Required questions are enforced when this posts — an incomplete survey comes back with a legible error, nothing is recorded.</span>`,
+      }),
+    );
+  }
+  if (!item.options?.length && !item.questions?.length) {
+    forms.push(
+      aformHtml({
+        kind: "triage",
+        verb: "answer",
+        objectRef,
+        inner: `<input type="text" name="text" placeholder="Your answer / decision" aria-label="Answer" required><button type="submit" class="primary">Answer</button>`,
+      }),
+    );
+  }
+  const d = item.delegation;
+  if (d) {
+    const autoBlocked = item.whyUser === "access" || item.whyUser === "policy";
+    const expired = proposalExpired(d, now);
+    const modeButton = (mode: DelegationMode, label: string) => {
+      if (mode === "auto" && autoBlocked)
+        return `<span class="aform"><button type="button" disabled>Delegate: Auto</button><span class="why">${esc(WHY_USER_LABELS[item.whyUser!])} items can never be auto-delegated — they stay with you.</span></span>`;
+      const current = d.mode === mode && !(expired && mode === "first-pass");
+      return aformHtml({
+        kind: "triage",
+        verb: "delegate",
+        objectRef,
+        inner: `<input type="hidden" name="mode" value="${esc(mode)}"><button type="submit"${current ? " disabled" : ""}>${esc(label)}${current ? " (current)" : ""}</button>`,
+      });
+    };
+    forms.push(
+      modeButton(
+        "first-pass",
+        expired && d.mode === "first-pass" ? "Delegate: First Pass (fresh draft)" : "Delegate: First Pass",
+      ),
+      modeButton("auto", "Delegate: Auto"),
+      modeButton("user", "Bring Back to Me"),
+    );
+    if (d.status === "proposal-ready" && d.proposal && !expired && d.runId) {
+      const identity =
+        `<input type="hidden" name="proposalRunId" value="${esc(d.runId)}">` +
+        `<input type="hidden" name="proposalUpdatedAt" value="${esc(d.updatedAt)}">`;
+      forms.push(
+        aformHtml({
+          kind: "triage",
+          verb: "approve-proposal",
+          objectRef,
+          inner: `${identity}<button type="submit" class="primary">Approve Proposal</button><span class="why">The pass applies it on its next run and reports the application.</span>`,
+        }),
+        aformHtml({
+          kind: "triage",
+          verb: "reject-proposal",
+          objectRef,
+          inner: `${identity}<input type="text" name="reason" placeholder="Reason (required)" aria-label="Rejection reason" required><button type="submit">Reject Proposal</button>`,
+        }),
+      );
+    }
+  }
+  forms.push(
+    aformHtml({
+      kind: "triage",
+      verb: "dismiss",
+      objectRef,
+      inner: `<input type="text" name="reason" placeholder="Reason (required)" aria-label="Dismiss reason" required><button type="submit">Dismiss</button><span class="why">Dismissed items stay out of the queue unless a new material fact appears — then they resurface with the fact cited.</span>`,
+    }),
+  );
+  // A pending delegation action supersedes the stamped mode display:
+  // the badges already say so; nothing extra to render here.
+  return forms.join("");
+}
+
+/** The standing delegation-default toggle (#1290/#1291): the current
+ *  effective value from the preference records, with the change form. */
+export function delegationDefaultHtml(records: DashAction[] | undefined, opts: ActionFormOpts): string {
+  const eff = effectiveStandingAuto(records ?? []);
+  const state = eff.standingAuto
+    ? `<strong>On</strong> — Decision, Missing Info, and Approval items delegate to Auto by default`
+    : `<strong>Off</strong> — items stay with you unless you delegate them per item`;
+  const pending = eff.pending
+    ? ` <span class="badge act-pending">⏳ change pending — applies on the next orchestration pass</span>`
+    : "";
+  const form = aformHtml({
+    kind: "preference",
+    verb: "set-delegation-default",
+    objectRef: DELEGATION_DEFAULT_OBJECT_REF,
+    inner: `<label>Standing auto <select name="standingAuto"><option value="true"${eff.standingAuto ? " selected" : ""}>On</option><option value="false"${eff.standingAuto ? "" : " selected"}>Off</option></select></label><button type="submit">Save standing default</button><span class="why">Access and Policy items never auto, whatever this says. Per-item delegation always overrides the default. Initial record: the user's decision, 2026-10-27.</span>`,
+  });
+  return `<div class="card"><strong>Standing delegation default</strong> — ${state}.${pending}${actboxHtml(opts, form)}</div>`;
+}
+
+/** The Project Status values a status request may target (#910 field). */
+export const PROJECT_STATUS_VALUES = ["Todo", "In Progress", "In Review", "Done"] as const;
+
+/** The #1154 control: request a Project Status change (never a direct write). */
+export function statusRequestHtml(
+  objectRef: string,
+  targetRef: RefKey,
+  currentStatus: string | null,
+  opts: ActionFormOpts,
+): string {
+  const options = PROJECT_STATUS_VALUES.map(
+    (s) => `<option value="${esc(s)}"${s === currentStatus ? " selected" : ""}>${esc(s)}</option>`,
+  ).join("");
+  const form = aformHtml({
+    kind: "status-request",
+    verb: "request-status",
+    objectRef,
+    targetRef,
+    inner: `<label>Request status change to <select name="status">${options}</select></label><input type="text" name="reason" placeholder="Reason (optional)" aria-label="Status change reason"><button type="submit">Request status change</button><span class="why">A request, not a write — the orchestration pass (the Project's single writer) applies it on its next run.</span>`,
+  });
+  return actboxHtml(opts, form);
+}
+
+/** Which session verbs a source can support, and why not when it can't. */
+export function sessionVerbSupport(source: string): { verb: "poke" | "answer" | "stop"; reason?: string }[] {
+  if (source === "opencode-sandbox" || source === "opencode-laptop") {
+    return [{ verb: "poke" }, { verb: "answer" }, { verb: "stop" }];
+  }
+  if (source === "jules") {
+    return [
+      { verb: "poke", reason: "Jules sessions are keeper-mediated — answer only" },
+      { verb: "answer" },
+      { verb: "stop", reason: "Jules sessions are keeper-mediated — answer only" },
+    ];
+  }
+  if (source === "claude-code") {
+    const reason = "No live control channel for Muse sessions — launch records only";
+    return [
+      { verb: "poke", reason },
+      { verb: "answer", reason },
+      { verb: "stop", reason },
+    ];
+  }
+  return [];
+}
+
+/** The #1156 control set for one live session (merged registry identity). */
+export function sessionActionsHtml(sessionId: string, source: string, opts: ActionFormOpts): string {
+  const support = sessionVerbSupport(source);
+  if (!support.length) return "";
+  const objectRef = sessionObjectRef(sessionId);
+  const forms = support
+    .map(({ verb, reason }) => {
+      if (reason) {
+        return `<div class="aform"><button type="button" disabled>${esc(verb === "poke" ? "Poke" : verb === "answer" ? "Answer" : "Stop")}</button><span class="why">${esc(reason)}.</span></div>`;
+      }
+      if (verb === "poke") {
+        return aformHtml({
+          kind: "session",
+          verb,
+          objectRef,
+          sessionId,
+          sessionSource: source,
+          inner: `<button type="submit" class="primary">Poke</button><span class="why">Nudges the session via its owning server.</span>`,
+        });
+      }
+      if (verb === "answer") {
+        return aformHtml({
+          kind: "session",
+          verb,
+          objectRef,
+          sessionId,
+          sessionSource: source,
+          inner: `<input type="text" name="text" placeholder="Answer for the waiting session…" aria-label="Answer text" required><button type="submit">Answer</button>`,
+        });
+      }
+      return aformHtml({
+        kind: "session",
+        verb,
+        objectRef,
+        sessionId,
+        sessionSource: source,
+        inner: `<label class="confirm"><input type="checkbox" name="confirm" value="yes"> Confirm stop</label><button type="submit" class="danger">Stop session</button><span class="why">Two-step: tick Confirm stop, then Stop — the owning job terminates the run.</span>`,
+      });
+    })
+    .join("");
+  return actboxHtml(opts, forms);
+}
+
+/** Terminal registry statuses — a record in one of these is history, not live. */
+const TERMINAL_SESSION_STATUSES = new Set([
+  "completed",
+  "complete",
+  "done",
+  "failed",
+  "error",
+  "stopped",
+  "terminated",
+  "succeeded",
+  "cancelled",
+]);
+
+/** A registry record counts as live inside the attention currency window (2 h). */
+export function sessionRecordIsLive(r: SessionRecord, now = Date.now()): boolean {
+  if (TERMINAL_SESSION_STATUSES.has(r.status.toLowerCase())) return false;
+  if (!r.lastSeenAt) return false;
+  return now - Date.parse(r.lastSeenAt) < 2 * 60 * 60 * 1000;
+}
+
 export function coverageHtml(coverage: SourceCoverage[]): string {
   const rows = coverage
     .map(
@@ -415,6 +1118,11 @@ export function renderBoard(
   provenance: Provenance,
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
+  act?: {
+    actionsByObject?: Map<string, DashAction[]>;
+    poolByRef?: Map<RefKey, ProjectPoolItem>;
+    identities?: AuthorIdentity[];
+  },
 ): string {
   const cols = new Map<string, BoardItem[]>();
   for (const item of board) {
@@ -447,7 +1155,17 @@ export function renderBoard(
             return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}"><span class="badge implementing">orchestrator · in flight</span> ${esc(item.title)}</a>${cmt}<br>${status}${repo}${goal}${blocked}${refs}</div>`;
           }
           const src = item.source === "github" ? `<span class="badge open">gh-only</span> ` : "";
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${stripHtml(items, item.links)}</div>`;
+          // #1154: a card whose linked issue sits in the Project pool
+          // carries the status-request control for that pool item.
+          let statusCtl = "";
+          if (act?.identities && act.poolByRef) {
+            const pooled = item.links.map((l) => act.poolByRef!.get(l.ref)).find((p) => p !== undefined);
+            if (pooled) {
+              const objectRef = ghObjectRef(pooled.ref);
+              statusCtl = `${actionBadgesHtml(act.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, pooled.ref, pooled.status ?? null, { identities: act.identities })}`;
+            }
+          }
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${stripHtml(items, item.links)}${statusCtl}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
@@ -464,7 +1182,7 @@ export function renderBoard(
     `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p><div class="board">${bodies}</div>`,
     provenance,
     "/",
-    "",
+    act?.identities ? ACTION_SCRIPT : "",
     detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
   );
 }
@@ -563,6 +1281,10 @@ export interface ItemExtras {
   formOpts: CommentFormOpts;
   /** Registry sessions loosely linked to this item's refs (#906 §3). */
   sessions: SessionRecord[];
+  /** Dashboard actions across this item's object refs (#1152/#1154). */
+  actions?: DashAction[];
+  /** Set when one of the item's refs is in the Project pool (#1154). */
+  statusRequest?: { objectRef: string; targetRef: RefKey; currentStatus: string | null };
 }
 
 export function renderItem(
@@ -602,21 +1324,28 @@ export function renderItem(
     extras && extras.sessions.length
       ? `<h2>Sessions that worked this</h2>${extras.sessions.map((r) => sessionRecordLine(r)).join("")}`
       : "";
+  const statusSection =
+    extras?.statusRequest && extras.formOpts
+      ? `<h2>Request status change</h2>${actionBadgesHtml(extras.actions)}${statusRequestHtml(extras.statusRequest.objectRef, extras.statusRequest.targetRef, extras.statusRequest.currentStatus, { identities: extras.formOpts.identities })}`
+      : "";
   return layout(
     title,
     `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${stripHtml(items, links)}
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><tr><th>Ref</th><th>Title</th><th>Labels</th><th>Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><tr><th>When</th><th>Kind</th><th>Author</th><th>Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
-${sessionSection}${dashSection}`,
+${sessionSection}${statusSection}${dashSection}`,
     provenance,
     "/",
-    extras ? COMMENT_SCRIPT : "",
+    extras ? COMMENT_SCRIPT + (extras.statusRequest ? ACTION_SCRIPT : "") : "",
   );
 }
 
 /** One registry record as a compact line (item page, sessions page). */
-export function sessionRecordLine(r: SessionRecord): string {
+export function sessionRecordLine(
+  r: SessionRecord,
+  act?: { actions?: DashAction[]; identities?: AuthorIdentity[] },
+): string {
   const tokens = r.tokensTotal != null ? ` · ${r.tokensTotal.toLocaleString()} tok` : "";
   const parent = r.parentId
     ? ` · sub of <a href="/sessions#${encodeURIComponent(r.parentId)}">${esc(r.parentId)}</a>`
@@ -624,7 +1353,12 @@ export function sessionRecordLine(r: SessionRecord): string {
   const refs = r.taskRefs.length
     ? ` · ${r.taskRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(" ")}`
     : "";
-  return `<div class="card" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span><br><span class="muted">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span></div>`;
+  // #1156: live records carry the session action set on the merged
+  // registry identity; historical records render no controls.
+  const badges = actionBadgesHtml(act?.actions);
+  const controls =
+    act?.identities && sessionRecordIsLive(r) ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
+  return `<div class="card" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
 }
 
 // --- Quota view (#851) + Usage & billing hub (design 2026-10-25) -----------
@@ -944,6 +1678,7 @@ function sessionCard(
   children: Map<string, TieredEntry[]>,
   depth = 0,
   counts?: Map<string, number>,
+  act?: { actionsByObject?: Map<string, DashAction[]>; identities?: AuthorIdentity[] },
 ): string {
   const src = SESSION_SOURCE_LABELS[sourceOf(e)];
   const sub =
@@ -963,14 +1698,35 @@ function sessionCard(
   const orch = e.orchestratorNote ? `<div class="orch-note">${esc(e.orchestratorNote)}</div>` : "";
   const kids = children.get(e.sessionId) ?? [];
   const kidsHtml = kids.length
-    ? `<details class="kids"><summary>${kids.length} sub-session${kids.length === 1 ? "" : "s"}</summary>${kids.map((k) => sessionCard(k, children, depth + 1, counts)).join("")}</details>`
+    ? `<details class="kids"><summary>${kids.length} sub-session${kids.length === 1 ? "" : "s"}</summary>${kids.map((k) => sessionCard(k, children, depth + 1, counts, act)).join("")}</details>`
     : "";
   const cmt = counts ? commentBadge(sessionObjectRef(e.sessionId), counts) : "";
-  return `<div class="card"><strong>${esc(e.title ?? e.sessionId)}</strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${sub}${cmt}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${kidsHtml}</div>`;
+  // #1156 + #1152: session actions (poke/answer/stop by source support)
+  // and, for tiered entries, the triage set — session-derived items
+  // stay actionable even when the tier source is down (the session
+  // feed is live), so no disabledReason ever applies here.
+  const objectRef = sessionObjectRef(e.sessionId);
+  const own = act?.actionsByObject?.get(objectRef);
+  const badges = actionBadgesHtml(own);
+  let controls = "";
+  if (act?.identities) {
+    const sessionBox = sessionActionsHtml(e.sessionId, sourceOf(e), { identities: act.identities });
+    const triageBox =
+      e.tier === "needs-drew" || e.tier === "needs-orchestrator"
+        ? triageActionsHtml(objectRef, e.tier, { identities: act.identities })
+        : "";
+    controls = `${sessionBox}${triageBox}`;
+  }
+  return `<div class="card"><strong>${esc(e.title ?? e.sessionId)}</strong> <span class="badge src">${esc(src)}</span> <span class="badge ${esc(e.state)}">${esc(STATE_LABELS[e.state])}</span>${tierBadge}${sub}${cmt}${badges}<br><span class="muted">${esc(e.sessionId)} · ${esc(e.directory ?? "—")}${e.branch ? ` · ${esc(e.branch)}` : ""} · ${esc(e.model ?? "—")}${e.provider ? ` / ${esc(e.provider)}` : ""} · last activity ${fmtDate(e.lastActivityAt)} · ${esc(e.messageCount ?? "—")} msgs${e.outcome ? ` · outcome: ${esc(e.outcome)}` : ""}</span><br>${esc(evidence)}${reason}${orch}${controls}${kidsHtml}</div>`;
 }
 
 /** A #899 tier item that is not a live session — a decision, task, or gap. */
-function tierItemCard(item: TierItem, whyLabel: string, counts?: Map<string, number>): string {
+function tierItemCard(
+  item: TierItem,
+  whyLabel: string,
+  counts?: Map<string, number>,
+  act?: { actions?: DashAction[]; identities?: AuthorIdentity[]; disabledReason?: string },
+): string {
   const blocked = item.blockedBy?.length
     ? `<br><strong>Blocked by:</strong> ${item.blockedBy
         .map((d) => esc(`${d.task} (${d.status}${d.workerLabel ? `, ${d.workerLabel}` : ""})`))
@@ -982,7 +1738,30 @@ function tierItemCard(item: TierItem, whyLabel: string, counts?: Map<string, num
     : "";
   const ref = item.ref ? `<br><a href="${esc(refUrl(item.ref))}">${esc(item.ref)}</a>` : "";
   const cmt = counts ? commentBadge(tierItemObjectRef(item), counts) : "";
-  return `<div class="card"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span> <strong>${esc(item.title)}</strong>${cmt}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${ref}</div>`;
+  const badges = actionBadgesHtml(act?.actions);
+  // #1291: on Needs User cards, the item's own contract renders — the
+  // why-class badge in the header, the summary / if-ignored /
+  // delegation / proposal / inability block in the body, and the
+  // options / survey / delegation / dismiss forms in the actbox.
+  const isUserTier = whyLabel === "Why you";
+  const objectRef = tierItemObjectRef(item);
+  const extBody = isUserTier ? needsUserBodyHtml(item, act?.actions) : "";
+  const extForms = isUserTier ? needsUserFormsHtml(item, objectRef) : "";
+  // #1152: the triage control set. Section-derived items disable with
+  // the reason when the tier source is absent/invalid (#1139 state) —
+  // the item may not exist in the publisher's current view.
+  const controls = act?.identities
+    ? triageActionsHtml(
+        objectRef,
+        isUserTier ? "needs-drew" : "needs-orchestrator",
+        {
+          identities: act.identities,
+          ...(act.disabledReason ? { disabledReason: act.disabledReason } : {}),
+        },
+        extForms,
+      )
+    : "";
+  return `<div class="card"><span class="badge src">${esc(item.source)}</span> <span class="badge">${esc(item.kind)}</span>${isUserTier ? whyUserBadge(item) : ""} <strong>${esc(item.title)}</strong>${cmt}${badges}<br><strong>${esc(whyLabel)}:</strong> ${esc(item.reason)}${question}${blocked}${action}${extBody}${ref}${controls}</div>`;
 }
 
 export function renderAttention(
@@ -991,6 +1770,7 @@ export function renderAttention(
   provenance: Provenance,
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
+  act?: { actionsByObject?: Map<string, DashAction[]>; identities?: AuthorIdentity[] },
 ): string {
   const children = sessionChildren(view.all);
   const roots = sessionRoots(view.all);
@@ -1018,37 +1798,86 @@ export function renderAttention(
   const drewCount = ts.present ? String(drewTotal) : "unknown";
   const orchCount = ts.present ? String(orchTotal) : "unknown";
   const chips = `<div class="chips"><a href="#drew">Needs User (${drewCount})</a><a href="#orchestrator">Needs Orchestrator (${orchCount})</a><a href="#sessions">All sessions (${roots.length})</a></div>`;
+  // #1152: section-derived items disable their controls whenever the
+  // tier source is not live — stale items come from the publisher's
+  // last section and may no longer exist in its current view (absent/
+  // invalid sources serve no section items at all). Session-derived
+  // items stay enabled: the session feed is live.
+  const sectionDisabledReason =
+    ts.state !== "live"
+      ? `the tier source is ${ts.state}, so this item cannot be confirmed against the orchestrator's current published queues`
+      : undefined;
+  const tierAct = (item: TierItem) => ({
+    actions: act?.actionsByObject?.get(tierItemObjectRef(item)),
+    identities: act?.identities,
+    ...(sectionDisabledReason ? { disabledReason: sectionDisabledReason } : {}),
+  });
+  // #1290/#1291: the standing delegation-default toggle — a dashboard
+  // preference, so it renders whenever the action surface is up; its
+  // state comes from the preference records in the store.
+  const delegationDefault = act?.identities
+    ? delegationDefaultHtml(act.actionsByObject?.get(DELEGATION_DEFAULT_OBJECT_REF), {
+        identities: act.identities,
+      })
+    : "";
   const drewCards =
     [
-      ...view.drew.map((e) => sessionCard(e, children, 0, counts)),
-      ...view.drewExtra.map((i) => tierItemCard(i, "Why you", counts)),
+      ...view.drew.map((e) => sessionCard(e, children, 0, counts, act)),
+      ...view.drewExtra.map((i) => tierItemCard(i, "Why you", counts, tierAct(i))),
     ].join("") ||
     (ts.present
       ? `<p class="muted">Nothing in the user queue right now.</p>`
       : `<p class="muted">Unknown — the tier source is missing, so this queue cannot be reported.</p>`);
   const orchCards =
     [
-      ...view.orchestrator.map((e) => sessionCard(e, children, 0, counts)),
-      ...view.orchestratorExtra.map((i) => tierItemCard(i, "Why the fleet", counts)),
+      ...view.orchestrator.map((e) => sessionCard(e, children, 0, counts, act)),
+      ...view.orchestratorExtra.map((i) => tierItemCard(i, "Why the fleet", counts, tierAct(i))),
     ].join("") ||
     (ts.present
       ? `<p class="muted">The fleet's queue is empty.</p>`
       : `<p class="muted">Unknown — the tier source is missing, so this queue cannot be reported.</p>`);
+  // The snoozed strip: an applied snooze makes the pass omit the item
+  // from the tiers, so the suppression is rendered HERE, from the
+  // actions store — visible, never silent (design Cluster 3).
+  const now = Date.now();
+  const snoozedEntries = [...(act?.actionsByObject?.entries() ?? [])]
+    .map(([objectRef, actions]) => ({ objectRef, snooze: latestInFamily(actions, "snooze") }))
+    .filter((x) => x.snooze?.state === "applied" && x.snooze.payload.until && Date.parse(x.snooze.payload.until) > now);
+  const snoozedStrip = snoozedEntries.length
+    ? `<h2 id="snoozed">Snoozed by you (${snoozedEntries.length})</h2><p class="muted">These items are out of the queues until their snooze expires — the orchestration pass omits them, and they resurface on their own. Unsnoozing records a superseding action.</p>${snoozedEntries
+        .map(({ objectRef, snooze }) => {
+          const unsnooze =
+            act?.identities && snooze
+              ? actboxHtml(
+                  { identities: act.identities },
+                  aformHtml({
+                    kind: "triage",
+                    verb: "snooze",
+                    objectRef,
+                    supersedes: snooze.id,
+                    inner: `<input type="hidden" name="untilPreset" value="${new Date(now).toISOString()}"><button type="submit">Unsnooze now</button>`,
+                  }),
+                )
+              : "";
+          return `<div class="card">💤 <a href="/discuss/${encodeURIComponent(objectRef)}"><code>${esc(objectRef)}</code></a> <span class="badge act-snoozed">snoozed until ${esc(fmtDate(snooze!.payload.until))}</span><br><span class="muted">applied by ${esc(snooze!.appliedByRun ?? "a fleet run")}${snooze!.resultNote ? ` — ${esc(snooze!.resultNote)}` : ""}</span>${unsnooze}</div>`;
+        })
+        .join("")}`
+    : "";
   const sessionCards = roots.length
-    ? roots.map((e) => sessionCard(e, children, 0, counts)).join("")
+    ? roots.map((e) => sessionCard(e, children, 0, counts, act)).join("")
     : `<p class="muted">No current sessions.</p>`;
   return layout(
     "Needs you",
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>.</p>
 ${tierBanner}${chips}
 ${coverageHtml(coverage)}
-<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
-<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}
+${delegationDefault}<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
+${snoozedStrip}<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}
 <h2 id="sessions">All sessions (${roots.length})</h2><p class="muted">Every current session with its source and state; sub-sessions collapse under their parent.</p>${sessionCards}
 ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale ${view.expiredCount === 1 ? "entry" : "entries"} expired out of this view.</p>` : ""}`,
     provenance,
     "/attention",
-    "",
+    act?.identities ? ACTION_SCRIPT : "",
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
 }
@@ -1182,6 +2011,752 @@ export function renderDns(section: DnsSection | null, provenance: Provenance, de
 
 // --- AA cost explorer page (ainventory workbook data via the fleet feed) -----
 
+/**
+ * The Cost Explorer's client side: tabs, the shared filter bar, the
+ * three frontier charts, and both tables, all rendered from the
+ * #xpl-data JSON the server embeds (aaPoints + catalog, computed in
+ * src/aa.ts). Dependency-free inline script, like COMMENT_SCRIPT.
+ * Written without template literals on purpose — it lives inside one.
+ */
+const AA_EXPLORER_SCRIPT = `<script>
+(function () {
+  var dataEl = document.getElementById("xpl-data");
+  if (!dataEl) return;
+  var DATA = JSON.parse(dataEl.textContent);
+  var POINTS = DATA.points || [];
+  var CATALOG = DATA.catalog || null;
+  var PALETTE = ["#58a6ff","#3fb950","#e3b341","#f778ba","#bc8cff","#ffa657","#79c0ff","#56d364","#ff7b72","#a5d6ff","#7ee787","#f0883e","#d2a8ff","#e67e22","#2166ac","#b2182b","#1a9850","#386cb0","#7570b3","#66a61e","#e7298a","#bf812d","#0891b2","#ec4899","#2f9e6e","#d97706","#3b82f6","#a855f7","#94a3b8"];
+  var famColor = {};
+  var famList = [];
+  POINTS.forEach(function (p) {
+    if (!(p.family in famColor)) { famColor[p.family] = PALETTE[famList.length % PALETTE.length]; famList.push(p.family); }
+  });
+  var EORD = { "non-reasoning": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5, "reasoning": 6 };
+  function eord(e) { var v = EORD[String(e || "").toLowerCase()]; return v == null ? 50 : v; }
+  var ESHORT = { "medium": "med", "reasoning": "reas", "max (peak)": "max·pk", "max (off-peak, derived)": "max·offpk", "non-reasoning": "base" };
+  function shortLabel(p) { var e = String(p.effort || ""); return p.family + " " + (ESHORT[e.toLowerCase()] || e); }
+  function normName(s) {
+    var t = String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    for (var i = 0; i < 3; i++) t = t.replace(/(\d) (\d)/g, "$1.$2");
+    return t.replace(/\s+/g, " ");
+  }
+  var goCapByName = {};
+  (CATALOG || []).forEach(function (e) { if (e.goCapUsd != null) goCapByName[normName(e.name)] = e.goCapUsd; });
+  function goCapFor(p) { var v = goCapByName[normName(p.family)]; return v == null ? null : v; }
+  function fmtInt(v) { return String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+  function tasksAt(cost, budget) { return cost ? Math.floor(budget / cost) : null; }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function fmt$(v) { return v == null ? "—" : "$" + (v < 0.01 ? v.toFixed(4) : v < 1 ? v.toFixed(3) : v.toFixed(2)); }
+  function fmtT(v) {
+    if (v == null) return "—";
+    if (v < 60) return (Math.round(v * 10) / 10) + "s";
+    return Math.floor(v / 60) + "m " + Math.round(v % 60) + "s";
+  }
+  function fmtN(v, d) { return v == null ? "—" : String(Math.round(v * Math.pow(10, d)) / Math.pow(10, d)); }
+  function fmtCtx(v) {
+    if (v == null) return "—";
+    if (v >= 1000000) return (Math.round(v / 100000) / 10) + "M";
+    if (v >= 1000) return Math.round(v / 1000) + "k";
+    return String(v);
+  }
+  function cmpDesc(a, b) {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return b - a;
+  }
+  function cmpAsc(a, b) {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return a - b;
+  }
+  var S = {
+    tab: location.hash === "#models" ? "models" : "aa",
+    xp: "api",
+    q: "",
+    creator: "",
+    fam: "",
+    bench: "",
+    efforts: {},
+    effortAny: false,
+    off: {},
+    elig: false,
+    pooledOnly: false,
+    measuredOnly: false,
+    hideDisabled: false,
+    sel: null,
+    hidden: [],
+    sizeBy: {},
+    tasksMode: "per",
+    baseline: "",
+  };
+  var XP_NOTES = {
+    plan: "Plan perspective — plan quotas are sunk cost, so dollars are ignored: ranked on intelligence per second (speed + intelligence). Cost columns hidden.",
+    api: "API perspective — ranked on intelligence per dollar and cost per task; the cost × score frontier is the value curve.",
+    pertask: "Per-task perspective — ranked on total time and total cost to finish one task (the workbook's measured per-task figures, TTFT shown where timed).",
+  };
+  function visPoints() {
+    return POINTS.filter(function (p) {
+      if (S.q && (p.family + " " + (p.effort || "") + " " + p.creator).toLowerCase().indexOf(S.q) < 0) return false;
+      if (S.creator && p.creator !== S.creator) return false;
+      if (S.fam && p.family !== S.fam) return false;
+      if (S.bench && p.benchmark !== S.bench) return false;
+      if (S.effortAny && !S.efforts[p.effort || ""]) return false;
+      if (S.elig && !p.eligible) return false;
+      if (S.off[p.family]) return false;
+      if (S.hidden.indexOf(p.key) >= 0) return false;
+      return true;
+    });
+  }
+  function visCatalog() {
+    if (!CATALOG) return [];
+    return CATALOG.filter(function (e) {
+      if (S.q && (e.id + " " + e.name + " " + e.providerName + " " + (e.plan || "")).toLowerCase().indexOf(S.q) < 0) return false;
+      if (S.fam && e.provider !== S.fam) return false;
+      if (S.pooledOnly && !e.routes.length) return false;
+      if (S.measuredOnly && e.aaScore == null) return false;
+      if (S.hideDisabled && e.disabled) return false;
+      return true;
+    });
+  }
+  function sortPoints(rows) {
+    var out = rows.slice();
+    if (S.xp === "plan") {
+      out.sort(function (a, b) { return cmpDesc(a.scorePerSecond, b.scorePerSecond) || cmpDesc(a.score, b.score); });
+    } else if (S.xp === "pertask") {
+      out.sort(function (a, b) { return cmpAsc(a.time, b.time) || cmpAsc(a.cost, b.cost); });
+    } else {
+      out.sort(function (a, b) {
+        var ka = a.pointsPerDollar != null ? a.pointsPerDollar : a.scorePerDollar;
+        var kb = b.pointsPerDollar != null ? b.pointsPerDollar : b.scorePerDollar;
+        return cmpDesc(ka, kb) || cmpDesc(a.score, b.score);
+      });
+    }
+    return out;
+  }
+  function effCost(e) {
+    return e.aaCostPerTask != null && e.multiplier ? e.aaCostPerTask / e.multiplier : null;
+  }
+  function sortCatalog(rows) {
+    var out = rows.slice();
+    if (S.xp === "plan") {
+      out.sort(function (a, b) {
+        var ka = a.aaScore != null && a.aaTimePerTask ? a.aaScore / a.aaTimePerTask : null;
+        var kb = b.aaScore != null && b.aaTimePerTask ? b.aaScore / b.aaTimePerTask : null;
+        return cmpDesc(ka, kb) || cmpDesc(a.aaScore, b.aaScore) || (a.id < b.id ? -1 : 1);
+      });
+    } else if (S.xp === "pertask") {
+      out.sort(function (a, b) { return cmpAsc(a.aaTimePerTask, b.aaTimePerTask) || cmpDesc(a.aaScore, b.aaScore); });
+    } else {
+      out.sort(function (a, b) { return cmpAsc(effCost(a), effCost(b)) || cmpDesc(a.aaScore, b.aaScore) || (a.id < b.id ? -1 : 1); });
+    }
+    return out;
+  }
+  // --- charts (hand-rolled SVG, the reference design's three scatters) ---
+  var W = 680, H = 400, ML = 46, MR = 14, MT = 12, MB = 40, PW = W - ML - MR, PH = H - MT - MB;
+  function logPos(v, lo, hi) { return (Math.log10(Math.max(v, lo)) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo)); }
+  function fmtTickX(v, kind) {
+    if (kind === "cost") return "$" + (v < 1 ? v : Math.round(v));
+    return v < 60 ? v + "s" : v / 60 + "m";
+  }
+  function drawChart(id, cfg) {
+    var svg = document.getElementById(id);
+    if (!svg) return;
+    var all = visPoints();
+    var rows = all.filter(function (p) { return cfg.x(p) != null && cfg.y(p) != null; });
+    var note = svg.parentElement.querySelector("[data-note]");
+    if (note) {
+      var missing = all.filter(function (p) { return cfg.x(p) == null || cfg.y(p) == null; });
+      var names = missing.slice(0, 4).map(shortLabel).join(", ");
+      note.textContent = rows.length + " of " + all.length + " shown — the rest lack a measured " + cfg.need + " in the workbook (nothing is estimated)" +
+        (missing.length ? ": " + names + (missing.length > 4 ? " (+" + (missing.length - 4) + " more)" : "") + "." : ".");
+    }
+    if (!rows.length) { svg.innerHTML = ""; return; }
+    var xs = rows.map(cfg.x), ys = rows.map(cfg.y);
+    var xlo, xhi, ylo, yhi;
+    if (cfg.xlog) {
+      xlo = Math.pow(10, Math.floor(Math.log10(Math.min.apply(null, xs)) * 2) / 2) / 1.4;
+      xhi = Math.max.apply(null, xs) * 1.5;
+    } else {
+      xlo = Math.min.apply(null, xs); xhi = Math.max.apply(null, xs);
+    }
+    if (cfg.ylog) {
+      ylo = Math.pow(10, Math.floor(Math.log10(Math.min.apply(null, ys)) * 2) / 2) / 1.4;
+      yhi = Math.max.apply(null, ys) * 1.5;
+    } else {
+      ylo = Math.max(0, Math.floor(Math.min.apply(null, ys) - 4));
+      yhi = Math.ceil(Math.max.apply(null, ys) + 3);
+    }
+    var X = function (v) { return ML + (cfg.xlog ? logPos(v, xlo, xhi) : (v - xlo) / (xhi - xlo)) * PW; };
+    var Y = function (v) { return MT + (1 - (cfg.ylog ? logPos(v, ylo, yhi) : (v - ylo) / (yhi - ylo))) * PH; };
+    var g = "";
+    // gridlines + ticks
+    var xticks = [];
+    if (cfg.xlog) {
+      for (var e = Math.ceil(Math.log10(xlo)); e <= Math.log10(xhi); e++) xticks.push(Math.pow(10, e));
+      if (cfg.xkind === "time") xticks = [10, 60, 300, 900, 1800, 3600].filter(function (v) { return v >= xlo && v <= xhi; });
+    }
+    xticks.forEach(function (v) {
+      g += '<line x1="' + X(v) + '" y1="' + MT + '" x2="' + X(v) + '" y2="' + (MT + PH) + '" stroke="#30363d" stroke-width="0.5" opacity="0.6"/>';
+      g += '<text x="' + X(v) + '" y="' + (H - MB + 16) + '" font-size="9.5" fill="#8b949e" text-anchor="middle">' + fmtTickX(v, cfg.xkind) + "</text>";
+    });
+    var yticks = cfg.ylog ? [10, 60, 300, 900, 1800].filter(function (v) { return v >= ylo && v <= yhi; }) : [20, 30, 40, 50, 60].filter(function (v) { return v >= ylo && v <= yhi; });
+    yticks.forEach(function (v) {
+      g += '<line x1="' + ML + '" y1="' + Y(v) + '" x2="' + (ML + PW) + '" y2="' + Y(v) + '" stroke="#30363d" stroke-width="0.5" opacity="0.6"/>';
+      g += '<text x="' + (ML - 5) + '" y="' + (Y(v) + 3) + '" font-size="9.5" fill="#8b949e" text-anchor="end">' + (cfg.ylog ? fmtTickX(v, "time") : v) + "</text>";
+    });
+    g += '<line x1="' + ML + '" y1="' + (MT + PH) + '" x2="' + (ML + PW) + '" y2="' + (MT + PH) + '" stroke="#30363d"/><line x1="' + ML + '" y1="' + MT + '" x2="' + ML + '" y2="' + (MT + PH) + '" stroke="#30363d"/>';
+    // bracket dividers from the reference design (cost tiers, time splits, II lines)
+    (cfg.dividers || []).forEach(function (dv) {
+      if (dv.axis === "x") {
+        if (dv.v < xlo || dv.v > xhi) return;
+        var dx = X(dv.v);
+        g += '<line x1="' + dx + '" y1="' + MT + '" x2="' + dx + '" y2="' + (MT + PH) + '" stroke="#8b949e" stroke-width="1" stroke-dasharray="4 4" opacity="0.55"/>';
+        if (dv.label) g += '<text x="' + (dx + 3) + '" y="' + (MT + 11) + '" font-size="9" fill="#8b949e">' + dv.label + "</text>";
+      } else {
+        if (dv.v < ylo || dv.v > yhi) return;
+        var dy = Y(dv.v);
+        g += '<line x1="' + ML + '" y1="' + dy + '" x2="' + (ML + PW) + '" y2="' + dy + '" stroke="#8b949e" stroke-width="1" stroke-dasharray="4 4" opacity="0.55"/>';
+        if (dv.label) g += '<text x="' + (ML + 3) + '" y="' + (dy - 3) + '" font-size="9" fill="#8b949e">' + dv.label + "</text>";
+      }
+    });
+    g += '<text x="' + (ML + PW / 2) + '" y="' + (H - 4) + '" font-size="10.5" fill="#8b949e" text-anchor="middle">' + cfg.xlabel + "</text>";
+    g += '<text x="12" y="' + (MT + PH / 2) + '" font-size="10.5" fill="#8b949e" text-anchor="middle" transform="rotate(-90 12 ' + (MT + PH / 2) + ')">' + cfg.ylabel + "</text>";
+    // effort ladder lines per family (kept readable: only when few points show)
+    if (rows.length <= 60) {
+      famList.forEach(function (fam) {
+        if (S.off[fam]) return;
+        var pts = rows.filter(function (p) { return p.family === fam; }).sort(function (a, b) { return eord(a.effort) - eord(b.effort); });
+        if (pts.length < 2) return;
+        var isDS = fam.indexOf("DeepSeek") === 0;
+        g += '<polyline points="' + pts.map(function (p) { return X(cfg.x(p)).toFixed(1) + "," + Y(cfg.y(p)).toFixed(1); }).join(" ") + '" fill="none" stroke="' + famColor[fam] + '" stroke-width="' + (isDS ? 1.6 : 1) + '" opacity="' + (isDS ? 0.8 : 0.4) + '"' + (isDS ? ' stroke-dasharray="2.5 3"' : "") + "/>";
+      });
+    }
+    // frontier curve for this chart's axis pair
+    var fr = rows.filter(function (p) { return p[cfg.flag]; }).sort(function (a, b) { return cfg.x(a) - cfg.x(b); });
+    if (fr.length > 1) {
+      g += '<polyline points="' + fr.map(function (p) { return X(cfg.x(p)).toFixed(1) + "," + Y(cfg.y(p)).toFixed(1); }).join(" ") + '" fill="none" stroke="#e6edf3" stroke-width="1.4" opacity="0.65" stroke-dasharray="5 3"/>';
+    }
+    // dot sizing by the chart's third metric (reference design's toggle)
+    var sizeVals = null, sizeLo = 0, sizeHi = 1;
+    if (S.sizeBy[id] && cfg.sizeMetric) {
+      sizeVals = rows.map(cfg.sizeMetric).filter(function (v) { return v != null; });
+      if (sizeVals.length) {
+        var tr = cfg.sizeLog ? sizeVals.map(function (v) { return Math.log10(v); }) : sizeVals;
+        sizeLo = Math.min.apply(null, tr); sizeHi = Math.max.apply(null, tr);
+      }
+    }
+    function radius(p, onF) {
+      if (!sizeVals || !sizeVals.length || !cfg.sizeMetric) return onF ? 5.5 : 4.4;
+      var v = cfg.sizeMetric(p);
+      if (v == null) return 3;
+      var t = cfg.sizeLog ? Math.log10(v) : v;
+      var f = sizeHi > sizeLo ? Math.min(1, Math.max(0, (t - sizeLo) / (sizeHi - sizeLo))) : 0.5;
+      return 1.6 + Math.pow(f, 1.5) * 8.4;
+    }
+    rows.forEach(function (p) {
+      var cx = X(cfg.x(p)), cy = Y(cfg.y(p));
+      var onF = !!p[cfg.flag];
+      var col = famColor[p.family];
+      var r = radius(p, onF);
+      var hollow = p.benchmark && p.benchmark.indexOf("AA") !== 0;
+      var tip = p.family + " " + (p.effort || "") + " — Intelligence " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + "/task" + (p.tps != null ? " · " + p.tps + " tok/s" : "") + (hollow ? " · " + p.benchmark + " basis" : "");
+      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + r.toFixed(1) + '" fill="' + (onF ? col : "#9aa0a6") + '" fill-opacity="' + (hollow ? 0.25 : onF ? 0.9 : 0.5) + '" stroke="' + (S.sel === p.key ? "#fff" : onF ? col : "#6b7075") + '" stroke-width="' + (S.sel === p.key ? 2 : 1) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
+      if (onF || S.sel === p.key) {
+        var anchorEnd = cx > ML + PW * 0.78;
+        g += '<text data-key="' + esc(p.key) + '" x="' + (anchorEnd ? cx - r - 3 : cx + r + 3) + '" y="' + (cy + 3) + '" font-size="8.6" fill="' + (onF ? "#c9d1d9" : "#8b949e") + '" text-anchor="' + (anchorEnd ? "end" : "start") + '" style="cursor:pointer">' + esc(shortLabel(p)) + "</text>";
+      }
+    });
+    svg.innerHTML = g;
+    svg.querySelectorAll("[data-key]").forEach(function (el) {
+      el.addEventListener("click", function () { selectPoint(el.getAttribute("data-key")); });
+    });
+  }
+  var COST_DIVIDERS = [0.15, 0.75, 2.5].map(function (v, i) {
+    return { axis: "x", v: v, label: ["Mid", "Premium", "Flagship"][i] };
+  });
+  var TIME_DIVIDERS_X = [60, 300, 900].map(function (v) { return { axis: "x", v: v, label: "" }; });
+  var TIME_DIVIDERS_Y = [60, 300, 900].map(function (v) { return { axis: "y", v: v, label: "" }; });
+  var CHARTS = [
+    { id: "xpl-c1", x: function (p) { return p.time; }, y: function (p) { return p.score; }, xlog: true, ylog: false, xkind: "time", xlabel: "Seconds to finish one task (log)", ylabel: "Intelligence Index", flag: "frontierTime", need: "per-task time", sizeMetric: function (p) { return p.cost; }, sizeLog: true, dividers: TIME_DIVIDERS_X },
+    { id: "xpl-c2", x: function (p) { return p.cost; }, y: function (p) { return p.score; }, xlog: true, ylog: false, xkind: "cost", xlabel: "Cost per task, USD (log)", ylabel: "Intelligence Index", flag: "frontierCost", need: "cost", sizeMetric: function (p) { return p.time; }, sizeLog: true, dividers: COST_DIVIDERS.concat([{ axis: "y", v: 40, label: "II 40" }, { axis: "y", v: 50, label: "II 50" }]) },
+    { id: "xpl-c3", x: function (p) { return p.cost; }, y: function (p) { return p.time; }, xlog: true, ylog: true, xkind: "cost", xlabel: "Cost per task, USD (log)", ylabel: "Seconds per task (log)", flag: "frontierCostTime", need: "cost + per-task time", sizeMetric: function (p) { return p.score; }, sizeLog: false, dividers: COST_DIVIDERS.concat(TIME_DIVIDERS_Y) },
+  ];
+  var CHART_ORDER = { plan: ["xpl-c1", "xpl-c2", "xpl-c3"], api: ["xpl-c2", "xpl-c1", "xpl-c3"], pertask: ["xpl-c3", "xpl-c2", "xpl-c1"] };
+  function drawCharts() {
+    var wrap = document.getElementById("xpl-charts");
+    var order = CHART_ORDER[S.xp];
+    wrap.querySelectorAll(".chart").forEach(function (c) {
+      c.classList.remove("primary");
+      var idx = order.indexOf(c.getAttribute("data-chart"));
+      c.style.order = idx >= 0 ? String(idx + 1) : "9";
+    });
+    var first = wrap.querySelector('[data-chart="' + order[0] + '"]');
+    if (first) first.classList.add("primary");
+    CHARTS.forEach(function (c) { drawChart(c.id, c); });
+    drawTasks();
+    drawMultiples();
+    drawScores();
+  }
+  function downloadPng(svgId) {
+    var svg = document.getElementById(svgId);
+    if (!svg) return;
+    var vb = (svg.getAttribute("viewBox") || "0 0 680 400").split(" ");
+    var w = Math.round(Number(vb[2]) * 2), h = Math.round(Number(vb[3]) * 2);
+    var clone = svg.cloneNode(true);
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("width", String(w));
+    clone.setAttribute("height", String(h));
+    var blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var img = new Image();
+    img.onload = function () {
+      var cv = document.createElement("canvas");
+      cv.width = w; cv.height = h;
+      var ctx = cv.getContext("2d");
+      ctx.fillStyle = "#0d1117";
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      var a = document.createElement("a");
+      a.download = "cost-explorer-" + svgId + ".png";
+      a.href = cv.toDataURL("image/png");
+      a.click();
+    };
+    img.src = url;
+  }
+  // --- chart 4: tasks completed vs duration (scatter-widget parity) ---
+  var BUDGET_LADDER = [0.25, 1, 2, 5, 10, 20, 50, 100, 120, 200];
+  function nominalBudget(cost) {
+    var target = 30 * cost, best = BUDGET_LADDER[0], bd = Infinity;
+    BUDGET_LADDER.forEach(function (b) {
+      var d = Math.abs(Math.log10(b / target));
+      if (d < bd) { bd = d; best = b; }
+    });
+    return best;
+  }
+  function drawTasks() {
+    var svg = document.getElementById("xpl-c4");
+    if (!svg) return;
+    var all = visPoints();
+    var rows = all.filter(function (p) { return p.cost != null && p.time != null; });
+    var note = svg.parentElement.querySelector("[data-note]");
+    if (note) {
+      var missing = all.filter(function (p) { return p.cost == null || p.time == null; });
+      note.textContent = rows.length + " of " + all.length + " shown — the rest lack a measured cost or per-task time: " +
+        missing.slice(0, 4).map(shortLabel).join(", ") + (missing.length > 4 ? " (+" + (missing.length - 4) + " more)" : "") +
+        ". Circles = a nominal budget ($0.25–$200, picked per model so its task count lands in range). ◆ = the model's published OpenCode Go monthly cap spent on that model alone (docs reading, 2026-10-20 — the fleet's workspaces appear to meter one pooled bar instead). Hollow = non-AA benchmark basis.";
+    }
+    document.querySelectorAll("[data-tmode]").forEach(function (b) {
+      b.classList.toggle("active", b.getAttribute("data-tmode") === S.tasksMode);
+    });
+    if (!rows.length) { svg.innerHTML = ""; return; }
+    var per = S.tasksMode === "per";
+    var pts = rows.map(function (p) {
+      var budget = nominalBudget(p.cost);
+      var tasks = Math.max(1, Math.floor(budget / p.cost));
+      var cap = goCapFor(p);
+      return { p: p, budget: budget, tasks: tasks, y: per ? p.time : tasks * p.time, goTasks: cap ? Math.floor(cap / p.cost) : null, goY: cap ? (per ? p.time : Math.floor(cap / p.cost) * p.time) : null };
+    });
+    var xs = pts.map(function (t) { return t.tasks; }).concat(pts.filter(function (t) { return t.goTasks; }).map(function (t) { return t.goTasks; }));
+    var ys = pts.map(function (t) { return t.y; }).concat(pts.filter(function (t) { return t.goY != null; }).map(function (t) { return t.goY; }));
+    var xlo = Math.pow(10, Math.floor(Math.log10(Math.min.apply(null, xs)) * 2) / 2) / 1.4;
+    var xhi = Math.max.apply(null, xs) * 1.6;
+    var ylo = Math.pow(10, Math.floor(Math.log10(Math.min.apply(null, ys)) * 2) / 2) / 1.4;
+    var yhi = Math.max.apply(null, ys) * 1.5;
+    var X = function (v) { return ML + logPos(v, xlo, xhi) * PW; };
+    var Y = function (v) { return MT + (1 - logPos(v, ylo, yhi)) * PH; };
+    var g = "";
+    [1, 3, 10, 30, 100, 300, 1000, 3000].filter(function (v) { return v >= xlo && v <= xhi; }).forEach(function (v) {
+      g += '<line x1="' + X(v) + '" y1="' + MT + '" x2="' + X(v) + '" y2="' + (MT + PH) + '" stroke="#30363d" stroke-width="0.5" opacity="0.6"/><text x="' + X(v) + '" y="' + (H - MB + 16) + '" font-size="9.5" fill="#8b949e" text-anchor="middle">' + v + "</text>";
+    });
+    [10, 30, 100, 300, 1000, 3000, 10000, 43200, 140000].filter(function (v) { return v >= ylo && v <= yhi; }).forEach(function (v) {
+      g += '<line x1="' + ML + '" y1="' + Y(v) + '" x2="' + (ML + PW) + '" y2="' + Y(v) + '" stroke="#30363d" stroke-width="0.5" opacity="0.6"/><text x="' + (ML - 5) + '" y="' + (Y(v) + 3) + '" font-size="9.5" fill="#8b949e" text-anchor="end">' + fmtT(v) + "</text>";
+    });
+    g += '<line x1="' + ML + '" y1="' + (MT + PH) + '" x2="' + (ML + PW) + '" y2="' + (MT + PH) + '" stroke="#30363d"/><line x1="' + ML + '" y1="' + MT + '" x2="' + ML + '" y2="' + (MT + PH) + '" stroke="#30363d"/>';
+    g += '<text x="' + (ML + PW / 2) + '" y="' + (H - 4) + '" font-size="10.5" fill="#8b949e" text-anchor="middle">tasks completed (log scale)</text>';
+    g += '<text x="12" y="' + (MT + PH / 2) + '" font-size="10.5" fill="#8b949e" text-anchor="middle" transform="rotate(-90 12 ' + (MT + PH / 2) + ')">' + (per ? "duration per task" : "total time, all tasks back-to-back") + "</text>";
+    pts.forEach(function (t) {
+      var p = t.p, cx = X(t.tasks), cy = Y(t.y), col = famColor[p.family];
+      var hollow = p.benchmark && p.benchmark.indexOf("AA") !== 0;
+      var tip = shortLabel(p) + " — $" + t.budget + " nominal → " + t.tasks + " tasks · " + fmtT(p.time) + "/task · " + fmt$(p.cost) + "/task · Intelligence " + fmtN(p.score, 1) + (t.goTasks ? " · published Go cap buys " + fmtInt(t.goTasks) + " tasks" : "");
+      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="5.5" fill="' + col + '" fill-opacity="' + (hollow ? 0.25 : 0.9) + '" stroke="' + (S.sel === p.key ? "#fff" : col) + '" stroke-width="' + (S.sel === p.key ? 2 : 1.5) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
+      if (t.goTasks) {
+        var gx = X(t.goTasks), gy = Y(t.goY);
+        g += '<rect data-key="' + esc(p.key) + '" x="' + (gx - 5).toFixed(1) + '" y="' + (gy - 5).toFixed(1) + '" width="10" height="10" transform="rotate(45 ' + gx.toFixed(1) + " " + gy.toFixed(1) + ')" fill="' + col + '" fill-opacity="0.95" stroke="#0d1117" stroke-width="1.2" style="cursor:pointer"><title>' + esc(tip) + "</title></rect>";
+      }
+      if (p.frontierCostTime || S.sel === p.key) {
+        var anchorEnd = cx > ML + PW * 0.78;
+        g += '<text data-key="' + esc(p.key) + '" x="' + (anchorEnd ? cx - 9 : cx + 9) + '" y="' + (cy + 3) + '" font-size="8.6" fill="#c9d1d9" text-anchor="' + (anchorEnd ? "end" : "start") + '" style="cursor:pointer">' + esc(shortLabel(p)) + "</text>";
+      }
+    });
+    svg.innerHTML = g;
+    svg.querySelectorAll("[data-key]").forEach(function (el) {
+      el.addEventListener("click", function () { selectPoint(el.getAttribute("data-key")); });
+    });
+  }
+  // --- chart 5: multiples of a baseline (multiples-widget parity) ---
+  function baselinePoint() {
+    var pool = POINTS.filter(function (p) { return p.cost != null && p.time != null && p.score != null && S.hidden.indexOf(p.key) < 0; });
+    if (!pool.length) return null;
+    var chosen = pool.find(function (p) { return p.key === S.baseline; });
+    if (chosen) return chosen;
+    var lunaLow = pool.find(function (p) { return p.family.indexOf("Luna") >= 0 && String(p.effort).toLowerCase() === "low"; });
+    if (lunaLow) return lunaLow;
+    return pool.slice().sort(function (a, b) { return a.cost - b.cost; })[0];
+  }
+  function buildBaselineOptions() {
+    var sel = document.getElementById("xf-baseline");
+    if (!sel) return;
+    var pool = POINTS.filter(function (p) { return p.cost != null && p.time != null && p.score != null; })
+      .sort(function (a, b) { return a.family < b.family ? -1 : a.family > b.family ? 1 : eord(a.effort) - eord(b.effort); });
+    var base = baselinePoint();
+    sel.innerHTML = pool.map(function (p) {
+      return '<option value="' + esc(p.key) + '"' + (base && p.key === base.key ? " selected" : "") + ">" + esc(shortLabel(p)) + "</option>";
+    }).join("");
+  }
+  function drawMultiples() {
+    var svg = document.getElementById("xpl-c5");
+    if (!svg) return;
+    var base = baselinePoint();
+    var note = svg.parentElement.querySelector("[data-note]");
+    var all = visPoints();
+    var rows = base ? all.filter(function (p) { return p.cost != null && p.time != null && p.score != null; }) : [];
+    if (note) {
+      note.textContent = base
+        ? "Baseline: " + shortLabel(base) + " = 1× on all three measures (" + fmt$(base.cost) + "/task, " + fmtT(base.time) + "/task, Intelligence " + fmtN(base.score, 1) + "). " + rows.length + " of " + all.length + " configurations have all three measures."
+        : "No configuration with cost, time and score is visible — the multiples view needs all three.";
+    }
+    renderMultTable(base, rows);
+    if (!base || !rows.length) { svg.innerHTML = ""; return; }
+    var pts = rows.map(function (p) {
+      return { p: p, cx: p.cost / base.cost, ty: p.time / base.time, sx: p.score / base.score };
+    });
+    var xs = pts.map(function (t) { return t.cx; }), ys = pts.map(function (t) { return t.ty; });
+    var xlo = Math.min(0.8, Math.min.apply(null, xs) / 1.4), xhi = Math.max.apply(null, xs) * 1.5;
+    var ylo = Math.min(0.8, Math.min.apply(null, ys) / 1.4), yhi = Math.max.apply(null, ys) * 1.5;
+    var X = function (v) { return ML + logPos(v, xlo, xhi) * PW; };
+    var Y = function (v) { return MT + (1 - logPos(v, ylo, yhi)) * PH; };
+    var g = "";
+    [1, 3, 10, 30, 100, 300, 1000].filter(function (v) { return v >= xlo && v <= xhi; }).forEach(function (v) {
+      g += '<line x1="' + X(v) + '" y1="' + MT + '" x2="' + X(v) + '" y2="' + (MT + PH) + '" stroke="#30363d" stroke-width="0.5" opacity="0.6"/><text x="' + X(v) + '" y="' + (H - MB + 16) + '" font-size="9.5" fill="#8b949e" text-anchor="middle">' + v + "×</text>";
+    });
+    [1, 3, 10, 30, 100, 300].filter(function (v) { return v >= ylo && v <= yhi; }).forEach(function (v) {
+      g += '<line x1="' + ML + '" y1="' + Y(v) + '" x2="' + (ML + PW) + '" y2="' + Y(v) + '" stroke="#30363d" stroke-width="0.5" opacity="0.6"/><text x="' + (ML - 5) + '" y="' + (Y(v) + 3) + '" font-size="9.5" fill="#8b949e" text-anchor="end">' + v + "×</text>";
+    });
+    if (xlo < 1 && xhi > 1) g += '<line x1="' + X(1) + '" y1="' + MT + '" x2="' + X(1) + '" y2="' + (MT + PH) + '" stroke="#58a6ff" stroke-width="1" opacity="0.55"/>';
+    if (ylo < 1 && yhi > 1) g += '<line x1="' + ML + '" y1="' + Y(1) + '" x2="' + (ML + PW) + '" y2="' + Y(1) + '" stroke="#58a6ff" stroke-width="1" opacity="0.55"/>';
+    g += '<line x1="' + ML + '" y1="' + (MT + PH) + '" x2="' + (ML + PW) + '" y2="' + (MT + PH) + '" stroke="#30363d"/><line x1="' + ML + '" y1="' + MT + '" x2="' + ML + '" y2="' + (MT + PH) + '" stroke="#30363d"/>';
+    g += '<text x="' + (ML + PW / 2) + '" y="' + (H - 4) + '" font-size="10.5" fill="#8b949e" text-anchor="middle">cost multiple of the baseline (log scale)</text>';
+    g += '<text x="12" y="' + (MT + PH / 2) + '" font-size="10.5" fill="#8b949e" text-anchor="middle" transform="rotate(-90 12 ' + (MT + PH / 2) + ')">duration multiple of the baseline (lower = faster)</text>';
+    pts.forEach(function (t) {
+      var p = t.p, cx = X(t.cx), cy = Y(t.ty), col = famColor[p.family];
+      var hollow = p.benchmark && p.benchmark.indexOf("AA") !== 0;
+      var tip = shortLabel(p) + " — costs " + fmtN(t.cx, 2) + "× baseline (" + fmt$(p.cost) + "/task), takes " + fmtN(t.ty, 2) + "× as long (" + fmtT(p.time) + "/task), scores " + fmtN(t.sx, 2) + "× (Intelligence " + fmtN(p.score, 1) + ")";
+      g += '<circle class="xpt" data-key="' + esc(p.key) + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="5.5" fill="' + col + '" fill-opacity="' + (hollow ? 0.25 : 0.9) + '" stroke="' + (S.sel === p.key ? "#fff" : col) + '" stroke-width="' + (S.sel === p.key ? 2 : 1.5) + '"' + (hollow ? ' stroke-dasharray="2.5 1.8"' : "") + "><title>" + esc(tip) + "</title></circle>";
+      if (p.key === base.key) g += '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="10" fill="none" stroke="#58a6ff" stroke-width="1.5"/>';
+      if (p.frontierCostTime || S.sel === p.key || p.key === base.key) {
+        var anchorEnd = cx > ML + PW * 0.78;
+        g += '<text data-key="' + esc(p.key) + '" x="' + (anchorEnd ? cx - 9 : cx + 9) + '" y="' + (cy + 3) + '" font-size="8.6" fill="#c9d1d9" text-anchor="' + (anchorEnd ? "end" : "start") + '" style="cursor:pointer">' + esc(shortLabel(p)) + "</text>";
+      }
+    });
+    svg.innerHTML = g;
+    svg.querySelectorAll("[data-key]").forEach(function (el) {
+      el.addEventListener("click", function () { selectPoint(el.getAttribute("data-key")); });
+    });
+  }
+  function renderMultTable(base, rows) {
+    var tb = document.getElementById("xpl-mtrows");
+    if (!tb) return;
+    if (!base) { tb.innerHTML = ""; return; }
+    var sorted = rows.slice().sort(function (a, b) { return a.cost / base.cost - b.cost / base.cost; });
+    tb.innerHTML = sorted.map(function (p) {
+      return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + "</strong></td><td>" + esc(p.effort || "—") + '</td><td class="num">' + fmtN(p.score, 1) + '</td><td class="num">' + fmtN(p.score / base.score, 2) + '×</td><td class="num xpl-costcol">' + fmt$(p.cost) + '</td><td class="num xpl-costcol">' + fmtN(p.cost / base.cost, 2) + '×</td><td class="num">' + fmtT(p.time) + '</td><td class="num">' + fmtN(p.time / base.time, 2) + '×</td><td>' + esc(p.benchmark || "—") + "</td></tr>";
+    }).join("");
+    tb.querySelectorAll("tr").forEach(function (tr) {
+      tr.addEventListener("click", function () { selectPoint(tr.getAttribute("data-key")); });
+    });
+    markSelectedRow();
+  }
+  // --- chart 6: scores only, incl. configurations with no published cost ---
+  function drawScores() {
+    var svg = document.getElementById("xpl-c6");
+    if (!svg) return;
+    var all = visPoints();
+    var rows = all.filter(function (p) { return p.score != null; }).sort(function (a, b) { return b.score - a.score; });
+    var note = svg.parentElement.querySelector("[data-note]");
+    var top = rows.slice(0, 40);
+    if (note) {
+      note.textContent = "Top " + top.length + " of " + rows.length + " scored configurations (of " + all.length + " visible). Score-only view: configurations with no published cost belong here even though no cost chart can plot them.";
+    }
+    if (!top.length) { svg.innerHTML = ""; return; }
+    var rowH = 17, topPad = 8, botPad = 22;
+    var hgt = topPad + top.length * rowH + botPad;
+    svg.setAttribute("viewBox", "0 0 680 " + hgt);
+    var labelW = 218, plotW = 680 - labelW - 52;
+    var maxScore = Math.max.apply(null, top.map(function (p) { return p.score; })) * 1.05;
+    var g = "";
+    top.forEach(function (p, i) {
+      var y = topPad + i * rowH;
+      var w = Math.max(2, (p.score / maxScore) * plotW);
+      var col = famColor[p.family];
+      var label = shortLabel(p) + (p.cost == null ? " (cost n/a)" : "");
+      g += '<text data-key="' + esc(p.key) + '" x="' + (labelW - 6) + '" y="' + (y + 11) + '" font-size="9.5" fill="#c9d1d9" text-anchor="end" style="cursor:pointer">' + esc(label) + "</text>";
+      g += '<rect data-key="' + esc(p.key) + '" x="' + labelW + '" y="' + (y + 2) + '" width="' + w.toFixed(1) + '" height="11" fill="' + col + '" fill-opacity="' + (S.sel === p.key ? 1 : 0.75) + '" style="cursor:pointer"><title>' + esc(shortLabel(p) + " — Intelligence " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + "/task") + "</title></rect>";
+      g += '<text x="' + (labelW + w + 5) + '" y="' + (y + 11) + '" font-size="9.5" fill="#8b949e">' + fmtN(p.score, 1) + "</text>";
+    });
+    svg.innerHTML = g;
+    svg.querySelectorAll("[data-key]").forEach(function (el) {
+      el.addEventListener("click", function () { selectPoint(el.getAttribute("data-key")); });
+    });
+  }
+  // --- hidden tray (reference design's hide-a-configuration flow) ---
+  function renderTray() {
+    var tray = document.getElementById("xpl-tray");
+    if (!tray) return;
+    var chips = document.getElementById("xpl-traychips");
+    if (!S.hidden.length) { tray.hidden = true; chips.innerHTML = ""; return; }
+    tray.hidden = false;
+    chips.innerHTML = "";
+    S.hidden.forEach(function (key) {
+      var p = POINTS.find(function (x) { return x.key === key; });
+      if (!p) return;
+      var s = document.createElement("span");
+      s.className = "hchip";
+      s.textContent = shortLabel(p);
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = "×";
+      b.title = "Bring back";
+      b.addEventListener("click", function () {
+        S.hidden = S.hidden.filter(function (h) { return h !== key; });
+        render();
+      });
+      s.appendChild(b);
+      chips.appendChild(s);
+    });
+  }
+  function renderLegend() {
+    var lg = document.getElementById("xpl-legend");
+    if (!lg) return;
+    lg.innerHTML = "";
+    famList.forEach(function (fam) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "xchip" + (S.off[fam] ? " off" : "");
+      b.innerHTML = '<span class="dot" style="background:' + famColor[fam] + '"></span>' + esc(fam);
+      b.addEventListener("click", function () {
+        if (S.off[fam]) delete S.off[fam]; else S.off[fam] = true;
+        render();
+      });
+      lg.appendChild(b);
+    });
+  }
+  function showDetail(html) {
+    var box = document.getElementById("xpl-detail");
+    if (!box) return;
+    if (!html) { box.style.display = "none"; box.innerHTML = ""; return; }
+    box.innerHTML = html;
+    box.style.display = "block";
+  }
+  function selectPoint(key) {
+    S.sel = key;
+    var p = POINTS.find(function (x) { return x.key === key; });
+    if (!p) return;
+    var beaten = p.beatenBy && p.beatenBy.length
+      ? p.beatenBy.slice(0, 4).join("; ") + (p.beatenBy.length > 4 ? " (+" + (p.beatenBy.length - 4) + " more)" : "")
+      : "nothing on all three axes — it is on the frontier";
+    var budgets = p.cost
+      ? "<br>Tasks per budget at this cost: $60 → " + fmtInt(tasksAt(p.cost, 60)) + " · $90 → " + fmtInt(tasksAt(p.cost, 90)) + " · $120 → " + fmtInt(tasksAt(p.cost, 120)) + " · $180 → " + fmtInt(tasksAt(p.cost, 180))
+      : "";
+    var cap = goCapFor(p);
+    var goLine = cap && p.cost
+      ? '<br><span class="muted">Published OpenCode Go cap for this model: $' + cap + "/mo → ~" + fmtInt(Math.floor(cap / p.cost)) + " tasks at this AA cost (docs reading — the fleet's workspaces appear to meter pooled).</span>"
+      : "";
+    showDetail(
+      "<strong>" + esc(p.family) + " — " + esc(p.effort || "—") + "</strong> <span class='muted'>" + esc(p.creator) + "</span><br>" +
+      "Intelligence " + fmtN(p.score, 1) + " · " + fmt$(p.cost) + "/task · " + fmtT(p.time) + " per task" +
+      (p.ttft != null ? " · TTFT " + fmtT(p.ttft) : "") + (p.tps != null ? " · " + p.tps + " tok/s" : "") + budgets + "<br>" +
+      '<span class="muted">Beaten on score + cost + time at once by: ' + esc(beaten) + "</span>" + goLine +
+      '<br><button type="button" id="xpl-hide" class="xpl-ctl-btn">Hide this configuration</button>',
+    );
+    var hideBtn = document.getElementById("xpl-hide");
+    if (hideBtn) {
+      hideBtn.addEventListener("click", function () {
+        if (S.hidden.indexOf(p.key) < 0) S.hidden.push(p.key);
+        S.sel = null;
+        showDetail(null);
+        render();
+      });
+    }
+    drawCharts();
+    markSelectedRow();
+  }
+  function selectCatalog(id) {
+    S.sel = id;
+    var e = (CATALOG || []).find(function (x) { return x.id === id; });
+    if (!e) return;
+    showDetail(
+      "<strong>" + esc(e.name) + "</strong> <span class='muted'><code>" + esc(e.id) + "</code></span><br>" +
+      (e.plan ? "Plan: <strong>" + esc(e.plan) + "</strong>" + (e.multiplier ? " — " + e.multiplier + "× list value" : "") + "<br>" : "") +
+      (e.planNote ? '<span class="muted">' + esc(e.planNote) + "</span><br>" : "") +
+      "Pool seats: " + (e.routes.length ? e.routes.map(function (r) { return "<code>" + esc(r) + "</code>"; }).join(" ") : '<span class="muted">none — no route sends it work</span>') +
+      (e.goCapUsd != null && e.aaCostPerTask ? '<br><span class="muted">Published OpenCode Go cap: $' + e.goCapUsd + "/mo → ~" + fmtInt(Math.floor(e.goCapUsd / e.aaCostPerTask)) + " AA tasks at the measured cost (docs reading — the fleet's workspaces appear to meter pooled).</span>" : "") +
+      (e.disabled ? '<br><span class="muted">Provider is disabled in the fleet config — catalogued but not callable.</span>' : ""),
+    );
+    markSelectedRow();
+  }
+  function markSelectedRow() {
+    document.querySelectorAll(".xpl-table tr").forEach(function (tr) {
+      tr.style.background = tr.getAttribute("data-sel") === S.sel ? "#1f6feb22" : "";
+    });
+  }
+  function renderAaTable() {
+    var tb = document.getElementById("xpl-rows");
+    if (!tb) return;
+    var rows = sortPoints(visPoints());
+    document.getElementById("xpl-count").textContent =
+      rows.length + " of " + POINTS.length + " ranked configurations · sorted by the " + S.xp + " perspective · solid dots in the charts sit on that chart's frontier, gray are beaten on its axes";
+    tb.innerHTML = rows.map(function (p) {
+      return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + '</strong><br><span class="muted">' + esc(p.creator) + (p.qualStatus ? " · " + esc(p.qualStatus) : "") + '</span></td><td>' + esc(p.effort || "—") + '</td><td class="num">' + fmtN(p.score, 1) + '</td><td class="num xpl-costcol">' + fmt$(p.cost) + '</td><td class="num">' + fmtT(p.time) + '</td><td class="num">' + fmtT(p.ttft) + '</td><td class="num">' + fmtN(p.tps, 0) + '</td><td class="num xpl-costcol">' + fmtN(p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar, 1) + '</td><td class="num">' + fmtN(p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond, 3) + "</td></tr>";
+    }).join("");
+    tb.querySelectorAll("tr").forEach(function (tr) {
+      tr.addEventListener("click", function () { selectPoint(tr.getAttribute("data-key")); });
+    });
+    markSelectedRow();
+  }
+  function renderModels() {
+    var tb = document.getElementById("xpl-mrows");
+    if (!tb) return;
+    if (!CATALOG) return;
+    var rows = sortCatalog(visCatalog());
+    document.getElementById("xpl-mcount").textContent =
+      rows.length + " of " + CATALOG.length + " catalog models · sorted by the " + S.xp + " perspective" +
+      (S.xp === "api" ? " (effective $/task = AA list $/task ÷ the plan's multiplier, where the registry records one)" : "");
+    tb.innerHTML = rows.map(function (e) {
+      var ec = effCost(e);
+      return '<tr data-sel="' + esc(e.id) + '" data-mid="' + esc(e.id) + '"><td><strong>' + esc(e.name) + '</strong><br><span class="muted"><code>' + esc(e.id) + "</code></span></td>" +
+        "<td>" + esc(e.providerName) + (e.plan ? '<br><span class="badge src">' + esc(e.plan) + "</span>" : "") + (e.disabled ? ' <span class="badge stale">disabled</span>' : "") + '</td>' +
+        '<td class="num">' + fmtCtx(e.contextLimit) + "</td>" +
+        "<td>" + (e.variants.length ? esc(e.variants.join(", ")) : "—") + "</td>" +
+        "<td>" + (e.routes.length ? e.routes.map(function (r) { return '<span class="badge open">' + esc(r) + "</span>"; }).join(" ") : '<span class="muted">—</span>') + "</td>" +
+        '<td class="num">' + fmtN(e.aaScore, 1) + '</td><td class="num xpl-costcol">' + fmt$(e.aaCostPerTask) + '</td><td class="num xpl-costcol">' + (ec != null ? fmt$(ec) : "—") + '</td><td class="num">' + fmtT(e.aaTimePerTask) + "</td></tr>";
+    }).join("");
+    tb.querySelectorAll("tr").forEach(function (tr) {
+      tr.addEventListener("click", function () { selectCatalog(tr.getAttribute("data-mid")); });
+    });
+    markSelectedRow();
+  }
+  function buildFilterOptions() {
+    var creatorSel = document.getElementById("xf-creator");
+    var creators = [];
+    var seenC = {};
+    POINTS.forEach(function (p) {
+      var k = p.creator.toLowerCase();
+      if (!seenC[k]) { seenC[k] = true; creators.push(p.creator); }
+    });
+    creators.sort();
+    creatorSel.innerHTML = '<option value="">All creators</option>' + creators.map(function (c) { return '<option value="' + esc(c) + '"' + (S.creator === c ? " selected" : "") + ">" + esc(c) + "</option>"; }).join("");
+    var benchSel = document.getElementById("xf-bench");
+    var benches = [];
+    POINTS.forEach(function (p) { if (p.benchmark && benches.indexOf(p.benchmark) < 0) benches.push(p.benchmark); });
+    benchSel.innerHTML = '<option value="">All benchmarks</option>' + benches.map(function (b) { return '<option value="' + esc(b) + '"' + (S.bench === b ? " selected" : "") + ">" + esc(b) + "</option>"; }).join("");
+    var effWrap = document.getElementById("xf-efforts");
+    var efforts = [];
+    POINTS.forEach(function (p) { var e = p.effort || ""; if (efforts.indexOf(e) < 0) efforts.push(e); });
+    efforts.sort(function (a, b) { return eord(a) - eord(b); });
+    effWrap.innerHTML = "";
+    efforts.forEach(function (e) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "xchip" + (S.effortAny && !S.efforts[e] ? " off" : "");
+      b.textContent = e || "(none)";
+      b.addEventListener("click", function () {
+        if (!S.effortAny) { S.effortAny = true; S.efforts = {}; S.efforts[e] = true; }
+        else if (S.efforts[e]) { delete S.efforts[e]; if (!Object.keys(S.efforts).length) S.effortAny = false; }
+        else S.efforts[e] = true;
+        render();
+      });
+      effWrap.appendChild(b);
+    });
+    buildFamOptions();
+  }
+  function buildFamOptions() {
+    var sel = document.getElementById("xf-fam");
+    var label = document.getElementById("xf-fam-label");
+    var opts = [];
+    if (S.tab === "models" && CATALOG) {
+      label.textContent = "Provider";
+      var seen = {};
+      CATALOG.forEach(function (e) { if (!seen[e.provider]) { seen[e.provider] = true; opts.push([e.provider, e.providerName]); } });
+      opts.sort(function (a, b) { return a[1] < b[1] ? -1 : 1; });
+      sel.innerHTML = '<option value="">All providers</option>' + opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (S.fam === o[0] ? " selected" : "") + ">" + esc(o[1]) + "</option>"; }).join("");
+    } else {
+      label.textContent = "Family";
+      sel.innerHTML = '<option value="">All families</option>' + famList.slice().sort().map(function (f) { return '<option value="' + esc(f) + '"' + (S.fam === f ? " selected" : "") + ">" + esc(f) + "</option>"; }).join("");
+    }
+  }
+  function applyTab() {
+    document.querySelectorAll("[data-xtab]").forEach(function (b) {
+      b.classList.toggle("active", b.getAttribute("data-xtab") === S.tab);
+    });
+    document.getElementById("xtab-aa").hidden = S.tab !== "aa";
+    document.getElementById("xtab-models").hidden = S.tab !== "models";
+    document.querySelectorAll("[data-tabaa]").forEach(function (el) { el.hidden = S.tab !== "aa"; });
+    document.querySelectorAll("[data-tabmodels]").forEach(function (el) { el.hidden = S.tab !== "models"; });
+    buildFamOptions();
+  }
+  function render() {
+    document.body.classList.toggle("xp-plan", S.xp === "plan");
+    document.getElementById("xp-note").textContent = XP_NOTES[S.xp];
+    document.querySelectorAll("[data-xp]").forEach(function (b) {
+      b.classList.toggle("active", b.getAttribute("data-xp") === S.xp);
+    });
+    applyTab();
+    if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderAaTable(); }
+    else renderModels();
+  }
+  document.querySelectorAll("[data-xtab]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      S.tab = b.getAttribute("data-xtab");
+      S.fam = "";
+      history.replaceState(null, "", S.tab === "models" ? "#models" : "#aa");
+      render();
+    });
+  });
+  document.querySelectorAll("[data-xp]").forEach(function (b) {
+    b.addEventListener("click", function () { S.xp = b.getAttribute("data-xp"); render(); });
+  });
+  document.getElementById("xf-q").addEventListener("input", function (ev) { S.q = ev.target.value.trim().toLowerCase(); render(); });
+  document.getElementById("xf-creator").addEventListener("change", function (ev) { S.creator = ev.target.value; render(); });
+  document.getElementById("xf-fam").addEventListener("change", function (ev) { S.fam = ev.target.value; render(); });
+  document.getElementById("xf-bench").addEventListener("change", function (ev) { S.bench = ev.target.value; render(); });
+  document.getElementById("xf-elig").addEventListener("change", function (ev) { S.elig = ev.target.checked; render(); });
+  document.getElementById("xf-pooled").addEventListener("change", function (ev) { S.pooledOnly = ev.target.checked; render(); });
+  document.getElementById("xf-measured").addEventListener("change", function (ev) { S.measuredOnly = ev.target.checked; render(); });
+  document.getElementById("xf-nodis").addEventListener("change", function (ev) { S.hideDisabled = ev.target.checked; render(); });
+  document.querySelectorAll("[data-sizeby]").forEach(function (cb) {
+    cb.addEventListener("change", function () { S.sizeBy[cb.getAttribute("data-sizeby")] = cb.checked; drawCharts(); });
+  });
+  document.querySelectorAll("[data-dl]").forEach(function (b) {
+    b.addEventListener("click", function () { downloadPng(b.getAttribute("data-dl")); });
+  });
+  document.querySelectorAll("[data-tmode]").forEach(function (b) {
+    b.addEventListener("click", function () { S.tasksMode = b.getAttribute("data-tmode"); drawCharts(); });
+  });
+  var baselineSel = document.getElementById("xf-baseline");
+  if (baselineSel) baselineSel.addEventListener("change", function (ev) { S.baseline = ev.target.value; drawCharts(); });
+  buildFilterOptions();
+  buildBaselineOptions();
+  render();
+})();
+</script>`;
+
 function fmtCost(v: number | null): string {
   return v == null ? "—" : `$${Number(v.toFixed(4))}`;
 }
@@ -1196,27 +2771,10 @@ function fmtTimed(v: number | null): string {
   return v == null ? '<span class="muted">not measured</span>' : fmtSec(v);
 }
 
-function fmtVal(v: number | null): string {
-  return v == null ? "—" : Number(v.toFixed(3)).toString();
-}
-
 /** "openai|gpt-6-luna|max|reasoning|fallback-na" -> "gpt-6-luna · max". */
 function variantLabel(modelVariantKey: string): string {
   const parts = modelVariantKey.split("|");
   return parts.length >= 3 ? `${parts[1]} · ${parts[2]}` : modelVariantKey;
-}
-
-function aaRankingsTable(rankings: AaRanking[], usableUpTo: Map<string, number>): string {
-  const sorted = [...rankings].sort(
-    (a, b) => (a.rankBalanced ?? Number.MAX_SAFE_INTEGER) - (b.rankBalanced ?? Number.MAX_SAFE_INTEGER),
-  );
-  const rows = sorted
-    .map((r) => {
-      const usable = usableUpTo.get(r.testRunKey);
-      return `<tr><td>${r.rankBalanced ?? "—"}</td><td><strong>${esc(r.family)}</strong><br><span class="muted">${esc(r.creator)}${r.qualStatus ? ` · ${esc(r.qualStatus)}` : ""}</span></td><td>${esc(r.effort ?? "—")}</td><td>${r.adjustedScore ?? r.rawScore ?? "—"}</td><td>${fmtCost(r.costTask)}</td><td>${fmtSec(r.timeTaskSec)}</td><td>${r.speedTps ?? "—"}</td><td>${r.intelEffPerUsd == null ? "—" : Number(r.intelEffPerUsd.toFixed(2))}</td><td>${fmtVal(r.balancedValue)}</td><td>${usable == null ? "—" : `≥ ${usable}`}</td><td class="muted">intel #${r.rankIntelligence ?? "—"} · cost #${r.rankLowCost ?? "—"}</td></tr>`;
-    })
-    .join("");
-  return `<div class="tblwrap"><table><tr><th># balanced</th><th>Model</th><th>Effort</th><th>Intelligence</th><th>$/task</th><th>Time/task</th><th>Speed (t/s)</th><th>Intel / $</th><th>Balanced value</th><th>Usable up to</th><th>Ranks</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
 }
 
 function aaTimingsTable(testRuns: AaTestRun[]): string {
@@ -1245,19 +2803,25 @@ function aaNameList(names: string[]): string {
     : '<p class="muted">none</p>';
 }
 
+/** JSON for a <script type="application/json"> block: `<` is the only
+ * character that can break out of it, so it crosses as its escape. */
+function jsonForScript(json: string): string {
+  return json.replace(/</g, "\\u003c");
+}
+
 export function renderAa(section: AaFeedSection | null, provenance: Provenance): string {
   if (!section) {
     return layout(
-      "AA Cost Explorer",
-      `<h1>AA Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory workbook import; this page only renders it.</div>`,
+      "Cost Explorer",
+      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory workbook import; this page only renders it.</div>`,
       provenance,
       "/aa",
     );
   }
   if (section.status === "absent") {
     return layout(
-      "AA Cost Explorer",
-      `<h1>AA Cost Explorer</h1><div class="banner">The collector could not build the AA section on its last run (${fmtDate(section.generatedAt)}): ${esc(section.reason)}. The page will fill in on the next successful collection — no stale numbers are shown in the meantime.</div>`,
+      "Cost Explorer",
+      `<h1>Cost Explorer</h1><div class="banner">The collector could not build the AA section on its last run (${fmtDate(section.generatedAt)}): ${esc(section.reason)}. The page will fill in on the next successful collection — no stale numbers are shown in the meantime.</div>`,
       provenance,
       "/aa",
     );
@@ -1280,43 +2844,108 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance):
 <details><summary>Catalog models with no AA measurement and no pool seat (${cov.catalogNotPooledUnmeasured.length})</summary>
 <p class="muted">Catalog ids verbatim from the config — this is where unmeasured newcomers (e.g. <code>commandcode/reflection/beam:free</code>, the Reflection Beam seat) sit until the workbook measures them.</p>${aaNameList(cov.catalogNotPooledUnmeasured)}</details>`
     : `<h2>Coverage — measured but not pooled</h2><p class="muted">Coverage was not computed for this section — the collector could not read <code>.opencode/opencode.jsonc</code> on that run.</p>`;
-  const body = `<h1>AA Cost Explorer</h1>
-<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
+  const catalog = s.catalog;
+  const modelCards = catalog
+    ? `<div class="board">
+<div class="card"><strong>${catalog.length} models</strong> in the fleet's provider catalogs<br><span class="muted">from <code>.opencode/opencode.jsonc</code>, read by the same collector run as the AA data</span></div>
+<div class="card"><strong>${new Set(catalog.map((e) => e.provider)).size} providers</strong> · ${catalog.filter((e) => e.disabled).length} models behind disabled providers<br><span class="muted">Disabled means catalogued but not callable — the config disables the door, the proxy layer never does</span></div>
+<div class="card"><strong>${catalog.filter((e) => e.routes.length > 0).length} pooled</strong> · ${catalog.filter((e) => e.aaScore !== null).length} AA-measured<br><span class="muted">Pooled = at least one route sends it work; measured = the workbook has an intelligence score for its name</span></div>
+</div>`
+    : `<div class="banner">The collector has not carried the fleet catalog yet — it is built from the same <code>.opencode/opencode.jsonc</code> read as the coverage section and appears once a collector build that knows it has run. No catalog is shown rather than a stale one.</div>`;
+  const explorerJson = jsonForScript(JSON.stringify({ points: aaPoints(s), catalog: catalog ?? null }));
+  const body = `<h1>Cost Explorer</h1>
+<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows${catalog ? ` · ${catalog.length} catalog models` : ""} · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
 <div class="card"><strong>Provenance</strong><br>
-<span class="muted">These are the workbook snapshot's figures (AA Intelligence Index v4.3.2), not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A workbook refresh (the coding-plan-watch import) flips the batch; the feed collector picks it up within minutes.</span>
+<span class="muted">These are the workbook snapshot's figures (AA Intelligence Index v4.3.2), not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A workbook refresh (the coding-plan-watch import) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change.</span>
 <ul>${sourcesHtml || '<li class="muted">source files not recorded for this batch</li>'}</ul></div>
-<h2>Rankings</h2>
-<p class="muted">Every ranked configuration from the workbook's rankings view, best balanced value first. "Usable up to" is the highest target intelligence at which the threshold view still counts the configuration usable.</p>
-${aaRankingsTable(s.rankings, summary.usableUpTo)}
+<div class="xtabs" role="tablist"><button type="button" class="xtab" data-xtab="aa">AA Explorer</button><button type="button" class="xtab" data-xtab="models">Model Explorer</button></div>
+<div class="card xpl-filters" id="xpl-filters">
+<input type="search" id="xf-q" placeholder="Search models, families, providers…" aria-label="Search">
+<label data-tabaa>Creator <select id="xf-creator"></select></label>
+<label><span id="xf-fam-label">Family</span> <select id="xf-fam"></select></label>
+<label data-tabaa>Benchmark <select id="xf-bench"></select></label>
+<span class="xp-seg" role="group" aria-label="Efficiency perspective"><button type="button" data-xp="plan">Plan</button><button type="button" data-xp="api">API</button><button type="button" data-xp="pertask">Per-task</button></span>
+<div data-tabaa style="flex-basis:100%"><span class="muted">Efforts:</span> <span id="xf-efforts"></span> <label style="margin-left:10px"><input type="checkbox" id="xf-elig"> Eligible only</label></div>
+<div data-tabmodels hidden style="flex-basis:100%"><label><input type="checkbox" id="xf-pooled"> Pooled only</label> <label><input type="checkbox" id="xf-measured"> AA-measured only</label> <label><input type="checkbox" id="xf-nodis"> Hide disabled providers</label></div>
+<p class="muted" id="xp-note" style="flex-basis:100%;margin:2px 0 0"></p>
+</div>
+<div class="card xpl-detail" id="xpl-detail"></div>
+<div class="card" id="xpl-tray" hidden><strong>Hidden</strong> <span id="xpl-traychips"></span></div>
+<section id="xtab-aa">
+<div id="xpl-legend" class="strip"></div>
+<div class="xpl-charts" id="xpl-charts">
+<div class="chart" data-chart="xpl-c1"><h3>Completion time × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c1"> size dots by cost</label><button type="button" data-dl="xpl-c1">Download PNG</button></span><svg id="xpl-c1" viewBox="0 0 680 400" role="img" aria-label="Completion time by score scatter chart"></svg><p class="muted" data-note></p></div>
+<div class="chart" data-chart="xpl-c2"><h3>Cost × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c2"> size dots by time</label><button type="button" data-dl="xpl-c2">Download PNG</button></span><svg id="xpl-c2" viewBox="0 0 680 400" role="img" aria-label="Cost by score scatter chart"></svg><p class="muted" data-note></p></div>
+<div class="chart" data-chart="xpl-c3"><h3>Cost × Completion time</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c3"> size dots by score</label><button type="button" data-dl="xpl-c3">Download PNG</button></span><svg id="xpl-c3" viewBox="0 0 680 400" role="img" aria-label="Cost by completion time scatter chart"></svg><p class="muted" data-note></p></div>
+<div class="chart" data-chart="xpl-c4"><h3>Tasks completed vs duration</h3><span class="xpl-ctl"><button type="button" data-tmode="per">Seconds per task</button><button type="button" data-tmode="tot">Total time to finish all tasks</button><button type="button" data-dl="xpl-c4">Download PNG</button></span><svg id="xpl-c4" viewBox="0 0 680 400" role="img" aria-label="Tasks completed by duration scatter chart"></svg><p class="muted" data-note></p></div>
+<div class="chart" data-chart="xpl-c5"><h3>Multiples of the baseline</h3><span class="xpl-ctl"><label>Baseline <select id="xf-baseline"></select></label><button type="button" data-dl="xpl-c5">Download PNG</button></span><svg id="xpl-c5" viewBox="0 0 680 400" role="img" aria-label="Cost and duration multiples scatter chart"></svg><p class="muted" data-note></p></div>
+<div class="chart" data-chart="xpl-c6"><h3>Scores — every measured configuration</h3><span class="xpl-ctl"><button type="button" data-dl="xpl-c6">Download PNG</button></span><svg id="xpl-c6" viewBox="0 0 680 400" role="img" aria-label="Scores bar chart"></svg><p class="muted" data-note></p></div>
+</div>
+<p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; solid dots sit on it, gray are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only workbook measurements are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
+<h2>Multiples table</h2>
+<p class="muted">Every visible configuration with all three measures, as multiples of the baseline chosen above, sorted by cost multiple.</p>
+<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Effort</th><th class="num">Score</th><th class="num">Score ×</th><th class="num xpl-costcol">Cost/task</th><th class="num xpl-costcol">Cost ×</th><th class="num">Time/task</th><th class="num">Time ×</th><th>Benchmark</th></tr></thead><tbody id="xpl-mtrows"></tbody></table></div>
+<h2>Configurations</h2>
+<p class="muted" id="xpl-count"></p>
+<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Effort</th><th class="num">Intelligence</th><th class="num xpl-costcol">$/task</th><th class="num">Time/task</th><th class="num">TTFT</th><th class="num">Speed (t/s)</th><th class="num xpl-costcol">Score / $</th><th class="num">Score / s</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
 <h2>Timing — Test_Runs</h2>
 <p class="muted">Per-configuration timing from the workbook's Test_Runs sheet. "Not measured" means the workbook carries no value for that cell — nothing is estimated.</p>
 ${aaTimingsTable(s.testRuns)}
 <h2>Measured configurations</h2>
 <p class="muted">The AA Intelligence Index rows of the latest import batch, effort labels verbatim from the workbook.</p>
 ${aaConfigsTable(s.configs)}
-${coverageHtml}`;
-  return layout("AA Cost Explorer", body, provenance, "/aa");
+</section>
+<section id="xtab-models" hidden>
+<h2>The fleet's model universe</h2>
+<p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the workbook has one. Click a row for the plan note.</p>
+${modelCards}
+<p class="muted" id="xpl-mcount"></p>
+<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Provider / plan</th><th class="num">Context</th><th>Variants</th><th>Pool seats</th><th class="num">AA score</th><th class="num xpl-costcol">AA $/task</th><th class="num xpl-costcol">Eff. $/task</th><th class="num">AA time/task</th></tr></thead><tbody id="xpl-mrows"></tbody></table></div>
+</section>
+${coverageHtml}
+<script type="application/json" id="xpl-data">${explorerJson}</script>`;
+  return layout("Cost Explorer", body, provenance, "/aa", AA_EXPLORER_SCRIPT);
 }
 
 // --- Sessions / identity registry page (#906 §3) ------------------------------
 
 const REGISTRY_SOURCE_ORDER = ["opencode-laptop", "opencode-sandbox", "jules", "claude-code", "cron"];
 
-export function renderSessions(records: SessionRecord[], provenance: Provenance, detail?: ProvenanceDetail): string {
+export function renderSessions(
+  records: SessionRecord[],
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+  act?: { actionsByObject?: Map<string, DashAction[]>; identities?: AuthorIdentity[] },
+): string {
   const bySource = new Map<string, SessionRecord[]>();
   for (const r of records) bySource.set(r.source, [...(bySource.get(r.source) ?? []), r]);
   const totalTokens = records.reduce((sum, r) => sum + (r.tokensTotal ?? 0), 0);
   const groups = [...bySource.entries()]
     .sort((a, b) => REGISTRY_SOURCE_ORDER.indexOf(a[0]) - REGISTRY_SOURCE_ORDER.indexOf(b[0]))
     .map(
-      ([source, list]) => `<h2>${esc(source)} (${list.length})</h2>${list.map((r) => sessionRecordLine(r)).join("")}`,
+      ([source, list]) =>
+        `<h2>${esc(source)} (${list.length})</h2>${list
+          .map((r) =>
+            sessionRecordLine(r, {
+              actions: act?.actionsByObject?.get(sessionObjectRef(r.id)),
+              identities: act?.identities,
+            }),
+          )
+          .join("")}`,
     )
     .join("");
   const body = `<h1>Sessions — identity registry</h1>
 <p class="muted">Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. ${records.length} records · ${totalTokens.toLocaleString()} tokens recorded. Machine-first: <a href="/api/registry.json">/api/registry.json</a>.</p>
 <p class="muted">Coverage honesty: OpenCode sessions register from their servers; Jules from the keeper's state; Muse sessions only when a launch record was appended at spawn (<code>scripts/record-claude-launch.ts</code>) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.</p>
 ${groups || '<p class="muted">No sessions recorded yet.</p>'}`;
-  return layout("Sessions", body, provenance, "/sessions", "", detail ? freshnessChips(detail, ["registry"]) : "");
+  return layout(
+    "Sessions",
+    body,
+    provenance,
+    "/sessions",
+    act?.identities ? ACTION_SCRIPT : "",
+    detail ? freshnessChips(detail, ["registry"]) : "",
+  );
 }
 
 // --- All pages (the manifest as a page) ---------------------------------------
@@ -1459,6 +3088,8 @@ export function renderProjects(
     area?: string | null;
     orchestration?: OrchestrationSection | null;
     detail?: ProvenanceDetail;
+    actionsByObject?: Map<string, DashAction[]>;
+    identities?: AuthorIdentity[];
   } = {},
 ): string {
   const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
@@ -1496,7 +3127,12 @@ export function renderProjects(
         `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
         `<span class="badge src">derived: ${esc(derived)}</span>`,
       ].join(" ");
-      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span></div>`;
+      // #1154: the status-request control + the store's visible state.
+      const objectRef = ghObjectRef(p.ref);
+      const statusCtl = opts.identities
+        ? `${actionBadgesHtml(opts.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, p.ref, p.status ?? null, { identities: opts.identities })}`
+        : "";
+      return `<div class="card"><strong>${esc(p.title)}</strong>${clashBadge}<br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a> · <a href="${esc(p.projectUrl)}">Project #4</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span>${statusCtl}</div>`;
     })
     .join("");
   const body = `<h1>Projects — GitHub Project pool</h1>
@@ -1508,7 +3144,7 @@ ${cards || '<p class="muted">No items in this area.</p>'}`;
     body,
     provenance,
     "/projects",
-    "",
+    opts.identities ? ACTION_SCRIPT : "",
     opts.detail ? freshnessChips(opts.detail, ["items"]) : "",
   );
 }
