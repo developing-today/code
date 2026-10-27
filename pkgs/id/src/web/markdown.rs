@@ -1027,7 +1027,9 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
             let tight = json["attrs"]["tight"].as_bool().unwrap_or_else(|| {
                 !json["content"].as_array().is_some_and(|items| {
                     items.iter().any(|item| {
-                        item["content"].as_array().is_some_and(|blocks| blocks.len() > 1)
+                        item["content"]
+                            .as_array()
+                            .is_some_and(|blocks| blocks.len() > 1)
                     })
                 })
             });
