@@ -5299,10 +5299,17 @@
         // leaf on every door has wired (Flash/GLM are overpowered for this tier at any rung:
         // AA v4.3.2 Flash max 45, GLM max 42 vs Haiku low 29). Flash addresses the PLAN pool
         // directly so routine traffic can never reach the PAYG tail on the parent route.
+        // 2026-10-26 pass 3.1: Beam joins as a direct leaf — Reflection Beam 1.0 via the
+        // Command Code proxy (AA v4.3.2: II 30, TTFT 0.59s, ~385 t/s decode, :free variant).
+        // The door was probe-verified live 2026-10-26 (chat completion answered), so the
+        // registry's "no API access" note is stale for the proxy path. Caveats: the proxy
+        // injects its own ~21k-token agent prompt per call, and the free tier's rate
+        // limits are unmeasured — automatic quota demotion bounds the blast radius.
         "targets": [
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/glm-flash-plan#low",
-          "opencode-route/haiku-plan#low"
+          "opencode-route/haiku-plan#low",
+          "commandcode/reflection/beam:free"
         ],
         "selection": "round-robin",
         "autonomy": "rules"
