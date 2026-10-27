@@ -769,6 +769,23 @@ mod tests {
         assert_eq!(again.metrics.sent_operations, 0);
     }
 
+    /// Issue #1302: on a failed bulk session, read the responder's own
+    /// session result (bounded, so a still-running responder cannot hang
+    /// the test) and render it next to the client's error. `SyncError`
+    /// rendering distinguishes the verdicts for #241: a responder
+    /// `Timeout` means its session deadline dropped it; a transport
+    /// error on both sides points at the connection itself.
+    async fn drain_responder_result(
+        results: &mut mpsc::UnboundedReceiver<Result<Outcome, SyncError>>,
+    ) -> String {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), results.recv()).await {
+            Ok(Some(Ok(outcome))) => format!("Ok(received={:?})", outcome.received),
+            Ok(Some(Err(error))) => format!("Err({error:#})"),
+            Ok(None) => "channel closed without a result".to_owned(),
+            Err(_) => "no result within 10s of the client error".to_owned(),
+        }
+    }
+
     #[tokio::test]
     async fn test_a_bulk_session_moves_every_event_across_pages() {
         let topic = group(2);
@@ -806,12 +823,26 @@ mod tests {
                     break (outcome, answered);
                 }
                 Err(error) if attempt < 3 => {
-                    eprintln!("retrying the bulk session after a transport error: {error:#}");
+                    // Issue #1302: the responder's own session result is the
+                    // decisive evidence for a mid-stream reset (#241) — drain
+                    // it before shutting anything down, next to the client's
+                    // error. Closing the client first is what makes the
+                    // responder's `answer` return promptly on this path.
                     client.close().await;
+                    let responder = drain_responder_result(&mut results).await;
+                    eprintln!(
+                        "retrying the bulk session after a transport error: {error:#}\n\
+                         responder session result: {responder}"
+                    );
                     let _ = router.shutdown().await;
                 }
                 Err(error) => {
-                    panic!("bulk session failed after {attempt} attempts: {error:#}");
+                    client.close().await;
+                    let responder = drain_responder_result(&mut results).await;
+                    panic!(
+                        "bulk session failed after {attempt} attempts: {error:#}\n\
+                         responder session result: {responder}"
+                    );
                 }
             }
         };
