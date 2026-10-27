@@ -357,10 +357,7 @@ interface MetricRow {
 
 /** Non-dominated keys on one axis pair (both axes "lower wins" after
  * the caller's sign flips). Rows missing either axis never qualify. */
-function paretoKeys(
-  rows: MetricRow[],
-  pick: (r: MetricRow) => [number, number] | null,
-): Set<string> {
+function paretoKeys(rows: MetricRow[], pick: (r: MetricRow) => [number, number] | null): Set<string> {
   const pts = rows
     .map((r) => ({ key: r.key, xy: pick(r) }))
     .filter((p): p is { key: string; xy: [number, number] } => p.xy !== null);
@@ -391,15 +388,9 @@ export function aaPoints(section: AaSection): AaPoint[] {
       time: r.timeTaskSec ?? t?.timePerTaskSeconds ?? null,
     };
   });
-  const frontierCost = paretoKeys(base, (r) =>
-    r.cost !== null && r.score !== null ? [r.cost, -r.score] : null,
-  );
-  const frontierTime = paretoKeys(base, (r) =>
-    r.time !== null && r.score !== null ? [r.time, -r.score] : null,
-  );
-  const frontierCostTime = paretoKeys(base, (r) =>
-    r.cost !== null && r.time !== null ? [r.cost, r.time] : null,
-  );
+  const frontierCost = paretoKeys(base, (r) => (r.cost !== null && r.score !== null ? [r.cost, -r.score] : null));
+  const frontierTime = paretoKeys(base, (r) => (r.time !== null && r.score !== null ? [r.time, -r.score] : null));
+  const frontierCostTime = paretoKeys(base, (r) => (r.cost !== null && r.time !== null ? [r.cost, r.time] : null));
   const label = (r: AaRanking): string => `${r.family}${r.effort ? ` ${r.effort}` : ""}`;
   return section.rankings.map((r, i) => {
     const b = base[i];
@@ -589,9 +580,7 @@ interface RawModelEntry {
 }
 
 /** Route id -> the leaf model ids it reaches (nested routes expanded). */
-function routeLeafSets(cfg: {
-  experimental?: { model_routes?: unknown };
-}): Map<string, Set<string>> {
+function routeLeafSets(cfg: { experimental?: { model_routes?: unknown } }): Map<string, Set<string>> {
   const routes = new Map<string, unknown[]>();
   const rawRoutes = cfg.experimental?.model_routes;
   if (typeof rawRoutes === "object" && rawRoutes !== null) {
