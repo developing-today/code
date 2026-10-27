@@ -73,6 +73,14 @@ export const PAGES: PageDef[] = [
     blurb: "The live GitHub Project pool (#4): every item, its Project fields, and Project-vs-derived disagreements.",
   },
   {
+    id: "program",
+    title: "Program status",
+    route: "/program",
+    api: "/api/program.json",
+    blurb:
+      "What this dashboard is, what's built, what's next, and the long-term roadmap — fed from the tracked issues and the Project pool.",
+  },
+  {
     id: "pages",
     title: "All pages",
     route: "/pages",

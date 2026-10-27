@@ -17,7 +17,7 @@
 //! - `bullet_list`: Unordered list with `tight` attribute
 //! - `ordered_list`: Ordered list with `order` and `tight` attributes
 //! - `list_item`: List item containing blocks
-//! - `task_list`: Task list (GFM `- [ ]`/`- [x]` items)
+//! - `task_list`: Task list (GFM `- [ ]`/`- [x]` items); ordered task lists carry an `order` attribute
 //! - `task_list_item`: Task list item with `checked` attribute
 //! - `image`: Inline image with `src`, `alt`, `title` attributes
 //! - `hard_break`: Hard line break
@@ -213,10 +213,25 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
             if is_task_list {
                 let content = collect_list_items(node);
-                json!({
-                    "type": "task_list",
-                    "content": content
-                })
+                // #997: an ordered task list carries its start in
+                // `attrs.order`, mirroring `ordered_list` below, or the
+                // ordering is lost on save. Bullet task lists keep
+                // emitting no attrs, preserving their current JSON shape.
+                match list.list_type {
+                    ListType::Ordered => {
+                        json!({
+                            "type": "task_list",
+                            "attrs": {"order": list.start},
+                            "content": content
+                        })
+                    }
+                    ListType::Bullet => {
+                        json!({
+                            "type": "task_list",
+                            "content": content
+                        })
+                    }
+                }
             } else {
                 let content = collect_list_items(node);
                 let tight = list.tight;
@@ -308,7 +323,17 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
                 mark_type: "link",
                 attrs: Some(attrs),
             });
-            json!(collect_inline_children(node, &marks))
+            let children = collect_inline_children(node, &marks);
+            if children.is_empty() {
+                // #996: an empty-text link has no inline children to
+                // carry the link mark, so without this the mark — and
+                // the href — vanish and save emits nothing. Synthesize
+                // an empty text node carrying the mark; the save side
+                // wraps it back into a Link node (create_marked_text),
+                // so `[](url)` round-trips.
+                return json!(vec![text_node_with_marks("", &marks)]);
+            }
+            json!(children)
         }
 
         NodeValue::Image(image) => {
@@ -503,17 +528,16 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
         }
 
         NodeValue::FootnoteDefinition(definition) => {
-            // #945: a definition's AST children are block nodes (usually a
-            // single paragraph); carry their inline content directly on a
-            // block node with the label, mirroring the reference arm.
-            let mut content = Vec::new();
-            for child in node.children() {
-                content.extend(collect_inline_children(child, &[]));
-            }
+            // #945: carry the definition as a dedicated node with the
+            // label, mirroring the reference arm. #1031: carry its BLOCK
+            // children (paragraphs, lists, code blocks) as blocks —
+            // flattening them to inline content fused multi-paragraph
+            // definitions into one run of text on save and silently
+            // dropped code blocks (their literal has no child nodes).
             json!({
                 "type": "footnote_definition",
                 "attrs": {"label": definition.name},
-                "content": content
+                "content": collect_block_children(node)
             })
         }
 
@@ -535,7 +559,10 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
 
 /// Create a text node with the given marks.
 fn text_node_with_marks(text: &str, marks: &[Mark]) -> Value {
-    if text.is_empty() {
+    // An empty text node with no marks carries nothing and is dropped,
+    // but an empty text node WITH marks is information-bearing: it is
+    // the only representation of an empty-text link (#996).
+    if text.is_empty() && marks.is_empty() {
         return json!(null);
     }
 
@@ -946,6 +973,26 @@ fn substitute_spaced_destinations<'a>(root: &'a AstNode<'a>) -> Vec<(String, Str
     substitutions
 }
 
+/// Whether a converted AST node is block-level (as opposed to inline).
+/// Used by the footnote_definition save path (#1031) to tell carried
+/// block children apart from legacy inline children.
+fn is_block_node(node: &AstNode<'_>) -> bool {
+    matches!(
+        node.data.borrow().value,
+        NodeValue::Paragraph
+            | NodeValue::Heading(_)
+            | NodeValue::BlockQuote
+            | NodeValue::List(_)
+            | NodeValue::Item(_)
+            | NodeValue::TaskItem(_)
+            | NodeValue::CodeBlock(_)
+            | NodeValue::HtmlBlock(_)
+            | NodeValue::ThematicBreak
+            | NodeValue::Table(_)
+            | NodeValue::FootnoteDefinition(_)
+    )
+}
+
 /// Convert `ProseMirror` JSON to comrak AST.
 fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>, ConversionError> {
     let node_type = json["type"].as_str().ok_or(ConversionError::MissingType)?;
@@ -1017,13 +1064,25 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "list_item" => NodeValue::Item(comrak::nodes::NodeList::default()),
 
         "task_list" => {
-            // Task list is a bullet list whose children are TaskItems
-            NodeValue::List(comrak::nodes::NodeList {
-                list_type: ListType::Bullet,
-                tight: true,
-                bullet_char: b'-',
-                ..Default::default()
-            })
+            // Task list is a list whose children are TaskItems. #997: when
+            // the parse side stored `attrs.order`, rebuild an ordered list
+            // with that start; without it, a bullet list as before.
+            #[allow(clippy::cast_possible_truncation)] // order is typically small
+            let order = json["attrs"]["order"].as_u64().map(|o| o as usize);
+            match order {
+                Some(start) => NodeValue::List(comrak::nodes::NodeList {
+                    list_type: ListType::Ordered,
+                    start,
+                    tight: true,
+                    ..Default::default()
+                }),
+                None => NodeValue::List(comrak::nodes::NodeList {
+                    list_type: ListType::Bullet,
+                    tight: true,
+                    bullet_char: b'-',
+                    ..Default::default()
+                }),
+            }
         }
 
         "task_list_item" => {
@@ -1198,21 +1257,38 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         return Ok(ast_node);
     }
 
-    // Special case: footnote definitions. The parse direction stores the
-    // definition's inline content directly on the PM node (#945), but
-    // comrak's AST requires a FootnoteDefinition's children to be blocks —
-    // re-wrap the inline children in a Paragraph here, or the commonmark
-    // formatter rejects the document as ill-formed.
+    // Special case: footnote definitions. The parse direction stores
+    // the definition's BLOCK children on the PM node (#1031), and
+    // comrak's AST requires a FootnoteDefinition's children to be
+    // blocks — append block children directly. Legacy #945-shape docs
+    // store bare inline nodes instead; group consecutive inline
+    // children into a single Paragraph, as before, so those documents
+    // still save as a well-formed definition.
     if node_type == "footnote_definition" {
-        if let Some(content) = json["content"].as_array()
-            && !content.is_empty()
-        {
-            let paragraph = arena.alloc(AstNode::from(NodeValue::Paragraph));
+        if let Some(content) = json["content"].as_array() {
+            let mut paragraph: Option<&AstNode<'a>> = None;
             for child_json in content {
                 let child = json_to_ast(arena, child_json)?;
-                append_inline_child(arena, paragraph, child);
+                if is_block_node(child) {
+                    paragraph = None;
+                    ast_node.append(child);
+                } else {
+                    let target = match paragraph {
+                        Some(p) => p,
+                        None => {
+                            // `&*` reborrows the arena's `&mut` as a shared
+                            // reference so `p` stays Copy-usable after
+                            // being stored in `paragraph`.
+                            let p: &'a AstNode<'a> =
+                                &*arena.alloc(AstNode::from(NodeValue::Paragraph));
+                            ast_node.append(p);
+                            paragraph = Some(p);
+                            p
+                        }
+                    };
+                    append_inline_child(arena, target, child);
+                }
             }
-            ast_node.append(paragraph);
         }
         return Ok(ast_node);
     }
@@ -1221,9 +1297,30 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     if node_type != "code_block"
         && let Some(content) = json["content"].as_array()
     {
+        // #1032: coalesce consecutive bullet_list siblings into the first
+        // list. The PM model has no bullet-marker attribute, so adjacent
+        // lists that differed only by marker (- / + / *) are one list in
+        // every way the model can express — but as separate comrak List
+        // nodes the CommonMark renderer separates them with
+        // <!-- end list --> comments, which reparse as ```html fences
+        // and grow the file on every save. Move each later list's items
+        // into the first list (the first list's tight wins).
+        // ordered_list is NOT merged (it carries restart numbering) and
+        // task_list is a distinct PM node type, so neither is affected.
+        let mut prev_bullet_list: Option<&AstNode<'a>> = None;
         for child_json in content {
+            let is_bullet_list = child_json["type"].as_str() == Some("bullet_list");
             let child = json_to_ast(arena, child_json)?;
+            if is_bullet_list && let Some(list_node) = prev_bullet_list {
+                let items: Vec<&AstNode<'a>> = child.children().collect();
+                for item in items {
+                    item.detach();
+                    list_node.append(item);
+                }
+                continue;
+            }
             append_inline_child(arena, ast_node, child);
+            prev_bullet_list = if is_bullet_list { Some(child) } else { None };
         }
     }
 
@@ -1732,6 +1829,33 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_link_roundtrips() {
+        // #996: an empty-text link has no child text node to carry the
+        // link mark; the codec synthesizes an empty marked text node so
+        // the href is present in the PM doc and survives save.
+        let doc = markdown_to_prosemirror("[](https://e.com)");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        assert_eq!(para_content.len(), 1);
+        assert_eq!(para_content[0]["type"], "text");
+        assert_eq!(para_content[0]["text"], "");
+        let mark = &para_content[0]["marks"][0];
+        assert_eq!(mark["type"], "link");
+        assert_eq!(mark["attrs"]["href"], "https://e.com");
+
+        // Byte-identical round-trips, alone, mid-paragraph, and with a
+        // title; the second save is a stable fixpoint.
+        for original in [
+            "[](https://e.com)\n",
+            "before [](https://e.com) after\n",
+            "[](https://e.com \"T\")\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "first save for {original:?}");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+    }
+
+    #[test]
     fn test_code_block() {
         let doc = markdown_to_prosemirror("```rust\nfn main() {}\n```");
         let content = doc["content"].as_array().unwrap();
@@ -1759,6 +1883,73 @@ mod tests {
         let items = content[0]["content"].as_array().unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["type"], "list_item");
+    }
+
+    #[test]
+    fn test_adjacent_bullet_lists_mixed_markers_fixpoint() {
+        // #1032: "- a\n+ b\n* c" parses to three adjacent bullet_list
+        // nodes (the PM model has no marker attr). Saving must coalesce
+        // them into one comrak list: separate adjacent lists make the
+        // renderer emit <!-- end list --> comments, which reparse as
+        // ```html fences and grow the file on every save.
+        let first = prosemirror_to_markdown(&markdown_to_prosemirror("- a\n+ b\n* c\n")).unwrap();
+        let second = prosemirror_to_markdown(&markdown_to_prosemirror(&first)).unwrap();
+        let third = prosemirror_to_markdown(&markdown_to_prosemirror(&second)).unwrap();
+        assert_eq!(first, "- a\n- b\n- c\n", "coalesced single list: {first:?}");
+        assert!(
+            !first.contains("end list"),
+            "no end-list artefact: {first:?}"
+        );
+        assert!(
+            !first.contains("```html"),
+            "no html-fence artefact: {first:?}"
+        );
+        assert_eq!(first, second, "second save is a fixpoint");
+        assert_eq!(second, third, "third save is a fixpoint");
+    }
+
+    #[test]
+    fn test_adjacent_bullet_lists_in_blockquote_fixpoint() {
+        // #1032: coalescing applies at any parent, e.g. inside a
+        // blockquote, not just at doc level.
+        let (first, second) = two_saves("> - a\n> + b\n");
+        assert!(
+            !first.contains("end list"),
+            "no end-list artefact: {first:?}"
+        );
+        assert!(
+            !first.contains("```html"),
+            "no html-fence artefact: {first:?}"
+        );
+        for needle in ["a", "b"] {
+            assert!(first.contains(needle), "item {needle} preserved: {first:?}");
+        }
+        assert_eq!(first, second, "blockquote lists are a fixpoint");
+    }
+
+    #[test]
+    fn test_adjacent_bullet_lists_first_tight_wins() {
+        // #1032: when adjacent bullet lists differ in tight, the merged
+        // list keeps the FIRST list's tight (here tight=true, so items
+        // render with no blank lines between them; the second list's
+        // tight=false must not loosen the merged list).
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {"type": "bullet_list", "attrs": {"tight": true}, "content": [
+                    {"type": "list_item", "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "a"}]}
+                    ]}
+                ]},
+                {"type": "bullet_list", "attrs": {"tight": false}, "content": [
+                    {"type": "list_item", "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "b"}]}
+                    ]}
+                ]}
+            ]
+        });
+        let md = prosemirror_to_markdown(&doc).expect("adjacent bullet lists convert");
+        assert_eq!(md, "- a\n- b\n", "first list's tight wins: {md:?}");
     }
 
     #[test]
@@ -2046,6 +2237,96 @@ mod tests {
     }
 
     #[test]
+    fn test_footnote_multi_paragraph_definition_fixpoint() {
+        // #1031: a two-paragraph footnote definition must keep its
+        // paragraph boundary — the flat #945 shape fused the two
+        // paragraphs into one run of text on save.
+        let original = "Text.[^1]\n\n[^1]: First paragraph.\n\n    Second paragraph.\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "multi-paragraph definition is a fixpoint");
+        assert!(
+            !first.contains("First paragraph.Second paragraph."),
+            "paragraphs must not fuse: {first:?}"
+        );
+        // The saved form still parses to a definition carrying two
+        // paragraph children.
+        let doc = markdown_to_prosemirror(&first);
+        let top = doc["content"].as_array().unwrap();
+        let definition = top
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("footnote_definition node present");
+        let child_types: Vec<&str> = definition["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n["type"].as_str())
+            .collect();
+        assert_eq!(child_types, ["paragraph", "paragraph"]);
+    }
+
+    #[test]
+    fn test_footnote_definition_with_code_block_child_fixpoint() {
+        // #1031: a code block inside a definition was silently dropped
+        // by the flat shape (its literal has no child nodes). As a
+        // block child it round-trips.
+        let original = "Text.[^1]\n\n[^1]: Note.\n\n    ```\n    let x = 1;\n    ```\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "code-block definition is a fixpoint");
+        assert!(first.contains("let x = 1;"), "code survives: {first:?}");
+        let doc = markdown_to_prosemirror(&first);
+        let top = doc["content"].as_array().unwrap();
+        let definition = top
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("footnote_definition node present");
+        let child_types: Vec<&str> = definition["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n["type"].as_str())
+            .collect();
+        assert_eq!(child_types, ["paragraph", "code_block"]);
+    }
+
+    #[test]
+    fn test_footnote_legacy_flat_shape_still_saves() {
+        // #1031: documents already stored in the legacy #945 flat
+        // shape (definition content = bare inline nodes) still save
+        // correctly via the inline-grouping fallback.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Text."},
+                        {"type": "footnote_reference", "attrs": {"label": "1"}}
+                    ]
+                },
+                {
+                    "type": "footnote_definition",
+                    "attrs": {"label": "1"},
+                    "content": [{"type": "text", "text": "Body."}]
+                }
+            ]
+        });
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        // comrak renders a definition's paragraph on an indented
+        // continuation line (`[^1]:\n    Body.`) — that is its style
+        // for parsed definitions too (verified on the standard
+        // parse->save path), so assert content preservation, not the
+        // same-line form.
+        assert!(
+            saved.contains("[^1]:") && saved.contains("Body."),
+            "legacy doc saves: {saved:?}"
+        );
+        // And the saved form round-trips as a fixpoint from here.
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(saved, resaved);
+    }
+
+    #[test]
     fn test_footnote_parse_shape_is_footnote_nodes() {
         // #945: the parse direction represents a footnote as dedicated
         // footnote_reference / footnote_definition nodes carrying the
@@ -2057,7 +2338,12 @@ mod tests {
             .find(|n| n["type"] == "footnote_definition")
             .expect("footnote_definition node present");
         assert_eq!(definition["attrs"]["label"], "1");
-        let definition_text: Vec<&str> = definition["content"]
+        // #1031: the definition carries BLOCK children — a single
+        // paragraph wrapping the inline body, not bare inline nodes.
+        let definition_content = definition["content"].as_array().unwrap();
+        assert_eq!(definition_content.len(), 1);
+        assert_eq!(definition_content[0]["type"], "paragraph");
+        let definition_text: Vec<&str> = definition_content[0]["content"]
             .as_array()
             .unwrap()
             .iter()
@@ -2240,6 +2526,32 @@ mod tests {
         // Second item: checked
         assert_eq!(items[1]["type"], "task_list_item");
         assert_eq!(items[1]["attrs"]["checked"], true);
+    }
+
+    #[test]
+    fn test_ordered_task_list_roundtrips() {
+        // #997: an ordered task list must keep its ordering and start on
+        // save instead of being rewritten as a bullet task list.
+        let doc = markdown_to_prosemirror("1. [ ] todo\n2. [x] done\n");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "task_list");
+        assert_eq!(content[0]["attrs"]["order"], 1);
+
+        let doc5 = markdown_to_prosemirror("5. [ ] five\n6. [x] six\n");
+        assert_eq!(doc5["content"][0]["attrs"]["order"], 5);
+
+        // Byte-identical round-trips at start 1 and start >1; the second
+        // save is a stable fixpoint.
+        for original in ["1. [ ] todo\n2. [x] done\n", "5. [ ] five\n6. [x] six\n"] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "first save for {original:?}");
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+        }
+
+        // A bullet task list keeps its current PM shape: no attrs at all.
+        let bullet = markdown_to_prosemirror("- [ ] todo\n");
+        assert_eq!(bullet["content"][0]["type"], "task_list");
+        assert!(bullet["content"][0]["attrs"].is_null());
     }
 
     #[test]

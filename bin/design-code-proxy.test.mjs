@@ -10,6 +10,10 @@
 //   'quota-status' -> HTTP 429 status
 //   'ok-length'    -> a successful chat completion with an explicit
 //                     Content-Length on the compact JSON body (#684)
+//   'ok-length-stream' -> the SSE stream, with a Content-Length set to
+//                     the backend's own (pre-model-rewrite) byte count,
+//                     which is stale the moment the proxy rewrites the
+//                     model in each chunk (#688)
 //   'ok' (default) -> a successful chat completion naming the backend
 //
 // A quota error reported in a 200 JSON body used to hang the client
@@ -56,14 +60,20 @@ const startStub = (name) => new Promise((resolve) => {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(compact) });
         res.end(compact);
       } else if (bodyText.includes('"stream":true')) {
-        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         const chunk = {
           id: 'chatcmpl-stub', object: 'chat.completion.chunk', created: 0, model: 'stub-model',
           choices: [{ index: 0, delta: { content: `hello from ${name}` }, finish_reason: null }]
         };
-        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        res.write('data: [DONE]\n\n');
-        res.end();
+        const payload = `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`;
+        const headers = { 'Content-Type': 'text/event-stream' };
+        if (stub.mode === 'ok-length-stream') {
+          // #688: the length of the backend's own body. The proxy's
+          // per-chunk model rewrite makes the body it sends longer, so
+          // forwarding this length would truncate the stream.
+          headers['Content-Length'] = Buffer.byteLength(payload);
+        }
+        res.writeHead(200, headers);
+        res.end(payload);
       } else {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -189,6 +199,29 @@ test('backend Content-Length does not truncate the re-serialized success body (#
   const body = JSON.parse(text);
   assert.equal(body.choices[0].message.content, 'hello from primary');
   assert.equal(body.model, 'design-code-flash');
+  assert.equal(primary.calls, 1);
+  assert.equal(fallback.calls, 0);
+});
+
+test('backend Content-Length does not truncate the model-rewritten SSE stream (#688)', async (t) => {
+  const { port, primary, fallback, stop } = await startProxy();
+  t.after(stop);
+  primary.mode = 'ok-length-stream';
+  const res = await post(port, { stream: true });
+  assert.equal(res.status, 200);
+  const sse = await res.text();
+  // The proxy rewrites the model in every chunk, so the stream it sends
+  // is longer than the backend body the stub's Content-Length describes.
+  // Forwarding that stale length truncates the tail — [DONE] is lost.
+  assert.match(sse, /hello from primary/);
+  assert.match(sse, /design-code-flash/);
+  assert.ok(sse.trimEnd().endsWith('data: [DONE]'), `stream truncated: ${JSON.stringify(sse)}`);
+  // The forwarded head must describe the stream actually sent: either no
+  // Content-Length (chunked) or exactly the received byte count.
+  const advertised = res.headers.get('content-length');
+  if (advertised !== null) {
+    assert.equal(Number(advertised), Buffer.byteLength(sse));
+  }
   assert.equal(primary.calls, 1);
   assert.equal(fallback.calls, 0);
 });

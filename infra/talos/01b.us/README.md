@@ -1,3 +1,5 @@
+> **Historical reference only — torn down.** This folder described a v1.9-era Talos test cluster (01b.us) that has been torn down (confirmed by Drew, 2026-10-26). Nothing in it is running. The current program is in [`planning/roadmaps/basement-cluster.md`](../../../planning/roadmaps/basement-cluster.md).
+
 - https://hub.docker.com/r/ronivay/xen-orchestra
 
 - uses https://factory.talos.dev/?arch=amd64&cmdline-set=true&extensions=-&extensions=siderolabs%2Fdrbd&extensions=siderolabs%2Ftailscale&extensions=siderolabs%2Fxen-guest-agent&platform=metal&target=metal&version=1.9.0

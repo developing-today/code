@@ -277,6 +277,14 @@ rec {
       url = "github:developing-today/openchamber";
       inputs.opencode.follows = "opencode";
     };
+    # OpenClaw: declarative packaging for the OpenClaw gateway (peer
+    # intelligence source on the laptop). Home Manager module + overlay;
+    # consumed by home/openclaw. Pinned by flake.lock like everything else.
+    nix-openclaw = {
+      url = "github:openclaw/nix-openclaw";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.home-manager.follows = "home-manager";
+    };
     # Helium: privacy-focused Chromium fork by imputnet (the cobalt.tools org).
     # Not in nixpkgs and unlikely to be soon -- seven `helium: init` PRs have been
     # closed unmerged and the one still open (#498572) has been stalled since

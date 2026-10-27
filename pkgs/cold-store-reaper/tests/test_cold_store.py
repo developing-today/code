@@ -509,6 +509,46 @@ class TestUploadLimits(ColdStoreTestBase):
         self.assertEqual(self.fake.files, {})
         self.assertEqual(self.fake.folders, [])
 
+    def test_put_backup_cumulative_budget_refusal(self):
+        # #1028: individually-fitting backups must be refused once
+        # their CUMULATIVE total crosses the project budget — prior
+        # backups count, via the transfer ledger's backup-upload rows.
+        self.set_meta("project_budget_bytes", 150)
+        first = self.write_src("a.sql", b"x" * 100)
+        second = self.write_src("b.sql", b"y" * 100)
+        result = self.store.put_backup("d1", str(first))
+        self.assertTrue(result["drive_file_id"])
+        files_after_first = dict(self.fake.files)
+        sessions_after_first = dict(self.fake.sessions)
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.put_backup("d1", str(second))
+        self.assertIn("project budget", str(ctx.exception))
+        # refused before any Drive write
+        self.assertEqual(self.fake.files, files_after_first)
+        self.assertEqual(self.fake.sessions, sessions_after_first)
+        # status shares the accounting: 100 B of backups counted
+        d = self.store.status_data()
+        self.assertEqual(d["backup_bytes"], 100)
+        self.assertEqual(d["cold_bytes"], 0)
+        self.assertTrue(d["within_budget"])
+
+    def test_backup_prune_ledger_row_decrements_backup_bytes(self):
+        # #1028: a backup-prune trash row (prune_backups' ledger
+        # record) decrements the counted backup bytes, so pruned
+        # backups stop consuming the project budget.
+        self.set_meta("project_budget_bytes", 150)
+        first = self.write_src("a.sql", b"x" * 100)
+        self.store.put_backup("d1", str(first))
+        self.assertEqual(self.store.status_data()["backup_bytes"], 100)
+        conn = self.store.db()
+        with conn:
+            self.store.ledger_add(conn, "trash", 100, "backup-prune", "gone.sql")
+        conn.close()
+        self.assertEqual(self.store.status_data()["backup_bytes"], 0)
+        second = self.write_src("b.sql", b"y" * 100)
+        result = self.store.put_backup("d1", str(second))
+        self.assertTrue(result["drive_file_id"])
+
     def test_just_under_limits_succeeds(self):
         src = self.write_src("a.txt", b"limit data " * 20)
         packed = self.store.pack([str(src)])
