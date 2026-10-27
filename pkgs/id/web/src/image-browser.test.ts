@@ -44,7 +44,7 @@ describe("openImageBrowser", () => {
           };
         }
         return { ok: false, status: 404 };
-      })
+      }),
     );
   });
 

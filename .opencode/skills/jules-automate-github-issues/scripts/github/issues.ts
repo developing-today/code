@@ -20,9 +20,7 @@ import { getGitRepoInfo } from "./git.js";
 export const CachedOctokit = Octokit.plugin(cachePlugin) as typeof Octokit;
 
 /** Fetch open issues from the current repository */
-export async function getIssues(
-  options?: { perPage?: number; state?: "open" | "closed" | "all" }
-) {
+export async function getIssues(options?: { perPage?: number; state?: "open" | "closed" | "all" }) {
   const repoInfo = await getGitRepoInfo();
   const octokit = new CachedOctokit({
     auth: process.env.GITHUB_TOKEN,
