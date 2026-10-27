@@ -77,7 +77,8 @@ export const PAGES: PageDef[] = [
     title: "Program status",
     route: "/program",
     api: "/api/program.json",
-    blurb: "What this dashboard is, what's built, what's next, and the long-term roadmap — fed from the tracked issues and the Project pool.",
+    blurb:
+      "What this dashboard is, what's built, what's next, and the long-term roadmap — fed from the tracked issues and the Project pool.",
   },
   {
     id: "pages",

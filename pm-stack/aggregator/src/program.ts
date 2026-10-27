@@ -92,7 +92,8 @@ export const PROGRAM: ProgramDoc = {
     },
     {
       title: "Grist — roadmap & registers",
-      detail: "The roadmap table and the registers (the DNS register behind /dns is #902's, rendered from Grist-side data).",
+      detail:
+        "The roadmap table and the registers (the DNS register behind /dns is #902's, rendered from Grist-side data).",
       refs: [issue(902)],
     },
     {
@@ -263,9 +264,7 @@ export function buildProgramLive(
       byStatus: counts(pool.map((p) => p.status)),
       byArea: counts(pool.map((p) => p.area)),
     },
-    orchestration: orchestration
-      ? { generatedAt: orchestration.generatedAt, runId: orchestration.runId }
-      : null,
+    orchestration: orchestration ? { generatedAt: orchestration.generatedAt, runId: orchestration.runId } : null,
   };
 }
 

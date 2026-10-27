@@ -973,11 +973,8 @@ export function renderToday(
           // carry a non-array `accomplished` (e.g. a bare string) —
           // coerce instead of crashing the whole /today render.
           const rawAccomplished: unknown = m.accomplished;
-          const accomplished = (Array.isArray(rawAccomplished)
-            ? rawAccomplished
-            : rawAccomplished
-              ? [rawAccomplished]
-              : []
+          const accomplished = (
+            Array.isArray(rawAccomplished) ? rawAccomplished : rawAccomplished ? [rawAccomplished] : []
           ).map((a) => String(a));
           const done = accomplished.length
             ? `<br>Recently accomplished:<ul>${accomplished.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>`
@@ -1170,7 +1167,9 @@ function programEntryHtml(e: ProgramEntry, items: Map<RefKey, GhItem>): string {
   const refs = (e.refs ?? [])
     .map((r) => {
       const item = items.get(r);
-      return item ? itemBadge(item) : `<span class="badge closed" title="The current source cannot resolve this ref">unresolved ${esc(r)}</span>`;
+      return item
+        ? itemBadge(item)
+        : `<span class="badge closed" title="The current source cannot resolve this ref">unresolved ${esc(r)}</span>`;
     })
     .join(" ");
   const links = (e.links ?? []).map((l) => `<a href="${esc(l.url)}">${esc(l.label)}</a>`).join(" · ");
