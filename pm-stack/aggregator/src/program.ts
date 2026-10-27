@@ -57,7 +57,7 @@ export const TRACKED_REFS: RefKey[] = [issue(898), issue(899), issue(902), issue
 export const PROGRAM: ProgramDoc = {
   intro:
     "This dashboard is the aggregator of the PM stack: the one screen Drew lives in while the fleet works in GitHub, Kaneo, and Pad underneath. This page is the program's own record — what it is, what is built, what is next — with the status sections below derived live from the tracked issues, the Project pool, and the orchestrator, so they cannot drift quietly.",
-  designRecordUrl: `https://github.com/developing-today/code/blob/main/doc/2026-10-24T11-05-38Z_design_project-management-stack.md`,
+  designRecordUrl: `https://github.com/developing-today/code/blob/main/doc/2026-10-24T11-05-38Z_design_project-management-stack/2026-10-24T11-05-38Z_design_project-management-stack.md`,
   projectUrl: PROJECT_URL,
   architecture: [
     {
@@ -151,6 +151,12 @@ export const PROGRAM: ProgramDoc = {
         "Project created with its fields and backfill (27/27 items); Board and Roadmap views created (Start/Target date fields added); Stage 4 orchestrator reconciliation wired as the single writer; Stage 5 the dashboard reads the Project pool. Proof it works: the first fully automatic reconciliation pass set #910 itself to Done, and auto-added the nix epic #672.",
       refs: [issue(910)],
       links: [{ label: "Project #4", url: PROJECT_URL }],
+    },
+    {
+      title: "Program pages generalized to every project",
+      detail:
+        "This page stopped being a single hard-coded document: projects are configured in a registry (src/project-config.ts), /program is the projects index, and every configured project — pm-dashboard, the basement cluster, id, the repo fleet, mcpx, the cloud program — has its own page under /program/<id> with live pool, roadmap, and tracked-issue sections. Epic #1129 tracks the remaining per-project build-out.",
+      refs: [issue(1120), issue(1121)],
     },
   ],
   next: [
@@ -268,10 +274,14 @@ export function buildProgramLive(
   };
 }
 
-/** The /api/program.json shape: the editorial document plus the live half. */
+/** The /api/program.json shape: the editorial document plus the live half.
+ * `projects` (the multi-project index summaries, #1121) is attached by
+ * the server from src/project-config.ts; optional so the builder and
+ * its tests keep working without the registry. */
 export interface ProgramData {
   program: ProgramDoc;
   live: ProgramLive;
+  projects?: import("./project-config.ts").ProjectSummary[];
 }
 
 export function buildProgramData(

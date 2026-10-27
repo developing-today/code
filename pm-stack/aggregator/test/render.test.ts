@@ -159,7 +159,7 @@ describe("fixture source", () => {
     const board = await src.board();
     const rows = await src.roadmap();
     expect(board.length).toBeGreaterThan(0);
-    expect(rows.length).toBe(16); // the real Grist seed
+    expect(rows.length).toBe(23); // the real Grist seed (grew 16 → 23 with the cluster/id rows)
     const crossRepo = board.find((b) => b.id.includes("aggregator"));
     expect(crossRepo?.links.some((l) => l.ref.startsWith("developing-today/openchamber"))).toBe(true);
   });
