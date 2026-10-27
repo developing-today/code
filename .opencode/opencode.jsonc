@@ -5377,6 +5377,21 @@
           "opencode-route/haiku-plan": 2,
           "opencode-route/luna-plan": 1
         }
+      },
+      "luna-haiku-100k": {
+        "name": "Luna + Haiku under 100k - value pool capped below the 100k context cliff",
+        // 2026-10-26: both members price much cheaper below 100k context. The route's
+        // context cap (developing-today/opencode#554) presents a 100k limit, so sessions
+        // pinned here compact before crossing the cliff. On fork builds predating #554
+        // the decoder strips the unknown limit key and the pool simply runs uncapped.
+        // AA v4.3.2: Haiku #high 38, Luna #xhigh 35 (TTFT 24.2s; #max would be 93.8s).
+        "targets": [
+          "opencode-route/haiku-plan#high",
+          "opencode-route/luna-plan#xhigh"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "limit": { "context": 100000 }
       }
     }
   }
