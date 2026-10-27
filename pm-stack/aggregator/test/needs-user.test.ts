@@ -12,6 +12,9 @@ import { loadConfig } from "../src/config.ts";
 import { buildAttention } from "../src/derive.ts";
 import { isOrchestrationSection } from "../src/feed.ts";
 import type { OrchestrationSection, TierItem } from "../src/model.ts";
+import { STANDING_IDENTITIES } from "../src/registry.ts";
+import { renderAttention } from "../src/render.ts";
+import { fixtureSource } from "../src/sources/fixtures.ts";
 import { liveSource } from "../src/sources/live.ts";
 import {
   checkActionAgainstItem,
@@ -490,5 +493,173 @@ describe("count consistency (#1293)", () => {
     expect(view.drew.length + view.drewExtra.length).toBe(2);
     expect(view.drewExtra.map((i) => i.id)).toEqual([proposalItem.id, plain.id]);
     expect(view.drewExtra[0]?.delegation?.status).toBe("proposal-ready");
+  });
+});
+
+describe("needs-user card rendering (#1291/#1293)", () => {
+  const identities = STANDING_IDENTITIES.map((i) => ({ ...i }));
+  const recent = () => new Date(Date.now() - 3_600_000).toISOString();
+  const longAgo = () => new Date(Date.now() - 72 * 3_600_000).toISOString();
+
+  async function page(
+    items: TierItem[],
+    actionsByObject: Map<string, DashAction[]> = new Map(),
+    stale = false,
+  ): Promise<string> {
+    const src = fixtureSource();
+    const section: OrchestrationSection = {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      runId: "orch-test",
+      provenance: { sources: ["fixture"] },
+      tiers: { needsDrew: items, needsOrchestrator: [] },
+      dependencies: [],
+      goals: [],
+      actions: [],
+    };
+    const view = buildAttention(
+      [],
+      section,
+      Date.now(),
+      stale ? { state: "stale", runId: section.runId, generatedAt: section.generatedAt } : undefined,
+    );
+    return renderAttention(view, await src.coverage(), src.provenance(), undefined, undefined, {
+      identities,
+      actionsByObject,
+    });
+  }
+
+  /** A proposal-ready item stamped relative to real now, so the TTL
+   *  math in the render is exercised the way production runs it. */
+  function proposalItem(at: string): TierItem {
+    const raw = extendedRaw();
+    (raw.delegation as Record<string, unknown>).updatedAt = at;
+    ((raw.delegation as Record<string, unknown>).proposal as Record<string, unknown>).at = at;
+    return sanitizeTierItemExtensions(raw as unknown as TierItem);
+  }
+
+  test("the full card: class badge, summary, if-nothing line, option buttons, survey, delegation controls, dismiss", async () => {
+    const item = withUserFallbacks(
+      sanitizeTierItemExtensions(extendedRaw() as unknown as TierItem),
+      new Date().toISOString(),
+      true,
+    );
+    const html = await page([item]);
+    expect(html).toContain("Needs User (1)");
+    expect(html).toContain(">Decision</span>");
+    expect(html).toContain("The export needs a format before the importer can be built.");
+    expect(html).toContain("If nothing happens:");
+    expect(html).toContain("The importer work stays blocked.");
+    // option button + its predicted effect line
+    expect(html).toContain('name="optionId" value="csv"');
+    expect(html).toContain("Effect: Importer unblocks this week");
+    // survey: prompt, required coverage line, submit
+    expect(html).toContain("Who consumes the export?");
+    expect(html).toContain("Needed: the privacy review scope");
+    expect(html).toContain("Submit answers");
+    expect(html).toContain('name="answers:audience"');
+    // delegation controls + dismiss are on the card
+    expect(html).toContain('data-verb="delegate"');
+    expect(html).toContain("Delegate: Auto");
+    expect(html).toContain('data-verb="dismiss"');
+    // no free-text answer box when the item offers options/survey
+    expect(html).not.toContain("Your answer / decision");
+  });
+
+  test("an access item's Auto control is disabled with the reason", async () => {
+    const item: TierItem = {
+      ...BASE,
+      whyUser: "access",
+      delegation: { mode: "user", status: "idle", updatedAt: recent() },
+    };
+    const html = await page([item]);
+    expect(html).toContain(">Access</span>");
+    expect(html).toContain("can never be auto-delegated");
+  });
+
+  test("a live proposal renders its box + approve/reject forms carrying the identity", async () => {
+    const html = await page([proposalItem(recent())]);
+    expect(html).toContain("First-pass proposal");
+    expect(html).toContain("Recommend CSV");
+    expect(html).toContain('data-verb="approve-proposal"');
+    expect(html).toContain('data-verb="reject-proposal"');
+    expect(html).toContain('name="proposalRunId" value="orch-2026-10-27T02:00:00Z"');
+    expect(html).toContain("nothing is applied unless you approve");
+  });
+
+  test("a re-proposal names the previous rejection in its box", async () => {
+    const item = proposalItem(recent());
+    const rejection: DashAction = {
+      id: "da-old",
+      clientToken: "ct-old",
+      kind: "triage",
+      verb: "reject-proposal",
+      objectRef: "gh:developing-today/code#2001",
+      payload: { reason: "too risky as drafted" },
+      author: { kind: "drew", id: "drew", label: "Drew" },
+      createdAt: recent(),
+      state: "applied",
+    };
+    const html = await page([item], new Map([["gh:developing-today/code#2001", [rejection]]]));
+    expect(html).toContain("second first pass; previous rejected: too risky as drafted");
+  });
+
+  test("an expired proposal renders expired and offers no approve form", async () => {
+    const html = await page([proposalItem(longAgo())]);
+    expect(html).toContain("Proposal expired");
+    expect(html).not.toContain('data-verb="approve-proposal"');
+    expect(html).toContain("Delegate: First Pass (fresh draft)");
+  });
+
+  test("an unable delegation renders the structured inability", async () => {
+    const item: TierItem = {
+      ...BASE,
+      whyUser: "decision",
+      delegation: {
+        mode: "auto",
+        status: "unable",
+        updatedAt: recent(),
+        runId: "orch-x",
+        unable: {
+          reason: "No recorded context settles the format.",
+          whatItTried: ["searched the repo docs", "checked the decision log"],
+          whatItNeeds: "a product call on the public audience",
+          at: recent(),
+        },
+      },
+    };
+    const html = await page([item]);
+    expect(html).toContain("The orchestrator could not resolve this");
+    expect(html).toContain("searched the repo docs");
+    expect(html).toContain("Needs: a product call on the public audience");
+  });
+
+  test("a stale tier source disables the needs-user controls with the triage ones", async () => {
+    const html = await page([proposalItem(recent())], new Map(), true);
+    expect(html).toContain("Actions unavailable");
+    expect(html).toContain("<fieldset disabled>");
+    expect(html).toContain('data-verb="delegate"');
+  });
+
+  test("the standing-default toggle renders its state and the preference form", async () => {
+    const html = await page([{ ...BASE }]);
+    expect(html).toContain("Standing delegation default");
+    expect(html).toContain("delegate to Auto by default");
+    expect(html).toContain('data-kind="preference"');
+    expect(html).toContain('data-verb="set-delegation-default"');
+    const pendingPref: DashAction = {
+      id: "da-pref",
+      clientToken: "ct-pref",
+      kind: "preference",
+      verb: "set-delegation-default",
+      objectRef: "needs-user-delegation-default",
+      payload: { standingAuto: false },
+      author: { kind: "drew", id: "drew", label: "Drew" },
+      createdAt: recent(),
+      state: "new",
+    };
+    const html2 = await page([{ ...BASE }], new Map([["needs-user-delegation-default", [pendingPref]]]));
+    expect(html2).toContain("items stay with you unless you delegate them per item");
+    expect(html2).toContain("change pending");
   });
 });
