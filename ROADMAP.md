@@ -16,7 +16,7 @@ A row here records intent. It does not settle a product question and it is not a
 
 ## Now, across the repo
 
-1. Make CI trustworthy for `id`: the LogSync bulk test (#241, PR #255), Firefox E2E isolation (#229), the out-of-disk failures (#257).
+1. Make CI trustworthy for `id`: the LogSync bulk test (#241).
 2. Settle how other flakes consume `mcpx` from this repo, its single source (#308), and move the backlog here (#309).
 3. Quiet the automation: stale PRs (#310, #311).
 
