@@ -2885,9 +2885,7 @@ mod tests {
         // must save as a table: the first row is promoted to a header
         // row so comrak emits the GFM delimiter row, instead of the
         // table degrading to a plain paragraph on save.
-        let cell = |text: &str| {
-            json!({"type": "table_cell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]})
-        };
+        let cell = |text: &str| json!({"type": "table_cell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]});
         let pm_json = json!({
             "type": "doc",
             "content": [{
