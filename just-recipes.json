@@ -350,7 +350,9 @@
                 ["#!/usr/bin/env bash"],
                 ["set -euo pipefail"],
                 ["git grep -rl '[[:space:]]$' -- \\"],
-                ["  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \\"],
+                [
+                  "  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' ':!*/transcript.txt' \\"
+                ],
                 ["  ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \\"],
                 [
                   "  ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \\"
@@ -361,6 +363,7 @@
                 ["  ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \\"],
                 ["  2>/dev/null | while IFS= read -r f; do"],
                 ["  case \"$f\" in"],
+                ["    */transcript.txt) continue ;;"],
                 ["    */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;"],
                 ["    */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;"],
                 ["    */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;"],
@@ -669,7 +672,7 @@
             "windows_shell": null,
             "working_directory": null
           },
-          "source": "/home/user/code/root.just",
+          "source": "/tmp/wt-tf2/root.just",
           "unexports": [],
           "warnings": []
         }
@@ -1370,6 +1373,22 @@
           "private": false,
           "quiet": false,
           "namepath": "id::coverage-summary",
+          "shebang": false
+        },
+        "crash-gate": {
+          "attributes": [{ "group": "test" }],
+          "body": [
+            ["cargo test --release --features web --test crash -- --skip write_corpus --include-ignored"],
+            ["@echo \"✓ Crash gate passed\""]
+          ],
+          "dependencies": [],
+          "doc": "Crash-safety gate for redb and the identity store: every storage call under every survival policy, and the lying-sync control, in release",
+          "name": "crash-gate",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::crash-gate",
           "shebang": false
         },
         "default": {
@@ -2157,7 +2176,11 @@
         },
         "test-e2e": {
           "attributes": [{ "group": "e2e" }],
-          "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test"]],
+          "body": [
+            [
+              "cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test \"$spec\" || exit 1; done"
+            ]
+          ],
           "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
           "doc": "[bun] Run Playwright E2E tests (both chromium and firefox)",
           "name": "test-e2e",
@@ -2170,7 +2193,11 @@
         },
         "test-e2e-chromium": {
           "attributes": [{ "group": "e2e" }],
-          "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test --project=chromium"]],
+          "body": [
+            [
+              "cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test --project=chromium \"$spec\" || exit 1; done"
+            ]
+          ],
           "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
           "doc": "[bun] Run Playwright E2E tests (chromium only)",
           "name": "test-e2e-chromium",
@@ -2183,7 +2210,11 @@
         },
         "test-e2e-firefox": {
           "attributes": [{ "group": "e2e" }],
-          "body": [["cd e2e && bun install --frozen-lockfile && bunx playwright test --project=firefox"]],
+          "body": [
+            [
+              "cd e2e && bun install --frozen-lockfile && for spec in tests/*.spec.ts; do bunx playwright test --project=firefox \"$spec\" || exit 1; done"
+            ]
+          ],
           "dependencies": [{ "arguments": [], "recipe": "build", "star": null }],
           "doc": "[bun] Run Playwright E2E tests (firefox only)",
           "name": "test-e2e-firefox",
@@ -2389,6 +2420,50 @@
           "private": false,
           "quiet": false,
           "namepath": "id::test-sandbox",
+          "shebang": false
+        },
+        "test-shard-sandbox": {
+          "attributes": [{ "group": "test" }],
+          "body": [["bash scripts/test-shard-sandbox.sh ", [["variable", "SHARD"]], " ", [["variable", "COUNT"]]]],
+          "dependencies": [],
+          "doc": "pair (#869).",
+          "name": "test-shard-sandbox",
+          "parameters": [
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "singular",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "SHARD",
+              "pattern": null,
+              "short": null,
+              "value": null
+            },
+            {
+              "default": null,
+              "export": false,
+              "flag": false,
+              "help": null,
+              "kind": "singular",
+              "long": null,
+              "max": null,
+              "min": null,
+              "multiple": false,
+              "name": "COUNT",
+              "pattern": null,
+              "short": null,
+              "value": null
+            }
+          ],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::test-shard-sandbox",
           "shebang": false
         },
         "test-unit": {
@@ -2935,7 +3010,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/code/pkgs/id/justfile",
+      "source": "/tmp/wt-tf2/pkgs/id/justfile",
       "unexports": [],
       "warnings": []
     }
@@ -3284,7 +3359,9 @@
         ["#!/usr/bin/env bash"],
         ["set -euo pipefail"],
         ["git grep -rl '[[:space:]]$' -- \\"],
-        ["  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' \\"],
+        [
+          "  ':!*.patch' ':!*.min.*' ':!*.lock' ':!*.map' ':!*.generated.*' ':!*.pb.*' ':!*.g.dart' ':!*/transcript.txt' \\"
+        ],
         ["  ':!*.exe' ':!*.dll' ':!*.so' ':!*.dylib' ':!*.a' ':!*.o' ':!*.obj' \\"],
         [
           "  ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.webp' ':!*.svg' ':!*.tiff' ':!*.tif' ':!*.avif' \\"
@@ -3295,6 +3372,7 @@
         ["  ':!*.pdf' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.otf' ':!*.eot' \\"],
         ["  2>/dev/null | while IFS= read -r f; do"],
         ["  case \"$f\" in"],
+        ["    */transcript.txt) continue ;;"],
         ["    */node_modules/*|*/dist/*|*/target/*|*/vendor/*|*/vendored/*|*/release/*|*/bin/*) continue ;;"],
         ["    */build/*|*/out/*|*/output/*|*/_build/*|*/pkg/*|*/.next/*|*/.nuxt/*|*/.output/*) continue ;;"],
         ["    */_site/*|*/.cache/*|*/__pycache__/*|*/.tox/*|*/_generated/*) continue ;;"],
@@ -3600,7 +3678,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/code/justfile",
+  "source": "/tmp/wt-tf2/justfile",
   "unexports": [],
   "warnings": []
 }

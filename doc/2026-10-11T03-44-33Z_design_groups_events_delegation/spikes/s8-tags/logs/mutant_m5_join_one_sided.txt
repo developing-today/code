@@ -46,7 +46,7 @@ proptest: If this test was run on a CI system, you may wish to add the following
 cc 5d5b0e034095bb7ab53b2756b4b6bbb341d1203dcf166ce56c44a660bb80f045
 
 thread 'join_is_commutative_associative_and_idempotent' (3412168) panicked at tests/props.rs:185:1:
-Test failed: assertion failed: `(left == right)` 
+Test failed: assertion failed: `(left == right)`
   left: `State { live: {}, vv: {[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 1} }`,
  right: `State { live: {Dot { device: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], seq: 1 }: Entry { subject: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], name: "a", value: None }}, vv: {[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]: 1} }` at tests/props.rs:284.
 minimal failing input: (n, acts, seed, picks) = (

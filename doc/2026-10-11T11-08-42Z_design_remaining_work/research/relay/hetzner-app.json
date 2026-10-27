@@ -60,10 +60,10 @@
     <script>
         var _paq = window._paq = window._paq || []
         _paq.push(['setDocumentTitle', document.domain + ' / ' + document.title])
-            
+
             _paq.push(['setCookieDomain', '*.hetzner.com'])
             _paq.push(['setDomains', '*.hetzner.com'])
-            
+
         _paq.push(['requireCookieConsent'])
         _paq.push(['setConversionAttributionFirstReferrer', true])
         _paq.push(['trackPageView'])
@@ -105,7 +105,7 @@
 
 
 <header id="header">
-    
+
 <div class="modal fade h-100 justify-content-center align-items-center d-none" id="InitModal" role="dialog" style="display: flex;">
     <div class="modal-dialog modal-dialog-centered modal-lg" style="max-width: 768px;">
         <div class="modal-content text-center">
@@ -137,8 +137,8 @@
     </div>
 </div>
 
-    
-    
+
+
 
 
     <div class="modal fade" id="LangSettings" role="dialog">
@@ -159,7 +159,7 @@
         id="settings-language"
         class="settings-items"
     >
-        
+
             <button
                 class="btn btn-langsettings lvc-modal-lang-track"
                 id="language-de"
@@ -168,7 +168,7 @@
             >
                 <span>Deutsch</span>
             </button>
-        
+
             <button
                 class="btn btn-langsettings lvc-modal-lang-track"
                 id="language-en"
@@ -177,7 +177,7 @@
             >
                 <span>English</span>
             </button>
-        
+
     </div>
 </div>
 
@@ -189,7 +189,7 @@
         id="settings-currency"
         class="settings-items"
     >
-        
+
             <button
                 class="btn btn-langsettings lvc-modal-currency-track"
                 id="currency-EUR"
@@ -197,7 +197,7 @@
             >
                <span><span class="currency-symbol">€</span> EUR</span>
             </button>
-        
+
             <button
                 class="btn btn-langsettings lvc-modal-currency-track"
                 id="currency-USD"
@@ -205,7 +205,7 @@
             >
                <span><span class="currency-symbol">$</span> USD</span>
             </button>
-        
+
     </div>
 </div>
 
@@ -218,10 +218,10 @@
         class="selectpicker"
         id="settings-vat"
     >
-        
+
     <option
     value="ot-0"
-    
+
 >
     All others
 </option>
@@ -230,7 +230,7 @@
 
     <option
     value="au-10"
-    
+
 >
     Australia
 </option>
@@ -238,7 +238,7 @@
 
     <option
     value="at-20"
-    
+
 >
     Austria
 </option>
@@ -246,7 +246,7 @@
 
     <option
     value="be-21"
-    
+
 >
     Belgium
 </option>
@@ -254,7 +254,7 @@
 
     <option
     value="bg-20"
-    
+
 >
     Bulgaria
 </option>
@@ -262,7 +262,7 @@
 
     <option
     value="hr-25"
-    
+
 >
     Croatia
 </option>
@@ -270,7 +270,7 @@
 
     <option
     value="cy-19"
-    
+
 >
     Cyprus
 </option>
@@ -278,7 +278,7 @@
 
     <option
     value="cz-21"
-    
+
 >
     Czech Republic
 </option>
@@ -286,7 +286,7 @@
 
     <option
     value="dk-25"
-    
+
 >
     Denmark
 </option>
@@ -294,7 +294,7 @@
 
     <option
     value="ee-24"
-    
+
 >
     Estonia
 </option>
@@ -302,7 +302,7 @@
 
     <option
     value="fi-25.5"
-    
+
 >
     Finland
 </option>
@@ -310,7 +310,7 @@
 
     <option
     value="fr-20"
-    
+
 >
     France
 </option>
@@ -318,7 +318,7 @@
 
     <option
     value="de-19"
-    
+
 >
     Germany
 </option>
@@ -326,7 +326,7 @@
 
     <option
     value="gr-24"
-    
+
 >
     Greece
 </option>
@@ -334,7 +334,7 @@
 
     <option
     value="hu-27"
-    
+
 >
     Hungary
 </option>
@@ -342,7 +342,7 @@
 
     <option
     value="ie-23"
-    
+
 >
     Ireland
 </option>
@@ -350,7 +350,7 @@
 
     <option
     value="it-22"
-    
+
 >
     Italy
 </option>
@@ -358,7 +358,7 @@
 
     <option
     value="lv-21"
-    
+
 >
     Latvia
 </option>
@@ -366,7 +366,7 @@
 
     <option
     value="lt-21"
-    
+
 >
     Lithuania
 </option>
@@ -374,7 +374,7 @@
 
     <option
     value="lu-17"
-    
+
 >
     Luxembourg
 </option>
@@ -382,7 +382,7 @@
 
     <option
     value="mt-18"
-    
+
 >
     Malta
 </option>
@@ -390,7 +390,7 @@
 
     <option
     value="nl-21"
-    
+
 >
     Netherlands
 </option>
@@ -398,7 +398,7 @@
 
     <option
     value="no-25"
-    
+
 >
     Norway
 </option>
@@ -406,7 +406,7 @@
 
     <option
     value="pl-23"
-    
+
 >
     Poland
 </option>
@@ -414,7 +414,7 @@
 
     <option
     value="pt-23"
-    
+
 >
     Portugal
 </option>
@@ -422,7 +422,7 @@
 
     <option
     value="ro-21"
-    
+
 >
     Romania
 </option>
@@ -430,7 +430,7 @@
 
     <option
     value="sg-9"
-    
+
 >
     Singapore
 </option>
@@ -438,7 +438,7 @@
 
     <option
     value="sk-23"
-    
+
 >
     Slovakia
 </option>
@@ -446,7 +446,7 @@
 
     <option
     value="si-22"
-    
+
 >
     Slovenia
 </option>
@@ -454,7 +454,7 @@
 
     <option
     value="za-15"
-    
+
 >
     South Africa
 </option>
@@ -462,7 +462,7 @@
 
     <option
     value="es-21"
-    
+
 >
     Spain
 </option>
@@ -470,7 +470,7 @@
 
     <option
     value="se-25"
-    
+
 >
     Sweden
 </option>
@@ -478,7 +478,7 @@
 
     <option
     value="ch-8.1"
-    
+
 >
     Switzerland
 </option>
@@ -486,7 +486,7 @@
 
     <option
     value="ua-0"
-    
+
 >
     Ukraine
 </option>
@@ -494,7 +494,7 @@
 
     <option
     value="gb-20"
-    
+
 >
     United Kingdom
 </option>
@@ -502,7 +502,7 @@
 
     <option
     value="us-0"
-    
+
 >
     USA
 </option>
@@ -556,7 +556,7 @@
 
 </script>
 
-    
+
     <nav id="header-nav" class="header-nav" role="navigation" aria-label="Main navigation">
         <div
     id="geo-suggestion"
@@ -607,7 +607,7 @@
             >
         </a>
         <div class="d-flex justify-content-center align-items-center toptoolbar-pills">
-            
+
                 <button
                         type="button"
                         class="btn-pre-pill toptoolbar-askai"
@@ -616,9 +616,9 @@
                     <i class="ho-icon ho-icon-speech-s"></i>
                     Ask AI
                 </button>
-            
 
-            
+
+
                 <ho-localization-provider>
                     <ho-lvc-switch
                             use-api="true"
@@ -628,9 +628,9 @@
                             short-vat
                     ></ho-lvc-switch>
                 </ho-localization-provider>
-            
 
-            
+
+
                 <div class="dropdown toptoolbar-login">
                     <button
                             type="button"
@@ -642,44 +642,44 @@
                     >
                         <span class="d-flex align-items-center" style="gap:4px;">
                             <i class="ho-icon ho-icon-user-s"></i>
-                            
+
                             <i class="ho-icon ho-icon-chevron-down-xs"></i>
                         </span>
                     </button>
-                    
+
                         <ul class="dropdown-menu dropdown-list">
-                            
+
                                 <li>
                                     <a href="https://console.hetzner.com/">
-                                        
+
                                             <img src="https://cdn.hetzner.com/assets/Uploads/icon-hetzner-cloud.svg" class="login-img" alt="icon hetzner cloud">
-                                        
+
                                         Console
                                     </a>
                                 </li>
-                            
+
                                 <li>
                                     <a href="https://robot.hetzner.com/">
-                                        
+
                                             <img src="https://cdn.hetzner.com/assets/Uploads/icon-hetzner-robot.svg" class="login-img" alt="icon hetzner robot">
-                                        
+
                                         Robot
                                     </a>
                                 </li>
-                            
+
                                 <li>
                                     <a href="https://konsoleh.hetzner.com/">
-                                        
+
                                             <img src="https://cdn.hetzner.com/assets/testfolder/icon-hetzner-konsoleh.svg" class="login-img" alt="icon hetzner konsoleh">
-                                        
+
                                         konsoleH
                                     </a>
                                 </li>
-                            
+
                         </ul>
-                    
+
                 </div>
-            
+
         </div>
         <button type="button" id="mnav-toggle" class="mnav-toggle" aria-label="Menu" aria-expanded="false"
                 aria-controls="mobile-nav">
@@ -691,158 +691,158 @@
 
         <div id="header-main-nav">
     <ul class="main-nav-list">
-        
+
             <li class="main-nav-entry">
-                
+
                     <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176843" data-event-type="1" data-event-category="Navigation" data-event-action="In-Dedicated" data-event-name="nav">
                         <span class="item">
-                            
+
                             <span>Dedicated</span>
                             <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
                         </span>
                     </button>
                     <div class="main-nav-flyout" id="main-nav-flyout-176843">
-                        
+
     <div class="flyout">
-        
+
             <div class="flyout-content">
-    
+
         <div class="flyout-col">
-            
+
                 <div>
-                    
+
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/dedicated-rootserver/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-ServerFinder" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Server Finder
         </span>
         <span class="flyout-item-sub">Find the right server for you</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="/dedicated-rootserver/matrix-ax/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-AXLine" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             AX-Line
         </span>
         <span class="flyout-item-sub">AMD based performance</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="/dedicated-rootserver/matrix-ex/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-EXLine" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             EX-Line
         </span>
         <span class="flyout-item-sub">Intel based performance</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
                 <div>
-                    
+
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/dedicated-rootserver/matrix-gpu/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-GPULine" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             GPU-Line
         </span>
         <span class="flyout-item-sub">Maximum workloads &amp; ai</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="/dedicated-rootserver/matrix-sx/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-SXLine" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             SX-Line
         </span>
         <span class="flyout-item-sub">For large amounts of data</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="/dedicated-rootserver/matrix-dell/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-DXLine" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             DX-Line
         </span>
         <span class="flyout-item-sub">Dell server for heavy computing</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
                 <div>
-                    
+
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/sb/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-ServerAuction" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Server Auction
         </span>
         <span class="flyout-item-sub">Refurbished dedicated deals</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
-    
+
+
         <div class="flyout-col flyout-col-point-out  flyout-col-teaser-item ">
-            
-                
+
+
                     <a class="flyout-teaser-card" href="/sb" data-event-type="1" data-event-category="Navigation" data-event-action="To-Dedicated-NAVDedicatedTeaser" data-event-name="nav">
-    
+
         <img class="flyout-teaser-img" src="https://cdn.hetzner.com/assets/Uploads/ad_hetzner_server_auction.webp" alt="ad hetzner server auction">
-    
+
     <span class="flyout-teaser-headline">Server Auction</span>
     <span class="flyout-teaser-sub">Save money and do good for the planet with refurbished servers </span>
     <div class="flyout-teaser-price-row">
-        
+
             <span class="flyout-teaser-price">
             <ho-localization-provider>
                 <ho-price-container
@@ -850,548 +850,548 @@
                         price-view="auction"
                         product-key="auction"
                 >
-                    
+
                         <span slot="start">from </span>
-                    
+
                 </ho-price-container>
             </ho-localization-provider>
         </span>
-        
+
     </div>
 </a>
 
-                
-            
+
+
         </div>
-    
+
 </div>
 
-        
+
     </div>
 
 
                     </div>
-                
+
             </li>
-        
+
             <li class="main-nav-entry">
-                
+
                     <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176855" data-event-type="1" data-event-category="Navigation" data-event-action="In-Cloud" data-event-name="nav">
                         <span class="item">
-                            
+
                             <span>Cloud</span>
                             <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
                         </span>
                     </button>
                     <div class="main-nav-flyout" id="main-nav-flyout-176855">
-                        
+
     <div class="flyout">
-        
+
             <div class="flyout-content">
-    
+
         <div class="flyout-col">
-            
+
                 <div>
-                    
+
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item flyout-item-card" href="/cloud/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Cloud-CloudOverview" data-event-name="nav">
-    
+
         <span class="flyout-item-icon">
             <i class="ho-icon ho-icon-cloud-computing-m" aria-hidden="true"></i>
         </span>
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Cloud Overview
         </span>
         <span class="flyout-item-sub">Affordable Cloud Hosting</span>
     </span>
-    
+
         <i class="ho-icon ho-icon-chevron-right-s" aria-hidden="true"></i>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
                 <div>
-                    
+
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/cloud/cost-optimized/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Cloud-CostOptimized" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Cost-Optimized
         </span>
         <span class="flyout-item-sub">Perfect for test environments</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="/cloud/regular-performance/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Cloud-RegularPerformance" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Regular Performance
         </span>
         <span class="flyout-item-sub">Best price-performance ratio</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="/cloud/general-purpose/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Cloud-GeneralPurpose" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             General Purpose
         </span>
         <span class="flyout-item-sub">Ideal for business applications</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
         </div>
-    
-    
+
+
         <div class="flyout-col flyout-col-point-out  flyout-col-teaser-item ">
-            
-                
+
+
                     <a class="flyout-teaser-card" href="/european-cloud/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Cloud-NAVEuropeanCloud" data-event-name="nav">
-    
+
         <img class="flyout-teaser-img" src="https://cdn.hetzner.com/assets/Uploads/ad_hetzner_european_cloud.webp" alt="ad hetzner european cloud">
-    
+
     <span class="flyout-teaser-headline">European Cloud</span>
     <span class="flyout-teaser-sub">Lower costs, more data sovereignty – with Hetzner Cloud</span>
     <div class="flyout-teaser-price-row">
-        
+
     </div>
 </a>
 
-                
-            
+
+
         </div>
-    
+
 </div>
 
-        
+
     </div>
 
 
                     </div>
-                
+
             </li>
-        
+
             <li class="main-nav-entry">
-                
+
                     <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176863" data-event-type="1" data-event-category="Navigation" data-event-action="In-Storage" data-event-name="nav">
                         <span class="item">
-                            
+
                             <span>Storage</span>
                             <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
                         </span>
                     </button>
                     <div class="main-nav-flyout" id="main-nav-flyout-176863">
-                        
+
     <div class="flyout">
-        
+
             <div class="flyout-content">
-    
+
         <div class="flyout-col">
-            
+
                 <div>
-                    
+
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/storage/object-storage/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Storage-ObjectStorage" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Object Storage
         </span>
         <span class="flyout-item-sub">S3-compatible storage</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
                 <div>
-                    
+
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/storage/storage-box/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Storage-StorageBox" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Storage Box
         </span>
         <span class="flyout-item-sub">Cheap backup servers</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
         </div>
-    
-    
+
+
         <div class="flyout-col flyout-col-point-out  flyout-col-teaser-item ">
-            
-                
+
+
                     <a class="flyout-teaser-card" href="/self-hosting/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Storage-NAVSelfHosting" data-event-name="nav">
-    
+
         <img class="flyout-teaser-img" src="https://cdn.hetzner.com/assets/Uploads/ad_hetzner_self_hosting.webp" alt="ad hetzner self hosting">
-    
+
     <span class="flyout-teaser-headline">Sovereignty starts with hosting it yourself</span>
     <span class="flyout-teaser-sub">Start self-hosting with Hetzner</span>
     <div class="flyout-teaser-price-row">
-        
+
     </div>
 </a>
 
-                
-            
+
+
         </div>
-    
+
 </div>
 
-        
+
     </div>
 
 
                     </div>
-                
+
             </li>
-        
+
             <li class="main-nav-entry">
-                
+
                     <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176869" data-event-type="1" data-event-category="Navigation" data-event-action="In-Managed" data-event-name="nav">
                         <span class="item">
-                            
+
                             <span>Managed</span>
                             <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
                         </span>
                     </button>
                     <div class="main-nav-flyout" id="main-nav-flyout-176869">
-                        
+
     <div class="flyout">
-        
+
             <div class="flyout-content">
-    
+
         <div class="flyout-col">
-            
+
                 <div>
                     <p class="flyout-group-name">Web &amp; Mail</p>
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/webhosting/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-Webhosting" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Webhosting
         </span>
         <span class="flyout-item-sub">Simple &amp; cheap web hosting</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="/whois/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-DomainCheck" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Domain Check
         </span>
         <span class="flyout-item-sub">Search for domains</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="/registrationrobot/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-RegistrationRobot" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Registration Robot
         </span>
         <span class="flyout-item-sub">Domain registration</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
                 <div>
                     <p class="flyout-group-name">Servers</p>
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/managed-server/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-ManagedServer" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Managed Server
         </span>
         <span class="flyout-item-sub">Fully managed servers</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
                 <div>
                     <p class="flyout-group-name">Cloud Storage</p>
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/storage/storage-share/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-StorageShare" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Storage Share
         </span>
         <span class="flyout-item-sub">GDPR-compliant storage</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
-    
+
+
         <div class="flyout-col flyout-col-point-out  flyout-col-teaser-item ">
-            
-                
+
+
                     <a class="flyout-teaser-card" href="https://docs.hetzner.com/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Managed-NAVDocs" data-event-name="nav">
-    
+
         <img class="flyout-teaser-img" src="https://cdn.hetzner.com/assets/Uploads/ad_hetzner_docs.webp" alt="ad hetzner docs">
-    
+
     <span class="flyout-teaser-headline">Need help?</span>
     <span class="flyout-teaser-sub">Find self service guides, technical details and helpful information in our Docs</span>
     <div class="flyout-teaser-price-row">
-        
+
     </div>
 </a>
 
-                
-            
+
+
         </div>
-    
+
 </div>
 
-        
+
     </div>
 
 
                     </div>
-                
+
             </li>
-        
+
             <li class="main-nav-entry">
-                
+
                     <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176904" data-event-type="1" data-event-category="Navigation" data-event-action="In-Services" data-event-name="nav">
                         <span class="item">
-                            
+
                             <span>Services</span>
                             <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
                         </span>
                     </button>
                     <div class="main-nav-flyout" id="main-nav-flyout-176904">
-                        
+
     <div class="flyout">
-        
+
             <div class="flyout-content">
-    
+
         <div class="flyout-col">
-            
+
                 <div>
                     <p class="flyout-group-name">Domain &amp; Security</p>
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/dns/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Services-DNSManagement" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             DNS Management
         </span>
         <span class="flyout-item-sub">Manage DNS entries and zones</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="/sslzertifikate/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Services-SSLCertificate" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             SSL-Certificate
         </span>
         <span class="flyout-item-sub">For any usecase</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
                 <div>
                     <p class="flyout-group-name">Network</p>
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/cloud/load-balancer/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Services-LoadBalancer" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Load Balancer
         </span>
         <span class="flyout-item-sub">Automatically distributing traffic</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
                 <div>
                     <p class="flyout-group-name">For Business</p>
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/custom-solutions/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Services-CustomSolutions" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Custom Solutions
         </span>
         <span class="flyout-item-sub">Customized IT infrastructure</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
-    
+
+
         <div class="flyout-col flyout-col-point-out  flyout-col-teaser-item ">
-            
-                
+
+
                     <a class="flyout-teaser-card" href="https://docs.hetzner.com/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Services-NAVDocs" data-event-name="nav">
-    
+
         <img class="flyout-teaser-img" src="https://cdn.hetzner.com/assets/Uploads/ad_hetzner_docs.webp" alt="ad hetzner docs">
-    
+
     <span class="flyout-teaser-headline">Need help?</span>
     <span class="flyout-teaser-sub">Find self service guides, technical details and helpful information in our Docs</span>
     <div class="flyout-teaser-price-row">
-        
+
     </div>
 </a>
 
-                
-            
+
+
         </div>
-    
+
 </div>
 
-        
+
     </div>
 
 
                     </div>
-                
+
             </li>
-        
+
             <li class="main-nav-entry">
-                
+
                     <button type="button" class="main-nav-trigger" aria-expanded="false" aria-haspopup="true" aria-controls="main-nav-flyout-176879" data-event-type="1" data-event-category="Navigation" data-event-action="In-Resources" data-event-name="nav">
                         <span class="item">
-                            
+
                             <span>Resources</span>
                             <i class="ho-icon main-nav-chevron ho-icon-chevron-down-xs" aria-hidden="true"></i>
                         </span>
                     </button>
                     <div class="main-nav-flyout" id="main-nav-flyout-176879">
-                        
+
     <div class="flyout">
-        
+
             <div class="flyout-content">
-    
+
         <div class="flyout-col">
-            
+
                 <div>
-                    
+
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="/blog/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Blog" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
              <span class="badge-new">New</span>
@@ -1400,198 +1400,198 @@
         </span>
         <span class="flyout-item-sub">Inspiration, usecases &amp; insights</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="/newsletter/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Newsletter" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Newsletter
         </span>
         <span class="flyout-item-sub">Product news &amp; updates</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
                 <div>
-                    
+
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="https://docs.hetzner.com/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Docs" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Docs
         </span>
         <span class="flyout-item-sub">Self service and technical docs</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="https://community.hetzner.com/tutorials" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Tutorials" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Tutorials
         </span>
         <span class="flyout-item-sub">Guides and how-tos</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="https://forum.hetzner.com/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Forum" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Forum
         </span>
         <span class="flyout-item-sub">Community support &amp; discussion</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
+
         <div class="flyout-col">
-            
+
                 <div>
-                    
+
                     <div class="flyout-items">
-                        
+
                             <a class="flyout-item" href="https://status.hetzner.com/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Status" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Status
         </span>
         <span class="flyout-item-sub">System and service status</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="https://docs.hetzner.cloud/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-API" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             API
         </span>
         <span class="flyout-item-sub">Automate via REST API</span>
     </span>
-    
+
 </a>
 
-                        
+
                             <a class="flyout-item" href="/unternehmen/downloads/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-Downloads" data-event-name="nav">
-    
+
     <span class="flyout-item-body">
         <span class="flyout-item-label">
-             
+
             Downloads
         </span>
         <span class="flyout-item-sub">Documents and forms</span>
     </span>
-    
+
 </a>
 
-                        
+
                     </div>
                 </div>
-            
+
         </div>
-    
-    
+
+
         <div class="flyout-col flyout-col-point-out  flyout-col-teaser-list ">
-            
-                
+
+
                     <div class="flyout-topiclist">
     <span class="flyout-topiclist-headline">Current topics</span>
-    
+
         <a class="flyout-topiclist-item" href="/blog/inference-experiment/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-NAVBlogInference" data-event-name="nav">
-            
+
                 <div class="flyout-topiclist-item-img-wrapper">
                     <img class="flyout-topiclist-item-img" src="https://cdn.hetzner.com/assets/Uploads/HO-Blog-Experiments.webp" alt="HO Blog Experiments">
                 </div>
-            
+
             <span class="flyout-topiclist-item-text">
-                
+
                     <span class="flyout-topiclist-item-label">Engineering</span>
-                
-                
+
+
                     <span class="flyout-topiclist-item-headline">Inference Experiment</span>
-                
+
             </span>
         </a>
-    
+
         <a class="flyout-topiclist-item" href="/blog/one-click-self-hosting-with-coolify/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-NAVBlogCoolify" data-event-name="nav">
-            
+
                 <div class="flyout-topiclist-item-img-wrapper">
                     <img class="flyout-topiclist-item-img" src="https://cdn.hetzner.com/assets/Uploads/HO-Blog-Coolify-v2.webp" alt="HO Blog Coolify">
                 </div>
-            
+
             <span class="flyout-topiclist-item-text">
-                
+
                     <span class="flyout-topiclist-item-label">Engineering</span>
-                
-                
+
+
                     <span class="flyout-topiclist-item-headline">One-click self-hosting with coolify</span>
-                
+
             </span>
         </a>
-    
+
         <a class="flyout-topiclist-item" href="/blog/your-own-vpn-server-with-wireguard-what-are-the-benefits/" data-event-type="1" data-event-category="Navigation" data-event-action="To-Resources-NAVBlogWireguard" data-event-name="nav">
-            
+
                 <div class="flyout-topiclist-item-img-wrapper">
                     <img class="flyout-topiclist-item-img" src="https://cdn.hetzner.com/assets/Uploads/HO-Blog-Grafiken-VPN.webp" alt="HO Blog Grafiken VPN">
                 </div>
-            
+
             <span class="flyout-topiclist-item-text">
-                
+
                     <span class="flyout-topiclist-item-label">Engineering</span>
-                
-                
+
+
                     <span class="flyout-topiclist-item-headline">Your own vpn server with wireguard</span>
-                
+
             </span>
         </a>
-    
-</div>
-                
-            
-        </div>
-    
+
 </div>
 
-        
+
+        </div>
+
+</div>
+
+
     </div>
 
 
                     </div>
-                
+
             </li>
-        
+
     </ul>
 </div>
 
@@ -1621,35 +1621,35 @@
 <nav class="mobile-shift-menu" id="mobile-shift-menu">
     <div class="closebtn"><h4>Close <i class="fa fa-times"></i></h4></div>
     <div style="width: auto;">
-        
-    
-        
+
+
+
             <div class="mobile-nav-section">
                 <a
                     class="link-color-white nav-menu-item-wrapper link-highlight"
                     href="/sb/"
                 >
                     <div class="nav-mobile-item" data-target="serverboerse">
-                        
+
                         <div class="nav-mobile-item-text">
                             <span class="product-name">
-                                
+
                                 Server Auction
                             </span>
                             <ho-localization-provider>
-                                
+
                                     <div class="highlight-menu-price">
                                         <ho-price-container
                                             class="price-nav-mobile"
                                             price-view="auction"
                                             product-key="auction"
                                         >
-                                            
+
                                                 <span slot="start">from </span>
-                                            
+
                                         </ho-price-container>
                                     </div>
-                                
+
                             </ho-localization-provider>
                         </div>
                     </div>
@@ -1657,23 +1657,23 @@
                 </a>
             </div>
             <hr class="hr-grey">
-        
-    
-        
+
+
+
             <div class="mobile-nav-section">
                 <a
                     class="link-color-white nav-menu-item-wrapper link-highlight"
                     href="/dedicated-rootserver/"
                 >
                     <div class="nav-mobile-item" data-target="serverfinder">
-                        
+
                         <div class="nav-mobile-item-text">
                             <span class="product-name">
-                                
+
                                 Server Finder
                             </span>
                             <ho-localization-provider>
-                                
+
                                     <div>
                                         <ho-price-container
                                             class="price-nav-mobile"
@@ -1681,12 +1681,12 @@
                                             product-key="10003"
                                             price-type="monthly"
                                         >
-                                            
+
                                                 <span slot="start">from </span>
-                                            
+
                                         </ho-price-container>
                                     </div>
-                                
+
                             </ho-localization-provider>
                         </div>
                     </div>
@@ -1694,25 +1694,25 @@
                 </a>
             </div>
             <hr class="hr-grey">
-        
-    
-
-    
-        
-    
-
-    
-
-    
-
-    
 
 
-        
+
+
+
+
+
+
+
+
+
+
+
+
+
     <hr class="hr-grey">
 <div class="mobile-nav-section">
-    
-        
+
+
             <a
                 class="link-color-white nav-menu-item-wrapper"
                 data-bs-toggle="collapse"
@@ -1726,16 +1726,16 @@
             </a>
             <div id="collapse-7030" class="collapse">
                 <ul class="margin-0">
-    
+
         <li>
             <a href="/dedicated-rootserver/matrix-ex/" data-target="ex-line">
                 <span class="mobile-nav-title-name">
-                    
+
                     EX-Line
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -1744,27 +1744,27 @@
                                         product-key="8703"
                                         price-type="monthly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/dedicated-rootserver/matrix-ax/" data-target="ax-line">
                 <span class="mobile-nav-title-name">
-                    
+
                     AX-Line
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -1773,37 +1773,37 @@
                                         product-key="168047"
                                         price-type="monthly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/dedicated-rootserver/matrix-rx/" data-target="rx-line">
                 <span class="mobile-nav-title-name">
-                    
+
                     RX-Line
                 </span>
-                
+
             </a>
         </li>
-    
+
         <li>
             <a href="/dedicated-rootserver/matrix-sx/" data-target="sx-line">
                 <span class="mobile-nav-title-name">
-                    
+
                     SX-Line
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -1812,27 +1812,27 @@
                                         product-key="398"
                                         price-type="monthly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/dedicated-rootserver/matrix-gpu/" data-target="gpu-line">
                 <span class="mobile-nav-title-name">
-                    
+
                     GPU-Line
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -1841,27 +1841,27 @@
                                         product-key="168983"
                                         price-type="monthly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/dedicated-rootserver/matrix-dell/" data-target="dx-line">
                 <span class="mobile-nav-title-name">
-                    
+
                     DX-Line
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -1870,24 +1870,24 @@
                                         product-key="9537"
                                         price-type="monthly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
 </ul>
 
             </div>
-        
-    
-        
+
+
+
             <a
                 href="/cloud/"
                 class="link-color-white nav-menu-item-wrapper"
@@ -1896,9 +1896,9 @@
                     Cloud
                 </h4>
             </a>
-        
-    
-        
+
+
+
             <a
                 class="link-color-white nav-menu-item-wrapper"
                 data-bs-toggle="collapse"
@@ -1912,16 +1912,16 @@
             </a>
             <div id="collapse-7078" class="collapse">
                 <ul class="margin-0">
-    
+
         <li>
             <a href="/webhosting/" data-target="web">
                 <span class="mobile-nav-title-name">
-                    
+
                     Web Hosting
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -1930,27 +1930,27 @@
                                         product-key="394"
                                         price-type="monthly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/managed-server/" data-target="managed">
                 <span class="mobile-nav-title-name">
-                    
+
                     Managed Server
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -1959,24 +1959,24 @@
                                         product-key="10442"
                                         price-type="monthly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
 </ul>
 
             </div>
-        
-    
-        
+
+
+
             <a
                 class="link-color-white nav-menu-item-wrapper"
                 data-bs-toggle="collapse"
@@ -1990,16 +1990,16 @@
             </a>
             <div id="collapse-7080" class="collapse">
                 <ul class="margin-0">
-    
+
         <li>
             <a href="/storage/object-storage/" data-target="">
                 <span class="mobile-nav-title-name">
-                    
+
                     Object Storage
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -2008,27 +2008,27 @@
                                         product-key="10007"
                                         price-type="monthly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/storage/storage-box/" data-target="storagebox">
                 <span class="mobile-nav-title-name">
-                    
+
                     Storage Box
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -2037,27 +2037,27 @@
                                         product-key="217"
                                         price-type="monthly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/storage/storage-share/" data-target="storage-share">
                 <span class="mobile-nav-title-name">
-                    
+
                     Storage Share
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -2066,24 +2066,24 @@
                                         product-key="166886"
                                         price-type="monthly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
 </ul>
 
             </div>
-        
-    
-        
+
+
+
             <a
                 class="link-color-white nav-menu-item-wrapper"
                 data-bs-toggle="collapse"
@@ -2097,16 +2097,16 @@
             </a>
             <div id="collapse-7081" class="collapse">
                 <ul class="margin-0">
-    
+
         <li>
             <a href="/cloud/load-balancer/" data-target="">
                 <span class="mobile-nav-title-name">
-                    
+
                     Load Balancer
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -2115,27 +2115,27 @@
                                         product-key="167933"
                                         price-type="monthly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/whois/" data-target="domain">
                 <span class="mobile-nav-title-name">
-                    
+
                     Domain check
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -2144,43 +2144,43 @@
                                         product-key="10006"
                                         price-type="domain"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/dns/" data-target="dns">
                 <span class="mobile-nav-title-name">
-                    
+
                     DNS Management
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right">free of charge</small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/registrationrobot/" data-target="robot">
                 <span class="mobile-nav-title-name">
-                    
+
                     Registration Robot
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -2189,27 +2189,27 @@
                                         product-key="10005"
                                         price-type="hourly"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/sslzertifikate/" data-target="ssl">
                 <span class="mobile-nav-title-name">
-                    
+
                     SSL Certificate
                 </span>
-                
-                    
-                        
+
+
+
                             <small class="pull-right nav-mobile-price">
                                 <ho-localization-provider>
                                     <ho-price-container
@@ -2218,48 +2218,48 @@
                                         product-key="10002"
                                         price-type="setup"
                                     >
-                                        
+
                                             <span slot="start">from </span>
-                                        
+
                                     </ho-price-container>
                                 </ho-localization-provider>
                             </small>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/custom-solutions/" data-target="custom-solutions">
                 <span class="mobile-nav-title-name">
-                    
+
                     Custom Solutions
                 </span>
-                
-                    
-                        
+
+
+
                             <div class="price"
                                  style="text-transform: initial">on demand</div>
-                        
-                    
-                
+
+
+
             </a>
         </li>
-    
+
 </ul>
 
             </div>
-        
-    
+
+
 </div>
 
 
 
     <hr class="hr-grey">
 <div class="mobile-nav-section">
-    
-        
+
+
             <a
                 href="/blog/"
                 class="link-color-white nav-menu-item-wrapper"
@@ -2268,9 +2268,9 @@
                     Blog
                 </h4>
             </a>
-        
-    
-        
+
+
+
             <a
                 href="https://career.hetzner.com/"
                 class="link-color-white nav-menu-item-wrapper"
@@ -2279,9 +2279,9 @@
                     Jobs
                 </h4>
             </a>
-        
-    
-        
+
+
+
             <a
                 href="https://community.hetzner.com/"
                 class="link-color-white nav-menu-item-wrapper"
@@ -2290,9 +2290,9 @@
                     Community
                 </h4>
             </a>
-        
-    
-        
+
+
+
             <a
                 class="link-color-white nav-menu-item-wrapper"
                 data-bs-toggle="collapse"
@@ -2306,73 +2306,73 @@
             </a>
             <div id="collapse-171351" class="collapse">
                 <ul class="margin-0">
-    
+
         <li>
             <a href="/unternehmen/ueber-uns/" data-target="">
                 <span class="mobile-nav-title-name">
-                    
+
                     Company
                 </span>
-                
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/pressroom/" data-target="">
                 <span class="mobile-nav-title-name">
-                    
+
                     Pressroom
                 </span>
-                
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/customers/" data-target="">
                 <span class="mobile-nav-title-name">
-                    
+
                     Our customers
                 </span>
-                
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="https://career.hetzner.com/de/" data-target="">
                 <span class="mobile-nav-title-name">
-                    
+
                     Career
                 </span>
-                
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="/legal/legal-notice/" data-target="">
                 <span class="mobile-nav-title-name">
-                    
+
                     Legal
                 </span>
-                
-                    
-                
+
+
+
             </a>
         </li>
-    
+
 </ul>
 
             </div>
-        
-    
-        
+
+
+
             <a
                 href="/support/"
                 class="link-color-white nav-menu-item-wrapper"
@@ -2381,9 +2381,9 @@
                     Support
                 </h4>
             </a>
-        
-    
-        
+
+
+
             <a
                 class="link-color-white nav-menu-item-wrapper"
                 data-bs-toggle="collapse"
@@ -2397,48 +2397,48 @@
             </a>
             <div id="collapse-171353" class="collapse">
                 <ul class="margin-0">
-    
+
         <li>
             <a href="https://console.hetzner.com/" data-target="">
                 <span class="mobile-nav-title-name">
-                    
+
                     Console
                 </span>
-                
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="https://robot.hetzner.com" data-target="">
                 <span class="mobile-nav-title-name">
-                    
+
                     Robot
                 </span>
-                
-                    
-                
+
+
+
             </a>
         </li>
-    
+
         <li>
             <a href="https://konsoleh.hetzner.com/" data-target="">
                 <span class="mobile-nav-title-name">
-                    
+
                     konsoleH
                 </span>
-                
-                    
-                
+
+
+
             </a>
         </li>
-    
+
 </ul>
 
             </div>
-        
-    
+
+
 </div>
 
 
@@ -2497,12 +2497,12 @@
     <div class="footer-main-section hidden-sm hidden-xs">
         <div class="container">
             <div class="row footer-row">
-                
-                    
+
+
                         <div class="col-lg-2 col-md-2 col-sm-4">
                             <span class="footer-headline">Hetzner</span>
                             <ul class="list-unstyled accordion-content">
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2512,7 +2512,7 @@
                                             Company
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2522,7 +2522,7 @@
                                             Our Customers
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2532,7 +2532,7 @@
                                             Sustainability
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2542,7 +2542,7 @@
                                             Blog
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2552,7 +2552,7 @@
                                             Career
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2562,16 +2562,16 @@
                                             Pressroom
                                         </a>
                                     </li>
-                                
+
                             </ul>
                         </div>
-                    
-                
-                    
+
+
+
                         <div class="col-lg-2 col-md-2 col-sm-4">
                             <span class="footer-headline">Support</span>
                             <ul class="list-unstyled accordion-content">
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2581,7 +2581,7 @@
                                             Support Center
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2591,7 +2591,7 @@
                                             Contact
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2601,7 +2601,7 @@
                                             Downloads
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2611,7 +2611,7 @@
                                             Hetzner Docs
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2621,16 +2621,16 @@
                                             Status
                                         </a>
                                     </li>
-                                
+
                             </ul>
                         </div>
-                    
-                
-                    
+
+
+
                         <div class="col-lg-2 col-md-2 col-sm-4">
                             <span class="footer-headline">Legal</span>
                             <ul class="list-unstyled accordion-content">
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2640,7 +2640,7 @@
                                             Legal notice
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2650,7 +2650,7 @@
                                             Data privacy
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2660,7 +2660,7 @@
                                             System policies
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2670,7 +2670,7 @@
                                             Terms and conditions
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2680,7 +2680,7 @@
                                             Digital Services Act
                                         </a>
                                     </li>
-                                
+
                                     <li>
                                         <a
                                             class="footer-track-link"
@@ -2690,11 +2690,11 @@
                                             Abuse form
                                         </a>
                                     </li>
-                                
+
                             </ul>
                         </div>
-                    
-                
+
+
                 <div class="col-lg-2 col-md-2 col-sm-4">
                     <span class="footer-headline">About Us</span>
                     <ul class="list-unstyled">
@@ -2808,12 +2808,12 @@
         <div class="container">
             <div class="footer-accordion">
                 <div class="row footer-row">
-                    
-                        
+
+
                             <div class="col-lg-2 col-md-2 col-sm-4">
                                 <p class="footer-headline">Hetzner</p>
                                 <ul class="list-unstyled accordion-content">
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2823,7 +2823,7 @@
                                                 Company
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2833,7 +2833,7 @@
                                                 Our Customers
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2843,7 +2843,7 @@
                                                 Sustainability
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2853,7 +2853,7 @@
                                                 Blog
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2863,7 +2863,7 @@
                                                 Career
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2873,16 +2873,16 @@
                                                 Pressroom
                                             </a>
                                         </li>
-                                    
+
                                 </ul>
                             </div>
-                        
-                    
-                        
+
+
+
                             <div class="col-lg-2 col-md-2 col-sm-4">
                                 <p class="footer-headline">Support</p>
                                 <ul class="list-unstyled accordion-content">
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2892,7 +2892,7 @@
                                                 Support Center
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2902,7 +2902,7 @@
                                                 Contact
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2912,7 +2912,7 @@
                                                 Downloads
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2922,7 +2922,7 @@
                                                 Hetzner Docs
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2932,16 +2932,16 @@
                                                 Status
                                             </a>
                                         </li>
-                                    
+
                                 </ul>
                             </div>
-                        
-                    
-                        
+
+
+
                             <div class="col-lg-2 col-md-2 col-sm-4">
                                 <p class="footer-headline">Legal</p>
                                 <ul class="list-unstyled accordion-content">
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2951,7 +2951,7 @@
                                                 Legal notice
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2961,7 +2961,7 @@
                                                 Data privacy
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2971,7 +2971,7 @@
                                                 System policies
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2981,7 +2981,7 @@
                                                 Terms and conditions
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -2991,7 +2991,7 @@
                                                 Digital Services Act
                                             </a>
                                         </li>
-                                    
+
                                         <li>
                                             <a
                                                 class="footer-track-link"
@@ -3001,11 +3001,11 @@
                                                 Abuse form
                                             </a>
                                         </li>
-                                    
+
                                 </ul>
                             </div>
-                        
-                    
+
+
                     <div class="col-lg-2 col-md-2 col-sm-12 col-12">
                         <ul class="list-unstyled">
                             <li>

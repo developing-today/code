@@ -916,7 +916,8 @@ export const FIXTURE_AA: AaSection = {
       disabled: false,
       plan: "Command Code GOAT",
       multiplier: 7,
-      planNote: "$10/mo → $70 credits (7×); the entry Go tier is $1 → $10 credits (10×). Tier on the account is unconfirmed.",
+      planNote:
+        "$10/mo → $70 credits (7×); the entry Go tier is $1 → $10 credits (10×). Tier on the account is unconfirmed.",
       goCapUsd: null,
       aaScore: null,
       aaCostPerTask: null,
@@ -955,7 +956,8 @@ export const FIXTURE_AA: AaSection = {
       disabled: false,
       plan: "OpenCode Go — Personal",
       multiplier: 6,
-      planNote: "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). Cancelled — period ends 2026-11-02.",
+      planNote:
+        "$10/mo buys a $60/mo list-rate meter (6×); Flash promo cap $80 (≈8×). Cancelled — period ends 2026-11-02.",
       goCapUsd: 15,
       aaScore: 38,
       aaCostPerTask: 0.07,
