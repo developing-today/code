@@ -3,8 +3,12 @@
 // adds the app's first writes — dashboard comments (POST /api/comments
 // and its triage/github-result companions); everything underneath
 // (GitHub, Kaneo, Grist) stays read-only from here.
+import { stat } from "node:fs/promises";
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
+import { loadFeed } from "./feed.ts";
+import { buildHealth, recordRender, type HealthView } from "./health.ts";
+import { PAGES } from "./pages.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import type { DashComment, RefKey } from "./model.ts";
 import { buildProgramData, programRefs } from "./program.ts";
@@ -23,6 +27,7 @@ import {
   renderBoard,
   renderDiscuss,
   renderDns,
+  renderHealth,
   renderItem,
   renderPages,
   renderProgram,
@@ -88,6 +93,32 @@ async function ensureProvenancePrimed(): Promise<void> {
     priming = null;
   })();
   await priming;
+}
+
+/**
+ * The one health assembly behind both /health and /api/health
+ * (#1147): primed provenance first (so facet truth never depends on
+ * request order, #1267), then the feed snapshot the section ages and
+ * job lines are measured from, then buildHealth's probes (cached
+ * 60 s inside health.ts). Page and API read this same view, so they
+ * cannot disagree.
+ */
+async function healthContext(): Promise<HealthView> {
+  await ensureProvenancePrimed();
+  const [feed, feedFileMtimeMs] = await Promise.all([
+    loadFeed(cfg.feedFile).catch(() => null),
+    stat(cfg.feedFile)
+      .then((s) => s.mtimeMs)
+      .catch(() => null),
+  ]);
+  return buildHealth({
+    mode: cfg.source,
+    cfg,
+    feed,
+    feedFileMtimeMs,
+    diagnosis: source.diagnostics?.().orchestration,
+    detail: source.provenanceDetail?.(),
+  });
 }
 
 /** Author identities for the comment form: standing + registry sessions. */
@@ -361,6 +392,11 @@ async function handler(req: Request): Promise<Response> {
     return json(buildProjectDetail(config, items, pool, rows));
   }
 
+  if (path === "/health") {
+    const view = await healthContext();
+    return html(renderHealth(view, prov()));
+  }
+
   if (path === "/pages") {
     return html(renderPages(prov()));
   }
@@ -433,10 +469,24 @@ async function handler(req: Request): Promise<Response> {
     // #1267: prime first — health's answer must not depend on
     // request order. `sections` carries the structured diagnosis
     // (#1140) beside the provenance strings for machine consumers.
-    await ensureProvenancePrimed();
+    // #1147 extends the shape in place (services/feed/pages/jobs
+    // added from the same assembly /health renders; the existing
+    // status/source/sections keys are unchanged).
+    const view = await healthContext();
     const body: Record<string, unknown> = { status: "ok", source: prov() };
     const diag = source.diagnostics?.();
     if (diag) body.sections = diag;
+    body.services = view.services.map((s) => ({
+      id: s.def.id,
+      state: s.state,
+      ok: s.ok,
+      detail: s.detail,
+      ...(s.probedAt ? { probedAt: s.probedAt } : {}),
+    }));
+    body.feed = { generatedAt: view.feed.generatedAt, fileMtime: view.feed.fileMtime };
+    body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
+    body.jobs = view.jobs;
+    body.degraded = view.degraded;
     return json(body);
   }
 
@@ -475,6 +525,31 @@ async function handler(req: Request): Promise<Response> {
   return json({ error: "not found", path }, 404);
 }
 
+/**
+ * #1147's render registry: every successful HTML page render is
+ * recorded against its manifest route (subroutes count toward their
+ * parent page), so /health can report each page's real last-render
+ * time — measured from actual traffic, never self-probed.
+ */
+function manifestRouteFor(path: string): string | null {
+  const exact = PAGES.find((p) => p.route === path);
+  if (exact) return exact.route;
+  if (path.startsWith("/program/")) return "/program";
+  if (path.startsWith("/quota/service/")) return "/quota";
+  return null;
+}
+
+async function fetchHandler(req: Request): Promise<Response> {
+  const res = await handler(req);
+  if (req.method === "GET") {
+    const route = manifestRouteFor(new URL(req.url).pathname);
+    if (route && (res.headers.get("content-type") ?? "").includes("text/html")) {
+      recordRender(route, res.status < 400);
+    }
+  }
+  return res;
+}
+
 // One server per bind address (PM_AGG_HOSTS). Deployment on the
 // laptop binds loopback + the tailnet address, like Pad/Grist — no
 // public route (Drew, 2026-10-25: public only behind a password).
@@ -482,7 +557,7 @@ const servers = cfg.hosts.map((hostname) =>
   Bun.serve({
     hostname,
     port: cfg.port,
-    fetch: handler,
+    fetch: fetchHandler,
   }),
 );
 

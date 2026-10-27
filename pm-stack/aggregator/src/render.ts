@@ -24,6 +24,7 @@ import { githubCommentUrl } from "./comments.ts";
 import { summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
+import type { HealthView } from "./health.ts";
 import {
   type AaConfig,
   type AaFeedSection,
@@ -132,6 +133,12 @@ meter { width: 140px; height: 14px; }
 .fchip.stale { border-color: #d29922; color: #e3b341; }
 .fchip.invalid { border-color: #f85149; color: #f85149; }
 .fchip.absent { border-color: #d29922; color: #e3b341; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: #8b949e; vertical-align: baseline; }
+.dot.up, .dot.self { background: #3fb950; }
+.dot.down, .dot.invalid { background: #f85149; }
+.dot.stale, .dot.absent { background: #d29922; }
+.dot.off, .dot.unknown { background: #8b949e; }
+.dot.fixtures { background: #bc8cff; }
 .srcdetail { margin: 6px 0; }
 .srcdetail summary { cursor: pointer; }
 .reason { border-left: 3px solid #f85149; padding: 6px 10px; margin: 8px 0 2px; background: #f851490d; }
@@ -947,9 +954,9 @@ function sessionCard(
         : "";
   const tierBadge =
     e.tier === "needs-drew"
-      ? `<span class="badge drew">needs user</span>`
+      ? `<span class="badge drew">Needs User</span>`
       : e.tier === "needs-orchestrator"
-        ? `<span class="badge orch">needs orchestrator</span>`
+        ? `<span class="badge orch">Needs Orchestrator</span>`
         : "";
   const evidence = e.supervisionNote ? `${e.evidence} Keeper: ${e.supervisionNote}` : e.evidence;
   const reason = e.drewReason ? `<div class="reason"><strong>Why you:</strong> ${esc(e.drewReason)}</div>` : "";
@@ -1010,7 +1017,7 @@ export function renderAttention(
       : "";
   const drewCount = ts.present ? String(drewTotal) : "unknown";
   const orchCount = ts.present ? String(orchTotal) : "unknown";
-  const chips = `<div class="chips"><a href="#drew">Needs user (${drewCount})</a><a href="#orchestrator">Needs orchestrator (${orchCount})</a><a href="#sessions">All sessions (${roots.length})</a></div>`;
+  const chips = `<div class="chips"><a href="#drew">Needs User (${drewCount})</a><a href="#orchestrator">Needs Orchestrator (${orchCount})</a><a href="#sessions">All sessions (${roots.length})</a></div>`;
   const drewCards =
     [
       ...view.drew.map((e) => sessionCard(e, children, 0, counts)),
@@ -1035,8 +1042,8 @@ export function renderAttention(
     `<h1>Needs you</h1><p class="muted">The NEEDS USER queue is an intake the orchestrator works first — it resolves what it can and escalates only what genuinely requires the user, each escalated item with its reason. Everything else the fleet can work is the orchestrator's own queue. Finished runs and stale items expire out (2 h after a run finishes, 24 h at the latest). Machine-first: <a href="/api/attention.json">/api/attention.json</a> · <a href="/api/coverage.json">/api/coverage.json</a>.</p>
 ${tierBanner}${chips}
 ${coverageHtml(coverage)}
-<h2 id="drew">Needs user (${drewCount})${sectionStamp}</h2>${drewCards}
-<h2 id="orchestrator">Needs orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}
+<h2 id="drew">Needs User (${drewCount})${sectionStamp}</h2>${drewCards}
+<h2 id="orchestrator">Needs Orchestrator (${orchCount})${sectionStamp}</h2><p class="muted">The orchestration job (#899) reviews this queue and pushes work back into motion; it escalates to the user queue only what truly needs the user.</p>${orchCards}
 <h2 id="sessions">All sessions (${roots.length})</h2><p class="muted">Every current session with its source and state; sub-sessions collapse under their parent.</p>${sessionCards}
 ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale ${view.expiredCount === 1 ? "entry" : "entries"} expired out of this view.</p>` : ""}`,
     provenance,
@@ -1327,6 +1334,93 @@ export function renderPages(provenance: Provenance): string {
   );
 }
 
+// --- Health & topology (#1147 page, #1137 table) ---------------------------
+
+/**
+ * The /health page: one view assembled by src/health.ts from live
+ * probes (cached 60 s), the feed, the section diagnosis, and this
+ * process's render registry — the same view /api/health serves, so
+ * the page and the API cannot disagree. States are named per row; a
+ * failed probe, a stale feed, and an unrendered page all say so.
+ */
+export function renderHealth(view: HealthView, provenance: Provenance): string {
+  const nowMs = Date.parse(view.generatedAt);
+  const probedAge = (iso?: string): string =>
+    iso ? ` · probed ${ageMsText(Math.max(0, nowMs - Date.parse(iso)))}` : "";
+  const serviceRows = view.services
+    .map((s) => {
+      const port = s.def.port !== null ? String(s.def.port) : "—";
+      const upWhen = s.def.upWhen ? `<br><span class="muted">up = ${esc(s.def.upWhen)}</span>` : "";
+      const notes = s.def.notes ? `<br><span class="muted">${esc(s.def.notes)}</span>` : "";
+      return `<tr><td><strong>${esc(s.def.name)}</strong>${upWhen}${notes}</td><td><code>${port}</code></td><td>${esc(s.def.bind)}</td><td><code>${esc(s.def.runsAs)}</code></td><td><span class="dot ${s.state}"></span><strong>${esc(s.state)}</strong> — ${esc(s.detail)}${probedAge(s.probedAt)}</td><td>${esc(s.def.consumers)}</td><td>${esc(s.def.breaksIfDown)}</td></tr>`;
+    })
+    .join("");
+  const sectionRows = view.feed.sections.length
+    ? view.feed.sections
+        .map(
+          (s) =>
+            `<tr><td><code>${esc(s.key)}</code></td><td>${s.present ? "present" : '<span class="badge stale">absent</span>'}</td><td>${s.ageMs !== undefined ? esc(ageMsText(s.ageMs)) : "—"}</td><td>${s.note ? esc(s.note) : ""}</td></tr>`,
+        )
+        .join("")
+    : `<tr><td colspan="4" class="muted">No readable fleet feed — sections cannot be reported.</td></tr>`;
+  const orch = view.jobs.orchestration;
+  const orchLine = orch.generatedAt
+    ? `last run <code>${esc(orch.runId ?? "unknown")}</code> · ${esc(ageMsText(orch.ageMs ?? 0))} · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""} · next expected ~${esc(orch.nextExpectedAt ?? "")} (hourly cadence — an expectation, not a promise)`
+    : `no run on record · state <strong>${esc(orch.state)}</strong>${orch.failedChecks ? ` · failed checks: ${esc(orch.failedChecks.join(", "))}` : ""}`;
+  const coll = view.jobs.collector;
+  const collLine = coll.generatedAt
+    ? `feed generated ${esc(ageMsText(coll.ageMs ?? 0))} · file written ${coll.fileMtime ? esc(coll.fileMtime) : "unknown"}`
+    : "no readable fleet feed";
+  const pageRows = view.pages
+    .map((p) => {
+      const last =
+        p.lastRenderedAt === null
+          ? `<span class="muted">not rendered since this process started (boot ${esc(view.bootAt)})</span>`
+          : `${esc(ageMsText(p.ageMs ?? 0))} · ${p.ok ? "ok" : '<span class="badge stale">last render failed</span>'}`;
+      return `<tr><td><a href="${esc(p.route)}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${last}</td></tr>`;
+    })
+    .join("");
+  const facets = view.facets
+    ? freshnessChips(view.facets, [
+        "board",
+        "roadmap",
+        "items",
+        "comments",
+        "quota",
+        "usage",
+        "attention",
+        "orchestration",
+        "dns",
+        "registry",
+        "aa",
+      ])
+    : `<p class="muted">This source does not report structured source facets.</p>`;
+  const degraded = view.degraded
+    ? `<div class="flag">Something below is degraded — each row names its own state; nothing on this page is smoothed over.</div>`
+    : "";
+  const modeNote =
+    view.mode === "fixtures"
+      ? `<div class="banner">Fixtures mode — no live probes are made in this deployment; every service reports “fixtures”.</div>`
+      : "";
+  const body = `<h1>Health</h1>
+<p class="muted">Every stack service probed live (results cached 60 s), every feed section aged, the last job runs, and this dashboard's own render history — assembled from the same view <a href="/api/health">/api/health</a> serves, at ${esc(view.generatedAt)}.</p>
+${degraded}${modeNote}
+<h2 id="topology">Services &amp; topology</h2>
+<p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed; the projector is off by config and says so.</p>
+<div class="tblwrap"><table><tr><th>Service</th><th>Port</th><th>Bind</th><th>Runs as</th><th>State</th><th>Consumed by</th><th>If it is down</th></tr>${serviceRows}</table></div>
+<h2>Feed sections</h2>
+<div class="tblwrap"><table><tr><th>Section</th><th>Present</th><th>Age</th><th>Note</th></tr>${sectionRows}</table></div>
+<h2>Jobs</h2>
+<div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
+<div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
+<h2>Source facets</h2>
+${facets}
+<h2>Pages</h2>
+<p class="muted">Render history of this process — a page nobody has opened since boot is labelled unrendered, not green.</p>
+<div class="tblwrap"><table><tr><th>Page</th><th>Route</th><th>Last rendered</th></tr>${pageRows}</table></div>`;
+  return layout("Health", body, provenance, "/health");
+}
+
 // --- Discuss page (one object's dashboard comments) -----------------------------
 
 export function renderDiscuss(
@@ -1508,6 +1602,7 @@ export function renderProgram(
   const body = `<h1>Program status — projects</h1>
 <p class="muted">Every project the fleet runs, documented the same way: a description, its live Project-pool and roadmap sections, its tracked issues resolved live, and its roadmap — all driven by the project registry in <code>src/project-config.ts</code>. Pick a project for its full page.</p>
 <p class="muted">Source of truth: the <a href="${esc(program.designRecordUrl)}">design record</a> in developing-today/code · the org Project <a href="${esc(program.projectUrl)}">Developing Today (#4)</a> · Machine-first: <a href="/api/program.json">/api/program.json</a>.</p>
+<p class="muted">What runs where — every stack service, its port and bind, and its live health: <a href="/health#topology">Health &amp; topology →</a></p>
 <h2>Projects</h2>
 <div class="board">${cards || '<p class="muted">No projects configured.</p>'}</div>
 ${unsetHtml}
