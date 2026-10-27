@@ -15,9 +15,11 @@
 # checks that run nightly in id-e2e-nightly.yml (which also runs the
 # full `nix flake check` as a safety net), and the aggregate test
 # recipes `test`, `test-web` and `test-int` — on PRs their content is
-# covered by composition instead: test-unit + test-shard-0/1/2 +
+# covered by composition instead: test-unit + test-shard-0/1/2/3 +
 # test-web-unit + test-web-typecheck run every test they run (#869).
-# They still run in the nightly full flake check.
+# The aggregate `crash-gate` is likewise covered by composition on
+# PRs: crash-gate-sampled/-sweep/-control/-ingest partition its tests
+# by name filter (#551). They still run in the nightly full flake check.
 #
 # Usage: check-id-pr-checks.sh [list-file]
 # For tests, ID_FLAKE_CHECKS_FILE names a file with one flake check
@@ -37,6 +39,7 @@ excluded=(
   test
   test-web
   test-int
+  crash-gate
 )
 
 if [[ -n ${ID_FLAKE_CHECKS_FILE:-} ]]; then
