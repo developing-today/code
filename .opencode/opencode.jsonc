@@ -5983,7 +5983,27 @@
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
         // developing-today/opencode#541). ClinePass has no medium/xhigh; OpenDesign tops at
         // high. Remaps keep every leaf in the dispatch at its nearest wired rung.
+        // 2026-10-27 (issue #1328 D5): OpenCode Go leaves added. The dotted
+        // id deepseek-v4.1-flash was probe-verified through BOTH Go workspace
+        // doors (real completions, billing_source "go"; the 2026-10-24
+        // invalid id was the dash form deepseek-v4-flash, which survives only
+        // as the ClinePass/OpenDesign spelling). Go's Flash caps are the
+        // largest on those plans (~$80 promo/workspace) and both workspaces
+        // are CANCELLED — Personal ends 2026-11-02 (monthly 80% used), Lab
+        // 2026-11-06 (62%) — so weights mirror luna-plan's burn-by-expiry
+        // (Personal 3 ahead of Lab 2; the ClinePass/OpenDesign leaves stay
+        // at the default and carry the pool when a Go leaf walls or the Go
+        // periods end). Go's Flash natively offers low/high/max, so its
+        // remaps match the ClinePass leaf's.
         "targets": [
+          {
+            "model": "opencode-go.personal/deepseek-v4.1-flash",
+            "variants": { "medium": "high", "xhigh": "max" }
+          },
+          {
+            "model": "opencode-go.lab/deepseek-v4.1-flash",
+            "variants": { "medium": "high", "xhigh": "max" }
+          },
           {
             "model": "cline-pass/deepseek-v4.1-flash",
             "variants": { "medium": "high", "xhigh": "max" }
@@ -5998,7 +6018,11 @@
           }
         ],
         "selection": "round-robin",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        "weights": {
+          "opencode-go.personal/deepseek-v4.1-flash": 3,
+          "opencode-go.lab/deepseek-v4.1-flash": 2
+        }
       },
       "deepseek-flash": {
         "name": "DeepSeek Flash - plan providers only",
