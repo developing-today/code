@@ -1,0 +1,371 @@
+// AA cost explorer: the collector's pure pieces (Test_Runs mapping,
+// opencode-config coverage inputs, name matching, payload assembly,
+// feed-section shape), the page manifest entry, and the fixture
+// render + HTTP routes. Follows test/slice3.test.ts / program.test.ts.
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { spawn, type Subprocess } from "bun";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  aaAbsent,
+  aaSectionFromSupabase,
+  computeAaCoverage,
+  isAaSection,
+  normalizeModelName,
+  parseOpencodeCoverageInputs,
+  stripJsonComments,
+  summarizeAa,
+  testRunsFromSheetRows,
+  type AaRawPayload,
+} from "../src/aa.ts";
+import { PAGES } from "../src/pages.ts";
+import { renderAa } from "../src/render.ts";
+import { FIXTURE_AA, fixtureSource } from "../src/sources/fixtures.ts";
+import type { Provenance } from "../src/model.ts";
+
+const PROV: Provenance = {
+  board: "x",
+  roadmap: "x",
+  items: "x",
+  comments: "x",
+  quota: "x",
+  usage: "x",
+  attention: "x",
+  orchestration: "x",
+  dns: "x",
+  registry: "x",
+  aa: "fixtures",
+};
+
+describe("stripJsonComments", () => {
+  test("removes // and /* */ comments but keeps URLs inside strings", () => {
+    const out = stripJsonComments(`{ "npm": "@ai-sdk/openai-compatible", // provider pkg
+      "options": { "baseURL": "https://api.example.com/v1" }, /* block */
+      "note": "a // b" }`);
+    const parsed = JSON.parse(out) as { options: { baseURL: string }; note: string };
+    expect(parsed.options.baseURL).toBe("https://api.example.com/v1");
+    expect(parsed.note).toBe("a // b");
+  });
+});
+
+// A snippet shaped like the repo config: JSONC comments, a nested
+// route (scout wraps speed), an object target with a variant remap,
+// and an instanceOf alias provider with no inline models.
+const CONFIG_SNIPPET = `{
+  // comment about the config
+  "provider": {
+    "openai": { "models": { "gpt-6-luna": {}, "gpt-6.1-sol": {} } },
+    "commandcode": { "models": { "reflection/beam:free": {}, "deepseek/deepseek-v4-pro": {} } },
+    "opencode-go.personal": { "instanceOf": "opencode-go" },
+  },
+  "experimental": {
+    "model_routes": {
+      "speed": { "targets": ["openai/gpt-6-luna#max"] },
+      "scout": { "targets": ["opencode-route/speed", { "model": "deepseek/deepseek-v4-flash#low", "variants": { "xhigh": "max" } }] },
+    },
+  },
+}`;
+
+describe("opencode coverage inputs", () => {
+  test("catalog = model ids (sans instanceOf aliases); pooled expands nested routes and strips #pins", () => {
+    const inputs = parseOpencodeCoverageInputs(CONFIG_SNIPPET);
+    expect(inputs).not.toBeNull();
+    expect(inputs!.catalog).toContain("openai/gpt-6-luna");
+    expect(inputs!.catalog).toContain("commandcode/reflection/beam:free");
+    expect(inputs!.catalog.some((id) => id.startsWith("opencode-go.personal"))).toBe(false);
+    expect(inputs!.pooled).toContain("openai/gpt-6-luna");
+    expect(inputs!.pooled).toContain("deepseek/deepseek-v4-flash");
+    expect(inputs!.pooled.some((id) => id.includes("#"))).toBe(false);
+  });
+
+  test("null on unparseable config", () => {
+    expect(parseOpencodeCoverageInputs("{ not json")).toBeNull();
+  });
+});
+
+describe("Test_Runs mapping", () => {
+  // Header order deliberately shuffled vs the real sheet: mapping
+  // must key off the header row, not positions.
+  const rows = [
+    {
+      rowIndex: 1,
+      cells: [
+        "time_per_task_seconds",
+        "test_run_key",
+        "raw_score",
+        "ttft_seconds",
+        "snapshot_date",
+        "model_variant_key",
+        "cost_per_task_usd",
+        "first_answer_seconds",
+        "e2e_500_seconds",
+        "output_speed_tps",
+      ],
+    },
+    {
+      rowIndex: 2,
+      cells: [
+        "407.3",
+        "openai|luna|k",
+        38,
+        "93.76",
+        "2026-09-28",
+        "openai|gpt-6-luna|max",
+        "0.07",
+        "93.76",
+        "97.71",
+        "145",
+      ],
+    },
+    {
+      rowIndex: 3,
+      cells: ["", "deepseek|flash|k", "", "", "2026-09-28", "deepseek|v4.1-flash|max", "0.49", "", "", "231.2"],
+    },
+    { rowIndex: 4, cells: ["123", "", "", "", "", "", "", "", "", ""] }, // no key -> dropped
+  ];
+  test("maps by header; empty cells become null (never invented)", () => {
+    const runs = testRunsFromSheetRows(rows);
+    expect(runs.length).toBe(2);
+    const luna = runs.find((r) => r.testRunKey === "openai|luna|k")!;
+    const flash = runs.find((r) => r.testRunKey === "deepseek|flash|k")!;
+    expect(luna.ttftSeconds).toBe(93.76);
+    expect(luna.e2e500Seconds).toBe(97.71);
+    expect(luna.timePerTaskSeconds).toBe(407.3);
+    expect(luna.intelligence).toBe(38);
+    expect(flash.ttftSeconds).toBeNull();
+    expect(flash.timePerTaskSeconds).toBeNull();
+    expect(flash.costPerTaskUsd).toBe(0.49);
+  });
+});
+
+describe("coverage name matching", () => {
+  test("normalization keeps point versions distinct (GPT-6 vs GPT-6.1)", () => {
+    expect(normalizeModelName("GPT-6 Sol")).toBe("gpt 6 sol");
+    expect(normalizeModelName("gpt-6.1-sol")).toBe("gpt 6 1 sol");
+    expect(normalizeModelName("GPT-6 Sol")).not.toBe(normalizeModelName("gpt-6.1-sol"));
+  });
+
+  test("Beam: catalogued, unmeasured, unpooled — lands in the unmeasured list, not the measured one", () => {
+    const cov = computeAaCoverage(["GPT-6 Luna", "Kimi K3", "DeepSeek V4 Pro 0813"], {
+      catalog: ["openai/gpt-6-luna", "commandcode/reflection/beam:free", "commandcode/deepseek/deepseek-v4-pro"],
+      pooled: ["openai/gpt-6-luna"],
+    });
+    expect(cov.measuredNotPooled).toContain("Kimi K3");
+    expect(cov.measuredNotPooled).toContain("DeepSeek V4 Pro 0813"); // via the 0813 alias
+    expect(cov.measuredNotPooled).not.toContain("GPT-6 Luna"); // pooled
+    expect(cov.catalogNotPooledMeasured).toContain("DeepSeek V4 Pro 0813");
+    expect(cov.catalogNotPooledMeasured).not.toContain("Kimi K3");
+    expect(cov.measuredNotInCatalog).toContain("Kimi K3");
+    expect(cov.catalogNotPooledUnmeasured).toContain("commandcode/reflection/beam:free");
+  });
+});
+
+function rawPayload(): AaRawPayload {
+  return {
+    batch: "8152e746-4805-4a11-9664-317b44ca9f1b",
+    sources: [
+      {
+        name: "model_value_data.csv",
+        kind: "drive-csv",
+        importedAt: "2026-10-26T13:16:45Z",
+        driveModifiedAt: "2026-10-19T06:55:29Z",
+      },
+    ],
+    rankings: [
+      {
+        rowIndex: "3",
+        testRunKey: "openai|luna|k",
+        modelVariantKey: "openai|gpt-6-luna|max",
+        family: "GPT-6 Luna",
+        creator: "OpenAI",
+        effort: "max",
+        benchmarkVersionKey: "aa-v4.3.2",
+        rawScore: "38",
+        adjustedScore: "38",
+        costTask: "0.07",
+        timeTaskSec: "407.3",
+        speedTps: "145",
+        qualStatus: "Contender",
+        availability: "yes",
+        eligible: true,
+        intelEffPerUsd: "28.57",
+        usdPerUsableUnit: "0.035",
+        pointsPerDollar: "542.9",
+        pointsPerSecond: "0.093",
+        balancedValue: "0.41",
+        smartValue: "0.44",
+        speedValue: "0.31",
+        rankBalanced: "24",
+        rankSmart: "22",
+        rankSpeed: "31",
+        rankIntelligence: "30",
+        rankLowCost: "4",
+      },
+    ],
+    thresholds: [
+      {
+        testRunKey: "openai|luna|k",
+        target: "30",
+        usable: true,
+        levelledScore: "38",
+        costTask: "0.07",
+        timeMin: "6.79",
+        usdPerUsablePoint: "0.009",
+      },
+      {
+        testRunKey: "openai|luna|k",
+        target: "40",
+        usable: false,
+        levelledScore: "38",
+        costTask: "0.07",
+        timeMin: "6.79",
+        usdPerUsablePoint: null,
+      },
+    ],
+    configs: [
+      {
+        modelName: "GPT-6 Luna",
+        benchmark: "AA Intelligence Index",
+        effort: "Reasoning, Max Effort",
+        intelligence: "38",
+        costPerTaskUsd: "0.07",
+        speedTps: "145.2",
+      },
+    ],
+    testRunRows: [
+      { rowIndex: 1, cells: ["test_run_key", "ttft_seconds"] },
+      { rowIndex: 2, cells: ["openai|luna|k", "93.76"] },
+    ],
+  };
+}
+
+describe("payload assembly + section shape", () => {
+  test("string numerics from the Management API are coerced; coverage computed when config parses", () => {
+    const section = aaSectionFromSupabase(rawPayload(), CONFIG_SNIPPET, "2026-10-26T18:05:00Z");
+    expect(section).not.toBeNull();
+    expect(section!.status).toBe("ok");
+    expect(section!.rankings[0].costTask).toBe(0.07);
+    expect(section!.rankings[0].rankBalanced).toBe(24);
+    expect(section!.testRuns[0].ttftSeconds).toBe(93.76);
+    expect(section!.coverage?.catalogNotPooledUnmeasured).toContain("commandcode/reflection/beam:free");
+    expect(section!.coverage?.measuredNotPooled).toEqual([]); // Luna is pooled in the snippet
+    expect(isAaSection(section)).toBe(true);
+  });
+
+  test("unparseable config omits coverage but keeps the section", () => {
+    const section = aaSectionFromSupabase(rawPayload(), "{ nope", "2026-10-26T18:05:00Z");
+    expect(section?.status).toBe("ok");
+    expect(section?.coverage).toBeUndefined();
+    expect(isAaSection(section)).toBe(true);
+  });
+
+  test("isAaSection accepts the absent form, rejects junk", () => {
+    expect(isAaSection(aaAbsent("Supabase unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
+    expect(isAaSection(null)).toBe(false);
+    expect(isAaSection({ status: "ok" })).toBe(false);
+    expect(isAaSection({ status: "absent", reason: 42 })).toBe(false);
+    expect(isAaSection({ generatedAt: "x", batch: "y", rankings: [] })).toBe(false);
+  });
+
+  test("summarizeAa: usable-up-to + snapshot vintage", () => {
+    const summary = summarizeAa(FIXTURE_AA);
+    const lunaKey = FIXTURE_AA.testRuns[0].testRunKey;
+    expect(summary.usableUpTo.get(lunaKey)).toBe(30);
+    expect(summary.snapshotVintage).toEqual({ min: "2026-09-28", max: "2026-09-28" });
+  });
+});
+
+describe("aa-explorer manifest + render", () => {
+  test("PAGES carries the aa-explorer page with unique routes", () => {
+    const page = PAGES.find((p) => p.id === "aa-explorer");
+    expect(page?.title).toBe("AA Cost Explorer");
+    expect(page?.route).toBe("/aa");
+    expect(page?.api).toBe("/api/aa.json");
+    const routes = PAGES.map((p) => p.route);
+    expect(new Set(routes).size).toBe(routes.length);
+  });
+
+  test("fixtures render: rankings, timing with 'not measured', coverage incl. Beam", () => {
+    const html = renderAa(FIXTURE_AA, PROV);
+    expect(html).toContain("AA Cost Explorer");
+    expect(html).toContain("GPT-6 Sol");
+    expect(html).toContain("1m 34s"); // Luna max's 93.76s TTFT, formatted
+    expect(html).toContain("26.7s"); // Haiku high's TTFT
+    expect(html).toContain("not measured"); // the fixture's unmeasured flash row
+    expect(html).toContain("commandcode/reflection/beam:free");
+    expect(html).toContain("8152e746"); // batch provenance
+    expect(html).toContain("/api/aa.json");
+  });
+
+  test("null and absent sections render honest banners, no tables", () => {
+    const missing = renderAa(null, PROV);
+    expect(missing).toContain("has not reached the dashboard yet");
+    const absent = renderAa(aaAbsent("Supabase query failed (HTTP 500)", "2026-10-26T18:05:00Z"), PROV);
+    expect(absent).toContain("Supabase query failed (HTTP 500)");
+    expect(absent).not.toContain("Rankings");
+  });
+
+  test("fixtureSource().aa() returns the fixture section", async () => {
+    const section = await fixtureSource().aa();
+    expect(section?.status).toBe("ok");
+  });
+});
+
+let proc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
+let port = 0;
+const tmp = mkdtempSync(join(tmpdir(), "agg-aa-"));
+
+beforeAll(async () => {
+  port = 6100 + Math.floor(Math.random() * 700);
+  const commentsFile = join(tmp, "comments.json");
+  writeFileSync(commentsFile, JSON.stringify({ version: 1, comments: [] }));
+  proc = spawn({
+    cmd: ["bun", "run", "src/server.ts"],
+    cwd: import.meta.dir + "/..",
+    env: {
+      ...Bun.env,
+      PM_AGG_PORT: String(port),
+      PM_AGG_SOURCE: "fixtures",
+      PM_AGG_COMMENTS_FILE: commentsFile,
+      PM_AGG_REGISTRY_FILE: join(tmp, "registry.json"),
+    },
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  const deadline = Date.now() + 8000;
+  let ready = false;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+      if (res.ok) {
+        ready = true;
+        break;
+      }
+    } catch {
+      /* not up yet */
+    }
+    await Bun.sleep(120);
+  }
+  expect(ready).toBe(true);
+});
+
+afterAll(() => {
+  proc?.kill();
+});
+
+describe("aa routes (HTTP, fixtures)", () => {
+  test("/aa serves the explorer and /api/aa.json the section", async () => {
+    const page = await (await fetch(`http://127.0.0.1:${port}/aa`)).text();
+    expect(page).toContain("AA Cost Explorer");
+    expect(page).toContain("GPT-6 Sol");
+    const section = (await (await fetch(`http://127.0.0.1:${port}/api/aa.json`)).json()) as {
+      status: string;
+      rankings: { family: string }[];
+      coverage?: { catalogNotPooledUnmeasured: string[] };
+    };
+    expect(section.status).toBe("ok");
+    expect(section.rankings.some((r) => r.family === "GPT-6 Sol")).toBe(true);
+    expect(section.coverage?.catalogNotPooledUnmeasured).toContain("commandcode/reflection/beam:free");
+  });
+});

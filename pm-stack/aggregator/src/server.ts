@@ -8,9 +8,17 @@ import { loadConfig } from "./config.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import type { DashComment, RefKey } from "./model.ts";
 import { buildProgramData, programRefs } from "./program.ts";
+import {
+  PROJECT_CONFIGS,
+  allProjectRefs,
+  buildProjectDetail,
+  buildProjectSummaries,
+  projectConfigById,
+} from "./project-config.ts";
 import { identitiesFromRecords } from "./registry.ts";
 import {
   ghObjectRef,
+  renderAa,
   renderAttention,
   renderBoard,
   renderDiscuss,
@@ -18,6 +26,7 @@ import {
   renderItem,
   renderPages,
   renderProgram,
+  renderProgramProject,
   renderProjects,
   renderQuota,
   renderRoadmap,
@@ -90,8 +99,8 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-function html(body: string): Response {
-  return new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
+function html(body: string, status = 200): Response {
+  return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
 async function boardContext() {
@@ -227,6 +236,14 @@ async function handler(req: Request): Promise<Response> {
     return json(section ?? { status: "absent", reason: "no DNS register section in the fleet feed yet" });
   }
 
+  if (path === "/aa") {
+    return html(renderAa(await source.aa(), prov()));
+  }
+  if (path === "/api/aa.json") {
+    const section = await source.aa();
+    return json(section ?? { status: "absent", reason: "no AA explorer section in the fleet feed yet" });
+  }
+
   if (path === "/sessions") {
     return html(renderSessions(await source.registry(), prov()));
   }
@@ -248,18 +265,51 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/program" || path === "/api/program.json") {
-    // #1046: the dashboard documents itself. Editorial content from
-    // src/program.ts; the live half derived from the same Source the
-    // other views read (items / projects / orchestration), each facet
-    // failing soft on its own.
-    const [items, pool, orchestration] = await Promise.all([
+    // #1046 + #1121: /program is the projects index. Editorial content
+    // from src/program.ts (the pm-dashboard doc) and the project
+    // registry in src/project-config.ts; the live half derived from
+    // the same Source the other views read (items / projects /
+    // roadmap / orchestration), each facet failing soft on its own.
+    const [items, pool, rows, orchestration] = await Promise.all([
       source.items(programRefs()).catch(() => new Map()),
       source.projects().catch(() => []),
+      source.roadmap().catch(() => []),
       source.orchestration().catch(() => null),
     ]);
-    const data = buildProgramData(items, pool, orchestration);
+    const data = {
+      ...buildProgramData(items, pool, orchestration),
+      projects: buildProjectSummaries(PROJECT_CONFIGS, pool, rows),
+    };
     if (path === "/api/program.json") return json(data);
     return html(renderProgram(data, items, prov()));
+  }
+
+  const programProjectMatch = /^\/program\/([\w-]+)$/.exec(path);
+  if (programProjectMatch) {
+    const config = projectConfigById(programProjectMatch[1]);
+    if (!config) {
+      return html(
+        `<h1>Not found</h1><p class="muted">no project with id <code>${programProjectMatch[1]}</code> in the registry (<code>src/project-config.ts</code>) — <a href="/program">back to the projects index</a></p>`,
+        404,
+      );
+    }
+    const [items, pool, rows] = await Promise.all([
+      source.items(allProjectRefs()).catch(() => new Map()),
+      source.projects().catch(() => []),
+      source.roadmap().catch(() => []),
+    ]);
+    return html(renderProgramProject(buildProjectDetail(config, items, pool, rows), items, prov()));
+  }
+  if (path === "/api/program-project.json") {
+    const id = url.searchParams.get("id") ?? "";
+    const config = projectConfigById(id);
+    if (!config) return json({ error: "unknown project", id }, 404);
+    const [items, pool, rows] = await Promise.all([
+      source.items(allProjectRefs()).catch(() => new Map()),
+      source.projects().catch(() => []),
+      source.roadmap().catch(() => []),
+    ]);
+    return json(buildProjectDetail(config, items, pool, rows));
   }
 
   if (path === "/pages") {

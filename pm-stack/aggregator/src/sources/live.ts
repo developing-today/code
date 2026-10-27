@@ -6,8 +6,15 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Config } from "../config.ts";
+import { isAaSection } from "../aa.ts";
 import { isDnsSection } from "../dns.ts";
-import { feedAgeText, isOrchestrationSection, loadFeed, type FleetFeed } from "../feed.ts";
+import {
+  feedAgeText,
+  normalizeOrchestrationSection,
+  orchestrationSectionProblem,
+  loadFeed,
+  type FleetFeed,
+} from "../feed.ts";
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
@@ -17,6 +24,7 @@ import { SnapshotStore } from "../snapshots.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
+  type AaFeedSection,
   type BoardItem,
   type Comment,
   type DnsSection,
@@ -397,7 +405,11 @@ const slugify = (s: string): string =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 60) || "task";
-const normTitle = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const normTitle = (s: string): string =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 
 /**
  * The synthetic in-flight entries for one orchestration section,
@@ -468,6 +480,7 @@ export function liveSource(cfg: Config): Source {
     orchestration: "fixtures",
     dns: "fixtures",
     registry: "fixtures",
+    aa: "fixtures",
   };
 
   async function kaneoCookieHeader(): Promise<string> {
@@ -584,10 +597,11 @@ export function liveSource(cfg: Config): Source {
           // fails soft: no feed / no section = the Kaneo board alone.
           try {
             const feed = await getFeed();
-            if (feed?.orchestration && isOrchestrationSection(feed.orchestration)) {
-              const inFlight = inFlightBoardItems(feed.orchestration, merged);
+            const orchSection = feed?.orchestration ? normalizeOrchestrationSection(feed.orchestration) : null;
+            if (orchSection) {
+              const inFlight = inFlightBoardItems(orchSection, merged);
               if (inFlight.length) {
-                provenance.board += ` + orchestrator in-flight (${inFlight.length} lined-up, section ${feed.orchestration.generatedAt})`;
+                provenance.board += ` + orchestrator in-flight (${inFlight.length} lined-up, section ${orchSection.generatedAt})`;
                 merged = [...inFlight, ...merged];
               }
             }
@@ -648,7 +662,9 @@ export function liveSource(cfg: Config): Source {
       if (poolServed > 0 && feed) {
         provenance.items =
           `live (project pool · fleet feed · ${feedAgeText(feed.generatedAt)})` +
-          (remaining.length ? ` + ${projectorServed ? "projector" : "fixtures"} for ${remaining.length} ref(s) outside the pool` : "");
+          (remaining.length
+            ? ` + ${projectorServed ? "projector" : "fixtures"} for ${remaining.length} ref(s) outside the pool`
+            : "");
       } else if (projectorServed) {
         provenance.items = "live (projector)";
       }
@@ -787,10 +803,21 @@ export function liveSource(cfg: Config): Source {
       // #899: the orchestration section rides the fleet feed, embedded
       // by the collector from the orchestrator's own output file. The
       // section carries its own provenance; absent = not measured yet.
+      // #1140: three states, told apart — live (accepted, served in
+      // the normalized contract shape, #1110), invalid (a section is
+      // present but failed validation: name the failed check, never
+      // claim the job "has not published"), absent (no section key).
       const feed = await getFeed();
-      if (feed?.orchestration && isOrchestrationSection(feed.orchestration)) {
-        provenance.orchestration = `live (orchestration section ${feed.orchestration.runId} · ${feedAgeText(feed.orchestration.generatedAt)})`;
-        return feed.orchestration;
+      if (feed?.orchestration) {
+        const section = normalizeOrchestrationSection(feed.orchestration);
+        if (section) {
+          provenance.orchestration = `live (orchestration section ${section.runId} · ${feedAgeText(section.generatedAt)})`;
+          return section;
+        }
+        const problem = orchestrationSectionProblem(feed.orchestration);
+        console.error(`aggregator: orchestration section present but invalid (${problem}); the today view derives`);
+        provenance.orchestration = `invalid — orchestration section present but failed validation (${problem}); the today view derives`;
+        return null;
       }
       provenance.orchestration = feed
         ? "none yet — the orchestration job (#899) has not published a section; the today view derives"
@@ -808,6 +835,24 @@ export function liveSource(cfg: Config): Source {
       }
       provenance.dns = feed
         ? "not collected yet — the collector has not embedded a register section"
+        : "fixtures (no fleet feed file yet)";
+      return null;
+    },
+    async aa(): Promise<AaFeedSection | null> {
+      // AA cost explorer: the section rides the fleet feed, read from
+      // Supabase ainventory by the collector. Its absent form is a real
+      // section (the page renders the reason); a missing section means
+      // the collector has not embedded one yet.
+      const feed = await getFeed();
+      if (feed?.aa && isAaSection(feed.aa)) {
+        provenance.aa =
+          feed.aa.status === "ok"
+            ? `live (fleet feed · ${feedAgeText(feed.generatedAt)} · ainventory batch ${feed.aa.batch.slice(0, 8)} · collected ${feed.aa.generatedAt})`
+            : `live (fleet feed · ${feedAgeText(feed.generatedAt)} · AA section absent: ${feed.aa.reason})`;
+        return feed.aa;
+      }
+      provenance.aa = feed
+        ? "not collected yet — the collector has not embedded an AA section"
         : "fixtures (no fleet feed file yet)";
       return null;
     },

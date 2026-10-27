@@ -21,8 +21,14 @@ import {
   windowPercent,
 } from "./derive.ts";
 import { githubCommentUrl } from "./comments.ts";
+import { summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import {
+  type AaConfig,
+  type AaFeedSection,
+  type AaRanking,
+  type AaSection,
+  type AaTestRun,
   type BoardItem,
   type ChargeRow,
   type Comment,
@@ -52,7 +58,8 @@ import {
   refUrl,
 } from "./model.ts";
 import { PAGES } from "./pages.ts";
-import type { ProgramData, ProgramEntry } from "./program.ts";
+import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
+import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import { type AuthorIdentity } from "./registry.ts";
 
@@ -218,7 +225,7 @@ function layout(title: string, body: string, provenance: Provenance, active: str
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><style>${CSS}</style></head>
 <body><nav>${links}${dropdown}</nav><main>${body}
-<div class="foot">board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)}<br>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
+<div class="foot">board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}<br>tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
 </main>${extra}</body></html>`;
 }
 
@@ -1039,6 +1046,124 @@ export function renderDns(section: DnsSection | null, provenance: Provenance): s
   return layout("DNS register", body, provenance, "/dns");
 }
 
+// --- AA cost explorer page (ainventory workbook data via the fleet feed) -----
+
+function fmtCost(v: number | null): string {
+  return v == null ? "—" : `$${Number(v.toFixed(4))}`;
+}
+
+function fmtSec(v: number | null): string {
+  if (v == null) return "—";
+  if (v < 60) return `${Number(v.toFixed(1))}s`;
+  return `${Math.floor(v / 60)}m ${Math.round(v % 60)}s`;
+}
+
+function fmtTimed(v: number | null): string {
+  return v == null ? '<span class="muted">not measured</span>' : fmtSec(v);
+}
+
+function fmtVal(v: number | null): string {
+  return v == null ? "—" : Number(v.toFixed(3)).toString();
+}
+
+/** "openai|gpt-6-luna|max|reasoning|fallback-na" -> "gpt-6-luna · max". */
+function variantLabel(modelVariantKey: string): string {
+  const parts = modelVariantKey.split("|");
+  return parts.length >= 3 ? `${parts[1]} · ${parts[2]}` : modelVariantKey;
+}
+
+function aaRankingsTable(rankings: AaRanking[], usableUpTo: Map<string, number>): string {
+  const sorted = [...rankings].sort(
+    (a, b) => (a.rankBalanced ?? Number.MAX_SAFE_INTEGER) - (b.rankBalanced ?? Number.MAX_SAFE_INTEGER),
+  );
+  const rows = sorted
+    .map((r) => {
+      const usable = usableUpTo.get(r.testRunKey);
+      return `<tr><td>${r.rankBalanced ?? "—"}</td><td><strong>${esc(r.family)}</strong><br><span class="muted">${esc(r.creator)}${r.qualStatus ? ` · ${esc(r.qualStatus)}` : ""}</span></td><td>${esc(r.effort ?? "—")}</td><td>${r.adjustedScore ?? r.rawScore ?? "—"}</td><td>${fmtCost(r.costTask)}</td><td>${fmtSec(r.timeTaskSec)}</td><td>${r.speedTps ?? "—"}</td><td>${r.intelEffPerUsd == null ? "—" : Number(r.intelEffPerUsd.toFixed(2))}</td><td>${fmtVal(r.balancedValue)}</td><td>${usable == null ? "—" : `≥ ${usable}`}</td><td class="muted">intel #${r.rankIntelligence ?? "—"} · cost #${r.rankLowCost ?? "—"}</td></tr>`;
+    })
+    .join("");
+  return `<div class="tblwrap"><table><tr><th># balanced</th><th>Model</th><th>Effort</th><th>Intelligence</th><th>$/task</th><th>Time/task</th><th>Speed (t/s)</th><th>Intel / $</th><th>Balanced value</th><th>Usable up to</th><th>Ranks</th></tr>${rows || '<tr><td colspan="11" class="muted">none</td></tr>'}</table></div>`;
+}
+
+function aaTimingsTable(testRuns: AaTestRun[]): string {
+  const rows = testRuns
+    .map(
+      (r) =>
+        `<tr><td><strong>${esc(variantLabel(r.modelVariantKey))}</strong><br><span class="muted">${esc(r.snapshotDate ?? "no snapshot date")}</span></td><td>${r.intelligence ?? "—"}</td><td>${fmtCost(r.costPerTaskUsd)}</td><td>${fmtTimed(r.ttftSeconds)}</td><td>${fmtTimed(r.firstAnswerSeconds)}</td><td>${fmtTimed(r.e2e500Seconds)}</td><td>${fmtTimed(r.timePerTaskSeconds)}</td><td>${r.outputSpeedTps ?? "—"}</td></tr>`,
+    )
+    .join("");
+  return `<div class="tblwrap"><table><tr><th>Configuration</th><th>Intelligence</th><th>$/task</th><th>TTFT</th><th>First answer</th><th>E2E (500 tok)</th><th>Time / task</th><th>Speed (t/s)</th></tr>${rows || '<tr><td colspan="8" class="muted">none</td></tr>'}</table></div>`;
+}
+
+function aaConfigsTable(configs: AaConfig[]): string {
+  const rows = configs
+    .map(
+      (c) =>
+        `<tr><td><strong>${esc(c.modelName)}</strong></td><td>${esc(c.effort ?? "—")}</td><td>${c.intelligence ?? "—"}</td><td>${fmtCost(c.costPerTaskUsd)}</td><td>${c.speedTps ?? "—"}</td></tr>`,
+    )
+    .join("");
+  return `<div class="tblwrap"><table><tr><th>Model</th><th>Effort (workbook label)</th><th>Intelligence</th><th>$/task</th><th>Speed (t/s)</th></tr>${rows || '<tr><td colspan="5" class="muted">none</td></tr>'}</table></div>`;
+}
+
+function aaNameList(names: string[]): string {
+  return names.length
+    ? `<div class="strip">${names.map((n) => `<span class="badge src">${esc(n)}</span>`).join("")}</div>`
+    : '<p class="muted">none</p>';
+}
+
+export function renderAa(section: AaFeedSection | null, provenance: Provenance): string {
+  if (!section) {
+    return layout(
+      "AA Cost Explorer",
+      `<h1>AA Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory workbook import; this page only renders it.</div>`,
+      provenance,
+      "/aa",
+    );
+  }
+  if (section.status === "absent") {
+    return layout(
+      "AA Cost Explorer",
+      `<h1>AA Cost Explorer</h1><div class="banner">The collector could not build the AA section on its last run (${fmtDate(section.generatedAt)}): ${esc(section.reason)}. The page will fill in on the next successful collection — no stale numbers are shown in the meantime.</div>`,
+      provenance,
+      "/aa",
+    );
+  }
+  const s: AaSection = section;
+  const summary = summarizeAa(s);
+  const sourcesHtml = s.sources
+    .map(
+      (src) =>
+        `<li><code>${esc(src.name)}</code> (${esc(src.kind)}) — imported ${src.importedAt ? fmtDate(src.importedAt) : "—"} · file modified ${src.driveModifiedAt ? fmtDate(src.driveModifiedAt) : "—"}</li>`,
+    )
+    .join("");
+  const cov = s.coverage;
+  const coverageHtml = cov
+    ? `<h2>Coverage — measured but not pooled</h2>
+<p class="muted">The collector compares the AA-measured model names against the repo's <code>.opencode/opencode.jsonc</code>: the provider catalogs and every route pool's leaf targets (nested routes expanded). Matching is best-effort — normalization plus a small alias map in <code>src/aa.ts</code> — so a miss means "not matched", not "does not exist".</p>
+<h3>In a catalog, in no pool (${cov.catalogNotPooledMeasured.length})</h3>
+<p class="muted">Measured and reachable today, but no route sends them work — the actionable list.</p>${aaNameList(cov.catalogNotPooledMeasured)}
+<h3>Measured, in no catalog (${cov.measuredNotInCatalog.length})</h3>${aaNameList(cov.measuredNotInCatalog)}
+<details><summary>Catalog models with no AA measurement and no pool seat (${cov.catalogNotPooledUnmeasured.length})</summary>
+<p class="muted">Catalog ids verbatim from the config — this is where unmeasured newcomers (e.g. <code>commandcode/reflection/beam:free</code>, the Reflection Beam seat) sit until the workbook measures them.</p>${aaNameList(cov.catalogNotPooledUnmeasured)}</details>`
+    : `<h2>Coverage — measured but not pooled</h2><p class="muted">Coverage was not computed for this section — the collector could not read <code>.opencode/opencode.jsonc</code> on that run.</p>`;
+  const body = `<h1>AA Cost Explorer</h1>
+<p class="muted">${s.rankings.length} ranked configurations · ${s.configs.length} AA Intelligence Index configurations · ${s.testRuns.length} timing rows · collected ${fmtDate(s.generatedAt)} from ainventory batch <code>${esc(s.batch.slice(0, 8))}…</code>. Machine-first: <a href="/api/aa.json">/api/aa.json</a>.</p>
+<div class="card"><strong>Provenance</strong><br>
+<span class="muted">These are the workbook snapshot's figures (AA Intelligence Index v4.3.2), not a live Artificial Analysis pull.${summary.snapshotVintage ? ` Test_Runs snapshots in this batch: ${esc(summary.snapshotVintage.min)} – ${esc(summary.snapshotVintage.max)}.` : ""} A workbook refresh (the coding-plan-watch import) flips the batch; the feed collector picks it up within minutes.</span>
+<ul>${sourcesHtml || '<li class="muted">source files not recorded for this batch</li>'}</ul></div>
+<h2>Rankings</h2>
+<p class="muted">Every ranked configuration from the workbook's rankings view, best balanced value first. "Usable up to" is the highest target intelligence at which the threshold view still counts the configuration usable.</p>
+${aaRankingsTable(s.rankings, summary.usableUpTo)}
+<h2>Timing — Test_Runs</h2>
+<p class="muted">Per-configuration timing from the workbook's Test_Runs sheet. "Not measured" means the workbook carries no value for that cell — nothing is estimated.</p>
+${aaTimingsTable(s.testRuns)}
+<h2>Measured configurations</h2>
+<p class="muted">The AA Intelligence Index rows of the latest import batch, effort labels verbatim from the workbook.</p>
+${aaConfigsTable(s.configs)}
+${coverageHtml}`;
+  return layout("AA Cost Explorer", body, provenance, "/aa");
+}
+
 // --- Sessions / identity registry page (#906 §3) ------------------------------
 
 const REGISTRY_SOURCE_ORDER = ["opencode-laptop", "opencode-sandbox", "jules", "claude-code", "cron"];
@@ -1181,40 +1306,171 @@ function programEntries(entries: ProgramEntry[], items: Map<RefKey, GhItem>): st
   return entries.map((e) => programEntryHtml(e, items)).join("");
 }
 
-export function renderProgram(data: ProgramData, items: Map<RefKey, GhItem>, provenance: Provenance): string {
-  const { program, live } = data;
-  const trackedRows = live.tracked
+function countList(list: { name: string; count: number }[]): string {
+  return list.length ? list.map((c) => `${esc(c.name)}: ${c.count}`).join(" · ") : '<span class="muted">none</span>';
+}
+
+function trackedTable(tracked: TrackedIssue[]): string {
+  const rows = tracked
     .map(({ ref, item }) =>
       item
         ? `<tr><td>${itemBadge(item)}</td><td>${esc(item.title)}</td><td><span class="badge ${item.state === "open" ? "open" : item.state === "merged" ? "merged" : "closed"}">${esc(item.state)}</span></td><td>${fmtDate(item.updatedAt)}</td></tr>`
         : `<tr><td><span class="badge closed">unresolved</span></td><td><code>${esc(ref)}</code></td><td><span class="muted">unresolved — the current source cannot resolve this ref</span></td><td>—</td></tr>`,
     )
     .join("");
-  const countList = (list: { name: string; count: number }[]) =>
-    list.length ? list.map((c) => `${esc(c.name)}: ${c.count}`).join(" · ") : '<span class="muted">none</span>';
-  const poolHtml = live.pool.total
+  return `<div class="tblwrap"><table><tr><th>Tracked issue</th><th>Title</th><th>State</th><th>Updated</th></tr>${rows}</table></div>`;
+}
+
+function poolSummaryHtml(live: ProgramLive): string {
+  return live.pool.total
     ? `<div class="card"><strong><a href="/projects">${live.pool.total} items</a></strong> in the org Project pool<br><span class="muted">By status — ${countList(live.pool.byStatus)}</span><br><span class="muted">By area — ${countList(live.pool.byArea)}</span></div>`
-    : `<div class="banner">No Project pool in the current feed — the collector embeds it from the org Project when a Projects token is available. The pool summary appears here when it lands; the tracked issues above still resolve through the projector/fixtures chain.</div>`;
-  const orchHtml = live.orchestration
+    : `<div class="banner">No Project pool in the current feed — the collector embeds it from the org Project when a Projects token is available. Pool summaries appear here when it lands; tracked issues still resolve through the projector/fixtures chain.</div>`;
+}
+
+function orchestrationHtml(live: ProgramLive): string {
+  return live.orchestration
     ? `<div class="card"><strong>Orchestrator</strong> — latest run <code>${esc(live.orchestration.runId)}</code>, published ${fmtDate(live.orchestration.generatedAt)}.<br><span class="muted">The tiers and goal measurements it publishes are on <a href="/attention">Needs you</a> and <a href="/today">Today</a>.</span></div>`
     : `<div class="card"><strong>Orchestrator</strong> — <span class="muted">no orchestration section in the current feed yet (not measured). The Today view derives and labels itself until one lands.</span></div>`;
-  const body = `<h1>Program status — what this dashboard is</h1>
-<p class="muted">${esc(program.intro)}</p>
+}
+
+function projectCard(s: ProjectSummary): string {
+  const poolLine =
+    s.poolArea === null
+      ? `<span class="muted">No dedicated Project Area yet.</span>`
+      : `<strong><a href="/projects?area=${encodeURIComponent(s.poolArea)}">${s.poolTotal} pool items</a></strong> <span class="muted">(${esc(s.poolArea)})</span>${s.poolTotal ? `<br><span class="muted">By status — ${countList(s.poolByStatus)}</span>` : ""}`;
+  const roadmapLine =
+    s.roadmapArea === null
+      ? `<span class="muted">No Grist roadmap area yet.</span>`
+      : `<span class="muted">${s.roadmapRows} roadmap row${s.roadmapRows === 1 ? "" : "s"} (${esc(s.roadmapArea)})</span>`;
+  const homeLine = s.homeDoc
+    ? `<br><span class="muted">Home doc: <a href="${esc(s.homeDoc.url)}">${esc(s.homeDoc.path)}</a></span>`
+    : "";
+  return `<div class="card"><strong><a href="${esc(s.route)}">${esc(s.title)}</a></strong><br>${poolLine}<br>${roadmapLine}${homeLine}<br><a href="${esc(s.route)}">Project page →</a></div>`;
+}
+
+/** /program as the projects index (#1121): one card per configured
+ * project from the registry, the whole-pool + orchestrator live blocks
+ * from #1046, and the unset-Area count as a visible gap. The full
+ * pm-dashboard document moved to /program/pm-dashboard — every link
+ * that pointed at /program still lands here. */
+export function renderProgram(data: ProgramData, items: Map<RefKey, GhItem>, provenance: Provenance): string {
+  const { program, live } = data;
+  const projects = data.projects ?? [];
+  const unset = live.pool.byArea.find((c) => c.name === "(unset)")?.count ?? 0;
+  const cards = projects.map(projectCard).join("");
+  const unsetHtml =
+    live.pool.total && unset
+      ? `<div class="banner">${unset} pool item${unset === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible.</div>`
+      : "";
+  const body = `<h1>Program status — projects</h1>
+<p class="muted">Every project the fleet runs, documented the same way: a description, its live Project-pool and roadmap sections, its tracked issues resolved live, and its roadmap — all driven by the project registry in <code>src/project-config.ts</code>. Pick a project for its full page.</p>
 <p class="muted">Source of truth: the <a href="${esc(program.designRecordUrl)}">design record</a> in developing-today/code · the org Project <a href="${esc(program.projectUrl)}">Developing Today (#4)</a> · Machine-first: <a href="/api/program.json">/api/program.json</a>.</p>
-<h2>What this is — architecture</h2>
-${programEntries(program.architecture, items)}
+<h2>Projects</h2>
+<div class="board">${cards || '<p class="muted">No projects configured.</p>'}</div>
+${unsetHtml}
 <h2>Live status</h2>
-<p class="muted">Derived at request time from the tracked issues, the Project pool, and the latest orchestration section — not written by hand. A ref the current source cannot resolve says so.</p>
-<div class="tblwrap"><table><tr><th>Tracked issue</th><th>Title</th><th>State</th><th>Updated</th></tr>${trackedRows}</table></div>
-${poolHtml}
-${orchHtml}
-<h2>What's built</h2>
-${programEntries(program.done, items)}
-<h2>What's next</h2>
-${programEntries(program.next, items)}
-<h2>Long-term roadmap</h2>
-${programEntries(program.longTerm, items)}
-<h2>Known gaps</h2>
-${programEntries(program.gaps, items)}`;
+<p class="muted">Derived at request time from the Project pool and the latest orchestration section — not written by hand.</p>
+${poolSummaryHtml(live)}
+${orchestrationHtml(live)}
+<h2>The PM dashboard's own record</h2>
+<p class="muted">This dashboard's architecture, what's built, what's next, and its long-term roadmap live on its project page: <a href="/program/pm-dashboard">PM dashboard →</a>. Its tracked issues, resolved live:</p>
+${trackedTable(live.tracked)}`;
   return layout("Program status", body, provenance, "/program");
+}
+
+// --- Per-project page (#1121, registry in src/project-config.ts) -------------
+
+const POOL_ITEM_CAP = 24;
+
+export function renderProgramProject(
+  detail: ProjectDetail,
+  items: Map<RefKey, GhItem>,
+  provenance: Provenance,
+): string {
+  const { config } = detail;
+  const linkBits: string[] = [];
+  if (config.homeDoc) {
+    linkBits.push(
+      `Home doc: <a href="${esc(config.homeDoc.url)}">${esc(config.homeDoc.path)}</a> <span class="muted">(${esc(config.homeDoc.repo)})</span>`,
+    );
+  } else {
+    linkBits.push(`<span class="muted">No home doc configured for this project yet.</span>`);
+  }
+  if (config.statusReport) {
+    linkBits.push(`Status report: <a href="${esc(config.statusReport.url)}">${esc(config.statusReport.label)}</a>`);
+  }
+  for (const l of config.dashboardLinks ?? []) {
+    linkBits.push(
+      `<a href="${esc(l.route)}">${esc(l.label)}</a>${l.note ? ` <span class="muted">(${esc(l.note)})</span>` : ""}`,
+    );
+  }
+  linkBits.push(`<a href="/api/program-project.json?id=${encodeURIComponent(config.id)}">JSON twin</a>`);
+
+  const archHtml = config.architecture?.length
+    ? `<h2>What this is — architecture</h2>${programEntries(config.architecture, items)}`
+    : "";
+
+  let poolHtml: string;
+  if (config.poolArea === null) {
+    poolHtml = `<div class="banner">No dedicated Project Area yet — this project's items are not in the org Project pool under their own Area. ${detail.unsetPoolCount} pool item${detail.unsetPoolCount === 1 ? "" : "s"} currently carry no Area at all. Its work is tracked in the tracked issues above and its home doc / links, where configured.</div>`;
+  } else if (!detail.poolItems.length) {
+    poolHtml = `<div class="banner">No pool items with Area <code>${esc(config.poolArea)}</code> in the current feed — the collector embeds the pool from the org Project when a Projects token is available, and reconciliation assigns Area.</div>`;
+  } else {
+    const shown = detail.poolItems.slice(0, POOL_ITEM_CAP);
+    const cards = shown
+      .map((p) => {
+        const statusBadge = p.status
+          ? `<span class="badge ${p.status === "Done" ? "merged" : p.status === "Todo" ? "closed" : "implementing"}">${esc(p.status)}</span>`
+          : `<span class="badge">no status</span>`;
+        const meta = [
+          p.horizon ? `<span class="badge src">${esc(p.horizon)}</span>` : "",
+          p.kind ? `<span class="badge src">${esc(p.kind)}</span>` : "",
+          `<span class="badge ${p.state === "open" ? "open" : "closed"}">issue ${esc(p.state)}</span>`,
+        ].join(" ");
+        return `<div class="card"><strong>${esc(p.title)}</strong><br>${statusBadge} ${meta}<br><span class="muted"><a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a> · <a href="${esc(p.url)}">Project item</a>${p.updatedAt ? ` · updated ${fmtDate(p.updatedAt)}` : ""}</span></div>`;
+      })
+      .join("");
+    const more =
+      detail.poolItems.length > POOL_ITEM_CAP
+        ? `<p class="muted">Showing ${POOL_ITEM_CAP} of ${detail.poolItems.length} — the full set is on <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects</a>.</p>`
+        : "";
+    poolHtml = `<p class="muted"><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${cards}${more}`;
+  }
+
+  let roadmapHtml: string;
+  if (config.roadmapArea === null) {
+    roadmapHtml = `<div class="banner">No Grist roadmap area yet — this project has no rows in the Program roadmap table. Its horizons live in its home doc and tracked issues.</div>`;
+  } else if (!detail.roadmapRows.length) {
+    roadmapHtml = `<div class="banner">No roadmap rows with area <code>${esc(config.roadmapArea)}</code> in the current source.</div>`;
+  } else {
+    const rows = detail.roadmapRows
+      .map((r) => {
+        const links = r.links
+          .map((l) => `<a class="badge src" href="${esc(refUrl(l.ref))}">${esc(l.ref)}</a>`)
+          .join(" ");
+        return `<div class="card"><strong>${esc(r.title)}</strong><br><span class="badge src">${esc(r.status)}</span> <span class="badge src">${esc(r.horizon)}</span>${links ? ` ${links}` : ""}${r.notes ? `<br><span class="muted">${esc(r.notes)}</span>` : ""}<br><span class="muted"><a href="/discuss/${encodeURIComponent(r.subject)}">💬 comments</a> · <a href="/roadmap">roadmap</a></span></div>`;
+      })
+      .join("");
+    roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap.</p>${rows}`;
+  }
+
+  const ed = config.editorial;
+  const editorialHtml = ed
+    ? `${ed.done.length ? `<h2>What's built</h2>${programEntries(ed.done, items)}` : ""}${ed.next.length ? `<h2>What's next</h2>${programEntries(ed.next, items)}` : ""}${ed.longTerm.length ? `<h2>Long-term roadmap</h2>${programEntries(ed.longTerm, items)}` : ""}${ed.gaps.length ? `<h2>Known gaps</h2>${programEntries(ed.gaps, items)}` : ""}`
+    : "";
+
+  const body = `<h1>${esc(config.title)}</h1>
+<p class="muted">${esc(config.intro)}</p>
+<p class="muted">${linkBits.join(" · ")}</p>
+<p class="muted"><a href="/program">← all projects</a></p>
+${archHtml}
+<h2>Live status — tracked issues</h2>
+<p class="muted">Resolved at request time from the same Source as every other view. A ref the current source cannot resolve says so — never an invented state.</p>
+${trackedTable(detail.tracked)}
+<h2>Project pool — live</h2>
+${poolHtml}
+<h2>Roadmap — live</h2>
+${roadmapHtml}
+${editorialHtml}`;
+  return layout(config.title, body, provenance, "/program");
 }

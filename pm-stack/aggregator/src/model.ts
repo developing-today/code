@@ -167,6 +167,7 @@ export interface Provenance {
   orchestration: string;
   dns: string;
   registry: string;
+  aa: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -446,14 +447,30 @@ export interface GoalMeasurement {
 }
 
 /** The whole orchestration section, as embedded in the fleet feed. */
+/**
+ * The orchestration section's own provenance (#1110): the sources the
+ * producing run read, as the orchestration job publishes them. The
+ * object form is the contract — the publisher has always emitted it,
+ * and it is strictly richer than a joined string. The aggregator's
+ * feed boundary also accepts the legacy plain-string form older runs
+ * published and normalizes it to this shape (see feed.ts), so every
+ * consumer sees exactly this type.
+ */
+export interface OrchestrationProvenance {
+  /** One human-readable note per source the run read. */
+  sources: string[];
+  /** The producing run, when the publisher records it here too. */
+  runId?: string;
+}
+
 export interface OrchestrationSection {
   version: 1;
   /** ISO timestamp of the orchestrator run that produced this section. */
   generatedAt: string;
   /** "orch-<ISO>" — the producing run. */
   runId: string;
-  /** Sources + run, human-readable (the section's own provenance). */
-  provenance: string;
+  /** What the producing run read (the section's own provenance). */
+  provenance: OrchestrationProvenance;
   tiers: { needsDrew: TierItem[]; needsOrchestrator: TierItem[] };
   /** Flat cross-item dependency view for one-place rendering. */
   dependencies: (DependencyRef & { taskRef?: RefKey })[];
@@ -499,6 +516,145 @@ export interface DnsSection {
   totalAnnualListUsd: number;
   entries: DnsEntry[];
 }
+
+// ---------------------------------------------------------------------------
+// AA cost explorer: the Artificial Analysis workbook data (Supabase
+// `ainventory`, latest import batch) as the collector embeds it in the
+// fleet feed. The figures are the workbook snapshot's — AA Intelligence
+// Index v4.3.2, Test_Runs snapshots of Sep–Oct 2026 — not a live AA pull;
+// the section's provenance says exactly which batch and files they are.
+// ---------------------------------------------------------------------------
+
+/** One workbook source file behind the AA section (freshness evidence). */
+export interface AaSourceInfo {
+  name: string;
+  kind: string;
+  /** When the ainventory import read the file. */
+  importedAt: string | null;
+  /** The file's own modification time in Drive. */
+  driveModifiedAt: string | null;
+}
+
+/** One row of ainventory.v_rankings (the explorer's headline table). */
+export interface AaRanking {
+  rowIndex: number;
+  testRunKey: string;
+  modelVariantKey: string;
+  /** Display family name, e.g. "GPT-6.1 Sol". */
+  family: string;
+  creator: string;
+  effort: string | null;
+  benchmarkVersionKey: string | null;
+  rawScore: number | null;
+  adjustedScore: number | null;
+  costTask: number | null;
+  timeTaskSec: number | null;
+  speedTps: number | null;
+  qualStatus: string | null;
+  availability: string | null;
+  eligible: boolean;
+  intelEffPerUsd: number | null;
+  usdPerUsableUnit: number | null;
+  pointsPerDollar: number | null;
+  pointsPerSecond: number | null;
+  balancedValue: number | null;
+  smartValue: number | null;
+  speedValue: number | null;
+  rankBalanced: number | null;
+  rankSmart: number | null;
+  rankSpeed: number | null;
+  rankIntelligence: number | null;
+  rankLowCost: number | null;
+}
+
+/** One row of ainventory.v_threshold_metrics: is this config "usable"
+ * (clears the surplus bar) at a given target intelligence level? */
+export interface AaThreshold {
+  testRunKey: string;
+  target: number;
+  usable: boolean;
+  levelledScore: number | null;
+  costTask: number | null;
+  /** Minutes per task at this config. */
+  timeMin: number | null;
+  usdPerUsablePoint: number | null;
+}
+
+/** One AA Intelligence Index row of ainventory.benchmark_results. */
+export interface AaConfig {
+  modelName: string;
+  benchmark: string;
+  /** The workbook's effort label, verbatim (e.g. "Adaptive Reasoning,
+   * High Effort, Default Fallback") — never shortened or invented. */
+  effort: string | null;
+  intelligence: number | null;
+  costPerTaskUsd: number | null;
+  speedTps: number | null;
+}
+
+/** One Test_Runs row, mapped by the sheet's own header row: per-config
+ * timing. Null timing = the workbook never measured it — the page says
+ * "not measured", it does not estimate. */
+export interface AaTestRun {
+  testRunKey: string;
+  modelVariantKey: string;
+  snapshotDate: string | null;
+  intelligence: number | null;
+  costPerTaskUsd: number | null;
+  outputSpeedTps: number | null;
+  ttftSeconds: number | null;
+  firstAnswerSeconds: number | null;
+  e2e500Seconds: number | null;
+  timePerTaskSeconds: number | null;
+}
+
+/**
+ * Pool/catalog coverage, computed by the collector from the repo's
+ * .opencode/opencode.jsonc (provider catalog + model_routes leaves,
+ * nested routes expanded) against the AA-measured model names.
+ * Best-effort: name matching is normalization + a small alias map in
+ * src/aa.ts, so a miss means "not matched", never "does not exist".
+ */
+export interface AaCoverage {
+  /** AA-measured models with no seat in any route pool. */
+  measuredNotPooled: string[];
+  /** The subset of those that a provider catalog does carry — measured,
+   * reachable, but unrouted (the actionable list). */
+  catalogNotPooledMeasured: string[];
+  /** Measured models no provider catalog carries under a matched name. */
+  measuredNotInCatalog: string[];
+  /** Catalog model ids (provider/model) with no AA measurement and no
+   * pool seat — e.g. commandcode/reflection/beam:free. Display names
+   * are catalog ids, not AA names, so they can be found in the config. */
+  catalogNotPooledUnmeasured: string[];
+}
+
+/** The AA explorer section as the collector embeds it in the fleet feed. */
+export interface AaSection {
+  status: "ok";
+  /** ISO timestamp of the collector run that built the section. */
+  generatedAt: string;
+  /** ainventory import batch (v_latest_workbook_batch) the rows came from. */
+  batch: string;
+  sources: AaSourceInfo[];
+  rankings: AaRanking[];
+  thresholds: AaThreshold[];
+  configs: AaConfig[];
+  testRuns: AaTestRun[];
+  /** Absent when the collector could not read .opencode/opencode.jsonc. */
+  coverage?: AaCoverage;
+}
+
+/** The section's degraded form: the collector could not reach Supabase
+ * (or the payload failed its check) — the page renders the reason
+ * instead of stale numbers, and the feed never fails over it. */
+export interface AaAbsentSection {
+  status: "absent";
+  reason: string;
+  generatedAt: string;
+}
+
+export type AaFeedSection = AaSection | AaAbsentSection;
 
 /**
  * A dashboard comment (#906 §2). Distinct from the projector's `Comment`
