@@ -146,6 +146,58 @@ describe("richSchema", () => {
   });
 });
 
+// ============================================================================
+// #1436: code_block attrs round-trip (markdown codec mirror)
+// ============================================================================
+
+describe("richSchema code_block attrs (#1436)", () => {
+  it("declares params and htmlBlock attrs defaulting to null", () => {
+    const spec = richSchema.nodes.code_block.spec;
+    expect(spec.attrs?.params).toEqual({ default: null });
+    expect(spec.attrs?.htmlBlock).toEqual({ default: null });
+    // Inherited basic-schema fields are preserved.
+    expect(spec.content).toBe("text*");
+    expect(spec.marks).toBe("");
+    expect(spec.group).toBe("block");
+    expect(spec.code).toBe(true);
+    expect(spec.defining).toBe(true);
+  });
+
+  it("preserves {params: html, htmlBlock: true} through fromJSON -> toJSON", () => {
+    const json = {
+      type: "doc",
+      content: [
+        {
+          type: "code_block",
+          attrs: { params: "html", htmlBlock: true },
+          content: [{ type: "text", text: "<p>hi</p>" }],
+        },
+      ],
+    };
+    const doc = richSchema.nodeFromJSON(json);
+    const out = doc.toJSON();
+    expect(out.content[0].attrs).toEqual({ params: "html", htmlBlock: true });
+    expect(out.content[0].content).toEqual([{ type: "text", text: "<p>hi</p>" }]);
+  });
+
+  it("preserves an authored fence {params: rust} (no htmlBlock) through fromJSON -> toJSON", () => {
+    const json = {
+      type: "doc",
+      content: [
+        {
+          type: "code_block",
+          attrs: { params: "rust" },
+          content: [{ type: "text", text: "fn main() {}" }],
+        },
+      ],
+    };
+    const doc = richSchema.nodeFromJSON(json);
+    const out = doc.toJSON();
+    expect(out.content[0].attrs.params).toBe("rust");
+    expect(out.content[0].attrs.htmlBlock ?? null).toBeNull();
+  });
+});
+
 describe("rawSchema", () => {
   it("has doc node type", () => {
     expect(rawSchema.nodes.doc).toBeDefined();

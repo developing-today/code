@@ -44,6 +44,32 @@ export type ContentMode = "rich" | "markdown" | "plain" | "raw" | "media" | "bin
  */
 export const richSchema = new Schema({
   nodes: addListNodes(basicSchema.spec.nodes, "paragraph block*", "block")
+    .update("code_block", {
+      // Inherited prosemirror-schema-basic fields, preserved unchanged:
+      content: "text*",
+      marks: "",
+      group: "block",
+      code: true,
+      defining: true,
+      parseDOM: [{ tag: "pre", preserveWhitespace: "full" }],
+      toDOM() {
+        return ["pre", ["code", 0]];
+      },
+      // #1436: mirror the markdown codec's code_block attrs into the
+      // editor schema, following the #880 image linkHref / #881 table
+      // alignments mirror pattern. The Rust codec (markdown.rs) sets
+      // attrs {params: html, htmlBlock: true} for HTML blocks and
+      // {params: <info>} for authored fences, and on save reads
+      // attrs.params and requires attrs.htmlBlock == true to emit an
+      // HtmlBlock. Without these declared here, Node.fromJSON drops
+      // both attrs on editor load: HTML blocks re-fence as an html
+      // fence (the #982 regression path) and authored fences lose
+      // their language/info string.
+      attrs: {
+        params: { default: null },
+        htmlBlock: { default: null },
+      },
+    })
     .update("image", {
       inline: true,
       group: "inline",
