@@ -56,7 +56,14 @@ const TURN_TIMEOUT_MS = 300 * 1000;
 
 // The models the sandbox opencode.jsonc advertises for this provider.
 // Any other requested id is passed through to the CLI untouched.
-const MODELS = [{ id: 'claude-haiku-5-5', name: 'Haiku 5.5 (Claude Code)' }];
+// Sonnet/Opus ids verified against the CLI's own session records on the
+// laptop (~/.claude/projects: claude-sonnet-5-5 and claude-opus-5-5 are
+// models this CLI has served under the fleet account). Issue #1132.
+const MODELS = [
+  { id: 'claude-haiku-5-5', name: 'Haiku 5.5 (Claude Code)' },
+  { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5 (Claude Code)' },
+  { id: 'claude-opus-5-5', name: 'Opus 5.5 (Claude Code)' }
+];
 const DEFAULT_MODEL = 'claude-haiku-5-5';
 
 const findClaudeBinary = () => {
