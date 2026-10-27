@@ -4301,6 +4301,104 @@
         },
         "gpt-5.5-xhigh": {
           "name": "GPT-5.5 XHigh (ChatGPT)"
+        },
+        "gpt-reserve": {
+          "name": "GPT Reserve (ChatGPT)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "gpt-reserve-low": {
+          "name": "GPT Reserve Low (ChatGPT)"
+        },
+        "gpt-reserve-medium": {
+          "name": "GPT Reserve Medium (ChatGPT)"
+        },
+        "gpt-reserve-high": {
+          "name": "GPT Reserve High (ChatGPT)"
+        },
+        "gpt-reserve-xhigh": {
+          "name": "GPT Reserve XHigh (ChatGPT)"
+        },
+        "gpt-reserve-max": {
+          "name": "GPT Reserve Max (ChatGPT)"
+        },
+        "codex-auto-review": {
+          "name": "Codex Auto Review (ChatGPT)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            },
+            "xhigh": {
+              "options": {
+                "reasoning_effort": "xhigh"
+              }
+            },
+            "max": {
+              "options": {
+                "reasoning_effort": "max"
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 128000
+          }
+        },
+        "codex-auto-review-low": {
+          "name": "Codex Auto Review Low (ChatGPT)"
+        },
+        "codex-auto-review-medium": {
+          "name": "Codex Auto Review Medium (ChatGPT)"
+        },
+        "codex-auto-review-high": {
+          "name": "Codex Auto Review High (ChatGPT)"
+        },
+        "codex-auto-review-xhigh": {
+          "name": "Codex Auto Review XHigh (ChatGPT)"
+        },
+        "codex-auto-review-max": {
+          "name": "Codex Auto Review Max (ChatGPT)"
         }
 
       }
