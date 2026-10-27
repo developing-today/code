@@ -89,6 +89,14 @@ export const PAGES: PageDef[] = [
       "The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.",
   },
   {
+    id: "health",
+    title: "Health",
+    route: "/health",
+    api: "/api/health",
+    blurb:
+      "Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).",
+  },
+  {
     id: "pages",
     title: "All pages",
     route: "/pages",

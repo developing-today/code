@@ -380,10 +380,10 @@ describe("attention render (slice 2)", () => {
     const src = fixtureSource();
     const view = buildAttention(await src.attention(), SECTION);
     const html = renderAttention(view, await src.coverage(), src.provenance());
-    expect(html).toContain("Needs user");
+    expect(html).toContain("Needs User");
     // Section present: counts render as numbers and the tier header
     // carries the section's run id — no honesty banner (#1139).
-    expect(html).not.toContain("Needs user (unknown)");
+    expect(html).not.toContain("Needs User (unknown)");
     expect(html).not.toContain("Tier source missing");
     expect(html).toContain("orch-test");
     expect(html).toContain("Why you:");
@@ -407,9 +407,9 @@ describe("attention honesty (#1139)", () => {
     const html = renderAttention(view, await src.coverage(), src.provenance());
     expect(html).toContain("Tier source missing");
     expect(html).toContain("the orchestrator's published queues are NOT reflected");
-    expect(html).toContain("Needs user (unknown)");
-    expect(html).toContain("Needs orchestrator (unknown)");
-    expect(html).not.toContain("Needs user (0)");
+    expect(html).toContain("Needs User (unknown)");
+    expect(html).toContain("Needs Orchestrator (unknown)");
+    expect(html).not.toContain("Needs User (0)");
     // The false-reassurance empty copy is suppressed in this state.
     expect(html).not.toContain("Nothing in the user queue right now.");
   });
@@ -424,7 +424,7 @@ describe("attention honesty (#1139)", () => {
     const html = renderAttention(view, await src.coverage(), src.provenance());
     expect(html).toContain("Tier source invalid");
     expect(html).toContain("provenance");
-    expect(html).toContain("Needs user (unknown)");
+    expect(html).toContain("Needs User (unknown)");
   });
 
   test("stale section: counts render, badged with a stale banner and the run stamp", async () => {
@@ -437,7 +437,7 @@ describe("attention honesty (#1139)", () => {
     expect(view.tierSource.present).toBe(true);
     const html = renderAttention(view, await src.coverage(), src.provenance());
     expect(html).toContain("Tier source stale");
-    expect(html).not.toContain("Needs user (unknown)");
+    expect(html).not.toContain("Needs User (unknown)");
     expect(html).toContain("orch-test");
   });
 

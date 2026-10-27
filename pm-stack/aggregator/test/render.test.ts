@@ -222,13 +222,13 @@ describe("render smoke (fixtures)", () => {
     const view = buildAttention(await src.attention(), await src.orchestration());
     const html = renderAttention(view, await src.coverage(), src.provenance());
     expect(html).toContain("Needs you");
-    expect(html).toContain("Needs user");
-    expect(html).toContain("Needs orchestrator");
+    expect(html).toContain("Needs User");
+    expect(html).toContain("Needs Orchestrator");
     // No orchestration section in fixtures: the honesty banner shows
     // and the tier heading reports "unknown", not a number (#1139).
     expect(html).toContain("Tier source missing");
-    expect(html).toContain("Needs user (unknown)");
-    expect(html).not.toContain("Needs user (0)");
+    expect(html).toContain("Needs User (unknown)");
+    expect(html).not.toContain("Needs User (0)");
     expect(html).toContain("waiting for an answer");
     expect(html).toContain("Waiting on:");
   });

@@ -42,6 +42,15 @@ export interface Config {
   projector: {
     baseUrl: string | null;
   };
+  /** Probe targets for the /health page (#1147): the stack services the
+   * aggregator does not otherwise read. Kaneo/Grist/projector targets
+   * already live in their own sections above. */
+  pad: {
+    baseUrl: string;
+  };
+  readyForAgent: {
+    baseUrl: string;
+  };
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -91,6 +100,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         env.PM_PROJECTOR_URL === "off" || env.PM_PROJECTOR_URL === "none"
           ? null
           : s(env.PM_PROJECTOR_URL, "http://127.0.0.1:7801"),
+    },
+    pad: {
+      baseUrl: s(env.PM_AGG_PAD_URL, "http://127.0.0.1:7777"),
+    },
+    readyForAgent: {
+      baseUrl: s(env.PM_AGG_RFA_URL, "http://127.0.0.1:6056"),
     },
   };
 }
