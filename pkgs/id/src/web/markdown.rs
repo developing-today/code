@@ -41,6 +41,17 @@ pub enum ConversionError {
     MissingType,
     /// The JSON contains an unknown node type.
     UnknownType(String),
+    /// A node appears where its kind cannot legally go (e.g. an inline
+    /// node as a direct child of `doc`, a block node inside a
+    /// `paragraph`). Converting it would build an ill-formed comrak AST
+    /// that panics the formatter in debug builds and emits invalid
+    /// markdown in release builds (#1043).
+    MisplacedNode {
+        /// The parent node type the child was found under.
+        parent: String,
+        /// The misplaced child node type.
+        child: String,
+    },
     /// Failed to format markdown output.
     FormatError(std::fmt::Error),
 }
@@ -50,6 +61,9 @@ impl std::fmt::Display for ConversionError {
         match self {
             Self::MissingType => write!(f, "JSON node missing 'type' field"),
             Self::UnknownType(t) => write!(f, "Unknown node type: {t}"),
+            Self::MisplacedNode { parent, child } => {
+                write!(f, "Misplaced node: {child} cannot appear inside {parent}")
+            }
             Self::FormatError(e) => write!(f, "Markdown format error: {e}"),
         }
     }
@@ -907,6 +921,113 @@ fn parse_linked_img_tag(html: &str) -> Option<Value> {
     Some(image_with_link(img, &href, link_title.as_deref()))
 }
 
+/// Placement categories for the #1043 validation walk. A node whose type
+/// is not listed here is left to `json_to_ast`, which reports it as
+/// `ConversionError::UnknownType` — validation never masks that error.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    /// Block-level node (`paragraph`, `table`, lists, …).
+    Block,
+    /// Inline node (`text`, `image`, `hard_break`, …).
+    Inline,
+    /// `list_item` — only legal directly inside a bullet/ordered list.
+    ListItem,
+    /// `task_list_item` — only legal directly inside a `task_list`.
+    TaskListItem,
+    /// `table_row` — only legal directly inside a `table`.
+    TableRow,
+    /// `table_header` / `table_cell` — only legal inside a `table_row`.
+    TableCell,
+}
+
+fn placement_of(node_type: &str) -> Option<Placement> {
+    match node_type {
+        "paragraph" | "heading" | "blockquote" | "code_block" | "horizontal_rule" | "bullet_list"
+        | "ordered_list" | "task_list" | "table" | "footnote_definition" => Some(Placement::Block),
+        "text" | "image" | "hard_break" | "html_inline" | "footnote_reference" => {
+            Some(Placement::Inline)
+        }
+        "list_item" => Some(Placement::ListItem),
+        "task_list_item" => Some(Placement::TaskListItem),
+        "table_row" => Some(Placement::TableRow),
+        "table_header" | "table_cell" => Some(Placement::TableCell),
+        _ => None,
+    }
+}
+
+/// Whether a child of category `child` may appear directly inside a
+/// parent of type `parent`. Mirrors the comrak AST containment rules for
+/// the node kinds this codec emits, at the `ProseMirror` level.
+fn placement_allowed(parent: &str, child: Placement) -> bool {
+    match parent {
+        // The document and block containers hold blocks only.
+        "doc" | "blockquote" | "list_item" | "task_list_item" => child == Placement::Block,
+        // Inline containers hold inline content only.
+        "paragraph" | "heading" => child == Placement::Inline,
+        "bullet_list" | "ordered_list" => child == Placement::ListItem,
+        "task_list" => child == Placement::TaskListItem,
+        "table" => child == Placement::TableRow,
+        "table_row" => child == Placement::TableCell,
+        // PM table cells wrap blocks (unwrapped during conversion) and
+        // footnote definitions carry inline content on the PM side
+        // (re-wrapped during conversion, #945); both shapes are legal.
+        "table_header" | "table_cell" | "footnote_definition" => {
+            child == Placement::Block || child == Placement::Inline
+        }
+        "code_block" => false,
+        // Inline leaves and anything unlisted impose no child rules here;
+        // structural surprises inside them are json_to_ast's to report.
+        _ => true,
+    }
+}
+
+/// Validate block/inline placement over a `ProseMirror` document before
+/// conversion (#1043). `json_to_ast` places any known node type anywhere;
+/// a misplaced node (a `text` node directly under `doc`, a `paragraph`
+/// inside a `paragraph`, …) produces an ill-formed comrak AST that
+/// panics the formatter in debug builds and silently emits invalid
+/// markdown in release builds. Reject those documents up front with
+/// `ConversionError::MisplacedNode` instead.
+fn validate_placement(doc: &Value) -> Result<(), ConversionError> {
+    fn walk(node: &Value, parent: Option<&str>) -> Result<(), ConversionError> {
+        let Some(node_type) = node["type"].as_str() else {
+            // Missing type: json_to_ast reports MissingType; keep that
+            // error's precedence.
+            return Ok(());
+        };
+        if let Some(parent_type) = parent
+            && let Some(category) = placement_of(node_type)
+            && !placement_allowed(parent_type, category)
+        {
+            return Err(ConversionError::MisplacedNode {
+                parent: parent_type.to_owned(),
+                child: node_type.to_owned(),
+            });
+        }
+        // code_block content is literal text children only.
+        if node_type == "code_block" {
+            if let Some(content) = node["content"].as_array() {
+                for child in content {
+                    if child["type"].as_str() != Some("text") {
+                        return Err(ConversionError::MisplacedNode {
+                            parent: node_type.to_owned(),
+                            child: child["type"].as_str().unwrap_or("<missing>").to_owned(),
+                        });
+                    }
+                }
+            }
+            return Ok(());
+        }
+        if let Some(content) = node["content"].as_array() {
+            for child in content {
+                walk(child, Some(node_type))?;
+            }
+        }
+        Ok(())
+    }
+    walk(doc, None)
+}
+
 /// Convert `ProseMirror` JSON document to markdown text.
 ///
 /// # Arguments
@@ -921,6 +1042,7 @@ fn parse_linked_img_tag(html: &str) -> Option<Value> {
 ///
 /// Returns `ConversionError` if the JSON structure is invalid.
 pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
+    validate_placement(doc)?;
     let arena = Arena::new();
     let root = json_to_ast(&arena, doc)?;
     // #1019: comrak's renderer percent-encodes a space in a link/image
@@ -1726,6 +1848,77 @@ mod tests {
             assert_eq!(first, original, "first save for {original:?}");
             assert_eq!(first, second, "no fixpoint for {original:?}");
         }
+    }
+
+    #[test]
+    fn test_misplaced_nodes_return_error_not_panic() {
+        // #1043: json_to_ast placed any known node type anywhere, so a
+        // misplaced node built an ill-formed comrak AST — panicking the
+        // formatter in debug builds, emitting invalid markdown in
+        // release builds. Placement validation must reject each of these
+        // with MisplacedNode instead.
+        let cases: &[(&str, Value)] = &[
+            (
+                "text at doc level",
+                json!({"type": "doc", "content": [{"type": "text", "text": "orphan"}]}),
+            ),
+            (
+                "image at doc level",
+                json!({"type": "doc", "content": [{"type": "image", "attrs": {"src": "x.png"}}]}),
+            ),
+            (
+                "hard_break at doc level",
+                json!({"type": "doc", "content": [{"type": "hard_break"}]}),
+            ),
+            (
+                "paragraph inside paragraph",
+                json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "x"}]}
+                ]}]}),
+            ),
+            (
+                "heading inside paragraph",
+                json!({"type": "doc", "content": [{"type": "paragraph", "content": [
+                    {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "x"}]}
+                ]}]}),
+            ),
+            (
+                "inline directly inside blockquote",
+                json!({"type": "doc", "content": [{"type": "blockquote", "content": [
+                    {"type": "text", "text": "x"}
+                ]}]}),
+            ),
+            (
+                "paragraph directly inside table (no row)",
+                json!({"type": "doc", "content": [{"type": "table", "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "x"}]}
+                ]}]}),
+            ),
+            (
+                "list_item inside task_list",
+                json!({"type": "doc", "content": [{"type": "task_list", "content": [
+                    {"type": "list_item", "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "x"}]}
+                    ]}
+                ]}]}),
+            ),
+        ];
+        for (name, doc) in cases {
+            match prosemirror_to_markdown(doc) {
+                Err(ConversionError::MisplacedNode { .. }) => {}
+                other => panic!("{name}: expected MisplacedNode error, got {other:?}"),
+            }
+        }
+
+        // Unknown types keep their existing error (validation must not
+        // mask it), and well-formed docs convert exactly as before.
+        let unknown = json!({"type": "doc", "content": [{"type": "nosuchnode"}]});
+        assert!(matches!(
+            prosemirror_to_markdown(&unknown),
+            Err(ConversionError::UnknownType(_))
+        ));
+        let ok = json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hello"}]}]});
+        assert_eq!(prosemirror_to_markdown(&ok).unwrap(), "hello\n");
     }
 
     #[test]
