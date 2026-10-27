@@ -1309,6 +1309,7 @@ async fn query_session<I: SessionIo>(service: &WorldService, io: &mut I, first: 
             } => {
                 let token = JoinCapability::from_wire(capability);
                 if let Err(message) = records_session(
+                    service.frame_meter(),
                     service.world(),
                     io,
                     token,
@@ -1382,6 +1383,7 @@ async fn records_ticket_session<I: SessionIo>(
 pub(crate) const MAX_RECORDS_PAGE_BYTES: usize = 768 * 1024;
 
 async fn records_session<I: SessionIo>(
+    meter: &WorldMetrics,
     world: &WorldHandle,
     io: &mut I,
     token: JoinCapability,
@@ -1422,7 +1424,7 @@ async fn records_session<I: SessionIo>(
         page.insert(key.clone(), value.clone());
     }
     let next_after = more.then_some(last_included).flatten();
-    if !send_json(service.frame_meter(), 
+    if !send_json(meter, 
         io,
         &ServerFrame::Records {
             sequence,
@@ -1641,7 +1643,7 @@ async fn joined<I: SessionIo>(
                     if !send_json(service.frame_meter(), io, &ServerFrame::Event { event }).await {
                         return;
                     }
-                    if !send_view(world, io, &token, event.sequence, viewport).await {
+                    if !send_view(service.frame_meter(), world, io, &token, event.sequence, viewport).await {
                         return;
                     }
                 }
@@ -1661,7 +1663,7 @@ async fn joined<I: SessionIo>(
     {
         return;
     }
-    if !send_view(world, io, &token, cursor, viewport).await {
+    if !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
         return;
     }
 
@@ -1703,7 +1705,7 @@ async fn joined<I: SessionIo>(
                             if !send_json(service.frame_meter(), io, &ServerFrame::ProgramChanged {
                                 module_hash,
                                 sequence: cursor,
-                            }).await || !send_view(world, io, &token, cursor, viewport).await {
+                            }).await || !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
                                 break;
                             }
                         }
@@ -1726,7 +1728,7 @@ async fn joined<I: SessionIo>(
                     if !send_json(service.frame_meter(), io, &ServerFrame::Event { event: &shown }).await {
                         break;
                     }
-                    if !send_view(world, io, &token, cursor, viewport).await {
+                    if !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
                         break;
                     }
                 }
@@ -1736,7 +1738,7 @@ async fn joined<I: SessionIo>(
                         break;
                     }
                     cursor = snapshot.current_sequence;
-                    if !send_view(world, io, &token, cursor, viewport).await {
+                    if !send_view(service.frame_meter(), world, io, &token, cursor, viewport).await {
                         break;
                     }
                 }
@@ -1745,7 +1747,7 @@ async fn joined<I: SessionIo>(
             changed = views.changed() => match changed {
                 Ok(()) => {
                     let sequence = *views.borrow_and_update();
-                    if !send_view(world, io, &token, sequence, viewport).await {
+                    if !send_view(service.frame_meter(), world, io, &token, sequence, viewport).await {
                         break;
                     }
                 }
@@ -1780,6 +1782,7 @@ impl Drop for PresenceGuard {
 }
 
 async fn send_view<I: SessionIo>(
+    meter: &WorldMetrics,
     world: &WorldHandle,
     io: &mut I,
     token: &JoinCapability,
@@ -1797,7 +1800,7 @@ async fn send_view<I: SessionIo>(
     match view {
         Ok(Some(data)) => {
             if data.len() > MAX_FRAME_BYTES {
-                return send_error(service.frame_meter(), io, "world presentation is too large").await;
+                return send_error(meter, io, "world presentation is too large").await;
             }
             let surface = match crate::world_presentation::parse_surface(&data) {
                 Ok(Some(crate::world_presentation::WorldSurface::Screen(screen))) => {
@@ -1807,9 +1810,9 @@ async fn send_view<I: SessionIo>(
                     Some(crate::world_presentation::WorldSurface::Screen(screen))
                 }
                 Ok(surface) => surface,
-                Err(_) => return send_error(service.frame_meter(), io, "invalid world screen presentation").await,
+                Err(_) => return send_error(meter, io, "invalid world screen presentation").await,
             };
-            send_json(service.frame_meter(), 
+            send_json(meter, 
                 io,
                 &ServerFrame::View {
                     sequence,
@@ -1934,7 +1937,7 @@ async fn handle_client_frame<I: SessionIo>(
                 width: usize::from(width),
                 height: usize::from(height),
             });
-            return send_view(world, io, token, sequence, *viewport).await;
+            return send_view(service.frame_meter(), world, io, token, sequence, *viewport).await;
         }
         ClientFrame::Paste { text } => {
             let Ok(bytes) = normalize_paste(&text) else {
@@ -1953,6 +1956,7 @@ async fn handle_client_frame<I: SessionIo>(
         ClientFrame::Records { prefix, after, .. } => {
             // Authorized by the session's own capability.
             if let Err(message) = records_session(
+                service.frame_meter(),
                 world,
                 io,
                 token.clone(),
