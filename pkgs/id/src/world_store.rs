@@ -1524,6 +1524,8 @@ mod tests {
         assert!(metrics.commands_total >= 1, "{metrics:?}");
         assert_eq!(metrics.command_latency.count, metrics.commands_total);
         world.shutdown().await.unwrap();
+    }
+
     #[test]
     fn first_execution_profile_append_bumps_the_journal_header() {
         // Cross-version fixture for the issue-#227 contract: a version-1
