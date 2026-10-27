@@ -17,7 +17,7 @@
 //! - `bullet_list`: Unordered list with `tight` attribute
 //! - `ordered_list`: Ordered list with `order` and `tight` attributes
 //! - `list_item`: List item containing blocks
-//! - `task_list`: Task list (GFM `- [ ]`/`- [x]` items)
+//! - `task_list`: Task list (GFM `- [ ]`/`- [x]` items) with `tight` attribute
 //! - `task_list_item`: Task list item with `checked` attribute
 //! - `image`: Inline image with `src`, `alt`, `title` attributes
 //! - `hard_break`: Hard line break
@@ -215,6 +215,7 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
                 let content = collect_list_items(node);
                 json!({
                     "type": "task_list",
+                    "attrs": {"tight": list.tight},
                     "content": content
                 })
             } else {
@@ -1017,10 +1018,22 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         "list_item" => NodeValue::Item(comrak::nodes::NodeList::default()),
 
         "task_list" => {
-            // Task list is a bullet list whose children are TaskItems
+            // Task list is a bullet list whose children are TaskItems.
+            // #1036: carry `tight` like bullet_list/ordered_list. When the
+            // attr is absent (legacy PM docs stored by the old codec, which
+            // dropped it), infer it: loose if any task_list_item has more
+            // than one block child, else tight — so legacy loose items stop
+            // fusing and legacy tight lists render exactly as before.
+            let tight = json["attrs"]["tight"].as_bool().unwrap_or_else(|| {
+                !json["content"].as_array().is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item["content"].as_array().is_some_and(|blocks| blocks.len() > 1)
+                    })
+                })
+            });
             NodeValue::List(comrak::nodes::NodeList {
                 list_type: ListType::Bullet,
-                tight: true,
+                tight,
                 bullet_char: b'-',
                 ..Default::default()
             })
@@ -2143,6 +2156,117 @@ mod tests {
         );
         assert!(result.contains("unchecked item"));
         assert!(result.contains("checked item"));
+    }
+
+    #[test]
+    fn test_task_list_tight_attr_carried_on_parse() {
+        // #1036: parse must carry list.tight on the task_list node.
+        let tight_doc = markdown_to_prosemirror("- [ ] a\n- [x] b\n");
+        assert_eq!(tight_doc["content"][0]["attrs"]["tight"], true);
+        let loose_doc = markdown_to_prosemirror("- [ ] first\n\n  second para\n- [ ] other\n");
+        assert_eq!(loose_doc["content"][0]["attrs"]["tight"], false);
+    }
+
+    #[test]
+    fn test_loose_task_list_roundtrip_fixpoint() {
+        // #1036: a loose (multi-paragraph) task item must keep its
+        // paragraph boundary and be a two-save fixpoint, checked and not.
+        for original in [
+            "- [ ] first\n\n  second para\n- [ ] other\n",
+            "- [x] first\n\n  second para\n- [ ] other\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, second, "no fixpoint for {original:?}: {first:?}");
+            assert!(
+                !first.contains("first second para"),
+                "paragraphs fused for {original:?}: {first:?}"
+            );
+            assert!(first.contains("first"), "lost text: {first:?}");
+            assert!(first.contains("second para"), "lost text: {first:?}");
+        }
+    }
+
+    #[test]
+    fn test_task_list_code_block_item_survives() {
+        // #1036: a code block inside a task item survives a save as a
+        // code block, not inlined into paragraph text.
+        let original = "- [ ] item\n\n  ```\n  code\n  ```\n- [ ] other\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "no fixpoint: {first:?}");
+        assert!(first.contains("```"), "code fence lost: {first:?}");
+        assert!(
+            !first.contains("item code"),
+            "code block inlined: {first:?}"
+        );
+        let doc = markdown_to_prosemirror(&first);
+        let item = &doc["content"][0]["content"][0];
+        assert!(
+            item["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|b| b["type"] == "code_block"),
+            "no code_block child after reparse: {item}"
+        );
+    }
+
+    #[test]
+    fn test_tight_task_list_renders_as_before() {
+        // #1036: tight lists render byte-identically to the old codec.
+        let original = "- [ ] unchecked item\n- [x] checked item\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, original);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_legacy_task_list_without_tight_attr_infers_loose() {
+        // #1036: legacy PM docs (no tight attr, stored by the old codec)
+        // with a multi-block item must save loose, not fuse.
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "task_list",
+                "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+                        {"type": "paragraph", "content": [{"type": "text", "text": "second para"}]}
+                    ]},
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "other"}]}
+                    ]}
+                ]
+            }]
+        });
+        let md = prosemirror_to_markdown(&doc).unwrap();
+        assert!(
+            !md.contains("first second para"),
+            "legacy loose item fused: {md:?}"
+        );
+        let second = prosemirror_to_markdown(&markdown_to_prosemirror(&md)).unwrap();
+        assert_eq!(md, second, "legacy loose output is not a fixpoint");
+    }
+
+    #[test]
+    fn test_legacy_task_list_without_tight_attr_single_para_is_tight() {
+        // #1036: a legacy no-attr list whose items are all single
+        // paragraphs renders tight exactly as before.
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "task_list",
+                "content": [
+                    {"type": "task_list_item", "attrs": {"checked": false}, "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "one"}]}
+                    ]},
+                    {"type": "task_list_item", "attrs": {"checked": true}, "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "two"}]}
+                    ]}
+                ]
+            }]
+        });
+        let md = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(md, "- [ ] one\n- [x] two\n");
     }
 
     #[test]

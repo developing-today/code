@@ -98,6 +98,10 @@ export const richSchema = new Schema({
       task_list: {
         group: "block",
         content: "task_list_item+",
+        // #1036: tight/loose carried for the markdown codec, mirroring
+        // the #881 table-alignments pattern; absent/loose rendering
+        // depends on it so multi-block task items do not fuse on save.
+        attrs: { tight: { default: true } },
         parseDOM: [
           {
             tag: "ul",
