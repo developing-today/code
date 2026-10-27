@@ -15,7 +15,7 @@ function section(linedUp: OrchestrationSection["goals"][number]["linedUp"], goal
     version: 1,
     generatedAt: GENERATED,
     runId: `orch-${GENERATED}`,
-    provenance: "test section",
+    provenance: { sources: ["test section"] },
     tiers: { needsDrew: [], needsOrchestrator: [] },
     dependencies: [],
     goals: [
