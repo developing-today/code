@@ -1993,9 +1993,23 @@ class FakeTurso:
         "INSERT INTO notes VALUES(1,'hello');\n"
         "COMMIT;\n"
     )
+    # A dump cut mid-stream: complete statements, but the transaction
+    # never commits — it would rebuild into an integrity-clean shell
+    # with every row rolled back.
+    TRUNCATED_SQL = (
+        "PRAGMA foreign_keys=OFF;\n"
+        "BEGIN TRANSACTION;\n"
+        "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);\n"
+        "INSERT INTO notes VALUES(1,'hello');\n"
+    )
+    # Well-formed and committed, but carries no user tables at all.
+    EMPTY_SQL = "PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\nCOMMIT;\n"
 
     def __init__(self):
         self.failing_dumps = set()
+        self.truncated_dumps = set()
+        self.empty_dumps = set()
+        self.dump_accept_encodings = {}
         self.databases = [
             {"Name": "fake-one", "Hostname": "fake-one.example.invalid"},
             {"Name": "fake-two", "Hostname": "fake-two.example.invalid"},
@@ -2028,10 +2042,17 @@ def make_turso_handler(fake: FakeTurso):
                 return self._send(200, json.dumps({"databases": fake.databases}))
             if len(parts) == 2 and parts[1] == "dump":
                 name = parts[0]
+                fake.dump_accept_encodings[name] = self.headers.get(
+                    "Accept-Encoding"
+                )
                 if self.headers.get("Authorization") != f"Bearer fake-jwt-{name}":
                     return self._send(401, {"error": "bad db token"})
                 if name in fake.failing_dumps:
                     return self._send(500, "dump exploded", "text/plain")
+                if name in fake.truncated_dumps:
+                    return self._send(200, FakeTurso.TRUNCATED_SQL, "text/plain")
+                if name in fake.empty_dumps:
+                    return self._send(200, FakeTurso.EMPTY_SQL, "text/plain")
                 return self._send(200, FakeTurso.DUMP_SQL, "text/plain")
             return self._send(404, {"error": "not found"})
 
@@ -2084,7 +2105,7 @@ class TestTursoExportScript(unittest.TestCase):
         )
         self.stub.chmod(0o755)
 
-    def run_export(self, with_token=True):
+    def run_export(self, with_token=True, extra_env=None):
         script = Path(__file__).resolve().parent.parent / "scripts" / "export-turso.sh"
         env = dict(os.environ)
         env.pop("TURSO_PLATFORM_API_TOKEN", None)
@@ -2100,6 +2121,8 @@ class TestTursoExportScript(unittest.TestCase):
                 "no_proxy": "127.0.0.1,localhost",
             }
         )
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(
             ["bash", str(script)],
             env=env,
@@ -2156,6 +2179,74 @@ class TestTursoExportScript(unittest.TestCase):
         self.assertIn("fake-two", proc.stderr)
         self.assertTrue((self.captured / "fake-one.db.gz").is_file())
         self.assertFalse((self.captured / "fake-two.db.gz").exists())
+
+    def test_dump_download_offers_compression(self):
+        # --compressed on the client: the dump endpoint must see an
+        # Accept-Encoding offering gzip (uncompressed GB-class dumps
+        # get cut mid-stream by the sandbox proxy).
+        proc = self.run_export()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(
+            set(self.fake.dump_accept_encodings), {"fake-one", "fake-two"}
+        )
+        for name, encoding in self.fake.dump_accept_encodings.items():
+            self.assertIn("gzip", encoding or "", name)
+
+    def test_truncated_dump_is_rejected_and_other_still_files(self):
+        # A dump whose tail lacks COMMIT; would rebuild into an
+        # integrity-clean but empty database — it must be refused
+        # before rebuilding, by name, without starving the other DB.
+        self.fake.truncated_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("fake-two", proc.stderr)
+        self.assertIn("truncated", proc.stderr)
+        self.assertTrue((self.captured / "fake-one.db.gz").is_file())
+        self.assertFalse((self.captured / "fake-two.db.gz").exists())
+
+    def test_committed_but_tableless_dump_is_rejected(self):
+        self.fake.empty_dumps = {"fake-two"}
+        proc = self.run_export()
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("fake-two", proc.stderr)
+        self.assertIn("no user tables", proc.stderr)
+        self.assertTrue((self.captured / "fake-one.db.gz").is_file())
+        self.assertFalse((self.captured / "fake-two.db.gz").exists())
+
+    def test_rebuild_streams_through_sqlite3_cli(self):
+        # SQLITE3_BIN is the rebuild seam: a recording shim that
+        # delegates to the real sqlite3 must be what builds and
+        # verifies the export (never an in-memory python read).
+        real_sqlite3 = shutil.which("sqlite3")
+        if not real_sqlite3:
+            self.skipTest("sqlite3 CLI unavailable")
+        shim_log = self.tmp / "sqlite3-shim.log"
+        shim = self.tmp / "sqlite3-shim"
+        shim.write_text(
+            "#!/usr/bin/env bash\n"
+            f'echo "$@" >>"{shim_log}"\n'
+            f'exec "{real_sqlite3}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        proc = self.run_export(extra_env={"SQLITE3_BIN": str(shim)})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        calls = shim_log.read_text()
+        self.assertIn("-bail", calls)
+        self.assertIn("PRAGMA integrity_check;", calls)
+        raw = gzip.decompress((self.captured / "fake-one.db.gz").read_bytes())
+        check = self.tmp / "check-shim.db"
+        check.write_bytes(raw)
+        con = sqlite3.connect(str(check))
+        try:
+            self.assertEqual(
+                con.execute("PRAGMA integrity_check").fetchone()[0], "ok"
+            )
+            self.assertEqual(
+                con.execute("SELECT body FROM notes WHERE id=1").fetchone()[0],
+                "hello",
+            )
+        finally:
+            con.close()
 
 
 class TestWorkerDecoder(unittest.TestCase):
