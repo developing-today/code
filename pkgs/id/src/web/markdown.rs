@@ -861,7 +861,7 @@ fn collect_alt_markdown<'a>(node: &'a AstNode<'a>, out: &mut String) {
 /// detached and ready to append under an Image node. Falls back to a
 /// single plain Text node when the alt does not parse to a paragraph
 /// (defensive; plain alts parse to exactly that anyway).
-fn alt_markdown_to_nodes<'a>(arena: &'a Arena<AstNode<'a>>, alt: &str) -> Vec<&'a AstNode<'a>> {
+fn alt_markdown_to_nodes<'a>(arena: &'a Arena<'a>, alt: &str) -> Vec<&'a AstNode<'a>> {
     let options = commonmark_options();
     let root = parse_document(arena, alt, &options);
     if let Some(paragraph) = root
@@ -2394,7 +2394,10 @@ mod tests {
             assert_eq!(saved.trim(), md.trim(), "round-trip for {md}");
             // And the saved form re-parses to the same stored alt (fixpoint).
             let doc2 = markdown_to_prosemirror(&saved);
-            assert_eq!(doc2["content"][0]["content"][0]["attrs"]["alt"], expected_alt);
+            assert_eq!(
+                doc2["content"][0]["content"][0]["attrs"]["alt"],
+                expected_alt
+            );
         }
     }
 
