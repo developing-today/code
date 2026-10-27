@@ -10,6 +10,7 @@ import "./world";
 import { type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { identityNeedsRefresh } from "./identity-refresh";
+import { updateHeaderSubtitle } from "./header-subtitle";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
 /** Result from saveFile() for AutoSaveManager to process */
@@ -535,22 +536,6 @@ function initScrollShowHeader(
     header.classList.remove("floating", "visible");
     footer?.classList.remove("floating", "visible");
   };
-}
-
-/**
- * Update header subtitle based on navigation state.
- * Shows "p2p file sharing" on initial load, or last filename as link after navigation.
- */
-function updateHeaderSubtitle(lastFilename: string | null, lastFilePath: string | null, hasHistory: boolean): void {
-  const subtitle = document.getElementById("header-subtitle");
-  if (!subtitle) return;
-
-  if (lastFilename && lastFilePath && hasHistory) {
-    // Create a link to the last file
-    subtitle.innerHTML = `// <a href="${lastFilePath}" data-nav>${lastFilename}</a>`;
-  } else {
-    subtitle.textContent = "// p2p file sharing";
-  }
 }
 
 /**
