@@ -313,13 +313,10 @@ describe("POST-boundary checks against the published item (#1291/#1293)", () => 
     expect(checkActionAgainstItem(actionInput({ payload: { optionId: "csv" } }), item, NOW)).toBeNull();
   });
 
-  test("survey answers: unknown ids and missing required answers are legible 400s", () => {
+  test("survey answers: unknown ids and bad values are legible 400s; partial submits are accepted (#1451)", () => {
     expect(
       checkActionAgainstItem(actionInput({ payload: { answers: [{ questionId: "nope", value: "x" }] } }), item, NOW),
     ).toContain('unknown question id "nope"');
-    expect(
-      checkActionAgainstItem(actionInput({ payload: { answers: [{ questionId: "notes", value: "hi" }] } }), item, NOW),
-    ).toContain("missing required answers: audience");
     expect(
       checkActionAgainstItem(
         actionInput({ payload: { answers: [{ questionId: "audience", value: "bogus" }] } }),
@@ -327,6 +324,13 @@ describe("POST-boundary checks against the published item (#1291/#1293)", () => 
         NOW,
       ),
     ).toContain("must be one of its options");
+    // #1451 (Drew, 2026-10-27): a partial submit — only the optional
+    // question answered — is recorded, not rejected; the card keeps
+    // showing the required remainder. (Pre-#1451 this was the
+    // "missing required answers: audience" 400.)
+    expect(
+      checkActionAgainstItem(actionInput({ payload: { answers: [{ questionId: "notes", value: "hi" }] } }), item, NOW),
+    ).toBeNull();
     expect(
       checkActionAgainstItem(
         actionInput({ payload: { answers: [{ questionId: "audience", value: "internal" }] } }),

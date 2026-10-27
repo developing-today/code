@@ -132,6 +132,14 @@ export class CommentsStore {
     return (await this.all()).filter((c) => c.objectRef === objectRef);
   }
 
+  /** Comments grouped by object ref, oldest first — the per-card
+   *  comment boxes (#1446) render from this. */
+  async byObject(): Promise<Map<string, DashComment[]>> {
+    const out = new Map<string, DashComment[]>();
+    for (const c of await this.all()) out.set(c.objectRef, [...(out.get(c.objectRef) ?? []), c]);
+    return out;
+  }
+
   /** Counts per object ref, for 💬 badges across the views. */
   async counts(): Promise<Map<string, number>> {
     const out = new Map<string, number>();
