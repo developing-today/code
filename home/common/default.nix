@@ -793,6 +793,31 @@ in
           "~/.local/state/proxy-supervisor/muse-proxy.build-stamp"
         ];
       }
+      # Enrolled 2026-10-27. The let block reserved claudeCodeProxyPort
+      # and the session variables already export CLAUDE_CODE_PROXY_PORT
+      # (opencode.jsonc dials it), but the proxy was never added to this
+      # list, so nothing supervised port 18749 and it sat dark until
+      # started by hand -- the same drift class as the hand-added pair
+      # transcribed above. Entry mirrors codex-proxy (the other node
+      # CLI bridge): host + PATH env, entrypoint + proxy-port.mjs as
+      # the artifact hash.
+      {
+        name = "claude-code-proxy";
+        canonicalPort = claudeCodeProxyPort;
+        portEnv = "CLAUDE_CODE_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/node"
+          "~/code/bin/claude-code-proxy.mjs"
+        ];
+        env = {
+          CLAUDE_CODE_PROXY_HOST = "127.0.0.1";
+          PATH = "/run/current-system/sw/bin:$HOME/.local/bin:/usr/bin:/bin";
+        };
+        hashFiles = [
+          "~/code/bin/claude-code-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+        ];
+      }
     ];
   };
 
