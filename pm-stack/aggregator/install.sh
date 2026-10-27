@@ -64,3 +64,23 @@ echo "== health (tailnet ${TAILNET_IP}) =="
 curl -s "http://${TAILNET_IP}:4870/api/health"
 echo
 systemctl --user is-active pm-aggregator.service
+
+# Quota gatherer (#1151): a user timer on the same 15-minute cadence
+# as the Meta file exporter (#1301), running the deployed package's
+# scripts/gather-quota.ts. Units ship with this package (systemd/);
+# a ~/pm-stack/systemd copy wins when present, matching how the
+# aggregator unit itself is sourced. Guarded: a checkout without
+# the units skips this block instead of failing the install.
+GATHERER_SVC_SRC="$SRC/systemd/quota-gatherer.service"
+GATHERER_TMR_SRC="$SRC/systemd/quota-gatherer.timer"
+[ -f "$HOME/pm-stack/systemd/quota-gatherer.service" ] && GATHERER_SVC_SRC="$HOME/pm-stack/systemd/quota-gatherer.service"
+[ -f "$HOME/pm-stack/systemd/quota-gatherer.timer" ] && GATHERER_TMR_SRC="$HOME/pm-stack/systemd/quota-gatherer.timer"
+if [ -f "$GATHERER_SVC_SRC" ] && [ -f "$GATHERER_TMR_SRC" ]; then
+  cp "$GATHERER_SVC_SRC" "$HOME/.config/systemd/user/quota-gatherer.service"
+  cp "$GATHERER_TMR_SRC" "$HOME/.config/systemd/user/quota-gatherer.timer"
+  systemctl --user daemon-reload
+  systemctl --user enable --now quota-gatherer.timer
+  echo "quota-gatherer.timer: $(systemctl --user is-active quota-gatherer.timer)"
+else
+  echo "quota-gatherer units not found — gatherer timer not installed"
+fi

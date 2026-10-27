@@ -1,0 +1,13 @@
+[Unit]
+Description=Quota gatherer — provider quotas every ~15 minutes (pm-stack, #1151)
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=300
+WorkingDirectory=%h/pm-stack/aggregator
+# Runs the deployed package's gatherer: imports the OpenChamber quota
+# module from the laptop checkout, reads OpenCode's credential store
+# directly, ingests laptop file exports (Meta, #1301), and writes
+# quota-current.json + snapshot records beside the aggregator.
+ExecStart=/run/current-system/sw/bin/bun run scripts/gather-quota.ts

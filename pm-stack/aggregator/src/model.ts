@@ -737,6 +737,65 @@ export interface AttentionFlag {
 }
 
 /**
+ * The quota plane's latest-state contract (Stage 2, #1151): one entry
+ * per provider credential the gatherer read this tick, each window
+ * carrying the hub's {value, pctOfLimit, resetsAt, measuredAt, source,
+ * state} shape. Written by scripts/gather-quota.ts to
+ * quota-current.json beside fleet-feed.json; the collector embeds it
+ * in the feed as `quotaCurrent` for the laptop aggregator.
+ */
+export interface QuotaCurrentWindow {
+  /** Window key from the provider result (e.g. "weekly", "5h", "credits_balance"). */
+  name: string;
+  /** Used value in the window's own unit: percent for plan windows, null for label-only rows. */
+  value: number | null;
+  /** Used percent of the window's limit, or null when the provider reports no percent. */
+  pctOfLimit: number | null;
+  /** Human label for non-percent values (e.g. a balance "¥44.29"), or null. */
+  valueLabel: string | null;
+  windowSeconds: number | null;
+  resetsAt: string | null;
+  measuredAt: string;
+  source: string;
+  state: "ok" | "error";
+}
+
+export interface QuotaCurrentEntry {
+  providerId: string;
+  providerName: string;
+  /** Hub snapshot/pool service id this provider's records land under. */
+  serviceId: string;
+  credentialId?: string;
+  credentialLabel?: string;
+  planLabel?: string;
+  state: "ok" | "error" | "unconfigured";
+  measuredAt: string;
+  source: string;
+  error?: string;
+  windows: QuotaCurrentWindow[];
+  /** The provider result's raw usage object, kept for fidelity until consumers settle. */
+  usage?: unknown;
+}
+
+/** One gatherer tick's health record, embedded in quota-current.json and kept standalone. */
+export interface QuotaGatherHeartbeat {
+  tickAt: string;
+  ok: boolean;
+  durationMs: number;
+  perProvider: Record<string, { state: "ok" | "error"; ms: number; rows: number; error?: string }>;
+  /** Set when the tick itself failed before any provider ran (import / credential store). */
+  error?: string;
+}
+
+export interface QuotaCurrentFile {
+  version: 1;
+  generatedAt: string;
+  source: string;
+  heartbeat: QuotaGatherHeartbeat;
+  providers: QuotaCurrentEntry[];
+}
+
+/**
  * One snapshot-store record (§4). Estimates are stored as a low/high
  * pair with unit "usd-est"; the 1.2× rule applies at render.
  */

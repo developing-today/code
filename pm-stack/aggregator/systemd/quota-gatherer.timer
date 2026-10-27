@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the quota gatherer every 15 minutes (pm-stack, #1151)
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=20
+Persistent=true
+Unit=quota-gatherer.service
+
+[Install]
+WantedBy=timers.target
