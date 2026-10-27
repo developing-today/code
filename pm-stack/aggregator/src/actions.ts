@@ -77,13 +77,21 @@ export type DashActionVerb =
   | "dismiss"
   | "approve-proposal"
   | "reject-proposal"
+  // triage — quick actions + restore (#1449/#1450): "mark-done" is the
+  // one-tap "Already done" (the consumer closes the item out; for gh:
+  // refs it performs the Done status write). "restore" undoes a
+  // suppression — it MUST name the suppressing action in `supersedes`.
+  | "mark-done"
+  | "restore"
   // status-request (#1154)
   | "request-status"
   // session (#1156)
   | "poke"
   | "stop"
   // preference (#1290)
-  | "set-delegation-default";
+  | "set-delegation-default"
+  // preference — Needs-you card order (#1456)
+  | "set-needs-order";
 
 export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = {
   triage: [
@@ -96,10 +104,12 @@ export const VERBS_BY_KIND: Record<DashActionKind, readonly DashActionVerb[]> = 
     "dismiss",
     "approve-proposal",
     "reject-proposal",
+    "mark-done",
+    "restore",
   ],
   "status-request": ["request-status"],
   session: ["poke", "answer", "stop"],
-  preference: ["set-delegation-default"],
+  preference: ["set-delegation-default", "set-needs-order"],
 };
 
 export interface DashActionPayload {
@@ -130,6 +140,9 @@ export interface DashActionPayload {
   proposalUpdatedAt?: string;
   /** set-delegation-default: the standing auto toggle value. */
   standingAuto?: boolean;
+  /** set-needs-order: the Needs-you card ordering (#1456). "urgency" is
+   *  the orchestrator's published order; the rest sort at render. */
+  needsOrder?: "urgency" | "newest" | "oldest" | "deadline";
 }
 
 export interface DashAction {
@@ -288,6 +301,17 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
     }
     payload.standingAuto = rawPayload.standingAuto;
   }
+  if (rawPayload.needsOrder !== undefined) {
+    if (
+      rawPayload.needsOrder !== "urgency" &&
+      rawPayload.needsOrder !== "newest" &&
+      rawPayload.needsOrder !== "oldest" &&
+      rawPayload.needsOrder !== "deadline"
+    ) {
+      return { ok: false, error: "payload.needsOrder must be urgency | newest | oldest | deadline" };
+    }
+    payload.needsOrder = rawPayload.needsOrder;
+  }
 
   let targetRef: RefKey | undefined;
   if (b.targetRef !== undefined) {
@@ -332,6 +356,12 @@ export function validateNewAction(body: unknown): { ok: true; value: NewAction }
   }
   if (verb === "set-delegation-default" && payload.standingAuto === undefined) {
     return { ok: false, error: "set-delegation-default requires payload.standingAuto (boolean)" };
+  }
+  if (verb === "set-needs-order" && payload.needsOrder === undefined) {
+    return { ok: false, error: "set-needs-order requires payload.needsOrder" };
+  }
+  if (verb === "restore" && supersedes === undefined) {
+    return { ok: false, error: "restore requires supersedes (the id of the action it undoes)" };
   }
   if ((verb === "dismiss" || verb === "reject-proposal") && payload.reason === undefined) {
     return { ok: false, error: `${verb} requires payload.reason` };
@@ -506,6 +536,7 @@ export const VERB_FAMILIES: Partial<Record<DashActionVerb, string>> = {
   "de-escalate": "tier",
   delegate: "delegation",
   dismiss: "dismiss",
+  "mark-done": "done",
   "request-status": "status",
   poke: "poke",
   stop: "stop",
