@@ -26,9 +26,16 @@
 # aggregates the matrix result and keeps the historical required status
 # name "nix flake check". The integration suite itself is sharded too:
 # the old `test`/`test-web` checks each re-ran the whole cargo suite in
-# one derivation (~25 minutes); test-shard-0/1/2 split its targets three
-# ways (see the justfile's test-shard-sandbox) and, with test-unit and
-# the web checks, cover the same tests by composition.
+# one derivation (~25 minutes); test-shard-0/1/2/3 split its targets
+# four ways (see the justfile's test-shard-sandbox) and, with test-unit
+# and the web checks, cover the same tests by composition.
+#
+# Shape (2026-10, #551): crash-gate was the slowest single PR check
+# (~15 min) because it ran every heavy crash sweep serially in one
+# derivation. It is now split by test-name filter into four parallel
+# checks (crash-gate-sampled/-sweep/-control/-ingest in
+# id-pr-checks.txt); the aggregate still runs nightly via the full
+# flake check.
 
 name: id
 
@@ -94,7 +101,7 @@ jobs:
           echo "PR checks: $checks"
 
   # One parallel job per PR check. Fast PR set: unit + integration
-  # tests, lint, format, typecheck, doc and the crash gate, listed in
+  # tests, lint, format, typecheck, doc and the crash gates, listed in
   # id-pr-checks.txt. The heavy remainder — test-e2e (Playwright),
   # nixos-serve, nixos-e2e, nixos-integration and nixos-playwright-e2e —
   # runs nightly in id-e2e-nightly.yml, which also runs the full
