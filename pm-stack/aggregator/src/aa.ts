@@ -760,6 +760,7 @@ function catalogRates(prices: AaPrice[]): Map<string, CatalogRate> {
           output: p.outputPer1M,
           cacheRead: p.cacheReadPer1M,
           cacheWrite: p.cacheWritePer1M,
+          window: p.windowKind,
         })),
       windowed: rows.some((p) => p.windowKind !== null && p.windowKind !== "flat"),
     };

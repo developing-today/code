@@ -925,6 +925,9 @@ export interface AaCatalogEntry {
       output: number | null;
       cacheRead: number | null;
       cacheWrite: number | null;
+      /** Rate window of the price row: "flat", or a time-of-day window
+       * ("peak" / "offpeak") for scheduled providers (DeepSeek). */
+      window: string | null;
     }[];
     windowed: boolean;
   } | null;
