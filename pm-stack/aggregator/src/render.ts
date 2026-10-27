@@ -2141,6 +2141,7 @@ const AA_EXPLORER_SCRIPT = `<script>
     bandCount: 3,
     bandScale: 1,
     rec: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
+    pj: { turns: 3, inputTokens: 20000, answerTokens: 2000, thinkingTokens: 4000, cacheReadPct: 50, writesPct: 0, overheadSec: 10, window: "peak" },
   };
   var XP_NOTES = {
     plan: "Plan perspective — plan quotas are sunk cost, so dollars are ignored: ranked on intelligence per second (speed + intelligence). Cost columns hidden.",
@@ -2671,7 +2672,13 @@ const AA_EXPLORER_SCRIPT = `<script>
       (e.planNote ? '<span class="muted">' + esc(e.planNote) + "</span><br>" : "") +
       "Pool seats: " + (e.routes.length ? e.routes.map(function (r) { return "<code>" + esc(r) + "</code>"; }).join(" ") : '<span class="muted">none — no route sends it work</span>') +
       (e.goCapUsd != null && e.aaCostPerTask ? '<br><span class="muted">Published OpenCode Go cap: $' + e.goCapUsd + "/mo → ~" + fmtInt(Math.floor(e.goCapUsd / e.aaCostPerTask)) + " AA tasks at the measured cost (docs reading — the fleet's workspaces appear to meter pooled).</span>" : "") +
-      (e.disabled ? '<br><span class="muted">Provider is disabled in the fleet config — catalogued but not callable.</span>' : ""),
+      (e.disabled ? '<br><span class="muted">Provider is disabled in the fleet config — catalogued but not callable.</span>' : "") +
+      (function () {
+        var proj = project(e);
+        if (!proj.band) return "";
+        var P = S.pj;
+        return '<br><span class="muted">Your projected task (ESTIMATED, NOT MEASURED): ' + P.turns + " turns × " + fmtInt(Number(P.inputTokens) || 0) + " input + " + fmtInt(Number(P.answerTokens) || 0) + " answer + " + fmtInt(Number(P.thinkingTokens) || 0) + " thinking tokens/turn · " + P.cacheReadPct + "% cache reads · rate window: " + esc(proj.band.window || "flat") + " (" + fmt$(proj.band.input) + " in / " + fmt$(proj.band.output) + " out per 1M) → " + (proj.cost != null ? "~" + fmt$(proj.cost) + "/task" : "cost unknown — a required rate is not recorded") + (proj.time != null ? " · ~" + fmtT(proj.time) + "/task" : "") + ".</span>";
+      })(),
     );
     markSelectedRow();
   }
@@ -3095,6 +3102,58 @@ const AA_EXPLORER_SCRIPT = `<script>
     });
     markSelectedRow();
   }
+  // --- task-assumptions projection (Site 2, in the Model Explorer) -------
+  // ESTIMATED, NOT MEASURED: priced only from the token rates recorded
+  // in the ainventory price event log (the catalog's rate bands). A
+  // missing required rate yields an unknown cost, never a guess.
+  // cost = turns x [uncached input + cache reads + cache writes +
+  // (answer + thinking) output]; time = turns x (measured TTFT +
+  // answer / measured throughput + tool overhead), borrowing the
+  // family timing from either benchmark point set.
+  function pjBand(e) {
+    if (!e.rate || !e.rate.bands.length) return null;
+    var bands = e.rate.bands;
+    var win = bands.filter(function (b) { return b.window === S.pj.window; });
+    var pool = win.length ? win : bands.filter(function (b) { return b.window == null || b.window === "flat"; });
+    if (!pool.length) pool = bands;
+    var input = Number(S.pj.inputTokens) || 0;
+    for (var i = 0; i < pool.length; i++) {
+      var b = pool[i];
+      if ((b.minTokens == null || input >= b.minTokens) && (b.maxTokens == null || input < b.maxTokens)) return b;
+    }
+    return pool[pool.length - 1];
+  }
+  function pjTiming(e) {
+    var norm = normName(e.name);
+    var sets = [AA_POINTS, CAI_POINTS];
+    for (var si = 0; si < sets.length; si++) {
+      var cands = sets[si].filter(function (p) { return normName(p.family) === norm; });
+      for (var i = 0; i < cands.length; i++) if (cands[i].tps != null) return { tps: cands[i].tps, ttft: cands[i].ttft };
+    }
+    return null;
+  }
+  function project(e) {
+    var band = pjBand(e);
+    if (!band) return { cost: null, time: null, band: null };
+    var P = S.pj;
+    var input = Number(P.inputTokens) || 0, answer = Number(P.answerTokens) || 0, thinking = Number(P.thinkingTokens) || 0;
+    var turns = Number(P.turns) || 0;
+    var cacheShare = (Number(P.cacheReadPct) || 0) / 100;
+    var writesShare = (Number(P.writesPct) || 0) / 100;
+    var uncached = input * (1 - cacheShare);
+    var reads = input * cacheShare;
+    var writes = uncached * writesShare;
+    var missing = band.input == null || band.output == null || (reads > 0 && band.cacheRead == null) || (writes > 0 && band.cacheWrite == null);
+    var cost = null;
+    if (!missing) {
+      var perTurn = (uncached * band.input + reads * (band.cacheRead || 0) + writes * (band.cacheWrite || 0) + (answer + thinking) * band.output) / 1000000;
+      cost = turns * perTurn;
+    }
+    var timing = pjTiming(e);
+    var time = null;
+    if (timing && timing.tps) time = turns * ((timing.ttft || 0) + answer / timing.tps + (Number(P.overheadSec) || 0));
+    return { cost: cost, time: time, band: band };
+  }
   function renderModels() {
     var tb = document.getElementById("xpl-mrows");
     if (!tb) return;
@@ -3105,12 +3164,14 @@ const AA_EXPLORER_SCRIPT = `<script>
       (S.xp === "api" ? " (effective $/task = AA list $/task ÷ the plan's multiplier, where the registry records one)" : "");
     tb.innerHTML = rows.map(function (e) {
       var ec = effCost(e);
+      var proj = project(e);
       return '<tr data-sel="' + esc(e.id) + '" data-mid="' + esc(e.id) + '"><td><strong>' + esc(e.name) + '</strong><br><span class="muted"><code>' + esc(e.id) + "</code></span></td>" +
         "<td>" + esc(e.providerName) + (e.plan ? '<br><span class="badge src">' + esc(e.plan) + "</span>" : "") + (e.disabled ? ' <span class="badge stale">disabled</span>' : "") + '</td>' +
         '<td class="num">' + fmtCtx(e.contextLimit) + "</td>" +
         "<td>" + (e.variants.length ? esc(e.variants.join(", ")) : "—") + "</td>" +
         "<td>" + (e.routes.length ? e.routes.map(function (r) { return '<span class="badge open">' + esc(r) + "</span>"; }).join(" ") : '<span class="muted">—</span>') + "</td>" +
-        '<td class="num">' + fmtN(e.aaScore, 1) + '</td><td class="num xpl-costcol">' + fmt$(e.aaCostPerTask) + '</td><td class="num xpl-costcol">' + (ec != null ? fmt$(ec) : "—") + '</td><td class="num">' + fmtT(e.aaTimePerTask) + "</td></tr>";
+        '<td class="num">' + fmtN(e.aaScore, 1) + '</td><td class="num xpl-costcol">' + fmt$(e.aaCostPerTask) + '</td><td class="num xpl-costcol">' + (ec != null ? fmt$(ec) : "—") + '</td><td class="num">' + fmtT(e.aaTimePerTask) + '</td>' +
+        '<td class="num xpl-costcol">' + (proj.cost != null ? "~" + fmt$(proj.cost) : "—") + '</td><td class="num">' + (proj.time != null ? "~" + fmtT(proj.time) : "—") + '</td><td class="num xpl-costcol">' + (e.aaScore != null && proj.cost ? fmtN(e.aaScore / proj.cost, 1) : "—") + "</td></tr>";
     }).join("");
     tb.querySelectorAll("tr").forEach(function (tr) {
       tr.addEventListener("click", function () { selectCatalog(tr.getAttribute("data-mid")); });
@@ -3259,6 +3320,33 @@ const AA_EXPLORER_SCRIPT = `<script>
       Object.keys(preset).forEach(function (k) { S.rec[k] = preset[k]; });
       syncRecInputs();
       renderRecs();
+    });
+  });
+  function syncPjInputs() {
+    document.querySelectorAll("[data-pj]").forEach(function (el) {
+      var f = el.getAttribute("data-pj");
+      if (S.pj[f] != null) el.value = S.pj[f];
+    });
+    var cv = document.getElementById("pj-cacheread-val");
+    if (cv) cv.textContent = S.pj.cacheReadPct + "%";
+  }
+  document.querySelectorAll("[data-pj]").forEach(function (el) {
+    var on = function () { S.pj[el.getAttribute("data-pj")] = el.value; syncPjInputs(); if (S.tab === "models") renderModels(); };
+    el.addEventListener("input", on);
+    el.addEventListener("change", on);
+  });
+  var PJ_PRESETS = {
+    small: { turns: 2, inputTokens: 8000, answerTokens: 1200, thinkingTokens: 2000, cacheReadPct: 60, writesPct: 0, overheadSec: 8 },
+    feature: { turns: 4, inputTokens: 25000, answerTokens: 3000, thinkingTokens: 6000, cacheReadPct: 50, writesPct: 5, overheadSec: 10 },
+    repo: { turns: 8, inputTokens: 60000, answerTokens: 4000, thinkingTokens: 8000, cacheReadPct: 70, writesPct: 5, overheadSec: 15 },
+  };
+  document.querySelectorAll("[data-pjpreset]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var preset = PJ_PRESETS[b.getAttribute("data-pjpreset")];
+      if (!preset) return;
+      Object.keys(preset).forEach(function (k) { S.pj[k] = preset[k]; });
+      syncPjInputs();
+      if (S.tab === "models") renderModels();
     });
   });
   var recExport = document.getElementById("xpl-rec-export");
@@ -3495,8 +3583,22 @@ ${s.cai ? aaCaiTable(s.cai) : ""}
 <h2>The fleet's model universe</h2>
 <p class="muted">Every model in the fleet config's provider catalogs: the plan each door belongs to and its effective value multiplier where the registry records one, the pools that seat it, and its AA measurement when the workbook has one. Click a row for the plan note.</p>
 ${modelCards}
+<h3>Task projection — estimated, not measured</h3>
+<p class="muted">The task-assumptions projection from the ChatGPT coding explorer: set the shape of a task and every model with a recorded token rate gets an estimated cost and time, marked ~. Prices come only from the ainventory price event log joined onto this catalog (the band your per-turn input falls in); a model with no recorded rate — or missing a rate the assumptions need — shows —, never a guess. Time borrows the family's measured TTFT and throughput. Cache-storage hours are not modelled: the price log carries no storage rate.</p>
+<div class="card xpl-filters">
+<span role="group" aria-label="Task presets"><button type="button" class="xpl-ctl-btn" data-pjpreset="small">Small patch</button><button type="button" class="xpl-ctl-btn" data-pjpreset="feature">Feature</button><button type="button" class="xpl-ctl-btn" data-pjpreset="repo">Repo task</button></span>
+<label>Turns <input type="number" data-pj="turns" value="3" min="1" style="width:4em"></label>
+<label>Input / turn <input type="number" data-pj="inputTokens" value="20000" step="1000" style="width:6em"></label>
+<label>Answer / turn <input type="number" data-pj="answerTokens" value="2000" step="500" style="width:5em"></label>
+<label>Thinking / turn <input type="number" data-pj="thinkingTokens" value="4000" step="500" style="width:5em"></label>
+<label>Cache read share <input type="range" data-pj="cacheReadPct" min="0" max="100" step="5" value="50"> <span id="pj-cacheread-val">50%</span></label>
+<label>Writes / uncached <input type="number" data-pj="writesPct" value="0" min="0" max="100" style="width:4em"> %</label>
+<label>Tool overhead / turn <input type="number" data-pj="overheadSec" value="10" min="0" style="width:4em"> s</label>
+<label>Rate window <select data-pj="window"><option value="peak" selected>Peak (conservative)</option><option value="offpeak">Off-peak</option></select></label>
+<span class="muted">The window applies to scheduled rates only (DeepSeek halves every token rate off-peak).</span>
+</div>
 <p class="muted" id="xpl-mcount"></p>
-<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Provider / plan</th><th class="num">Context</th><th>Variants</th><th>Pool seats</th><th class="num">AA score</th><th class="num xpl-costcol">AA $/task</th><th class="num xpl-costcol">Eff. $/task</th><th class="num">AA time/task</th></tr></thead><tbody id="xpl-mrows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><thead><tr><th>Model</th><th>Provider / plan</th><th class="num">Context</th><th>Variants</th><th>Pool seats</th><th class="num">AA score</th><th class="num xpl-costcol">AA $/task</th><th class="num xpl-costcol">Eff. $/task</th><th class="num">AA time/task</th><th class="num xpl-costcol">Proj. $/task ~</th><th class="num">Proj. time/task ~</th><th class="num xpl-costcol">AA score / proj. $</th></tr></thead><tbody id="xpl-mrows"></tbody></table></div>
 </section>
 ${coverageHtml}
 <script type="application/json" id="xpl-data">${explorerJson}</script>`;

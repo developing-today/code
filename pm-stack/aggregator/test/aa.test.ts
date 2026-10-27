@@ -615,6 +615,9 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('data-recpreset="fast"');
     expect(html).toContain('id="xpl-bandgroups"'); // band comparisons
     expect(html).toContain('id="xf-bandscale"');
+    expect(html).toContain('data-pj="inputTokens"'); // task-assumptions projection
+    expect(html).toContain('data-pjpreset="repo"');
+    expect(html).toContain("Proj. $/task");
     expect(html).toContain("8152e746"); // batch provenance
     expect(html).toContain("/api/aa.json");
   });
