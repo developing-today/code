@@ -146,6 +146,56 @@ Notes are never polled; they are read from
 pages merge the item's own thread with the threads of its linked
 `gh:` refs.
 
+### Dashboard actions — the triage write path (#1152/#1154/#1156)
+
+Actions are the dashboard's second write surface: where comments are
+conversation, actions are **requests a fleet job applies**. They live
+in their own store (`src/actions.ts`, one JSON file with atomic
+writes; path `PM_AGG_ACTIONS_FILE`) on the comments pattern, keyed by
+the same object refs, and every action carries a validated author
+(self-asserted on this loopback+tailnet-only surface — the trust
+model #941 tracks hardening).
+
+**How dashboard actions flow:** a form on a card posts
+`POST /api/actions` → the record sits in the store at state `new`,
+rendered on the card as a ⏳ badge → the consuming fleet job polls
+`GET /api/actions.json?state=new`, applies the action as the single
+writer of its surface, and reports the outcome via
+`POST /api/actions/result { id, outcome, byRun, note }` → the card
+then shows ✓ applied (or ✗ rejected, with the note). A result only
+transitions out of `new` (consume-once), a reposted form returns its
+existing record (per-form `clientToken` dedupe), and undo is a
+superseding action — records are never deleted, so
+`GET /api/actions.json` is the inspectable audit log.
+
+Kinds and consumers (one consumer per kind/source slice):
+
+- **triage** — the orchestration pass: `acknowledge` (seen; the next
+  published tier entry carries the ack), `snooze` (the item leaves
+  the Needs User tier until `payload.until`, and renders meanwhile in
+  the page's visible "Snoozed by you" strip), `escalate` /
+  `de-escalate` (tier override with reason), `answer` (text, a picked
+  `optionId`, or survey `answers[]` — one content verb), plus the
+  needs-user layer's `delegate` / `dismiss` / proposal verbs
+  (#1290–#1293; `dismiss` requires a reason at the boundary).
+- **status-request** — the orchestration pass again: `request-status`
+  asks for a Project Status change (the card shows "change requested"
+  until applied). The dashboard never writes the Project; the pass —
+  its single writer, #910 — applies it and its run log names
+  "requested via dashboard, action da-…".
+- **session** — routed by the recorded `sessionSource`: `poke` /
+  `answer` / `stop` on live sessions. Jules sessions are
+  keeper-mediated (the jules-review job consumes their `answer`
+  actions; poke/stop render disabled with the reason), OpenCode
+  sessions are consumed by the orchestration pass, and sources with
+  no live control channel (Muse, cron) render no enabled
+  controls. Stop sits behind a two-step confirm.
+
+Controls render only where they are honest: while the orchestration
+tier source is not live, section-derived items on `/attention`
+disable theirs with the reason shown (session-derived items stay
+enabled — the session feed is live).
+
 ### Session identity registry (slice 3, #906)
 
 `src/registry.ts` normalizes every session source into one durable
@@ -218,6 +268,7 @@ Everything defaults to **fixtures** and works with no configuration:
 | `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                            | The `Program roadmap` document id (Phase 2 seed)                                                                                                     |
 | `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                             | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                              |
 | `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                   | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                          |
+| `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                    | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                 |
 | `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                   | Durable session identity registry (#906) — merged records persist across restarts                                                                    |
 
 Secrets are read from the environment only and are never committed or
