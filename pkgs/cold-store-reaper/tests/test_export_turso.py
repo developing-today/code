@@ -20,6 +20,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "export-turso.sh"
+REPAIR = Path(__file__).resolve().parent.parent / "scripts" / "repair_dump.py"
 
 PLATFORM_TOKEN = "fake-platform-token-SECRET"
 DB_JWT = "fake-db-jwt-SECRET"
@@ -45,8 +46,10 @@ done
 body=""
 case "${url}" in
   */auth/tokens) body='{"jwt":"__JWT__"}' ;;
-  */dump) body='CREATE TABLE t (x INTEGER);
+  */dump) body='BEGIN TRANSACTION;
+CREATE TABLE t (x INTEGER);
 INSERT INTO t VALUES (1);
+COMMIT;
 ' ;;
   *) body='{"databases":[{"Name":"db1","Hostname":"db1.example.test"}]}' ;;
 esac
@@ -130,12 +133,113 @@ class TestExportTursoArgv(unittest.TestCase):
         # behaviour unchanged: the export was filed with cold-store
         self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
 
+    def dump_argv_lines(self):
+        for argv_log in sorted(self.capture.glob("argv-*.log")):
+            lines = argv_log.read_text().splitlines()
+            if any("dump.test" in line for line in lines):
+                return lines
+        self.fail("no dump invocation recorded by the stub curl")
+
+    def test_dump_uses_default_max_time_and_one_retry(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.dump_argv_lines()
+        self.assertEqual(lines[lines.index("--max-time") + 1], "1800")
+        self.assertEqual(lines[lines.index("--retry") + 1], "1")
+        self.assertIn("--retry-all-errors", lines)
+
+    def test_dump_requests_compression(self):
+        # --compressed keeps GB-class dumps under the sandbox proxy's
+        # mid-stream cut: the wire size shrinks several-fold.
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--compressed", self.dump_argv_lines())
+
+    def test_dump_max_time_env_override_is_honored(self):
+        env = {**self.env, "TURSO_DUMP_MAX_TIME_SECONDS": "42"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.dump_argv_lines()
+        self.assertEqual(lines[lines.index("--max-time") + 1], "42")
+
     def test_skip_when_token_unset(self):
         env = {k: v for k, v in self.env.items() if k != "TURSO_PLATFORM_API_TOKEN"}
         result = self.run_script(env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("skipped (TURSO_PLATFORM_API_TOKEN not set)", result.stdout)
         self.assertEqual(list(self.capture.glob("argv-*.log")), [])
+
+
+BROKEN_SCHEMA_INSERT = (
+    b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+    b" VALUES('table','chunks_fts','chunks_fts',0,"
+    b"'CREATE VIRTUAL TABLE chunks_fts\n"
+    b"      USING fts5(text, content='chunks', content_rowid='id')');\n"
+)
+ESCAPED_SCHEMA_INSERT = BROKEN_SCHEMA_INSERT.replace(
+    b"content='chunks'", b"content=''chunks''"
+).replace(b"content_rowid='id'", b"content_rowid=''id''")
+
+
+class TestDumpRepairFilter(unittest.TestCase):
+    """scripts/repair_dump.py (#1391): the streaming filter between the
+    /dump download and the sqlite3 rebuild. Only a verifiably
+    mis-escaped sqlite_schema literal is rewritten; everything else —
+    including correctly-escaped statements — is byte-identical."""
+
+    def run_filter(self, data: bytes) -> bytes:
+        result = subprocess.run(
+            [sys.executable, str(REPAIR)],
+            input=data,
+            capture_output=True,
+            timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_broken_literal_is_rewritten_with_doubled_quotes(self):
+        data = (
+            b"PRAGMA writable_schema=ON;\n"
+            + BROKEN_SCHEMA_INSERT
+            + b"PRAGMA writable_schema=OFF;\n"
+        )
+        expected = (
+            b"PRAGMA writable_schema=ON;\n"
+            + ESCAPED_SCHEMA_INSERT
+            + b"PRAGMA writable_schema=OFF;\n"
+        )
+        self.assertEqual(self.run_filter(data), expected)
+
+    def test_correctly_escaped_literal_passes_byte_identical(self):
+        data = (
+            b"PRAGMA writable_schema=ON;\n"
+            + ESCAPED_SCHEMA_INSERT
+            + b"PRAGMA writable_schema=OFF;\n"
+        )
+        self.assertEqual(self.run_filter(data), data)
+
+    def test_quoteless_schema_literal_passes_byte_identical(self):
+        data = (
+            b"INSERT INTO sqlite_schema(type,name,tbl_name,rootpage,sql)"
+            b" VALUES('table','t','t',0,'CREATE TABLE t (x INTEGER)');\n"
+        )
+        self.assertEqual(self.run_filter(data), data)
+
+    def test_unrelated_lines_pass_byte_identical(self):
+        data = (
+            b"PRAGMA foreign_keys=OFF;\n"
+            b"BEGIN TRANSACTION;\n"
+            b"CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);\n"
+            b"INSERT INTO notes VALUES(1,'it''s a ''quoted'' note');\n"
+            b"COMMIT;\n"
+        )
+        self.assertEqual(self.run_filter(data), data)
+
+    def test_unterminated_statement_at_eof_flushes_unchanged(self):
+        # A truncated dump must not be mangled on its way to the
+        # caller's COMMIT; guard — it passes through exactly as cut.
+        data = b"BEGIN TRANSACTION;\n" + BROKEN_SCHEMA_INSERT[:-20]
+        self.assertEqual(self.run_filter(data), data)
 
 
 if __name__ == "__main__":

@@ -475,6 +475,82 @@ export interface TierItem {
   blockedBy?: DependencyRef[];
   /** The orchestrator's recorded resolution or handoff note. */
   recommendedAction?: string;
+  /** #1290 extension fields — all optional, validated per item fail-soft
+   *  in the live source (src/tier-items.ts); the section gate in feed.ts
+   *  never learns them, so a malformed extension drops, never the item. */
+  whyUser?: WhyUserClass;
+  /** 1–3 sentence plain-language version of the item. */
+  summary?: string;
+  /** What happens if this sits unanswered. When the publisher omits it,
+   *  the live source computes the fallback from `since`. */
+  ifIgnored?: string;
+  options?: TierItemOption[];
+  questions?: TierItemQuestion[];
+  delegation?: TierItemDelegation;
+}
+
+/** Why an item needs the user, per the #1290 contract. Naming is
+ *  role-based (2026-10-27 decision): no new Drew-named identifiers — the
+ *  legacy `needsDrew` tier array name is the published shape and stays. */
+export type WhyUserClass = "decision" | "missing-info" | "approval" | "access" | "policy";
+
+/** A publisher-offered answer option on a needs-user item (#1290).
+ *  Picking one posts the `answer` verb with the option's id. */
+export interface TierItemOption {
+  id: string;
+  label: string;
+  description?: string;
+  /** Predicted effect of picking this option, shown under its button. */
+  effect?: string;
+}
+
+export type TierItemQuestionType = "single" | "multi" | "text" | "yesno";
+
+/** One survey question on a needs-user item (#1290). `covers` names the
+ *  decision the answer settles; it is mandatory, so a survey can never
+ *  be decoration. */
+export interface TierItemQuestion {
+  id: string;
+  prompt: string;
+  type: TierItemQuestionType;
+  options?: { id: string; label: string }[];
+  /** The sanitizer defaults an absent flag to true. */
+  required: boolean;
+  covers: string;
+}
+
+export type DelegationMode = "user" | "first-pass" | "auto";
+export type DelegationStatus = "idle" | "working" | "proposal-ready" | "unable" | "done";
+
+/** A drafted, NOT-yet-applied first-pass proposal (#1290/#1293). Present
+ *  exactly when the delegation status is `proposal-ready`. Proposal
+ *  identity is (item id, delegation runId, delegation updatedAt). */
+export interface DelegationProposal {
+  summary: string;
+  detail?: string;
+  proposedChanges?: string[];
+  at: string;
+}
+
+/** The structured inability record — the ONLY way a delegated item comes
+ *  back to the user (#1292). Present exactly when status is `unable`. */
+export interface DelegationUnable {
+  reason: string;
+  whatItTried: string[];
+  whatItNeeds: string;
+  at: string;
+}
+
+/** Delegation state for a needs-user item (#1290), validated as a unit
+ *  by the per-item sanitizer: any inconsistency drops the whole field,
+ *  never the item. */
+export interface TierItemDelegation {
+  mode: DelegationMode;
+  status: DelegationStatus;
+  updatedAt: string;
+  runId?: string;
+  proposal?: DelegationProposal;
+  unable?: DelegationUnable;
 }
 
 /** One task lined up under a goal, with its ladder bucket. */
@@ -667,6 +743,62 @@ export interface AaTestRun {
 }
 
 /**
+ * One Coding Agent Index row of ainventory.benchmark_results (the
+ * workbook's Coding_Agent_Results import): a model + effort + agent
+ * harness observation, kept strictly separate from the AA Intelligence
+ * Index — no score conversion between the indexes (the ChatGPT
+ * explorers' cross-benchmark rule). Component scores are the published
+ * fractions (0–1) of DeepSWE v1.1 / Terminal-Bench 4.0 / SWE-Atlas-QnA;
+ * the page renders them as percents.
+ */
+export interface AaCaiRow {
+  /** Model name as reported, effort included, e.g. "GPT-6.1 Sol (xhigh)". */
+  modelName: string;
+  /** Family display name: modelName with the trailing "(effort)" removed. */
+  family: string;
+  /** Creator display name, mapped from the observation key's creator slug. */
+  creator: string;
+  /** Effort label as reported ("not stated" stays "not stated"). */
+  effort: string | null;
+  /** Benchmark version, e.g. "v1.5" (one historical "v1.4" row rides along). */
+  version: string | null;
+  /** Coding Agent Index score (0–100 scale of that index). */
+  score: number | null;
+  /** Published cost per coding task, USD; null = not published/comparable. */
+  cost: number | null;
+  /** Average agent wall time per task, seconds. */
+  wallSec: number | null;
+  /** Total token usage per task. */
+  tokensPerTask: number | null;
+  /** Agent harness the observation ran under, e.g. "Codex". */
+  harness: string | null;
+  deepSwe: number | null;
+  terminalBench: number | null;
+  sweAtlas: number | null;
+  snapshotDate: string | null;
+  sourceUrl: string | null;
+}
+
+/**
+ * One current token price from the ainventory event log
+ * (v_current_prices — the #1248 append-only price events, resolved to
+ * current): USD per 1M tokens for one model id (models.dev-style
+ * "provider/model"), one context band, one rate window. windowKind is
+ * "flat" unless the provider runs a time-of-day schedule.
+ */
+export interface AaPrice {
+  /** Models.dev-style id the price is recorded under. */
+  modelName: string;
+  inputPer1M: number | null;
+  outputPer1M: number | null;
+  cacheReadPer1M: number | null;
+  cacheWritePer1M: number | null;
+  contextMinTokens: number | null;
+  contextMaxTokens: number | null;
+  windowKind: string | null;
+}
+
+/**
  * Pool/catalog coverage, computed by the collector from the repo's
  * .opencode/opencode.jsonc (provider catalog + model_routes leaves,
  * nested routes expanded) against the AA-measured model names.
@@ -687,6 +819,120 @@ export interface AaCoverage {
   catalogNotPooledUnmeasured: string[];
 }
 
+/**
+ * One explorer data point: a rankings row joined with its Test_Runs
+ * timing row (same testRunKey) and enriched with the derived values
+ * the Cost Explorer's charts and perspectives plot — per-dollar and
+ * per-second intelligence, Pareto-frontier flags for each chart's axis
+ * pair, and the 3-axis dominators ("beaten by") list in the reference
+ * design's sense. Built by aaPoints() in src/aa.ts; null always means
+ * "not measured", never an estimate.
+ */
+export interface AaPoint {
+  key: string;
+  family: string;
+  creator: string;
+  effort: string | null;
+  benchmark: string | null;
+  score: number | null;
+  cost: number | null;
+  time: number | null;
+  tps: number | null;
+  ttft: number | null;
+  pointsPerDollar: number | null;
+  pointsPerSecond: number | null;
+  /** score / cost, computed when the workbook's own column is absent. */
+  scorePerDollar: number | null;
+  /** score / time, computed when the workbook's own column is absent. */
+  scorePerSecond: number | null;
+  eligible: boolean;
+  qualStatus: string | null;
+  /** Agent harness (CAI points only; null on AA points). */
+  harness: string | null;
+  /** Total tokens per task (CAI points only; the workbook's AA rows
+   * do not carry a per-task token count). */
+  tokensPerTask: number | null;
+  /** CAI component scores as published fractions (CAI points only). */
+  components: { deepSwe: number | null; terminalBench: number | null; sweAtlas: number | null } | null;
+  /** On the cost×score Pareto frontier (cheaper-or-equal, smarter-or-equal unbeaten). */
+  frontierCost: boolean;
+  /** On the time×score Pareto frontier. */
+  frontierTime: boolean;
+  /** On the cost×time Pareto frontier (lower-left unbeaten). */
+  frontierCostTime: boolean;
+  /** "Family effort" labels beating this point on score + cost + time at once. */
+  beatenBy: string[];
+}
+
+/**
+ * One model in the fleet's own catalog (the Model Explorer tab): a
+ * provider/model entry from .opencode/opencode.jsonc, its pool seats
+ * (route ids whose expanded leaves include it), the plan the provider
+ * door belongs to (collector-carried registry facts — see
+ * AA_PLAN_FACTS in src/aa.ts), and its best AA measurement when the
+ * workbook measured a model of the same normalized name. Assembled by
+ * aaCatalogFromConfig() in src/aa.ts.
+ */
+export interface AaCatalogEntry {
+  /** Full catalog id, "provider/model…" (model part may contain /). */
+  id: string;
+  provider: string;
+  /** The provider's display name in the config, else its id. */
+  providerName: string;
+  model: string;
+  /** The model's display name in the config, else the model id part. */
+  name: string;
+  contextLimit: number | null;
+  outputLimit: number | null;
+  /** Effort variant ids the config defines for this model, ladder order. */
+  variants: string[];
+  /** Route ids seating this model (nested routes expanded). */
+  routes: string[];
+  /** The provider sits in the config's disabled_providers — catalogued but not callable. */
+  disabled: boolean;
+  /** Plan label from the collector's registry facts, when one is recorded. */
+  plan: string | null;
+  /** Effective value multiplier of the plan (list-rate dollars per $1), when recorded. */
+  multiplier: number | null;
+  /** Short plan note (caps, expiries, caveats), when recorded. */
+  planNote: string | null;
+  /**
+   * The model's published OpenCode Go monthly cap in USD, where Go lists
+   * one (docs reading, AA value report 2026-10-20) — per-model caps, not
+   * a shared pool; the fleet's older workspaces may meter pooled.
+   */
+  goCapUsd: number | null;
+  /** Best AA intelligence measured for this model name, when measured. */
+  aaScore: number | null;
+  /** $/task of that best-scoring AA measurement. */
+  aaCostPerTask: number | null;
+  /** Fastest measured time/task among the family's ranked rows. */
+  aaTimePerTask: number | null;
+  /**
+   * Current token rates (USD per 1M) from the ainventory price event
+   * log, when a price is recorded for this model — the Model Explorer's
+   * task-projection calculator prices from these, and only these.
+   * `bands` are the recorded context bands (the projection picks the
+   * band the task's per-turn input falls in, like Site 2's long-tier
+   * rule); `windowed` marks a provider with a time-of-day schedule
+   * (the projection's DeepSeek peak/off-peak toggle reads it).
+   */
+  rate?: {
+    bands: {
+      minTokens: number | null;
+      maxTokens: number | null;
+      input: number | null;
+      output: number | null;
+      cacheRead: number | null;
+      cacheWrite: number | null;
+      /** Rate window of the price row: "flat", or a time-of-day window
+       * ("peak" / "offpeak") for scheduled providers (DeepSeek). */
+      window: string | null;
+    }[];
+    windowed: boolean;
+  } | null;
+}
+
 /** The AA explorer section as the collector embeds it in the fleet feed. */
 export interface AaSection {
   status: "ok";
@@ -701,6 +947,16 @@ export interface AaSection {
   testRuns: AaTestRun[];
   /** Absent when the collector could not read .opencode/opencode.jsonc. */
   coverage?: AaCoverage;
+  /** The fleet catalog for the Model Explorer tab, from the same
+   * config read as coverage; absent on the same condition. */
+  catalog?: AaCatalogEntry[];
+  /** Coding Agent Index rows of the same batch (separate benchmark
+   * family — the explorer's "Coding agents" perspective); absent when
+   * the collector's payload predates them. */
+  cai?: AaCaiRow[];
+  /** Current token prices from the ainventory price event log
+   * (v_current_prices); absent on the same condition as cai. */
+  prices?: AaPrice[];
 }
 
 /** The section's degraded form: the collector could not reach Supabase

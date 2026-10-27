@@ -13,6 +13,8 @@
 # listed: the aggregate test recipes `test`, `test-web` and `test-int`
 # — the test-shard-* checks below plus test-unit, test-web-unit and
 # test-web-typecheck cover every test they run, in parallel (#869).
+# Also not listed: the aggregate `crash-gate` — the crash-gate-*
+# checks below partition its tests by name filter in parallel (#551).
 cargo-fmt-check
 rustfmt-check
 web-fmt-check
@@ -31,7 +33,11 @@ test-unit
 test-shard-0
 test-shard-1
 test-shard-2
+test-shard-3
 test-web-unit
 test-web-typecheck
-crash-gate
+crash-gate-sampled
+crash-gate-sweep
+crash-gate-control
+crash-gate-ingest
 doc

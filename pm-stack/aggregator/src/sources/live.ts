@@ -22,6 +22,7 @@ import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
 import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
+import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { overlayQuotaCurrent, parseQuotaCurrent } from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
 import { fixtureSource } from "./fixtures.ts";
@@ -479,7 +480,7 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
  */
 const FEED_STALE_MS = 15 * 60_000;
 
-export function liveSource(cfg: Config): Source {
+export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<boolean> }): Source {
   const fix = fixtureSource();
   const provenance: Provenance = {
     board: "fixtures",
@@ -861,6 +862,21 @@ export function liveSource(cfg: Config): Source {
         const section = normalizeOrchestrationSection(feed.orchestration);
         if (section) {
           provenance.orchestration = `live (orchestration section ${section.runId} · ${feedAgeText(section.generatedAt)})`;
+          // #1290: the per-item extension seam. The section gate above
+          // never learns the extension fields; each tier item's
+          // extensions are validated here, fail-soft (a malformed
+          // extension drops, never the item or the section), and
+          // needs-user items gain their contract fallbacks (whyUser,
+          // ifIgnored, the standing-toggle delegation default).
+          const standingAuto = opts?.standingAuto
+            ? await opts.standingAuto().catch(() => INITIAL_STANDING_AUTO)
+            : INITIAL_STANDING_AUTO;
+          section.tiers = {
+            needsDrew: section.tiers.needsDrew.map((item) =>
+              withUserFallbacks(sanitizeTierItemExtensions(item), section.generatedAt, standingAuto),
+            ),
+            needsOrchestrator: section.tiers.needsOrchestrator.map((item) => sanitizeTierItemExtensions(item)),
+          };
           return section;
         }
         const problem = orchestrationSectionProblem(feed.orchestration);
