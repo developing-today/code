@@ -503,17 +503,16 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
         }
 
         NodeValue::FootnoteDefinition(definition) => {
-            // #945: a definition's AST children are block nodes (usually a
-            // single paragraph); carry their inline content directly on a
-            // block node with the label, mirroring the reference arm.
-            let mut content = Vec::new();
-            for child in node.children() {
-                content.extend(collect_inline_children(child, &[]));
-            }
+            // #945: carry the definition as a dedicated node with the
+            // label, mirroring the reference arm. #1031: carry its BLOCK
+            // children (paragraphs, lists, code blocks) as blocks —
+            // flattening them to inline content fused multi-paragraph
+            // definitions into one run of text on save and silently
+            // dropped code blocks (their literal has no child nodes).
             json!({
                 "type": "footnote_definition",
                 "attrs": {"label": definition.name},
-                "content": content
+                "content": collect_block_children(node)
             })
         }
 
@@ -946,6 +945,26 @@ fn substitute_spaced_destinations<'a>(root: &'a AstNode<'a>) -> Vec<(String, Str
     substitutions
 }
 
+/// Whether a converted AST node is block-level (as opposed to inline).
+/// Used by the footnote_definition save path (#1031) to tell carried
+/// block children apart from legacy inline children.
+fn is_block_node(node: &AstNode<'_>) -> bool {
+    matches!(
+        node.data.borrow().value,
+        NodeValue::Paragraph
+            | NodeValue::Heading(_)
+            | NodeValue::BlockQuote
+            | NodeValue::List(_)
+            | NodeValue::Item(_)
+            | NodeValue::TaskItem(_)
+            | NodeValue::CodeBlock(_)
+            | NodeValue::HtmlBlock(_)
+            | NodeValue::ThematicBreak
+            | NodeValue::Table(_)
+            | NodeValue::FootnoteDefinition(_)
+    )
+}
+
 /// Convert `ProseMirror` JSON to comrak AST.
 fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>, ConversionError> {
     let node_type = json["type"].as_str().ok_or(ConversionError::MissingType)?;
@@ -1198,21 +1217,34 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         return Ok(ast_node);
     }
 
-    // Special case: footnote definitions. The parse direction stores the
-    // definition's inline content directly on the PM node (#945), but
-    // comrak's AST requires a FootnoteDefinition's children to be blocks —
-    // re-wrap the inline children in a Paragraph here, or the commonmark
-    // formatter rejects the document as ill-formed.
+    // Special case: footnote definitions. The parse direction stores
+    // the definition's BLOCK children on the PM node (#1031), and
+    // comrak's AST requires a FootnoteDefinition's children to be
+    // blocks — append block children directly. Legacy #945-shape docs
+    // store bare inline nodes instead; group consecutive inline
+    // children into a single Paragraph, as before, so those documents
+    // still save as a well-formed definition.
     if node_type == "footnote_definition" {
-        if let Some(content) = json["content"].as_array()
-            && !content.is_empty()
-        {
-            let paragraph = arena.alloc(AstNode::from(NodeValue::Paragraph));
+        if let Some(content) = json["content"].as_array() {
+            let mut paragraph: Option<&AstNode<'a>> = None;
             for child_json in content {
                 let child = json_to_ast(arena, child_json)?;
-                append_inline_child(paragraph, child);
+                if is_block_node(child) {
+                    paragraph = None;
+                    ast_node.append(child);
+                } else {
+                    let target = match paragraph {
+                        Some(p) => p,
+                        None => {
+                            let p = arena.alloc(AstNode::from(NodeValue::Paragraph));
+                            ast_node.append(p);
+                            paragraph = Some(p);
+                            p
+                        }
+                    };
+                    append_inline_child(target, child);
+                }
             }
-            ast_node.append(paragraph);
         }
         return Ok(ast_node);
     }
@@ -1909,6 +1941,88 @@ mod tests {
     }
 
     #[test]
+    fn test_footnote_multi_paragraph_definition_fixpoint() {
+        // #1031: a two-paragraph footnote definition must keep its
+        // paragraph boundary — the flat #945 shape fused the two
+        // paragraphs into one run of text on save.
+        let original = "Text.[^1]\n\n[^1]: First paragraph.\n\n    Second paragraph.\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "multi-paragraph definition is a fixpoint");
+        assert!(
+            !first.contains("First paragraph.Second paragraph."),
+            "paragraphs must not fuse: {first:?}"
+        );
+        // The saved form still parses to a definition carrying two
+        // paragraph children.
+        let doc = markdown_to_prosemirror(&first);
+        let top = doc["content"].as_array().unwrap();
+        let definition = top
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("footnote_definition node present");
+        let child_types: Vec<&str> = definition["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n["type"].as_str())
+            .collect();
+        assert_eq!(child_types, ["paragraph", "paragraph"]);
+    }
+
+    #[test]
+    fn test_footnote_definition_with_code_block_child_fixpoint() {
+        // #1031: a code block inside a definition was silently dropped
+        // by the flat shape (its literal has no child nodes). As a
+        // block child it round-trips.
+        let original = "Text.[^1]\n\n[^1]: Note.\n\n    ```\n    let x = 1;\n    ```\n";
+        let (first, second) = two_saves(original);
+        assert_eq!(first, second, "code-block definition is a fixpoint");
+        assert!(first.contains("let x = 1;"), "code survives: {first:?}");
+        let doc = markdown_to_prosemirror(&first);
+        let top = doc["content"].as_array().unwrap();
+        let definition = top
+            .iter()
+            .find(|n| n["type"] == "footnote_definition")
+            .expect("footnote_definition node present");
+        let child_types: Vec<&str> = definition["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n["type"].as_str())
+            .collect();
+        assert_eq!(child_types, ["paragraph", "code_block"]);
+    }
+
+    #[test]
+    fn test_footnote_legacy_flat_shape_still_saves() {
+        // #1031: documents already stored in the legacy #945 flat
+        // shape (definition content = bare inline nodes) still save
+        // correctly via the inline-grouping fallback.
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": "Text."},
+                        {"type": "footnote_reference", "attrs": {"label": "1"}}
+                    ]
+                },
+                {
+                    "type": "footnote_definition",
+                    "attrs": {"label": "1"},
+                    "content": [{"type": "text", "text": "Body."}]
+                }
+            ]
+        });
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert!(saved.contains("[^1]: Body."), "legacy doc saves: {saved:?}");
+        // And the saved form round-trips as a fixpoint from here.
+        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).unwrap();
+        assert_eq!(saved, resaved);
+    }
+
+    #[test]
     fn test_footnote_parse_shape_is_footnote_nodes() {
         // #945: the parse direction represents a footnote as dedicated
         // footnote_reference / footnote_definition nodes carrying the
@@ -1920,7 +2034,12 @@ mod tests {
             .find(|n| n["type"] == "footnote_definition")
             .expect("footnote_definition node present");
         assert_eq!(definition["attrs"]["label"], "1");
-        let definition_text: Vec<&str> = definition["content"]
+        // #1031: the definition carries BLOCK children — a single
+        // paragraph wrapping the inline body, not bare inline nodes.
+        let definition_content = definition["content"].as_array().unwrap();
+        assert_eq!(definition_content.len(), 1);
+        assert_eq!(definition_content[0]["type"], "paragraph");
+        let definition_text: Vec<&str> = definition_content[0]["content"]
             .as_array()
             .unwrap()
             .iter()
