@@ -1309,7 +1309,11 @@ mod tests {
             let large = live.layout_at(200, 60).unwrap();
             println!(
                 "| {name} | {} | {} | {} |",
-                if has_layout { "yes" } else { "no (view fallback)" },
+                if has_layout {
+                    "yes"
+                } else {
+                    "no (view fallback)"
+                },
                 small.len(),
                 large.len()
             );

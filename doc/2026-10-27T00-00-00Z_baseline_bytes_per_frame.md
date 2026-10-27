@@ -20,15 +20,15 @@ are out of scope for this baseline and are not measured here.
 
 ## Baseline table (seed 7, at rest)
 
-| example | plaza_layout | bytes @ 80x24 | bytes @ 200x60 |
-| --- | --- | ---: | ---: |
-| lounge | yes | 29 | 29 |
-| roc-chat | yes | 24 | 24 |
-| roc-counter | yes | 7 | 7 |
-| roc-grid | yes | 383 | 383 |
-| roc-screen | yes | 179 | 179 |
-| territory | yes | 1010 | 1010 |
-| tic-tac-toe | yes | 25 | 25 |
+| example     | plaza_layout | bytes @ 80x24 | bytes @ 200x60 |
+| ----------- | ------------ | ------------: | -------------: |
+| lounge      | yes          |            29 |             29 |
+| roc-chat    | yes          |            24 |             24 |
+| roc-counter | yes          |             7 |              7 |
+| roc-grid    | yes          |           383 |            383 |
+| roc-screen  | yes          |           179 |            179 |
+| territory   | yes          |          1010 |           1010 |
+| tic-tac-toe | yes          |            25 |             25 |
 
 Notes:
 
