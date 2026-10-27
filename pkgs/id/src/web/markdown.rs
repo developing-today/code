@@ -1702,8 +1702,14 @@ mod tests {
         let second = prosemirror_to_markdown(&markdown_to_prosemirror(&first)).unwrap();
         let third = prosemirror_to_markdown(&markdown_to_prosemirror(&second)).unwrap();
         assert_eq!(first, "- a\n- b\n- c\n", "coalesced single list: {first:?}");
-        assert!(!first.contains("end list"), "no end-list artefact: {first:?}");
-        assert!(!first.contains("```html"), "no html-fence artefact: {first:?}");
+        assert!(
+            !first.contains("end list"),
+            "no end-list artefact: {first:?}"
+        );
+        assert!(
+            !first.contains("```html"),
+            "no html-fence artefact: {first:?}"
+        );
         assert_eq!(first, second, "second save is a fixpoint");
         assert_eq!(second, third, "third save is a fixpoint");
     }
@@ -1713,8 +1719,14 @@ mod tests {
         // #1032: coalescing applies at any parent, e.g. inside a
         // blockquote, not just at doc level.
         let (first, second) = two_saves("> - a\n> + b\n");
-        assert!(!first.contains("end list"), "no end-list artefact: {first:?}");
-        assert!(!first.contains("```html"), "no html-fence artefact: {first:?}");
+        assert!(
+            !first.contains("end list"),
+            "no end-list artefact: {first:?}"
+        );
+        assert!(
+            !first.contains("```html"),
+            "no html-fence artefact: {first:?}"
+        );
         for needle in ["a", "b"] {
             assert!(first.contains(needle), "item {needle} preserved: {first:?}");
         }
