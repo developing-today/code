@@ -22,6 +22,7 @@ import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
 import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
+import { overlayQuotaCurrent, parseQuotaCurrent } from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
@@ -716,13 +717,31 @@ export function liveSource(cfg: Config): Source {
       // on the sandbox by scripts/collect-fleet-feed.ts. A stale feed
       // keeps rendering, with its age in provenance; fixtures only when
       // no feed exists at all.
+      // Stage 2 (#1151): the quota gatherer's quota-current.json —
+      // written into this aggregator's own data dir on a 15-minute
+      // tick — overlays the dated-read pools: fresh reads win, error /
+      // stale reads surface as the pool's state. Fail-soft: a missing
+      // or malformed file leaves the base view untouched.
       const feed = await getFeed();
+      let view: QuotaView;
       if (feed) {
         provenance.quota = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
-        return feed.quota;
+        view = feed.quota;
+      } else {
+        provenance.quota = "fixtures (no fleet feed file yet)";
+        view = await fix.quota();
       }
-      provenance.quota = "fixtures (no fleet feed file yet)";
-      return fix.quota();
+      try {
+        const raw = await readFile(cfg.quotaCurrentFile, "utf8");
+        const file = parseQuotaCurrent(JSON.parse(raw));
+        if (file) {
+          provenance.quota += ` · gatherer ${file.generatedAt}`;
+          return overlayQuotaCurrent(view, file);
+        }
+      } catch {
+        /* no gatherer file (or unreadable): base view stands */
+      }
+      return view;
     },
     async usage(): Promise<UsageView> {
       // Usage & billing hub (design §3): feed sections first (the
