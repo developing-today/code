@@ -22,7 +22,6 @@ function decodePem(pem: string): string {
   return trimmed;
 }
 
-
 function derLength(n: number): number[] {
   if (n < 0x80) return [n];
   const bytes: number[] = [];
@@ -79,7 +78,6 @@ export interface GitHubAuth {
   kind: "app" | "token";
   token: string;
 }
-
 
 const discoveredInstallations = new Map<string, number>();
 
