@@ -83,8 +83,7 @@ const dnsRegisterPath =
   join(HOME, "workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/files/dns-domain-register.md");
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
-const snapshotOutboxPath =
-  process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
+const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
   process.env.OPENCODE_SERVER_PASSWORD_FILE ?? join(HOME, "tools/secrets.d/opencode-server-password");
@@ -187,8 +186,7 @@ async function resolveProjectToken(): Promise<string | null> {
   const fromEnv = process.env.GITHUB_PROJECT_TOKEN ?? process.env.GH_TOKEN;
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();
   const bwsBin = process.env.BWS_BIN ?? join(HOME, "tools/bin/bws");
-  const accessTokenFile =
-    process.env.BWS_ACCESS_TOKEN_FILE ?? join(HOME, ".config/bitwarden/access-token");
+  const accessTokenFile = process.env.BWS_ACCESS_TOKEN_FILE ?? join(HOME, ".config/bitwarden/access-token");
   try {
     await access(bwsBin);
     const accessToken = (await readFile(accessTokenFile, "utf8")).trim();
@@ -358,7 +356,9 @@ async function main(): Promise<void> {
       }
     }
   } catch (err) {
-    console.error(`collector: GitHub Project read failed (${err instanceof Error ? err.message : "error"}); projects section omitted`);
+    console.error(
+      `collector: GitHub Project read failed (${err instanceof Error ? err.message : "error"}); projects section omitted`,
+    );
     projects = undefined;
   }
 
