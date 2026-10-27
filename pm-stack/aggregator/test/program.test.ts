@@ -26,6 +26,7 @@ const PROV: Provenance = {
   orchestration: "x",
   dns: "x",
   registry: "x",
+  aa: "x",
 };
 
 function poolItem(partial: Partial<ProjectPoolItem>): ProjectPoolItem {

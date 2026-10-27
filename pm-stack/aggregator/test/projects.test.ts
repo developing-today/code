@@ -4,12 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { OrchestrationSection } from "../src/model.ts";
-import {
-  derivedProjectState,
-  parseProjectItems,
-  poolItemToGhItem,
-  projectDisagreement,
-} from "../src/projects.ts";
+import { derivedProjectState, parseProjectItems, poolItemToGhItem, projectDisagreement } from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
@@ -87,6 +82,7 @@ const PROV = {
   orchestration: "x",
   dns: "x",
   registry: "x",
+  aa: "x",
 };
 
 describe("collector projects parsing (GraphQL -> feed section)", () => {
@@ -118,7 +114,9 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
       tiers: { needsDrew: [], needsOrchestrator: [] },
       goals: [
         {
-          linedUp: [{ title: "x", ref: "dezren39/nix#508", status: "in-progress", horizon: "today", horizonWhy: "test" }],
+          linedUp: [
+            { title: "x", ref: "dezren39/nix#508", status: "in-progress", horizon: "today", horizonWhy: "test" },
+          ],
         },
       ],
       dependencies: [],

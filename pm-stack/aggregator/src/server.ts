@@ -18,6 +18,7 @@ import {
 import { identitiesFromRecords } from "./registry.ts";
 import {
   ghObjectRef,
+  renderAa,
   renderAttention,
   renderBoard,
   renderDiscuss,
@@ -233,6 +234,14 @@ async function handler(req: Request): Promise<Response> {
   if (path === "/api/dns.json") {
     const section = await source.dns();
     return json(section ?? { status: "absent", reason: "no DNS register section in the fleet feed yet" });
+  }
+
+  if (path === "/aa") {
+    return html(renderAa(await source.aa(), prov()));
+  }
+  if (path === "/api/aa.json") {
+    const section = await source.aa();
+    return json(section ?? { status: "absent", reason: "no AA explorer section in the fleet feed yet" });
   }
 
   if (path === "/sessions") {
