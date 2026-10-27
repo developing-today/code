@@ -748,6 +748,35 @@
       "namepath": "audit",
       "shebang": false
     },
+    "bench": {
+      "attributes": [],
+      "body": [["cargo bench --bench world_bench -- ", ["variable", "args"]]],
+      "dependencies": [],
+      "doc": "Run the F11.8 benchmark harness (issue #539): journal append+fsync, checkpoint compaction, guest replay, session fan-out",
+      "name": "bench",
+      "parameters": [
+        {
+          "default": null,
+          "export": false,
+          "flag": false,
+          "help": null,
+          "kind": "star",
+          "long": null,
+          "max": null,
+          "min": null,
+          "multiple": false,
+          "name": "args",
+          "pattern": null,
+          "short": null,
+          "value": null
+        }
+      ],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "bench",
+      "shebang": false
+    },
     "build": {
       "attributes": [{ "group": "build" }],
       "body": [["./scripts/build.sh web debug"]],
