@@ -180,7 +180,8 @@ export class AutoSaveManager {
     } else if (result.retryAfterMs) {
       // Rate limited — schedule retry. The retry captures the document when
       // it fires, so it also serves as the follow-up for any edits that
-      // arrived during the failed save.
+      // arrived during the failed save: consume the follow-up request here.
+      this.followUpRequested = false;
       this.state = "rate-limited";
       this.updateIndicator();
 
@@ -189,7 +190,14 @@ export class AutoSaveManager {
         this.triggerSave();
       }, result.retryAfterMs);
     } else {
-      // Generic error — don't auto-retry (prevents infinite loops on network outage)
+      // Generic error — don't auto-retry a save that covered everything
+      // (prevents infinite loops on network outage). But an edit coalesced
+      // during this save is not covered by it: consume the request and run
+      // exactly one follow-up (#1616). The follow-up starts with the request
+      // cleared, so if it also fails generically with no new edits, it stops
+      // in the error state below — no retry loop.
+      const followUp = this.followUpRequested || this.editGeneration !== startGeneration;
+      this.followUpRequested = false;
       this.state = "error";
       this.updateIndicator();
 
@@ -201,6 +209,10 @@ export class AutoSaveManager {
           this.updateIndicator();
         }
       }, 2000);
+
+      if (followUp) {
+        void this.triggerSave();
+      }
     }
   }
 
