@@ -2597,10 +2597,12 @@ mod tests {
             .map(|(text, marks)| {
                 let mut node = json!({"type": "text", "text": text});
                 if !marks.is_empty() {
-                    node["marks"] = json!(marks
-                        .iter()
-                        .map(|mark| json!({"type": mark}))
-                        .collect::<Vec<_>>());
+                    node["marks"] = json!(
+                        marks
+                            .iter()
+                            .map(|mark| json!({"type": mark}))
+                            .collect::<Vec<_>>()
+                    );
                 }
                 node
             })
@@ -2708,8 +2710,13 @@ mod tests {
 
         let pm = pm_runs(&[(" b", &["em"]), ("c", &[])]);
         let saved = prosemirror_to_markdown(&pm).expect("converts");
-        assert_eq!(markdown_to_prosemirror(&saved), pm, "PM-identical at boundary");
-        let resaved = prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).expect("reconverts");
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            pm,
+            "PM-identical at boundary"
+        );
+        let resaved =
+            prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).expect("reconverts");
         assert_eq!(resaved, saved, "fixpoint at boundary");
     }
 
