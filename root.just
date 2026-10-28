@@ -222,6 +222,14 @@ stage-docs-all *args:
 switch:
     ./s
 
+# Update all flake inputs, then rebuild and switch NixOS configuration
+[group('nixos')]
+rebuild:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just update-inputs-all
+    just switch
+
 # =============================================================================
 # Mail Worker
 # =============================================================================
