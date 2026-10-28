@@ -165,7 +165,11 @@ fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
             }
         }
         if !in_fence && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
-            let lt = if markdown[i..].starts_with("](<") { i + 2 } else { i + 3 };
+            let lt = if markdown[i..].starts_with("](<") {
+                i + 2
+            } else {
+                i + 3
+            };
             // Find the closing '>' before any blank line or nested '<'.
             let mut end = None;
             let mut k = lt + 1;
