@@ -24,12 +24,42 @@ interface ImageEntry {
 // ============================================================================
 
 /**
+ * The one open browser, if any. The overlay is appended to `document.body`,
+ * so it outlives the editor view that opened it: `closeEditor()`, SPA
+ * navigation, and collab re-init all destroy the view while a body-level
+ * overlay would stay on screen, still holding the dead view in its Insert
+ * closures (#1381). Module state lets those teardown paths close the
+ * browser, mirroring `destroySearchPanel` / `destroyGotoLineDialog`.
+ */
+interface ActiveBrowser {
+  view: EditorView;
+  close: () => void;
+}
+
+let activeBrowser: ActiveBrowser | null = null;
+
+/**
+ * Close the image browser if it is open.
+ * Call this when the editor is being destroyed. Safe to call when no
+ * browser is open, and safe to call more than once.
+ */
+export function closeImageBrowser(): void {
+  activeBrowser?.close();
+}
+
+/**
  * Open the image browser dialog.
  * Fetches available images from `/api/images` and displays a grid.
  * On selection, inserts the image at the current cursor position.
  */
 export function openImageBrowser(view: EditorView, schema: Schema): void {
-  // Don't open multiple
+  if (activeBrowser) {
+    // Don't open multiple for the same view.
+    if (activeBrowser.view === view) return;
+    // A browser left over from a previous (torn-down) view self-closes:
+    // its Insert closures dispatch on a destroyed view (#1381).
+    closeImageBrowser();
+  }
   if (document.querySelector(".pm-image-browser-overlay")) return;
 
   // Overlay
@@ -71,8 +101,15 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
   insertBtn.disabled = true;
   insertBtn.addEventListener("click", () => {
     if (selectedImage) {
-      insertImage(selectedImage);
-      close();
+      // Dispatching on a destroyed view throws: log it and dismiss in a
+      // finally, so the dialog never stays stuck on screen (#1381).
+      try {
+        insertImage(selectedImage);
+      } catch (err) {
+        console.warn("[image-browser] Insert failed:", err);
+      } finally {
+        close();
+      }
     }
   });
 
@@ -144,8 +181,13 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
         // Double-click to insert immediately
         card.addEventListener("dblclick", () => {
           selectedImage = img;
-          insertImage(img);
-          close();
+          try {
+            insertImage(img);
+          } catch (err) {
+            console.warn("[image-browser] Insert failed:", err);
+          } finally {
+            close();
+          }
         });
 
         grid.appendChild(card);
@@ -166,9 +208,14 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
   }
 
   function close(): void {
+    if (activeBrowser?.close === close) {
+      activeBrowser = null;
+    }
     document.removeEventListener("keydown", onKeyDown);
     overlay.remove();
   }
+
+  activeBrowser = { view, close };
 }
 
 // ============================================================================
