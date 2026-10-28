@@ -51,7 +51,10 @@
         # raised again 2026-10-28 (Drew) after nix#1020: bursts through
         # the tailnet still tripped the 100 cap during fleet-wide runs.
         MaxStartups = "200:30:500";
-        MaxSessions = 50;
+        # 50 -> 100 (2026-10-28): every fleet command multiplexes as a
+        # channel over one shared connection; bursts of sweeps/queue
+        # workers plus long-lived --watch commands can exhaust 50.
+        MaxSessions = 100;
         # Unauthenticated slots recycle in half the stock time, so a
         # burst drains faster instead of piling up against MaxStartups.
         LoginGraceTime = 60;
