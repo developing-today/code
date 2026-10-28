@@ -474,7 +474,10 @@ mod archive_name_tests {
         store.tags().set(&second, hash(2)).await.unwrap();
 
         // Both archives survive, each still pointing at its own version.
-        assert_eq!(store.tags().get(&first).await.unwrap().unwrap().hash, hash(1));
+        assert_eq!(
+            store.tags().get(&first).await.unwrap().unwrap().hash,
+            hash(1)
+        );
         assert_eq!(
             store.tags().get(&second).await.unwrap().unwrap().hash,
             hash(2)
