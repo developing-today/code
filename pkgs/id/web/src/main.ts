@@ -12,6 +12,7 @@ import { type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { updateHeaderSubtitle } from "./header-subtitle";
 import { identityNeedsRefresh } from "./identity-refresh";
+import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
@@ -1005,6 +1006,10 @@ async function init(): Promise<void> {
     },
 
     closeEditor(): void {
+      // The image browser overlay lives on document.body and holds the
+      // editor view in its closures — close it before the view is
+      // destroyed or it stays stuck over the next document (#1381).
+      closeImageBrowser();
       // Cancel auto-save timers and remove editor:change listener
       if (this.autoSave) {
         this.autoSave.cancel();

@@ -181,9 +181,39 @@ type Tool struct {
 	Meta  json.RawMessage `json:"_meta,omitempty"`
 }
 
+// CacheHints is what a list result said about how long it may be cached
+// (2026-07-28 ttlMs/cacheScope), aggregated across the list's pages.
+//
+// TTLMs is the minimum declared ttlMs among pages that declared one;
+// HasTTL=false means no page declared one, so "absent" stays
+// distinguishable from an explicit 0 at this boundary -- the pool maps
+// absent, zero and negative to "immediately stale" for modern servers.
+// Private is true when any page declared cacheScope "private".
+type CacheHints struct {
+	TTLMs   int64
+	HasTTL  bool
+	Private bool
+}
+
+// merge folds one page's hints into the aggregate: the smallest declared
+// TTL wins, and private on any page marks the whole list private.
+func (h *CacheHints) merge(ttlMs *int64, cacheScope string) {
+	if ttlMs != nil {
+		if !h.HasTTL || *ttlMs < h.TTLMs {
+			h.TTLMs = *ttlMs
+		}
+		h.HasTTL = true
+	}
+	if cacheScope == "private" {
+		h.Private = true
+	}
+}
+
 type toolsListResult struct {
 	Tools      []Tool  `json:"tools"`
 	NextCursor *string `json:"nextCursor,omitempty"`
+	TTLMs      *int64  `json:"ttlMs,omitempty"`
+	CacheScope string  `json:"cacheScope,omitempty"`
 }
 
 // Resource is one entry from resources/list.
@@ -205,11 +235,15 @@ type Resource struct {
 type resourcesListResult struct {
 	Resources  []Resource `json:"resources"`
 	NextCursor *string    `json:"nextCursor,omitempty"`
+	TTLMs      *int64     `json:"ttlMs,omitempty"`
+	CacheScope string     `json:"cacheScope,omitempty"`
 }
 
 type resourceTemplatesListResult struct {
 	ResourceTemplates []Resource `json:"resourceTemplates"`
-	NextCursor        string     `json:"nextCursor,omitempty"`
+	NextCursor        *string    `json:"nextCursor,omitempty"`
+	TTLMs             *int64     `json:"ttlMs,omitempty"`
+	CacheScope        string     `json:"cacheScope,omitempty"`
 }
 
 // Era is which protocol generation a server speaks.
@@ -1052,13 +1086,22 @@ func pageParams(cursor *string) json.RawMessage {
 // and SHOULD warn, so one bad definition cannot make its headers -- and so
 // every call to it -- wrong.
 func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
+	all, _, err := c.ListToolsWithHints(ctx)
+	return all, err
+}
+
+// ListToolsWithHints is ListTools plus the cache hints the server declared
+// on the pages it returned.
+func (c *Client) ListToolsWithHints(ctx context.Context) ([]Tool, CacheHints, error) {
 	var all []Tool
+	var hints CacheHints
 	var cursor *string
 	for i := 0; i < defaults.ListPageLimit; i++ {
 		var res toolsListResult
 		if err := c.call(ctx, "tools/list", pageParams(cursor), &res); err != nil {
-			return all, err
+			return all, hints, err
 		}
+		hints.merge(res.TTLMs, res.CacheScope)
 		all = append(all, res.Tools...)
 		next, more := c.nextPage(res.NextCursor, cursor)
 		if !more {
@@ -1066,18 +1109,31 @@ func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
 		}
 		cursor = &next
 	}
-	return c.checkToolHeaders(c.checkToolSchemas(all)), nil
+	checked := c.checkToolHeaders(c.checkToolSchemas(all))
+	return checked, hints, nil
 }
 
 // ListResources returns static resources plus resource templates.
 func (c *Client) ListResources(ctx context.Context) ([]Resource, error) {
+	all, _, err := c.ListResourcesWithHints(ctx)
+	return all, err
+}
+
+// ListResourcesWithHints is ListResources plus the cache hints declared
+// across BOTH lists it reads: resources/list pages and -- now paged, so
+// templates past page 1 are no longer dropped -- resources/templates/list
+// pages. A templates failure stays swallowed, as before, and a swallowed
+// list contributes no hints.
+func (c *Client) ListResourcesWithHints(ctx context.Context) ([]Resource, CacheHints, error) {
 	var all []Resource
+	var hints CacheHints
 	var cursor *string
 	for i := 0; i < defaults.ListPageLimit; i++ {
 		var res resourcesListResult
 		if err := c.call(ctx, "resources/list", pageParams(cursor), &res); err != nil {
-			return all, err
+			return all, hints, err
 		}
+		hints.merge(res.TTLMs, res.CacheScope)
 		all = append(all, res.Resources...)
 		next, more := c.nextPage(res.NextCursor, cursor)
 		if !more {
@@ -1085,11 +1141,21 @@ func (c *Client) ListResources(ctx context.Context) ([]Resource, error) {
 		}
 		cursor = &next
 	}
-	var tres resourceTemplatesListResult
-	if err := c.call(ctx, "resources/templates/list", json.RawMessage(`{}`), &tres); err == nil {
+	var tcursor *string
+	for i := 0; i < defaults.ListPageLimit; i++ {
+		var tres resourceTemplatesListResult
+		if err := c.call(ctx, "resources/templates/list", pageParams(tcursor), &tres); err != nil {
+			break
+		}
+		hints.merge(tres.TTLMs, tres.CacheScope)
 		all = append(all, tres.ResourceTemplates...)
+		next, more := c.nextPage(tres.NextCursor, tcursor)
+		if !more {
+			break
+		}
+		tcursor = &next
 	}
-	return all, nil
+	return all, hints, nil
 }
 
 // Prompt is a reusable template a server offers.
@@ -1118,11 +1184,21 @@ type PromptArgument struct {
 type promptsListResult struct {
 	Prompts    []Prompt `json:"prompts"`
 	NextCursor *string  `json:"nextCursor"`
+	TTLMs      *int64   `json:"ttlMs,omitempty"`
+	CacheScope string   `json:"cacheScope,omitempty"`
 }
 
 // ListPrompts returns every prompt a server offers.
 func (c *Client) ListPrompts(ctx context.Context) ([]Prompt, error) {
+	all, _, err := c.ListPromptsWithHints(ctx)
+	return all, err
+}
+
+// ListPromptsWithHints is ListPrompts plus the cache hints the server
+// declared on the pages it returned.
+func (c *Client) ListPromptsWithHints(ctx context.Context) ([]Prompt, CacheHints, error) {
 	var all []Prompt
+	var hints CacheHints
 	var cursor *string
 	for i := 0; i < defaults.ListPageLimit; i++ {
 		var res promptsListResult
@@ -1130,8 +1206,9 @@ func (c *Client) ListPrompts(ctx context.Context) ([]Prompt, error) {
 			// A server without prompts answers method-not-found, which is an
 			// absence rather than a failure. Treating it as an error would
 			// make every listing fail on the majority of servers.
-			return all, nil
+			return all, hints, nil
 		}
+		hints.merge(res.TTLMs, res.CacheScope)
 		all = append(all, res.Prompts...)
 		next, more := c.nextPage(res.NextCursor, cursor)
 		if !more {
@@ -1139,7 +1216,7 @@ func (c *Client) ListPrompts(ctx context.Context) ([]Prompt, error) {
 		}
 		cursor = &next
 	}
-	return all, nil
+	return all, hints, nil
 }
 
 // GetPrompt renders one prompt with its arguments filled in.

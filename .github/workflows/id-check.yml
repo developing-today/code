@@ -47,12 +47,14 @@ on:
       - ".github/workflows/id-check.yml"
       - ".github/scripts/id-pr-checks.txt"
       - ".github/scripts/check-id-pr-checks.sh"
+      - ".github/scripts/check-crash-gate-coverage.sh"
   pull_request:
     paths:
       - "pkgs/id/**"
       - ".github/workflows/id-check.yml"
       - ".github/scripts/id-pr-checks.txt"
       - ".github/scripts/check-id-pr-checks.sh"
+      - ".github/scripts/check-crash-gate-coverage.sh"
 
 permissions:
   contents: read
@@ -92,6 +94,12 @@ jobs:
       # by name instead of silently getting no PR coverage.
       - name: Guard PR check list against flake drift
         run: .github/scripts/check-id-pr-checks.sh
+
+      # The crash-gate composition asserted in check-id-pr-checks.sh is
+      # itself checked (#1635): an #[ignore]d crash test matching none
+      # of the PR split filters fails here by name.
+      - name: Guard crash-gate PR partition coverage
+        run: .github/scripts/check-crash-gate-coverage.sh
 
       - name: Emit PR check list for the matrix
         id: list
