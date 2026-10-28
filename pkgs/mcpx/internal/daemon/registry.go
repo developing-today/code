@@ -119,13 +119,21 @@ type cachedEntry struct {
 	Prompts      []mcpclient.Prompt `json:"prompts"`
 	Instructions string             `json:"instructions,omitempty"`
 	FetchedAt    time.Time          `json:"fetchedAt"`
+	// Deadline and Scope are the catalogue's freshness and visibility
+	// as fetched (#1603). Deadline is absolute — a TTL would let a
+	// restart extend freshness — and Scope is the cacheScope wire
+	// value ("private" or "public"; empty means public). SaveCache
+	// never writes a private entry and loadCache never seeds one; the
+	// fields exist so a public entry round-trips its deadline/scope.
+	Deadline time.Time `json:"deadline,omitempty"`
+	Scope    string    `json:"scope,omitempty"`
 }
 
 // cacheVersion is bumped whenever a cached entry gains a field. Adding one
 // parses cleanly against an old file and leaves it empty, which presented as
 // the destructive-call policy silently never firing: the annotations were
 // there upstream and absent from the cache nobody had reason to invalidate.
-const cacheVersion = 5
+const cacheVersion = 6
 
 // NewRegistry builds pools from config and seeds them from the disk cache.
 func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*Registry, error) {
@@ -257,8 +265,14 @@ func (r *Registry) loadCache() {
 		return
 	}
 	for name, e := range cf.Servers {
+		// #1603: a private entry is never seeded, even from a foreign
+		// or hand-written file — SaveCache does not write them, so one
+		// present on disk did not come from this daemon's own save.
+		if e.Scope == "private" {
+			continue
+		}
 		if p, ok := r.pools[name]; ok {
-			p.SetSchemas(e.Tools, e.Resources, e.Prompts, e.Instructions, e.FetchedAt)
+			p.SetSchemas(e.Tools, e.Resources, e.Prompts, e.Instructions, e.FetchedAt, e.Deadline, false)
 		}
 	}
 	r.logf("loaded schema cache for %d servers", len(cf.Servers))
@@ -269,13 +283,20 @@ func (r *Registry) SaveCache() error {
 	cf := cacheFile{Version: cacheVersion, ConfigHash: r.hash, SavedAt: time.Now(), Servers: map[string]*cachedEntry{}}
 	r.mu.RLock()
 	for name, p := range r.pools {
-		tools, res, prompts, at := p.CachedAll()
+		tools, res, prompts, at, deadline, private := p.CachedAll()
 		if at.IsZero() {
+			continue
+		}
+		// #1603: a private catalogue never touches disk — it was
+		// fetched under one caller's authority and must not be served
+		// to every caller of a restarted daemon.
+		if private {
 			continue
 		}
 		cf.Servers[name] = &cachedEntry{
 			Tools: tools, Resources: res, Prompts: prompts,
 			Instructions: p.Instructions(), FetchedAt: at,
+			Deadline: deadline, Scope: "public",
 		}
 	}
 	r.mu.RUnlock()

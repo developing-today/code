@@ -70,6 +70,13 @@ for d in "${REPOS[@]}"; do
   [ -z "$db" ] && db=main
   has_origin=0
   g remote get-url origin >/dev/null 2>&1 && has_origin=1
+  # A repo with no origin (e.g. the local clan-flakes working repos)
+  # has no upstream default to align to: whatever branch it is on IS
+  # its default — never flag it, never move it.
+  if [ "$has_origin" -eq 0 ]; then
+    db="$(g branch --show-current)"
+    [ -z "$db" ] && db=main
+  fi
   if [ "$has_origin" -eq 1 ]; then
     timeout 60 git -C "$d" fetch -q --prune origin 2>/dev/null || say "- $name: FETCH FAILED — continuing with local state"
   fi

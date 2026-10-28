@@ -64,6 +64,7 @@ use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
+use p2panda_core::Hash;
 #[cfg(all(feature = "world", feature = "sandbox"))]
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,9 @@ use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
     resolve_config,
 };
+use crate::groups::log::{FILE_NAME as GROUPS_FILE_NAME, GroupLog};
+use crate::groups::warnings::{Evaluator, Observation, Warning};
+use crate::groups::{Key as GroupKey, Projection};
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::tags::TagStore;
@@ -1174,6 +1178,24 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         })
     });
 
+    // Group warnings (P4.9, #799): one persistent Evaluator for the life of
+    // the process. The first pass runs here so active warnings surface in
+    // the CLI status output at startup; the spawned task then re-evaluates
+    // as membership changes and writes fired warnings to the server log.
+    let mut group_watcher = GroupWarningWatcher::new();
+    let groups_log = PathBuf::from(GROUPS_FILE_NAME);
+    for (_, warning) in evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now()) {
+        status!("group warning: {}", warning.message());
+    }
+    let group_warning_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(GROUP_WARNING_INTERVAL);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now());
+        }
+    });
+
     tokio::signal::ctrl_c().await?;
     remove_serve_lock().await?;
     router.shutdown().await?;
@@ -1196,8 +1218,131 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     if let Some(hub) = &world_hub {
         hub.shutdown_all().await;
     }
+    group_warning_handle.abort();
+    let _ = group_warning_handle.await;
     store.shutdown().await?;
     Ok(())
+}
+
+/// How often serve re-evaluates the group warnings against the group log.
+const GROUP_WARNING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The serve-side group warning watcher (P4.9, #799).
+///
+/// Serve holds exactly one of these for the life of the process, so the
+/// [`Evaluator`]'s high-water marks survive across evaluations: a group that
+/// crosses a size threshold warns once, not on every pass. The groups in the
+/// node's own group log are the ones its operator made through the CLI, so
+/// every group is observed as client-made. Member counts come from the fold.
+///
+/// Group events carry no timestamps, so churn cannot be reconstructed from
+/// the log for time before serve started. Instead the watcher derives re-adds
+/// from what it observes between evaluations: a device that is authorized,
+/// later unauthorized, and then authorized again is a re-add, stamped with
+/// the time of the evaluation that first sees it back.
+struct GroupWarningWatcher {
+    evaluator: Evaluator,
+    /// The devices authorized per group at the previous evaluation.
+    devices: std::collections::BTreeMap<Hash, std::collections::BTreeSet<GroupKey>>,
+    /// Every device ever seen authorized per group.
+    seen_devices: std::collections::BTreeMap<Hash, std::collections::BTreeSet<GroupKey>>,
+    /// The re-add times per group, as observed by this watcher.
+    readds: std::collections::BTreeMap<Hash, Vec<u64>>,
+}
+
+impl GroupWarningWatcher {
+    fn new() -> Self {
+        Self {
+            evaluator: Evaluator::default(),
+            devices: std::collections::BTreeMap::new(),
+            seen_devices: std::collections::BTreeMap::new(),
+            readds: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Evaluates every active group in `projection` at `now` (Unix seconds).
+    /// Returns the warnings this evaluation adds, and writes each of them to
+    /// the server log through the warnings module.
+    fn evaluate(&mut self, projection: &Projection, now: u64) -> Vec<(Hash, Warning)> {
+        let mut fired = Vec::new();
+        for (group, view) in projection.groups() {
+            if !view.is_active() {
+                continue;
+            }
+            let current = projection.group_active_devices(group);
+            let mut new_readds = 0_usize;
+            {
+                let seen = self.seen_devices.entry(*group).or_default();
+                let previous = self.devices.entry(*group).or_default();
+                for device in &current {
+                    if !previous.contains(device) && seen.contains(device) {
+                        new_readds += 1;
+                    }
+                }
+                seen.extend(current.iter().copied());
+                *previous = current;
+            }
+            if new_readds > 0 {
+                let times = self.readds.entry(*group).or_default();
+                for _ in 0..new_readds {
+                    times.push(now);
+                }
+                times.retain(|at| {
+                    now.saturating_sub(*at) < crate::groups::warnings::CHURN_WINDOW_SECS
+                });
+            }
+            let readds = self.readds.get(group).cloned().unwrap_or_default();
+            let observation = Observation {
+                group: *group,
+                client_made: true,
+                members: view.members.len(),
+                readds: &readds,
+            };
+            let warnings = self.evaluator.observe(&observation, now);
+            if !warnings.is_empty() {
+                crate::groups::warnings::log(group, &warnings);
+                fired.extend(warnings.into_iter().map(|warning| (*group, warning)));
+            }
+        }
+        fired
+    }
+}
+
+/// One warning evaluation pass over the group log at `path`.
+///
+/// A missing log means no groups, not an error. A log that cannot be read or
+/// folded is noted in the server log and skipped: warnings never block serve.
+fn evaluate_group_warnings(
+    watcher: &mut GroupWarningWatcher,
+    path: &std::path::Path,
+    now: u64,
+) -> Vec<(Hash, Warning)> {
+    if !path.exists() {
+        return Vec::new();
+    }
+    let log = match GroupLog::open(path) {
+        Ok(log) => log,
+        Err(error) => {
+            debug!("group warnings: cannot open {}: {error}", path.display());
+            return Vec::new();
+        }
+    };
+    let projection = match log.projection() {
+        Ok(projection) => projection,
+        Err(error) => {
+            debug!("group warnings: cannot fold {}: {error}", path.display());
+            return Vec::new();
+        }
+    };
+    watcher.evaluate(&projection, now)
+}
+
+/// The current time as Unix seconds, for the warning evaluator's clock.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 /// Background loop for gossip-based peer discovery.
@@ -1365,6 +1510,120 @@ async fn run_gossip_loop(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A scratch directory unique to this test process.
+    fn serve_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("id-serve-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Builds a group log on disk holding one group of `members` accounts
+    /// (the author included), returning the group's ID. This is the file the
+    /// serve warning path reads.
+    fn group_log_with_members(dir: &std::path::Path, members: usize) -> Hash {
+        use crate::groups::Role;
+        use crate::groups::actions::NewGroup;
+
+        let path = dir.join(GROUPS_FILE_NAME);
+        let mut log = GroupLog::open(&path).unwrap();
+        let author: GroupKey = [1; 32];
+        let created = log
+            .create(
+                author,
+                NewGroup::Normal {
+                    max: None,
+                    admins_on_create: false,
+                },
+            )
+            .unwrap();
+        for i in 1..members {
+            let member: GroupKey = [u8::try_from(i + 1).unwrap(); 32];
+            log.add(author, created.group, member, Role::Read).unwrap();
+        }
+        created.group
+    }
+
+    #[test]
+    fn serve_group_warnings_fire_once_at_each_size_threshold() {
+        let dir = serve_test_dir("size");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let group = group_log_with_members(&dir, 96);
+        let mut watcher = GroupWarningWatcher::new();
+
+        // The integration surface: serve's own evaluation over the on-disk
+        // group log warns when the group crosses 96 members (P4.9's e2e
+        // column: "the server warns at a threshold").
+        let fired = evaluate_group_warnings(&mut watcher, &path, 1_000);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].0, group);
+        assert!(matches!(
+            fired[0].1,
+            Warning::Size {
+                threshold: 96,
+                members: 96
+            }
+        ));
+
+        // The persistent Evaluator's high-water mark: the same state warns
+        // no second time.
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+
+        // Growing past the next threshold warns once more, for that tier.
+        {
+            let mut log = GroupLog::open(&path).unwrap();
+            let author: GroupKey = [1; 32];
+            for i in 96..128 {
+                let member: GroupKey = [u8::try_from(i + 1).unwrap(); 32];
+                log.add(author, group, member, crate::groups::Role::Read)
+                    .unwrap();
+            }
+        }
+        let fired = evaluate_group_warnings(&mut watcher, &path, 1_002);
+        assert_eq!(fired.len(), 1);
+        assert!(matches!(
+            fired[0].1,
+            Warning::Size {
+                threshold: 128,
+                members: 128
+            }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serve_group_warnings_fire_on_device_readd_churn() {
+        use crate::groups::Role;
+
+        let dir = serve_test_dir("churn");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let group = group_log_with_members(&dir, 2);
+        let author: GroupKey = [1; 32];
+        let device: GroupKey = [200; 32];
+        let mut log = GroupLog::open(&path).unwrap();
+        let mut watcher = GroupWarningWatcher::new();
+
+        // The first authorization is not a re-add, and warns about nothing.
+        log.device_add(author, group, device, Role::Read).unwrap();
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+
+        // Four revoke + re-authorize cycles inside the window: the fourth
+        // re-add crosses the churn threshold and warns exactly once.
+        for cycle in 0..4_u64 {
+            log.device_revoke(author, group, device).unwrap();
+            assert!(evaluate_group_warnings(&mut watcher, &path, 1_001 + cycle * 2).is_empty());
+            log.device_add(author, group, device, Role::Read).unwrap();
+            let fired = evaluate_group_warnings(&mut watcher, &path, 1_002 + cycle * 2);
+            if cycle < 3 {
+                assert!(fired.is_empty(), "cycle {cycle} fired early: {fired:?}");
+            } else {
+                assert_eq!(fired.len(), 1);
+                assert!(matches!(fired[0].1, Warning::Churn { readds: 4 }));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[cfg(feature = "world")]
     #[test]
