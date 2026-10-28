@@ -311,7 +311,8 @@ describe("handlePaste/handleDrop oversized filtering", () => {
   it("oversized-only paste is not claimed: returns false, no preventDefault, no dispatch", () => {
     const view = stubView();
     const event = pasteEvent([oversizedFile()]);
-    const result = handlePaste.call(plugin,
+    const result = handlePaste.call(
+      plugin,
       view as unknown as EditorView,
       event as unknown as ClipboardEvent,
       undefined as unknown as Slice,
@@ -324,7 +325,8 @@ describe("handlePaste/handleDrop oversized filtering", () => {
   it("oversized-only drop is not claimed: returns false, no preventDefault, no dispatch", () => {
     const view = stubView();
     const event = dropEvent([oversizedFile()]);
-    const result = handleDrop.call(plugin,
+    const result = handleDrop.call(
+      plugin,
       view as unknown as EditorView,
       event as unknown as DragEvent,
       undefined as unknown as Slice,
@@ -339,7 +341,8 @@ describe("handlePaste/handleDrop oversized filtering", () => {
   it("mixed paste uploads only the valid file and still claims the event", () => {
     const view = stubView();
     const event = pasteEvent([oversizedFile(), new File(["ok"], "ok.png", { type: "image/png" })]);
-    const result = handlePaste.call(plugin,
+    const result = handlePaste.call(
+      plugin,
       view as unknown as EditorView,
       event as unknown as ClipboardEvent,
       undefined as unknown as Slice,
@@ -353,7 +356,8 @@ describe("handlePaste/handleDrop oversized filtering", () => {
   it("mixed drop uploads only the valid file and still claims the event", () => {
     const view = stubView();
     const event = dropEvent([new File(["ok"], "ok.png", { type: "image/png" }), oversizedFile()]);
-    const result = handleDrop.call(plugin,
+    const result = handleDrop.call(
+      plugin,
       view as unknown as EditorView,
       event as unknown as DragEvent,
       undefined as unknown as Slice,
