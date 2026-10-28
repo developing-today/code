@@ -57,8 +57,7 @@ export function createNavigation(deps: NavigationDeps): Navigation {
     const token = (partialTokens.get(targetSelector) ?? 0) + 1;
     partialTokens.set(targetSelector, token);
     const generation = pageGeneration;
-    const isCurrent = (): boolean =>
-      partialTokens.get(targetSelector) === token && generation === pageGeneration;
+    const isCurrent = (): boolean => partialTokens.get(targetSelector) === token && generation === pageGeneration;
     try {
       const response = await fetch(url, {
         headers: { "X-Partial-Request": "true" },

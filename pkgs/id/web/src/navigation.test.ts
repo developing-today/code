@@ -185,8 +185,7 @@ describe("fetchPartial x navigateTo (page generation, #1578)", () => {
   // The partial target lives INSIDE #main, as in the real pages: a
   // navigation swap replaces it with the new page's own element.
   function seedPage(listHtml: string): void {
-    document.getElementById("main")!.innerHTML =
-      `<div id="file-list-content">${listHtml}</div>`;
+    document.getElementById("main")!.innerHTML = `<div id="file-list-content">${listHtml}</div>`;
   }
   function listContent(): string {
     return document.querySelector("#main #file-list-content")!.innerHTML;
