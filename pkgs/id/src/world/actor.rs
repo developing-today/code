@@ -9,7 +9,6 @@ use tracing::Instrument;
 
 use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
 
-
 impl WorldCommand {
     pub(crate) fn name(&self) -> &'static str {
         match self {
@@ -294,7 +293,9 @@ impl WorldActor {
             let name = command.name();
             async {
                 self.handle(command).await;
-            }.instrument(tracing::info_span!("command", name)).await;
+            }
+            .instrument(tracing::info_span!("command", name))
+            .await;
             self.metrics.record_command(started.elapsed());
             self.after_change().await;
             self.acting = None;

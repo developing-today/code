@@ -72,14 +72,14 @@ pub(super) struct DirectoryRequest {
     action: DirectoryAction,
 }
 
-
 async fn metrics_handler(
     State(state): State<WorldWebState>,
     headers: HeaderMap,
 ) -> Result<Response, StatusCode> {
     let hub = state.hub.ok_or(StatusCode::NOT_FOUND)?;
 
-    let auth_header = headers.get(header::AUTHORIZATION)
+    let auth_header = headers
+        .get(header::AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "));
 
@@ -90,46 +90,120 @@ async fn metrics_handler(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    let lease = hub.lease(None, Some(token)).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    let lease = hub
+        .lease(None, Some(token))
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
     let handle = lease.service();
-    let metrics = handle.world.metrics().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let metrics = handle
+        .world
+        .metrics()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut out = String::new();
 
     let write_counter = |out: &mut String, name: &str, help: &str, value: u64| {
-        out.push_str(&format!("# HELP {} {}\n# TYPE {} counter\n{} {}\n", name, help, name, name, value));
+        out.push_str(&format!(
+            "# HELP {} {}\n# TYPE {} counter\n{} {}\n",
+            name, help, name, name, value
+        ));
     };
 
     let write_gauge = |out: &mut String, name: &str, help: &str, value: u64| {
-        out.push_str(&format!("# HELP {} {}\n# TYPE {} gauge\n{} {}\n", name, help, name, name, value));
+        out.push_str(&format!(
+            "# HELP {} {}\n# TYPE {} gauge\n{} {}\n",
+            name, help, name, name, value
+        ));
     };
 
-    let write_histogram = |out: &mut String, name: &str, help: &str, hist: &crate::world::HistogramSnapshot| {
-        out.push_str(&format!("# HELP {} {}\n# TYPE {} histogram\n", name, help, name));
-        let mut cumulative = 0;
-        for (i, &count) in hist.buckets.iter().enumerate() {
-            cumulative += count;
-            if i < hist.bucket_bounds_us.len() {
-                let bound_sec = hist.bucket_bounds_us[i] as f64 / 1_000_000.0;
-                out.push_str(&format!("{}_bucket{{le=\"{:.3}\"}} {}\n", name, bound_sec, cumulative));
-            } else {
-                out.push_str(&format!("{}_bucket{{le=\"+Inf\"}} {}\n", name, cumulative));
+    let write_histogram =
+        |out: &mut String, name: &str, help: &str, hist: &crate::world::HistogramSnapshot| {
+            out.push_str(&format!(
+                "# HELP {} {}\n# TYPE {} histogram\n",
+                name, help, name
+            ));
+            let mut cumulative = 0;
+            for (i, &count) in hist.buckets.iter().enumerate() {
+                cumulative += count;
+                if i < hist.bucket_bounds_us.len() {
+                    let bound_sec = hist.bucket_bounds_us[i] as f64 / 1_000_000.0;
+                    out.push_str(&format!(
+                        "{}_bucket{{le=\"{:.3}\"}} {}\n",
+                        name, bound_sec, cumulative
+                    ));
+                } else {
+                    out.push_str(&format!("{}_bucket{{le=\"+Inf\"}} {}\n", name, cumulative));
+                }
             }
-        }
-        out.push_str(&format!("{}_sum {}\n", name, hist.sum_us as f64 / 1_000_000.0));
-        out.push_str(&format!("{}_count {}\n", name, hist.count));
-    };
+            out.push_str(&format!(
+                "{}_sum {}\n",
+                name,
+                hist.sum_us as f64 / 1_000_000.0
+            ));
+            out.push_str(&format!("{}_count {}\n", name, hist.count));
+        };
 
-    write_counter(&mut out, "id_world_commands_total", "Actor commands handled", metrics.commands_total);
-    write_histogram(&mut out, "id_world_command_latency_seconds", "Time spent handling actor commands", &metrics.command_latency);
-    write_counter(&mut out, "id_world_journal_appends_total", "Journal entries appended", metrics.journal_appends_total);
-    write_histogram(&mut out, "id_world_journal_append_latency_seconds", "Journal append latency, including the fsync", &metrics.journal_append_latency);
-    write_counter(&mut out, "id_world_checkpoints_total", "Journal checkpoints completed", metrics.checkpoints_total);
-    write_histogram(&mut out, "id_world_checkpoint_duration_seconds", "Time spent checkpointing the journal", &metrics.checkpoint_duration);
-    write_counter(&mut out, "id_world_frame_bytes_total", "Bytes of session frames sent", metrics.frame_bytes_total);
-    write_gauge(&mut out, "id_world_actor_queue_depth", "Commands waiting in actor queue", metrics.actor_queue_depth);
-    write_gauge(&mut out, "id_world_actor_queue_depth_max", "Deepest actor queue depth observed", metrics.actor_queue_depth_max);
-    write_gauge(&mut out, "id_world_sessions", "Live sessions (joined participants)", metrics.sessions);
+    write_counter(
+        &mut out,
+        "id_world_commands_total",
+        "Actor commands handled",
+        metrics.commands_total,
+    );
+    write_histogram(
+        &mut out,
+        "id_world_command_latency_seconds",
+        "Time spent handling actor commands",
+        &metrics.command_latency,
+    );
+    write_counter(
+        &mut out,
+        "id_world_journal_appends_total",
+        "Journal entries appended",
+        metrics.journal_appends_total,
+    );
+    write_histogram(
+        &mut out,
+        "id_world_journal_append_latency_seconds",
+        "Journal append latency, including the fsync",
+        &metrics.journal_append_latency,
+    );
+    write_counter(
+        &mut out,
+        "id_world_checkpoints_total",
+        "Journal checkpoints completed",
+        metrics.checkpoints_total,
+    );
+    write_histogram(
+        &mut out,
+        "id_world_checkpoint_duration_seconds",
+        "Time spent checkpointing the journal",
+        &metrics.checkpoint_duration,
+    );
+    write_counter(
+        &mut out,
+        "id_world_frame_bytes_total",
+        "Bytes of session frames sent",
+        metrics.frame_bytes_total,
+    );
+    write_gauge(
+        &mut out,
+        "id_world_actor_queue_depth",
+        "Commands waiting in actor queue",
+        metrics.actor_queue_depth,
+    );
+    write_gauge(
+        &mut out,
+        "id_world_actor_queue_depth_max",
+        "Deepest actor queue depth observed",
+        metrics.actor_queue_depth_max,
+    );
+    write_gauge(
+        &mut out,
+        "id_world_sessions",
+        "Live sessions (joined participants)",
+        metrics.sessions,
+    );
 
     Ok(Response::builder()
         .status(StatusCode::OK)
