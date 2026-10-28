@@ -4923,12 +4923,12 @@
     "url": "https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#session-management",
     "quote": "\"it **MUST** start a new session by sending a new `InitializeRequest` without a session ID attached.\"",
     "applicability": {
-      "client": "n/a:catalogue marks it n/a",
+      "client": "applies",
       "server": "n/a:addresses the other side"
     },
     "notes": {
-      "client": "n/a",
-      "server": "yes — a session 404 triggers one re-initialize (no session id on it) and one retry on the new session; tested, see `conformance-matrix.md`"
+      "client": "yes — a session 404 triggers one re-initialize (no session id on it) and one retry on the new session; tested, see `conformance-matrix.md`",
+      "server": "n/a"
     }
   },
   {

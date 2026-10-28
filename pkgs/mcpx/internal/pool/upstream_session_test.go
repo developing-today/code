@@ -261,13 +261,22 @@ func TestAnExpiredUpstreamSessionIsReinitialised(t *testing.T) {
 	up.expireAll()
 	handOff(t, old, successor)
 
-	if st := successor.Status(); st.Live != 0 {
-		t.Fatalf("an expired session must not be served, %d live", st.Live)
+	// Since #1637 the recovery lives in the client, not the pool: the
+	// probe ping's 404 makes the adopted client forget the dead session,
+	// re-initialize, and retry, so the handed-on instance is served on
+	// the replacement session instead of being dropped for the next
+	// call to replace (#1634: client-level recovery is transparent and
+	// immediate; pool reaping was the rejected alternative).
+	if st := successor.Status(); st.Live != 1 {
+		t.Fatalf("an expired session should be reinitialised in place, %d live", st.Live)
 	}
 	pingThrough(t, successor, "k")
 	up.mu.Lock()
 	defer up.mu.Unlock()
 	if up.issued != 2 {
 		t.Fatalf("the upstream issued %d sessions; an expired one should be replaced once", up.issued)
+	}
+	if len(up.served) == 0 || up.served[len(up.served)-1] != "sess-2" {
+		t.Fatalf("requests served on sessions %v, want the last on the replacement sess-2", up.served)
 	}
 }
