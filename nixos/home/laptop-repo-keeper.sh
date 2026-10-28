@@ -29,18 +29,33 @@ BIG_TRACKED=26214400 # 25 MiB
 LINES=()
 say() { LINES+=("$1"); printf '%s\n' "$1"; }
 
+# Discovery (Drew 2026-10-28: the keeper checks ALL repos): every
+# primary clone under $HOME to depth 3 — a .git DIRECTORY marks a
+# primary (worktrees carry a .git file and stay the lanes' own
+# business). Excluded: scratch (~/tmp, ~/backups, trash, caches),
+# anything nested inside an already-found repo, and duplicate
+# paths to one repo (~/code is a symlink to ~/git/code).
 declare -A SEEN=()
 REPOS=()
-for d in "$HOME"/git/*/ "$HOME/code" "$HOME/hatch" "$HOME/hatch-personal" "$HOME/.openclaw"; do
-  d="${d%/}"
-  [ -d "$d/.git" ] || continue
+while IFS= read -r gd; do
+  d="${gd%/.git}"
+  case "$d" in
+    "$HOME/tmp" | "$HOME/tmp/"* | "$HOME/backups" | "$HOME/backups/"* | \
+    "$HOME/.cache" | "$HOME/.cache/"* | "$HOME/.local/share/Trash" | "$HOME/.local/share/Trash/"* | \
+    "$HOME/tools.prelink"*) continue ;;
+  esac
+  nested=0
+  for e in "${REPOS[@]}"; do
+    case "$d" in
+      "$e"/*) nested=1 ;;
+    esac
+  done
+  [ "$nested" -eq 1 ] && continue
   real="$(readlink -f "$d")"
   [ -n "${SEEN[$real]:-}" ] && continue
   SEEN[$real]=1
   REPOS+=("$d")
-done
-IFS=$'\n' REPOS=($(printf '%s\n' "${REPOS[@]}" | sort))
-unset IFS
+done < <(find "$HOME" -maxdepth 3 -name .git -type d 2>/dev/null | sort)
 
 say "# repo-keeper $TS"
 for d in "${REPOS[@]}"; do
@@ -53,12 +68,20 @@ for d in "${REPOS[@]}"; do
   fi
   db="$(g symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
   [ -z "$db" ] && db=main
-  timeout 60 git -C "$d" fetch -q --prune origin 2>/dev/null || say "- $name: FETCH FAILED — continuing with local state"
+  has_origin=0
+  g remote get-url origin >/dev/null 2>&1 && has_origin=1
+  if [ "$has_origin" -eq 1 ]; then
+    timeout 60 git -C "$d" fetch -q --prune origin 2>/dev/null || say "- $name: FETCH FAILED — continuing with local state"
+  fi
   br="$(g branch --show-current)"
   dirty="$(g status --porcelain | grep -vc '^??')"
   untracked="$(g ls-files --others --exclude-standard | wc -l)"
-  big="$(cd "$d" && git ls-files -z | xargs -0 -r stat -c '%s %n' 2>/dev/null | awk -v t="$BIG_TRACKED" '$1 > t {printf "%s (%d MiB); ", $2, $1 / 1048576}')"
-  [ -n "$big" ] && say "- $name: LARGE TRACKED FILES: $big"
+  # repo-archive holds git bundles BY DESIGN — its large files are the
+  # archive itself, not violations, so it is exempt from this flag.
+  if [ "$name" != "repo-archive" ]; then
+    big="$(cd "$d" && git ls-files -z | xargs -0 -r stat -c '%s %n' 2>/dev/null | awk -v t="$BIG_TRACKED" '$1 > t {printf "%s (%d MiB); ", $2, $1 / 1048576}')"
+    [ -n "$big" ] && say "- $name: LARGE TRACKED FILES: $big"
+  fi
   wt="$(g worktree list | wc -l)"
   if [ "$br" != "$db" ]; then
     if [ "$dirty" -eq 0 ]; then
@@ -87,7 +110,10 @@ for d in "${REPOS[@]}"; do
   if [ "$untracked" -gt 0 ]; then
     say "- $name: $untracked untracked file(s) — left for the daily review"
   fi
-  counts="$(g rev-list --left-right --count "$db...origin/$db" 2>/dev/null || echo '0 0')"
+  counts="0 0"
+  if [ "$has_origin" -eq 1 ]; then
+    counts="$(g rev-list --left-right --count "$db...origin/$db" 2>/dev/null || echo '0 0')"
+  fi
   read -r ahead behind <<<"$counts"
   if [ "${behind:-0}" -gt 0 ] && [ "${ahead:-0}" -eq 0 ] && [ "$dirty" -eq 0 ]; then
     if timeout 60 git -C "$d" pull -q --ff-only origin "$db"; then
