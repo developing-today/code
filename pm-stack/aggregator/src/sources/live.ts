@@ -601,6 +601,8 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
   // is the aggregator's own data (like comments.json); a failed write
   // never breaks the read.
   let registryStore: SessionRecord[] | null = null;
+  let registryWriteChain: Promise<void> = Promise.resolve();
+  let registryWriteSeq = 0;
   async function loadRegistryStore(): Promise<SessionRecord[]> {
     if (registryStore) return registryStore;
     try {
@@ -617,11 +619,18 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     const changed = merged.length !== current.length || merged.some((r, i) => r !== current[i]);
     registryStore = merged;
     if (changed) {
-      try {
+      // Serialized writes + unique temp path per write (#1509): the
+      // pid-only temp path raced concurrent merges the same way the
+      // comments/actions stores did, and the catch below hid the loss.
+      const write = registryWriteChain.then(async () => {
         await mkdir(dirname(cfg.registryFile), { recursive: true });
-        const tmp = `${cfg.registryFile}.tmp-${process.pid}`;
+        const tmp = `${cfg.registryFile}.tmp-${process.pid}-${++registryWriteSeq}`;
         await writeFile(tmp, JSON.stringify(merged, null, 2));
         await rename(tmp, cfg.registryFile);
+      });
+      registryWriteChain = write.catch(() => {});
+      try {
+        await write;
       } catch {
         /* durability is best-effort; the in-memory merge still serves */
       }
