@@ -24,6 +24,7 @@ in
       "services/flatpak"
       "services/id-mail"
       "services/pm-stack"
+      "services/power-guard"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -59,6 +60,11 @@ in
         # PM dashboard stack (aggregator + projector, git-sync and
         # quota-gatherer timers) as NixOS-managed user services.
         services.pm-stack.enable = true;
+      }
+      {
+        # Power guard (code#1687): confirm critical battery readings
+        # before UPower can hybrid-sleep the machine.
+        services.power-guard.enable = true;
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard
