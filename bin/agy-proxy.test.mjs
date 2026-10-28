@@ -1,13 +1,18 @@
-// Tests for agy-proxy's failure detection (#678).
+// Tests for agy-proxy: failure detection (#678), the reconciled model
+// list (#1692 + the 2026-10-28 `agy models` reconciliation), and the
+// resident warm stream-json serving path.
 // Run: node --test bin/agy-proxy.test.mjs
 //
-// The proxy spawns one `agy` child per request, with the prompt delivered
-// as the `-p` argument. These tests put a stub `agy` at
-// $HOME/.local/bin/agy (the proxy's binary resolution prefers it) whose
-// behaviour is keyed on markers in the prompt: a run that exited non-zero
-// used to be reported as a successful 'stop' — in stream mode always
-// (the close handler never checked the code), and in non-stream mode
-// whenever the run had produced partial output.
+// The proxy now holds resident `agy` processes speaking
+// `--input-format stream-json`: prompts arrive on the child's stdin as
+// NDJSON `{"event":"user","message":{"content":...}}` lines and each
+// turn ends with a `result` event. These tests put a stub `agy` at
+// $HOME/.local/bin/agy (the proxy's binary resolution reaches it when
+// no system agy exists) that speaks that protocol: it emits an `init`
+// event at spawn, then one reply per stdin line, keyed on markers in
+// the prompt — a run that dies non-zero must be reported as an error,
+// never as a successful 'stop' (in stream mode always, in non-stream
+// mode also when the run produced partial output first).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -20,43 +25,33 @@ import { fileURLToPath } from 'node:url';
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
 const STUB = `#!/bin/sh
-prompt=""
-fmt="json"
 conv=""
 prev=""
 for a in "$@"; do
-  if [ "$prev" = "-p" ]; then prompt="$a"; fi
   if [ "$prev" = "--conversation" ]; then conv="$a"; fi
-  if [ "$a" = "stream-json" ]; then fmt="stream"; fi
   prev="$a"
 done
-case "$prompt" in
-  *RETRYME*)
-    if [ -n "$conv" ]; then
-      echo "stub agy: resume failed" >&2
-      exit 3
-    fi ;;
-  *FAILME*)
-    echo "stub agy: auth expired" >&2
-    exit 3 ;;
-  *FAILPARTIAL*)
-    if [ "$fmt" = "stream" ]; then
+printf '%s\\n' '{"event":"init","conversation_id":"stub-conv-1","init":{}}'
+while IFS= read -r line; do
+  case "$line" in
+    *RETRYME*)
+      if [ -n "$conv" ]; then
+        echo "stub agy: resume failed" >&2
+        exit 3
+      fi ;;
+    *FAILME*)
+      echo "stub agy: auth expired" >&2
+      exit 3 ;;
+    *FAILPARTIAL*)
       printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"partial answer"}}'
-    else
-      printf '%s\\n' '{"response":"partial answer"}'
-    fi
-    echo "stub agy: run failed midway" >&2
-    exit 3 ;;
-  *SIGKILLME*)
-    kill -9 $$ ;;
-esac
-if [ "$fmt" = "stream" ]; then
+      echo "stub agy: run failed midway" >&2
+      exit 3 ;;
+    *SIGKILLME*)
+      kill -9 $$ ;;
+  esac
   printf '%s\\n' '{"event":"step_update","step_update":{"text_delta":"Hello world"}}'
-  printf '%s\\n' '{"event":"result","result":{"usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103}}}'
-else
-  printf '%s\\n' '{"response":"Hello world","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103}}'
-fi
-exit 0
+  printf '%s\\n' '{"event":"result","result":{"conversation_id":"stub-conv-1","status":"SUCCESS","response":"Hello world","usage":{"input_tokens":100,"output_tokens":3,"total_tokens":103}}}'
+done
 `;
 
 const freePort = () => new Promise((resolve, reject) => {
@@ -200,7 +195,51 @@ test('failed resume still retries once as a fresh conversation (#678)', async (t
   assert.match(sse, /"finish_reason":"stop"/);
 });
 
-test("unknown model is a 400, never a silent fallback; Argon is listed and served", async (t) => {
+test('session requests reuse one resident worker (same pid across turns)', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const headers = { 'x-conversation-id': 'conv-warm-1' };
+
+  const first = await post(port, { messages: [{ role: 'user', content: 'hi' }] }, headers);
+  assert.equal(first.status, 200);
+  await first.text();
+  const pid1 = first.headers.get('x-agy-worker-pid');
+  assert.ok(pid1 && Number(pid1) > 0, 'first response must name its worker pid');
+
+  const second = await post(port, {
+    messages: [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'Hello world' },
+      { role: 'user', content: 'again' }
+    ]
+  }, headers);
+  assert.equal(second.status, 200);
+  const secondBody = JSON.parse(await second.text());
+  assert.equal(secondBody.choices[0].message.content, 'Hello world');
+  const pid2 = second.headers.get('x-agy-worker-pid');
+  assert.equal(pid2, pid1, 'second turn of a session must run on the same resident worker');
+
+  const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+  assert.equal(health.engine, 'agy-stream-json-resident');
+  assert.ok(health.warm.sessionPids.includes(Number(pid1)), 'health must list the live session worker pid');
+});
+
+test('a pre-warmed spare is ready before the first stateless request', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+    if (Array.isArray(health.warm?.sparePids) && health.warm.sparePids.length > 0) {
+      assert.ok(health.warm.spares['gemini-4-argon-medium'] > 0, 'argon spare must be pre-warmed');
+      return;
+    }
+    if (Date.now() > deadline) throw new Error('no pre-warmed spare appeared in /health');
+    await new Promise(r => setTimeout(r, 50));
+  }
+});
+
+test("unknown model is a 400, never a silent fallback; the served list is the `agy models` list", async (t) => {
   const { port, stop } = await startProxy();
   t.after(stop);
   const messages = [{ role: "user", content: "hi" }];
@@ -213,12 +252,39 @@ test("unknown model is a 400, never a silent fallback; Argon is listed and serve
   const listRes = await fetch(`http://127.0.0.1:${port}/v1/models`);
   const list = JSON.parse(await listRes.text());
   const ids = list.data.map((m) => m.id);
-  for (const id of ["gemini-4-argon", "gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high"]) {
+  // `agy models` (1.2.16, 2026-10-28) lists exactly these 13 ids; the
+  // proxy serves each base plus its per-effort variants.
+  for (const id of [
+    "gemini-4-argon", "gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high",
+    "gemini-3.8-flash", "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high",
+    "claude-sonnet-5-5", "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "claude-sonnet-5-5-high",
+    "claude-opus-5-5", "claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-opus-5-5-high",
+    "gpt-oss-120b", "gpt-oss-120b-medium"
+  ]) {
     assert.ok(ids.includes(id), `models list must include ${id}`);
+  }
+  // Advertised before 2026-10-28 but absent from `agy models` (agy
+  // itself rejects them): they must not be served or silently remapped.
+  for (const id of ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro"]) {
+    assert.ok(!ids.includes(id), `models list must not include ${id}`);
+    const res = await post(port, { model: id, messages });
+    assert.equal(res.status, 400, `${id} must be a 400, not a silent remap`);
+    await res.text();
   }
 
   const argonRes = await post(port, { model: "gemini-4-argon", messages });
   assert.equal(argonRes.status, 200);
   const argon = JSON.parse(await argonRes.text());
   assert.equal(argon.model, "gemini-4-argon-medium");
+
+  const sonnetRes = await post(port, { model: "claude-sonnet-5-5", messages });
+  assert.equal(sonnetRes.status, 200);
+  const sonnet = JSON.parse(await sonnetRes.text());
+  assert.equal(sonnet.model, "claude-sonnet-5-5-medium");
+  assert.equal(sonnet.choices[0].message.content, "Hello world");
+
+  const opusRes = await post(port, { model: "claude-opus-5-5-high", messages });
+  assert.equal(opusRes.status, 200);
+  const opus = JSON.parse(await opusRes.text());
+  assert.equal(opus.model, "claude-opus-5-5-high");
 });
