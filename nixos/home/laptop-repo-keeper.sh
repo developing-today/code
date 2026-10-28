@@ -68,7 +68,11 @@ for d in "${REPOS[@]}"; do
   fi
   db="$(g symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
   [ -z "$db" ] && db=main
-  timeout 60 git -C "$d" fetch -q --prune origin 2>/dev/null || say "- $name: FETCH FAILED — continuing with local state"
+  has_origin=0
+  g remote get-url origin >/dev/null 2>&1 && has_origin=1
+  if [ "$has_origin" -eq 1 ]; then
+    timeout 60 git -C "$d" fetch -q --prune origin 2>/dev/null || say "- $name: FETCH FAILED — continuing with local state"
+  fi
   br="$(g branch --show-current)"
   dirty="$(g status --porcelain | grep -vc '^??')"
   untracked="$(g ls-files --others --exclude-standard | wc -l)"
@@ -106,7 +110,10 @@ for d in "${REPOS[@]}"; do
   if [ "$untracked" -gt 0 ]; then
     say "- $name: $untracked untracked file(s) — left for the daily review"
   fi
-  counts="$(g rev-list --left-right --count "$db...origin/$db" 2>/dev/null || echo '0 0')"
+  counts="0 0"
+  if [ "$has_origin" -eq 1 ]; then
+    counts="$(g rev-list --left-right --count "$db...origin/$db" 2>/dev/null || echo '0 0')"
+  fi
   read -r ahead behind <<<"$counts"
   if [ "${behind:-0}" -gt 0 ] && [ "${ahead:-0}" -eq 0 ] && [ "$dirty" -eq 0 ]; then
     if timeout 60 git -C "$d" pull -q --ff-only origin "$db"; then
