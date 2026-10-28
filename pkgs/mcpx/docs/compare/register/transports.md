@@ -48,7 +48,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 | TR-26 | `Mcp-Session-Id` minted on `server/discover` | `2026-07-28 removes` `mcpx missing` | `26-07`: do not mint or echo | ✗ — minted for every discover, modern or not (#199) | + med | M | med |
 | TR-27 | `Mcp-Session-Id` minted on a failed `initialize` | `2025-03-26 has` `mcpx missing` | `25-03 ✓ · 25-06 ✓ · 25-11 ✓` | ✗ — issued even when the handshake is refused (#202) | + low | S | low |
 | TR-28 | Unknown or expired session id → 404 | `2025-03-26 has` `mcpx missing` | `25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 ignore` | ✗ — served statelessly as 2025-03-26 (#202) | + med | S | med |
-| TR-29 | Client re-initializes after a session 404 | `2025-03-26 has` `opencode v1 has` `opencode v2 has` `mcpx missing` | `25-03 ✓ · 25-06 ✓ · 25-11 ✓` · opencode v1 ✓ · opencode v2 ✓ | ✗ — 404 is a plain error; no re-initialize (#203) | + med | M | med |
+| TR-29 | Client re-initializes after a session 404 | `2025-03-26 has` `opencode v1 has` `opencode v2 has` `mcpx has` | `25-03 ✓ · 25-06 ✓ · 25-11 ✓` · opencode v1 ✓ · opencode v2 ✓ | ✓ — client forgets the dead session, re-initializes once and retries once (#1637) | + med | M | low |
 | TR-30 | Client sends a session id to modern servers | `2026-07-28 removes` `mcpx missing` | `26-07`: no sessions | ✗ — captured from any response, echoed always (#200) | + low | S | low |
 | TR-31 | `DELETE` handled by the server | `2025-03-26 has` `2026-07-28 removes` | `25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 405` | ✓ — 204, even for an unknown session | + low | S | low |
 | TR-32 | `DELETE` sent by the client on close | `2025-03-26 has` | `25-03 ✓ · 25-06 ✓ · 25-11 ✓` | ✓ — sent when a session id is held | + low | S | low |
@@ -554,15 +554,29 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Where.** 2025-03-26..2025-11-25. opencode v1 (through its SDK patch) re-initializes transparently; opencode v2
   treats a 404, or a 400 "Bad Request: Server not initialized", on a session-carrying connection as an expired session,
   reconnects and retries once, and applies this only to legacy connections.
-- **mcpx @ 05c78b2.** A 404 is an ordinary error (`internal/mcpclient/http.go:136-140`); nothing re-initializes. The
-  pool would have to reap the instance, and an HTTP transport never dies on its own.
+- **mcpx (as built, #1637 / PR #1642).** The recovery lives in the client layer, not the pool: `Client.roundTrip`
+  (`internal/mcpclient/client.go`) catches the narrow trigger — a session-carrying legacy-era request (never
+  `initialize` itself) answered HTTP 404 — and recovers exactly once. The dead session is forgotten through the
+  transport seam `forgetSession()` (`internal/mcpclient/http.go:669-676`; HTTP transports only, stdio has no session
+  to forget), the client re-initializes with no session id attached, and the request is retried exactly once on the
+  new session. The re-initialize is singleflight: `reinitMu` plus the recovery generation (`reinitGen`) mean N
+  concurrent 404s from one server restart produce one initialize, and the other calls retry on the session it
+  installs. After a successful re-initialize the tools, resources and prompts list-changed invalidations fire,
+  because a restarted upstream's catalogue is not the cached one. Everything outside the trigger surfaces as
+  before: a 404 with no session held, a modern-era 404, and a second 404 after re-initialize are ordinary errors.
+  Covered by `TestLegacySession404Recovery` (`internal/mcpclient/reinit_test.go:96`); the conformance gap
+  `streamable-http-client-reinit-on-404` was retired by PR #1642.
 - **Value to mcpx.** + med: transparent recovery after a remote server restarts.
-- **Effort.** M — the pool must reconnect the instance.
-- **Risk.** A restarted remote server leaves its mcpx instance failing every call.
-- **Detail.** None.
+- **Effort.** M — landed as client-layer recovery in `roundTrip` (singleflight re-initialize), not a pool reconnect.
+- **Risk.** Low: the trigger is deliberately narrow (legacy era, HTTP, session-carrying, first 404 only); anything
+  outside it surfaces as an error, as before.
+- **Detail.** This entry is mcpx as a client of other servers; mcpx's own server side never sending the 404 is
+  TR-28's subject.
 - **Sources.** `2025-11-25/basic/transports.mdx:213-215` "it **MUST** start a new session";
   `internal/mcpclient/http.go:139`; `v1:patches/@modelcontextprotocol%2Fsdk@1.29.0.patch:210`;
-  `v2:packages/core/src/mcp/client.ts:173`; `v2:packages/core/src/mcp/index.ts:336`.
+  `v2:packages/core/src/mcp/client.ts:173`; `v2:packages/core/src/mcp/index.ts:336`;
+  `internal/mcpclient/client.go` (`roundTrip`, `sessionGone`, `reinitializeLegacy`);
+  `internal/mcpclient/reinit_test.go:96`; `internal/conformance/coverage_transport.go:19`.
 
 ## TR-30 Client sends a session id to modern servers
 

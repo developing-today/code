@@ -25,7 +25,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 | PM-03 | Cross-request state named by an explicit identifier each request | `2026-07-28 has` | `25-11 — · 26-07 MUST (handles are a pattern)` | partial — tasks are handles; pool key is not | + high | S | med |
 | PM-04 | A connection or process is not a conversation | `2026-07-28 has` | `25-11 — · 26-07 SHOULD/SHOULD NOT` | partial — pool scope keyed on a process id | + high | S | high |
 | PM-05 | Server state carried through the client in `requestState` | `2026-07-28 has` `has better replacement` | `25-11 — · 26-07 ✓` | partial — token names daemon-side call; bound to session | + med | M | med |
-| PM-06 | A broken stream loses the request; client re-issues | `2026-07-28 has` | `25-03..25-11 resumable · 26-07 lost` | n/a — upstream retry policy not examined | + low | S | med |
+| PM-06 | A broken stream loses the request; client re-issues | `2026-07-28 has` `mcpx has` | `25-03..25-11 resumable · 26-07 lost` | ✓ — modern broken-stream requests re-issued once with a new id; tools/call gated on readOnlyHint/idempotentHint (#1638) | + low | S | med |
 | PM-07 | State that 2026 still permits | `2026-07-28 has` | `26-07 listen, tasks, requestState, handles, legacy sessions` | ✓ — tasks and legacy sessions allowed | + low | S | low |
 | PM-08 | Request with neither modern `_meta` nor a prior `initialize` | `specs conflict` | `26-07 silent for dual-era stdio; HTTP MAY assume 2025-03-26` | acc. — served as 2025-03-26 | + low | S | low |
 | PM-09 | What "supports 2026-07-28" minimally means | `2026-07-28 has` | `24-11..25-11 base + lifecycle · 26-07 base + versioning + patterns` | partial — discover and listen shapes wrong | + high | M | high |
@@ -135,15 +135,27 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** No redelivery: if a response stream breaks, the in-flight request is lost and the client MUST re-issue it
   with a new id; on stdio a crash means restart and retry.
 - **Where.** 2026-07-28. 2025-03-26 through 2025-11-25 had SSE resumability instead (transports area).
-- **mcpx @ 05c78b2.** Not examined for upstream calls (pool retry policy). Restart backoff settings exist in
-  `plumbing` (`internal/defaults/defaults.json:49-50`).
+- **mcpx (as built, #1638 / PR #1645).** Examined, and implemented for upstream calls: on a modern-era connection a
+  request whose response stream breaks unanswered is re-issued exactly once with a new id, in `Client.roundTrip`
+  (`internal/mcpclient/client.go`). Stream-lost identity is a data marker, never the message: the synthesized error
+  carries code `codeStreamLost` (-32000) plus data `{mcpxStreamLost: true}`, and `isStreamLost` requires both — the
+  receive loop's own -32000 "connection closed" and any server-sent -32000 carry no marker and are never re-issued
+  (transport death is a different mechanism, and a server's own error is an answer). Modern era only: legacy
+  connections keep the transport's `resume()` mechanism. A call whose caller context is cancelled is never
+  re-issued, and a second marked failure surfaces to the caller. Covered by `TestModernReissueBrokenRequest`
+  (`internal/mcpclient/reissue_test.go:107`); the conformance gap
+  `streamable-http-client-reissue-broken-request` was retired by PR #1645.
 - **Value to mcpx.** + low: retry-on-crash is spec-aligned for modern upstreams.
 - **Effort.** S.
-- **Risk.** Med: re-issuing a non-idempotent tool executes it twice; nothing makes the server deduplicate, and
-  `idempotentHint`/`destructiveHint` are the only signal (an unwritten hazard).
-- **Detail.** The MUST applies to the client's intent to get a result; mcpx as a proxy has to decide whether a lost
-  upstream call is retried or surfaced to the host.
-- **Sources.** `2026-07-28/changelog.mdx:28` "A broken response stream loses the in-flight request; clients **MUST** re-issue it as a new request with a new request ID"; `2026-07-28/basic/transports/stdio.mdx:112` "Because the protocol is stateless, any in-flight requests are simply lost and"
+- **Risk.** Med: re-issuing a non-idempotent tool executes it twice and nothing makes the server deduplicate; the
+  annotation gate below is the containment, and its residual is that annotations are the server's own claim — a
+  tool that lies about `idempotentHint` can still run twice.
+- **Detail.** The MUST applies to the client's intent to get a result, and this entry's earlier text left the proxy
+  decision to mcpx. Settled by #1638, recorded as mcpx's proxy decision: every method re-issues automatically
+  except `tools/call`, which re-issues only when the tool's list-time annotations declare `readOnlyHint` or
+  `idempotentHint` (hints retained at `ListTools` by `recordToolHints`, consulted via `toolCallReissueAllowed`).
+  An ungated `tools/call` surfaces the stream-lost error to the host instead of risking a double execution.
+- **Sources.** `2026-07-28/changelog.mdx:28` "A broken response stream loses the in-flight request; clients **MUST** re-issue it as a new request with a new request ID"; `2026-07-28/basic/transports/stdio.mdx:112` "Because the protocol is stateless, any in-flight requests are simply lost and"; `internal/mcpclient/client.go` (`roundTrip`, `isStreamLost`, `recordToolHints`); `internal/mcpclient/reissue_test.go:107`; `internal/conformance/coverage_transport.go:20`
 
 ## PM-07 State that 2026 still permits
 
