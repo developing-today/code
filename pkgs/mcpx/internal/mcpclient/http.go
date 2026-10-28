@@ -378,13 +378,20 @@ func (t *HTTPTransport) resume(ctx context.Context, reqID json.RawMessage, st ss
 func (t *HTTPTransport) lost(reqID json.RawMessage) {
 	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": reqID, "error": map[string]any{
 		"code": codeStreamLost, "message": "the server closed the response stream before answering",
+		// The marker is this error's identity: -32000 alone is shared
+		// with the receive loop's "connection closed" and with anything
+		// a server sends, and only a stream mcpx itself watched break
+		// may be re-issued (see isStreamLost).
+		"data": map[string]any{"mcpxStreamLost": true},
 	}})
 	t.push(b)
 }
 
 // codeStreamLost is the JSON-RPC error mcpx reports for a request whose
 // response stream closed first. -32000 is the start of the range JSON-RPC
-// reserves for implementation-defined server errors.
+// reserves for implementation-defined server errors. The code alone does
+// not identify a lost stream -- the mcpxStreamLost data marker lost()
+// stamps on its error does (see isStreamLost).
 const codeStreamLost = -32000
 
 // get opens a GET stream, resuming after lastID when it is set.
