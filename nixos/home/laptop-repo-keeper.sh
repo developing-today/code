@@ -27,7 +27,10 @@ TS="$(date '+%Y-%m-%d %H:%M %Z')"
 SECRET_RE='\.env|secret|credential|\.pem$|\.key$|id_rsa|id_ed25519'
 BIG_TRACKED=26214400 # 25 MiB
 LINES=()
-say() { LINES+=("$1"); printf '%s\n' "$1"; }
+say() {
+  LINES+=("$1")
+  printf '%s\n' "$1"
+}
 
 # Discovery (Drew 2026-10-28: the keeper checks ALL repos): every
 # primary clone under $HOME to depth 3 — a .git DIRECTORY marks a
@@ -40,14 +43,14 @@ REPOS=()
 while IFS= read -r gd; do
   d="${gd%/.git}"
   case "$d" in
-    "$HOME/tmp" | "$HOME/tmp/"* | "$HOME/backups" | "$HOME/backups/"* | \
+  "$HOME/tmp" | "$HOME/tmp/"* | "$HOME/backups" | "$HOME/backups/"* | \
     "$HOME/.cache" | "$HOME/.cache/"* | "$HOME/.local/share/Trash" | "$HOME/.local/share/Trash/"* | \
     "$HOME/tools.prelink"*) continue ;;
   esac
   nested=0
   for e in "${REPOS[@]}"; do
     case "$d" in
-      "$e"/*) nested=1 ;;
+    "$e"/*) nested=1 ;;
     esac
   done
   [ "$nested" -eq 1 ] && continue
