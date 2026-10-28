@@ -325,7 +325,14 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
-      const comment = await commentsStore.add(parsed.value);
+      // #1509: a persistence failure is a server error, not bad input -
+      // only the validation/body-parse path above earns a 400.
+      let comment;
+      try {
+        comment = await commentsStore.add(parsed.value);
+      } catch (err) {
+        return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+      }
       return json({ comment }, 201);
     } catch (err) {
       return json({ error: `invalid comment: ${err instanceof Error ? err.message : err}` }, 400);
@@ -379,7 +386,14 @@ async function handler(req: Request): Promise<Response> {
           if (problem) return json({ error: problem }, 400);
         }
       }
-      const { action, created } = await actionsStore.add(parsed.value);
+      // #1509: persistence failure -> 5xx (see /api/comments above).
+      let added;
+      try {
+        added = await actionsStore.add(parsed.value);
+      } catch (err) {
+        return json({ error: `action persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+      }
+      const { action, created } = added;
       return json(created ? { action } : { action, deduped: true }, created ? 201 : 200);
     } catch (err) {
       return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);
