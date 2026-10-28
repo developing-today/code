@@ -14,7 +14,6 @@ import { updateHeaderSubtitle } from "./header-subtitle";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 import { AutoSaveManager, type SaveResult } from "./auto-save";
 
-
 declare global {
   interface Window {
     idApp: IdApp;
