@@ -473,6 +473,15 @@ func (a *App) mcpSession() string {
 func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	srv := mcpserver.New(mcpBackend{app: a}, "mcpx", a.Version)
 	srv.Notify = daemonNotifier{app: a}
+	// The daemon's task store, when this server is the daemon's own
+	// (root.go set a.daemonStore): MCP tasks and /v1 tasks are then
+	// one set in one durable store (issue #1555). The store's
+	// PollInterval was configured once at daemon construction from
+	// protoTasks.pollInterval -- the same setting Timing.TaskPoll
+	// below reads -- so neither surface's cadence changes.
+	if a.daemonStore != nil {
+		srv.TaskStore = a.daemonStore
+	}
 	srv.PageSize = a.Settings().Int("mcp.pageSize")
 	srv.Passthrough = a.passNS()
 	// A function, because completion.maxValues is hot: the daemon's /mcp

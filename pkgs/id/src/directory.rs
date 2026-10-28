@@ -509,7 +509,29 @@ impl Directory {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(directory),
             Err(error) => return Err(error.into()),
         };
-        for (number, line) in text.lines().enumerate() {
+        // #1521: an unterminated final line is a torn append — append
+        // writes one line + newline in a single write_all + sync_data,
+        // so a crash mid-append leaves a fragment the writer never
+        // acknowledged. Mirror FileJournal::open (world_store.rs):
+        // drop the fragment (parseable or not), warn, and truncate the
+        // file to the last complete line. A newline-terminated line
+        // that does not parse is corruption and still fails below.
+        let kept_len = if text.is_empty() || text.ends_with('\n') {
+            text.len()
+        } else {
+            text.rfind('\n').map_or(0, |index| index + 1)
+        };
+        if kept_len < text.len() {
+            tracing::warn!(
+                "directory journal {}: dropping torn final entry at byte {kept_len}",
+                path.display()
+            );
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)?
+                .set_len(u64::try_from(kept_len)?)?;
+        }
+        for (number, line) in text[..kept_len].lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
@@ -2634,6 +2656,68 @@ mod tests {
         assert!(
             Directory::replay(&path).is_err(),
             "removing the last admin is refused on replay"
+        );
+    }
+
+    #[test]
+    fn replay_drops_a_torn_final_fragment_and_truncates_the_journal() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::new();
+        let (ann, ann_credential) = account_into(&mut directory, &path, "Ann");
+        let (_bo, _) = account_into(&mut directory, &path, "Bo");
+        let complete = std::fs::read_to_string(&path).unwrap();
+
+        // A crash mid-append leaves half a JSON entry with no newline.
+        let mut text = complete.clone();
+        text.push_str("{\"account_created\":{\"id\":\"torn");
+        std::fs::write(&path, text).unwrap();
+
+        let replayed = Directory::replay(&path).unwrap();
+        assert_eq!(replayed.account_for(&ann_credential), Some(ann));
+        // The fragment is gone: the file is back to the complete lines.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), complete);
+    }
+
+    #[test]
+    fn replay_drops_a_parseable_but_unterminated_final_entry() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::new();
+        let (_ann, _) = account_into(&mut directory, &path, "Ann");
+        let complete = std::fs::read_to_string(&path).unwrap();
+
+        // A fully-formed entry whose newline never landed was never
+        // acknowledged, so it is dropped like any other torn append.
+        let mut staging = Directory::new();
+        let (cy_credential, entry) = staging.sign_up("Cy").unwrap();
+        let mut text = complete.clone();
+        text.push_str(&serde_json::to_string(&entry).unwrap());
+        std::fs::write(&path, text).unwrap();
+
+        let replayed = Directory::replay(&path).unwrap();
+        assert_eq!(replayed.account_for(&cy_credential), None);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), complete);
+    }
+
+    #[test]
+    fn replay_refuses_a_terminated_corrupt_final_line() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("directory.jsonl");
+        let mut directory = Directory::new();
+        let (_ann, _) = account_into(&mut directory, &path, "Ann");
+
+        // Newline-terminated but unparseable is corruption, never a
+        // torn append: it must still fail as malformed.
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("not json\n");
+        std::fs::write(&path, text).unwrap();
+        let error = Directory::replay(&path)
+            .err()
+            .expect("corrupt line must fail");
+        assert!(
+            format!("{error:#}").contains("is malformed"),
+            "unexpected error: {error:#}"
         );
     }
 
