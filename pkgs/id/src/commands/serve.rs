@@ -64,9 +64,9 @@ use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
+use p2panda_core::Hash;
 #[cfg(all(feature = "world", feature = "sandbox"))]
 use rand::RngExt as _;
-use p2panda_core::Hash;
 use serde::{Deserialize, Serialize};
 use tokio::fs as afs;
 use tracing::{debug, info, warn};
@@ -75,11 +75,11 @@ use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
     resolve_config,
 };
-use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
-use crate::store::{load_or_create_keypair, open_store};
 use crate::groups::log::{FILE_NAME as GROUPS_FILE_NAME, GroupLog};
 use crate::groups::warnings::{Evaluator, Observation, Warning};
 use crate::groups::{Key as GroupKey, Projection};
+use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
+use crate::store::{load_or_create_keypair, open_store};
 use crate::tags::TagStore;
 use crate::{KEY_FILE, META_ALPN, SERVE_LOCK, STORE_PATH};
 
@@ -1224,7 +1224,6 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     Ok(())
 }
 
-
 /// How often serve re-evaluates the group warnings against the group log.
 const GROUP_WARNING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -1288,7 +1287,9 @@ impl GroupWarningWatcher {
                 for _ in 0..new_readds {
                     times.push(now);
                 }
-                times.retain(|at| now.saturating_sub(*at) < crate::groups::warnings::CHURN_WINDOW_SECS);
+                times.retain(|at| {
+                    now.saturating_sub(*at) < crate::groups::warnings::CHURN_WINDOW_SECS
+                });
             }
             let readds = self.readds.get(group).cloned().unwrap_or_default();
             let observation = Observation {
