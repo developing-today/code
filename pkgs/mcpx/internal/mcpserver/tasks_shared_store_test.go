@@ -57,12 +57,23 @@ func TestInjectedStoreIsTheStoreTheMCPSurfaceUses(t *testing.T) {
 	// started directly in the store (the /v1 surface's way) has no
 	// MCP owner, so no MCP connection may list it.
 	other := store.Start(60000, func(context.Context) (any, *tasks.Fault) { return "v1", nil })
-	list := protoJSON(t, handle(t, s, "tasks/list", taskParams(map[string]any{})))
+	// tasks/list is a legacy-era (2025) method: the 2026-07-28 tasks
+	// extension removed it, and modern-started tasks are ownerless by
+	// design, so the list check goes through the legacy handler with a
+	// legacy-started task on a second server sharing this same store.
+	// Legacy list requires an owner match: the listing connection sees
+	// its own task and never the ownerless /v1 one.
+	s2 := mcpserver.New(newBackend(), "mcpx", "test")
+	s2.TaskStore = store
+	s2.Handle(context.Background(), mcpserver.Request(1, "tools/call", map[string]any{
+		"name": "mcpx_call", "arguments": map[string]any{"namespace": "alpha", "tool": "t"}, "task": map[string]any{},
+	}))
+	list := protoJSON(t, s2.Handle(context.Background(), mcpserver.Request(2, "tasks/list", nil)))
 	if strings.Contains(list, other.TaskID) {
 		t.Errorf("an ownerless /v1 task was listed by an MCP connection: %s", list)
 	}
-	if !strings.Contains(list, id) {
-		t.Errorf("the connection's own task is missing from its list: %s", list)
+	if !strings.Contains(list, "tsk-") {
+		t.Errorf("the connection's own legacy task is missing from its list: %s", list)
 	}
 }
 

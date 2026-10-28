@@ -13,6 +13,7 @@ func init() {
 		S("ext-tasks-get-carries-result", "mcpserver.TestTasksPerEra/2026-07-28/tasks/server-directed-CreateTaskResult-is-flat", "mcpserver.TestTasksPerEra/2026-07-28/tasks/tool-isError-is-completed-not-failed"),
 		S("ext-tasks-update", "mcpserver.TestTasksPerEra/2026-07-28/tasks/update-and-cancel-ack-empty-unknown-is-32602", "mcpserver.TestATaskAskingAQuestionIsInputRequiredAndTasksUpdateAnswersIt@2026-07-28"),
 		S("ext-tasks-notifications-via-listen", "mcpserver.TestSubscriptionsListen/2026-07-28/subscriptions/taskIds-without-the-extension-is-32021", "mcpserver.TestListenDeliversTaskStatusNotifications@2026-07-28", "mcpserver.TestListenReportsATaskThatAlreadyFinished@2026-07-28"),
+		S("ext-tasks-durable-before-response", "mcpserver.TestInjectedStoreKeepsMCPTasksAcrossReopen@2026-07-28"),
 		S("tasks-unidentified-no-list", "mcpserver.TestTasksPerEra/2025-11-25/tasks/another-connection-cannot-list-or-read-it"),
 		S("caching-server-must-hint", "mcpserver.TestModernEnvelope/2026-07-28/caching/tools-list-has-ttlMs-and-cacheScope", "mcpserver.TestModernEnvelope/2026-07-28/caching/resources-read-has-ttlMs-and-cacheScope", "mcpserver.TestModernEnvelope/2026-07-28/caching/server-discover-has-ttlMs-and-cacheScope"),
 		S("cache-ttl-scope-required",

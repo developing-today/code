@@ -23,13 +23,13 @@ import (
 	"github.com/dezren39/mcpx/internal/artifacts"
 	"github.com/dezren39/mcpx/internal/config"
 	"github.com/dezren39/mcpx/internal/daemon"
-	"github.com/dezren39/mcpx/internal/tasks"
 	"github.com/dezren39/mcpx/internal/diagnose"
 	"github.com/dezren39/mcpx/internal/execsvc"
 	"github.com/dezren39/mcpx/internal/logging"
 	"github.com/dezren39/mcpx/internal/preflight"
 	"github.com/dezren39/mcpx/internal/runner"
 	"github.com/dezren39/mcpx/internal/source"
+	"github.com/dezren39/mcpx/internal/tasks"
 )
 
 // App carries state shared by every subcommand.
