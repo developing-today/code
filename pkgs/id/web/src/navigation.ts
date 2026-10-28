@@ -40,6 +40,11 @@ export type Navigation = {
 export function createNavigation(deps: NavigationDeps): Navigation {
   // One navigation slot: any newer navigation supersedes all earlier ones.
   let navigationToken = 0;
+  // Page generation (#1578): bumped exactly once per LANDED navigation
+  // swap. fetchPartial captures the generation at issue; a partial from
+  // an older generation may still write to the old page before the swap
+  // lands (the swap replaces it), but never after it.
+  let pageGeneration = 0;
   // One slot per partial target: a newer fetch for the SAME target
   // supersedes earlier ones; other targets are independent.
   const partialTokens = new Map<string, number>();
@@ -51,7 +56,8 @@ export function createNavigation(deps: NavigationDeps): Navigation {
   async function fetchPartial(url: string, targetSelector: string): Promise<void> {
     const token = (partialTokens.get(targetSelector) ?? 0) + 1;
     partialTokens.set(targetSelector, token);
-    const isCurrent = (): boolean => partialTokens.get(targetSelector) === token;
+    const generation = pageGeneration;
+    const isCurrent = (): boolean => partialTokens.get(targetSelector) === token && generation === pageGeneration;
     try {
       const response = await fetch(url, {
         headers: { "X-Partial-Request": "true" },
@@ -105,6 +111,7 @@ export function createNavigation(deps: NavigationDeps): Navigation {
         if (app?.collab) {
           app.closeEditor();
         }
+        pageGeneration++;
         main.innerHTML = html;
         if (pushUrl) {
           window.history.pushState(null, "", url);
