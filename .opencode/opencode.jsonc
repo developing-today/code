@@ -6,8 +6,11 @@
   //   THE token path (Gemini API key; working muse-sandbox free-tier key is
   //   in the credential store as "Google API (muse-sandbox)").
   // - THE Antigravity provider is "antigravity-ls" (warm language-server
-  //   route). "antigravity-agy" (CLI spawn route) is disabled, earmarked as
-  //   the fallback if the language server ever becomes unavailable.
+  //   route). "antigravity-agy" (CLI spawn route) sat disabled as the
+  //   fallback until 2026-10-28, when Drew re-enabled it for one seated
+  //   purpose: the agy CLI is a door that serves Gemini 4 Argon, so
+  //   argon-plan seats antigravity-agy/gemini-4-argon. Its other models
+  //   stay route-gated (seated nowhere).
   // - "claude-code" is TEMPORARILY disabled (2026-10-27, Drew): the Claude
   //   plan is on the FREE tier for now and the API may be down. The setup
   //   itself is confirmed working — the proxy (:18749) is live and serves
@@ -23,7 +26,6 @@
   "disabled_providers": [
     "google",
     "google-vertex",
-    "antigravity-agy",
     "cloudflare-ai-gateway",
     "groq",
     "nvidia",
@@ -57,6 +59,104 @@
       "models": {
         "claude-haiku-5-5": {
           "name": "Haiku 5.5 (Claude Code)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 4096
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 8192
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 16384
+                }
+              }
+            },
+            "xhigh": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 32768
+                }
+              }
+            },
+            "max": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 65536
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-sonnet-5-5": {
+          "name": "Sonnet 5.5 (Claude Code)",
+          "variants": {
+            "low": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 4096
+                }
+              }
+            },
+            "medium": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 8192
+                }
+              }
+            },
+            "high": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 16384
+                }
+              }
+            },
+            "xhigh": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 32768
+                }
+              }
+            },
+            "max": {
+              "options": {
+                "thinking": {
+                  "type": "enabled",
+                  "budget_tokens": 65536
+                }
+              }
+            }
+          },
+          "limit": {
+            "context": 1000000,
+            "output": 64000
+          }
+        },
+        "claude-opus-5-5": {
+          "name": "Opus 5.5 (Claude Code)",
           "variants": {
             "low": {
               "options": {
@@ -2163,6 +2263,39 @@
         "apiKey": "agy-local"
       },
       "models": {
+        "gemini-4-argon": {
+          "name": "Gemini 4 Argon (agy)",
+          "variants": {
+            "low": {
+              "options": {
+                "reasoning_effort": "low"
+              }
+            },
+            "medium": {
+              "options": {
+                "reasoning_effort": "medium"
+              }
+            },
+            "high": {
+              "options": {
+                "reasoning_effort": "high"
+              }
+            }
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "gemini-4-argon-low": {
+          "name": "Gemini 4 Argon Low (agy)"
+        },
+        "gemini-4-argon-medium": {
+          "name": "Gemini 4 Argon Medium (agy)"
+        },
+        "gemini-4-argon-high": {
+          "name": "Gemini 4 Argon High (agy)"
+        },
         "gemini-3.8-flash": {
           "name": "Gemini 3.8 Flash (agy)",
           "variants": {
@@ -4809,6 +4942,9 @@
         "gpt-6-luna": {
           "name": "GPT-6 Luna (Open Design)"
         },
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol (Open Design)"
+        },
         "hy4-preview": {
           "name": "Hunyuan H4 Preview"
         },
@@ -6094,18 +6230,20 @@
       "haiku-plan": {
         "name": "Claude Haiku - plan providers",
         // 2026-10-27 pool redesign: ORDERED, flat doors first and the
-        // metered Go premium leaves last. OpenDesign is the pool's live
-        // flat door today; claude-code stays listed second (dormant while
-        // the provider is disabled on the Claude free tier — it rejoins
-        // automatically on re-enable, issue #1132); the Go x3 leaves
+        // metered Go premium leaves last. The Go x3 leaves
         // (claude-haiku-5-5, 1M context) close the chain — Go's Haiku
         // burns the small premium allowance, so it is spent last.
+        // 2026-10-28 (Job 2): order is now claude-code → opendesign →
+        // Go.personal → Go.lab → Go.base. claude-code leads (dormant
+        // while the provider is disabled on the Claude free tier — it
+        // rejoins automatically on re-enable, issue #1132); OpenDesign
+        // is the pool's live flat door today.
         "targets": [
+          "claude-code/claude-haiku-5-5",
           {
             "model": "opendesign/claude-haiku-5.5",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "claude-code/claude-haiku-5-5",
           "opencode-go.personal/claude-haiku-5-5",
           "opencode-go.lab/claude-haiku-5-5",
           "opencode-go/claude-haiku-5-5"
@@ -6129,6 +6267,13 @@
         // 2026-10-27 pool redesign: the base opencode-go leaf joins at the
         // default weight (all-three-workspaces rule; it rides the Lab
         // login, so it burns last among the Go leaves).
+        // 2026-10-28 (Job 2): the Go leaves move from gpt-5.6-luna to
+        // gpt-6-luna. Step-0 verdict: models.dev's opencode-go catalog
+        // and the live serve catalog both list BOTH ids on all three
+        // workspaces; gpt-6-luna (2026-09-22) is the current Luna on
+        // every other door in this pool (openai, openai.alternate,
+        // opendesign) at half of 5.6's reference rates, so the pool
+        // now serves one Luna generation on every door.
         "targets": [
           "openai/gpt-6-luna",
           "openai.alternate/gpt-6-luna",
@@ -6136,15 +6281,15 @@
             "model": "opendesign/gpt-6-luna",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "opencode-go.lab/gpt-5.6-luna",
-          "opencode-go.personal/gpt-5.6-luna",
-          "opencode-go/gpt-5.6-luna"
+          "opencode-go.lab/gpt-6-luna",
+          "opencode-go.personal/gpt-6-luna",
+          "opencode-go/gpt-6-luna"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go.personal/gpt-5.6-luna": 3,
-          "opencode-go.lab/gpt-5.6-luna": 2
+          "opencode-go.personal/gpt-6-luna": 3,
+          "opencode-go.lab/gpt-6-luna": 2
         }
       },
       // glm-flash-plan DISSOLVED 2026-10-27 (pool redesign): GLM 5.3 Flash
@@ -6166,7 +6311,13 @@
       },
       "sonnet-plan": {
         "name": "Claude Sonnet - plan providers",
+        // 2026-10-28 (Job 2): claude-code joins — its provider block
+        // now lists claude-sonnet-5-5 (the proxy catalog gained the
+        // model in #1324; the block extension lands in this PR). The
+        // leaf is dormant while claude-code is disabled and rejoins
+        // automatically on re-enable.
         "targets": [
+          "claude-code/claude-sonnet-5-5",
           {
             "model": "antigravity-ls/claude-sonnet-5-5",
             "variants": { "xhigh": "high", "max": "high" }
@@ -6177,13 +6328,40 @@
       },
       "opus-plan": {
         "name": "Claude Opus - plan providers",
+        // 2026-10-28 (Job 2): claude-code joins, mirroring haiku-plan's
+        // door order (Claude plan door first, Antigravity second). Its
+        // provider block now lists claude-opus-5-5 (proxy catalog in
+        // #1324; block extension in this PR). Dormant while
+        // claude-code is disabled; rejoins on re-enable.
         "targets": [
+          "claude-code/claude-opus-5-5",
           {
             "model": "antigravity-ls/claude-opus-5-5",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
         "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "spark-plan": {
+        "name": "Muse Spark 1.3 Contributor - plan providers",
+        // NEW 2026-10-28 (Job 2): round-robin over every verified Spark
+        // contributor door — meta direct, ClinePass (live completion
+        // probed 2026-10-28), Command Code (live :18748 list), and
+        // OpenCode Go x3 (the live serve catalog lists
+        // muse-spark-1.3-contributor on all three workspaces). The
+        // tier seats that used to address the meta leaf directly
+        // (workhorse-weighted #xhigh w1, specialist #max, speed
+        // #xhigh w3) now address this pool at unchanged rungs/weights.
+        "targets": [
+          "meta/muse-spark-1.3-contributor",
+          "cline-pass/muse-spark-1.3-contributor",
+          "commandcode/meta/muse-spark-1.3-contributor",
+          "opencode-go.personal/muse-spark-1.3-contributor",
+          "opencode-go.lab/muse-spark-1.3-contributor",
+          "opencode-go/muse-spark-1.3-contributor"
+        ],
+        "selection": "round-robin",
         "autonomy": "rules"
       },
       "sol-plan": {
@@ -6197,9 +6375,22 @@
         // only distorted the pool's real mix (the ChatGPT doors were
         // carrying Sol traffic the leaf list claimed was shared four
         // ways). Go quota burns exclusively through luna-plan's
-        // gpt-5.6-luna leaves. Re-add a Go leaf here only when Go's own
+        // gpt-6-luna leaves. Re-add a Go leaf here only when Go's own
         // catalog lists a Sol-class model.
-        "targets": ["openai/gpt-6.1-sol", "openai.alternate/gpt-6.1-sol"],
+        // 2026-10-28 (Job 2): two plan doors join — OpenDesign (serves
+        // gpt-6.1-sol; its block entry is added in this PR) and Command
+        // Code (gpt-6.1-sol verified in the LIVE :18748 /v1/models
+        // list, 85 ids, 2026-10-28 — the running bridge trails the
+        // source catalog but does serve Sol).
+        "targets": [
+          "openai/gpt-6.1-sol",
+          "openai.alternate/gpt-6.1-sol",
+          {
+            "model": "opendesign/gpt-6.1-sol",
+            "variants": { "xhigh": "high", "max": "high" }
+          },
+          "commandcode/gpt-6.1-sol"
+        ],
         "selection": "round-robin",
         "autonomy": "rules"
       },
@@ -6244,12 +6435,21 @@
         // vanished). What the live catalog serves on all three
         // workspaces is plain gemini-4-argon, so that is the seated
         // leaf; the contributor spelling returns if the live catalog
-        // gains it. antigravity-agy stays out by design (disabled and
-        // unused).
+        // gains it.
+        // 2026-10-28 (Job 2): antigravity-agy JOINS the pool — Drew's
+        // direction supersedes the 2026-10-27 disable posture for this
+        // purpose. agy models (CLI 1.2.16, user session) lists
+        // gemini-4-argon low/medium/high and a live Argon completion
+        // succeeded; the agy proxy's MODELS gained the Argon entry in
+        // this PR (unknown ids previously fell back silently to Flash
+        // — now a 400). The provider leaves disabled_providers in
+        // this PR; its other models stay route-gated (only Argon is
+        // seated).
         "targets": [
           "opencode-go.personal/gemini-4-argon",
           "opencode-go.lab/gemini-4-argon",
-          "opencode-go/gemini-4-argon"
+          "opencode-go/gemini-4-argon",
+          "antigravity-agy/gemini-4-argon"
         ],
         "selection": "round-robin",
         "autonomy": "rules"
@@ -6378,17 +6578,19 @@
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
+        // 2026-10-28 (Job 2): the Spark seat addresses spark-plan#xhigh
+        // (was the direct meta contributor leaf) at the same weight 1.
         "targets": [
           "opencode-route/haiku-plan#high",
           "opencode-route/terra-plan#medium",
-          "meta/muse-spark-1.3-contributor#xhigh"
+          "opencode-route/spark-plan#xhigh"
         ],
         "selection": "weighted",
         "autonomy": "rules",
         "weights": {
           "opencode-route/haiku-plan": 2,
           "opencode-route/terra-plan": 2,
-          "meta/muse-spark-1.3-contributor": 1
+          "opencode-route/spark-plan": 1
         }
       },
       "specialist": {
@@ -6418,7 +6620,7 @@
         "targets": [
           "opencode-route/sonnet-plan#high",
           "opencode-route/argon-plan#high",
-          "meta/muse-spark-1.3-contributor#max",
+          "opencode-route/spark-plan#max",
           "opencode-route/sol-plan#medium"
         ],
         "selection": "ordered",
@@ -6460,17 +6662,24 @@
         // ~190 t/s decode; its 26.7s TTFT is the accepted cost). Beam is
         // faster still (385 t/s) but II 30 is below this pool's floor —
         // it is scout's speed, not this tier's.
+        // 2026-10-28 (Job 2): the Spark seat repoints to spark-plan at
+        // the same rung and weight, and Gemini Flash joins at weight 1
+        // via gemini-flash-plan — antigravity-ls serves
+        // gemini-3.8-flash live (AA v4.3.2: ~II 40-41 at high,
+        // ~311 t/s decode), which clears this pool's bar.
         "targets": [
-          "meta/muse-spark-1.3-contributor#xhigh",
+          "opencode-route/spark-plan#xhigh",
           "opencode-route/deepseek-flash-plan#high",
-          "opencode-route/haiku-plan#high"
+          "opencode-route/haiku-plan#high",
+          "opencode-route/gemini-flash-plan#high"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "meta/muse-spark-1.3-contributor": 3,
+          "opencode-route/spark-plan": 3,
           "opencode-route/deepseek-flash-plan": 2,
-          "opencode-route/haiku-plan": 2
+          "opencode-route/haiku-plan": 2,
+          "opencode-route/gemini-flash-plan": 1
         }
       },
       "small-100k": {
