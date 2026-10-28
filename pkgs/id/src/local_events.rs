@@ -241,7 +241,10 @@ impl LocalEvents {
                 None,
             )?);
         }
-        Ok((count, event.expect("at least one chunk was recorded")))
+        let Some(event) = event else {
+            bail!("no tag.clear event was recorded for {name}");
+        };
+        Ok((count, event))
     }
 
     /// The live claims on `subject`, sorted by claim ID.
