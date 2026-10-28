@@ -302,10 +302,14 @@ export function effectiveNeedsOrder(records: DashAction[]): { order: NeedsOrder;
 }
 
 /** #1293: a proposal-ready delegation past its TTL is expired — it
- *  renders as expired and the item is decidable again. */
+ *  renders as expired and the item is decidable again. The clock is the
+ *  proposal's own draft time (`proposal.at`, #1623): `updatedAt` moves on
+ *  any delegation write, so clocking from it would let churn resurrect an
+ *  old proposal indefinitely (and read a fresh proposal as expired when
+ *  the delegation record itself is old). */
 export function proposalExpired(d: TierItemDelegation | undefined, nowMs: number): boolean {
   if (!d || d.status !== "proposal-ready") return false;
-  const at = Date.parse(d.updatedAt);
+  const at = Date.parse(d.proposal?.at ?? "");
   return !Number.isNaN(at) && nowMs - at > PROPOSAL_TTL_MS;
 }
 

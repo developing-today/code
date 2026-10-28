@@ -156,9 +156,16 @@ function goWorkspace(name: "Personal" | "Lab"): Extractor {
       new RegExp(`\\*\\*${name} — monthly (\\d+(?:\\.\\d+)?)% used(?:, weekly (\\d+(?:\\.\\d+)?)%)?`, "i"),
     );
     if (!m) return null;
-    // Resets appear in the same paragraph order as the workspaces.
-    const resets = [...s.matchAll(/monthly reset (\w{3}) (\d{1,2}), (\d{2}:\d{2}) UTC/gi)];
-    const r = name === "Personal" ? resets[0] : resets[1];
+    // Paragraph anchoring (#1626): a workspace's reset is the first
+    // 'monthly reset' in its own paragraph — the text from its percentage
+    // match to the next blank line (or the end of the section). A paragraph
+    // with no reset yields null; a reset is never borrowed from another
+    // workspace's paragraph or from an earlier mention elsewhere in the
+    // section (the old section-wide index pairing shifted both workspaces'
+    // resets whenever one reset line was missing or an extra one appeared).
+    const paraEnd = s.indexOf("\n\n", m.index);
+    const paragraph = s.slice(m.index, paraEnd === -1 ? undefined : paraEnd);
+    const r = first(paragraph, /monthly reset (\w{3}) (\d{1,2}), (\d{2}:\d{2}) UTC/i);
     const monthlyReset = r ? monthDayTime(r[1], r[2], r[3], now) : null;
     const windows: QuotaWindow[] = [usdWindow("monthly", (Number(m[1]) / 100) * 60, 60, monthlyReset)];
     if (m[2] !== undefined) windows.push(usdWindow("weekly", (Number(m[2]) / 100) * 30, 30, null));

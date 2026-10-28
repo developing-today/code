@@ -4927,11 +4927,8 @@
       "server": "n/a:addresses the other side"
     },
     "notes": {
-      "client": "**gap** — 404 surfaces as `http 404` error; session id kept",
+      "client": "yes — a session 404 triggers one re-initialize (no session id on it) and one retry on the new session; tested, see `conformance-matrix.md`",
       "server": "n/a"
-    },
-    "claims": {
-      "client": "gap"
     }
   },
   {
