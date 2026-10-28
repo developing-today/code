@@ -336,7 +336,8 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
     }
 
     // Pagination controls
-    let total_pages = (page.total + page.per_page - 1) / page.per_page.max(1);
+    let per_page = page.per_page.max(1);
+    let total_pages = page.total.saturating_add(per_page.saturating_sub(1)) / per_page;
     if total_pages > 1 {
         let search_param = page
             .search
@@ -347,8 +348,25 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
         html.push_str("<div class=\"flex items-center justify-between px-3 py-2 border-t border-base-300 text-xs\">");
 
         // Info text
-        let start = (page.page - 1) * page.per_page + 1;
-        let end = (start + page.files.len()).saturating_sub(1);
+        // Display arithmetic must be saturating (#1472): paginate() echoes
+        // the requested page unclamped, so page can be usize::MAX here.
+        // An out-of-range page has no files; pin its range to 0-0 so the
+        // rendered range never inverts and never exceeds the total.
+        let (start, end) = if page.files.is_empty() {
+            (0, 0)
+        } else {
+            let start = page
+                .page
+                .saturating_sub(1)
+                .saturating_mul(page.per_page)
+                .saturating_add(1)
+                .min(page.total);
+            let end = start
+                .saturating_add(page.files.len())
+                .saturating_sub(1)
+                .min(page.total);
+            (start, end)
+        };
         let _ = write!(
             html,
             "<span class=\"text-base-content/50\">{}-{} of {}</span>",
@@ -1120,6 +1138,67 @@ mod tests {
         assert!(html.contains("test.txt"));
         assert!(html.contains("abc123def456"));
         assert!(html.contains("aria-label=\"Select file test.txt\""));
+    }
+
+    #[test]
+    fn test_render_file_list_pagination_normal_page_display() {
+        // Normal paging renders exactly as before (#1472): page 2 at
+        // per_page 50 over 300 files shows 51-100 of 300.
+        let files: Vec<FileInfo> = (0..50)
+            .map(|i| FileInfo {
+                name: format!("f{i}.txt"),
+                display_name: None,
+                hash: "abc123def456".to_owned(),
+                size: 1024,
+                kind: FileKind::Primary,
+                parent_name: None,
+                timestamp: None,
+                created_at: None,
+                modified_at: None,
+                tags: vec![],
+                is_deleted: false,
+            })
+            .collect();
+        let page = FileListPage {
+            files,
+            total: 300,
+            page: 2,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(html.contains("51-100 of 300"), "html: {html}");
+    }
+
+    #[test]
+    fn test_render_file_list_pagination_overflow_page_50() {
+        // Regression (#1472): paginate() echoes page=usize::MAX unclamped;
+        // the display arithmetic used to panic (debug) / wrap (release).
+        let page = FileListPage {
+            files: vec![],
+            total: 300,
+            page: usize::MAX,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(html.contains("0-0 of 300"), "html: {html}");
+    }
+
+    #[test]
+    fn test_render_file_list_pagination_overflow_page_200() {
+        let page = FileListPage {
+            files: vec![],
+            total: 300,
+            page: usize::MAX,
+            per_page: 200,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(html.contains("0-0 of 300"), "html: {html}");
     }
 
     #[test]
