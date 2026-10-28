@@ -72,8 +72,12 @@ for d in "${REPOS[@]}"; do
   br="$(g branch --show-current)"
   dirty="$(g status --porcelain | grep -vc '^??')"
   untracked="$(g ls-files --others --exclude-standard | wc -l)"
-  big="$(cd "$d" && git ls-files -z | xargs -0 -r stat -c '%s %n' 2>/dev/null | awk -v t="$BIG_TRACKED" '$1 > t {printf "%s (%d MiB); ", $2, $1 / 1048576}')"
-  [ -n "$big" ] && say "- $name: LARGE TRACKED FILES: $big"
+  # repo-archive holds git bundles BY DESIGN — its large files are the
+  # archive itself, not violations, so it is exempt from this flag.
+  if [ "$name" != "repo-archive" ]; then
+    big="$(cd "$d" && git ls-files -z | xargs -0 -r stat -c '%s %n' 2>/dev/null | awk -v t="$BIG_TRACKED" '$1 > t {printf "%s (%d MiB); ", $2, $1 / 1048576}')"
+    [ -n "$big" ] && say "- $name: LARGE TRACKED FILES: $big"
+  fi
   wt="$(g worktree list | wc -l)"
   if [ "$br" != "$db" ]; then
     if [ "$dirty" -eq 0 ]; then
