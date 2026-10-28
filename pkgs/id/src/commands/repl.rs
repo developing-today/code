@@ -93,7 +93,7 @@ use crate::commands::put::{add_raw, push_and_name};
 use crate::commands::serve::get_serve_info;
 use crate::commands::tag::{self as tag, TagDisplayOptions};
 use crate::local::LocalNode;
-use crate::meta_client::{MetaRequester, expect_ok, request_over};
+use crate::meta_client::{MetaRequester, expect_ok, read_capped_response, request_over};
 use crate::{
     CLIENT_KEY_FILE, FindMatch, META_ALPN, MatchKind, MetaRequest, MetaResponse, StoreType,
     export_blob, is_node_id, load_or_create_keypair, open_store,
@@ -703,7 +703,7 @@ impl ReplContext {
             })?;
             send.write_all(&req).await?;
             send.finish()?;
-            let resp_buf = recv.read_to_end(64 * 1024).await?;
+            let resp_buf = read_capped_response(&mut recv).await?;
             let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
 
             match resp {
