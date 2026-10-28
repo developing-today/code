@@ -95,6 +95,9 @@ type Client struct {
 	loopDone chan struct{}
 	// Negotiated is the version actually in use.
 	Negotiated string
+	// toolValidators holds each listed tool's compiled input/output
+	// schema validators (schemacheck.go), keyed by tool name.
+	toolValidators map[string]*toolSchemas
 	// onElicit answers server-initiated requests.
 	onElicit ElicitHandler
 	// notif holds notification handlers.
@@ -1063,7 +1066,7 @@ func (c *Client) ListTools(ctx context.Context) ([]Tool, error) {
 		}
 		cursor = &next
 	}
-	return c.checkToolHeaders(all), nil
+	return c.checkToolHeaders(c.checkToolSchemas(all)), nil
 }
 
 // ListResources returns static resources plus resource templates.
@@ -1165,6 +1168,13 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	if args == nil {
 		args = map[string]any{}
 	}
+	argsJSON, err := json.Marshal(args)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.validateToolArgs(ctx, name, argsJSON); err != nil {
+		return nil, err
+	}
 	params, err := json.Marshal(map[string]any{"name": name, "arguments": args})
 	if err != nil {
 		return nil, err
@@ -1188,6 +1198,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 		if err != nil {
 			return nil, err
 		}
+		c.checkToolOutput(ctx, name, raw)
 		return raw, nil
 	}
 }

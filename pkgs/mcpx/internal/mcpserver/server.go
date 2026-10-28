@@ -1002,6 +1002,16 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		if up := (*UpstreamError)(nil); errors.As(err, &up) {
 			return up.relay(req.ID)
 		}
+		// A client-side validation failure (the caller's arguments
+		// failed the tool's inputSchema, code -32602) is the caller's
+		// bug, not a tool failure: relay it as the protocol error it
+		// is instead of an isError result. The check is an interface
+		// assertion so this package does not import the client's
+		// error type.
+		var coded interface{ RPCCode() int }
+		if errors.As(err, &coded) && coded.RPCCode() == codeInvalidParams {
+			return fail(codeInvalidParams, err.Error())
+		}
 		if err != nil {
 			// A tool that fails is a result with isError, not a protocol
 			// error. The distinction matters: a protocol error means the
