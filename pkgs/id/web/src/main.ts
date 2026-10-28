@@ -12,6 +12,7 @@ import { type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
 import { updateHeaderSubtitle } from "./header-subtitle";
 import { identityNeedsRefresh } from "./identity-refresh";
+import { createNavigation } from "./navigation";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
 declare global {
@@ -424,68 +425,11 @@ let peersRefreshInterval: ReturnType<typeof setInterval> | null = null;
 // Track search debounce timer
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-/**
- * Fetch a URL and replace the innerHTML of a target element.
- * Used for partial page updates (search, pagination, tags WS refresh, peers auto-refresh).
- */
-async function fetchPartial(url: string, targetSelector: string): Promise<void> {
-  try {
-    const response = await fetch(url, {
-      headers: { "X-Partial-Request": "true" },
-    });
-    if (!response.ok) {
-      console.error("[id] fetchPartial failed:", response.status, response.statusText);
-      return;
-    }
-    const html = await response.text();
-    const target = document.querySelector(targetSelector);
-    if (target) {
-      target.innerHTML = html;
-      onPartialSwapped(targetSelector);
-    }
-  } catch (err) {
-    console.error("[id] fetchPartial error:", err);
-  }
-}
-
-/**
- * Navigate to a URL by fetching it as a partial and swapping #main content.
- * Used by [data-nav] link clicks, programmatic navigation, and popstate.
- */
-async function navigateTo(url: string, pushUrl: boolean = true): Promise<void> {
-  // Close editor before navigation
-  const app = (window as unknown as Record<string, IdApp>).idApp;
-  if (app?.collab) {
-    app.closeEditor();
-  }
-
-  try {
-    const response = await fetch(url, {
-      headers: { "X-Partial-Request": "true" },
-    });
-    if (!response.ok) {
-      console.error("[id] navigateTo failed:", response.status, response.statusText);
-      // Fallback to full page navigation
-      window.location.href = url;
-      return;
-    }
-    const html = await response.text();
-    const main = document.getElementById("main");
-    if (main) {
-      main.innerHTML = html;
-      if (pushUrl) {
-        window.history.pushState(null, "", url);
-      }
-      onMainSwapped();
-    } else {
-      // No #main element, fallback
-      window.location.href = url;
-    }
-  } catch (err) {
-    console.error("[id] navigateTo error:", err);
-    window.location.href = url;
-  }
-}
+// Navigation + partial swaps live in navigation.ts, with supersession
+// (#1462): only the most recently issued request may write the DOM, push
+// history, or run swap side effects. The swap callbacks are function
+// declarations below, hoisted, so they can be wired in here.
+const { fetchPartial, navigateTo } = createNavigation({ onPartialSwapped, onMainSwapped });
 
 /**
  * Called after #main content is swapped. Handles re-initialization of UI components

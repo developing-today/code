@@ -6,7 +6,7 @@
 // and the Needs-you order is a saved preference.
 import { describe, expect, test } from "bun:test";
 import { validateNewAction, type DashAction } from "../src/actions.ts";
-import { cardState } from "../src/card-state.ts";
+import { cardState, effectiveActions } from "../src/card-state.ts";
 import { buildAttention } from "../src/derive.ts";
 import type { OrchestrationSection, TierItem } from "../src/model.ts";
 import { STANDING_IDENTITIES } from "../src/registry.ts";
@@ -126,6 +126,57 @@ describe("card-state derivation (#1443/#1450)", () => {
     const cs = cardState([dismiss, restore], NOW);
     expect(cs.suppressed).toBeNull();
     expect(cs.pending.map((a) => a.verb)).toContain("restore");
+  });
+  test("a REJECTED restore does NOT cancel its target — the dismissal stands (#1474)", () => {
+    const dismiss = mkAction({ id: "da-dismiss", verb: "dismiss", state: "applied", payload: { reason: "x" } });
+    const restore = mkAction({
+      id: "da-restore",
+      verb: "restore",
+      state: "rejected",
+      supersedes: "da-dismiss",
+      createdAt: iso(NOW),
+    });
+    const cs = cardState([dismiss, restore], NOW);
+    expect(cs.suppressed?.kind).toBe("dismissed");
+    expect(effectiveActions([dismiss, restore]).map((a) => a.id)).toContain("da-dismiss");
+  });
+  test("a REJECTED restore of a snooze leaves the card snoozed (#1474)", () => {
+    const snooze = mkAction({
+      id: "da-snooze",
+      verb: "snooze",
+      state: "applied",
+      payload: { until: iso(NOW + 3_600_000) },
+    });
+    const restore = mkAction({
+      id: "da-restore",
+      verb: "restore",
+      state: "rejected",
+      supersedes: "da-snooze",
+      createdAt: iso(NOW),
+    });
+    expect(cardState([snooze, restore], NOW).suppressed?.kind).toBe("snoozed");
+  });
+  test("a REJECTED restore of an ack leaves the card acked (#1474)", () => {
+    const ack = mkAction({ id: "da-ack", verb: "acknowledge", state: "applied" });
+    const restore = mkAction({
+      id: "da-restore",
+      verb: "restore",
+      state: "rejected",
+      supersedes: "da-ack",
+      createdAt: iso(NOW),
+    });
+    expect(cardState([ack, restore], NOW).acked).toBe(true);
+  });
+  test("an APPLIED restore still cancels its target (#1474)", () => {
+    const dismiss = mkAction({ id: "da-dismiss", verb: "dismiss", state: "applied", payload: { reason: "x" } });
+    const restore = mkAction({
+      id: "da-restore",
+      verb: "restore",
+      state: "applied",
+      supersedes: "da-dismiss",
+      createdAt: iso(NOW),
+    });
+    expect(cardState([dismiss, restore], NOW).suppressed).toBeNull();
   });
   test("survey answers merge across submits, latest per question wins (#1451)", () => {
     const a1 = mkAction({
@@ -273,8 +324,23 @@ describe("needs-you order (#1456)", () => {
     expect(effectiveNeedsOrder([pref])).toEqual({ order: "newest", pending: true });
   });
   test("the order control renders and newest-first reorders the list at render", async () => {
-    const older: TierItem = { ...BASE, id: "older", title: "Older card", lastSeenAt: iso(NOW - 86_400_000) };
-    const newer: TierItem = { ...BASE, id: "newer", title: "Newer card", lastSeenAt: iso(NOW - 60_000) };
+    // #1485: newest sorts on the since axis. The lastSeenAt values here
+    // point the OTHER way (the older card was seen a minute ago) — under
+    // the pre-#1485 seenMs axis this pair ordered oldest-first.
+    const older: TierItem = {
+      ...BASE,
+      id: "older",
+      title: "Older card",
+      since: iso(NOW - 86_400_000),
+      lastSeenAt: iso(NOW - 60_000),
+    };
+    const newer: TierItem = {
+      ...BASE,
+      id: "newer",
+      title: "Newer card",
+      since: iso(NOW - 60_000),
+      lastSeenAt: iso(NOW - 86_400_000),
+    };
     const src = fixtureSource();
     const view = buildAttention([], section([older, newer]), NOW);
     const html = renderAttention(view, await src.coverage(), src.provenance(), undefined, undefined, {
@@ -284,6 +350,70 @@ describe("needs-you order (#1456)", () => {
     });
     expect(html).toContain('data-verb="set-needs-order"');
     expect(html.indexOf("Newer card")).toBeLessThan(html.indexOf("Older card"));
+  });
+  test("newest and oldest are exact reverses when since and lastSeenAt disagree (#1485)", async () => {
+    // The creator probe pair: a 30-day-old card seen 5 minutes ago led
+    // BOTH orders before #1485 (newest read lastSeenAt, oldest read since).
+    const newCard: TierItem = {
+      ...BASE,
+      id: "newcard",
+      title: "Fresh card",
+      since: iso(NOW - 3_600_000),
+      lastSeenAt: iso(NOW - 7_200_000),
+    };
+    const oldCard: TierItem = {
+      ...BASE,
+      id: "oldcard",
+      title: "Stale card",
+      since: iso(NOW - 30 * 86_400_000),
+      lastSeenAt: iso(NOW - 300_000),
+    };
+    const src = fixtureSource();
+    const render = async (needsOrder: "newest" | "oldest" | "deadline") => {
+      const view = buildAttention([], section([oldCard, newCard]), NOW);
+      return renderAttention(view, await src.coverage(), src.provenance(), undefined, undefined, {
+        identities,
+        actionsByObject: new Map(),
+        needsOrder,
+      });
+    };
+    const newest = await render("newest");
+    expect(newest.indexOf("Fresh card")).toBeLessThan(newest.indexOf("Stale card"));
+    const oldest = await render("oldest");
+    expect(oldest.indexOf("Stale card")).toBeLessThan(oldest.indexOf("Fresh card"));
+    // Deadline: both cards share rank (no horizon), so the sinceMs
+    // tiebreak decides — oldest-waiting first, lastSeenAt irrelevant.
+    const deadline = await render("deadline");
+    expect(deadline.indexOf("Stale card")).toBeLessThan(deadline.indexOf("Fresh card"));
+  });
+  test("newest and oldest reverse an agreeing pair too (#1485 control)", async () => {
+    const a: TierItem = {
+      ...BASE,
+      id: "ctl-a",
+      title: "Control A",
+      since: iso(NOW - 7_200_000),
+      lastSeenAt: iso(NOW - 7_200_000),
+    };
+    const b: TierItem = {
+      ...BASE,
+      id: "ctl-b",
+      title: "Control B",
+      since: iso(NOW - 3_600_000),
+      lastSeenAt: iso(NOW - 3_600_000),
+    };
+    const src = fixtureSource();
+    const render = async (needsOrder: "newest" | "oldest") => {
+      const view = buildAttention([], section([a, b]), NOW);
+      return renderAttention(view, await src.coverage(), src.provenance(), undefined, undefined, {
+        identities,
+        actionsByObject: new Map(),
+        needsOrder,
+      });
+    };
+    const newest = await render("newest");
+    expect(newest.indexOf("Control B")).toBeLessThan(newest.indexOf("Control A"));
+    const oldest = await render("oldest");
+    expect(oldest.indexOf("Control A")).toBeLessThan(oldest.indexOf("Control B"));
   });
 });
 

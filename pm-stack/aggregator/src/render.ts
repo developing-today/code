@@ -2299,10 +2299,15 @@ export function attentionSections(
   }
   // #1456: the saved card order applies at render. "urgency" is the
   // published order (no sort); the rest sort the visible list.
+  // #1485: every order sorts on the single sinceMs axis (when the card
+  // entered the queue), so newest and oldest are exact reverses. seenMs
+  // (lastSeenAt) is NOT the axis: a stale card seen recently would lead
+  // both orders. Deadline ties break oldest-waiting first (ascending
+  // sinceMs), matching the deadline/urgency reading.
   const order = act?.needsOrder ?? "urgency";
-  if (order === "newest") drewCardsList.sort((a, b) => b.seenMs - a.seenMs);
+  if (order === "newest") drewCardsList.sort((a, b) => b.sinceMs - a.sinceMs);
   else if (order === "oldest") drewCardsList.sort((a, b) => a.sinceMs - b.sinceMs);
-  else if (order === "deadline") drewCardsList.sort((a, b) => a.rank - b.rank || b.seenMs - a.seenMs);
+  else if (order === "deadline") drewCardsList.sort((a, b) => a.rank - b.rank || a.sinceMs - b.sinceMs);
   const orchCardsList: string[] = [];
   for (const e of view.orchestrator) {
     const objectRef = sessionObjectRef(e.sessionId);
