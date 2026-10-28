@@ -65,7 +65,7 @@ function createNodeView(view: EditorView, imageNode: PMNode): { nv: ImageNodeVie
 }
 
 function mouse(target: Document | Element, type: string, clientX: number): void {
-  target.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX, clientY: 0 }));
+  (target as EventTarget).dispatchEvent(new MouseEvent(type, { bubbles: true, clientX, clientY: 0 }));
 }
 
 /** Drag a corner handle from x=100 by `dx`, returning the live img size. */
