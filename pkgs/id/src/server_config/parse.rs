@@ -478,10 +478,9 @@ mod tests {
 
     #[test]
     fn test_a_policy_table_sets_both_knobs() {
-        let config = config(
-            "\n[policy]\nfreshness_window_seconds = 60\npull_policy = \"members\"\n",
-        )
-        .unwrap();
+        let config =
+            config("\n[policy]\nfreshness_window_seconds = 60\npull_policy = \"members\"\n")
+                .unwrap();
         assert_eq!(config.pull_policy(), PullPolicy::Members);
         assert_eq!(
             config.freshness().server,
@@ -496,16 +495,12 @@ mod tests {
     #[test]
     fn test_an_unknown_pull_policy_fails_startup() {
         let refused = config("\n[policy]\npull_policy = \"friends\"\n").unwrap_err();
-        assert!(matches!(
-            refused,
-            ConfigError::UnknownPullPolicy { .. }
-        ));
+        assert!(matches!(refused, ConfigError::UnknownPullPolicy { .. }));
     }
 
     #[test]
     fn test_an_unknown_policy_key_fails_startup() {
-        let refused =
-            config("\n[policy]\npull_policy = \"open\"\nwindow = 60\n").unwrap_err();
+        let refused = config("\n[policy]\npull_policy = \"open\"\nwindow = 60\n").unwrap_err();
         assert!(matches!(refused, ConfigError::Parse(_)));
     }
 
