@@ -155,7 +155,12 @@ pub fn validate_spec(spec: &CompileSpec) -> Result<()> {
         "the first file must be main.roc"
     );
     let mut total = 0usize;
+    let mut seen = std::collections::HashSet::new();
     for (name, content) in &spec.files {
+        ensure!(
+            seen.insert(name.as_str()),
+            "file name {name:?} appears more than once in the compile request"
+        );
         ensure!(
             !name.is_empty()
                 && name.len() <= 64
@@ -600,6 +605,34 @@ mod tests {
             many.push((Box::leak(format!("f{i}.roc").into_boxed_str()), "y"));
         }
         assert!(validate_spec(&spec(many)).is_err());
+    }
+
+    #[test]
+    fn duplicate_file_names_are_refused() {
+        // A duplicated helper: staging writes both to the same job path, so
+        // the first would be silently overwritten — and digest_sources would
+        // still hash it into the recorded provenance.
+        let duplicate = spec(vec![
+            ("main.roc", "app"),
+            ("Helper.roc", "first"),
+            ("Helper.roc", "second"),
+        ]);
+        let error = validate_spec(&duplicate).unwrap_err().to_string();
+        assert!(error.contains("Helper.roc"), "{error}");
+        assert!(error.contains("more than once"), "{error}");
+
+        // A duplicated main.roc: files[0] satisfies the main.roc rule, but
+        // the main.roc read back from the job directory would be the second.
+        let duplicate_main = spec(vec![
+            ("main.roc", "app"),
+            ("Helper.roc", "helper"),
+            ("main.roc", "other"),
+        ]);
+        assert!(validate_spec(&duplicate_main).is_err());
+
+        // Control: unique names still validate.
+        let unique = spec(vec![("main.roc", "app"), ("Helper.roc", "helper")]);
+        assert!(validate_spec(&unique).is_ok());
     }
 
     #[test]
