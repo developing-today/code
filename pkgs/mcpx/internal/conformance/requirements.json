@@ -13666,10 +13666,7 @@
     },
     "notes": {
       "client": "n/a (peer's duty)",
-      "server": "yes — GAP: `Peer.CanSample()` checks `sampling` only, not `sampling.tools` (`conn.go:211`); safe today only because mcpx never declares `sampling.tools` upstream, so a compliant upstream never sends tools"
-    },
-    "claims": {
-      "server": "gap"
+      "server": "yes — `Question.Sendable` refuses a tools-carrying sampling question unless the peer declared `sampling.tools` (`Peer.CanSampleTools`)"
     }
   },
   {
@@ -13712,7 +13709,7 @@
     },
     "notes": {
       "client": "n/a (peer's duty); mcpx declares no `sampling.context`",
-      "server": "yes — forwards `includeContext` unchanged; must drop to `\"none\"` when the downstream did not declare `sampling.context` (not verified)"
+      "server": "yes — `Question.paramsFor` drops `includeContext` unless the peer declared `sampling.context` (`Peer.CanSampleContext`)"
     }
   },
   {
