@@ -194,3 +194,50 @@ func TestEnumIsEnforced(t *testing.T) {
 		t.Fatal("a value outside the enum should be refused")
 	}
 }
+
+func TestValidateRefusesNegativeTimeouts(t *testing.T) {
+	// A negative timeout passes time.ParseDuration, so without an explicit
+	// refusal it validates and then every call is born expired (#1758).
+	server := echoSpec()
+	server.Timeout = "-5s"
+	err := server.Validate()
+	if err == nil {
+		t.Fatal("a negative server timeout should not validate")
+	}
+	for _, want := range []string{"negative", `"-5s"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("server error should name the offending value, missing %q from:\n%v", want, err)
+		}
+	}
+
+	tool := echoSpec()
+	tool.Tools[0].Timeout = "-1ms"
+	err = tool.Validate()
+	if err == nil {
+		t.Fatal("a negative tool timeout should not validate")
+	}
+	for _, want := range []string{"negative", `"-1ms"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("tool error should name the offending value, missing %q from:\n%v", want, err)
+		}
+	}
+}
+
+func TestZeroTimeoutIsUnset(t *testing.T) {
+	// Zero is unset at both levels: a "0s" tool timeout inherits the server
+	// timeout, and a "0s" server timeout means the 60s default - never an
+	// already-expired context (#1758).
+	spec := echoSpec()
+	spec.Timeout = "0s"
+	spec.Tools[0].Timeout = "0s"
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("zero timeouts are unset and should validate: %v", err)
+	}
+	res, err := spec.Call(context.Background(), "say", map[string]any{"text": "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, "said: hello") {
+		t.Errorf("got %q", res.Stdout)
+	}
+}
