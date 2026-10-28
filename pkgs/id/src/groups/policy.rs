@@ -151,10 +151,12 @@ impl Policy {
         self.delegation.unwrap_or(Delegation::Cascade)
     }
 
-    /// Whether the record is usable. Only Admin may change roles and policy, and a cap must allow
-    /// at least one member.
+    /// Whether the record is usable. Only Admin may change roles and policy, a cap must allow
+    /// at least one member, and a recent history window must hold at least one epoch.
     pub fn is_valid(&self) -> bool {
-        self.roles.change == Role::Admin && self.member_cap.is_none_or(|cap| cap >= 1)
+        self.roles.change == Role::Admin
+            && self.member_cap.is_none_or(|cap| cap >= 1)
+            && !matches!(self.history, History::Recent(0))
     }
 }
 
@@ -233,5 +235,19 @@ mod tests {
             ..Policy::default()
         };
         assert!(!no_members.is_valid());
+    }
+
+    #[test]
+    fn test_a_recent_window_must_hold_at_least_one_epoch() {
+        let empty_window = Policy {
+            history: History::Recent(0),
+            ..Policy::default()
+        };
+        assert!(!empty_window.is_valid());
+        let one_epoch = Policy {
+            history: History::Recent(1),
+            ..Policy::default()
+        };
+        assert!(one_epoch.is_valid());
     }
 }

@@ -309,23 +309,51 @@ export function mergeLinks(existing: Link[], extra: Link[]): Link[] {
 const RELATIONS = new Set<string>(["tracks", "implements", "relates"]);
 const asRelation = (v: string): Link["relation"] => (RELATIONS.has(v) ? (v as Link["relation"]) : "relates");
 
+/**
+ * Refs travel in the query string, and the projector (Bun.serve) rejects
+ * request lines past ~16KB with HTTP 431 — at ~30 encoded chars per ref
+ * that ceiling is only ~500 refs, which the board prime outgrew on
+ * 2026-10-27: the prime's comments/items reads failed over to fixtures
+ * while single-item pages (a handful of refs) stayed live. Chunk every
+ * multi-ref read so each request stays far below the limit.
+ */
+const PROJECTOR_REFS_PER_REQUEST = 200;
+
+function refChunks(refs: RefKey[]): RefKey[][] {
+  const chunks: RefKey[][] = [];
+  for (let i = 0; i < refs.length; i += PROJECTOR_REFS_PER_REQUEST) {
+    chunks.push(refs.slice(i, i + PROJECTOR_REFS_PER_REQUEST));
+  }
+  return chunks;
+}
+
 export async function projectorItems(baseUrl: string, refs: RefKey[]): Promise<Map<RefKey, GhItem> | null> {
   if (refs.length === 0) return new Map();
   // Refs contain `#` — they must be percent-encoded or the `#` starts a
   // fragment and the projector never sees the number.
-  const r = await getJson(`${baseUrl}/items?refs=${encodeURIComponent(refs.join(","))}`);
-  if (!r.ok) return null;
-  const rows = (r.json as { items?: ProjectorItemRow[] }).items ?? [];
-  return new Map(rows.map((row) => [row.ref, mapProjectorItem(row)] as const));
+  const out = new Map<RefKey, GhItem>();
+  for (const chunk of refChunks(refs)) {
+    const r = await getJson(`${baseUrl}/items?refs=${encodeURIComponent(chunk.join(","))}`);
+    if (!r.ok) return null;
+    const rows = (r.json as { items?: ProjectorItemRow[] }).items ?? [];
+    for (const row of rows) out.set(row.ref, mapProjectorItem(row));
+  }
+  return out;
 }
 
 export async function projectorComments(baseUrl: string, refs: RefKey[]): Promise<Comment[] | null> {
   if (refs.length === 0) return [];
-  const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(refs.join(","))}`);
-  if (!r.ok) return null;
-  return ((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
-    .map(mapProjectorComment)
-    .filter((c) => !c.deleted);
+  const out: Comment[] = [];
+  for (const chunk of refChunks(refs)) {
+    const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(chunk.join(","))}`);
+    if (!r.ok) return null;
+    out.push(
+      ...((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
+        .map(mapProjectorComment)
+        .filter((c) => !c.deleted),
+    );
+  }
+  return out;
 }
 
 /** Registry links for one subject (kaneo:/grist:/gh:), from GET /links. */

@@ -5995,6 +5995,13 @@
         // at the default and carry the pool when a Go leaf walls or the Go
         // periods end). Go's Flash natively offers low/high/max, so its
         // remaps match the ClinePass leaf's.
+        // 2026-10-27 pool redesign: the base opencode-go leaf joins (Drew's
+        // rule: a pool with one Go workspace carries all three — personal,
+        // lab, base; the base provider rides the Lab login, so it sits at
+        // the default weight behind both named workspaces), and Command
+        // Code joins as a minor leaf (weight 0.5; $1 Go tier, $10
+        // credits/mo — its boosted Flash allowance is small, the free
+        // routes are its durable value; issue #1328 D4).
         "targets": [
           {
             "model": "opencode-go.personal/deepseek-v4.1-flash",
@@ -6002,6 +6009,10 @@
           },
           {
             "model": "opencode-go.lab/deepseek-v4.1-flash",
+            "variants": { "medium": "high", "xhigh": "max" }
+          },
+          {
+            "model": "opencode-go/deepseek-v4.1-flash",
             "variants": { "medium": "high", "xhigh": "max" }
           },
           {
@@ -6015,13 +6026,15 @@
           {
             "model": "opendesign/deepseek-v4-flash",
             "variants": { "xhigh": "high", "max": "high" }
-          }
+          },
+          "commandcode/deepseek/deepseek-v4.1-flash"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
           "opencode-go.personal/deepseek-v4.1-flash": 3,
-          "opencode-go.lab/deepseek-v4.1-flash": 2
+          "opencode-go.lab/deepseek-v4.1-flash": 2,
+          "commandcode/deepseek/deepseek-v4.1-flash": 0.5
         }
       },
       "deepseek-flash": {
@@ -6044,7 +6057,24 @@
       },
       "deepseek-pro-plan": {
         "name": "DeepSeek V4 Pro - plan providers",
+        // 2026-10-27 pool redesign: Go x3 + Command Code (minor) join, per
+        // the same all-workspaces rule as deepseek-flash-plan. This pool
+        // seats no tier (specialist's Pro relief tail was removed in the
+        // same pass — Pro's II band sits below the specialist chain); it
+        // remains the named pool for direct calls.
         "targets": [
+          {
+            "model": "opencode-go.personal/deepseek-v4-pro",
+            "variants": { "medium": "high", "xhigh": "max" }
+          },
+          {
+            "model": "opencode-go.lab/deepseek-v4-pro",
+            "variants": { "medium": "high", "xhigh": "max" }
+          },
+          {
+            "model": "opencode-go/deepseek-v4-pro",
+            "variants": { "medium": "high", "xhigh": "max" }
+          },
           {
             "model": "cline-pass/deepseek-v4-pro",
             "variants": { "low": "high", "medium": "high", "xhigh": "max" }
@@ -6052,21 +6082,35 @@
           {
             "model": "opendesign/deepseek-v4-pro",
             "variants": { "xhigh": "high", "max": "high" }
-          }
+          },
+          "commandcode/deepseek/deepseek-v4-pro"
         ],
         "selection": "round-robin",
-        "autonomy": "rules"
+        "autonomy": "rules",
+        "weights": {
+          "commandcode/deepseek/deepseek-v4-pro": 0.5
+        }
       },
       "haiku-plan": {
         "name": "Claude Haiku - plan providers",
+        // 2026-10-27 pool redesign: ORDERED, flat doors first and the
+        // metered Go premium leaves last. OpenDesign is the pool's live
+        // flat door today; claude-code stays listed second (dormant while
+        // the provider is disabled on the Claude free tier — it rejoins
+        // automatically on re-enable, issue #1132); the Go x3 leaves
+        // (claude-haiku-5-5, 1M context) close the chain — Go's Haiku
+        // burns the small premium allowance, so it is spent last.
         "targets": [
-          "claude-code/claude-haiku-5-5",
           {
             "model": "opendesign/claude-haiku-5.5",
             "variants": { "xhigh": "high", "max": "high" }
-          }
+          },
+          "claude-code/claude-haiku-5-5",
+          "opencode-go.personal/claude-haiku-5-5",
+          "opencode-go.lab/claude-haiku-5-5",
+          "opencode-go/claude-haiku-5-5"
         ],
-        "selection": "round-robin",
+        "selection": "ordered",
         "autonomy": "rules"
       },
       "luna-plan": {
@@ -6082,6 +6126,9 @@
         // reserve, and OpenDesign's small short-window plan keeps the
         // default too. When a Go leaf walls, quota demotion + the remaining
         // leaves carry the pool as before.
+        // 2026-10-27 pool redesign: the base opencode-go leaf joins at the
+        // default weight (all-three-workspaces rule; it rides the Lab
+        // login, so it burns last among the Go leaves).
         "targets": [
           "openai/gpt-6-luna",
           "openai.alternate/gpt-6-luna",
@@ -6090,7 +6137,8 @@
             "variants": { "xhigh": "high", "max": "high" }
           },
           "opencode-go.lab/gpt-5.6-luna",
-          "opencode-go.personal/gpt-5.6-luna"
+          "opencode-go.personal/gpt-5.6-luna",
+          "opencode-go/gpt-5.6-luna"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -6099,25 +6147,12 @@
           "opencode-go.lab/gpt-5.6-luna": 2
         }
       },
-      "glm-flash-plan": {
-        "name": "GLM Flash - plan providers",
-        "targets": [
-          {
-            "model": "cline-pass/glm-5.3-flash",
-            "variants": { "medium": "high", "xhigh": "max" }
-          },
-          {
-            "model": "opendesign/glm-5.3-flash",
-            "variants": { "xhigh": "high", "max": "high" }
-          },
-          {
-            "model": "opendesign/glm-5.3-flashx",
-            "variants": { "xhigh": "high", "max": "high" }
-          }
-        ],
-        "selection": "round-robin",
-        "autonomy": "rules"
-      },
+      // glm-flash-plan DISSOLVED 2026-10-27 (pool redesign): GLM 5.3 Flash
+      // is seated nowhere. Decline-with-reason: it is dominated on its own
+      // doors — the slowest decode in the fleet (AA v4.3.2: ~984s/task,
+      // 57-61 t/s) at a higher burn than MiMo and below DeepSeek Flash's
+      // intelligence, on the same shared plan meters. The provider blocks
+      // keep listing the GLM models (catalog rule); no route seats them.
       "gemini-flash-plan": {
         "name": "Gemini Flash - plan providers",
         "targets": [
@@ -6195,6 +6230,71 @@
         "selection": "round-robin",
         "autonomy": "rules"
       },
+      "argon-plan": {
+        "name": "Gemini Argon - plan providers",
+        // NEW 2026-10-27 (pool redesign): Gemini 4 Argon (AA v4.3.2: high
+        // II 53; CAI 64 — the strongest coding evidence in the fleet).
+        // Doors: the OpenCode Go leaves x3. Two draft seats were cut on
+        // live evidence during the deploy: Antigravity LS (its own live
+        // model list, 38 models read from the :18745 proxy, serves NO
+        // Gemini 4 of any kind) and the gemini-4-argon-contributor
+        // spelling (present in models.dev's listing but absent from the
+        // workspaces' live catalog as the serves resolve it — with only
+        // contributor leaves the route expanded to zero leaves and
+        // vanished). What the live catalog serves on all three
+        // workspaces is plain gemini-4-argon, so that is the seated
+        // leaf; the contributor spelling returns if the live catalog
+        // gains it. antigravity-agy stays out by design (disabled and
+        // unused).
+        "targets": [
+          "opencode-go.personal/gemini-4-argon",
+          "opencode-go.lab/gemini-4-argon",
+          "opencode-go/gemini-4-argon"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "beam-plan": {
+        "name": "Reflection Beam - plan providers",
+        // NEW 2026-10-27 (pool redesign): Beam 1.0 gets its own plan pool
+        // (was a raw Command Code leaf inside scout). AA v4.3.2: II 30,
+        // TTFT 0.59s, ~385 t/s decode — the fleet's fastest starter.
+        // Doors: the Command Code free route plus OpenCode Go's beam-free
+        // on all three workspaces. Leaves are seated unconditionally: the
+        // router skips disabled or quota-empty leaves at runtime.
+        "targets": [
+          "commandcode/reflection/beam:free",
+          "opencode-go.personal/beam-free",
+          "opencode-go.lab/beam-free",
+          "opencode-go/beam-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "mimo-flash-plan": {
+        "name": "MiMo Flash - plan providers",
+        // NEW 2026-10-27 (pool redesign): MiMo-V2.6-Flash (AA v4.3.2:
+        // II 38 at ~$0.06/task list — the cheapest workhorse-adjacent
+        // seat; slow per task at ~1,253s, so it leads the patient
+        // background tier, not interactive pools). Doors: Go x3,
+        // ClinePass (flat meter — the reservation that keeps ClinePass's
+        // DeepSeek leaves out of the Flash pools' way is about burn
+        // accounting, and MiMo is ClinePass's best seat), OpenDesign,
+        // and Command Code as a minor leaf (weight 0.5, $10 credits/mo).
+        "targets": [
+          "opencode-go.personal/mimo-v2.6-flash",
+          "opencode-go.lab/mimo-v2.6-flash",
+          "opencode-go/mimo-v2.6-flash",
+          "cline-pass/mimo-v2.6-flash",
+          "opendesign/mimo-v2.6-flash",
+          "commandcode/xiaomi/mimo-v2.6-flash"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "commandcode/xiaomi/mimo-v2.6-flash": 0.5
+        }
+      },
       "scout": {
         "name": "Scout - routine work: cheapest, fastest, smart enough",
         // 2026-10-26 (pool remap review): all three routes addressed at #low — the rung every
@@ -6207,64 +6307,92 @@
         // registry's "no API access" note is stale for the proxy path. Caveats: the proxy
         // injects its own ~21k-token agent prompt per call, and the free tier's rate
         // limits are unmeasured — automatic quota demotion bounds the blast radius.
+        // 2026-10-27 pool redesign: GLM leaves the tier (glm-flash-plan is
+        // dissolved — GLM's ~60 t/s decode never fit a fast tier) and Beam
+        // is addressed through its new beam-plan pool instead of the raw
+        // Command Code leaf.
         "targets": [
           "opencode-route/deepseek-flash-plan#low",
-          "opencode-route/glm-flash-plan#low",
           "opencode-route/haiku-plan#low",
-          "commandcode/reflection/beam:free"
+          "opencode-route/beam-plan"
         ],
         "selection": "round-robin",
         "autonomy": "rules"
       },
+      "background": {
+        "name": "Background - patient queue work: best value first, no latency contract",
+        // NEW 2026-10-27 (pool redesign): the tier for machinery-dispatched
+        // work no human watches — repo sweeps, issue-queue workers,
+        // stewardship cycles, batch classification. Ordered chain in value
+        // order: DeepSeek Flash at #high first (workhorse-grade when it is
+        // available), then the MiMo pool (the fleet's cheapest burn) for
+        // the bulk.
+        // PENDING opencode#639 (config-layer time windows, priority/high):
+        // the full design is a three-stage clock-gated chain —
+        //   1. deepseek-flash-plan#high, all doors, OFF-PEAK window
+        //   2. mimo-flash-plan
+        //   3. deepseek-flash-plan#high, all doors, PEAK window
+        // (DeepSeek deductions double in the peak windows — Mon-Fri
+        // 01:00-04:00 + 06:00-10:00 UTC — on Go, and ClinePass's DeepSeek
+        // reference rates split the same way.) Until named config windows
+        // land, this chain runs its first two stages ungated; the runtime
+        // route_adjust tool can approximate the peak demotion meanwhile.
+        // No agent defaults here yet — queue workers are repointed as the
+        // follow-up step so the adoption is observable.
+        "targets": [
+          "opencode-route/deepseek-flash-plan#high",
+          "opencode-route/mimo-flash-plan"
+        ],
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
       "workhorse": {
-        "name": "Workhorse - standard work: fast and smart across plan pools",
-        // 2026-10-26 pass 3 (balance pass — intelligence vs time-to-first-token vs cost,
-        // AA v4.3.2 pages read 2026-10-26): Flash #high ~45 / TTFT ~1s / 170 t/s; Spark
-        // contributor #xhigh 45 / 19.1s / 303 t/s (contributor ids are always the cheaper
-        // seat on the Meta plan); Haiku #high 38 / 26.7s / 185 t/s — down from #xhigh
-        // (41, but a 67.4s TTFT made it the pool's slowest starter); Luna #xhigh 35 /
-        // 24.2s / 126 t/s — down from #max (38, but a 93.8s TTFT on the pool's lowest
-        // intelligence: slower AND dumber is the combination the balance rule removes;
-        // Luna stays as the pool's cheapest seat, weighted last as the OpenAI final
-        // reserve). Weights burn the small soon-expiring plans fastest.
-        // 2026-10-26 (Drew, cross-rung review): Sol #low joins — II 42 / TTFT 2.9s /
-        // $0.13 per task. A higher family's low rung beats the lower family's high
-        // rungs on intelligence and speed at once (it dominates the Luna #xhigh seat
-        // below on both axes), and OpenAI is our largest quota, so it will be spent
-        // regardless — better on the family's elbow rung than its slow tail. Luna
-        // keeps its #xhigh seat for now as the second OpenAI door; per Drew's
-        // standing guidance, anywhere Flash is available it covers Luna's niche.
-        // 2026-10-26 (Drew): Terra #medium joins at weight 1 — AA launch-day II 41.3
-        // at $0.095/task, probe-verified live via Codex the evening of its release.
-        // Weight stays at 1 until AA publishes per-rung TTFT (only max's 78s is
-        // known tonight); issue #1249 tracks the missing numbers.
-        // 2026-10-27: the TTFT landed and it is excellent — Terra #medium TTFT 1.43s
-        // (AA per-rung pages, pulled 2026-10-27; output speed ~91 t/s at every rung,
-        // per-task total ~65.6s decode-bound on 5,835 output tokens). That makes
-        // Terra #medium the pool's second-fastest starter after Flash and smarter
-        // than the Luna seat by 6 points: weight rises to 2, peer with Sol/Haiku/
-        // Spark. (Max remains an escalation rung only: TTFT 77.96s, ~464s/task.)
+        "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it",
+        // 2026-10-27 pool redesign (Drew's structure): incremental —
+        // DeepSeek Flash #high is the primary every session tries first;
+        // the weighted relief pool (workhorse-weighted) absorbs failover
+        // and overflow. This replaces the flat weighted round-robin of
+        // the 2026-10-26 balance pass, whose seats were re-litigated in
+        // the redesign review:
+        // - Luna #xhigh OUT: dominated — wherever Flash is available it
+        //   covers Luna's niche, and the seat only survived by inertia.
+        // - Sol #low OUT: workhorse keeps exactly ONE OpenAI seat
+        //   (Terra #medium — the ladder's efficiency winner, II 41.3 at
+        //   $0.095/task with a 1.43s TTFT); Sol's low rung was a second
+        //   seat on the same meter at the same job.
+        // - Spark contributor #xhigh stays, at weight 1 in the relief
+        //   pool: it is the tier's Meta/vendor-diversity seat (its edge
+        //   is the separate Meta quota).
+        // The relief pool's members are unchanged in kind from the
+        // balance pass (AA v4.3.2): Haiku #high 38 / 26.7s TTFT; Terra
+        // #medium 41.3 / 1.43s; Spark #xhigh 45 / 19.1s / ~300 t/s.
         "targets": [
           "opencode-route/deepseek-flash#high",
-          "opencode-route/luna-plan#xhigh",
-          "opencode-route/haiku-plan#high",
-          "meta/muse-spark-1.3-contributor#xhigh",
-          "opencode-route/sol-plan#low",
-          "opencode-route/terra-plan#medium"
+          "opencode-route/workhorse-weighted"
         ],
-        "selection": "round-robin",
+        "selection": "ordered",
+        "autonomy": "rules"
+      },
+      "workhorse-weighted": {
+        "name": "Workhorse relief - weighted pool behind the Flash primary",
+        // The weighted half of workhorse's incremental structure: sessions
+        // that fail over (or are demoted off) the Flash primary draw here
+        // by weight. Not addressed by any agent directly.
+        "targets": [
+          "opencode-route/haiku-plan#high",
+          "opencode-route/terra-plan#medium",
+          "meta/muse-spark-1.3-contributor#xhigh"
+        ],
+        "selection": "weighted",
         "autonomy": "rules",
         "weights": {
-          "opencode-route/deepseek-flash": 3,
           "opencode-route/haiku-plan": 2,
-          "meta/muse-spark-1.3-contributor": 2,
-          "opencode-route/sol-plan": 2,
-          "opencode-route/luna-plan": 1,
-          "opencode-route/terra-plan": 2
+          "opencode-route/terra-plan": 2,
+          "meta/muse-spark-1.3-contributor": 1
         }
       },
       "specialist": {
-        "name": "Specialist - hard work: quality first, Claude then Meta Spark then OpenAI, Luna relief, DeepSeek Pro last",
+        "name": "Specialist - hard work: quality first, Claude then Argon then Meta Spark then OpenAI",
         // 2026-10-26 pass 3 (AA v4.3.2, pages read 2026-10-26): Sonnet #high 47 / TTFT ~12s /
         // $0.88 per task (AA's Oct-26 cache-weighted costing; the Sep $1.08 figure is stale),
         // Spark contributor #max 48 / 42.0s / 176 t/s (single Meta door is the caveat), Sol
@@ -6278,12 +6406,20 @@
         // 78s is known); acceptable risk in an ordered chain's relief seat, and issue
         // #1249 tracks the missing numbers. Workhorse carries Terra #medium too, at
         // weight 1 until the TTFT lands.
+        // 2026-10-27 pool redesign: Argon #high inserts at #2 — Gemini 4
+        // Argon (AA high II 53, CAI 64) out-evidences Spark on coding and
+        // gives the chain a non-Claude/OpenAI second seat on its own
+        // (Go contributor) meter, touching neither the Antigravity quota
+        // the Sonnet head depends on nor the OpenAI reserve. Terra
+        // #medium REMOVED: behind Sol #medium it was
+        // the same effort on the same doors and the same quota — illusory
+        // diversity (if Sol walls on quota, Terra walls too). DeepSeek Pro
+        // tail REMOVED: its <=36 ceiling is below this tier's band.
         "targets": [
           "opencode-route/sonnet-plan#high",
+          "opencode-route/argon-plan#high",
           "meta/muse-spark-1.3-contributor#max",
-          "opencode-route/sol-plan#medium",
-          "opencode-route/terra-plan#medium",
-          "opencode-route/deepseek-pro-plan#high"
+          "opencode-route/sol-plan#medium"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -6292,10 +6428,18 @@
         "name": "Summit - very complex design only, deliberate use",
         // 2026-10-26: Sol addressed through sol-plan (four doors) instead of a single direct
         // OpenAI leaf; Wonder runs the contributor model (always cheaper on the Meta plan).
+        // 2026-10-27 pool redesign: Argon #high inserts at #2 and Sol
+        // #xhigh moves LAST. The OpenAI plan is the fleet's deepest
+        // reserve, so the chain spends Antigravity (Opus), the Go
+        // contributor bucket (Argon — CAI 64, the strongest coding
+        // evidence here), and Meta (Wonder) before it touches OpenAI at
+        // all; the previous order burned Sol ahead of Wonder, backwards
+        // under the reserve rule.
         "targets": [
           "opencode-route/opus-plan#high",
-          "opencode-route/sol-plan#xhigh",
-          "meta/muse-wonder-1.0-contributor#max"
+          "opencode-route/argon-plan#high",
+          "meta/muse-wonder-1.0-contributor#max",
+          "opencode-route/sol-plan#xhigh"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -6308,10 +6452,18 @@
         // tail), Haiku #medium 34 / 11.9s / 174 t/s (the pool's minimum-bar seat, kept for
         // its speed; #xhigh's 67.4s TTFT failed the pool's purpose). Luna REMOVED: its #max
         // paired the pool's slowest decode (~127 t/s) with a 93.8s TTFT.
+        // 2026-10-27 pool redesign: one definition of fast — decode
+        // throughput at a sensible rung, II floor ~38. Flash drops from
+        // #max to #high (max is fast per token but slow per task: the
+        // extra output tokens stretch wall-clock), and Haiku rises from
+        // #medium (II 34, scout-grade) to #high (II 38 at the same
+        // ~190 t/s decode; its 26.7s TTFT is the accepted cost). Beam is
+        // faster still (385 t/s) but II 30 is below this pool's floor —
+        // it is scout's speed, not this tier's.
         "targets": [
           "meta/muse-spark-1.3-contributor#xhigh",
-          "opencode-route/deepseek-flash-plan#max",
-          "opencode-route/haiku-plan#medium"
+          "opencode-route/deepseek-flash-plan#high",
+          "opencode-route/haiku-plan#high"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -6321,13 +6473,16 @@
           "opencode-route/haiku-plan": 2
         }
       },
-      "luna-haiku-100k": {
-        "name": "Luna + Haiku under 100k - value pool capped below the 100k context cliff",
-        // 2026-10-26: both members price much cheaper below 100k context. The route's
-        // context cap (developing-today/opencode#554) presents a 100k limit, so sessions
-        // pinned here compact before crossing the cliff. On fork builds predating #554
-        // the decoder strips the unknown limit key and the pool simply runs uncapped.
+      "small-100k": {
+        "name": "Small 100k - Haiku + Luna below the 100k context cliff",
+        // 2026-10-26 (as luna-haiku-100k): both members price much cheaper below 100k
+        // context. The route's context cap (developing-today/opencode#554) presents a
+        // 100k limit, so sessions pinned here compact before crossing the cliff. On fork
+        // builds predating #554 the decoder strips the unknown limit key and the pool
+        // simply runs uncapped.
         // AA v4.3.2: Haiku #high 38, Luna #xhigh 35 (TTFT 24.2s; #max would be 93.8s).
+        // 2026-10-27 pool redesign: this is now the <=100k element of the
+        // renamed `small` pool (below).
         "targets": [
           "opencode-route/haiku-plan#high",
           "opencode-route/luna-plan#xhigh"
@@ -6335,6 +6490,28 @@
         "selection": "round-robin",
         "autonomy": "rules",
         "limit": { "context": 100000 }
+      },
+      "small": {
+        "name": "Small - light work in small contexts, Haiku + Luna value seats",
+        // RENAMED 2026-10-27 (pool redesign) from luna-haiku-100k. Sessions
+        // pinned to the old id need re-pinning. The pool is the fleet's
+        // light/small tier: Haiku and Luna are much cheaper in small
+        // contexts, so membership is organized by context ceiling —
+        //   - the <=100k element (small-100k): Haiku #high + Luna #xhigh
+        //   - the <=200k element: Haiku #high alone (Luna's cheap tier
+        //     ends at 100k)
+        // The route schema has no per-target context limit, so the
+        // elements are expressed as a nested route (small-100k, capped at
+        // 100k) beside the direct Haiku target, under this route's 200k
+        // cap. Haiku 5.5 is 1M native — the 200k element is a cost-policy
+        // ceiling, not a model limit: bigger jobs belong to bigger pools.
+        "targets": [
+          "opencode-route/small-100k",
+          "opencode-route/haiku-plan#high"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "limit": { "context": 200000 }
       }
     }
   }

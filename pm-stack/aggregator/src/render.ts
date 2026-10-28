@@ -2299,10 +2299,15 @@ export function attentionSections(
   }
   // #1456: the saved card order applies at render. "urgency" is the
   // published order (no sort); the rest sort the visible list.
+  // #1485: every order sorts on the single sinceMs axis (when the card
+  // entered the queue), so newest and oldest are exact reverses. seenMs
+  // (lastSeenAt) is NOT the axis: a stale card seen recently would lead
+  // both orders. Deadline ties break oldest-waiting first (ascending
+  // sinceMs), matching the deadline/urgency reading.
   const order = act?.needsOrder ?? "urgency";
-  if (order === "newest") drewCardsList.sort((a, b) => b.seenMs - a.seenMs);
+  if (order === "newest") drewCardsList.sort((a, b) => b.sinceMs - a.sinceMs);
   else if (order === "oldest") drewCardsList.sort((a, b) => a.sinceMs - b.sinceMs);
-  else if (order === "deadline") drewCardsList.sort((a, b) => a.rank - b.rank || b.seenMs - a.seenMs);
+  else if (order === "deadline") drewCardsList.sort((a, b) => a.rank - b.rank || a.sinceMs - b.sinceMs);
   const orchCardsList: string[] = [];
   for (const e of view.orchestrator) {
     const objectRef = sessionObjectRef(e.sessionId);
@@ -4484,7 +4489,7 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
 <p class="muted">Every stack service probed live (results cached 60 s), every feed section aged, the last job runs, and this dashboard's own render history — assembled from the same view <a href="/api/health">/api/health</a> serves, at ${esc(view.generatedAt)}.</p>
 ${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
-<p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed; the projector is off by config and says so.</p>
+<p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
 <div class="tblwrap"><table><tr><th>Service</th><th>Port</th><th>Bind</th><th>Runs as</th><th>State</th><th>Consumed by</th><th>If it is down</th></tr>${serviceRows}</table></div>
 <h2>Feed sections</h2>
 <div class="tblwrap"><table><tr><th>Section</th><th>Present</th><th>Age</th><th>Note</th></tr>${sectionRows}</table></div>

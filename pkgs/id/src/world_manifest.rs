@@ -179,7 +179,9 @@ impl WorldManifest {
             "module_hash and module_source are mutually exclusive"
         );
         if let Some(hash) = &self.module_hash {
-            let valid = hash.len() <= MAX_NAME_BYTES && hash.bytes().all(|b| b.is_ascii_hexdigit());
+            let valid = !hash.is_empty()
+                && hash.len() <= MAX_NAME_BYTES
+                && hash.bytes().all(|b| b.is_ascii_hexdigit());
             ensure!(
                 valid,
                 "module hash must be 1 to {MAX_NAME_BYTES} hex digits"
@@ -580,6 +582,7 @@ wasm_fuel = 5_000_000
         assert!(parse("ceiling = [\"*\"]").is_err());
         assert!(parse("ceiling = [\"time.nwo\"]").is_err());
         assert!(parse("module_hash = \"not-hex!\"").is_err());
+        assert!(parse("module_hash = \"\"").is_err());
         assert!(parse("module_hash = \"abc\"\nmodule_source = \"main.roc\"").is_err());
         assert!(parse("schedules = { \"bad\nid\" = 1 }").is_err());
         assert!(parse("schedules = { \"a\" = 0 }").is_err());
