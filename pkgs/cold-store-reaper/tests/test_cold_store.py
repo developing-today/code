@@ -1373,11 +1373,20 @@ class TestS3TransportRetry(S3TestBase):
     def test_list_permanent_truncation_raises_named_error_after_4(self):
         self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
         self.s3.list_failures = ["truncate"] * 10
-        with self.assertRaises(cold_store.ColdStoreError) as ctx:
-            self.store.s3_list_objects("supabase-backups")
+
+        # urllib exhausts its 4 attempts, then the GET curl fallback
+        # (TestS3RequestCurlFallback) is attempted and also fails —
+        # the exhaustion error must name both.
+        def failing_status(url, access, secret):
+            raise cold_store.ColdStoreError("curl fallback failed (exit 18): simulated")
+
+        with mock.patch.object(self.store, "_curl_fetch_status", failing_status):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_list_objects("supabase-backups")
         message = str(ctx.exception)
         self.assertIn("S3 GET supabase-backups failed after 4 attempts", message)
         self.assertIn("IncompleteRead", message)
+        self.assertIn("curl fallback also failed", message)
         self.assertEqual(self.s3.list_attempts, 4)  # exactly 4, no more
 
     def test_delete_transport_failure_retries(self):
@@ -1565,6 +1574,196 @@ class TestS3CurlFallback(S3TestBase):
         head_requests = [r for r in self.s3.requests if r["method"] == "HEAD"]
         self.assertEqual(len(head_requests), 1)
         self.assertTrue(head_requests[0]["path"].endswith("/" + key))
+
+
+class TestS3RequestCurlFallback(S3TestBase):
+    """The curl fallback inside _s3_request for GET-class requests:
+    on a hostile-proxy night (live 2026-10-28) EVERY urllib attempt
+    at the bucket LIST truncated at a different offset, so the
+    transport retry loop exhausted and backup-supabase / evict-scan
+    died before their first object — the object-download fallback in
+    TestS3CurlFallback never got a chance to run. A GET whose urllib
+    attempts all fail at the transport level now gets exactly one
+    curl attempt (stubbed here at the _curl_fetch_status transport
+    seam; no network, no real curl) whose response flows through the
+    same status handling as a urllib response."""
+
+    @staticmethod
+    def _list_xml(entries):
+        """A ListObjectsV2 page in the fake's shape. entries are
+        (key, size, last_modified) triples."""
+        contents = "".join(
+            f"<Contents><Key>{k}</Key><LastModified>{lm}</LastModified>"
+            f"<Size>{size}</Size></Contents>"
+            for k, size, lm in entries
+        )
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            "<Name>supabase-backups</Name><IsTruncated>false</IsTruncated>"
+            f"{contents}</ListBucketResult>"
+        ).encode()
+
+    def _stub_curl_status(self, result):
+        """Patch the store's curl-status transport; return the call
+        log. Each entry snapshots the fake's urllib list_attempts
+        count at call time, proving the fallback fires only after
+        urllib exhaustion, never alongside it."""
+        calls = []
+
+        def fake_status(url, access, secret):
+            calls.append(
+                {
+                    "url": url,
+                    "access": access,
+                    "secret": secret,
+                    "list_attempts": self.s3.list_attempts,
+                }
+            )
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        return mock.patch.object(self.store, "_curl_fetch_status", fake_status), calls
+
+    def test_list_truncated_on_all_attempts_falls_back_to_curl(self):
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.put("pg/muse-dev/b.bin", b"yy", "2026-10-02T00:00:00.000Z")
+        self.s3.list_failures = ["truncate"] * cold_store.S3_TRANSPORT_ATTEMPTS
+        xml = self._list_xml(
+            [
+                ("pg/muse-dev/a.bin", 1, "2026-10-01T00:00:00.000Z"),
+                ("pg/muse-dev/b.bin", 2, "2026-10-02T00:00:00.000Z"),
+            ]
+        )
+        patcher, calls = self._stub_curl_status((200, xml))
+        with patcher:
+            objects = self.store.s3_list_objects("supabase-backups")
+        self.assertEqual(
+            [o["key"] for o in objects], ["pg/muse-dev/a.bin", "pg/muse-dev/b.bin"]
+        )
+        # exactly one curl attempt, only after all 4 urllib attempts
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["list_attempts"], cold_store.S3_TRANSPORT_ATTEMPTS)
+        self.assertIn("list-type=2", calls[0]["url"])
+        self.assertEqual(calls[0]["access"], "test-access-key")
+        self.assertEqual(self.s3.list_attempts, cold_store.S3_TRANSPORT_ATTEMPTS)
+
+    def test_backup_supabase_proceeds_when_list_falls_back(self):
+        body = b"newest backup payload " * 60
+        key = self.key_for(hashlib.sha256(body).hexdigest())
+        self.s3.put(key, body, "2026-10-21T02:00:00.000Z")
+        self.s3.put("pg/muse-dev/manifest.json", b"{}", "2026-10-22T02:00:00.000Z")
+        self.s3.list_failures = ["truncate"] * cold_store.S3_TRANSPORT_ATTEMPTS
+        xml = self._list_xml(
+            [
+                (key, len(body), "2026-10-21T02:00:00.000Z"),
+                ("pg/muse-dev/manifest.json", 2, "2026-10-22T02:00:00.000Z"),
+            ]
+        )
+        patcher, calls = self._stub_curl_status((200, xml))
+        with patcher:
+            result = self.store.backup_supabase()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["source_key"], key)
+        self.assertEqual(result["sha256"], hashlib.sha256(body).hexdigest())
+        self.assertEqual(self.fake.files[result["drive_file_id"]], body)
+
+    def test_curl_http_error_surfaces_as_s3_error_not_transport(self):
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        self.s3.list_failures = ["truncate"] * cold_store.S3_TRANSPORT_ATTEMPTS
+        error_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            "<Error><Code>AccessDenied</Code>"
+            "<Message>Access Denied</Message></Error>"
+        ).encode()
+        patcher, calls = self._stub_curl_status((403, error_xml))
+        with patcher:
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_list_objects("supabase-backups")
+        self.assertEqual(len(calls), 1)
+        message = str(ctx.exception)
+        # the same error shape _s3_check gives a urllib 403
+        self.assertIn("S3 list of supabase-backups failed (HTTP 403)", message)
+        self.assertIn("Access Denied", message)
+        self.assertNotIn("transport error", message)
+        self.assertNotIn("failed after 4 attempts", message)
+
+    def test_curl_fetch_status_splits_status_trailer(self):
+        """The real _curl_fetch_status (subprocess.run stubbed): the
+        --write-out trailer splits status from body, an HTTP error
+        status is a normal result (no --fail), and credentials ride
+        stdin config, never argv."""
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            seen["kwargs"] = kwargs
+            trailer = cold_store.ColdStore._CURL_STATUS_TRAILER.encode()
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=b"<xml>page</xml>" + trailer + b"403>>>", stderr=b""
+            )
+
+        with mock.patch.object(cold_store.subprocess, "run", fake_run):
+            status, body = self.store._curl_fetch_status(
+                "https://store.example/supabase-backups?list-type=2",
+                "test-access-key",
+                "test-secret-key",
+            )
+        self.assertEqual(status, 403)
+        self.assertEqual(body, b"<xml>page</xml>")
+        argv = seen["argv"]
+        self.assertNotIn("--fail", argv)
+        self.assertNotIn("--user", argv)
+        for element in argv:
+            self.assertNotIn("test-secret-key", element)
+        self.assertIn(
+            'user = "test-access-key:test-secret-key"',
+            seen["kwargs"]["input"].decode(),
+        )
+
+    def test_curl_fetch_status_transport_failure_raises_scrubbed(self):
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(
+                argv,
+                18,
+                stdout=b"",
+                stderr=b"curl: (18) transfer closed, keyed by test-secret-key",
+            )
+
+        with mock.patch.object(cold_store.subprocess, "run", fake_run):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store._curl_fetch_status(
+                    "https://store.example/supabase-backups?list-type=2",
+                    "test-access-key",
+                    "test-secret-key",
+                )
+        message = str(ctx.exception)
+        self.assertIn("curl fallback failed (exit 18)", message)
+        self.assertNotIn("test-secret-key", message)
+
+    def test_delete_exhaustion_never_invokes_curl(self):
+        # DELETE is not GET-class: it keeps the plain exhaustion
+        # error and the curl fallback must not fire for it.
+        import http.client
+
+        self.s3.put("pg/muse-dev/a.bin", b"x", "2026-10-01T00:00:00.000Z")
+        state = {"n": 0}
+
+        def always_drop(method, url, headers=None, data=None, timeout=120):
+            state["n"] += 1
+            raise http.client.RemoteDisconnected("simulated drop")
+
+        patcher, calls = self._stub_curl_status((204, b""))
+        with patcher, mock.patch.object(cold_store, "http_request", always_drop):
+            with self.assertRaises(cold_store.ColdStoreError) as ctx:
+                self.store.s3_delete_object("supabase-backups", "pg/muse-dev/a.bin")
+        self.assertEqual(state["n"], cold_store.S3_TRANSPORT_ATTEMPTS)
+        self.assertEqual(calls, [])
+        message = str(ctx.exception)
+        self.assertIn("S3 DELETE supabase-backups", message)
+        self.assertIn("failed after 4 attempts", message)
+        self.assertNotIn("curl fallback", message)
 
 
 class EvictTestBase(S3TestBase):
