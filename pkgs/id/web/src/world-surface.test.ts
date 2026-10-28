@@ -89,10 +89,7 @@ describe("world screen presenter", () => {
     const root = document.createElement("div");
     // Each of these is exactly one grapheme whose Rust unicode-width 0.2 width is 2:
     // 👍🏽 U+1F44D U+1F3FD (emoji modifier), 🏴󐁧󐁢󐁥󐁮󐁧󐁿 England flag (U+1F3F4 + tag sequence).
-    const sequenceGlyphs = [
-      "\u{1F44D}\u{1F3FD}",
-      "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}",
-    ];
+    const sequenceGlyphs = ["\u{1F44D}\u{1F3FD}", "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}"];
     for (const symbol of sequenceGlyphs) {
       const screen: ScreenSurface = {
         kind: "screen",
