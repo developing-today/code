@@ -13,7 +13,7 @@
 //! world platform declares none), and the cache lives inside the job
 //! directory so concurrent jobs cannot interfere.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -503,8 +503,13 @@ fn rewrite_platform_path(main: &str) -> Result<String> {
 }
 
 fn sanitize_file_name(name: &str) -> Result<String> {
+    // The name must be exactly one normal path component: no parent
+    // references, no separators, no root. (Splitting on '.' cannot
+    // detect ".." — its parts are maximal non-dot runs and never
+    // contain a dot.)
+    let mut components = Path::new(name).components();
     ensure!(
-        name.split('.').all(|part| part != "." && part != ".."),
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none(),
         "file name {name:?} must stay inside the job directory"
     );
     Ok(name.to_owned())
@@ -597,6 +602,7 @@ mod tests {
         validate_spec(&spec(vec![("main.roc", "app [x] {}")])).unwrap();
         assert!(validate_spec(&spec(vec![("lib.roc", "x")])).is_err());
         assert!(validate_spec(&spec(vec![("main.roc", "x"), ("../evil.roc", "y")])).is_err());
+
         assert!(validate_spec(&spec(vec![("main.roc", "x"), (".hidden", "y")])).is_err());
         let too_big = spec(vec![("main.roc", &"x".repeat(MAX_COMPILE_FILE_BYTES + 1))]);
         assert!(validate_spec(&too_big).is_err());
@@ -605,6 +611,28 @@ mod tests {
             many.push((Box::leak(format!("f{i}.roc").into_boxed_str()), "y"));
         }
         assert!(validate_spec(&spec(many)).is_err());
+    }
+
+    #[test]
+    fn sanitize_file_name_refuses_traversal() {
+        for name in [
+            "..",
+            ".",
+            "",
+            "../evil.roc",
+            "../../evil.roc",
+            "a/../../evil.roc",
+            "sub/Foo.roc",
+            "/etc/passwd",
+        ] {
+            assert!(
+                sanitize_file_name(name).is_err(),
+                "sanitize_file_name({name:?}) must refuse"
+            );
+        }
+        for name in ["main.roc", "Helper.roc", "a..b.roc", "foo-bar_baz.roc"] {
+            assert_eq!(sanitize_file_name(name).unwrap(), name);
+        }
     }
 
     #[test]
