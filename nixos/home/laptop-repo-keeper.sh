@@ -29,18 +29,33 @@ BIG_TRACKED=26214400 # 25 MiB
 LINES=()
 say() { LINES+=("$1"); printf '%s\n' "$1"; }
 
+# Discovery (Drew 2026-10-28: the keeper checks ALL repos): every
+# primary clone under $HOME to depth 3 — a .git DIRECTORY marks a
+# primary (worktrees carry a .git file and stay the lanes' own
+# business). Excluded: scratch (~/tmp, ~/backups, trash, caches),
+# anything nested inside an already-found repo, and duplicate
+# paths to one repo (~/code is a symlink to ~/git/code).
 declare -A SEEN=()
 REPOS=()
-for d in "$HOME"/git/*/ "$HOME/code" "$HOME/hatch" "$HOME/hatch-personal" "$HOME/.openclaw"; do
-  d="${d%/}"
-  [ -d "$d/.git" ] || continue
+while IFS= read -r gd; do
+  d="${gd%/.git}"
+  case "$d" in
+    "$HOME/tmp" | "$HOME/tmp/"* | "$HOME/backups" | "$HOME/backups/"* | \
+    "$HOME/.cache" | "$HOME/.cache/"* | "$HOME/.local/share/Trash" | "$HOME/.local/share/Trash/"* | \
+    "$HOME/tools.prelink"*) continue ;;
+  esac
+  nested=0
+  for e in "${REPOS[@]}"; do
+    case "$d" in
+      "$e"/*) nested=1 ;;
+    esac
+  done
+  [ "$nested" -eq 1 ] && continue
   real="$(readlink -f "$d")"
   [ -n "${SEEN[$real]:-}" ] && continue
   SEEN[$real]=1
   REPOS+=("$d")
-done
-IFS=$'\n' REPOS=($(printf '%s\n' "${REPOS[@]}" | sort))
-unset IFS
+done < <(find "$HOME" -maxdepth 3 -name .git -type d 2>/dev/null | sort)
 
 say "# repo-keeper $TS"
 for d in "${REPOS[@]}"; do

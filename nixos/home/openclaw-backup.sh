@@ -11,8 +11,10 @@
 # current run's date.
 #
 # Data set: all of ~/.openclaw EXCEPT the scratch trees tmp/ (2.9 GB of
-# session scratch) and cache/ (regenerable), the .git dir of the
-# openclaw-personal checkout, and transient sqlite sidecars/locks. The
+# session scratch) and cache/ (regenerable), codedb.snapshot (the
+# regenerable code-index snapshot — Drew 2026-10-28: not tracked in
+# git and not backed up), the .git dir of the openclaw-personal
+# checkout, and transient sqlite sidecars/locks. The
 # agent state DB (state/openclaw.sqlite) is snapshotted with sqlite3
 # .backup so the archived copy is transaction-consistent even while
 # the gateway is running. Also included: the last-24h (or since-last-
@@ -128,7 +130,7 @@ mkdir -p "$OUTDIR"
 # fails mid-read (a live file changed), this pipeline must fail even
 # though the extraction tar exits 0 (#1034).
 tar -cf - -C "$OC" \
-  --exclude='./tmp' --exclude='./cache' --exclude='./.git' \
+  --exclude='./tmp' --exclude='./cache' --exclude='./codedb.snapshot' --exclude='./.git' \
   --exclude='*.sqlite-wal' --exclude='*.sqlite-shm' --exclude='*.lock' \
   . | tar -xf - -C "$STAGE" || fail "staging copy of $OC failed"
 
