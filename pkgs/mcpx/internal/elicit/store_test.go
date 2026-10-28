@@ -146,3 +146,88 @@ func TestOpenAtConcurrentOpens(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAtConcurrentMigrationPreservesUncheckpointedWAL(t *testing.T) {
+	// A daemon that crashes leaves its newest questions only in the
+	// legacy store's WAL: the main database file does not have them
+	// until a checkpoint, which a crash never runs. Build that state
+	// by snapshotting a live legacy store's files before Close can
+	// checkpoint, then race first opens of the new location against
+	// the snapshot: no opener may see the destination before its WAL
+	// arrives, or the question is lost for good.
+	src := t.TempDir()
+	srcLegacy := filepath.Join(src, "logs", "elicit.db")
+	if err := os.MkdirAll(filepath.Dir(srcLegacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lb, err := elicit.Open(srcLegacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := ask(t, lb, elicit.Request{Session: "s1"})
+	wal, err := os.ReadFile(srcLegacy + "-wal")
+	if err != nil || len(wal) == 0 {
+		t.Fatalf("live legacy store has no WAL to snapshot: err=%v len=%d", err, len(wal))
+	}
+	main, err := os.ReadFile(srcLegacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state := t.TempDir()
+	legacy := filepath.Join(state, "logs", "elicit.db")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, main, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy+"-wal", wal, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := lb.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	brokers := make([]*elicit.Broker, n)
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b, err := elicit.OpenAt(state, legacy)
+			brokers[i] = b
+			errs[i] = err
+		}()
+	}
+	wg.Wait()
+	for i := range n {
+		if errs[i] != nil {
+			t.Errorf("concurrent migrating open %d: %v", i, errs[i])
+		}
+		if brokers[i] != nil {
+			brokers[i].Close()
+		}
+	}
+
+	b, err := elicit.OpenAt(state, legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	pending, err := b.Pending(elicit.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, q := range pending {
+		if q.ID == r.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("question %s that lived only in the legacy WAL did not survive concurrent migration: %+v", r.ID, pending)
+	}
+}

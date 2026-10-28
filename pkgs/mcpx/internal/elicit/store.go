@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/dezren39/mcpx/internal/defaults"
 )
@@ -44,6 +45,50 @@ func StorePath(stateDir string) string {
 // at all.
 func OpenAt(stateDir, legacyPath string) (*Broker, error) {
 	dest := StorePath(stateDir)
+	dir := filepath.Dir(dest)
+	if err := os.MkdirAll(dir, defaults.DirMode); err != nil {
+		return nil, err
+	}
+	if err := tighten(dir, defaults.DirMode); err != nil {
+		return nil, err
+	}
+	// Migration and the first open of the destination are one atomic
+	// step across processes, not just within one: without a shared
+	// lock, a second opener can see the destination database file
+	// before its WAL sidecar has been moved into place, open it, and
+	// permanently lose questions that only exist in the legacy WAL
+	// (the state a daemon crash leaves behind). The lock is held only
+	// until the store is complete and opened; SQLite itself arbitrates
+	// access from then on.
+	unlock, err := lockStoreDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	return openAt(dest, legacyPath)
+}
+
+// lockStoreDir takes the store directory's cross-process lock and
+// returns the release function. The lock file lives in the owner-only
+// store directory and is itself owner-only.
+func lockStoreDir(dir string) (func(), error) {
+	f, err := os.OpenFile(filepath.Join(dir, "elicit.db.lock"), os.O_CREATE|os.O_RDWR, storeFileMode)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("locking elicitation store directory: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
+}
+
+// openAt is OpenAt under the store lock: migrate (if needed), open,
+// tighten.
+func openAt(dest, legacyPath string) (*Broker, error) {
 	if legacyPath != "" && legacyPath != dest {
 		_, destErr := os.Stat(dest)
 		_, legacyErr := os.Stat(legacyPath)
