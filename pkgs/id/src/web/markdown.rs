@@ -1206,6 +1206,10 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     validate_placement(doc)?;
     let arena = Arena::new();
     let root = json_to_ast(&arena, doc)?;
+    // #1418: hoist delimiter-mark edge spaces that a word character
+    // touches out of their wrappers, before rendering (see
+    // `hoist_delimiter_edge_spaces`).
+    hoist_delimiter_edge_spaces(&arena, root);
     // #1019: comrak's renderer percent-encodes a space in a link/image
     // destination (`my notes.md` -> `my%20notes.md`) instead of emitting
     // the <...> angle form, silently breaking relative file links and
@@ -1219,6 +1223,211 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
         output = output.replace(&placeholder, &format!("<{raw}>"));
     }
     Ok(output)
+}
+
+/// Whether a node value is a delimiter-mark wrapper (#1418): the
+/// marks whose markdown spelling is a delimiter run (`*`/`**`/`~~`)
+/// subject to CommonMark flanking rules. Link (bracket syntax) and
+/// code (backtick syntax) tolerate edge spaces and are excluded.
+fn is_delimiter_wrapper(value: &NodeValue) -> bool {
+    matches!(
+        value,
+        NodeValue::Emph | NodeValue::Strong | NodeValue::Strikethrough
+    )
+}
+
+/// The first text leaf of a mark chain, descending first children
+/// through mark wrappers (#1418). `None` when the first inline is
+/// anything else (an image or html node is a different mechanism —
+/// #1407/#1412 — and keeps the legacy behaviour).
+fn first_text_leaf<'a>(node: &'a AstNode<'a>) -> Option<&'a AstNode<'a>> {
+    let mut current = node;
+    loop {
+        let child = current.first_child()?;
+        let value = child.data.borrow().value.clone();
+        match value {
+            NodeValue::Text(_) => return Some(child),
+            _ if is_mark_wrapper(&value) => current = child,
+            _ => return None,
+        }
+    }
+}
+
+/// The last text leaf of a mark chain; mirror of `first_text_leaf`.
+fn last_text_leaf<'a>(node: &'a AstNode<'a>) -> Option<&'a AstNode<'a>> {
+    let mut current = node;
+    loop {
+        let child = current.last_child()?;
+        let value = child.data.borrow().value.clone();
+        match value {
+            NodeValue::Text(_) => return Some(child),
+            _ if is_mark_wrapper(&value) => current = child,
+            _ => return None,
+        }
+    }
+}
+
+/// The last character a node renders as inline content (#1418):
+/// text/code literals verbatim, breaks as whitespace, mark wrappers
+/// by their last inline descendant. Anything else yields `None`
+/// (treated as a non-word neighbour).
+fn last_rendered_char(node: &AstNode<'_>) -> Option<char> {
+    match &node.data.borrow().value {
+        NodeValue::Text(literal) => literal.to_string().chars().last(),
+        NodeValue::Code(code) => code.literal.chars().last(),
+        NodeValue::LineBreak | NodeValue::SoftBreak => Some('\n'),
+        value if is_mark_wrapper(value) => node.last_child().and_then(last_rendered_char),
+        _ => None,
+    }
+}
+
+/// The first character a node renders as; mirror of
+/// `last_rendered_char`.
+fn first_rendered_char(node: &AstNode<'_>) -> Option<char> {
+    match &node.data.borrow().value {
+        NodeValue::Text(literal) => literal.to_string().chars().next(),
+        NodeValue::Code(code) => code.literal.chars().next(),
+        NodeValue::LineBreak | NodeValue::SoftBreak => Some('\n'),
+        value if is_mark_wrapper(value) => node.first_child().and_then(first_rendered_char),
+        _ => None,
+    }
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Whether the inline character immediately before `node` is a word
+/// character (#1418), climbing through mark-wrapper ancestors while
+/// `node` sits at their leading edge. No rendered neighbour (block
+/// boundary) is not a word character.
+fn preceded_by_word_char(node: &AstNode<'_>) -> bool {
+    let mut current = node;
+    loop {
+        if let Some(prev) = current.previous_sibling() {
+            return last_rendered_char(prev).is_some_and(is_word_char);
+        }
+        match current.parent() {
+            Some(parent) if is_mark_wrapper(&parent.data.borrow().value) => current = parent,
+            _ => return false,
+        }
+    }
+}
+
+/// Whether the inline character immediately after `node` is a word
+/// character; mirror of `preceded_by_word_char`.
+fn followed_by_word_char(node: &AstNode<'_>) -> bool {
+    let mut current = node;
+    loop {
+        if let Some(next) = current.next_sibling() {
+            return first_rendered_char(next).is_some_and(is_word_char);
+        }
+        match current.parent() {
+            Some(parent) if is_mark_wrapper(&parent.data.borrow().value) => current = parent,
+            _ => return false,
+        }
+    }
+}
+
+/// Replace a text leaf's literal, detaching the leaf (and any mark
+/// wrappers it leaves childless) when the replacement is empty
+/// (#1418: a span whose whole text was edge spaces).
+fn set_text_leaf_text(leaf: &AstNode<'_>, new_text: &str) {
+    if !new_text.is_empty() {
+        leaf.data.borrow_mut().value = NodeValue::Text(new_text.to_owned().into());
+        return;
+    }
+    let mut current = leaf.parent();
+    leaf.detach();
+    while let Some(node) = current {
+        if !is_mark_wrapper(&node.data.borrow().value) || node.first_child().is_some() {
+            break;
+        }
+        current = node.parent();
+        node.detach();
+    }
+}
+
+/// Hoist one edge of one delimiter wrapper (#1418): move its leading
+/// (or trailing) spaces to a plain text node just outside the wrapper
+/// — but still inside any outer non-delimiter wrapper such as a link,
+/// which is exactly the sibling position next to this wrapper — when
+/// a word character touches the wrapper on that side.
+fn hoist_one_edge<'a>(arena: &'a Arena<'a>, wrapper: &'a AstNode<'a>, leading: bool) {
+    let touches_word = if leading {
+        preceded_by_word_char(wrapper)
+    } else {
+        followed_by_word_char(wrapper)
+    };
+    if !touches_word {
+        return;
+    }
+    let Some(leaf) = (if leading {
+        first_text_leaf(wrapper)
+    } else {
+        last_text_leaf(wrapper)
+    }) else {
+        return;
+    };
+    let text = match &leaf.data.borrow().value {
+        NodeValue::Text(literal) => literal.to_string(),
+        _ => return,
+    };
+    let spaces_len = if leading {
+        text.len() - text.trim_start_matches(' ').len()
+    } else {
+        text.len() - text.trim_end_matches(' ').len()
+    };
+    if spaces_len == 0 {
+        return;
+    }
+    let (spaces, rest) = if leading {
+        (text[..spaces_len].to_owned(), text[spaces_len..].to_owned())
+    } else {
+        (
+            text[text.len() - spaces_len..].to_owned(),
+            text[..text.len() - spaces_len].to_owned(),
+        )
+    };
+    // Insert the hoisted spaces while the wrapper is still attached:
+    // shrinking the leaf afterwards may detach the wrapper itself
+    // (a span whose whole text was edge spaces), and the space node
+    // must stay at the wrapper's position when that happens.
+    let space_node = arena.alloc(AstNode::from(NodeValue::Text(spaces.into())));
+    if leading {
+        wrapper.insert_before(space_node);
+    } else {
+        wrapper.insert_after(space_node);
+    }
+    set_text_leaf_text(leaf, &rest);
+}
+
+/// #1418: a delimiter-mark span whose text starts or ends with a
+/// space saves with that space inside the delimiters, and comrak
+/// renders it as an `&#32;` entity (`a*&#32;b*`). When a word
+/// character touches the span on that side, the emitted form fails
+/// CommonMark flanking rules on reparse and the mark is destroyed.
+/// Hoist such edge spaces out of the delimiter wrappers so the saved
+/// form reparses with the mark intact; the space becomes unmarked,
+/// which renders identically. Edges a word character does not touch
+/// (paragraph boundaries, space/punctuation neighbours, spans padded
+/// on both edges) keep the `&#32;` form, which round-trips as-is.
+/// Working on the converted AST — after #968's chain merging — means
+/// only true span edges are considered: an edge space shared with a
+/// neighbouring run of the same span is interior here, not an edge.
+fn hoist_delimiter_edge_spaces<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>) {
+    let wrappers: Vec<&AstNode<'a>> = root
+        .descendants()
+        .filter(|node| is_delimiter_wrapper(&node.data.borrow().value))
+        .collect();
+    // Reverse document order: inner wrappers before their outers (a
+    // space hoisted out of an inner wrapper may still sit at the
+    // outer wrapper's edge and be hoisted again by its turn), and a
+    // wrapper's own leading edge before its trailing edge.
+    for wrapper in wrappers.into_iter().rev() {
+        hoist_one_edge(arena, wrapper, true);
+        hoist_one_edge(arena, wrapper, false);
+    }
 }
 
 /// Replace every link/image destination containing a space with a
@@ -2731,6 +2940,137 @@ mod tests {
             assert_eq!(first, second, "no fixpoint for {original:?}");
             assert!(!first.contains("&#32;"), "entity in {first:?}");
         }
+    }
+
+    /// Build a one-paragraph PM doc from (text, mark-types) runs
+    /// (#1418 test helper).
+    fn pm_runs(runs: &[(&str, &[&str])]) -> Value {
+        let content: Vec<Value> = runs
+            .iter()
+            .map(|(text, marks)| {
+                let mut node = json!({"type": "text", "text": text});
+                if !marks.is_empty() {
+                    node["marks"] = json!(
+                        marks
+                            .iter()
+                            .map(|mark| json!({"type": mark}))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                node
+            })
+            .collect();
+        json!({
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": content}]
+        })
+    }
+
+    #[test]
+    fn test_delimiter_edge_space_word_neighbour_roundtrips() {
+        // #1418: a delimiter-mark span whose text starts with a space,
+        // with a word character touching it on that side, used to save
+        // as `a*&#32;b*` — a form that fails CommonMark flanking on
+        // reparse, destroying the mark. The edge space is hoisted out
+        // of the wrapper instead: the mark survives, the saved bytes
+        // are a fixpoint, and the reopened doc is the original with
+        // the space as its own unmarked run.
+        for (marks, expected_md) in [
+            (vec!["em"], "a *b*\n"),
+            (vec!["strong"], "a **b**\n"),
+            (vec!["strikethrough"], "a ~~b~~\n"),
+        ] {
+            let pm = pm_runs(&[("a", &[]), (" b", &marks)]);
+            let saved = prosemirror_to_markdown(&pm).expect("converts");
+            assert_eq!(saved, expected_md, "saved form for {marks:?}");
+            assert!(!saved.contains("&#32;"), "entity in {saved:?}");
+            let reopened = markdown_to_prosemirror(&saved);
+            assert_eq!(
+                reopened,
+                pm_runs(&[("a ", &[]), ("b", &marks)]),
+                "reopened doc for {marks:?}"
+            );
+            let resaved = prosemirror_to_markdown(&reopened).expect("reconverts");
+            assert_eq!(resaved, saved, "fixpoint for {marks:?}");
+        }
+
+        // Combined em+strong on the same edge-space span.
+        let marks = vec!["strong", "em"];
+        let pm = pm_runs(&[("a", &[]), (" b", &marks)]);
+        let saved = prosemirror_to_markdown(&pm).expect("converts");
+        assert!(!saved.contains("&#32;"), "entity in {saved:?}");
+        let reopened = markdown_to_prosemirror(&saved);
+        assert_eq!(reopened, pm_runs(&[("a ", &[]), ("b", &marks)]));
+        let resaved = prosemirror_to_markdown(&reopened).expect("reconverts");
+        assert_eq!(resaved, saved, "fixpoint for combined marks");
+    }
+
+    #[test]
+    fn test_delimiter_trailing_edge_space_word_neighbour_roundtrips() {
+        // #1418 trailing-edge mirror: `a ` + em(`b `) + `c`.
+        let pm = pm_runs(&[("a ", &[]), ("b ", &["em"]), ("c", &[])]);
+        let saved = prosemirror_to_markdown(&pm).expect("converts");
+        assert_eq!(saved, "a *b* c\n");
+        let reopened = markdown_to_prosemirror(&saved);
+        assert_eq!(
+            reopened,
+            pm_runs(&[("a ", &[]), ("b", &["em"]), (" c", &[])])
+        );
+        let resaved = prosemirror_to_markdown(&reopened).expect("reconverts");
+        assert_eq!(resaved, saved, "fixpoint");
+    }
+
+    #[test]
+    fn test_delimiter_edge_space_in_heading_roundtrips() {
+        // #1418: the same failure in a heading context.
+        let pm = json!({
+            "type": "doc",
+            "content": [{
+                "type": "heading",
+                "attrs": {"level": 1},
+                "content": [
+                    {"type": "text", "text": "a"},
+                    {"type": "text", "text": " b", "marks": [{"type": "em"}]}
+                ]
+            }]
+        });
+        let saved = prosemirror_to_markdown(&pm).expect("converts");
+        assert_eq!(saved, "# a *b*\n");
+        let reopened = markdown_to_prosemirror(&saved);
+        let resaved = prosemirror_to_markdown(&reopened).expect("reconverts");
+        assert_eq!(resaved, saved, "fixpoint");
+        assert_eq!(
+            reopened["content"][0]["content"][1]["marks"][0]["type"], "em",
+            "mark survives in heading"
+        );
+    }
+
+    #[test]
+    fn test_delimiter_edge_space_safe_neighbours_keep_entity_form() {
+        // #1418 controls: edges a word character does NOT touch keep
+        // the `&#32;` form, which round-trips PM-identical — a span
+        // padded on both edges with spaced neighbours, a span whose
+        // neighbour on the space-carrying side is itself a space, and
+        // a span at the paragraph boundary.
+        let (first, second) = two_saves("a *&#32;b&#32;* c\n");
+        assert_eq!(first, "a *&#32;b&#32;* c\n");
+        assert_eq!(first, second, "fixpoint");
+
+        let pm = pm_runs(&[("a ", &[]), (" b", &["em"])]);
+        let saved = prosemirror_to_markdown(&pm).expect("converts");
+        assert_eq!(saved, "a *&#32;b*\n");
+        assert_eq!(markdown_to_prosemirror(&saved), pm, "PM-identical");
+
+        let pm = pm_runs(&[(" b", &["em"]), ("c", &[])]);
+        let saved = prosemirror_to_markdown(&pm).expect("converts");
+        assert_eq!(
+            markdown_to_prosemirror(&saved),
+            pm,
+            "PM-identical at boundary"
+        );
+        let resaved =
+            prosemirror_to_markdown(&markdown_to_prosemirror(&saved)).expect("reconverts");
+        assert_eq!(resaved, saved, "fixpoint at boundary");
     }
 
     #[test]
