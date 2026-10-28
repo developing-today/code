@@ -102,7 +102,7 @@ export const richSchema = new Schema({
         },
       ],
       toDOM(node) {
-        return node.attrs.order == 1 ? ["ol", 0] : ["ol", { start: node.attrs.order }, 0];
+        return node.attrs.order === 1 ? ["ol", 0] : ["ol", { start: node.attrs.order }, 0];
       },
       // #1469: mirror the markdown codec's ordered_list tight attr,
       // keeping the inherited order attr (default and validation)
