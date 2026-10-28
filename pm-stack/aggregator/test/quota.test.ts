@@ -69,6 +69,46 @@ describe("quota extractors", () => {
     expect(p.wallLiftsAt).toBeUndefined();
   });
 
+  test("opencode go resets are anchored to each workspace's own paragraph (#1626)", () => {
+    const goView = (section: string) => "\n### OpenCode Go \u00d72 workspaces\n" + section + "\n";
+    const go = (view: string) => {
+      const m = new Map(extractQuotaPools(view, NOW).map((p) => [p.id, p]));
+      return { personal: m.get("opencode-go:personal")!, lab: m.get("opencode-go:lab")! };
+    };
+
+    // Control: both paragraphs carry their own reset.
+    const both = go(
+      goView(
+        "- **Personal \u2014 monthly 60% used**; monthly reset Nov 3, 03:02 UTC.\n\n" +
+          "- **Lab \u2014 monthly 50% used, weekly 0%**; monthly reset Nov 9, 05:55 UTC.",
+      ),
+    );
+    expect(both.personal.windows[0].resetsAt).toBe("2026-11-03T03:02:00.000Z");
+    expect(both.lab.windows[0].resetsAt).toBe("2026-11-09T05:55:00.000Z");
+
+    // Personal's paragraph has no reset: Personal gets null — never Lab's —
+    // and Lab still gets its own.
+    const missing = go(
+      goView(
+        "- **Personal \u2014 monthly 60% used**, no reset read this time.\n\n" +
+          "- **Lab \u2014 monthly 50% used, weekly 0%**; monthly reset Nov 9, 05:55 UTC.",
+      ),
+    );
+    expect(missing.personal.windows[0].resetsAt).toBeNull();
+    expect(missing.lab.windows[0].resetsAt).toBe("2026-11-09T05:55:00.000Z");
+
+    // A stray reset mention in an earlier paragraph is never assigned.
+    const stray = go(
+      goView(
+        "- Earlier note: a monthly reset Oct 5, 01:00 UTC was observed last cycle.\n\n" +
+          "- **Personal \u2014 monthly 60% used**; monthly reset Nov 3, 03:02 UTC.\n\n" +
+          "- **Lab \u2014 monthly 50% used, weekly 0%**; monthly reset Nov 9, 05:55 UTC.",
+      ),
+    );
+    expect(stray.personal.windows[0].resetsAt).toBe("2026-11-03T03:02:00.000Z");
+    expect(stray.lab.windows[0].resetsAt).toBe("2026-11-09T05:55:00.000Z");
+  });
+
   test("opencode go workspaces are separate pools in USD", () => {
     const personal = byId.get("opencode-go:personal")!;
     expect(personal.windows[0]).toMatchObject({ unit: "usd", limit: 60, used: 36 });

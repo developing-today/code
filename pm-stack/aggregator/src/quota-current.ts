@@ -33,6 +33,16 @@ import type {
 /** Freshness bound for gatherer precedence: two missed ticks. */
 export const QUOTA_CURRENT_FRESH_MS = 20 * 60_000;
 
+/**
+ * Future clock-skew tolerance for a gatherer entry's measuredAt (#1541):
+ * NTP-disciplined hosts skew in seconds, so a read stamped at most this far
+ * in the future is indistinguishable from skew and stays fresh. Beyond it
+ * the entry is not fresh at all - it classifies stale, so one skewed write
+ * cannot pin a pool's windows (or outrank genuinely fresh reads) for as
+ * long as the skew lasts.
+ */
+export const QUOTA_CURRENT_FUTURE_SKEW_MS = 60_000;
+
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** Structural check of a parsed quota-current.json document. */
@@ -55,7 +65,9 @@ type FreshState = PoolFreshness["state"];
 function entryState(entry: QuotaCurrentEntry, nowMs: number): FreshState {
   if (entry.state === "ok") {
     const t = Date.parse(entry.measuredAt);
-    return Number.isFinite(t) && nowMs - t <= QUOTA_CURRENT_FRESH_MS ? "ok" : "stale";
+    return Number.isFinite(t) && t - nowMs <= QUOTA_CURRENT_FUTURE_SKEW_MS && nowMs - t <= QUOTA_CURRENT_FRESH_MS
+      ? "ok"
+      : "stale";
   }
   return "error";
 }
