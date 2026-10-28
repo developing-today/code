@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -128,6 +129,13 @@ type Client struct {
 	// (compact JSON), so an inbound notifications/cancelled can stop one.
 	asked    map[string]*askedReq
 	relaySeq atomic.Int64
+	// reinitMu singleflights legacy session recovery: N concurrent calls
+	// 404ing from one upstream restart produce exactly one initialize.
+	// reinitGen counts completed recoveries, so a call whose session
+	// generation was already replaced knows to retry without recovering
+	// again.
+	reinitMu  sync.Mutex
+	reinitGen atomic.Uint64
 	// toolHeaders are each tool's x-mcp-header annotations, learned from
 	// tools/list, for a modern connection over HTTP.
 	toolHeaders map[string][]mcpheaders.Param
@@ -950,7 +958,78 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 }
 
 // roundTrip sends one request and returns its raw result.
+//
+// A legacy HTTP session the upstream has forgotten -- it restarted, and
+// now answers a session-carrying request with 404 -- is recovered here,
+// once: the dead session is forgotten, the client re-initializes, and the
+// request is retried exactly once on the new session. The legacy
+// revisions require exactly this: a client receiving 404 for a session
+// MUST start a new session with an initialize carrying no session id.
+// https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#session-management
+// (#1637, Phase 1 of #1634.) Every other failure -- a 404 with no session
+// held, a modern-era 404, a second 404 after recovery -- surfaces as it
+// always has.
 func (c *Client) roundTrip(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
+	gen := c.reinitGen.Load()
+	raw, err := c.roundTripOnce(ctx, method, params)
+	if err == nil || !c.sessionGone(err, method) {
+		return raw, err
+	}
+	if !c.reinitializeLegacy(ctx, gen) {
+		return raw, err
+	}
+	return c.roundTripOnce(ctx, method, params)
+}
+
+// sessionGone reports whether err is the narrow recovery trigger: a
+// request (never initialize itself; notifications never reach roundTrip)
+// failed with HTTP 404 on a legacy-era connection.
+func (c *Client) sessionGone(err error, method string) bool {
+	// The atomic modern mirror, not c.Era: a concurrent recovery's
+	// finishLegacy writes Era, and this check runs on every failed call.
+	if method == "initialize" || c.modern.Load() {
+		return false
+	}
+	var he *HTTPStatusError
+	return errors.As(err, &he) && he.Status == http.StatusNotFound
+}
+
+// reinitializeLegacy replaces a forgotten legacy session, singleflight
+// across concurrent calls. gen is the recovery generation the failed call
+// set out with: if it has already moved, another call replaced the
+// session and this one simply retries on it. It reports whether the
+// caller should retry its request.
+func (c *Client) reinitializeLegacy(ctx context.Context, gen uint64) bool {
+	ft, ok := c.t.(interface{ forgetSession() bool })
+	if !ok {
+		return false // stdio transports have no session to forget
+	}
+	c.reinitMu.Lock()
+	defer c.reinitMu.Unlock()
+	if c.reinitGen.Load() != gen {
+		return true
+	}
+	if !ft.forgetSession() {
+		return false
+	}
+	if err := c.initializeLegacy(ctx, c.clientName, c.clientVersion); err != nil {
+		return false
+	}
+	c.reinitGen.Add(1)
+	// A restarted upstream's catalogue is not the cached one.
+	c.mu.Lock()
+	n := c.notif
+	c.mu.Unlock()
+	for _, kind := range []string{"tools", "resources", "prompts"} {
+		c.invalidate(kind, n)
+	}
+	return true
+}
+
+// roundTripOnce sends one request and returns its raw result, with no
+// session recovery: recovery lives in roundTrip, and the retry it makes
+// goes through here so a call is never recovered twice.
+func (c *Client) roundTripOnce(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
 	id := c.nextID.Add(1)
 	ch := make(chan *rpcResponse, 1)
 

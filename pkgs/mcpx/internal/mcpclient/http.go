@@ -659,6 +659,23 @@ func (t *HTTPTransport) Resume(h HTTPHandoff) {
 	t.sessionMu.Unlock()
 }
 
+// forgetSession atomically reports and clears the held session id. It is
+// the transport seam for legacy session recovery (#1637): the client calls
+// it when a request has failed with 404 for the session, and the fresh
+// initialize that follows must go out with no session id -- and no later
+// request may echo the dead one. It reports whether a session was held at
+// all: a stateless legacy server holds none, and its 404s are ordinary
+// errors, not a forgotten session.
+func (t *HTTPTransport) forgetSession() bool {
+	t.sessionMu.Lock()
+	defer t.sessionMu.Unlock()
+	if t.sessionID == "" {
+		return false
+	}
+	t.sessionID = ""
+	return true
+}
+
 // Abandon stops the transport without ending the upstream session, for a
 // session a successor process now holds.
 func (t *HTTPTransport) Abandon() {
