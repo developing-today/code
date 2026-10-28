@@ -46,9 +46,7 @@ describe("JSON stores under concurrent adds (#1509)", () => {
     const results = await Promise.allSettled(inputs.map((x) => store.add(x)));
     const fulfilled = results.filter((r) => r.status === "fulfilled");
     expect(fulfilled.length).toBe(20);
-    expect(
-      fulfilled.every((r) => r.status === "fulfilled" && r.value.created),
-    ).toBe(true);
+    expect(fulfilled.every((r) => r.status === "fulfilled" && r.value.created)).toBe(true);
     const reloaded = new ActionsStore(file);
     expect((await reloaded.all()).length).toBe(20);
   });
