@@ -7,12 +7,12 @@ import "@starfederation/datastar";
 import { initHome } from "./home";
 import "./world";
 import "./world";
+import { AutoSaveManager, type SaveResult } from "./auto-save";
 import { type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
-import { identityNeedsRefresh } from "./identity-refresh";
 import { updateHeaderSubtitle } from "./header-subtitle";
+import { identityNeedsRefresh } from "./identity-refresh";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
-import { AutoSaveManager, type SaveResult } from "./auto-save";
 
 declare global {
   interface Window {
