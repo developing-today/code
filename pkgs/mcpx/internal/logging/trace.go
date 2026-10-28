@@ -190,12 +190,13 @@ var sensitiveValue = regexp.MustCompile(`(?i)(bearer\s+\S+|` +
 	// No \b around the keyword: underscore is a word character, so \btoken\b
 	// does not match inside API_TOKEN, which is exactly the spelling that
 	// matters. Surrounding name characters are absorbed instead.
-	`[A-Za-z0-9_.-]*(token|secret|api[_-]?key|password|passwd|credential)[A-Za-z0-9_.-]*\s*[:=]\s*\S+|` +
+	`[A-Za-z0-9_.-]*(token|secret|key|password|passwd|pwd|credential|auth|session[_-]?id|session|cookie|signature|private)[A-Za-z0-9_.-]*\s*[:=]\s*(?:bearer\s+)?\S+|` +
+	`[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@|` +
 	`\bgh[pousr]_[A-Za-z0-9]{16,}|` +
 	`\bsk-[A-Za-z0-9]{16,}|` +
 	`\bxox[baprs]-[A-Za-z0-9-]{10,}|` +
 	`\bAKIA[0-9A-Z]{16}\b|` +
-	`\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.)`)
+	`\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})`)
 
 // Redact returns a value safe to record.
 //
@@ -210,6 +211,13 @@ func Redact(name, value string) string {
 		return value
 	}
 	return sensitiveValue.ReplaceAllStringFunc(value, func(m string) string {
+		// URL userinfo match: keep scheme://user:, elide only the password.
+		if i := strings.Index(m, "://"); i >= 0 {
+			rest := m[i+3:]
+			if colon := strings.Index(rest, ":"); colon >= 0 {
+				return m[:i+3] + rest[:colon+1] + "<elided>@"
+			}
+		}
 		// Keep the part that identifies what was elided, drop the secret.
 		if i := strings.IndexAny(m, ":="); i > 0 {
 			return m[:i+1] + "<elided>"
