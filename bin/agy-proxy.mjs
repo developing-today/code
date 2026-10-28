@@ -44,6 +44,7 @@ const publishEndpoint = () => {
 };
 
 const MODELS = [
+  { id: 'gemini-4-argon', name: 'Gemini 4 Argon (agy)', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
   { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (agy)', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
   { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash (agy)', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
   { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash (agy)', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
@@ -134,8 +135,8 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
   }
 
   // Find base model config
-  const modelConfig = MODELS.find(m => m.id === modelStr || m.id.replace(/-/g, '') === modelStr.replace(/-/g, ''))
-    || MODELS[0];
+  const modelConfig = MODELS.find(m => m.id === modelStr || m.id.replace(/-/g, '') === modelStr.replace(/-/g, ''));
+  if (!modelConfig) return null;
 
   // Resolve effort
   if (!effort || !modelConfig.efforts.includes(effort)) {
@@ -322,7 +323,13 @@ const server = http.createServer((req, res) => {
 
       const stream = Boolean(body.stream);
       const requestedEffort = body.reasoning_effort || body.effort || (body.options && (body.options.reasoning_effort || body.options.effort));
-      const { baseModel, effort, fullName } = resolveModelAndEffort(body.model, requestedEffort);
+      const resolved = resolveModelAndEffort(body.model, requestedEffort);
+      if (!resolved) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Unknown model: ${body.model}` }));
+        return;
+      }
+      const { baseModel, effort, fullName } = resolved;
 
       const sessionInfo = getSessionKey(req, body);
       const isResuming = Boolean(sessionInfo.conversationId);
