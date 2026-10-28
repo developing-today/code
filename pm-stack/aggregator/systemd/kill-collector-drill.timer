@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly kill-collector chaos drill (#1283, epic #1184)
+
+[Timer]
+# Sunday early morning, the stack's quietest window. The drill itself
+# refuses to overlap (flock), refuses during a flagged incident, and
+# refuses to start on an already-stale feed.
+OnCalendar=Sun 04:17
+RandomizedDelaySec=15min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
