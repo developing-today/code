@@ -72,6 +72,7 @@ const startProxy = async () => {
       CLAUDE_CODE_BIN: stubPath,
       CLAUDE_CODE_PROXY_WORKDIR: path.join(tmp, 'work'),
       CLAUDE_CODE_PROXY_SESSION_FILE: path.join(tmp, 'sessions.json'),
+      CLAUDE_CODE_PROXY_PROJECTS_DIR: path.join(tmp, 'no-projects'),
       CLAUDE_CODE_PROXY_EGRESS: '',
       STUB_LOG: logPath,
       XDG_STATE_HOME: path.join(tmp, 'state')
@@ -110,7 +111,9 @@ test('health + models catalog', async (t) => {
   assert.equal(health.service, 'claude-code-proxy');
   assert.equal(health.engine, 'claude-stream-json-resident');
   const models = await (await fetch(`${base}/v1/models`)).json();
-  assert.deepEqual(models.data.map(m => m.id), ['claude-haiku-5-5']);
+  // The verified static floor; the observed-models union is empty here
+  // because CLAUDE_CODE_PROXY_PROJECTS_DIR points at an empty test dir.
+  assert.deepEqual(models.data.map(m => m.id), ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5']);
 });
 
 test('two turns: second turn sends only the newest user message', async (t) => {

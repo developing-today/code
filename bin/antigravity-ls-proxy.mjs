@@ -406,9 +406,13 @@ const lsManager = new LanguageServerManager();
 process.on('SIGINT', () => { lsManager.cleanup(); process.exit(0); });
 process.on('SIGTERM', () => { lsManager.cleanup(); process.exit(0); });
 
-// The language server's model catalog (id -> { model enum, displayName }), cached
-// briefly so each chat request doesn't re-fetch it. Empty when the server is
-// unreachable, in which case only the static MODEL_MAP can resolve.
+// The language server's model catalog (id -> { model enum, displayName }),
+// pulled LIVE from the server's GetAvailableModels RPC (live-model rule,
+// 2026-10-28) and cached for 60s so each chat request doesn't re-fetch
+// it. Last-known-good: a failed refresh returns the previous successful
+// catalog (not an empty one), so a transient server outage never shrinks
+// the resolvable set; only a proxy that has never reached the server
+// resolves from the static MODEL_MAP floor alone.
 let liveCatalogCache = { at: 0, models: {} };
 const getLiveCatalog = async () => {
   if (Date.now() - liveCatalogCache.at < 60_000) return liveCatalogCache.models;
@@ -416,7 +420,8 @@ const getLiveCatalog = async () => {
     const live = await lsManager.callRpc('GetAvailableModels', {});
     liveCatalogCache = { at: Date.now(), models: live?.response?.models || {} };
   } catch {
-    return {};
+    // Keep { at } unchanged so the next request retries the live pull.
+    return liveCatalogCache.models;
   }
   return liveCatalogCache.models;
 };
@@ -718,8 +723,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      const live = await lsManager.callRpc('GetAvailableModels', {});
-      const liveModels = live?.response?.models || {};
+      const liveModels = await getLiveCatalog();
       for (const [k, v] of Object.entries(liveModels)) {
         if (!registered.has(k)) {
           registered.add(k);
