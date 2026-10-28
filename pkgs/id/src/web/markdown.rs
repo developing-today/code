@@ -581,8 +581,26 @@ fn text_node_with_marks(text: &str, marks: &[Mark]) -> Value {
 
 /// Collect block-level children of a node.
 fn collect_block_children<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
+    let children: Vec<&AstNode<'a>> = node.children().collect();
     let mut out = Vec::new();
-    for child in node.children() {
+    for (idx, child) in children.iter().enumerate() {
+        // #1370: comrak's renderer separates adjacent lists with
+        // <!-- end list --> comments, and the split sibling lists this
+        // change emits are adjacent by construction - so on reparse the
+        // separator comes back as an HtmlBlock between the lists. It is
+        // a separator, not content: drop it when a neighbouring sibling
+        // is a list. An authored <!-- end list --> comment NOT next to
+        // a list still converts exactly as before (an htmlBlock
+        // code_block, #982).
+        if is_end_list_separator(child)
+            && ((idx > 0
+                && matches!(children[idx - 1].data.borrow().value, NodeValue::List(_)))
+                || children
+                    .get(idx + 1)
+                    .is_some_and(|c| matches!(c.data.borrow().value, NodeValue::List(_))))
+        {
+            continue;
+        }
         if matches!(child.data.borrow().value, NodeValue::List(_)) {
             // #1370: a list converts to one or more sibling lists.
             out.extend(convert_list_runs(child));
@@ -594,6 +612,15 @@ fn collect_block_children<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
         }
     }
     out
+}
+
+/// True for the HtmlBlock comrak's renderer emits between adjacent
+/// lists (see collect_block_children).
+fn is_end_list_separator<'a>(node: &'a AstNode<'a>) -> bool {
+    match &node.data.borrow().value {
+        NodeValue::HtmlBlock(html) => html.literal.trim() == "<!-- end list -->",
+        _ => false,
+    }
 }
 
 /// Convert a comrak list node to one or more ProseMirror list nodes.
@@ -3616,6 +3643,22 @@ mod tests {
                 markdown_to_prosemirror(original)
             );
         }
+    }
+
+    #[test]
+    fn test_authored_end_list_comment_away_from_lists_survives() {
+        // #1370 follow-up: collect_block_children drops the renderer's
+        // <!-- end list --> separator only when it sits next to a list.
+        // The same comment authored away from any list is content like
+        // any other HTML block (#982) and must still convert.
+        let doc = markdown_to_prosemirror("<!-- end list -->
+
+Some text
+");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "code_block");
+        assert_eq!(content[0]["attrs"]["htmlBlock"], true);
+        assert_eq!(content[1]["type"], "paragraph");
     }
 
     #[test]
