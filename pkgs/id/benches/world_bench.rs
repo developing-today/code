@@ -187,20 +187,30 @@ fn bench_fanout(clients: usize, rounds: u64, reps: usize) -> Result<Vec<f64>> {
     for _ in 0..reps {
         samples.push(runtime.block_on(async {
             let mut core = WorldCore::new("bench-fanout", WorldLimits::default())?;
-            let (_participant, token) = core.issue_capability(
-                "bench",
-                WorldScopes::JOIN.union(WorldScopes::CHAT),
-                CapabilityBounds {
-                    expires_at: None,
-                    uses: None,
-                },
-            )?;
+            // Rotate across several senders: the per-participant chat rate
+            // limit (50 messages / 10 s window) would otherwise refuse the
+            // full-size workload (100 rounds from one sender) partway
+            // through. Four senders x 25 rounds stay under the burst cap
+            // while measuring the same delivery path.
+            let mut tokens = Vec::new();
+            for sender in ["bench-0", "bench-1", "bench-2", "bench-3"] {
+                let (_participant, token) = core.issue_capability(
+                    sender,
+                    WorldScopes::JOIN.union(WorldScopes::CHAT),
+                    CapabilityBounds {
+                        expires_at: None,
+                        uses: None,
+                    },
+                )?;
+                tokens.push(token);
+            }
             let handle = WorldHandle::spawn(core);
             let mut receivers: Vec<_> = (0..clients).map(|_| handle.subscribe()).collect();
             let start = Instant::now();
             for round in 0..rounds {
+                let token = tokens[(round as usize) % tokens.len()].clone();
                 handle
-                    .chat(token.clone(), format!("fanout {round}"))
+                    .chat(token, format!("fanout {round}"))
                     .await?;
                 for receiver in &mut receivers {
                     let event = receiver.recv().await.context("fanout recv")?;
