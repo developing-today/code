@@ -1,0 +1,70 @@
+name: cf-container-hello
+
+# Test verification for pkgs/cf-container-hello (#1439).
+#
+# The package's only test suite — the Python regression suite for the
+# #955 probe hardening (test/test_probe_hardening.py, 11 tests) — was
+# run by nothing: no workflow, flake check, or justfile recipe mentions
+# the package, so the pins could silently regress: the fail-closed
+# API_TOKEN gate ordering in src/index.ts, the no-stale-crawler-copy
+# rule, and the production validator's SSRF refusals. Several pins are
+# source-shape checks that produce no other signal when broken. This
+# workflow runs the single documented command (`npm test`, i.e.
+# python3 -m unittest discover -s test -p 'test_*.py') on every change
+# to the package.
+#
+# Cross-package trigger: the suite loads the production crawl
+# validator from pkgs/lab-ops-hub/container/app.py (repo-root
+# relative), so a change to that file can break this suite and is a
+# trigger path below even though it lives in another package.
+#
+# The suite is stdlib-only, so there is deliberately no `npm install`
+# step.
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/cf-container-hello/**"
+      - "pkgs/lab-ops-hub/container/app.py"
+      - ".github/workflows/cf-container-hello.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/cf-container-hello/**"
+      - "pkgs/lab-ops-hub/container/app.py"
+      - ".github/workflows/cf-container-hello.yml"
+
+permissions:
+  contents: read
+
+# Push-to-main runs each get their own group (keyed by run_id), so a
+# later merge can never cancel — or displace a pending — verification
+# run for an earlier merge: every merged tree gets its own completed
+# run. Pull-request runs keep sharing a per-ref group, so a new push
+# to a PR still supersedes its stale run (#392).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Run the #955 hardening suite
+        working-directory: pkgs/cf-container-hello
+        run: npm test
