@@ -390,10 +390,25 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
                 }
             }
 
-            json!({
+            // #1407: emphasis/strong/strikethrough wrapping an image
+            // ride on the image node as a `marks` array (the text-node
+            // shape) — like the link above, the editor schema cannot
+            // wrap an image node in a mark, so the marks travel on the
+            // node and the save direction re-wraps (see the image case
+            // in json_to_ast). The link stays in linkHref (#880).
+            let wrap_marks: Vec<Value> = active_marks
+                .iter()
+                .filter(|m| matches!(m.mark_type, "em" | "strong" | "strikethrough"))
+                .map(|m| json!({"type": m.mark_type}))
+                .collect();
+            let mut image_node = json!({
                 "type": "image",
                 "attrs": attrs
-            })
+            });
+            if !wrap_marks.is_empty() {
+                image_node["marks"] = json!(wrap_marks);
+            }
+            image_node
         }
 
         // Unsupported nodes - pass through as best we can
@@ -1951,21 +1966,53 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         }
     }
 
-    // #880: an image carrying linkHref (a linked image, see convert_node)
-    // is wrapped in a Link node so save emits [![alt](src)](href).
-    if node_type == "image"
-        && matches!(ast_node.data.borrow().value, NodeValue::Image(_))
-        && let Some(link_href) = json["attrs"]["linkHref"].as_str()
-        && !link_href.is_empty()
-    {
-        let link_node = arena.alloc(AstNode::from(NodeValue::Link(Box::new(
-            comrak::nodes::NodeLink {
-                url: link_href.to_owned(),
-                title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
-            },
-        ))));
-        link_node.append(ast_node);
-        return Ok(link_node);
+    // #880 + #1407: an image carrying linkHref (a linked image, see
+    // convert_node) and/or a `marks` array (emphasis/strong/
+    // strikethrough wrapping the image) is wrapped in the
+    // corresponding mark chain so save emits [![alt](src)](href),
+    // *![alt](src)*, or both combined. Wrappers use the canonical
+    // nesting order (#944) — the order create_marked_text applies —
+    // and the returned chain goes through append_inline_child's mark
+    // merging (#968), so a marked image inside a marked text span
+    // rejoins the span instead of fragmenting it.
+    if node_type == "image" && matches!(ast_node.data.borrow().value, NodeValue::Image(_)) {
+        let mut wrappers: Vec<(u8, NodeValue)> = Vec::new();
+        if let Some(link_href) = json["attrs"]["linkHref"].as_str()
+            && !link_href.is_empty()
+        {
+            wrappers.push((
+                mark_nesting_rank("link"),
+                NodeValue::Link(Box::new(comrak::nodes::NodeLink {
+                    url: link_href.to_owned(),
+                    title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
+                })),
+            ));
+        }
+        if let Some(marks) = json["marks"].as_array() {
+            for mark in marks {
+                let mark_type = mark["type"].as_str().unwrap_or("");
+                let wrapper = match mark_type {
+                    "em" => NodeValue::Emph,
+                    "strong" => NodeValue::Strong,
+                    "strikethrough" => NodeValue::Strikethrough,
+                    _ => continue,
+                };
+                if !wrappers.iter().any(|(_, w)| same_mark_wrapper(w, &wrapper)) {
+                    wrappers.push((mark_nesting_rank(mark_type), wrapper));
+                }
+            }
+        }
+        if !wrappers.is_empty() {
+            wrappers.sort_by_key(|(rank, _)| *rank);
+            // build_mark_chain consumes innermost-first; the sorted
+            // list above is outermost-first (canonical rank order).
+            let chain: Vec<NodeValue> = wrappers
+                .into_iter()
+                .map(|(_, wrapper)| wrapper)
+                .rev()
+                .collect();
+            return Ok(build_mark_chain(arena, ast_node, &chain, 0));
+        }
     }
 
     Ok(ast_node)
@@ -4037,6 +4084,71 @@ mod tests {
         let md = prosemirror_to_markdown(&doc).expect("converts");
         assert!(md.contains("![alt](img.png)"), "plain image: {md}");
         assert!(md.contains("[text](https://x.test)"), "plain link: {md}");
+    }
+
+    #[test]
+    fn test_marked_image_roundtrip_keeps_marks() {
+        // #1407: emphasis/strong/strikethrough wrapping an image ride
+        // on the image node as a `marks` array and are re-emitted as
+        // the wrapping mark on save.
+        for (md_src, mark) in [
+            ("*![alt](img.png)*\n", "em"),
+            ("**![alt](img.png)**\n", "strong"),
+            ("~~![alt](img.png)~~\n", "strikethrough"),
+        ] {
+            let doc = markdown_to_prosemirror(md_src);
+            let img = &doc["content"][0]["content"][0];
+            assert_eq!(img["type"], "image", "parse: {md_src}");
+            assert_eq!(img["marks"][0]["type"], mark, "parse marks: {md_src}");
+            let md = prosemirror_to_markdown(&doc).expect("converts");
+            assert!(md.contains(md_src.trim()), "roundtrip: {md_src} -> {md}");
+            // Fixpoint: the emitted form re-parses to the same marks.
+            let back = markdown_to_prosemirror(&md);
+            assert_eq!(
+                back["content"][0]["content"][0]["marks"][0]["type"], mark,
+                "fixpoint: {md_src}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_marked_linked_image_roundtrip() {
+        // #1407 + #880 combined: *[![alt](src)](href)* keeps both the
+        // link (linkHref) and the wrapping emphasis (marks).
+        let doc = markdown_to_prosemirror("*[![alt](img.png)](https://example.com)*\n");
+        let img = &doc["content"][0]["content"][0];
+        assert_eq!(img["attrs"]["linkHref"], "https://example.com");
+        assert_eq!(img["marks"][0]["type"], "em");
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        // Canonical nesting (#944) puts the link outermost, so the
+        // emitted spelling wraps the emphasis inside the link text;
+        // it re-parses to the same node (fixpoint asserted below).
+        assert!(
+            md.contains("[*![alt](img.png)*](https://example.com)"),
+            "combined roundtrip: {md}"
+        );
+        let back = markdown_to_prosemirror(&md);
+        let back_img = &back["content"][0]["content"][0];
+        assert_eq!(back_img["attrs"]["linkHref"], "https://example.com");
+        assert_eq!(back_img["marks"][0]["type"], "em");
+    }
+
+    #[test]
+    fn test_mixed_marked_span_with_image_roundtrips_as_one_span() {
+        // #1407: a marked span mixing text and an image must save as
+        // ONE span — no fragmentation, no &#32; boundary entities.
+        let doc = markdown_to_prosemirror("*text ![alt](img.png) tail*\n");
+        let content = doc["content"][0]["content"].as_array().expect("inline");
+        assert_eq!(content.len(), 3, "text + image + text: {doc}");
+        assert_eq!(content[1]["marks"][0]["type"], "em");
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert!(md.contains("*text ![alt](img.png) tail*"), "one span: {md}");
+        assert!(!md.contains("&#32;"), "no entity leak: {md}");
+        // Fixpoint: the emitted form re-parses to the same shape.
+        let back = markdown_to_prosemirror(&md);
+        let back_content = back["content"][0]["content"].as_array().expect("inline");
+        assert_eq!(back_content.len(), 3, "fixpoint shape: {back}");
+        assert_eq!(back_content[1]["marks"][0]["type"], "em");
     }
 
     #[test]
