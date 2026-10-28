@@ -1061,9 +1061,12 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     // #1019: comrak's renderer percent-encodes a space in a link/image
     // destination (`my notes.md` -> `my%20notes.md`) instead of emitting
     // the <...> angle form, silently breaking relative file links and
-    // mutating the PM href on reparse. The renderer has no angle-form
-    // option, so swap each spaced destination for a unique placeholder
-    // before rendering and restore it as <raw destination> afterwards.
+    // mutating the PM href on reparse. #1423: the same mangling hits the
+    // other whitespace characters — a tab is encoded to %09 and a newline
+    // destroys the link outright (`% `). The renderer has no angle-form
+    // option, so swap each whitespace-carrying destination for a unique
+    // placeholder before rendering and restore it as <raw destination>
+    // afterwards.
     let substitutions = substitute_spaced_destinations(root);
     let mut output = String::new();
     format_commonmark(root, &commonmark_options(), &mut output)?;
@@ -1073,11 +1076,15 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     Ok(output)
 }
 
-/// Replace every link/image destination containing a space with a
-/// unique placeholder token, returning (placeholder, raw destination)
-/// pairs for restoration after rendering (#1019). The token is a valid
-/// bare destination (no spaces or characters comrak encodes), so the
-/// renderer emits it verbatim exactly where the destination belongs.
+/// Replace every link/image destination containing whitespace (space,
+/// tab, newline, …) with a unique placeholder token, returning
+/// (placeholder, raw destination) pairs for restoration after rendering
+/// (#1019, #1423). The token is a valid bare destination (no whitespace
+/// or characters comrak encodes), so the renderer emits it verbatim
+/// exactly where the destination belongs. Reference-style links flow
+/// through here too: comrak resolves a reference definition into the
+/// referencing link's `url`, and the PM model stores that href directly,
+/// so no separate definition path exists in this codec.
 fn substitute_spaced_destinations<'a>(root: &'a AstNode<'a>) -> Vec<(String, String)> {
     let mut substitutions: Vec<(String, String)> = Vec::new();
     let mut stack: Vec<&AstNode<'a>> = vec![root];
@@ -1088,7 +1095,7 @@ fn substitute_spaced_destinations<'a>(root: &'a AstNode<'a>) -> Vec<(String, Str
             NodeValue::Link(link) | NodeValue::Image(link) => &mut link.url,
             _ => continue,
         };
-        if !url.contains(' ') {
+        if !url.contains(char::is_whitespace) {
             continue;
         }
         if let Some(index) = substitutions
@@ -2436,6 +2443,81 @@ mod tests {
         assert_eq!(
             back["content"][0]["content"][0]["marks"][0]["attrs"]["href"], "https://e.com/a b",
             "href identical after round trip"
+        );
+    }
+
+    #[test]
+    fn test_tab_and_newline_destinations_roundtrip_in_angle_form() {
+        // #1423: the #1019 protection only triggered on a literal space,
+        // so a tab destination was percent-encoded to %09 on save and a
+        // newline destination was mangled to `% `, destroying the link.
+        // Both must now save in <...> angle form byte-identically, for
+        // links and images alike.
+        for original in [
+            "[notes](<a\tb.md>)\n",
+            "![a](<a\tb.png>)\n",
+            "[notes](<a\nb.md>)\n",
+            "![a](<a\nb.png>)\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "angle form retained for {original:?}");
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert!(!first.contains("%09"), "no tab encoding: {first:?}");
+        }
+        // The PM href/src survive unmutated, tab and newline alike.
+        let doc = markdown_to_prosemirror("[notes](<a\tb.md>)\n");
+        assert_eq!(
+            doc["content"][0]["content"][0]["marks"][0]["attrs"]["href"], "a\tb.md",
+            "PM href unmutated (tab)"
+        );
+        let doc = markdown_to_prosemirror("![a](<a\nb.png>)\n");
+        assert_eq!(
+            doc["content"][0]["content"][0]["attrs"]["src"], "a\nb.png",
+            "PM src unmutated (newline)"
+        );
+    }
+
+    #[test]
+    fn test_tab_and_newline_editor_href_and_reference_definition() {
+        // #1423, save direction alone: an editor-created PM link whose
+        // href carries a tab or newline saves in angle form and reparses
+        // to the identical href.
+        for href in ["a\tb.md", "a\nb.md"] {
+            let pm = json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": "t",
+                        "marks": [{"type": "link", "attrs": {"href": href}}]
+                    }]
+                }]
+            });
+            let md = prosemirror_to_markdown(&pm).expect("converts");
+            assert_eq!(md, format!("[t](<{href}>)\n"), "angle form for {href:?}");
+            let back = markdown_to_prosemirror(&md);
+            assert_eq!(
+                back["content"][0]["content"][0]["marks"][0]["attrs"]["href"], href,
+                "href identical after round trip for {href:?}"
+            );
+        }
+
+        // #1423, reference definitions: a reference-style link's
+        // destination is resolved into the link href at parse time, so it
+        // takes the same placeholder path — the tab destination must
+        // survive the save unencoded and reach a fixpoint.
+        let (first, second) = two_saves("[notes][r]\n\n[r]: <a\tb.md>\n");
+        assert!(
+            first.contains("<a\tb.md>"),
+            "tab destination kept: {first:?}"
+        );
+        assert!(!first.contains("%09"), "no tab encoding: {first:?}");
+        assert_eq!(first, second, "fixpoint");
+        let doc = markdown_to_prosemirror(&first);
+        assert_eq!(
+            doc["content"][0]["content"][0]["marks"][0]["attrs"]["href"], "a\tb.md",
+            "PM href unmutated (reference definition)"
         );
     }
 
