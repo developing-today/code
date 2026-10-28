@@ -270,8 +270,11 @@ func TestRepairCannotRaiseAutonomyAboveTheCeiling(t *testing.T) {
 	if len(got.Diagnostics) != 0 {
 		t.Errorf("repair.autonomy run past autonomy.max off still attached diagnostics:\n%s", b)
 	}
-	if !strings.HasPrefix(got.Error, "mcp error -32602") {
-		t.Errorf("the server's own error should still come back:\n%s", b)
+	// Phase 2 of #1481: the refusal is detected by mcpx's own argument
+	// validation, so the error that comes back unexplained is the
+	// validator's -32602 headline, not a server answer.
+	if !strings.HasPrefix(got.Error, "Invalid params") {
+		t.Errorf("the refusal's own error should still come back:\n%s", b)
 	}
 }
 

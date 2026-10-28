@@ -42,6 +42,24 @@ test("parseSubscriptionQuota: shape drift fails closed", () => {
   const zeroLimit = structuredClone(QUOTA);
   zeroLimit.subscription_quota.window_weighted_limit = "0";
   assert.throws(() => parseSubscriptionQuota(zeroLimit), /zero limit/);
+  // window_duration_secs is validated like every other numeric field:
+  // missing, non-numeric, zero, or negative durations fail closed
+  // instead of exporting a "window-NaNs" window as a successful reading.
+  for (const bad of [undefined, "abc", 0, -3600]) {
+    const drifted = structuredClone(QUOTA);
+    if (bad === undefined) delete drifted.subscription_quota.window_duration_secs;
+    else drifted.subscription_quota.window_duration_secs = bad;
+    assert.throws(() => parseSubscriptionQuota(drifted), /window_duration_secs/);
+  }
+});
+
+test("parseSubscriptionQuota: window naming for valid durations is unchanged", () => {
+  const oneHour = structuredClone(QUOTA);
+  oneHour.subscription_quota.window_duration_secs = 3600;
+  assert.equal(parseSubscriptionQuota(oneHour).windows[0].name, "1h");
+  const twoHours = structuredClone(QUOTA);
+  twoHours.subscription_quota.window_duration_secs = 7200;
+  assert.equal(parseSubscriptionQuota(twoHours).windows[0].name, "window-7200s");
 });
 
 test("parseBillingBanner: minor units to USD, currency checked", () => {
