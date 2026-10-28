@@ -218,59 +218,17 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
             json!({"type": "horizontal_rule"})
         }
 
-        NodeValue::List(list) => {
-            // Check if this is a task list by looking at children
-            let is_task_list = node
-                .children()
+        NodeValue::List(_) => {
+            // #1370: a mixed task/plain list converts to several sibling
+            // lists (see convert_list_runs); block parents splice them in
+            // via collect_block_children. A direct call gets the first
+            // run - the remaining call sites are the document root and
+            // list-item collection, where a list is always reached
+            // through its parent's block children instead.
+            convert_list_runs(node)
+                .into_iter()
                 .next()
-                .is_some_and(|child| matches!(child.data.borrow().value, NodeValue::TaskItem(_)));
-
-            if is_task_list {
-                let content = collect_list_items(node);
-                // #1036: carry `tight` like bullet_list/ordered_list, or
-                // loose task items fuse on save. #997: an ordered task
-                // list also carries its start in `attrs.order`, mirroring
-                // `ordered_list` below, or the ordering is lost on save.
-                match list.list_type {
-                    ListType::Ordered => {
-                        json!({
-                            "type": "task_list",
-                            "attrs": {"order": list.start, "tight": list.tight},
-                            "content": content
-                        })
-                    }
-                    ListType::Bullet => {
-                        json!({
-                            "type": "task_list",
-                            "attrs": {"tight": list.tight},
-                            "content": content
-                        })
-                    }
-                }
-            } else {
-                let content = collect_list_items(node);
-                let tight = list.tight;
-
-                match list.list_type {
-                    ListType::Ordered => {
-                        json!({
-                            "type": "ordered_list",
-                            "attrs": {
-                                "order": list.start,
-                                "tight": tight
-                            },
-                            "content": content
-                        })
-                    }
-                    ListType::Bullet => {
-                        json!({
-                            "type": "bullet_list",
-                            "attrs": {"tight": tight},
-                            "content": content
-                        })
-                    }
-                }
-            }
+                .unwrap_or(Value::Null)
         }
 
         NodeValue::Item(_) => {
@@ -623,9 +581,78 @@ fn text_node_with_marks(text: &str, marks: &[Mark]) -> Value {
 
 /// Collect block-level children of a node.
 fn collect_block_children<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
-    node.children()
-        .map(|child| convert_node(child, &[]))
-        .filter(|v| !v.is_null())
+    let mut out = Vec::new();
+    for child in node.children() {
+        if matches!(child.data.borrow().value, NodeValue::List(_)) {
+            // #1370: a list converts to one or more sibling lists.
+            out.extend(convert_list_runs(child));
+        } else {
+            let converted = convert_node(child, &[]);
+            if !converted.is_null() {
+                out.push(converted);
+            }
+        }
+    }
+    out
+}
+
+/// Convert a comrak list node to one or more ProseMirror list nodes.
+///
+/// A pure list converts exactly as before (#997/#1036 attrs carried from
+/// the source list). #1370: a list mixing task items with plain items
+/// used to take its type from the first child only and convert the rest
+/// by their own kind, producing a `task_list` holding a `list_item` (or
+/// a plain list holding a `task_list_item`) - a shape the save-side
+/// placement validation and the editor schema both forbid, so the
+/// document could not be saved at all. Instead, group the items into
+/// runs of one kind and emit one sibling list per run, in source order.
+/// Ordered runs carry an `order` start offset by the items before them
+/// so numbering renders unchanged; `tight` is carried from the source
+/// list to every run. Placement validation and the editor schema are
+/// untouched: every emitted list is pure.
+fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
+    let (list_type, start, tight) = match &node.data.borrow().value {
+        NodeValue::List(list) => (list.list_type, list.start, list.tight),
+        _ => return Vec::new(),
+    };
+    // (is_task, items before this run, converted items)
+    let mut runs: Vec<(bool, usize, Vec<Value>)> = Vec::new();
+    let mut seen = 0usize;
+    for child in node.children() {
+        let is_task = matches!(child.data.borrow().value, NodeValue::TaskItem(_));
+        let item = convert_node(child, &[]);
+        if item.is_null() {
+            continue;
+        }
+        match runs.last_mut() {
+            Some((kind, _, items)) if *kind == is_task => items.push(item),
+            _ => runs.push((is_task, seen, vec![item])),
+        }
+        seen += 1;
+    }
+    runs.into_iter()
+        .map(|(is_task, offset, content)| match (is_task, list_type) {
+            (true, ListType::Ordered) => json!({
+                "type": "task_list",
+                "attrs": {"order": start + offset, "tight": tight},
+                "content": content
+            }),
+            (true, ListType::Bullet) => json!({
+                "type": "task_list",
+                "attrs": {"tight": tight},
+                "content": content
+            }),
+            (false, ListType::Ordered) => json!({
+                "type": "ordered_list",
+                "attrs": {"order": start + offset, "tight": tight},
+                "content": content
+            }),
+            (false, ListType::Bullet) => json!({
+                "type": "bullet_list",
+                "attrs": {"tight": tight},
+                "content": content
+            }),
+        })
         .collect()
 }
 
@@ -3519,6 +3546,61 @@ mod tests {
         // Second item: checked
         assert_eq!(items[1]["type"], "task_list_item");
         assert_eq!(items[1]["attrs"]["checked"], true);
+    }
+
+    #[test]
+    fn test_mixed_task_plain_list_splits_at_parse() {
+        // #1370: a list mixing checkbox and plain items must split into
+        // pure sibling lists at parse - one mixed list is a shape the
+        // placement validation and the editor schema both forbid, which
+        // made such documents unsavable.
+        let doc = markdown_to_prosemirror("- [ ] a\n- plain\n- [x] b\n");
+        let content = doc["content"].as_array().unwrap();
+        let types: Vec<&str> = content.iter().map(|n| n["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["task_list", "bullet_list", "task_list"]);
+        assert_eq!(content[0]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(content[1]["content"][0]["type"], "list_item");
+        assert_eq!(content[2]["content"][0]["attrs"]["checked"], true);
+
+        // Plain-first order splits the other way.
+        let doc = markdown_to_prosemirror("- plain\n- [ ] a\n");
+        let content = doc["content"].as_array().unwrap();
+        let types: Vec<&str> = content.iter().map(|n| n["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["bullet_list", "task_list"]);
+
+        // The split document saves (no MisplacedNode) and the save is a
+        // fixpoint: reparsing it splits identically.
+        for original in ["- [ ] a\n- plain\n- [x] b\n", "- plain\n- [ ] a\n"] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+            assert_eq!(markdown_to_prosemirror(&first), markdown_to_prosemirror(original));
+        }
+    }
+
+    #[test]
+    fn test_mixed_ordered_list_splits_with_order_offsets() {
+        // #1370: ordered split runs carry order offsets so the rendered
+        // numbering is unchanged.
+        let doc = markdown_to_prosemirror("1. [ ] a\n2. plain\n3. [x] b\n");
+        let content = doc["content"].as_array().unwrap();
+        let types: Vec<&str> = content.iter().map(|n| n["type"].as_str().unwrap()).collect();
+        assert_eq!(types, ["task_list", "ordered_list", "task_list"]);
+        assert_eq!(content[0]["attrs"]["order"], 1);
+        assert_eq!(content[1]["attrs"]["order"], 2);
+        assert_eq!(content[2]["attrs"]["order"], 3);
+
+        let doc = markdown_to_prosemirror("4. plain\n5. [ ] a\n");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "ordered_list");
+        assert_eq!(content[0]["attrs"]["order"], 4);
+        assert_eq!(content[1]["type"], "task_list");
+        assert_eq!(content[1]["attrs"]["order"], 5);
+
+        for original in ["1. [ ] a\n2. plain\n3. [x] b\n", "4. plain\n5. [ ] a\n"] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+            assert_eq!(markdown_to_prosemirror(&first), markdown_to_prosemirror(original));
+        }
     }
 
     #[test]
