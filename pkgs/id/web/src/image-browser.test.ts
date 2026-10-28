@@ -31,9 +31,7 @@ function stubFetchImages(): void {
 function createView(): { view: EditorView; container: HTMLElement } {
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const doc = richSchema.node("doc", null, [
-    richSchema.node("paragraph", null, [richSchema.text("hello")]),
-  ]);
+  const doc = richSchema.node("doc", null, [richSchema.node("paragraph", null, [richSchema.text("hello")])]);
   const state = EditorState.create({ schema: richSchema, doc });
   const view = new EditorView(container, { state });
   return { view, container };

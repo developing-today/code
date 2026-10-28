@@ -101,10 +101,12 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
   insertBtn.disabled = true;
   insertBtn.addEventListener("click", () => {
     if (selectedImage) {
-      // Dismiss in a finally: dispatching on a destroyed view throws, and
-      // the dialog must not stay stuck on screen when it does (#1381).
+      // Dispatching on a destroyed view throws: log it and dismiss in a
+      // finally, so the dialog never stays stuck on screen (#1381).
       try {
         insertImage(selectedImage);
+      } catch (err) {
+        console.warn("[image-browser] Insert failed:", err);
       } finally {
         close();
       }
@@ -181,6 +183,8 @@ export function openImageBrowser(view: EditorView, schema: Schema): void {
           selectedImage = img;
           try {
             insertImage(img);
+          } catch (err) {
+            console.warn("[image-browser] Insert failed:", err);
           } finally {
             close();
           }
