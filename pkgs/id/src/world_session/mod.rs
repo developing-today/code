@@ -216,6 +216,41 @@ impl WorldService {
         self.world.set_caps_ceiling(ceiling).await
     }
 
+    /// Pend one schedule for this world, admin only, journaled before the
+    /// reply. Replaces any pending schedule with the same id. Returns the
+    /// full pending map (id to fire time, unix ms).
+    ///
+    /// # Errors
+    ///
+    /// Fails with `admin denied` for a wrong token, and with the world's
+    /// message for an invalid or unstorable schedule.
+    pub async fn set_schedule(
+        &self,
+        supplied_admin: Option<&str>,
+        id: String,
+        at_ms: u64,
+    ) -> anyhow::Result<std::collections::BTreeMap<String, u64>> {
+        anyhow::ensure!(self.authorize_admin(supplied_admin).is_ok(), "admin denied");
+        self.world.admin_schedule_at(id, at_ms).await
+    }
+
+    /// Cancel a pending schedule for this world, admin only, journaled
+    /// before the reply. A no-op when the id is not pending. Returns the
+    /// full pending map.
+    ///
+    /// # Errors
+    ///
+    /// Fails with `admin denied` for a wrong token, and with the world's
+    /// message for a malformed id or storage failure.
+    pub async fn cancel_schedule(
+        &self,
+        supplied_admin: Option<&str>,
+        id: String,
+    ) -> anyhow::Result<std::collections::BTreeMap<String, u64>> {
+        anyhow::ensure!(self.authorize_admin(supplied_admin).is_ok(), "admin denied");
+        self.world.admin_cancel_schedule(id).await
+    }
+
     /// Persist a per-world resource profile. The running program keeps its
     /// existing limits; the request applies on the next install or restart.
     pub async fn set_execution_profile(
@@ -1158,6 +1193,74 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
             }
         },
+        ClientFrame::SetSchedule {
+            admin_token,
+            id,
+            at_ms,
+        } => match service.set_schedule(Some(&admin_token), id, at_ms).await {
+            Ok(schedules) => {
+                let _ = send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::Schedules { schedules },
+                )
+                .await;
+            }
+            Err(error) => {
+                let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+            }
+        },
+        ClientFrame::CancelSchedule { admin_token, id } => {
+            match service.cancel_schedule(Some(&admin_token), id).await {
+                Ok(schedules) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::Schedules { schedules },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+        }
+        ClientFrame::WorldState {
+            admin_token,
+            capability,
+        } => {
+            let admin_ok = admin_token
+                .as_deref()
+                .is_some_and(|token| service.authorize_admin(Some(token)).is_ok());
+            let cap_ok = if admin_ok {
+                true
+            } else if let Some(cap) = capability.as_deref() {
+                let token = JoinCapability::from_wire(cap.to_string());
+                service.world().participant_id(token).await.is_ok()
+            } else {
+                false
+            };
+            if !admin_ok && !cap_ok {
+                let _ = send_error(service.frame_meter(), io, "access denied").await;
+            } else {
+                match service.world().manifest_state().await {
+                    Ok((seed, schedules)) => {
+                        let _ = send_json(
+                            service.frame_meter(),
+                            io,
+                            &ServerFrame::WorldState {
+                                seed: admin_ok.then_some(seed),
+                                schedules,
+                            },
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        let _ = send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                    }
+                }
+            }
+        }
         ClientFrame::ExecutionProfileInfo {
             admin_token,
             capability,
@@ -2187,6 +2290,65 @@ async fn handle_client_frame<I: SessionIo>(
                 }
             }
             return true;
+        }
+        ClientFrame::SetSchedule {
+            admin_token,
+            id,
+            at_ms,
+        } => {
+            match service.set_schedule(Some(&admin_token), id, at_ms).await {
+                Ok(schedules) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::Schedules { schedules },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::CancelSchedule { admin_token, id } => {
+            match service.cancel_schedule(Some(&admin_token), id).await {
+                Ok(schedules) => {
+                    let _ = send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::Schedules { schedules },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
+            return true;
+        }
+        ClientFrame::WorldState { admin_token, .. } => {
+            let admin_ok = admin_token
+                .as_deref()
+                .is_some_and(|token| service.authorize_admin(Some(token)).is_ok());
+            // The session's own capability authorizes the read, like `info`;
+            // only a valid admin token in the frame unlocks the seed (#240).
+            match world.manifest_state().await {
+                Ok((seed, schedules)) => {
+                    return send_json(
+                        service.frame_meter(),
+                        io,
+                        &ServerFrame::WorldState {
+                            seed: admin_ok.then_some(seed),
+                            schedules,
+                        },
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    return send_error(service.frame_meter(), io, &format!("{error:#}")).await;
+                }
+            }
         }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }

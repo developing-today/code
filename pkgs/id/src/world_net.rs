@@ -372,6 +372,120 @@ impl WorldClient {
     /// # Errors
     ///
     /// Fails with the host's message if the admin token or profile is refused.
+    /// Pend one schedule on the host (admin), replacing any pending
+    /// schedule with the same id; the host journals it before replying.
+    /// Returns the full pending schedule map after the change.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token is refused or the
+    /// schedule is invalid.
+    pub async fn set_schedule(
+        &mut self,
+        admin_token: &str,
+        id: &str,
+        at_ms: u64,
+    ) -> Result<std::collections::BTreeMap<String, u64>> {
+        self.send_json(&serde_json::json!({
+            "type": "set_schedule",
+            "admin_token": admin_token,
+            "id": id,
+            "at_ms": at_ms,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        match reply["type"].as_str() {
+            Some("schedules") => serde_json::from_value(reply["schedules"].clone())
+                .context("host sent a malformed schedule map"),
+            _ => bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused to set a schedule")
+            ),
+        }
+    }
+
+    /// Cancel a pending schedule on the host (admin). Returns the full
+    /// pending schedule map after the change.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token is refused or the
+    /// schedule id is malformed.
+    pub async fn cancel_schedule(
+        &mut self,
+        admin_token: &str,
+        id: &str,
+    ) -> Result<std::collections::BTreeMap<String, u64>> {
+        self.send_json(&serde_json::json!({
+            "type": "cancel_schedule",
+            "admin_token": admin_token,
+            "id": id,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        match reply["type"].as_str() {
+            Some("schedules") => serde_json::from_value(reply["schedules"].clone())
+                .context("host sent a malformed schedule map"),
+            _ => bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused to cancel a schedule")
+            ),
+        }
+    }
+
+    /// Read the manifest-reconciliation state: the pending schedules, and
+    /// the active install seed when `admin_token` is the host's admin token
+    /// (a capability-only read gets `None` for the seed, #240).
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if neither credential is accepted.
+    pub async fn manifest_state(
+        &mut self,
+        admin_token: Option<&str>,
+        capability: Option<&str>,
+    ) -> Result<(Option<u64>, std::collections::BTreeMap<String, u64>)> {
+        self.send_json(&serde_json::json!({
+            "type": "world_state",
+            "admin_token": admin_token,
+            "capability": capability,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        match reply["type"].as_str() {
+            Some("world_state") => Ok((
+                reply["seed"].as_u64(),
+                serde_json::from_value(reply["schedules"].clone())
+                    .context("host sent a malformed schedule map")?,
+            )),
+            _ => bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused to report the world state")
+            ),
+        }
+    }
+
+    /// Persist the world's requested resource profile. The response includes
+    /// an explicit notice that it applies only on the next install or restart.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or profile is refused.
     pub async fn set_execution_profile(
         &mut self,
         admin_token: &str,

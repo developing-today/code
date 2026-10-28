@@ -238,6 +238,59 @@ impl WorldHandle {
             .context("world actor dropped execution profile")
     }
 
+    /// Read the manifest-reconciliation state: the active install seed and
+    /// the pending schedules (id to fire time, unix ms). Admin-layer only:
+    /// the seed never enters a participant projection (#240).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the world actor is closed.
+    pub async fn manifest_state(&self) -> Result<(u64, BTreeMap<String, u64>)> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::ManifestState { reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped manifest state response")
+    }
+
+    /// Admin: pend one schedule (replacing any pending schedule with the
+    /// same id), journaled before it is visible. Returns the pending map.
+    ///
+    /// # Errors
+    ///
+    /// A malformed id, a time past the horizon, a full schedule, or world
+    /// storage failure.
+    pub async fn admin_schedule_at(&self, id: String, at_ms: u64) -> Result<BTreeMap<String, u64>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AdminScheduleAt { id, at_ms, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped schedule response")?
+    }
+
+    /// Admin: cancel a pending schedule by id (a no-op when absent),
+    /// journaled before it is visible. Returns the pending map.
+    ///
+    /// # Errors
+    ///
+    /// A malformed id or world storage failure.
+    pub async fn admin_cancel_schedule(&self, id: String) -> Result<BTreeMap<String, u64>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::AdminCancelSchedule { id, reply })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped schedule response")?
+    }
+
     /// Change the world's isolation.
     ///
     /// # Errors

@@ -464,7 +464,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
         } => {
             let manifest = parse_manifest_file(&file)?;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
-            let state = current_world_state(&mut client, &capability).await?;
+            let state = current_world_state(&mut client, &capability, None).await?;
             client.close();
             endpoint.close().await;
             print!("{}", crate::world_manifest::diff(&manifest, &state));
@@ -482,7 +482,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
         } => {
             let manifest = parse_manifest_file(&file)?;
             let (endpoint, mut client) = connect(&node, &addrs, no_relay, world.as_deref()).await?;
-            let state = current_world_state(&mut client, &capability).await?;
+            let state = current_world_state(&mut client, &capability, Some(&admin_token)).await?;
             let steps = crate::world_manifest::plan(&manifest, &state);
             if steps.is_empty() {
                 println!("no drift");
@@ -873,12 +873,15 @@ fn parse_manifest_file(file: &std::path::Path) -> Result<crate::world_manifest::
 }
 
 /// Fetch the current world state the manifest is compared against: the active
-/// module hash, the grants, the ceiling and the execution profile. Schedules
-/// and the install seed are not exposed over the wire yet, so they read as
-/// empty here.
+/// module hash, the grants, the ceiling, the execution profile, the pending
+/// schedules and the install seed. The host returns the seed only to a caller
+/// presenting the admin token (#240), so a capability-only read (diff) plans
+/// with seed 0 — a seed alone never plans a step, and apply always reads with
+/// the admin token.
 async fn current_world_state(
     client: &mut WorldClient,
     capability: &str,
+    admin_token: Option<&str>,
 ) -> Result<crate::world_manifest::WorldState> {
     let info = client.info_details(capability).await?;
     let caps: crate::world_caps::CapsReport =
@@ -898,33 +901,41 @@ async fn current_world_state(
     } else {
         Some(caps.ceiling.clone())
     };
+    let (seed, schedules) = client.manifest_state(admin_token, Some(capability)).await?;
     Ok(crate::world_manifest::WorldState {
         module_hash: info.active_module_hash,
-        seed: 0,
+        seed: seed.unwrap_or(0),
         grants: caps.granted,
         ceiling,
         profile,
-        schedules: std::collections::BTreeMap::new(),
+        schedules,
     })
 }
 
-/// Whether [`apply_steps`] actually applies this step today. Module and
-/// schedule steps are reported, not applied, until their apply paths are
-/// wired (#807), so they must not count toward the "applied N step(s)"
-/// summary (#818).
+/// Whether [`apply_steps`] actually applies this step over the wire. Every
+/// step kind is wired since #807 (module install and schedules included),
+/// so every step counts toward the "applied N step(s)" summary (#818). The
+/// predicate stays explicit per kind so a future reported-only step cannot
+/// silently claim credit: list it here only when its apply path lands.
 fn step_is_applied(step: &crate::world_manifest::ApplyStep) -> bool {
     use crate::world_manifest::ApplyStep;
     matches!(
         step,
-        ApplyStep::SetGrants { .. } | ApplyStep::SetCeiling { .. } | ApplyStep::SetProfile { .. }
+        ApplyStep::InstallModule { .. }
+            | ApplyStep::SetGrants { .. }
+            | ApplyStep::SetCeiling { .. }
+            | ApplyStep::SetProfile { .. }
+            | ApplyStep::ScheduleAt { .. }
+            | ApplyStep::CancelSchedule { .. }
     )
 }
 
-/// Apply the reconciliation steps that the existing admin operations cover:
-/// grants, ceiling and profile. Module and schedule steps are reported, not
-/// applied, until their apply paths are wired. Returns how many of the steps
+/// Apply every reconciliation step over the wire through the admin
+/// operations: module install (compile a source, or download a known hash
+/// and re-install its bytes), grants, ceiling, profile, and schedule
+/// set/cancel — each journaled by the host. Returns how many of the steps
 /// were actually applied, so the caller's summary cannot claim credit for
-/// the reported-only ones (#818).
+/// any step whose apply path is missing (#818).
 async fn apply_steps(
     client: &mut WorldClient,
     admin_token: &str,
@@ -968,17 +979,79 @@ async fn apply_steps(
             ApplyStep::SetProfile { profile } => {
                 client.set_execution_profile(admin_token, *profile).await?;
             }
-            ApplyStep::InstallModule { .. }
-            | ApplyStep::ScheduleAt { .. }
-            | ApplyStep::CancelSchedule { .. } => {
-                eprintln!(
-                    "note: {} is reported but not applied here; use `id world install`/`compile` for modules",
-                    step.kind()
-                );
+            ApplyStep::InstallModule { hash, source, seed } => {
+                if let Some(source) = source {
+                    let sources = read_compile_sources(source)?;
+                    client.compile(admin_token, sources, *seed, false).await?;
+                } else if let Some(hash) = hash {
+                    // The module is already on the host: fetch its bytes by
+                    // hash and install them under the manifest's seed.
+                    let wasm = client.download_module(capability, hash).await?;
+                    client.install_wasm(admin_token, &wasm, *seed).await?;
+                } else {
+                    anyhow::bail!("install_module step names neither a hash nor a source");
+                }
+            }
+            ApplyStep::ScheduleAt { id, at_ms } => {
+                client.set_schedule(admin_token, id, *at_ms).await?;
+            }
+            ApplyStep::CancelSchedule { id } => {
+                client.cancel_schedule(admin_token, id).await?;
             }
         }
     }
     Ok(applied)
+}
+
+/// Read the Roc sources a manifest `module_source` names, in the shape the
+/// host compile operation expects: the main file first (always sent as
+/// `main.roc`), then any sibling `.roc` files when the source is a
+/// directory. Size bounds mirror `id world compile`.
+fn read_compile_sources(source: &std::path::Path) -> Result<Vec<(String, String)>> {
+    let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+    if source.is_dir() {
+        paths.push(("main.roc".to_owned(), source.join("main.roc")));
+        let mut siblings: Vec<std::path::PathBuf> = std::fs::read_dir(source)
+            .with_context(|| format!("read source directory {}", source.display()))?
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension().is_some_and(|ext| ext == "roc")
+                    && path.file_name().is_some_and(|name| name != "main.roc")
+            })
+            .collect();
+        siblings.sort();
+        for path in siblings {
+            let name = path
+                .file_name()
+                .context("a source file has no name")?
+                .to_string_lossy()
+                .into_owned();
+            paths.push((name, path));
+        }
+    } else {
+        paths.push(("main.roc".to_owned(), source.to_path_buf()));
+    }
+    let mut sources = Vec::new();
+    let mut total = 0usize;
+    for (name, path) in paths {
+        let content =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        anyhow::ensure!(
+            content.len() <= crate::world_compile::MAX_COMPILE_FILE_BYTES,
+            "{} exceeds {} bytes",
+            path.display(),
+            crate::world_compile::MAX_COMPILE_FILE_BYTES
+        );
+        total += content.len();
+        sources.push((name, content));
+    }
+    anyhow::ensure!(
+        total <= crate::world_compile::MAX_COMPILE_TOTAL_BYTES,
+        "the sources exceed {} bytes",
+        crate::world_compile::MAX_COMPILE_TOTAL_BYTES
+    );
+    Ok(sources)
 }
 
 /// Record a world to a fixture: the file at `out`, or standard output.
@@ -1574,11 +1647,11 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
 mod tests {
     use super::{PumpLine, check_contract, pump_command, scaffold_world, step_is_applied};
 
-    /// #818: only grants/ceiling/profile steps are actually applied by
-    /// `apply_steps`; module and schedule steps are reported-only until
-    /// #807 wires their apply paths, so they must not count as applied.
+    /// #818, updated for #807: every step kind is applied by `apply_steps`
+    /// over the wire — module install and schedules included — so every
+    /// step counts toward the applied summary.
     #[test]
-    fn only_grants_ceiling_and_profile_steps_count_as_applied() {
+    fn every_step_kind_counts_as_applied() {
         use crate::world_manifest::ApplyStep;
         let steps = [
             ApplyStep::InstallModule {
@@ -1600,7 +1673,30 @@ mod tests {
             },
         ];
         let applied = steps.iter().filter(|step| step_is_applied(step)).count();
-        assert_eq!(applied, 3);
+        assert_eq!(applied, steps.len());
+    }
+
+    /// A manifest `module_source` that names a directory compiles its
+    /// `main.roc` plus the sibling `.roc` files (and nothing else); a plain
+    /// file compiles alone, always sent as `main.roc`.
+    #[test]
+    fn compile_sources_read_a_directorys_main_and_siblings() {
+        let dir = std::env::temp_dir().join(format!("id-apply-sources-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.roc"), "main").unwrap();
+        std::fs::write(dir.join("Helper.roc"), "helper").unwrap();
+        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+        let sources = super::read_compile_sources(&dir).unwrap();
+        assert_eq!(
+            sources,
+            vec![
+                ("main.roc".to_owned(), "main".to_owned()),
+                ("Helper.roc".to_owned(), "helper".to_owned()),
+            ]
+        );
+        let single = super::read_compile_sources(&dir.join("main.roc")).unwrap();
+        assert_eq!(single, vec![("main.roc".to_owned(), "main".to_owned())]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The shared line grammar maps the same line to the same action on the
