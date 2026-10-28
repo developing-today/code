@@ -6234,19 +6234,22 @@
         "name": "Gemini Argon - plan providers",
         // NEW 2026-10-27 (pool redesign): Gemini 4 Argon (AA v4.3.2: high
         // II 53; CAI 64 — the strongest coding evidence in the fleet).
-        // Doors: the OpenCode Go contributor leaves x3. The redesign
-        // draft also seated Antigravity LS, but LS's own live model list
-        // (38 models, read from the :18745 proxy during this pass) serves
-        // NO Gemini 4 of any kind — the leaf would be dead, so it is not
-        // seated; it returns if LS's list gains Argon. antigravity-agy
-        // stays out by design (disabled and unused). Go also lists a
-        // non-contributor gemini-4-argon; the contributor spelling is
-        // the cheaper seat (the Spark/Wonder pattern), so it is the one
-        // seated.
+        // Doors: the OpenCode Go leaves x3. Two draft seats were cut on
+        // live evidence during the deploy: Antigravity LS (its own live
+        // model list, 38 models read from the :18745 proxy, serves NO
+        // Gemini 4 of any kind) and the gemini-4-argon-contributor
+        // spelling (present in models.dev's listing but absent from the
+        // workspaces' live catalog as the serves resolve it — with only
+        // contributor leaves the route expanded to zero leaves and
+        // vanished). What the live catalog serves on all three
+        // workspaces is plain gemini-4-argon, so that is the seated
+        // leaf; the contributor spelling returns if the live catalog
+        // gains it. antigravity-agy stays out by design (disabled and
+        // unused).
         "targets": [
-          "opencode-go.personal/gemini-4-argon-contributor",
-          "opencode-go.lab/gemini-4-argon-contributor",
-          "opencode-go/gemini-4-argon-contributor"
+          "opencode-go.personal/gemini-4-argon",
+          "opencode-go.lab/gemini-4-argon",
+          "opencode-go/gemini-4-argon"
         ],
         "selection": "round-robin",
         "autonomy": "rules"
