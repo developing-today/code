@@ -1137,7 +1137,9 @@ fn is_block_node(node: &AstNode<'_>) -> bool {
 /// `normalize_inline_child_json`).
 fn is_unmarked_text_json(node: &Value) -> bool {
     node["type"].as_str() == Some("text")
-        && node["marks"].as_array().is_none_or(|marks| marks.is_empty())
+        && node["marks"]
+            .as_array()
+            .is_none_or(|marks| marks.is_empty())
 }
 
 /// Whether a JSON node is a `hard_break` — the boundary between two
