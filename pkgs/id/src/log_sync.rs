@@ -65,6 +65,14 @@ const EVENT_BUFFER: usize = 16;
 /// Operations the ingest worker takes in one write transaction, at most.
 const INGEST_BATCH: usize = 256;
 
+/// Total arrivals one batch may hold, refusals included. [`INGEST_BATCH`] caps the headers a
+/// batch stores, but a refusal is not stored, so a header-only cap never fires on a refused
+/// stream: every arrival restarts the batch's idle grace, and a peer streaming refusals spaced
+/// inside the grace would hold one batch open forever — nothing commits, and the refusals are
+/// never tallied (#1537). Counting every arrival towards this cap ends such a batch; the
+/// refusals are tallied and any headers queued with them commit.
+const BATCH_MAX_ARRIVALS: usize = INGEST_BATCH;
+
 /// How long the ingest worker waits for more arrivals before committing a batch that is not
 /// full. A batch is one write transaction, so a batch per arrival pays one commit (and one
 /// fsync) per operation. Arrivals are paced by the peer's page reads and the stream, not by
@@ -446,10 +454,11 @@ fn ingest_arrivals(
 }
 
 /// Collects one batch of arrivals, starting from `first`. The batch holds at most
-/// [`INGEST_BATCH`] headers (refusals do not count towards the cap, as before). Everything
-/// already queued is taken at once; then, while the batch is not full, the worker waits out
-/// an idle [`BATCH_GRACE`] for more arrivals before giving up on the batch — each arrival
-/// restarts the wait — so arrivals paced by the stream still land in the same write
+/// [`INGEST_BATCH`] headers and at most [`BATCH_MAX_ARRIVALS`] arrivals in total, refusals
+/// included, so a refused stream cannot hold the batch open (see [`BATCH_MAX_ARRIVALS`]).
+/// Everything already queued is taken at once; then, while the batch is not full, the worker
+/// waits out an idle [`BATCH_GRACE`] for more arrivals before giving up on the batch — each
+/// arrival restarts the wait — so arrivals paced by the stream still land in the same write
 /// transaction, however long their run spans. The wait ends early when the stream
 /// closes (every sender dropped), so a session's last, partial batch is not held back.
 fn collect_batch(first: Arrival, arrivals: &mut mpsc::Receiver<Arrival>) -> Vec<Arrival> {
@@ -464,7 +473,7 @@ fn collect_batch(first: Arrival, arrivals: &mut mpsc::Receiver<Arrival>) -> Vec<
             headers += 1;
         }
         batch.push(arrival);
-        if headers >= INGEST_BATCH {
+        if headers >= INGEST_BATCH || batch.len() >= BATCH_MAX_ARRIVALS {
             break;
         }
         next = loop {
@@ -1006,6 +1015,82 @@ mod tests {
             left += 1;
         }
         assert_eq!(left, 10, "the rest stays queued for the next batch");
+    }
+
+    /// A stream of refusals spaced inside the grace must not hold a batch open forever
+    /// (#1537): refusals count towards the batch's total-arrival cap, so the batch ends at
+    /// the cap while the stream is still flowing. Before the cap, each refusal restarted
+    /// the idle grace and `collect_batch` returned only once the stream closed.
+    #[test]
+    fn test_batch_collection_refused_stream_ends_at_the_total_cap() {
+        const SENT: usize = BATCH_MAX_ARRIVALS * 3;
+        let (tx, mut rx) = mpsc::channel::<Arrival>(SENT + 16);
+        let pacer = std::thread::spawn(move || {
+            for _ in 0..SENT {
+                tx.try_send(Arrival::Refused).unwrap();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        });
+        let first = loop {
+            match rx.try_recv() {
+                Ok(arrival) => break arrival,
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("the pacer went away: {error}"),
+            }
+        };
+        let started = std::time::Instant::now();
+        let batch = collect_batch(first, &mut rx);
+        let elapsed = started.elapsed();
+        pacer.join().unwrap();
+
+        assert_eq!(
+            batch.len(),
+            BATCH_MAX_ARRIVALS,
+            "a refused stream ends the batch at the total-arrival cap"
+        );
+        assert!(
+            batch
+                .iter()
+                .all(|arrival| matches!(arrival, Arrival::Refused)),
+            "the capped batch holds the refusals it collected"
+        );
+        assert!(
+            elapsed < Duration::from_millis((SENT * 2) as u64),
+            "the batch ended while the stream was still flowing, took {elapsed:?}"
+        );
+    }
+
+    /// The ingest worker tallies a refused stream and commits the headers queued with it
+    /// (#1537): the refusals are counted, not held uncommitted behind a batch that never
+    /// ends, and the one real header among them is stored.
+    #[test]
+    fn test_ingest_tallies_refusals_and_commits_queued_headers() {
+        let (_dir, store) = open();
+        let signer = key(31);
+        let events = chain_of(&signer, 1, group(31));
+        let header = events[0].bytes.clone();
+
+        const REFUSALS: usize = BATCH_MAX_ARRIVALS + 10;
+        let (tx, rx) = mpsc::channel::<Arrival>(REFUSALS + 16);
+        let producer = std::thread::spawn(move || {
+            for _ in 0..REFUSALS {
+                tx.try_send(Arrival::Refused).unwrap();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            tx.try_send(Arrival::Header(header)).unwrap();
+        });
+        let tally = ingest_arrivals(&store, rx).unwrap();
+        producer.join().unwrap();
+
+        assert_eq!(tally.refused, REFUSALS as u32, "every refusal is tallied");
+        assert_eq!(tally.accepted, 1, "the queued header is committed");
+        let refs: Vec<&SigningKey> = vec![&signer];
+        assert_eq!(
+            applied(&store, &refs, 0)[0].as_deref(),
+            Some(events[0].bytes.as_slice())
+        );
     }
 
     /// A store that has forked `alice`. It holds the first `held` events of the honest chain, which
