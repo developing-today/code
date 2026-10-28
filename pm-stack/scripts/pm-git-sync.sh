@@ -20,7 +20,10 @@
 set -uo pipefail
 REPO="${PM_GIT_SYNC_REPO:-$HOME/git/code}"
 BUN="${PM_GIT_SYNC_BUN:-/run/current-system/sw/bin/bun}"
-cd "$REPO" || { echo "pm-git-sync: FAIL cannot cd $REPO"; exit 1; }
+cd "$REPO" || {
+  echo "pm-git-sync: FAIL cannot cd $REPO"
+  exit 1
+}
 branch="$(git branch --show-current)"
 if [ "$branch" != "main" ]; then
   echo "pm-git-sync: FAIL $REPO is on branch '$branch', not main — not pulling"
@@ -52,13 +55,13 @@ redeploy() { # <subtree> <unit> <dep-step-or-empty>
   local subtree="$1" unit="$2" dep="$3"
   git diff --name-only "$old" "$new" -- "$subtree" | grep -q . || return 0
   if [ -n "$dep" ]; then
-    (cd "$subtree" && eval "$dep") \
-      && echo "pm-git-sync: dep step done for $subtree" \
-      || echo "pm-git-sync: WARN dep step failed for $subtree"
+    (cd "$subtree" && eval "$dep") &&
+      echo "pm-git-sync: dep step done for $subtree" ||
+      echo "pm-git-sync: WARN dep step failed for $subtree"
   fi
-  systemctl --user restart "$unit" \
-    && echo "pm-git-sync: $unit restarted ($subtree changed)" \
-    || echo "pm-git-sync: WARN $unit restart failed"
+  systemctl --user restart "$unit" &&
+    echo "pm-git-sync: $unit restarted ($subtree changed)" ||
+    echo "pm-git-sync: WARN $unit restart failed"
 }
 
 # The aggregator installs with bun when its dependency inputs change.

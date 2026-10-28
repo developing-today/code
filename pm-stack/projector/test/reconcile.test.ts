@@ -47,10 +47,7 @@ describe("listResource pagination", () => {
     const fetchFn = (async (url: string) => {
       seen.push(url);
       if (url.endsWith("page=2")) return jsonRes([{ n: 2 }]);
-      return jsonRes(
-        [{ n: 1 }],
-        '<https://api.github.com/repos/o/r/issues?page=2>; rel="next"',
-      );
+      return jsonRes([{ n: 1 }], '<https://api.github.com/repos/o/r/issues?page=2>; rel="next"');
     }) as unknown as typeof fetch;
 
     const rows = await listResource<{ n: number }>(auth, "repos/o/r/issues?per_page=100", fetchFn);
@@ -105,20 +102,13 @@ describe("reconcileRepos against a fake GitHub", () => {
       }
       if (url.includes("/issues?") && url.includes("page=2")) return jsonRes([issue(2)]);
       if (url.includes("/issues?")) {
-        return jsonRes(
-          [issue(1)],
-          '<https://api.github.com/repos/developing-today/code/issues?page=2>; rel="next"',
-        );
+        return jsonRes([issue(1)], '<https://api.github.com/repos/developing-today/code/issues?page=2>; rel="next"');
       }
       if (url.includes("/pulls?")) return jsonRes([]);
       return jsonRes([]);
     }) as unknown as typeof fetch;
 
-    const result = await reconcileRepos(
-      db,
-      { PM_REPOS: "developing-today/code", GITHUB_TOKEN: "test-token" },
-      fetchFn,
-    );
+    const result = await reconcileRepos(db, { PM_REPOS: "developing-today/code", GITHUB_TOKEN: "test-token" }, fetchFn);
 
     expect(result.ok).toBe(true);
     const errors = (result.streams as { error?: string }[]).filter((s) => s.error);
