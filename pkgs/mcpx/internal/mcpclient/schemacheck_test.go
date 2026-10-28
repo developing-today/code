@@ -232,3 +232,34 @@ func BenchmarkCallToolValidateArgs(b *testing.B) {
 		}
 	}
 }
+
+// An explicit null for a property the schema does not require is an
+// omission, not a type violation (SEP-2243: a null parameter's header
+// is omitted, and the conformance suite calls a boolean-typed optional
+// parameter with null). A null for a required property is still
+// validated as sent and fails here, because the schema does not admit
+// null for it.
+func TestCallToolNullForOptionalPropertyIsAnOmission(t *testing.T) {
+	ss, c, _ := newSchemaServer(t,
+		[]any{toolFixture("opts", `{"type":"object","properties":{"region":{"type":"string"},"verbose":{"type":"boolean"}},"required":["region"],"additionalProperties":false}`, "")},
+		map[string]any{"resultType": "complete", "content": []any{}})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.ListTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CallTool(ctx, "opts", map[string]any{"region": "us-east1", "verbose": nil}); err != nil {
+		t.Fatalf("null for optional property: %v", err)
+	}
+	if got := ss.calls.Load(); got != 1 {
+		t.Fatalf("upstream received %d tools/call requests, want 1", got)
+	}
+	_, err := c.CallTool(ctx, "opts", map[string]any{"region": nil})
+	var ipe *mcpclient.InvalidParamsError
+	if !errors.As(err, &ipe) {
+		t.Fatalf("null for required property: error is %T (%v), want InvalidParamsError", err, err)
+	}
+	if got := ss.calls.Load(); got != 1 {
+		t.Fatalf("upstream received %d tools/call requests after the rejected call, want 1", got)
+	}
+}

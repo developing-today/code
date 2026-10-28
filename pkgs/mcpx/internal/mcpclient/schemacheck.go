@@ -1,6 +1,7 @@
 package mcpclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,6 +24,11 @@ type toolSchemas struct {
 	hash   string
 	input  *schemaval.Schema
 	output *schemaval.Schema
+	// required names the inputSchema's required top-level properties,
+	// parsed from the raw schema at compile time. validateToolArgs uses
+	// it to tell an omitted optional property apart from a required one
+	// sent as explicit null.
+	required map[string]bool
 }
 
 // InvalidParamsError is a CallTool argument set that failed validation
@@ -86,6 +92,7 @@ func (c *Client) checkToolSchemas(tools []Tool) []Tool {
 				bad = fmt.Sprintf("inputSchema: %v", err)
 			} else {
 				ts.input = s
+				ts.required = requiredProps(t.InputSchema)
 			}
 		}
 		if bad == "" && len(t.OutputSchema) > 0 {
@@ -130,10 +137,57 @@ func (c *Client) validateToolArgs(ctx context.Context, name string, argsJSON jso
 	if !ok || ts.input == nil {
 		return nil
 	}
-	if err := ts.input.ValidateJSON(argsJSON); err != nil {
+	if err := ts.input.ValidateJSON(validationCopy(ts, argsJSON)); err != nil {
 		return &InvalidParamsError{Tool: name, Err: err}
 	}
 	return nil
+}
+
+// requiredProps extracts the top-level required property names from a
+// raw inputSchema. A schema whose required list does not parse simply
+// yields none; Compile has already judged the schema itself.
+func requiredProps(raw json.RawMessage) map[string]bool {
+	var doc struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil || len(doc.Required) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(doc.Required))
+	for _, name := range doc.Required {
+		out[name] = true
+	}
+	return out
+}
+
+// validationCopy returns the argument bytes to validate. An explicit
+// JSON null for a property the schema does not require is an omission,
+// not a value: SEP-2243 treats a null parameter as not provided (its
+// header must be omitted), and the conformance suite calls tools that
+// way -- a boolean-typed optional parameter sent as null. The copy
+// drops those keys; the caller's original arguments still go on the
+// wire unchanged. A null for a required property stays in the copy and
+// passes or fails exactly as the schema says.
+func validationCopy(ts *toolSchemas, argsJSON json.RawMessage) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(argsJSON, &obj); err != nil {
+		return argsJSON
+	}
+	changed := false
+	for key, value := range obj {
+		if string(bytes.TrimSpace(value)) == "null" && !ts.required[key] {
+			delete(obj, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return argsJSON
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return argsJSON
+	}
+	return out
 }
 
 // checkToolOutput validates a result's structuredContent against the
