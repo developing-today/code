@@ -48,12 +48,14 @@ export interface CardState {
   answeredOptionId?: string;
 }
 
-/** Ids cancelled by a restore: any non-superseded restore action
- *  cancels the action it names in `supersedes`. */
+/** Ids cancelled by a restore: any non-superseded, non-rejected
+ *  restore action cancels the action it names in `supersedes`
+ *  (a consumer rejection is non-effective, as for every other verb). */
 export function cancelledActionIds(actions: DashAction[]): Set<string> {
   const out = new Set<string>();
   for (const a of actions) {
-    if (a.verb === "restore" && a.state !== "superseded" && a.supersedes) out.add(a.supersedes);
+    if (a.verb === "restore" && a.state !== "superseded" && a.state !== "rejected" && a.supersedes)
+      out.add(a.supersedes);
   }
   return out;
 }
