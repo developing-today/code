@@ -70,6 +70,16 @@ in
           services.laptop-backups.enable = true;
         };
       }
+      {
+        # Codex remote control (code#1685, dezren39/nix#1028): the
+        # Codex app-server daemon with remote control enabled, declared
+        # in dezren39/nix and imported as a home-manager module so it
+        # deploys with the same switch, like the laptop backups above.
+        home-manager.users.user = {
+          imports = [ inputs.dezren39-nix.homeModules.codex-remote-control ];
+          services.codex-remote-control.enable = true;
+        };
+      }
       # KRdp remote desktop for this laptop (user service + package);
       # see the file for the one-time on-machine credential setup.
       ./amd-krdp.nix
