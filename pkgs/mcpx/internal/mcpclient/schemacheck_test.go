@@ -92,6 +92,35 @@ func TestCallToolRejectsInvalidArgumentsBeforeTheTransport(t *testing.T) {
 	}
 }
 
+// A tool whose inputSchema fails through a combinator (anyOf) must
+// surface the -32602 InvalidParamsError, never panic: the validation
+// error tree for combinators has interior units with no message
+// (regression from the PR #1596 conformance crash, #1483).
+func TestCallToolCombinatorSchemaFailureReturnsInvalidParams(t *testing.T) {
+	ss, c, _ := newSchemaServer(t,
+		[]any{toolFixture("pick", `{"type":"object","properties":{"mode":{"anyOf":[{"const":"a"},{"const":"b"}]}},"required":["mode"]}`, "")},
+		map[string]any{"resultType": "complete", "content": []any{}})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.ListTools(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.CallTool(ctx, "pick", map[string]any{"mode": "c"})
+	var ipe *mcpclient.InvalidParamsError
+	if !errors.As(err, &ipe) {
+		t.Fatalf("error is %T (%v), want InvalidParamsError", err, err)
+	}
+	if ipe.RPCCode() != -32602 {
+		t.Fatalf("RPCCode %d, want -32602", ipe.RPCCode())
+	}
+	if !strings.Contains(err.Error(), "$.mode") {
+		t.Fatalf("error does not name the failing path: %v", err)
+	}
+	if got := ss.calls.Load(); got != 0 {
+		t.Fatalf("upstream received %d tools/call requests for invalid arguments, want 0", got)
+	}
+}
+
 func TestListToolsExcludesUncompilableSchemasWithWarning(t *testing.T) {
 	_, c, warned := newSchemaServer(t,
 		[]any{

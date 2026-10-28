@@ -188,6 +188,47 @@ func TestFlattenedPathErrors(t *testing.T) {
 	}
 }
 
+// Combinator failures (anyOf/oneOf/allOf/not/if-then) produce a
+// DetailedOutput tree whose interior units carry a nil Error;
+// Validate must flatten to the leaves instead of dereferencing it.
+// Regression: an anyOf argument failure panicked the daemon in the
+// mcpx conformance suite (#1483, PR #1596 server-all crash).
+func TestFlattenedCombinatorErrors(t *testing.T) {
+	cases := []struct {
+		name, schema, inst, wantPath string
+	}{
+		{"anyOf", `{"anyOf": [{"type": "integer"}, {"type": "boolean"}]}`, `"x"`, "$"},
+		{"oneOf", `{"oneOf": [{"type": "integer"}, {"type": "number"}]}`, `3`, "$"},
+		{"allOf", `{"allOf": [{"type": "integer"}, {"minimum": 5}]}`, `"x"`, "$"},
+		{"not", `{"not": {"type": "integer"}}`, `3`, "$"},
+		{"ifThen", `{"if": {"type": "integer"}, "then": {"minimum": 10}}`, `3`, "$"},
+		{"nestedAnyOf", `{"type": "object", "properties": {"mode": {"anyOf": [{"const": "a"}, {"const": "b"}]}}}`, `{"mode": "c"}`, "$.mode"},
+		{"contains", `{"type": "array", "contains": {"type": "integer"}}`, `["a", "b"]`, "$[0]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := mustCompile(t, tc.schema)
+			err := mustNotValidate(t, s, tc.inst)
+			var ve *ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("err = %T, want ValidationError", err)
+			}
+			if len(ve.Problems) == 0 {
+				t.Fatalf("no problems flattened from %v", err)
+			}
+			found := false
+			for _, pr := range ve.Problems {
+				if pr.Path == tc.wantPath {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("problems = %v, want one at %s", ve.Problems, tc.wantPath)
+			}
+		})
+	}
+}
+
 // A schema over the 1 MiB bound fails compilation with the typed error.
 func TestSchemaTooLarge(t *testing.T) {
 	big := `{"description": "` + strings.Repeat("x", MaxSchemaBytes) + `", "type": "integer"}`

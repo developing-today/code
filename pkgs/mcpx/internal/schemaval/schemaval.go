@@ -254,10 +254,23 @@ func (s *Schema) Validate(v any) error {
 		return err
 	}
 	out := ve.DetailedOutput()
+	// DetailedOutput is a tree, not a flat list: a unit that groups
+	// sub-errors (every combinator failure — anyOf/oneOf/allOf/not —
+	// and any failure under a grouping keyword) carries Errors but a
+	// nil Error. Flatten by walking to the leaves; reading Error off
+	// an interior unit panics (found by the mcpx conformance suite:
+	// an anyOf argument failure crashed the daemon, #1483).
 	problems := make([]Problem, 0, len(out.Errors))
-	for _, u := range out.Errors {
-		problems = append(problems, Problem{Path: jsonPath(u.InstanceLocation), Message: u.Error.String()})
+	var walk func(u *jsonschema.OutputUnit)
+	walk = func(u *jsonschema.OutputUnit) {
+		if u.Error != nil {
+			problems = append(problems, Problem{Path: jsonPath(u.InstanceLocation), Message: u.Error.String()})
+		}
+		for i := range u.Errors {
+			walk(&u.Errors[i])
+		}
 	}
+	walk(out)
 	if len(problems) == 0 {
 		problems = append(problems, Problem{Path: "$", Message: ve.Error()})
 	}
