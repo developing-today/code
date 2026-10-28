@@ -7,9 +7,11 @@
 #   - flags tracked files over 25 MiB (report only)
 #   - puts the primary back on the default branch when it is clean
 #     (a dirty primary on the wrong branch is reported, never forced)
-#   - commits a dirty tree on the default branch — all-or-nothing:
-#     a tree containing a secret-shaped path, or an untracked file
-#     over 10 MiB, is reported, never committed
+#   - commits tracked-file changes on the default branch —
+#     all-or-nothing: a tree containing a secret-shaped tracked
+#     path is reported, never committed. Untracked files are only
+#     counted here; the daily laptop-untracked-review classifies
+#     them (oversized ones belong to the backup scripts)
 #   - pulls fast-forward when behind, pushes when ahead; never
 #     force-pushes, never merges, never rebases
 # Worktrees are counted for the report but never touched: they are
@@ -24,7 +26,6 @@ mkdir -p "$REPORT_DIR"
 TS="$(date '+%Y-%m-%d %H:%M %Z')"
 SECRET_RE='\.env|secret|credential|\.pem$|\.key$|id_rsa|id_ed25519'
 BIG_TRACKED=26214400 # 25 MiB
-BIG_NEW=10485760     # 10 MiB
 LINES=()
 say() { LINES+=("$1"); printf '%s\n' "$1"; }
 
@@ -52,9 +53,10 @@ for d in "${REPOS[@]}"; do
   fi
   db="$(g symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
   [ -z "$db" ] && db=main
-  timeout 60 g fetch -q --prune origin 2>/dev/null || say "- $name: FETCH FAILED — continuing with local state"
+  timeout 60 git -C "$d" fetch -q --prune origin 2>/dev/null || say "- $name: FETCH FAILED — continuing with local state"
   br="$(g branch --show-current)"
-  dirty="$(g status --porcelain | wc -l)"
+  dirty="$(g status --porcelain | grep -vc '^??')"
+  untracked="$(g ls-files --others --exclude-standard | wc -l)"
   big="$(cd "$d" && git ls-files -z | xargs -0 -r stat -c '%s %n' 2>/dev/null | awk -v t="$BIG_TRACKED" '$1 > t {printf "%s (%d MiB); ", $2, $1 / 1048576}')"
   [ -n "$big" ] && say "- $name: LARGE TRACKED FILES: $big"
   wt="$(g worktree list | wc -l)"
@@ -73,31 +75,22 @@ for d in "${REPOS[@]}"; do
     fi
   fi
   if [ "$dirty" -gt 0 ]; then
-    guarded=""
-    if g status --porcelain | grep -Eiq "$SECRET_RE"; then
-      guarded="secret-shaped path present"
-    else
-      while IFS= read -r -d '' f; do
-        sz="$(stat -c '%s' "$d/$f" 2>/dev/null || echo 0)"
-        if [ "$sz" -gt "$BIG_NEW" ]; then
-          guarded="untracked file over 10 MiB: $f"
-          break
-        fi
-      done < <(g ls-files --others --exclude-standard -z)
-    fi
-    if [ -n "$guarded" ]; then
-      say "- $name: DIRTY ($dirty entries) NOT committed — $guarded"
-    elif g add -A && g commit -q -m "repo-keeper: snapshot $name $TS"; then
-      say "- $name: committed $dirty dirty entries on $db"
+    if g status --porcelain | grep -v '^??' | grep -Eiq "$SECRET_RE"; then
+      say "- $name: DIRTY ($dirty tracked entries) NOT committed — secret-shaped path present"
+    elif g add -u && g commit -q -m "repo-keeper: snapshot $name $TS"; then
+      say "- $name: committed $dirty tracked entries on $db"
       dirty=0
     else
-      say "- $name: COMMIT FAILED ($dirty dirty entries)"
+      say "- $name: COMMIT FAILED ($dirty tracked entries)"
     fi
+  fi
+  if [ "$untracked" -gt 0 ]; then
+    say "- $name: $untracked untracked file(s) — left for the daily review"
   fi
   counts="$(g rev-list --left-right --count "$db...origin/$db" 2>/dev/null || echo '0 0')"
   read -r ahead behind <<<"$counts"
   if [ "${behind:-0}" -gt 0 ] && [ "${ahead:-0}" -eq 0 ] && [ "$dirty" -eq 0 ]; then
-    if timeout 60 g pull -q --ff-only origin "$db"; then
+    if timeout 60 git -C "$d" pull -q --ff-only origin "$db"; then
       say "- $name: pulled $behind commit(s) (fast-forward)"
     else
       say "- $name: PULL FAILED ($behind behind)"
@@ -106,7 +99,7 @@ for d in "${REPOS[@]}"; do
     say "- $name: DIVERGED (ahead $ahead, behind $behind) — left alone"
   fi
   if [ "${ahead:-0}" -gt 0 ] && [ "$dirty" -eq 0 ]; then
-    if timeout 60 g push -q origin "$db"; then
+    if timeout 60 git -C "$d" push -q origin "$db"; then
       say "- $name: pushed $ahead commit(s)"
     else
       say "- $name: PUSH FAILED ($ahead ahead)"
