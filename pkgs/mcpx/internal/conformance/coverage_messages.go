@@ -1,6 +1,13 @@
 package conformance
 
 // Messages, errors, _meta, JSON Schema.
+//
+// Note: a JSON Schema validator mechanism now exists in the binary —
+// internal/schemaval (2020-12 core, dialect policy, offline-only refs;
+// see docs/schema-validation.md). The json-schema-* requirement rows
+// below still describe protocol-frame behaviour (internal/mcpspec,
+// test-only); schemaval row closures land with the schemaval phases
+// that wire it into list/call paths.
 func init() {
 	register(
 		SReq("conformance.TestMessagesServer",
