@@ -13,15 +13,15 @@ is the validator the binary carries.
 
 ## Dialect policy
 
-| Declared `$schema` | Result |
-| --- | --- |
-| *(absent)* | Treated as 2020-12 |
-| 2020-12 (`https://json-schema.org/draft/2020-12/schema`) | Supported |
-| 2019-09 (`https://json-schema.org/draft/2019-09/schema`) | Supported |
-| draft-07 (`http://json-schema.org/draft-07/schema#`) | Supported |
-| draft-06 (`http://json-schema.org/draft-06/schema#`) | Supported |
-| draft-04 (`http://json-schema.org/draft-04/schema#`) | Supported |
-| anything else | Compile fails with a typed `UnsupportedDialectError`, distinct from a generic compile error |
+| Declared `$schema`                                       | Result                                                                                      |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| _(absent)_                                               | Treated as 2020-12                                                                          |
+| 2020-12 (`https://json-schema.org/draft/2020-12/schema`) | Supported                                                                                   |
+| 2019-09 (`https://json-schema.org/draft/2019-09/schema`) | Supported                                                                                   |
+| draft-07 (`http://json-schema.org/draft-07/schema#`)     | Supported                                                                                   |
+| draft-06 (`http://json-schema.org/draft-06/schema#`)     | Supported                                                                                   |
+| draft-04 (`http://json-schema.org/draft-04/schema#`)     | Supported                                                                                   |
+| anything else                                            | Compile fails with a typed `UnsupportedDialectError`, distinct from a generic compile error |
 
 ## Rules
 
