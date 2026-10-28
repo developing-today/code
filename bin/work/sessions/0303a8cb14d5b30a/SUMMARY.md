@@ -16,6 +16,7 @@ opencode v2.0.30+56590c5
 ```
 
 Notes:
+
 - First one-shot attempt failed: `MODEL_NOT_IN_PLAN: GPT-5.6 Terra ...` (OpenCode's default model
   is not in-plan on this host). Retried pinned to `commandcode/deepseek/deepseek-v4-flash` -> exit 0.
 - Run: `acpx --cwd /home/user/code --format quiet --approve-all --model commandcode/deepseek/deepseek-v4-flash opencode exec "Reply with the exact output of running: opencode --version"`
