@@ -356,8 +356,17 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
                 "src": image.url
             });
 
-            // Get alt text from children (text content)
-            let alt = get_text_content(node);
+            // #1417: store the alt in markdown form, not flattened plain
+            // text - get_text_content dropped emphasis/strong/code-span
+            // structure, so `![*alt*](/x)` saved back as `![alt](/x)`.
+            // The PM image node carries `alt` as a plain string
+            // (editor.ts schema), so that string IS the markdown source
+            // for the alt; the save direction re-parses it into inline
+            // nodes (see json_to_ast's image special case). Plain-text
+            // alts are unchanged by this encoding. Editor limitation:
+            // the alt popover shows/edits the markdown form (e.g.
+            // `*alt*`), which is the documented trade-off for #1417.
+            let alt = get_alt_markdown(node);
             if !alt.is_empty() {
                 attrs["alt"] = json!(alt);
             }
@@ -729,6 +738,145 @@ fn collect_text<'a>(node: &'a AstNode<'a>, text: &mut String) {
             }
         }
     }
+}
+
+/// #1417: serialize an image alt subtree back to markdown form.
+///
+/// The inverse of the save direction's alt re-parse: emphasis, strong,
+/// strikethrough, code spans and links keep their markup; literal text
+/// is escaped so characters that were literal in the source (e.g. an
+/// escaped `\\*`) stay literal when the stored form is re-parsed on
+/// save. Nested images/links inside an alt are serialized recursively,
+/// so a nested-link alt round-trips instead of flattening.
+fn get_alt_markdown<'a>(node: &'a AstNode<'a>) -> String {
+    let mut out = String::new();
+    for child in node.children() {
+        collect_alt_markdown(child, &mut out);
+    }
+    out
+}
+
+fn collect_alt_markdown<'a>(node: &'a AstNode<'a>, out: &mut String) {
+    let data = node.data.borrow();
+    match &data.value {
+        NodeValue::Text(t) => {
+            for ch in t.chars() {
+                if matches!(ch, '\\' | '*' | '_' | '`' | '[' | ']') {
+                    out.push('\\');
+                }
+                out.push(ch);
+            }
+        }
+        NodeValue::Code(c) => {
+            // Fence with one more backtick than the longest run inside.
+            let longest = c
+                .literal
+                .split(|ch| ch != '`')
+                .map(str::len)
+                .max()
+                .unwrap_or(0);
+            let fence = "`".repeat(longest + 1);
+            out.push_str(&fence);
+            if c.literal.starts_with('`') || c.literal.ends_with('`') {
+                out.push(' ');
+                out.push_str(&c.literal);
+                out.push(' ');
+            } else {
+                out.push_str(&c.literal);
+            }
+            out.push_str(&fence);
+        }
+        NodeValue::SoftBreak => out.push(' '),
+        NodeValue::LineBreak => out.push('\n'),
+        NodeValue::HtmlInline(html) => out.push_str(html),
+        NodeValue::Emph => {
+            drop(data);
+            out.push('*');
+            for child in node.children() {
+                collect_alt_markdown(child, out);
+            }
+            out.push('*');
+        }
+        NodeValue::Strong => {
+            drop(data);
+            out.push_str("**");
+            for child in node.children() {
+                collect_alt_markdown(child, out);
+            }
+            out.push_str("**");
+        }
+        NodeValue::Strikethrough => {
+            drop(data);
+            out.push_str("~~");
+            for child in node.children() {
+                collect_alt_markdown(child, out);
+            }
+            out.push_str("~~");
+        }
+        NodeValue::Link(link) => {
+            let url = link.url.clone();
+            let title = link.title.clone();
+            drop(data);
+            out.push('[');
+            for child in node.children() {
+                collect_alt_markdown(child, out);
+            }
+            out.push_str("](");
+            out.push_str(&url);
+            if !title.is_empty() {
+                out.push_str(" \"");
+                out.push_str(&title.replace('"', "\\\""));
+                out.push_str("\"");
+            }
+            out.push(')');
+        }
+        NodeValue::Image(link) => {
+            let url = link.url.clone();
+            let title = link.title.clone();
+            drop(data);
+            out.push_str("![");
+            for child in node.children() {
+                collect_alt_markdown(child, out);
+            }
+            out.push_str("](");
+            out.push_str(&url);
+            if !title.is_empty() {
+                out.push_str(" \"");
+                out.push_str(&title.replace('"', "\\\""));
+                out.push_str("\"");
+            }
+            out.push(')');
+        }
+        _ => {
+            drop(data);
+            for child in node.children() {
+                collect_alt_markdown(child, out);
+            }
+        }
+    }
+}
+
+/// #1417: re-parse a stored markdown-form alt into inline AST nodes in
+/// `arena` (the save direction). Returns the paragraph's children,
+/// detached and ready to append under an Image node. Falls back to a
+/// single plain Text node when the alt does not parse to a paragraph
+/// (defensive; plain alts parse to exactly that anyway).
+fn alt_markdown_to_nodes<'a>(arena: &'a Arena<'a>, alt: &str) -> Vec<&'a AstNode<'a>> {
+    let options = commonmark_options();
+    let root = parse_document(arena, alt, &options);
+    if let Some(paragraph) = root
+        .children()
+        .find(|n| matches!(n.data.borrow().value, NodeValue::Paragraph))
+    {
+        let nodes: Vec<&'a AstNode<'a>> = paragraph.children().collect();
+        for n in &nodes {
+            n.detach();
+        }
+        if !nodes.is_empty() {
+            return nodes;
+        }
+    }
+    vec![&*arena.alloc(AstNode::from(NodeValue::Text(alt.to_owned().into())))]
 }
 
 /// Escape a value for a double-quoted HTML attribute (#873): `&` first, so
@@ -1489,13 +1637,19 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
     }
 
     // Special case: image needs alt text as child (but NOT for HtmlInline, i.e. sized images)
+    // #1417: the stored alt is markdown form (see convert_node's Image
+    // arm) - re-parse it into inline nodes so emphasis/strong/code-span
+    // markup is emitted as markup, not as one flat (formatter-escaped)
+    // Text child. A plain-text alt re-parses to a single Text node,
+    // exactly the old behaviour.
     if node_type == "image"
         && matches!(ast_node.data.borrow().value, NodeValue::Image(_))
         && let Some(alt) = json["attrs"]["alt"].as_str()
         && !alt.is_empty()
     {
-        let text_node = arena.alloc(AstNode::from(NodeValue::Text(alt.to_owned().into())));
-        ast_node.append(text_node);
+        for alt_node in alt_markdown_to_nodes(arena, alt) {
+            ast_node.append(alt_node);
+        }
     }
 
     // #880: an image carrying linkHref (a linked image, see convert_node)
@@ -2218,6 +2372,54 @@ mod tests {
         assert_eq!(img["attrs"]["src"], "image.png");
         assert_eq!(img["attrs"]["alt"], "Alt text");
         assert_eq!(img["attrs"]["title"], "Title");
+    }
+
+    #[test]
+    fn test_image_alt_markup_roundtrips() {
+        // #1417: inline markup inside image alt text must survive an
+        // open->save round-trip. The PM alt attr stores the markdown
+        // form; plain alts are byte-identical to before.
+        for (md, expected_alt) in [
+            ("![*alt* text](/x.png)\n", "*alt* text"),
+            ("![**bold alt**](/x.png)\n", "**bold alt**"),
+            ("![a `code` b](/x.png)\n", "a `code` b"),
+            ("![a [link](/y) b](/x.png)\n", "a [link](/y) b"),
+            ("![plain alt](/x.png)\n", "plain alt"),
+        ] {
+            let doc = markdown_to_prosemirror(md);
+            let img = &doc["content"][0]["content"][0];
+            assert_eq!(img["type"], "image", "image node for {md}");
+            assert_eq!(img["attrs"]["alt"], expected_alt, "stored alt for {md}");
+            let saved = prosemirror_to_markdown(&doc).expect("save converts");
+            assert_eq!(saved.trim(), md.trim(), "round-trip for {md}");
+            // And the saved form re-parses to the same stored alt (fixpoint).
+            let doc2 = markdown_to_prosemirror(&saved);
+            assert_eq!(
+                doc2["content"][0]["content"][0]["attrs"]["alt"],
+                expected_alt
+            );
+        }
+    }
+
+    #[test]
+    fn test_image_alt_markup_pm_to_md() {
+        // #1417, save direction alone: a PM image whose alt attr is in
+        // markdown form emits that markup inside the image brackets.
+        let pm_json = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "image",
+                    "attrs": {"src": "/x.png", "alt": "a `code` b"}
+                }]
+            }]
+        });
+        let md = prosemirror_to_markdown(&pm_json).unwrap();
+        assert!(
+            md.contains("![a `code` b](/x.png)"),
+            "code-span alt emitted as markup: {md}"
+        );
     }
 
     #[test]
