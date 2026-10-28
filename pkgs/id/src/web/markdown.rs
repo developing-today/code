@@ -3556,7 +3556,10 @@ mod tests {
         // made such documents unsavable.
         let doc = markdown_to_prosemirror("- [ ] a\n- plain\n- [x] b\n");
         let content = doc["content"].as_array().unwrap();
-        let types: Vec<&str> = content.iter().map(|n| n["type"].as_str().unwrap()).collect();
+        let types: Vec<&str> = content
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
         assert_eq!(types, ["task_list", "bullet_list", "task_list"]);
         assert_eq!(content[0]["content"].as_array().unwrap().len(), 1);
         assert_eq!(content[1]["content"][0]["type"], "list_item");
@@ -3565,7 +3568,10 @@ mod tests {
         // Plain-first order splits the other way.
         let doc = markdown_to_prosemirror("- plain\n- [ ] a\n");
         let content = doc["content"].as_array().unwrap();
-        let types: Vec<&str> = content.iter().map(|n| n["type"].as_str().unwrap()).collect();
+        let types: Vec<&str> = content
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
         assert_eq!(types, ["bullet_list", "task_list"]);
 
         // The split document saves (no MisplacedNode) and the save is a
@@ -3573,7 +3579,10 @@ mod tests {
         for original in ["- [ ] a\n- plain\n- [x] b\n", "- plain\n- [ ] a\n"] {
             let (first, second) = two_saves(original);
             assert_eq!(first, second, "no fixpoint for {original:?}");
-            assert_eq!(markdown_to_prosemirror(&first), markdown_to_prosemirror(original));
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original)
+            );
         }
     }
 
@@ -3583,7 +3592,10 @@ mod tests {
         // numbering is unchanged.
         let doc = markdown_to_prosemirror("1. [ ] a\n2. plain\n3. [x] b\n");
         let content = doc["content"].as_array().unwrap();
-        let types: Vec<&str> = content.iter().map(|n| n["type"].as_str().unwrap()).collect();
+        let types: Vec<&str> = content
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
         assert_eq!(types, ["task_list", "ordered_list", "task_list"]);
         assert_eq!(content[0]["attrs"]["order"], 1);
         assert_eq!(content[1]["attrs"]["order"], 2);
@@ -3599,7 +3611,10 @@ mod tests {
         for original in ["1. [ ] a\n2. plain\n3. [x] b\n", "4. plain\n5. [ ] a\n"] {
             let (first, second) = two_saves(original);
             assert_eq!(first, second, "no fixpoint for {original:?}");
-            assert_eq!(markdown_to_prosemirror(&first), markdown_to_prosemirror(original));
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original)
+            );
         }
     }
 
