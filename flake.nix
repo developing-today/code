@@ -107,12 +107,13 @@ rec {
     home-manager = {
       url = "github:nix-community/home-manager"; # ?shallow=1";
     };
-    # Drew's personal flake: source of the laptop-backups home-manager
-    # module (modules/laptop-backups.nix) imported for the amd host, so
-    # the laptop's backup jobs deploy with this flake's switch like
-    # everything else (code#1516, dezren39/nix#976). Only its
-    # homeModules output is consumed; no follows, on purpose: its
-    # package set targets darwin and nothing here builds from it.
+    # Drew's personal flake (Darwin). Retained as an input only as
+    # a pin source: other inputs follow its nixpkgs-hoisted. Its
+    # laptop home-manager modules (laptop-backups,
+    # codex-remote-control) moved into this flake on 2026-10-28
+    # (nixos/home/; code#1723) — nothing here consumes its
+    # homeModules output anymore. Its package set targets darwin
+    # and nothing here builds from it.
     dezren39-nix = {
       url = "github:dezren39/nix";
     };
