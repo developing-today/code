@@ -110,8 +110,124 @@ fn commonmark_options() -> Options<'static> {
 pub fn markdown_to_prosemirror(markdown: &str) -> Value {
     let arena = Arena::new();
     let options = commonmark_options();
-    let root = parse_document(&arena, markdown, &options);
-    convert_node(root, &[])
+    // #1423: comrak (per CommonMark) cannot parse a link destination
+    // that contains a line ending, even in <...> angle form, so a
+    // newline destination never becomes a link at all — the text is
+    // left literal and the href is lost on reopen. Protect newlines
+    // inside angle-form destinations with a collision-safe token
+    // before parsing (the parse-side mirror of the save direction's
+    // placeholder substitution in `substitute_spaced_destinations`)
+    // and restore them in the converted href/src attrs afterwards.
+    let (protected, newline_token) = protect_newline_destinations(markdown);
+    let root = parse_document(&arena, &protected, &options);
+    let mut doc = convert_node(root, &[]);
+    if let Some(token) = newline_token {
+        restore_attr_newlines(&mut doc, &token);
+    }
+    doc
+}
+
+/// Replace each newline inside an angle-form link/image destination
+/// (`](<...>)` inline, `]: <...>` reference definition) with a token
+/// comrak keeps verbatim in the parsed URL, returning the protected
+/// source and the token used (`None` when no destination needed
+/// protection). Fenced code blocks are skipped — a destination-shaped
+/// string inside a fence is literal text, not a link. A candidate
+/// destination that hits a blank line or another `<` before its
+/// closing `>` is not a destination and is left alone.
+fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
+    if !markdown.contains('\n') {
+        return (markdown.to_string(), None);
+    }
+    let mut token = String::from("idweb-newline-0-token");
+    let mut counter = 0;
+    while markdown.contains(&token) {
+        counter += 1;
+        token = format!("idweb-newline-{counter}-token");
+    }
+    let bytes = markdown.as_bytes();
+    let fence = "`".repeat(3);
+    let tilde_fence = "~".repeat(3);
+    let mut out = String::with_capacity(markdown.len());
+    let mut i = 0;
+    let mut in_fence = false;
+    let mut protected_any = false;
+    while i < bytes.len() {
+        // Fence tracking is line-based: a line whose first non-space
+        // characters (up to 3 spaces) are ``` or ~~~ toggles fence state.
+        if i == 0 || bytes[i - 1] == b'\n' {
+            let mut j = i;
+            while j < bytes.len() && bytes[j] == b' ' && j - i < 3 {
+                j += 1;
+            }
+            if markdown[j..].starts_with(&fence) || markdown[j..].starts_with(&tilde_fence) {
+                in_fence = !in_fence;
+            }
+        }
+        if !in_fence && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
+            let lt = markdown[i..].find('<').unwrap() + i;
+            // Find the closing '>' before any blank line or nested '<'.
+            let mut end = None;
+            let mut k = lt + 1;
+            while k < bytes.len() {
+                match bytes[k] {
+                    b'>' => {
+                        end = Some(k);
+                        break;
+                    }
+                    b'<' => break,
+                    b'\n' if k + 1 < bytes.len() && bytes[k + 1] == b'\n' => break,
+                    _ => k += 1,
+                }
+            }
+            if let Some(gt) = end {
+                let dest = &markdown[lt + 1..gt];
+                if dest.contains('\n') {
+                    out.push_str(&markdown[i..=lt]);
+                    out.push_str(&dest.replace('\n', &token));
+                    i = gt;
+                    protected_any = true;
+                    continue;
+                }
+            }
+        }
+        let ch_len = markdown[i..].chars().next().unwrap().len_utf8();
+        out.push_str(&markdown[i..i + ch_len]);
+        i += ch_len;
+    }
+    if protected_any {
+        (out, Some(token))
+    } else {
+        (markdown.to_string(), None)
+    }
+}
+
+/// Restore protected newlines in the converted document: the token
+/// only ever stands inside a link `href` or image `src` attr (the
+/// parse produced it from a destination), so only those string attrs
+/// are rewritten — literal text that happens to contain the token
+/// string is untouched.
+fn restore_attr_newlines(value: &mut Value, token: &str) {
+    match value {
+        Value::Object(map) => {
+            for (key, val) in map.iter_mut() {
+                if (key == "href" || key == "src")
+                    && let Value::String(text) = val
+                    && text.contains(token)
+                {
+                    *text = text.replace(token, "\n");
+                } else {
+                    restore_attr_newlines(val, token);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                restore_attr_newlines(item, token);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Active marks being applied to inline content.
