@@ -24,6 +24,7 @@ in
       "services/flatpak"
       "services/id-mail"
       "services/pm-stack"
+      "services/pm-apps"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -59,6 +60,12 @@ in
         # PM dashboard stack (aggregator + projector, git-sync and
         # quota-gatherer timers) as NixOS-managed user services.
         services.pm-stack.enable = true;
+      }
+      {
+        # PM app servers (code#1752): Kaneo + PostgreSQL, Grist, and
+        # Pad as oci-containers, ready-for-agent as a user service —
+        # the last hand-run servers, now flake-declared.
+        services.pm-apps.enable = true;
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard
