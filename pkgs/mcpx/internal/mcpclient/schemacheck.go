@@ -36,7 +36,7 @@ type InvalidParamsError struct {
 }
 
 func (e *InvalidParamsError) Error() string {
-	return fmt.Sprintf("invalid params: tool %q: %v", e.Tool, e.Err)
+	return fmt.Sprintf("Invalid params: tool %q: %v", e.Tool, e.Err)
 }
 
 func (e *InvalidParamsError) Unwrap() error { return e.Err }
