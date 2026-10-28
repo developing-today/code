@@ -43,11 +43,18 @@ in
 {
   imports = [ inputs.nix-openclaw.homeManagerModules.openclaw ];
 
-  # Point acpx's `opencode` harness at this laptop's pinned OpenCode fork
-  # (the build OpenChamber uses) instead of acpx's default
-  # `npx -y opencode-ai acp` upstream download.
+  # Point acpx's harnesses at this laptop's pinned binaries instead of
+  # acpx's default `npx -y ...` upstream downloads: opencode is the pinned
+  # OpenCode fork (the build OpenChamber uses); claude/codex run the local
+  # wrappers in ~/.openclaw/acpx (bundled adapters, no npx fetch); agy is
+  # the system antigravity-acp server.
   home.file.".acpx/config.json".text = builtins.toJSON {
-    agents.opencode.command = "/etc/profiles/per-user/user/bin/opencode acp";
+    agents = {
+      opencode.command = "/etc/profiles/per-user/user/bin/opencode acp";
+      claude.command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
+      codex.command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+      agy.command = "/run/current-system/sw/bin/agy_acp_server";
+    };
   };
 
   # Start after the provider proxies + mcpx it depends on.
@@ -281,12 +288,16 @@ in
         enabled = true;
         backend = "acpx";
         defaultAgent = "opencode";
-        # Only opencode is wired as an ACP harness for now: the acpx
-        # startup check initializes every allowed agent, and the other
-        # harnesses resolve to npx-fetched adapters, which hang on this
-        # laptop's flaky npmjs route (120s check timeout, 2026-10-26).
-        # Claude/Codex still work via their native runtime plugins.
-        allowedAgents = [ "opencode" ];
+        # Every allowed agent gets a per-agent command override below,
+        # so the acpx startup check never resolves a harness to an
+        # npx-fetched adapter (that fetch hangs on this laptop's flaky
+        # npmjs route; 120s check timeout, 2026-10-26). claude/codex run
+        # the local wrappers in ~/.openclaw/acpx (adapters bundled with
+        # the acpx plugin; the store repoint is code#1711); agy runs the
+        # system antigravity-acp binary. Drew enabled all four
+        # 2026-10-28. Claude/Codex ALSO work via their native runtime
+        # plugins for chat bindings — ACP is the background-spawn path.
+        allowedAgents = [ "opencode" "claude" "codex" "agy" ];
         dispatch.enabled = true;
       };
 
@@ -308,6 +319,15 @@ in
             agents.opencode = {
               command = "/etc/profiles/per-user/user/bin/opencode";
               args = [ "acp" ];
+            };
+            agents.claude = {
+              command = "/home/user/.openclaw/acpx/claude-agent-acp-wrapper.mjs";
+            };
+            agents.codex = {
+              command = "/home/user/.openclaw/acpx/codex-acp-wrapper.mjs";
+            };
+            agents.agy = {
+              command = "/run/current-system/sw/bin/agy_acp_server";
             };
           };
         };
