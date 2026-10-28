@@ -151,13 +151,14 @@ func TestReloadRestartsAPoolWhoseBinaryChangedAtTheSamePath(t *testing.T) {
 // file, not by the path it was reached by. A link re-pointed at a file with
 // different bytes is a different program and gets a new pool.
 //
-// Caveat: identity is the bytes of the file and nothing else. A program that
-// finds its own files relative to its real location, such as a node script
-// beside its node_modules, is kept when the link points at an identical copy
-// in another directory, and its child keeps the dependencies of the old
-// location. An operator who wants the new location in use restarts the server
-// (mcpx restart). Above limits.execHashMax the identity is the inode instead,
-// so an oversized copy is restarted; see
+// The keep above is same-directory only: a script (a hashed file beginning
+// with #!) is identified by its content plus the resolved directory of the
+// real file, because a script finds its own files relative to its real
+// location. A link re-pointed at a byte-identical script in a DIFFERENT
+// directory is a different program and replaces the pool; see
+// TestReloadRestartsAScriptRePointedAtAnIdenticalCopyInAnotherDirectory.
+// Above limits.execHashMax the identity is the inode instead, so an
+// oversized copy is restarted either way; see
 // TestReloadRestartsAnOversizedProgramRePointedAtACopy.
 func TestReloadFollowsAForRePointedCommandByWhatItRuns(t *testing.T) {
 	fake := testsupport.FakeMCPBinary(t)
@@ -210,6 +211,64 @@ func TestReloadFollowsAForRePointedCommandByWhatItRuns(t *testing.T) {
 	}
 	if pb2, _ := r.Pool("b"); pb2 == pb || childPID(t, pb2) == pid {
 		t.Fatal("a command re-pointed at different bytes kept its old child")
+	}
+	waitGone(t, pid)
+}
+
+// The cross-directory counterpart of the re-pointed-command test above
+// (#1531, Phase 2 proof): the two scripts are byte-identical and both are
+// scripts, so the only identity difference is the resolved directory the
+// script rule folds in. A link re-pointed at the copy in the other directory
+// must replace the pool: new pool, new child, old child gone.
+func TestReloadRestartsAScriptRePointedAtAnIdenticalCopyInAnotherDirectory(t *testing.T) {
+	fake := testsupport.FakeMCPBinary(t)
+	state := t.TempDir()
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	scriptA := filepath.Join(dirA, "mcp-server")
+	scriptB := filepath.Join(dirB, "mcp-server")
+	writeWrapper(t, fake, scriptA, "same program")
+	writeWrapper(t, fake, scriptB, "same program")
+	if a, b := mustRead(t, scriptA), mustRead(t, scriptB); !bytes.Equal(a, b) {
+		t.Fatal("the cross-directory copy is not byte-identical to the original script")
+	}
+	link := filepath.Join(state, "mcp-server")
+	if err := os.Symlink(scriptA, link); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := func() *config.Config {
+		return &config.Config{MCPServers: map[string]*config.Server{
+			"b": {Name: "b", Command: link},
+		}}
+	}
+	r, err := NewRegistry(cfg(), Paths{State: state, Cache: state}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	pb, _ := r.Pool("b")
+	pid := childPID(t, pb)
+	identityBefore := pb.ExecIdentity()
+
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(scriptB, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Reload(cfg()); err != nil {
+		t.Fatal(err)
+	}
+	pb2, _ := r.Pool("b")
+	if pb2 == pb {
+		t.Fatal("a script re-pointed at a byte-identical copy in another directory kept its pool")
+	}
+	if pb2.ExecIdentity() == identityBefore {
+		t.Fatal("the new pool records the old directory's identity")
+	}
+	if got := childPID(t, pb2); got == pid {
+		t.Fatalf("the cross-directory copy's child pid %d was kept", pid)
 	}
 	waitGone(t, pid)
 }
