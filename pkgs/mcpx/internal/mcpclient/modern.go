@@ -104,6 +104,45 @@ func (c *Client) elicitModeDeclared(mode string) bool {
 	return false
 }
 
+// samplingShape enforces the sampling declaration mcpx actually makes.
+// capabilities() declares sampling as a bare {} -- no tools, no context --
+// so a request that asks for either is asking for something mcpx never
+// offered. Tools change who acts: a request carrying tools or a toolChoice
+// is refused -32602, the same answer an undeclared elicitation mode gets,
+// and the handler never sees it. includeContext only widens what the
+// answerer is shown, so a request for context is answered with the field
+// dropped rather than refused outright; "none" asks for no context, so it
+// passes through as sent. A plain request is returned untouched.
+func samplingShape(params json.RawMessage) (json.RawMessage, *rpcError) {
+	if len(params) == 0 || string(params) == "null" {
+		return params, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(params, &m); err != nil {
+		return params, nil
+	}
+	present := func(k string) bool {
+		v, ok := m[k]
+		return ok && string(v) != "null"
+	}
+	if present("tools") || present("toolChoice") {
+		return nil, &rpcError{Code: codeInvalidParams,
+			Message: "sampling request carries tools but sampling.tools was not declared by this client"}
+	}
+	if v, ok := m["includeContext"]; ok {
+		var level string
+		if err := json.Unmarshal(v, &level); err != nil || level != "none" {
+			delete(m, "includeContext")
+			out, err := json.Marshal(m)
+			if err != nil {
+				return params, nil
+			}
+			return out, nil
+		}
+	}
+	return params, nil
+}
+
 // withMeta adds the per-request metadata 2026-07-28 requires.
 //
 // Version and capabilities are required on every request -- the server MUST
@@ -286,6 +325,13 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 				// anyway would teach the server that undeclared works.
 				return nil, &rpcError{Code: codeInvalidParams,
 					Message: fmt.Sprintf("elicitation mode %q was not declared by this client", p.Mode)}
+			}
+		}
+		if method == "sampling/createMessage" {
+			var rerr *rpcError
+			params, rerr = samplingShape(params)
+			if rerr != nil {
+				return nil, rerr
 			}
 		}
 		if h != nil {

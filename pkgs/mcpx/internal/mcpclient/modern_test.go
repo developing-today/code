@@ -416,3 +416,75 @@ func TestInputRequestsOfOneRoundAreAskedTogetherUnderTheirKeys(t *testing.T) {
 		t.Errorf("each question should carry its server's key, saw %v", keys)
 	}
 }
+
+// The 2026-07-28 path asks through input_required, and resolveInput shares
+// answer with the legacy wire path, so the sampling shape check applies
+// there too.
+// https://modelcontextprotocol.io/specification/2026-07-28/client/sampling
+func TestModernSamplingShape(t *testing.T) {
+	askWith := func(t *testing.T, sampleParams map[string]any, h mcpclient.ElicitHandler) error {
+		s := newScripted(func(method string, params map[string]any) any {
+			switch method {
+			case "server/discover":
+				return modernDiscover(params)
+			case "tools/call":
+				if _, ok := params["inputResponses"]; !ok {
+					return map[string]any{
+						"resultType": "input_required",
+						"inputRequests": map[string]any{
+							"q": map[string]any{"method": "sampling/createMessage", "params": sampleParams},
+						},
+						"requestState": "s",
+					}
+				}
+				return map[string]any{"resultType": "complete", "content": []any{}}
+			}
+			return nil
+		})
+		c := dialModern(t, s, mcpclient.Options{OnServerRequest: h})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := c.CallTool(ctx, "ask", map[string]any{})
+		return err
+	}
+	base := func() map[string]any {
+		return map[string]any{
+			"messages":  []any{map[string]any{"role": "user", "content": map[string]any{"type": "text", "text": "hi"}}},
+			"maxTokens": 5,
+		}
+	}
+
+	t.Run("2026-07-28/sampling/undeclared-tools-is-32602", func(t *testing.T) {
+		called := false
+		p := base()
+		p["tools"] = []any{map[string]any{"name": "x"}}
+		err := askWith(t, p, func(context.Context, string, json.RawMessage) (any, error) {
+			called = true
+			return map[string]any{"role": "assistant", "content": map[string]any{"type": "text", "text": "ok"}}, nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "-32602") || !strings.Contains(err.Error(), "sampling.tools") {
+			t.Fatalf("want a -32602 naming sampling.tools, got %v", err)
+		}
+		if called {
+			t.Error("the handler was invoked for a refused request")
+		}
+	})
+	t.Run("2026-07-28/sampling/includecontext-dropped-without-context", func(t *testing.T) {
+		var got map[string]any
+		p := base()
+		p["includeContext"] = "thisServer"
+		err := askWith(t, p, func(_ context.Context, _ string, params json.RawMessage) (any, error) {
+			_ = json.Unmarshal(params, &got)
+			return map[string]any{"role": "assistant", "content": map[string]any{"type": "text", "text": "ok"}}, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil {
+			t.Fatal("the handler was never invoked")
+		}
+		if _, ok := got["includeContext"]; ok {
+			t.Errorf("the handler saw includeContext: %v", got)
+		}
+	})
+}

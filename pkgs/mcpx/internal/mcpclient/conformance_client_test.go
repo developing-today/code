@@ -740,3 +740,80 @@ func TestVersionRetry(t *testing.T) {
 		}
 	})
 }
+
+// https://modelcontextprotocol.io/specification/2025-11-25/client/sampling
+func TestSamplingDeclarations(t *testing.T) {
+	var seen []map[string]any
+	handler := func(_ context.Context, _ string, params json.RawMessage) (any, error) {
+		var p map[string]any
+		_ = json.Unmarshal(params, &p)
+		seen = append(seen, p)
+		return map[string]any{"role": "assistant", "model": "m1", "stopReason": "endTurn",
+			"content": map[string]any{"type": "text", "text": "ok"}}, nil
+	}
+	at := func(rev string) *wire {
+		w := newWire(t, rev, func(m string, p map[string]any) (any, map[string]any) {
+			if m == "initialize" {
+				return initResult(rev, nil), nil
+			}
+			return nil, nil
+		})
+		dialWire(t, w, mcpclient.ForceLegacy, mcpclient.Options{OnServerRequest: handler})
+		return w
+	}
+	sample := func(w *wire, id string, extra map[string]any) map[string]any {
+		p := map[string]any{
+			"messages":  []any{map[string]any{"role": "user", "content": map[string]any{"type": "text", "text": "hi"}}},
+			"maxTokens": 10,
+		}
+		for k, v := range extra {
+			p[k] = v
+		}
+		w.push(map[string]any{"jsonrpc": "2.0", "id": id, "method": "sampling/createMessage", "params": p})
+		var r map[string]any
+		waitFor(t, "a reply to "+id, func() bool { r = reply(w, id); return r != nil })
+		return r
+	}
+
+	t.Run("2025-11-25/sampling/undeclared-tools-is-32602", func(t *testing.T) {
+		seen = nil
+		w := at("2025-11-25")
+		r := sample(w, "t1", map[string]any{"tools": []any{map[string]any{"name": "x"}}})
+		e, _ := r["error"].(map[string]any)
+		if e == nil || e["code"] != float64(-32602) || !strings.Contains(e["message"].(string), "sampling.tools") {
+			t.Fatalf("tools without sampling.tools: %v", r)
+		}
+		r = sample(w, "t2", map[string]any{"toolChoice": map[string]any{"mode": "auto"}})
+		if e, _ := r["error"].(map[string]any); e == nil || e["code"] != float64(-32602) {
+			t.Fatalf("toolChoice without sampling.tools: %v", r)
+		}
+		if len(seen) != 0 {
+			t.Fatalf("the handler was invoked for a refused request: %v", seen)
+		}
+	})
+	t.Run("2025-11-25/sampling/includecontext-dropped-without-context", func(t *testing.T) {
+		seen = nil
+		w := at("2025-11-25")
+		r := sample(w, "c1", map[string]any{"includeContext": "thisServer"})
+		if r["error"] != nil {
+			t.Fatalf("includeContext should be dropped, not refused: %v", r)
+		}
+		if len(seen) != 1 {
+			t.Fatalf("handler calls %d", len(seen))
+		}
+		if _, ok := seen[0]["includeContext"]; ok {
+			t.Fatalf("the handler saw includeContext: %v", seen[0])
+		}
+	})
+	t.Run("2025-11-25/sampling/plain-request-untouched", func(t *testing.T) {
+		seen = nil
+		w := at("2025-11-25")
+		r := sample(w, "p1", nil)
+		if r["error"] != nil {
+			t.Fatalf("plain request refused: %v", r)
+		}
+		if len(seen) != 1 || seen[0]["maxTokens"] != float64(10) {
+			t.Fatalf("plain request altered: %v", seen)
+		}
+	})
+}

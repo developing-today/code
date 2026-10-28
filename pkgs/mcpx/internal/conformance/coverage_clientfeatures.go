@@ -10,6 +10,8 @@ func init() {
 	const cliAnswer = "e2e.TestElicitationsCanBeListedAndAnsweredFromTheCommandLine@2025-11-25,2026-07-28"
 	register(
 		C("elicitation-client-32602-on-undeclared-mode", "mcpclient.TestElicitationDeclarations/2025-11-25/elicitation/undeclared-mode-is-32602"),
+		C("sampling-client-error-on-tools-without-capability", "mcpclient.TestSamplingDeclarations/2025-11-25/sampling/undeclared-tools-is-32602",
+			"mcpclient.TestModernSamplingShape/2026-07-28/sampling/undeclared-tools-is-32602"),
 		C("elicitation-client-prepopulate-defaults", "mcpclient.TestElicitationDeclarations/2025-11-25/elicitation/client-applies-schema-defaults",
 			"mcpclient.TestModernElicitationAppliesSchemaDefaults/2026-07-28/elicitation/client-applies-schema-defaults"),
 		C("elicitation-app-decline-cancel-options", decline, expire),
@@ -111,7 +113,6 @@ func init() {
 		Gap{ID: "elicitation-state-storage-protected", Side: Server, Issue: "#255", Why: "pending questions and answers are readable by any local user (0755 directory, default file mode)"},
 		Gap{ID: "sampling-client-rate-limit", Side: Client, Issue: "#257", Why: "no per-server or per-session limit on sampling requests"},
 		Gap{ID: "elicitation-client-rate-limit", Side: Client, Issue: "#257", Why: "no per-server limit on elicitation requests"},
-		Gap{ID: "sampling-client-error-on-tools-without-capability", Side: Client, Issue: "#210", Why: "a sampling request carrying tools is passed on though sampling.tools was not declared"},
 		Gap{ID: "sampling-client-errors-user-rejected-and-tool-shape", Side: Client, Issue: "#256", Why: "every refusal or failure is -32603; neither -1 nor -32602 is produced"},
 		Gap{ID: "sampling-server-no-tools-without-capability", Side: Server, Issue: "#210", Why: "an upstream sampling request is relayed as-is: tools and includeContext reach a client that did not declare sampling.tools or sampling.context"},
 		Gap{ID: "sampling-server-includecontext-only-with-context-capability", Side: Server, Issue: "#210", Why: "an upstream sampling request is relayed as-is: tools and includeContext reach a client that did not declare sampling.tools or sampling.context"},
