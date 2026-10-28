@@ -516,12 +516,10 @@ impl Directory {
         // drop the fragment (parseable or not), warn, and truncate the
         // file to the last complete line. A newline-terminated line
         // that does not parse is corruption and still fails below.
-        let kept_len = if text.is_empty() || text.ends_with('
-') {
+        let kept_len = if text.is_empty() || text.ends_with('\n') {
             text.len()
         } else {
-            text.rfind('
-').map_or(0, |index| index + 1)
+            text.rfind('\n').map_or(0, |index| index + 1)
         };
         if kept_len < text.len() {
             tracing::warn!(
@@ -2672,7 +2670,7 @@ mod tests {
 
         // A crash mid-append leaves half a JSON entry with no newline.
         let mut text = complete.clone();
-        text.push_str("{"account_created":{"id":"torn");
+        text.push_str("{\"account_created\":{\"id\":\"torn");
         std::fs::write(&path, text).unwrap();
 
         let replayed = Directory::replay(&path).unwrap();
@@ -2712,8 +2710,7 @@ mod tests {
         // Newline-terminated but unparseable is corruption, never a
         // torn append: it must still fail as malformed.
         let mut text = std::fs::read_to_string(&path).unwrap();
-        text.push_str("not json
-");
+        text.push_str("not json\n");
         std::fs::write(&path, text).unwrap();
         let error = Directory::replay(&path).err().expect("corrupt line must fail");
         assert!(
