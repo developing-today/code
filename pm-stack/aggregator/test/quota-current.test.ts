@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { overlayQuotaCurrent, parseQuotaCurrent, QUOTA_CURRENT_FRESH_MS } from "../src/quota-current.ts";
+import {
+  overlayQuotaCurrent,
+  parseQuotaCurrent,
+  QUOTA_CURRENT_FRESH_MS,
+  QUOTA_CURRENT_FUTURE_SKEW_MS,
+} from "../src/quota-current.ts";
 import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaPool, QuotaView } from "../src/model.ts";
 
 // The final visibility hop (#1151): the gatherer's quota-current.json
@@ -163,6 +168,56 @@ describe("quota-current overlay", () => {
     expect(cline.state).toBe("stale");
     expect(cline.freshness).toEqual({ measuredAt: staleAt, source: "openchamber-quota", state: "stale" });
     expect(cline.windows[0].percent).toBe(69); // dated read, not the aged gatherer value
+  });
+
+  test("an ok entry dated past the future-skew tolerance is stale, windows untouched (#1541)", () => {
+    for (const futureMs of [60 * 60_000, 30 * 24 * 60 * 60_000]) {
+      const futureAt = iso(-futureMs);
+      const out = overlayQuotaCurrent(
+        baseView(),
+        file([
+          entry({ serviceId: "cline-pass:cline-pass", measuredAt: futureAt, windows: [win("monthly", 71, futureAt)] }),
+        ]),
+        NOW,
+      );
+      const cline = out.pools.find((p) => p.id === "cline-pass:cline-pass")!;
+      expect(cline.state).toBe("stale");
+      expect(cline.freshness).toEqual({ measuredAt: futureAt, source: "openchamber-quota", state: "stale" });
+      expect(cline.windows[0].percent).toBe(69); // dated read, not the future-dated gatherer value
+      expect(out.gatherer?.providers.find((p) => p.serviceId === "cline-pass:cline-pass")?.state).toBe("stale");
+    }
+  });
+
+  test("an ok entry dated within the future-skew tolerance stays fresh (#1541)", () => {
+    const at = iso(-(QUOTA_CURRENT_FUTURE_SKEW_MS - 30_000));
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([entry({ serviceId: "cline-pass:cline-pass", measuredAt: at, windows: [win("monthly", 71, at)] })]),
+      NOW,
+    );
+    const cline = out.pools.find((p) => p.id === "cline-pass:cline-pass")!;
+    expect(cline.freshness?.state).toBe("ok");
+    expect(cline.windows[0].percent).toBe(71);
+  });
+
+  test("a future-dated entry cannot outrank a genuinely fresh entry for the same service (#1541)", () => {
+    const futureAt = iso(-60 * 60_000);
+    const out = overlayQuotaCurrent(
+      baseView(),
+      file([
+        entry({ serviceId: "cline-pass:cline-pass", measuredAt: futureAt, windows: [win("monthly", 99, futureAt)] }),
+        entry({
+          serviceId: "cline-pass:cline-pass",
+          measuredAt: iso(5 * 60_000),
+          windows: [win("monthly", 71, iso(5 * 60_000))],
+        }),
+      ]),
+      NOW,
+    );
+    const cline = out.pools.find((p) => p.id === "cline-pass:cline-pass")!;
+    expect(cline.freshness?.state).toBe("ok");
+    expect(cline.freshness?.measuredAt).toBe(iso(5 * 60_000));
+    expect(cline.windows[0].percent).toBe(71); // the genuinely fresh read, not the future-dated 99
   });
 
   test("a balance-only ok entry stamps freshness without inventing windows", () => {
