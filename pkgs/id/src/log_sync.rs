@@ -1051,7 +1051,9 @@ mod tests {
             "a refused stream ends the batch at the total-arrival cap"
         );
         assert!(
-            batch.iter().all(|arrival| matches!(arrival, Arrival::Refused)),
+            batch
+                .iter()
+                .all(|arrival| matches!(arrival, Arrival::Refused)),
             "the capped batch holds the refusals it collected"
         );
         assert!(
@@ -1085,7 +1087,10 @@ mod tests {
         assert_eq!(tally.refused, REFUSALS as u32, "every refusal is tallied");
         assert_eq!(tally.accepted, 1, "the queued header is committed");
         let refs: Vec<&SigningKey> = vec![&signer];
-        assert_eq!(applied(&store, &refs, 0)[0].as_deref(), Some(events[0].bytes.as_slice()));
+        assert_eq!(
+            applied(&store, &refs, 0)[0].as_deref(),
+            Some(events[0].bytes.as_slice())
+        );
     }
 
     /// A store that has forked `alice`. It holds the first `held` events of the honest chain, which
