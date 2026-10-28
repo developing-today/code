@@ -247,7 +247,11 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
         feed === null
           ? { state: "down", ok: false, detail: "no readable fleet feed" }
           : feedFutureMs !== null && feedFutureMs > GENERATED_AT_FUTURE_SKEW_MS
-            ? { state: "stale", ok: false, detail: `feed generatedAt ${feed.generatedAt} is >60s in the future — never fresh` }
+            ? {
+                state: "stale",
+                ok: false,
+                detail: `feed generatedAt ${feed.generatedAt} is >60s in the future — never fresh`,
+              }
             : feedAgeMs !== null && feedAgeMs > FEED_STALE_MS
               ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — past the 15m freshness threshold` }
               : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };

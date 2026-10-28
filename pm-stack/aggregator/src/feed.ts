@@ -202,7 +202,8 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
   const f = v as Partial<FleetFeed>;
   return (
     f.version === 1 &&
-    typeof f.generatedAt === "string" && Number.isFinite(Date.parse(f.generatedAt)) &&
+    typeof f.generatedAt === "string" &&
+    Number.isFinite(Date.parse(f.generatedAt)) &&
     typeof f.quota === "object" &&
     f.quota !== null &&
     Array.isArray((f.quota as QuotaView).pools) &&
