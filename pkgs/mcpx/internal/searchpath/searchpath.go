@@ -186,10 +186,12 @@ func (r Resolved) Find(name string, opt FindOptions) (string, *Ambiguity, error)
 	return "", nil, nil
 }
 
-// List returns every name found along the path, nearest first, with the
-// nearer occurrence of a duplicated name winning.
+// List returns every name found along the path, nearest first. The nearest
+// occurrence of a name decides it: a nearer file wins over anything further
+// down, and a near pair of forms is reported as ambiguous rather than being
+// replaced by a farther plain copy.
 func (r Resolved) List(opt FindOptions) ([]string, []Ambiguity) {
-	seen := map[string]string{}
+	seen := map[string]bool{}
 	var order []string
 	var ambiguous []Ambiguity
 
@@ -229,17 +231,16 @@ func (r Resolved) List(opt FindOptions) ([]string, []Ambiguity) {
 		sort.Strings(stems)
 
 		for _, stem := range stems {
+			if seen[stem] {
+				continue // a nearer entry already decided this name
+			}
+			seen[stem] = true
 			hits := byStem[stem]
+			sort.Strings(hits)
 			if len(hits) > 1 && !opt.AllowOverlap {
-				sort.Strings(hits)
 				ambiguous = append(ambiguous, Ambiguity{Name: stem, Paths: hits})
 				continue
 			}
-			if _, dup := seen[stem]; dup {
-				continue // a nearer entry already provided it
-			}
-			sort.Strings(hits)
-			seen[stem] = hits[0]
 			order = append(order, stem)
 		}
 	}
