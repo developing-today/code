@@ -269,13 +269,7 @@ mod tests {
         assert!(index.named("missing").is_empty());
     }
 
-    fn claim_by(
-        id: u8,
-        author: u8,
-        subject: u8,
-        name: &str,
-        value: Option<&str>,
-    ) -> Claim {
+    fn claim_by(id: u8, author: u8, subject: u8, name: &str, value: Option<&str>) -> Claim {
         Claim {
             id: Hash::from_bytes([id; 32]),
             author: [author; 32],
@@ -326,7 +320,10 @@ mod tests {
             ids.sort_unstable();
             ids
         };
-        assert_eq!(ids(index.author_name(&[7; 32], "city")), vec![[1; 32], [2; 32]]);
+        assert_eq!(
+            ids(index.author_name(&[7; 32], "city")),
+            vec![[1; 32], [2; 32]]
+        );
         assert_eq!(
             ids(index.author_name_value(&[7; 32], "city", Some("Seattle"))),
             vec![[1; 32]]

@@ -196,10 +196,7 @@ pub fn search_store(
 /// # Errors
 ///
 /// Returns the errors of [`EventStore::tag_claims`] and [`EventStore::event_by_id`].
-pub fn search_store_terms(
-    store: &EventStore,
-    terms: &[Term<'_>],
-) -> Result<Vec<Hit>, StoreError> {
+pub fn search_store_terms(store: &EventStore, terms: &[Term<'_>]) -> Result<Vec<Hit>, StoreError> {
     let claims = store.tag_claims()?;
     let mut kinds: HashMap<Hash, Option<String>> = HashMap::new();
     for subject in claims.iter().map(|claim| claim.subject) {
