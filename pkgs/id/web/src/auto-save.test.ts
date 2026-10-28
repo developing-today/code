@@ -130,6 +130,38 @@ describe("AutoSaveManager serialization (#1440)", () => {
     expect(save.calls).toBe(2);
   });
 
+  it("runs exactly one follow-up when an edit lands during a generically failing save (#1616)", async () => {
+    const save = deferredSaveFn();
+    const mgr = new AutoSaveManager(save.fn);
+
+    mgr.onContentChange();
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS);
+    expect(save.calls).toBe(1);
+    expect(mgr.state).toBe("saving");
+
+    // Edit during the flight; its debounce fires mid-flight too, so the
+    // follow-up is both requested and visible in the edit generation.
+    mgr.onContentChange();
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS);
+    expect(save.calls).toBe(1); // still serialized
+
+    // The save fails generically: the coalesced edit must not be stranded —
+    // exactly one follow-up runs.
+    save.resolveNext({ ok: false });
+    await flush();
+    expect(save.calls).toBe(2);
+    expect(save.maxInFlight).toBe(1);
+
+    // The follow-up also fails generically, with no new edits: it must stop
+    // in a terminal unsaved/error state — no third call, no retry loop.
+    save.resolveNext({ ok: false });
+    await flush();
+    expect(mgr.state).toBe("error");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(save.calls).toBe(2);
+    expect(mgr.state).toBe("unsaved");
+  });
+
   it("saveNow saves immediately when idle and is a no-op while saving", async () => {
     const save = deferredSaveFn();
     const mgr = new AutoSaveManager(save.fn);
