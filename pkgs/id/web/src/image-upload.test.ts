@@ -4,8 +4,9 @@
  * and ProseMirror plugin creation.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Slice } from "prosemirror-model";
 import type { EditorView } from "prosemirror-view";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { rawSchema, richSchema } from "./editor";
 import {
   ALLOWED_IMAGE_TYPES,
@@ -313,6 +314,7 @@ describe("handlePaste/handleDrop oversized filtering", () => {
     const result = handlePaste(
       view as unknown as EditorView,
       event as unknown as ClipboardEvent,
+      undefined as unknown as Slice,
     );
     expect(result).toBe(false);
     expect(event.preventDefault).not.toHaveBeenCalled();
@@ -325,6 +327,8 @@ describe("handlePaste/handleDrop oversized filtering", () => {
     const result = handleDrop(
       view as unknown as EditorView,
       event as unknown as DragEvent,
+      undefined as unknown as Slice,
+      false,
     );
     expect(result).toBe(false);
     expect(event.preventDefault).not.toHaveBeenCalled();
@@ -334,13 +338,11 @@ describe("handlePaste/handleDrop oversized filtering", () => {
 
   it("mixed paste uploads only the valid file and still claims the event", () => {
     const view = stubView();
-    const event = pasteEvent([
-      oversizedFile(),
-      new File(["ok"], "ok.png", { type: "image/png" }),
-    ]);
+    const event = pasteEvent([oversizedFile(), new File(["ok"], "ok.png", { type: "image/png" })]);
     const result = handlePaste(
       view as unknown as EditorView,
       event as unknown as ClipboardEvent,
+      undefined as unknown as Slice,
     );
     expect(result).toBe(true);
     expect(event.preventDefault).toHaveBeenCalledOnce();
@@ -350,13 +352,12 @@ describe("handlePaste/handleDrop oversized filtering", () => {
 
   it("mixed drop uploads only the valid file and still claims the event", () => {
     const view = stubView();
-    const event = dropEvent([
-      new File(["ok"], "ok.png", { type: "image/png" }),
-      oversizedFile(),
-    ]);
+    const event = dropEvent([new File(["ok"], "ok.png", { type: "image/png" }), oversizedFile()]);
     const result = handleDrop(
       view as unknown as EditorView,
       event as unknown as DragEvent,
+      undefined as unknown as Slice,
+      false,
     );
     expect(result).toBe(true);
     expect(event.preventDefault).toHaveBeenCalledOnce();
