@@ -109,7 +109,6 @@ func init() {
 		Gap{ID: "tasks-resource-limits", Side: Server, Issue: "#209", Why: "no maximum ttl and no cap on concurrent tasks per requestor"},
 		Gap{ID: "tasks-audit", Side: Server, Issue: "#209", Why: "task creation, completion and retrieval are not logged"},
 		Gap{ID: "ext-tasks-cancel-cooperative", Side: Server, Issue: "#209", Why: "tasks/cancel forces the cancelled status rather than letting the work reach its own terminal status"},
-		Gap{ID: "ext-tasks-durable-before-response", Side: Server, Issue: "#209", Why: "the task store is an in-memory map; a task does not survive the daemon"},
 		Gap{ID: "caching-ttl-zero-stale", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
 		Gap{ID: "caching-ttl-positive-fresh", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
 		Gap{ID: "caching-ttl-absent-zero", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
