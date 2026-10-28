@@ -172,6 +172,20 @@ describe("buildHealth probes", () => {
     expect(saas?.present).toBe(false);
   });
 
+  test("a feed stamped far in the future is stale, never up/fresh (#1564)", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const view = await buildHealth(inputs({ feed: feedAt(-30 * 86_400_000) }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+    });
+    const ff = service(view, "fleet-feed");
+    expect(ff.state).toBe("stale");
+    expect(ff.ok).toBe(false);
+    expect(ff.detail).toContain("in the future");
+    expect(view.degraded).toBe(true);
+  });
+
   test("fixtures mode never probes and reports fixtures for every service", async () => {
     const { fetcher, calls } = fakeFetcher(allUp);
     const view = await buildHealth(
