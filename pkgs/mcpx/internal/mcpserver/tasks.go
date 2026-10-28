@@ -33,8 +33,14 @@ func (s *Server) tasks() *taskStore {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.taskStore == nil {
-		s.taskStore = tasks.New()
-		s.taskStore.PollInterval = s.Timing.resolved().TaskPoll
+		if s.TaskStore != nil {
+			// Injected: the daemon's one store, already configured
+			// (PollInterval included) by whoever built it.
+			s.taskStore = s.TaskStore
+		} else {
+			s.taskStore = tasks.New()
+			s.taskStore.PollInterval = s.Timing.resolved().TaskPoll
+		}
 	}
 	return s.taskStore
 }

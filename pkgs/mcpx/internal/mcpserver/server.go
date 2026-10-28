@@ -270,6 +270,13 @@ type Server struct {
 	def     *Conn
 	defOnce sync.Once
 
+	// TaskStore, when set, is the background-task store this server
+	// uses instead of lazily creating a private in-memory one. The
+	// daemon sets it to its own durable store so a task started over
+	// MCP is the same task its /v1 surface sees (issue #1555). Nil
+	// means the standalone behaviour: a private in-memory store.
+	TaskStore *taskStore
+
 	// taskStore holds background requests.
 	taskStore *taskStore
 	// taskOwners is which connection started each task, by its id. Empty
@@ -598,7 +605,7 @@ func (s *Server) Tools() []Tool {
 			},"required":["calls"],"additionalProperties":false}`),
 		},
 		{
-			Name: "batch_call",
+			Name:        "batch_call",
 			Description: "Alias for mcpx_batch. Execute one or more tools in a single turn.",
 			InputSchema: schema(`{"type":"object","properties":{
 				"calls":{"type":"array","description":"List of tools to execute","items":{"type":"object","properties":{
