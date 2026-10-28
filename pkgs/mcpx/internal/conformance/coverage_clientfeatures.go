@@ -8,6 +8,8 @@ func init() {
 	const decline = "elicit.TestAnsweringAfterTheProcessDiedStillWorks@2025-06-18,2025-11-25,2026-07-28"
 	const expire = "elicit.TestAnExpiredQuestionBecomesCancelNotDecline@2025-06-18,2025-11-25,2026-07-28"
 	const cliAnswer = "e2e.TestElicitationsCanBeListedAndAnsweredFromTheCommandLine@2025-11-25,2026-07-28"
+	const storeProtected = "elicit.TestOpenAtCreatesOwnerOnlyStore@2025-11-25,2026-07-28"
+	const storeMigrated = "elicit.TestOpenAtMigratesLegacyStore@2025-11-25,2026-07-28"
 	register(
 		C("elicitation-client-32602-on-undeclared-mode", "mcpclient.TestElicitationDeclarations/2025-11-25/elicitation/undeclared-mode-is-32602"),
 		C("elicitation-client-prepopulate-defaults", "mcpclient.TestElicitationDeclarations/2025-11-25/elicitation/client-applies-schema-defaults",
@@ -18,6 +20,7 @@ func init() {
 		C("elicitation-client-user-approval-controls", human),
 		C("elicitation-client-open-url-securely", human),
 		C("elicitation-client-manual-retry-cancel-controls", cliAnswer),
+		S("elicitation-state-storage-protected", storeProtected, storeMigrated),
 		SReq("conformance.TestClientFeaturesServer",
 			"sampling-tool-result-message-only-tool-results",
 			"sampling-tool-use-result-balance",
@@ -108,7 +111,6 @@ func init() {
 		Gap{ID: "sampling-both-handle-sensitive-data", Side: Client, Issue: "#255", Why: "prompts and answers are stored unredacted in state/logs/elicit.db under a 0755 directory and published on the event bus"},
 		Gap{ID: "sampling-both-handle-sensitive-data", Side: Server, Issue: "#255", Why: "prompts and answers are stored unredacted in state/logs/elicit.db under a 0755 directory and published on the event bus"},
 		Gap{ID: "sampling-messages-not-retained-between-requests", Side: Client, Issue: "#255", Why: "every CreateMessageRequest is kept in state/logs/elicit.db and never pruned"},
-		Gap{ID: "elicitation-state-storage-protected", Side: Server, Issue: "#255", Why: "pending questions and answers are readable by any local user (0755 directory, default file mode)"},
 		Gap{ID: "sampling-client-rate-limit", Side: Client, Issue: "#257", Why: "no per-server or per-session limit on sampling requests"},
 		Gap{ID: "elicitation-client-rate-limit", Side: Client, Issue: "#257", Why: "no per-server limit on elicitation requests"},
 		Gap{ID: "sampling-client-error-on-tools-without-capability", Side: Client, Issue: "#210", Why: "a sampling request carrying tools is passed on though sampling.tools was not declared"},
