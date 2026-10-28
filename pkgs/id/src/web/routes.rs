@@ -22,7 +22,7 @@ use super::templates::{
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
     render_peers, render_settings,
 };
-use crate::fileops::{FileOpError, FileOps};
+use crate::fileops::{FileOpError, FileOps, free_archive_name};
 
 /// Default number of files per page.
 const DEFAULT_PER_PAGE: usize = 50;
@@ -2172,7 +2172,12 @@ async fn archive_original_tag(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let archive_name = format!("{name}.archive.{timestamp}");
+    // Bump past an existing archive tag so two archives within the same
+    // second never overwrite each other (#1612).
+    let Ok(archive_name) = free_archive_name(store, name, timestamp).await else {
+        tracing::error!("[routes] Failed to find a free archive tag for {}", name);
+        return None;
+    };
     let archive_tag = iroh_blobs::api::Tag::from(archive_name.clone());
 
     match store.tags().set(archive_tag, expected).await {
