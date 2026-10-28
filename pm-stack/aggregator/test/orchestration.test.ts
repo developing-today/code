@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { todayFromSection } from "../src/derive.ts";
 import {
+  ageMsText,
   diagnoseOrchestrationSection,
+  feedAgeText,
   isFleetFeed,
   isOrchestrationSection,
   normalizeOrchestrationSection,
@@ -299,6 +301,41 @@ describe("orchestration diagnosis (#1139)", () => {
     const d = diagnoseOrchestrationSection(SECTION, Date.parse("2026-10-25T19:00:00.000Z"));
     expect(d.state).toBe("stale");
     expect(d.ageMs).toBe(100 * 60_000);
+  });
+
+  test("invalid: an unparseable generatedAt fails the generatedAt check (#1564)", () => {
+    const bad = { ...SECTION, generatedAt: "not a date" };
+    expect(orchestrationSectionProblem(bad)).toBe("generatedAt");
+    const d = diagnoseOrchestrationSection(bad, Date.parse("2026-10-25T17:50:00.000Z"));
+    expect(d.state).toBe("invalid");
+    expect(d.failedChecks).toEqual(["generatedAt"]);
+    const feed = {
+      version: 1,
+      generatedAt: "not a date",
+      quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+      attention: [],
+      orchestration: SECTION,
+    };
+    expect(isFleetFeed(feed)).toBe(false);
+  });
+
+  test("invalid: a generatedAt more than 60s in the future is never live (#1564)", () => {
+    const now = Date.parse("2026-10-25T17:50:00.000Z");
+    const future = { ...SECTION, generatedAt: new Date(now + 30 * 86_400_000).toISOString() };
+    const d = diagnoseOrchestrationSection(future, now);
+    expect(d.state).toBe("invalid");
+    expect(d.failedChecks).toEqual(["generatedAt"]);
+  });
+
+  test("live: a generatedAt within the 60s future-skew tolerance stays live (#1564)", () => {
+    const now = Date.parse("2026-10-25T17:50:00.000Z");
+    const within = { ...SECTION, generatedAt: new Date(now + 30_000).toISOString() };
+    expect(diagnoseOrchestrationSection(within, now).state).toBe("live");
+  });
+
+  test("age text: a non-finite age renders unknown, never NaNd old (#1564)", () => {
+    expect(ageMsText(Number.NaN)).toBe("unknown");
+    expect(feedAgeText("not a date")).toBe("unknown");
   });
 });
 

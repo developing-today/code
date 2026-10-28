@@ -134,6 +134,13 @@ type Client struct {
 	// toolHeaders are each tool's x-mcp-header annotations, learned from
 	// tools/list, for a modern connection over HTTP.
 	toolHeaders map[string][]mcpheaders.Param
+	// toolHints are each tool's readOnlyHint/idempotentHint annotations,
+	// learned from tools/list, for the modern broken-stream re-issue
+	// gate on tools/call: a call may be re-issued only when its tool
+	// declared itself safe to repeat. Unlike toolHeaders this is not
+	// gated on mirrorsHeaders -- the gate must work whether or not
+	// header mirroring is on, and over every transport.
+	toolHints map[string]toolHint
 	// invalidTools are tools excluded for invalid annotations, with why.
 	invalidTools map[string]string
 	// listen is the subscriptions/listen stream of a modern connection.
@@ -214,6 +221,25 @@ type toolsListResult struct {
 	NextCursor *string `json:"nextCursor,omitempty"`
 	TTLMs      *int64  `json:"ttlMs,omitempty"`
 	CacheScope string  `json:"cacheScope,omitempty"`
+}
+
+// toolHint is the pair of a tool's behaviour annotations the broken-stream
+// re-issue gate reads: a tools/call may be repeated only when the tool
+// declared itself read-only or idempotent.
+type toolHint struct {
+	readOnly   bool
+	idempotent bool
+}
+
+// parseToolHint reads the hints out of a tool's raw Annotations. Anything
+// unparseable or absent is no hint at all, which closes the gate.
+func parseToolHint(raw json.RawMessage) toolHint {
+	var a struct {
+		ReadOnly   bool `json:"readOnlyHint"`
+		Idempotent bool `json:"idempotentHint"`
+	}
+	_ = json.Unmarshal(raw, &a)
+	return toolHint{readOnly: a.ReadOnly, idempotent: a.Idempotent}
 }
 
 // Resource is one entry from resources/list.
@@ -937,9 +963,18 @@ func (c *Client) notify(ctx context.Context, method string, params json.RawMessa
 }
 
 func (c *Client) call(ctx context.Context, method string, params json.RawMessage, out any) error {
+	return c.callReissue(ctx, method, params, out, true)
+}
+
+// callReissue is call with the caller's broken-stream re-issue policy:
+// allowReissue says a modern request whose response stream broke
+// unanswered may be sent once more with a fresh id. Every method allows
+// it except a tools/call whose tool has not declared itself safe to
+// repeat (see CallTool).
+func (c *Client) callReissue(ctx context.Context, method string, params json.RawMessage, out any, allowReissue bool) error {
 	version := c.metaVersion
 	if version == "" {
-		raw, err := c.roundTrip(ctx, method, params)
+		raw, err := c.roundTrip(ctx, method, params, allowReissue)
 		if err != nil || out == nil {
 			return err
 		}
@@ -955,7 +990,7 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 		if err != nil {
 			return err
 		}
-		raw, err := c.roundTrip(ctx, method, withMeta)
+		raw, err := c.roundTrip(ctx, method, withMeta, allowReissue)
 		if err != nil {
 			return err
 		}
@@ -986,8 +1021,44 @@ func (c *Client) call(ctx context.Context, method string, params json.RawMessage
 	}
 }
 
+// isStreamLost reports whether err is the synthesized stream-lost error:
+// codeStreamLost carrying the mcpxStreamLost data marker lost() stamps on
+// it. The code alone does not identify it -- the receive loop's own
+// -32000 "connection closed" (see fail) and any server-sent -32000 share
+// the code and carry no marker, and neither may be re-issued: transport
+// death is a different mechanism, and a server's own error is an answer.
+// No message matching anywhere.
+func isStreamLost(err error) bool {
+	var re *rpcError
+	if !errors.As(err, &re) || re.Code != codeStreamLost {
+		return false
+	}
+	var data struct {
+		StreamLost bool `json:"mcpxStreamLost"`
+	}
+	return json.Unmarshal(re.Data, &data) == nil && data.StreamLost
+}
+
 // roundTrip sends one request and returns its raw result.
-func (c *Client) roundTrip(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
+//
+// On a modern connection a request whose response stream broke
+// unanswered (isStreamLost) is re-issued exactly once with a fresh id,
+// when allowReissue holds: 2026-07-28 has no resumption, so the broken
+// request is the client's to send again or lose. A second stream-lost
+// surfaces. Legacy keeps its resume() mechanism in the transport, and
+// a caller cancellation is never re-issued. Each input_required round
+// is its own call to roundTrip, so each round re-issues independently.
+func (c *Client) roundTrip(ctx context.Context, method string, params json.RawMessage, allowReissue bool) (json.RawMessage, error) {
+	for attempt := 0; ; attempt++ {
+		raw, err := c.roundTripOnce(ctx, method, params)
+		if err == nil || attempt > 0 || !allowReissue || c.Era != EraModern || ctx.Err() != nil || !isStreamLost(err) {
+			return raw, err
+		}
+	}
+}
+
+// roundTripOnce sends one request once and returns its raw result.
+func (c *Client) roundTripOnce(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
 	id := c.nextID.Add(1)
 	ch := make(chan *rpcResponse, 1)
 
@@ -1029,6 +1100,12 @@ func (c *Client) roundTrip(ctx context.Context, method string, params json.RawMe
 		return nil, ctx.Err()
 	case resp := <-ch:
 		if resp.Error != nil {
+			if ctx.Err() != nil && isStreamLost(resp.Error) {
+				// The caller cancelled while the stream broke:
+				// cancellation is the truthful outcome, and a
+				// cancelled request is never re-issued.
+				return nil, ctx.Err()
+			}
 			return nil, resp.Error
 		}
 		return resp.Result, nil
@@ -1109,8 +1186,23 @@ func (c *Client) ListToolsWithHints(ctx context.Context) ([]Tool, CacheHints, er
 		}
 		cursor = &next
 	}
+	c.recordToolHints(all)
 	checked := c.checkToolHeaders(c.checkToolSchemas(all))
 	return checked, hints, nil
+}
+
+// recordToolHints retains each listed tool's behaviour annotations for
+// the tools/call re-issue gate, replacing the previous snapshot whole,
+// as checkToolHeaders does for toolHeaders -- but in every era and over
+// every transport, since the gate is not a header-mirroring concern.
+func (c *Client) recordToolHints(tools []Tool) {
+	hints := make(map[string]toolHint, len(tools))
+	for _, t := range tools {
+		hints[t.Name] = parseToolHint(t.Annotations)
+	}
+	c.mu.Lock()
+	c.toolHints = hints
+	c.mu.Unlock()
 }
 
 // ListResources returns static resources plus resource templates.
@@ -1235,7 +1327,28 @@ func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]str
 	return raw, nil
 }
 
+// toolCallReissueAllowed reports whether a broken tools/call to name may
+// be re-issued: only when the tool's retained list-time annotations
+// declare readOnlyHint or idempotentHint. It reads only what ListTools
+// retained -- a client that has never listed has no retained annotations
+// and does not re-issue, and an unknown or unannotated tool closes the
+// gate too: re-issuing could execute the tool twice. (Deliberately no
+// lazy list here: CallTool must not grow a tools/list round trip on
+// servers that may never answer one. toolCallHeaders already lists on
+// a modern HTTP connection before the first attempt, so the gate is
+// computed after it.)
+func (c *Client) toolCallReissueAllowed(name string) bool {
+	c.mu.Lock()
+	h, ok := c.toolHints[name]
+	c.mu.Unlock()
+	return ok && (h.readOnly || h.idempotent)
+}
+
 // CallTool invokes a tool and returns the raw CallToolResult.
+//
+// A broken response stream re-issues the call once only when the tool's
+// list-time annotations declare it read-only or idempotent (see
+// toolCallReissueAllowed); every other method re-issues automatically.
 //
 // On a modern HTTP connection the tool's x-mcp-header parameters are
 // mirrored into Mcp-Param-* headers. A -32020 HeaderMismatch then most
@@ -1262,12 +1375,18 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	}
 	defer done()
 	var raw json.RawMessage
+	allowReissue := false
 	for attempt := 0; ; attempt++ {
 		hctx, err := c.toolCallHeaders(ctx, name, args, attempt > 0)
 		if err != nil {
 			return nil, err
 		}
-		err = c.call(hctx, "tools/call", params, &raw)
+		if attempt == 0 {
+			// After toolCallHeaders: on a modern HTTP connection it
+			// has just listed, so the retained hints are current.
+			allowReissue = c.toolCallReissueAllowed(name)
+		}
+		err = c.callReissue(hctx, "tools/call", params, &raw, allowReissue)
 		var re *rpcError
 		if attempt == 0 && errors.As(err, &re) && re.Code == codeHeaderMismatch && c.mirrorsHeaders() {
 			continue
