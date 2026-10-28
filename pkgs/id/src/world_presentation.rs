@@ -539,10 +539,7 @@ mod tests {
         let prev = grid(4, 2, " ");
         let mut cells = prev.cells.clone();
         cells[0] = cell("a");
-        cells[3] = ScreenCell {
-            fg: 9,
-            ..cell(" ")
-        };
+        cells[3] = ScreenCell { fg: 9, ..cell(" ") };
         cells[5] = cell("x");
         cells[6] = cell("y");
         let next = ScreenSurface::from_cells(4, 2, cells).unwrap();
