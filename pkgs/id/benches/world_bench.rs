@@ -209,9 +209,7 @@ fn bench_fanout(clients: usize, rounds: u64, reps: usize) -> Result<Vec<f64>> {
             let start = Instant::now();
             for round in 0..rounds {
                 let token = tokens[(round as usize) % tokens.len()].clone();
-                handle
-                    .chat(token, format!("fanout {round}"))
-                    .await?;
+                handle.chat(token, format!("fanout {round}")).await?;
                 for receiver in &mut receivers {
                     let event = receiver.recv().await.context("fanout recv")?;
                     black_box(event.sequence);
