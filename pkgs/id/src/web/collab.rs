@@ -581,6 +581,10 @@ impl CollabMessage {
             return Some(Self::Error { error });
         }
 
+        if let Ok((msg::CURSOR_REMOVE, client_id)) = from_slice::<(u8, u64)>(data) {
+            return Some(Self::CursorRemove { client_id });
+        }
+
         if let Ok((msg::NEW_VERSION, hash, name)) = from_slice::<(u8, String, String)>(data) {
             return Some(Self::NewVersion { hash, name });
         }
@@ -1487,6 +1491,71 @@ mod tests {
         assert_eq!(msg::ACK, 3);
         assert_eq!(msg::CURSOR, 4);
         assert_eq!(msg::ERROR, 5);
+        assert_eq!(msg::CURSOR_REMOVE, 6);
+        assert_eq!(msg::NEW_VERSION, 7);
+        assert_eq!(msg::AUTH, 8);
+        assert_eq!(msg::AUTH_OK, 9);
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[test]
+    fn test_collab_message_cursor_remove_roundtrip() {
+        // Regression (#1783): decode had no tag-6 branch, so a CursorRemove
+        // frame came back as None — indistinguishable from corrupt input.
+        let msg = CollabMessage::CursorRemove { client_id: 54321 };
+        let encoded = msg.encode();
+        let decoded = CollabMessage::decode(&encoded).unwrap();
+
+        match decoded {
+            CollabMessage::CursorRemove { client_id } => {
+                assert_eq!(client_id, 54321);
+            }
+            _ => panic!("Expected CursorRemove message"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[test]
+    fn test_collab_message_auth_roundtrip() {
+        let msg = CollabMessage::Auth {
+            token: "secret-token".to_owned(),
+        };
+        let encoded = msg.encode();
+        let decoded = CollabMessage::decode(&encoded).unwrap();
+
+        match decoded {
+            CollabMessage::Auth { token } => {
+                assert_eq!(token, "secret-token");
+            }
+            _ => panic!("Expected Auth message"),
+        }
+    }
+
+    #[allow(clippy::unwrap_used, clippy::panic)]
+    #[test]
+    fn test_collab_message_auth_ok_roundtrip() {
+        for token in [Some("fresh-token".to_owned()), None] {
+            let msg = CollabMessage::AuthOk {
+                client_id: "client-1".to_owned(),
+                name: Some("Alice".to_owned()),
+                token: token.clone(),
+            };
+            let encoded = msg.encode();
+            let decoded = CollabMessage::decode(&encoded).unwrap();
+
+            match decoded {
+                CollabMessage::AuthOk {
+                    client_id,
+                    name,
+                    token: decoded_token,
+                } => {
+                    assert_eq!(client_id, "client-1");
+                    assert_eq!(name, Some("Alice".to_owned()));
+                    assert_eq!(decoded_token, token);
+                }
+                _ => panic!("Expected AuthOk message"),
+            }
+        }
     }
 
     #[test]
