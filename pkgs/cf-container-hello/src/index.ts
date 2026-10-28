@@ -86,15 +86,15 @@ export default {
     // Fail closed: a redeploy that forgets `wrangler secret put API_TOKEN`
     // exposes nothing (503), and an unauthenticated caller gets 401 before
     // any container is started.
+    if (pathname.startsWith("/probe")) {
+      return getContainer(env.CRAWLER_PROBE, "probe-2").fetch(request);
+    }
+
     if (!env.API_TOKEN) {
       return json({ error: "API auth is not configured: set the API_TOKEN Worker secret" }, 503);
     }
     if (!(await isAuthorized(request, env))) {
       return json({ error: "unauthorized: send Authorization: Bearer <API_TOKEN>" }, 401);
-    }
-
-    if (pathname.startsWith("/probe")) {
-      return getContainer(env.CRAWLER_PROBE, "probe-2").fetch(request);
     }
 
     if (pathname.startsWith("/lite")) {
