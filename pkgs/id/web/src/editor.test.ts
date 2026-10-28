@@ -237,20 +237,15 @@ describe("richSchema list tight attrs (#1469)", () => {
     expect(out.content[0].content).toEqual([item("a"), item("b")]);
   });
 
-  it.each([true, false])(
-    "preserves ordered_list {order: 3, tight: %s} through fromJSON -> toJSON",
-    (tight) => {
-      const json = {
-        type: "doc",
-        content: [
-          { type: "ordered_list", attrs: { order: 3, tight }, content: [item("a"), item("b")] },
-        ],
-      };
-      const out = richSchema.nodeFromJSON(json).toJSON();
-      expect(out.content[0].attrs).toEqual({ order: 3, tight });
-      expect(out.content[0].content).toEqual([item("a"), item("b")]);
-    },
-  );
+  it.each([true, false])("preserves ordered_list {order: 3, tight: %s} through fromJSON -> toJSON", (tight) => {
+    const json = {
+      type: "doc",
+      content: [{ type: "ordered_list", attrs: { order: 3, tight }, content: [item("a"), item("b")] }],
+    };
+    const out = richSchema.nodeFromJSON(json).toJSON();
+    expect(out.content[0].attrs).toEqual({ order: 3, tight });
+    expect(out.content[0].content).toEqual([item("a"), item("b")]);
+  });
 });
 
 describe("rawSchema", () => {
