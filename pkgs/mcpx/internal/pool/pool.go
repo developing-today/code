@@ -177,7 +177,8 @@ type Pool struct {
 	schemaErr    error
 	// schemaDeadline is when a modern upstream's ttlMs hints say the
 	// cached catalogue goes stale; zero means "never expires" (legacy
-	// upstreams, and caches seeded by SetSchemas). schemaPrivate records
+	// upstreams; disk seeds carry the deadline they were saved with).
+	// schemaPrivate records
 	// that some fetched list declared cacheScope "private" (#1601 Phase 1
 	// stores the scope; enforcing it is Phase 2).
 	schemaDeadline time.Time
@@ -837,10 +838,13 @@ func (p *Pool) Schemas(ctx context.Context) ([]mcpclient.Tool, []mcpclient.Resou
 
 // RefreshSchemas re-reads tools/resources from a live instance.
 //
-// On failure the cache timestamp is deliberately left unset. Recording a
-// timestamp would make a server that never started look like one that
-// genuinely exposes no tools, and that state would then be persisted and
-// reloaded, permanently hiding the failure.
+// On failure of a FIRST fetch the cache timestamp is deliberately left
+// unset. Recording a timestamp would make a server that never started
+// look like one that genuinely exposes no tools, and that state would
+// then be persisted and reloaded, permanently hiding the failure. A
+// failed re-read of an expired cache is different (#1603): the stale
+// catalogue is served, the error is recorded, and the timestamp and
+// deadline are left untouched so the next read retries.
 func (p *Pool) RefreshSchemas(ctx context.Context) ([]mcpclient.Tool, []mcpclient.Resource, error) {
 	return p.refreshSchemas(ctx, nil)
 }
@@ -870,21 +874,14 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 	key := p.schemaKey()
 	lease, err := p.Acquire(ctx, key)
 	if err != nil {
-		p.schemaMu.Lock()
-		p.schemaErr = err
-		p.schemaMu.Unlock()
-		return nil, nil, err
+		return p.refreshFailed(staleGen, err)
 	}
 	defer lease.Release()
 
 	cl := lease.Client()
 	tools, toolsHints, terr := cl.ListToolsWithHints(ctx)
 	if terr != nil {
-		err := fmt.Errorf("server %q tools/list: %w", p.cfg.Name, terr)
-		p.schemaMu.Lock()
-		p.schemaErr = err
-		p.schemaMu.Unlock()
-		return nil, nil, err
+		return p.refreshFailed(staleGen, fmt.Errorf("server %q tools/list: %w", p.cfg.Name, terr))
 	}
 	var resources []mcpclient.Resource
 	var resHints mcpclient.CacheHints
@@ -966,6 +963,22 @@ func (p *Pool) refreshSchemas(ctx context.Context, staleGen *time.Time) ([]mcpcl
 	return tools, resources, nil
 }
 
+// refreshFailed records a failed refresh (#1603). When the caller was
+// re-reading an expired cache generation, the stale catalogue is served
+// and nil is returned: the error lives in schemaErr (surfaced via
+// Status), and schemaAt/schemaDeadline are left untouched so the next
+// read retries the refresh. Otherwise — a failed first fetch — the
+// error is returned and, per RefreshSchemas, no timestamp is recorded.
+func (p *Pool) refreshFailed(staleGen *time.Time, err error) ([]mcpclient.Tool, []mcpclient.Resource, error) {
+	p.schemaMu.Lock()
+	defer p.schemaMu.Unlock()
+	p.schemaErr = err
+	if staleGen != nil && !p.schemaAt.IsZero() && p.schemaAt.Equal(*staleGen) {
+		return p.tools, p.resources, nil
+	}
+	return nil, nil, err
+}
+
 // schemaKey is the instance a catalogue read borrows.
 func (p *Pool) schemaKey() string {
 	key, _ := p.cfg.Scope.Key(config.CallContext{CallID: "schema"})
@@ -973,12 +986,16 @@ func (p *Pool) schemaKey() string {
 }
 
 // SetSchemas seeds the cache from disk so the daemon can answer discovery
-// queries without starting a single child process.
-func (p *Pool) SetSchemas(tools []mcpclient.Tool, resources []mcpclient.Resource, prompts []mcpclient.Prompt, instructions string, at time.Time) {
+// queries without starting a single child process. The deadline and
+// scope are the ones the persisted entry carried (#1603): the deadline
+// is absolute, so a seed whose deadline has already passed starts
+// expired and the first Schemas call re-reads instead of serving it as
+// fresh.
+func (p *Pool) SetSchemas(tools []mcpclient.Tool, resources []mcpclient.Resource, prompts []mcpclient.Prompt, instructions string, at time.Time, deadline time.Time, private bool) {
 	p.schemaMu.Lock()
 	p.tools, p.resources, p.prompts = tools, resources, prompts
 	p.instructions, p.schemaAt, p.schemaErr = instructions, at, nil
-	p.schemaDeadline, p.schemaPrivate = time.Time{}, false
+	p.schemaDeadline, p.schemaPrivate = deadline, private
 	p.schemaMu.Unlock()
 }
 
@@ -999,11 +1016,13 @@ func (p *Pool) CachedSchemas() ([]mcpclient.Tool, []mcpclient.Resource, time.Tim
 // CachedAll is everything a catalogue read produced, for the disk cache.
 // Prompts are part of it: a cache that held only tools and resources left a
 // restarted daemon serving no prompts at all, because it counted itself warm
-// and never listed them again.
-func (p *Pool) CachedAll() ([]mcpclient.Tool, []mcpclient.Resource, []mcpclient.Prompt, time.Time) {
+// and never listed them again. The deadline and scope ride along (#1603):
+// the disk cache persists them for public catalogues and uses the scope
+// to keep private ones off disk entirely.
+func (p *Pool) CachedAll() ([]mcpclient.Tool, []mcpclient.Resource, []mcpclient.Prompt, time.Time, time.Time, bool) {
 	p.schemaMu.RLock()
 	defer p.schemaMu.RUnlock()
-	return p.tools, p.resources, p.prompts, p.schemaAt
+	return p.tools, p.resources, p.prompts, p.schemaAt, p.schemaDeadline, p.schemaPrivate
 }
 
 // Invalidate forgets the cached schema, so the next read fetches it afresh.
