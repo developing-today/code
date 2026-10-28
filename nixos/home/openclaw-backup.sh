@@ -11,8 +11,10 @@
 # current run's date.
 #
 # Data set: all of ~/.openclaw EXCEPT the scratch trees tmp/ (2.9 GB of
-# session scratch) and cache/ (regenerable), the .git dir of the
-# openclaw-personal checkout, and transient sqlite sidecars/locks. The
+# session scratch) and cache/ (regenerable), codedb.snapshot (the
+# regenerable code-index snapshot — Drew 2026-10-28: not tracked in
+# git and not backed up), the .git dir of the openclaw-personal
+# checkout, and transient sqlite sidecars/locks. The
 # agent state DB (state/openclaw.sqlite) is snapshotted with sqlite3
 # .backup so the archived copy is transaction-consistent even while
 # the gateway is running. Also included: the last-24h (or since-last-
@@ -43,7 +45,10 @@ R2_PREFIX="openclaw"
 DRIVE_DIR="Cloud/cold-store/db-backups/openclaw"
 
 log() { echo "openclaw-backup: $*"; }
-fail() { echo "openclaw-backup: FAILED $*" >&2; exit 1; }
+fail() {
+  echo "openclaw-backup: FAILED $*" >&2
+  exit 1
+}
 STAGE=""
 on_exit() {
   rc=$?
@@ -53,8 +58,8 @@ on_exit() {
 trap on_exit EXIT
 
 # --- DATE validation (same discipline as pm-dashboard-backup #989) ---
-if [[ ! "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
-  || [ "$(date -d "$DATE" +%F 2>/dev/null)" != "$DATE" ]; then
+if [[ ! $DATE =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||
+  [ "$(date -d "$DATE" +%F 2>/dev/null)" != "$DATE" ]; then
   fail "invalid DATE '$DATE' - expected a real calendar date as YYYY-MM-DD"
 fi
 
@@ -100,11 +105,11 @@ for s in json.load(sys.stdin):
 R2_ACCESS_KEY_ID="$(bws_get cloudflare.r2-backups-access-key-id)"
 R2_SECRET_ACCESS_KEY="$(bws_get cloudflare.r2-backups-secret-access-key)"
 R2_ENDPOINT="$(bws_get cloudflare.r2-endpoint)"
-[ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ] && [ -n "$R2_ENDPOINT" ] \
-  || fail "R2 credentials incomplete in Bitwarden"
+[ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ] && [ -n "$R2_ENDPOINT" ] ||
+  fail "R2 credentials incomplete in Bitwarden"
 case "$R2_ENDPOINT" in
-  http://*|https://*) ;;
-  *) R2_ENDPOINT="https://$R2_ENDPOINT" ;;
+http://* | https://*) ;;
+*) R2_ENDPOINT="https://$R2_ENDPOINT" ;;
 esac
 R2_ENDPOINT="${R2_ENDPOINT%/}"
 export RCLONE_CONFIG_R2BAK_TYPE="s3"
@@ -128,29 +133,29 @@ mkdir -p "$OUTDIR"
 # fails mid-read (a live file changed), this pipeline must fail even
 # though the extraction tar exits 0 (#1034).
 tar -cf - -C "$OC" \
-  --exclude='./tmp' --exclude='./cache' --exclude='./.git' \
+  --exclude='./tmp' --exclude='./cache' --exclude='./codedb.snapshot' --exclude='./.git' \
   --exclude='*.sqlite-wal' --exclude='*.sqlite-shm' --exclude='*.lock' \
   . | tar -xf - -C "$STAGE" || fail "staging copy of $OC failed"
 
 # --- transaction-consistent snapshot of the agent state DB on top ---
 if [ -f "$OC/state/openclaw.sqlite" ]; then
   mkdir -p "$STAGE/state"
-  sqlite3 "$OC/state/openclaw.sqlite" ".backup '$STAGE/state/openclaw.sqlite'" \
-    || fail "sqlite .backup of state/openclaw.sqlite failed"
+  sqlite3 "$OC/state/openclaw.sqlite" ".backup '$STAGE/state/openclaw.sqlite'" ||
+    fail "sqlite .backup of state/openclaw.sqlite failed"
 fi
 
 # --- journal: window start = min(last successful run, 24h ago) ---
 NOW_EPOCH="$(date +%s)"
 LAST=0
 if [ -f "$MARKER" ]; then LAST="$(cat "$MARKER" 2>/dev/null || echo 0)"; fi
-case "$LAST" in (*[!0-9]*|"") LAST=0;; esac
-W=$(( NOW_EPOCH - 86400 ))
+case "$LAST" in *[!0-9]* | "") LAST=0 ;; esac
+W=$((NOW_EPOCH - 86400))
 if [ "$LAST" -gt 0 ] && [ "$LAST" -lt "$W" ]; then W="$LAST"; fi
 SINCE_STR="$(date -d "@$W" '+%F %T')"
 mkdir -p "$STAGE/journals"
 journalctl --user -u "openclaw-gateway.service" --since "$SINCE_STR" --no-pager -o short-iso \
-  > "$STAGE/journals/openclaw-gateway.log" 2>/dev/null \
-  || echo "(journal unavailable for openclaw-gateway)" > "$STAGE/journals/openclaw-gateway.log"
+  >"$STAGE/journals/openclaw-gateway.log" 2>/dev/null ||
+  echo "(journal unavailable for openclaw-gateway)" >"$STAGE/journals/openclaw-gateway.log"
 
 # --- manifest ---
 python3 - "$STAGE" "$DATE" "$CREATED_AT" <<'PYEOF'
@@ -182,7 +187,8 @@ tar -I zstd -cf "$TMPARC" -C "$STAGE" .
 mv "$TMPARC" "$ARCHIVE"
 VDIR="$(mktemp -d)"
 tar -I zstd -xf "$ARCHIVE" -C "$VDIR"
-if ! ( cd "$VDIR" && python3 - <<'PYEOF'
+if ! (
+  cd "$VDIR" && python3 - <<'PYEOF'
 import hashlib, json, os, sys
 m = json.load(open("manifest.json"))
 bad = 0
@@ -197,7 +203,8 @@ sys.exit(1 if bad else 0)
 PYEOF
 ); then
   echo "openclaw-backup: VERIFY FAILED for $ARCHIVE" >&2
-  rm -rf "$VDIR"; exit 1
+  rm -rf "$VDIR"
+  exit 1
 fi
 rm -rf "$VDIR"
 
@@ -209,7 +216,10 @@ CUTOFF="$(date -d '30 days ago' +%F)"
 for d in "$ROOT"/20??-??-??; do
   [ -d "$d" ] || continue
   day="$(basename "$d")"
-  if [[ "$day" != "$DATE" && "$day" < "$CUTOFF" ]]; then rm -rf "$d"; log "pruned local $day"; fi
+  if [[ $day != "$DATE" && $day < $CUTOFF ]]; then
+    rm -rf "$d"
+    log "pruned local $day"
+  fi
 done
 
 # === legs 2+3: offsite copies, sha256-verified =============================
@@ -232,11 +242,11 @@ prune_remote() { # $1 rclone dir holding <date> subdirs, $2 label
   # discarded, so the cause reaches the log. A genuinely empty
   # listing still succeeds: lsf exits 0 with no output and the
   # loop below simply has nothing to prune.
-  subs="$(rclone lsf --dirs-only "$1")" \
-    || fail "prune listing failed on $2 ($1)"
+  subs="$(rclone lsf --dirs-only "$1")" ||
+    fail "prune listing failed on $2 ($1)"
   for day in $subs; do
     day="${day%/}"
-    if [[ "$day" =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]] && [[ "$day" != "$DATE" && "$day" < "$CUTOFF" ]]; then
+    if [[ $day =~ ^20[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]] && [[ $day != "$DATE" && $day < $CUTOFF ]]; then
       rclone purge "$1/$day" >/dev/null 2>&1 || fail "prune failed on $2 ($day)"
       log "pruned $2 $day"
     fi
@@ -254,6 +264,6 @@ verify_remote "$DRIVE_DEST" "Drive"
 prune_remote "drive:$DRIVE_DIR" "Drive"
 
 # --- journal cursor: advance ONLY now that all three legs succeeded ---
-echo "$NOW_EPOCH" > "$MARKER"
+echo "$NOW_EPOCH" >"$MARKER"
 
 log "OK openclaw $DATE backed up to local + R2 + Drive (sha256 $ARC_SHA)"

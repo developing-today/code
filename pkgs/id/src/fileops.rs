@@ -95,6 +95,26 @@ pub struct FileOps<'a> {
     blob_wait: Duration,
 }
 
+/// The archive tag for `name` at `ts`, bumped past any archive tag that
+/// already exists: `{name}.archive.{ts}`, then `{name}.archive.{ts + 1}`,
+/// and so on until the name is free.
+///
+/// Archive names carry second-resolution timestamps, so two replaces of one
+/// name within the same second would otherwise pick the same tag and the
+/// second would silently overwrite the first replace's archive (#1612). The
+/// suffix stays all digits: `delete` enumerates a file's archives by exactly
+/// that shape, and the web layer parses the suffix as the archive timestamp.
+pub(crate) async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Result<String> {
+    let mut suffix = ts;
+    loop {
+        let candidate = format!("{name}.archive.{suffix}");
+        if store.tags().get(&candidate).await?.is_none() {
+            return Ok(candidate);
+        }
+        suffix += 1;
+    }
+}
+
 impl<'a> FileOps<'a> {
     /// Create file operations over the given stores.
     pub const fn new(store: &'a Store, tags: &'a TagStore) -> Self {
@@ -154,7 +174,7 @@ impl<'a> FileOps<'a> {
         let Some(existing) = self.store.tags().get(name).await? else {
             return Ok(None);
         };
-        let archive = format!("{name}.archive.{ts}");
+        let archive = free_archive_name(self.store, name, ts).await?;
         self.store
             .tags()
             .set(&archive, existing.hash)
@@ -245,9 +265,14 @@ impl<'a> FileOps<'a> {
             .map_err(anyhow::Error::from)?;
 
         let archived_original = if archive {
-            let name = format!("{from}.archive.{ts}");
-            match self.store.tags().set(&name, hash).await {
-                Ok(()) => Some(name),
+            match free_archive_name(self.store, from, ts).await {
+                Ok(name) => match self.store.tags().set(&name, hash).await {
+                    Ok(()) => Some(name),
+                    Err(e) => {
+                        tracing::error!("failed to archive original {from}: {e}");
+                        None
+                    }
+                },
                 Err(e) => {
                     tracing::error!("failed to archive original {from}: {e}");
                     None
@@ -418,5 +443,56 @@ impl<'a> FileOps<'a> {
             archives_removed,
             metadata_removed,
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod archive_name_tests {
+    use iroh_blobs::{Hash, store::mem::MemStore};
+
+    use super::*;
+
+    fn hash(byte: u8) -> Hash {
+        Hash::from([byte; 32])
+    }
+
+    /// Two replaces of one name within the same second must not share an
+    /// archive tag (#1612): the second archive is bumped to the next free
+    /// numeric suffix, and both replaced versions stay archived.
+    #[tokio::test]
+    async fn same_second_archives_never_overwrite() {
+        let store: Store = MemStore::new().into();
+        let ts = 1_700_000_000_u64;
+
+        let first = free_archive_name(&store, "doc", ts).await.unwrap();
+        assert_eq!(first, format!("doc.archive.{ts}"));
+        store.tags().set(&first, hash(1)).await.unwrap();
+
+        let second = free_archive_name(&store, "doc", ts).await.unwrap();
+        assert_eq!(second, format!("doc.archive.{}", ts + 1));
+        store.tags().set(&second, hash(2)).await.unwrap();
+
+        // Both archives survive, each still pointing at its own version.
+        assert_eq!(
+            store.tags().get(&first).await.unwrap().unwrap().hash,
+            hash(1)
+        );
+        assert_eq!(
+            store.tags().get(&second).await.unwrap().unwrap().hash,
+            hash(2)
+        );
+
+        // A third same-second replace bumps past both.
+        let third = free_archive_name(&store, "doc", ts).await.unwrap();
+        assert_eq!(third, format!("doc.archive.{}", ts + 2));
+    }
+
+    /// With no collision the archive name is exactly the historic shape.
+    #[tokio::test]
+    async fn uncontested_archive_name_is_unchanged() {
+        let store: Store = MemStore::new().into();
+        let name = free_archive_name(&store, "doc", 42).await.unwrap();
+        assert_eq!(name, "doc.archive.42");
     }
 }
