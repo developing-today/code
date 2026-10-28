@@ -118,7 +118,7 @@ carry instead is a description that says so and MCP annotations
 | `tool_invoke` | `POST /v1/tools/{tool}` | `mcpx tool invoke` *generated* | `mcpx_tool_invoke` | `ops.toolInvoke()` |  |
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
 
-## CLI commands (64)
+## CLI commands (65)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -183,6 +183,7 @@ that reaches none says why: those are decisions, not gaps.
 | `stats` | `stats_query` |  |
 | `status` | `status` |  |
 | `stop` | `shutdown` |  |
+| `supervise` | – | Runs in its own process as the re-exec target of the supervised transport; it serves no API. |
 | `task` / `tasks` | `tasks_list`, `task_get`, `task_cancel`, `task_result` | Generated from the operation table. |
 | `tool` | `tool_invoke` | Generated from the operation table. |
 | `tools` | `tools` | Generated from the operation table. |

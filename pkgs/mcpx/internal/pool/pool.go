@@ -688,6 +688,16 @@ func (p *Pool) dial() (mcpclient.Transport, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.cfg.Stdio() && p.cfg.Mcpx != nil && p.cfg.Mcpx.Supervised {
+		return mcpclient.NewSupervised(mcpclient.SupervisedOptions{
+			Name:       p.cfg.Name,
+			Command:    p.cfg.Command,
+			Args:       p.cfg.Args,
+			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
+			Cwd:        p.cfg.Cwd,
+			InheritEnv: true,
+		})
+	}
 	if p.cfg.Stdio() {
 		return mcpclient.NewStdio(mcpclient.StdioOptions{
 			Command:    p.cfg.Command,
