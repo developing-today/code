@@ -768,15 +768,15 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
     <h2 class="font-bold">Join or invite</h2>
     <label class="form-control max-w-xl">
       <span class="label-text">Display name</span>
-      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest">
+      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest" aria-label="Display name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">World <span class="opacity-60">(blank for the server's default)</span></span>
-      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*">
+      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*" aria-label="World name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">Guest capability</span>
-      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability">
+      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability" aria-label="Guest capability">
     </label>
     <div class="flex flex-wrap gap-2">
       <button data-world-join class="btn btn-primary" type="button">Join world</button>
@@ -1064,6 +1064,9 @@ mod tests {
         assert!(html.contains("data-world-view"));
         assert!(html.contains("href=\"/files\""));
         assert!(html.contains("ProseMirror collaborative editor/viewer"));
+        assert!(html.contains("aria-label=\"Display name\""));
+        assert!(html.contains("aria-label=\"World name\""));
+        assert!(html.contains("aria-label=\"Guest capability\""));
     }
 
     #[test]
