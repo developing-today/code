@@ -80,6 +80,9 @@ export function parseSubscriptionQuota(payload) {
   if (windowLimit === 0 || weeklyLimit === 0) {
     throw new ExportError("unparseable", 6, "subscription-quota: zero limit");
   }
+  if (!Number.isFinite(durationSecs) || durationSecs <= 0) {
+    throw new ExportError("unparseable", 6, "subscription-quota: field window_duration_secs not a finite positive number");
+  }
   const shortName = durationSecs === 18_000 ? "5h" : durationSecs === 3_600 ? "1h" : `window-${durationSecs}s`;
   const iso = (epochSecs) => new Date(epochSecs * 1000).toISOString();
   return {
