@@ -9,6 +9,12 @@ func init() {
 	const expire = "elicit.TestAnExpiredQuestionBecomesCancelNotDecline@2025-06-18,2025-11-25,2026-07-28"
 	const cliAnswer = "e2e.TestElicitationsCanBeListedAndAnsweredFromTheCommandLine@2025-11-25,2026-07-28"
 	register(
+		C("elicitation-client-validate-responses", "mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema/2025-11-25/elicitation/wrong-typed-answer-is-32602-not-relayed",
+			"mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema/2026-07-28/elicitation/input-required-wrong-typed-answer-is-rejected"),
+		C("elicitation-both-validate-against-schema", "mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema@2025-06-18"),
+		S("elicitation-both-validate-against-schema", "mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema@2025-06-18"),
+		S("elicitation-server-validate-received-data", "mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema/2025-11-25/elicitation/wrong-typed-answer-is-32602-not-relayed",
+			"mcpclient.TestElicitationAnswersValidatedAgainstRequestedSchema/2026-07-28/elicitation/input-required-wrong-typed-answer-is-rejected"),
 		C("elicitation-client-32602-on-undeclared-mode", "mcpclient.TestElicitationDeclarations/2025-11-25/elicitation/undeclared-mode-is-32602"),
 		C("elicitation-client-prepopulate-defaults", "mcpclient.TestElicitationDeclarations/2025-11-25/elicitation/client-applies-schema-defaults",
 			"mcpclient.TestModernElicitationAppliesSchemaDefaults/2026-07-28/elicitation/client-applies-schema-defaults"),
@@ -122,10 +128,6 @@ func init() {
 		Gap{ID: "elicitation-client-handle-urls-carefully", Side: Client, Issue: "#255", Why: "mcpx elicit prints the raw request: no review step, no domain emphasis or punycode warning, no defaults pre-filled"},
 		Gap{ID: "elicitation-client-highlight-domain", Side: Client, Issue: "#255", Why: "mcpx elicit prints the raw request: no review step, no domain emphasis or punycode warning, no defaults pre-filled"},
 		Gap{ID: "elicitation-client-warn-punycode", Side: Client, Issue: "#255", Why: "mcpx elicit prints the raw request: no review step, no domain emphasis or punycode warning, no defaults pre-filled"},
-		Gap{ID: "elicitation-client-validate-responses", Side: Client, Issue: "#255", Why: "an answer is checked only for non-empty content, not against requestedSchema"},
-		Gap{ID: "elicitation-both-validate-against-schema", Side: Client, Issue: "#255", Why: "an answer is checked only for non-empty content, not against requestedSchema"},
-		Gap{ID: "elicitation-both-validate-against-schema", Side: Server, Issue: "#255", Why: "an answer is checked only for non-empty content, not against requestedSchema"},
-		Gap{ID: "elicitation-server-validate-received-data", Side: Server, Issue: "#255", Why: "a client answer is relayed upstream without a schema check"},
 		Gap{ID: "elicitation-server-must-return-32042", Side: Server, Issue: "#214", Why: "a url question for a client that cannot take it stays with the broker; -32042 is never returned"},
 		Gap{ID: "elicitation-server-state-bound-to-user", Side: Server, Issue: "#257", Why: "mcpx has no authenticated user: state is bound to the request, the session id is whatever the caller sends"},
 		Gap{ID: "elicitation-server-stored-state-bound-to-user", Side: Server, Issue: "#257", Why: "mcpx has no authenticated user: state is bound to the request, the session id is whatever the caller sends"},
