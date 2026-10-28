@@ -23,6 +23,7 @@ in
       # "printing"
       "services/flatpak"
       "services/id-mail"
+      "services/pm-stack"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -52,6 +53,21 @@ in
         services.id-mail = {
           transport = "worker";
           workerUrl = "https://mail.security.cab";
+        };
+      }
+      {
+        # PM dashboard stack (aggregator + projector, git-sync and
+        # quota-gatherer timers) as NixOS-managed user services.
+        services.pm-stack.enable = true;
+      }
+      {
+        # Laptop backups (code#1516, dezren39/nix#976): the dashboard
+        # backup (local + R2 + Drive) and the repo-archive restic job,
+        # declared in dezren39/nix and imported as a home-manager
+        # module so they deploy with the same switch.
+        home-manager.users.user = {
+          imports = [ inputs.dezren39-nix.homeModules.laptop-backups ];
+          services.laptop-backups.enable = true;
         };
       }
       # KRdp remote desktop for this laptop (user service + package);

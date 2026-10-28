@@ -9,7 +9,8 @@
 //   so a human refreshing — or a watchdog polling — never fans out to
 //   five services per hit. A failed probe renders as a failed probe,
 //   with its error and its age; nothing here invents a state.
-// - The projector (off by config) is never probed and never red.
+// - A service whose topology row is probe:"off" (the projector when
+//   unconfigured) is never probed and never red.
 // - Page health is an in-process render registry (server.ts records
 //   each successful page render), never self-HTTP: a route nobody has
 //   opened is labelled "not rendered since boot", not fake-green.
