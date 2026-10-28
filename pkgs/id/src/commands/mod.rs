@@ -68,6 +68,7 @@ pub mod put;
 pub mod repl;
 pub mod serve;
 pub mod tag;
+pub mod text;
 #[cfg(feature = "world")]
 pub mod world;
 
