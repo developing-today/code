@@ -277,6 +277,14 @@ pub async fn get_tags_handler(
         query.key.as_deref(),
         query.value.as_deref(),
     ) {
+        // value without key is not a value search — refuse rather than
+        // silently dropping the filter (see /api/tags/search for `:value`).
+        (Some(_), None, Some(_)) | (None, None, Some(_)) => {
+            return bad_ns(
+                "value filter requires the `key` query parameter (use /api/tags/search?q=:value for a value-only search)".to_owned(),
+            )
+            .into_response();
+        }
         // Subject + key + value → exact lookup
         (Some(subject), Some(key), value) => tag_store
             .get_by_key(ns, subject.as_bytes(), key.as_bytes())
@@ -462,5 +470,144 @@ pub async fn search_tags_handler(
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{
+        Router,
+        body::{Body, to_bytes},
+        http::{Request, StatusCode},
+    };
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+    use tower::ServiceExt as _;
+
+    use super::*;
+    use crate::tags::TagStore;
+    use crate::web::AppState;
+
+    async fn router() -> (Router, tempfile::TempDir, Endpoint, Docs) {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "tags-ws-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        // Seed: a.md has label=rust + label=go, b.md has label=rust.
+        tags.set_tag(&tags.global, b"a.md", b"label", Some(b"rust"), b"")
+            .await
+            .unwrap();
+        tags.set_tag(&tags.global, b"a.md", b"label", Some(b"go"), b"")
+            .await
+            .unwrap();
+        tags.set_tag(&tags.global, b"b.md", b"label", Some(b"rust"), b"")
+            .await
+            .unwrap();
+        let state = AppState::new(
+            store,
+            None,
+            "tags-ws-test".to_owned(),
+            tags,
+            [7; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        (
+            super::super::routes::create_router(state),
+            dir,
+            endpoint,
+            docs,
+        )
+    }
+
+    async fn get(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn value_without_key_is_rejected() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?value=rust").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], false);
+        assert!(
+            body["message"].as_str().unwrap_or("").contains("key"),
+            "message must name the missing key parameter: {body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn subject_plus_value_without_key_is_rejected() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?subject=a.md&value=rust").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], false);
+        assert!(
+            body["message"].as_str().unwrap_or("").contains("key"),
+            "message must name the missing key parameter: {body}",
+        );
+    }
+
+    #[tokio::test]
+    async fn key_plus_value_still_filters() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?key=label&value=rust").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn subject_key_value_still_filters() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        let (status, body) = get(&app, "/api/tags?subject=a.md&key=label&value=rust").await;
+        assert_eq!(status, StatusCode::OK);
+        let tags = body.as_array().unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0]["subject"], "a.md");
+        assert_eq!(tags[0]["value"], "rust");
+    }
+
+    #[tokio::test]
+    async fn subject_only_key_only_and_unfiltered_are_unchanged() {
+        let (app, _dir, _endpoint, _docs) = router().await;
+        // Web UI call shape (?subject= at main.ts:909) returns the subject's tags.
+        let (status, body) = get(&app, "/api/tags?subject=a.md").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 2);
+
+        let (status, body) = get(&app, "/api/tags?key=label").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 3);
+
+        let (status, body) = get(&app, "/api/tags").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 3);
     }
 }
