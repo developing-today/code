@@ -316,11 +316,15 @@ mod tests {
             claim_by(4, 6, 9, "city", Some("Seattle")),
         ];
         let index = TagIndex::new(&claims);
+        // Scan order is key order, in which a bare (null) value sorts before a
+        // valued one, so compare the ID sets, not the scan sequence.
         let ids = |entries: Vec<Entry>| -> Vec<[u8; 32]> {
-            entries
+            let mut ids: Vec<[u8; 32]> = entries
                 .iter()
                 .map(|entry| *entry.claim.as_bytes())
-                .collect()
+                .collect();
+            ids.sort_unstable();
+            ids
         };
         assert_eq!(ids(index.author_name(&[7; 32], "city")), vec![[1; 32], [2; 32]]);
         assert_eq!(
