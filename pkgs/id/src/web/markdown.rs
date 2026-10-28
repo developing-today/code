@@ -593,8 +593,7 @@ fn collect_block_children<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
         // a list still converts exactly as before (an htmlBlock
         // code_block, #982).
         if is_end_list_separator(child)
-            && ((idx > 0
-                && matches!(children[idx - 1].data.borrow().value, NodeValue::List(_)))
+            && ((idx > 0 && matches!(children[idx - 1].data.borrow().value, NodeValue::List(_)))
                 || children
                     .get(idx + 1)
                     .is_some_and(|c| matches!(c.data.borrow().value, NodeValue::List(_))))
@@ -3651,10 +3650,12 @@ mod tests {
         // <!-- end list --> separator only when it sits next to a list.
         // The same comment authored away from any list is content like
         // any other HTML block (#982) and must still convert.
-        let doc = markdown_to_prosemirror("<!-- end list -->
+        let doc = markdown_to_prosemirror(
+            "<!-- end list -->
 
 Some text
-");
+",
+        );
         let content = doc["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "code_block");
         assert_eq!(content[0]["attrs"]["htmlBlock"], true);
