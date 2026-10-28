@@ -189,11 +189,7 @@ describe("horizon calendar-date validation (#1628)", () => {
 
   test("roadmapDayGrain counts impossible dates as coarse, not outside", () => {
     const now = new Date("2026-10-28T12:00:00Z");
-    const g = roadmapDayGrain(
-      [row("2026-02-30", 1), row("2026-13-15", 2), row("2026-12-25", 3)],
-      "week",
-      now,
-    );
+    const g = roadmapDayGrain([row("2026-02-30", 1), row("2026-13-15", 2), row("2026-12-25", 3)], "week", now);
     expect(g.coarse.map((r) => r.horizon)).toEqual(["2026-02-30", "2026-13-15"]);
     expect(g.outside).toBe(1);
   });
