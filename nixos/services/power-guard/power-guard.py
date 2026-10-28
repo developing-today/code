@@ -26,6 +26,7 @@ real lock), POWER_GUARD_SLEEP_CMD (default "systemctl hybrid-sleep").
 Threshold/timing overrides: POWER_GUARD_POLL, POWER_GUARD_CONFIRM,
 POWER_GUARD_EDGE_CONFIRM.
 """
+
 import os
 import subprocess
 import sys
@@ -33,10 +34,10 @@ import time
 
 SYSFS = os.environ.get("POWER_GUARD_SYSFS", "/sys/class/power_supply")
 POLL = float(os.environ.get("POWER_GUARD_POLL", "15"))
-LOW_PCT = 20            # engage the block at/below this (UPower PercentageLow)
-CRITICAL_PCT = 5        # UPower PercentageCritical
-EDGE_PCT = 2            # UPower PercentageAction
-CRITICAL_TTE = 300      # seconds-to-empty treated as critical
+LOW_PCT = 20  # engage the block at/below this (UPower PercentageLow)
+CRITICAL_PCT = 5  # UPower PercentageCritical
+EDGE_PCT = 2  # UPower PercentageAction
+CRITICAL_TTE = 300  # seconds-to-empty treated as critical
 CONFIRM = float(os.environ.get("POWER_GUARD_CONFIRM", "300"))
 EDGE_CONFIRM = float(os.environ.get("POWER_GUARD_EDGE_CONFIRM", "60"))
 NO_INHIBIT = os.environ.get("POWER_GUARD_NO_INHIBIT") == "1"
@@ -106,11 +107,18 @@ class Inhibitor:
             self.proc = "stub"
             return
         self.proc = subprocess.Popen(
-            ["systemd-inhibit", "--what=sleep", "--mode=block",
-             "--who=power-guard",
-             "--why=battery reading unconfirmed; power-guard is evaluating",
-             "sleep", "infinity"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            [
+                "systemd-inhibit",
+                "--what=sleep",
+                "--mode=block",
+                "--who=power-guard",
+                "--why=battery reading unconfirmed; power-guard is evaluating",
+                "sleep",
+                "infinity",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         log("INHIBIT(block sleep) engaged")
 
     def release(self):
@@ -130,21 +138,26 @@ def main():
     inh = Inhibitor()
     critical_since = None
     edge_since = None
-    log(f"started: poll={POLL}s low={LOW_PCT}% crit={CRITICAL_PCT}% "
+    log(
+        f"started: poll={POLL}s low={LOW_PCT}% crit={CRITICAL_PCT}% "
         f"edge={EDGE_PCT}% confirm={CONFIRM}s edge_confirm={EDGE_CONFIRM}s "
-        f"sysfs={SYSFS} no_inhibit={NO_INHIBIT}")
+        f"sysfs={SYSFS} no_inhibit={NO_INHIBIT}"
+    )
     while True:
         on_ac, cap, status, tte = sample()
         now = time.monotonic()
         discharging = (not on_ac) and status == "Discharging" and cap is not None
         low = discharging and (cap <= LOW_PCT or (tte is not None and tte <= 900))
-        critical = discharging and (cap <= CRITICAL_PCT or
-                                    (tte is not None and tte <= CRITICAL_TTE))
+        critical = discharging and (
+            cap <= CRITICAL_PCT or (tte is not None and tte <= CRITICAL_TTE)
+        )
         edge = discharging and cap <= EDGE_PCT
 
         if not low:
             if inh.held:
-                log(f"recovered (ac={on_ac} cap={cap} status={status} tte={tte}); releasing")
+                log(
+                    f"recovered (ac={on_ac} cap={cap} status={status} tte={tte}); releasing"
+                )
             inh.release()
             critical_since = edge_since = None
         else:
