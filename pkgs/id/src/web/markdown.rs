@@ -341,59 +341,17 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
             json!({"type": "horizontal_rule"})
         }
 
-        NodeValue::List(list) => {
-            // Check if this is a task list by looking at children
-            let is_task_list = node
-                .children()
+        NodeValue::List(_) => {
+            // #1370: a mixed task/plain list converts to several sibling
+            // lists (see convert_list_runs); block parents splice them in
+            // via collect_block_children. A direct call gets the first
+            // run - the remaining call sites are the document root and
+            // list-item collection, where a list is always reached
+            // through its parent's block children instead.
+            convert_list_runs(node)
+                .into_iter()
                 .next()
-                .is_some_and(|child| matches!(child.data.borrow().value, NodeValue::TaskItem(_)));
-
-            if is_task_list {
-                let content = collect_list_items(node);
-                // #1036: carry `tight` like bullet_list/ordered_list, or
-                // loose task items fuse on save. #997: an ordered task
-                // list also carries its start in `attrs.order`, mirroring
-                // `ordered_list` below, or the ordering is lost on save.
-                match list.list_type {
-                    ListType::Ordered => {
-                        json!({
-                            "type": "task_list",
-                            "attrs": {"order": list.start, "tight": list.tight},
-                            "content": content
-                        })
-                    }
-                    ListType::Bullet => {
-                        json!({
-                            "type": "task_list",
-                            "attrs": {"tight": list.tight},
-                            "content": content
-                        })
-                    }
-                }
-            } else {
-                let content = collect_list_items(node);
-                let tight = list.tight;
-
-                match list.list_type {
-                    ListType::Ordered => {
-                        json!({
-                            "type": "ordered_list",
-                            "attrs": {
-                                "order": list.start,
-                                "tight": tight
-                            },
-                            "content": content
-                        })
-                    }
-                    ListType::Bullet => {
-                        json!({
-                            "type": "bullet_list",
-                            "attrs": {"tight": tight},
-                            "content": content
-                        })
-                    }
-                }
-            }
+                .unwrap_or(Value::Null)
         }
 
         NodeValue::Item(_) => {
@@ -513,10 +471,25 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
                 }
             }
 
-            json!({
+            // #1407: emphasis/strong/strikethrough wrapping an image
+            // ride on the image node as a `marks` array (the text-node
+            // shape) — like the link above, the editor schema cannot
+            // wrap an image node in a mark, so the marks travel on the
+            // node and the save direction re-wraps (see the image case
+            // in json_to_ast). The link stays in linkHref (#880).
+            let wrap_marks: Vec<Value> = active_marks
+                .iter()
+                .filter(|m| matches!(m.mark_type, "em" | "strong" | "strikethrough"))
+                .map(|m| json!({"type": m.mark_type}))
+                .collect();
+            let mut image_node = json!({
                 "type": "image",
                 "attrs": attrs
-            })
+            });
+            if !wrap_marks.is_empty() {
+                image_node["marks"] = json!(wrap_marks);
+            }
+            image_node
         }
 
         // Unsupported nodes - pass through as best we can
@@ -746,9 +719,104 @@ fn text_node_with_marks(text: &str, marks: &[Mark]) -> Value {
 
 /// Collect block-level children of a node.
 fn collect_block_children<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
-    node.children()
-        .map(|child| convert_node(child, &[]))
-        .filter(|v| !v.is_null())
+    let children: Vec<&AstNode<'a>> = node.children().collect();
+    let mut out = Vec::new();
+    for (idx, child) in children.iter().enumerate() {
+        // #1370: comrak's renderer separates adjacent lists with
+        // <!-- end list --> comments, and the split sibling lists this
+        // change emits are adjacent by construction - so on reparse the
+        // separator comes back as an HtmlBlock between the lists. It is
+        // a separator, not content: drop it when a neighbouring sibling
+        // is a list. An authored <!-- end list --> comment NOT next to
+        // a list still converts exactly as before (an htmlBlock
+        // code_block, #982).
+        if is_end_list_separator(child)
+            && ((idx > 0 && matches!(children[idx - 1].data.borrow().value, NodeValue::List(_)))
+                || children
+                    .get(idx + 1)
+                    .is_some_and(|c| matches!(c.data.borrow().value, NodeValue::List(_))))
+        {
+            continue;
+        }
+        if matches!(child.data.borrow().value, NodeValue::List(_)) {
+            // #1370: a list converts to one or more sibling lists.
+            out.extend(convert_list_runs(child));
+        } else {
+            let converted = convert_node(child, &[]);
+            if !converted.is_null() {
+                out.push(converted);
+            }
+        }
+    }
+    out
+}
+
+/// True for the HtmlBlock comrak's renderer emits between adjacent
+/// lists (see collect_block_children).
+fn is_end_list_separator<'a>(node: &'a AstNode<'a>) -> bool {
+    match &node.data.borrow().value {
+        NodeValue::HtmlBlock(html) => html.literal.trim() == "<!-- end list -->",
+        _ => false,
+    }
+}
+
+/// Convert a comrak list node to one or more ProseMirror list nodes.
+///
+/// A pure list converts exactly as before (#997/#1036 attrs carried from
+/// the source list). #1370: a list mixing task items with plain items
+/// used to take its type from the first child only and convert the rest
+/// by their own kind, producing a `task_list` holding a `list_item` (or
+/// a plain list holding a `task_list_item`) - a shape the save-side
+/// placement validation and the editor schema both forbid, so the
+/// document could not be saved at all. Instead, group the items into
+/// runs of one kind and emit one sibling list per run, in source order.
+/// Ordered runs carry an `order` start offset by the items before them
+/// so numbering renders unchanged; `tight` is carried from the source
+/// list to every run. Placement validation and the editor schema are
+/// untouched: every emitted list is pure.
+fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
+    let (list_type, start, tight) = match &node.data.borrow().value {
+        NodeValue::List(list) => (list.list_type, list.start, list.tight),
+        _ => return Vec::new(),
+    };
+    // (is_task, items before this run, converted items)
+    let mut runs: Vec<(bool, usize, Vec<Value>)> = Vec::new();
+    let mut seen = 0usize;
+    for child in node.children() {
+        let is_task = matches!(child.data.borrow().value, NodeValue::TaskItem(_));
+        let item = convert_node(child, &[]);
+        if item.is_null() {
+            continue;
+        }
+        match runs.last_mut() {
+            Some((kind, _, items)) if *kind == is_task => items.push(item),
+            _ => runs.push((is_task, seen, vec![item])),
+        }
+        seen += 1;
+    }
+    runs.into_iter()
+        .map(|(is_task, offset, content)| match (is_task, list_type) {
+            (true, ListType::Ordered) => json!({
+                "type": "task_list",
+                "attrs": {"order": start + offset, "tight": tight},
+                "content": content
+            }),
+            (true, ListType::Bullet) => json!({
+                "type": "task_list",
+                "attrs": {"tight": tight},
+                "content": content
+            }),
+            (false, ListType::Ordered) => json!({
+                "type": "ordered_list",
+                "attrs": {"order": start + offset, "tight": tight},
+                "content": content
+            }),
+            (false, ListType::Bullet) => json!({
+                "type": "bullet_list",
+                "attrs": {"tight": tight},
+                "content": content
+            }),
+        })
         .collect()
 }
 
@@ -2081,21 +2149,53 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         }
     }
 
-    // #880: an image carrying linkHref (a linked image, see convert_node)
-    // is wrapped in a Link node so save emits [![alt](src)](href).
-    if node_type == "image"
-        && matches!(ast_node.data.borrow().value, NodeValue::Image(_))
-        && let Some(link_href) = json["attrs"]["linkHref"].as_str()
-        && !link_href.is_empty()
-    {
-        let link_node = arena.alloc(AstNode::from(NodeValue::Link(Box::new(
-            comrak::nodes::NodeLink {
-                url: link_href.to_owned(),
-                title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
-            },
-        ))));
-        link_node.append(ast_node);
-        return Ok(link_node);
+    // #880 + #1407: an image carrying linkHref (a linked image, see
+    // convert_node) and/or a `marks` array (emphasis/strong/
+    // strikethrough wrapping the image) is wrapped in the
+    // corresponding mark chain so save emits [![alt](src)](href),
+    // *![alt](src)*, or both combined. Wrappers use the canonical
+    // nesting order (#944) — the order create_marked_text applies —
+    // and the returned chain goes through append_inline_child's mark
+    // merging (#968), so a marked image inside a marked text span
+    // rejoins the span instead of fragmenting it.
+    if node_type == "image" && matches!(ast_node.data.borrow().value, NodeValue::Image(_)) {
+        let mut wrappers: Vec<(u8, NodeValue)> = Vec::new();
+        if let Some(link_href) = json["attrs"]["linkHref"].as_str()
+            && !link_href.is_empty()
+        {
+            wrappers.push((
+                mark_nesting_rank("link"),
+                NodeValue::Link(Box::new(comrak::nodes::NodeLink {
+                    url: link_href.to_owned(),
+                    title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
+                })),
+            ));
+        }
+        if let Some(marks) = json["marks"].as_array() {
+            for mark in marks {
+                let mark_type = mark["type"].as_str().unwrap_or("");
+                let wrapper = match mark_type {
+                    "em" => NodeValue::Emph,
+                    "strong" => NodeValue::Strong,
+                    "strikethrough" => NodeValue::Strikethrough,
+                    _ => continue,
+                };
+                if !wrappers.iter().any(|(_, w)| same_mark_wrapper(w, &wrapper)) {
+                    wrappers.push((mark_nesting_rank(mark_type), wrapper));
+                }
+            }
+        }
+        if !wrappers.is_empty() {
+            wrappers.sort_by_key(|(rank, _)| *rank);
+            // build_mark_chain consumes innermost-first; the sorted
+            // list above is outermost-first (canonical rank order).
+            let chain: Vec<NodeValue> = wrappers
+                .into_iter()
+                .map(|(_, wrapper)| wrapper)
+                .rev()
+                .collect();
+            return Ok(build_mark_chain(arena, ast_node, &chain, 0));
+        }
     }
 
     Ok(ast_node)
@@ -3727,6 +3827,94 @@ mod tests {
     }
 
     #[test]
+    fn test_mixed_task_plain_list_splits_at_parse() {
+        // #1370: a list mixing checkbox and plain items must split into
+        // pure sibling lists at parse - one mixed list is a shape the
+        // placement validation and the editor schema both forbid, which
+        // made such documents unsavable.
+        let doc = markdown_to_prosemirror("- [ ] a\n- plain\n- [x] b\n");
+        let content = doc["content"].as_array().unwrap();
+        let types: Vec<&str> = content
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(types, ["task_list", "bullet_list", "task_list"]);
+        assert_eq!(content[0]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(content[1]["content"][0]["type"], "list_item");
+        assert_eq!(content[2]["content"][0]["attrs"]["checked"], true);
+
+        // Plain-first order splits the other way.
+        let doc = markdown_to_prosemirror("- plain\n- [ ] a\n");
+        let content = doc["content"].as_array().unwrap();
+        let types: Vec<&str> = content
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(types, ["bullet_list", "task_list"]);
+
+        // The split document saves (no MisplacedNode) and the save is a
+        // fixpoint: reparsing it splits identically.
+        for original in ["- [ ] a\n- plain\n- [x] b\n", "- plain\n- [ ] a\n"] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original)
+            );
+        }
+    }
+
+    #[test]
+    fn test_mixed_ordered_list_splits_with_order_offsets() {
+        // #1370: ordered split runs carry order offsets so the rendered
+        // numbering is unchanged.
+        let doc = markdown_to_prosemirror("1. [ ] a\n2. plain\n3. [x] b\n");
+        let content = doc["content"].as_array().unwrap();
+        let types: Vec<&str> = content
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(types, ["task_list", "ordered_list", "task_list"]);
+        assert_eq!(content[0]["attrs"]["order"], 1);
+        assert_eq!(content[1]["attrs"]["order"], 2);
+        assert_eq!(content[2]["attrs"]["order"], 3);
+
+        let doc = markdown_to_prosemirror("4. plain\n5. [ ] a\n");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "ordered_list");
+        assert_eq!(content[0]["attrs"]["order"], 4);
+        assert_eq!(content[1]["type"], "task_list");
+        assert_eq!(content[1]["attrs"]["order"], 5);
+
+        for original in ["1. [ ] a\n2. plain\n3. [x] b\n", "4. plain\n5. [ ] a\n"] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original)
+            );
+        }
+    }
+
+    #[test]
+    fn test_authored_end_list_comment_away_from_lists_survives() {
+        // #1370 follow-up: collect_block_children drops the renderer's
+        // <!-- end list --> separator only when it sits next to a list.
+        // The same comment authored away from any list is content like
+        // any other HTML block (#982) and must still convert.
+        let doc = markdown_to_prosemirror(
+            "<!-- end list -->
+
+Some text
+",
+        );
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "code_block");
+        assert_eq!(content[0]["attrs"]["htmlBlock"], true);
+        assert_eq!(content[1]["type"], "paragraph");
+    }
+
+    #[test]
     fn test_ordered_task_list_roundtrips() {
         // #997: an ordered task list must keep its ordering and start on
         // save instead of being rewritten as a bullet task list.
@@ -4242,6 +4430,71 @@ mod tests {
         let md = prosemirror_to_markdown(&doc).expect("converts");
         assert!(md.contains("![alt](img.png)"), "plain image: {md}");
         assert!(md.contains("[text](https://x.test)"), "plain link: {md}");
+    }
+
+    #[test]
+    fn test_marked_image_roundtrip_keeps_marks() {
+        // #1407: emphasis/strong/strikethrough wrapping an image ride
+        // on the image node as a `marks` array and are re-emitted as
+        // the wrapping mark on save.
+        for (md_src, mark) in [
+            ("*![alt](img.png)*\n", "em"),
+            ("**![alt](img.png)**\n", "strong"),
+            ("~~![alt](img.png)~~\n", "strikethrough"),
+        ] {
+            let doc = markdown_to_prosemirror(md_src);
+            let img = &doc["content"][0]["content"][0];
+            assert_eq!(img["type"], "image", "parse: {md_src}");
+            assert_eq!(img["marks"][0]["type"], mark, "parse marks: {md_src}");
+            let md = prosemirror_to_markdown(&doc).expect("converts");
+            assert!(md.contains(md_src.trim()), "roundtrip: {md_src} -> {md}");
+            // Fixpoint: the emitted form re-parses to the same marks.
+            let back = markdown_to_prosemirror(&md);
+            assert_eq!(
+                back["content"][0]["content"][0]["marks"][0]["type"], mark,
+                "fixpoint: {md_src}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_marked_linked_image_roundtrip() {
+        // #1407 + #880 combined: *[![alt](src)](href)* keeps both the
+        // link (linkHref) and the wrapping emphasis (marks).
+        let doc = markdown_to_prosemirror("*[![alt](img.png)](https://example.com)*\n");
+        let img = &doc["content"][0]["content"][0];
+        assert_eq!(img["attrs"]["linkHref"], "https://example.com");
+        assert_eq!(img["marks"][0]["type"], "em");
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        // Canonical nesting (#944) puts the link outermost, so the
+        // emitted spelling wraps the emphasis inside the link text;
+        // it re-parses to the same node (fixpoint asserted below).
+        assert!(
+            md.contains("[*![alt](img.png)*](https://example.com)"),
+            "combined roundtrip: {md}"
+        );
+        let back = markdown_to_prosemirror(&md);
+        let back_img = &back["content"][0]["content"][0];
+        assert_eq!(back_img["attrs"]["linkHref"], "https://example.com");
+        assert_eq!(back_img["marks"][0]["type"], "em");
+    }
+
+    #[test]
+    fn test_mixed_marked_span_with_image_roundtrips_as_one_span() {
+        // #1407: a marked span mixing text and an image must save as
+        // ONE span — no fragmentation, no &#32; boundary entities.
+        let doc = markdown_to_prosemirror("*text ![alt](img.png) tail*\n");
+        let content = doc["content"][0]["content"].as_array().expect("inline");
+        assert_eq!(content.len(), 3, "text + image + text: {doc}");
+        assert_eq!(content[1]["marks"][0]["type"], "em");
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert!(md.contains("*text ![alt](img.png) tail*"), "one span: {md}");
+        assert!(!md.contains("&#32;"), "no entity leak: {md}");
+        // Fixpoint: the emitted form re-parses to the same shape.
+        let back = markdown_to_prosemirror(&md);
+        let back_content = back["content"][0]["content"].as_array().expect("inline");
+        assert_eq!(back_content.len(), 3, "fixpoint shape: {back}");
+        assert_eq!(back_content[1]["marks"][0]["type"], "em");
     }
 
     #[test]
