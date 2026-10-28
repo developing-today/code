@@ -42,6 +42,11 @@ pub const SESSION_DEADLINE: Duration = Duration::from_secs(60);
 /// How often `serve` offers a sync session to each peer it has discovered.
 pub const SYNC_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How long the accepting side waits, after a completed session, for the dialer
+/// to close the connection before it lets the router close it instead (see
+/// `EventSyncProtocol::accept`).
+const CLOSE_WAIT: Duration = Duration::from_secs(5);
+
 /// Membership answers for a gate that never asks. [`PullPolicy::Open`] admits every
 /// peer without reading membership (see the module docs), so these answers are never
 /// used; the type exists only because a [`PullGate`] is built over a [`WorldAccess`].
@@ -99,20 +104,36 @@ impl ProtocolHandler for EventSyncProtocol {
         // layer's saves queue behind a session the way they queue behind each other.
         // Sessions are bounded by SESSION_DEADLINE, so the wait is bounded too.
         let mut events = self.events.lock().await;
-        match events
+        let completed = match events
             .sync_session(&conn, false, SESSION_DEADLINE, &self.gate)
             .await
         {
             Ok(outcome) => {
                 tracing::debug!(
-                    "event sync: session with {peer}: sent {} received {}",
+                    "event sync: session with {peer}: sent {} received {} accepted {} duplicates {} waiting {} refused {}",
                     outcome.sent,
-                    outcome.received
+                    outcome.received,
+                    outcome.accepted,
+                    outcome.duplicates,
+                    outcome.waiting,
+                    outcome.refused
                 );
+                true
             }
             Err(error) => {
                 tracing::debug!("event sync: session with {peer} ended: {error:#}");
+                false
             }
+        };
+        if completed {
+            // The session's last frame is the completion frame the dialer ends
+            // its session on. Returning now would let the router close the
+            // connection before the dialer has read it, discarding the frame
+            // and failing its otherwise-complete session — so, like
+            // `ArtifactPullProtocol`, wait for the dialer to close first. The
+            // wait is bounded: the store lock is held here, and a dialer that
+            // never closes must not hold it (or this handler) forever.
+            let _ = tokio::time::timeout(CLOSE_WAIT, conn.closed()).await;
         }
         Ok(())
     }
