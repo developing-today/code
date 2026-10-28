@@ -435,6 +435,13 @@ func localCompletion(prompts []mcpclient.Prompt, templates []mcpclient.Resource,
 
 // taskStore is the daemon's own, created on first use so a daemon that never
 // runs one carries nothing.
+// TaskStore returns the daemon's one task store, creating it on first
+// use exactly as the /v1 handlers do. internal/cli uses it to share
+// the same instance with the daemon's MCP surface (issue #1555): a
+// task started over MCP is then visible via /v1, and a /v1 task lives
+// in the same store the MCP surface reads.
+func (s *Server) TaskStore() *tasks.Store { return s.taskStore() }
+
 func (s *Server) taskStore() *tasks.Store {
 	s.taskOnce.Do(func() {
 		if s.paths.State != "" {

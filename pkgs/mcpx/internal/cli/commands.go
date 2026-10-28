@@ -29,6 +29,7 @@ import (
 	"github.com/dezren39/mcpx/internal/preflight"
 	"github.com/dezren39/mcpx/internal/runner"
 	"github.com/dezren39/mcpx/internal/source"
+	"github.com/dezren39/mcpx/internal/tasks"
 )
 
 // App carries state shared by every subcommand.
@@ -44,6 +45,11 @@ type App struct {
 	machineOutput bool
 	// inlineStop shuts down an in-process daemon when the command ends.
 	inlineStop func()
+	// daemonStore is the in-process daemon's task store, set only on
+	// the daemon-run path (root.go) so MCPServer can inject it into
+	// the daemon-served MCP server (issue #1555). Nil everywhere
+	// else: standalone MCP servers keep a private in-memory store.
+	daemonStore *tasks.Store
 	// warnedPathsConfig records that the paths.config file-entry warning
 	// has been shown, so adoptSettings does not repeat it per command.
 	warnedPathsConfig bool
