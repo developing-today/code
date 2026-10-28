@@ -1,18 +1,21 @@
-// Tests for agy-proxy: failure detection (#678), the reconciled model
-// list (#1692 + the 2026-10-28 `agy models` reconciliation), and the
-// resident warm stream-json serving path.
+// Tests for agy-proxy: failure detection (#678), the live-pulled model
+// list (fleet live-pull rule, 2026-10-28; #1692's unknown-model 400 is
+// judged against it), and the resident warm stream-json serving path.
 // Run: node --test bin/agy-proxy.test.mjs
 //
 // The proxy now holds resident `agy` processes speaking
 // `--input-format stream-json`: prompts arrive on the child's stdin as
 // NDJSON `{"event":"user","message":{"content":...}}` lines and each
-// turn ends with a `result` event. These tests put a stub `agy` at
+// turn ends with a `result` event. The served model list is pulled
+// live from `agy models`. These tests put a stub `agy` at
 // $HOME/.local/bin/agy (the proxy's binary resolution reaches it when
-// no system agy exists) that speaks that protocol: it emits an `init`
-// event at spawn, then one reply per stdin line, keyed on markers in
-// the prompt — a run that dies non-zero must be reported as an error,
-// never as a successful 'stop' (in stream mode always, in non-stream
-// mode also when the run produced partial output first).
+// no system agy exists) that speaks that protocol AND answers
+// `agy models` with a TSV list including a test-only model no static
+// array could contain: it emits an `init` event at spawn, then one
+// reply per stdin line, keyed on markers in the prompt — a run that
+// dies non-zero must be reported as an error, never as a successful
+// 'stop' (in stream mode always, in non-stream mode also when the run
+// produced partial output first).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -25,6 +28,27 @@ import { fileURLToPath } from 'node:url';
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
 const STUB = `#!/bin/sh
+if [ "$1" = "models" ]; then
+  if [ -n "$AGY_STUB_FAIL_MODELS" ]; then
+    echo "stub agy: models unavailable" >&2
+    exit 1
+  fi
+  printf '%s\\t%s\\n' 'gemini-4-argon-medium' 'Gemini 4 Argon (Medium)'
+  printf '%s\\t%s\\n' 'gemini-4-argon-high' 'Gemini 4 Argon (High)'
+  printf '%s\\t%s\\n' 'gemini-4-argon-low' 'Gemini 4 Argon (Low)'
+  printf '%s\\t%s\\n' 'gemini-3.8-flash-high' 'Gemini 3.8 Flash (High)'
+  printf '%s\\t%s\\n' 'gemini-3.8-flash-medium' 'Gemini 3.8 Flash (Medium)'
+  printf '%s\\t%s\\n' 'gemini-3.8-flash-low' 'Gemini 3.8 Flash (Low)'
+  printf '%s\\t%s\\n' 'claude-opus-5-5-low' 'Claude Opus 5.5 (Low)'
+  printf '%s\\t%s\\n' 'claude-opus-5-5-medium' 'Claude Opus 5.5 (Medium)'
+  printf '%s\\t%s\\n' 'claude-opus-5-5-high' 'Claude Opus 5.5 (High)'
+  printf '%s\\t%s\\n' 'claude-sonnet-5-5-low' 'Claude Sonnet 5.5 (Low)'
+  printf '%s\\t%s\\n' 'claude-sonnet-5-5-medium' 'Claude Sonnet 5.5 (Medium)'
+  printf '%s\\t%s\\n' 'claude-sonnet-5-5-high' 'Claude Sonnet 5.5 (High)'
+  printf '%s\\t%s\\n' 'gpt-oss-120b-medium' 'GPT-OSS 120B (Medium)'
+  printf '%s\\t%s\\n' 'gemini-9-testonly-medium' 'Gemini 9 Testonly (Medium)'
+  exit 0
+fi
 conv=""
 prev=""
 for a in "$@"; do
@@ -63,7 +87,7 @@ const freePort = () => new Promise((resolve, reject) => {
   });
 });
 
-const startProxy = async () => {
+const startProxy = async (extraEnv = {}) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-proxy-test-'));
   const home = path.join(tmp, 'home');
   fs.mkdirSync(path.join(home, '.local', 'bin'), { recursive: true });
@@ -74,7 +98,8 @@ const startProxy = async () => {
       ...process.env,
       HOME: home,
       XDG_STATE_HOME: path.join(tmp, 'state'),
-      AGY_PROXY_PORT: String(port)
+      AGY_PROXY_PORT: String(port),
+      ...extraEnv
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -218,6 +243,7 @@ test('session requests reuse one resident worker (same pid across turns)', async
   assert.equal(secondBody.choices[0].message.content, 'Hello world');
   const pid2 = second.headers.get('x-agy-worker-pid');
   assert.equal(pid2, pid1, 'second turn of a session must run on the same resident worker');
+  assert.ok(Number(second.headers.get('x-agy-turn-ms')) >= 0, 'responses must carry per-turn timing (x-agy-turn-ms)');
 
   const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
   assert.equal(health.engine, 'agy-stream-json-resident');
@@ -239,7 +265,7 @@ test('a pre-warmed spare is ready before the first stateless request', async (t)
   }
 });
 
-test("unknown model is a 400, never a silent fallback; the served list is the `agy models` list", async (t) => {
+test("unknown model is a 400, never a silent fallback; the served list is the live `agy models` list", async (t) => {
   const { port, stop } = await startProxy();
   t.after(stop);
   const messages = [{ role: "user", content: "hi" }];
@@ -252,8 +278,9 @@ test("unknown model is a 400, never a silent fallback; the served list is the `a
   const listRes = await fetch(`http://127.0.0.1:${port}/v1/models`);
   const list = JSON.parse(await listRes.text());
   const ids = list.data.map((m) => m.id);
-  // `agy models` (1.2.16, 2026-10-28) lists exactly these 13 ids; the
-  // proxy serves each base plus its per-effort variants.
+  // The stub's `agy models` answer lists these 13 real ids (matching
+  // agy 1.2.16 on 2026-10-28); the proxy serves each base plus its
+  // per-effort variants, sourced live from that answer.
   for (const id of [
     "gemini-4-argon", "gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high",
     "gemini-3.8-flash", "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high",
@@ -287,4 +314,54 @@ test("unknown model is a 400, never a silent fallback; the served list is the `a
   assert.equal(opusRes.status, 200);
   const opus = JSON.parse(await opusRes.text());
   assert.equal(opus.model, "claude-opus-5-5-high");
+});
+
+test('model list is sourced live: a model only the stub`s `agy models` reports is served', async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const messages = [{ role: 'user', content: 'hi' }];
+
+  const deadline = Date.now() + 5000;
+  let health;
+  for (;;) {
+    health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+    if (health.models.source === 'live') break;
+    if (Date.now() > deadline) break;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  assert.equal(health.models.source, 'live', 'catalog must come from the live pull');
+
+  const listRes = await fetch(`http://127.0.0.1:${port}/v1/models`);
+  const list = JSON.parse(await listRes.text());
+  const ids = list.data.map((m) => m.id);
+  assert.ok(ids.includes('gemini-9-testonly'), 'live list must include the stub-only base');
+  assert.ok(ids.includes('gemini-9-testonly-medium'), 'live list must include the stub-only variant');
+
+  const res = await post(port, { model: 'gemini-9-testonly', messages });
+  assert.equal(res.status, 200, 'a model from the live list must be served, not 400ed');
+  const body = JSON.parse(await res.text());
+  assert.equal(body.model, 'gemini-9-testonly-medium');
+  assert.equal(body.choices[0].message.content, 'Hello world');
+});
+
+test('live pull failure falls back to the last-known-good catalog; unknowns still 400', async (t) => {
+  const { port, stop } = await startProxy({ AGY_STUB_FAIL_MODELS: '1' });
+  t.after(stop);
+  const messages = [{ role: 'user', content: 'hi' }];
+
+  const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json();
+  assert.ok(['cache', 'fallback'].includes(health.models.source), `expected a last-known-good source, got ${health.models.source}`);
+
+  const listRes = await fetch(`http://127.0.0.1:${port}/v1/models`);
+  const list = JSON.parse(await listRes.text());
+  const ids = list.data.map((m) => m.id);
+  assert.ok(ids.includes('gemini-4-argon-medium'), 'fallback catalog must still serve Argon');
+
+  const okRes = await post(port, { model: 'gemini-4-argon', messages });
+  assert.equal(okRes.status, 200);
+  await okRes.text();
+
+  const badRes = await post(port, { model: 'gemini-9-nonexistent', messages });
+  assert.equal(badRes.status, 400, 'unknown ids are 400 against the fallback list too');
+  await badRes.text();
 });

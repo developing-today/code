@@ -72,18 +72,22 @@ const publishEndpoint = () => {
   } catch {}
 };
 
-// The served model set, reconciled against `agy models` (agy 1.2.16,
-// run in this proxy's service context on 2026-10-28): the CLI listed
-// exactly 13 ids — the 5 bases below × their efforts. This stays a
-// static array because `agy models` is a CLI call whose auth lives in
-// the spawned child's environment, not something the proxy can poll;
-// re-run `agy models` and update this array whenever the CLI version
-// or the account's model entitlements change. Requests for ids not in
-// this list are a 400, never a silent fallback (#1692).
-// Removed 2026-10-28: gemini-3.7-flash, gemini-3.6-flash,
-// gemini-3.1-pro — the proxy advertised them but `agy models` does not
-// list them and agy itself rejects them.
-const MODELS = [
+// The served model set is pulled LIVE from `agy models` (Drew's
+// fleet-wide rule, 2026-10-28: providers pull their model list live
+// unless not possible), in this proxy's own service context — the
+// pull spawns `agy models` with the same child environment the
+// workers get (HOME=AGY_HOME), which is the context whose auth works.
+// The list is cached in memory for MODELS_TTL_MS (stale-while-
+// revalidate: requests never block on a refresh after the first
+// load), refreshed in the background when stale and immediately
+// (async) when a request names an unknown model. Last-known-good
+// fallback chain when a pull fails: the on-disk cache of the last
+// successful pull ($XDG_STATE_HOME/agy-proxy/models-cache.json),
+// then FALLBACK_MODELS — the list as pulled on 2026-10-28 (agy
+// 1.2.16: 13 ids over 5 bases), kept only as a cold-start floor.
+// Unknown ids (against the current live / last-known-good list)
+// return HTTP 400, never a silent fallback (#1692).
+const FALLBACK_MODELS = [
   { id: 'gemini-4-argon', name: 'Gemini 4 Argon (agy)', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
   { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (agy)', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
   { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5 (agy)', efforts: ['low', 'medium', 'high'], defaultEffort: 'medium' },
@@ -158,6 +162,158 @@ const ensureAgyEnvironment = () => {
 
 ensureAgyEnvironment();
 
+// ---------------------------------------------------------------------------
+// Live model catalog (see the FALLBACK_MODELS comment above)
+// ---------------------------------------------------------------------------
+const MODELS_TTL_MS = Number(process.env.AGY_PROXY_MODELS_TTL_MS || 300000);
+const MODELS_PULL_TIMEOUT_MS = 30000;
+const modelsCacheFile = () => path.join(
+  process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'),
+  'agy-proxy', 'models-cache.json'
+);
+
+let modelCatalog = FALLBACK_MODELS;
+let modelsSource = 'fallback'; // 'live' | 'cache' | 'fallback'
+let modelsFetchedAt = 0;
+let modelsPullInFlight = null;
+
+// Group `agy models` full ids (`<base>-<effort>` TSV lines) into the
+// base-model catalog shape resolveModelAndEffort / /v1/models use.
+const catalogFromFullIds = (fullIds) => {
+  const bases = new Map();
+  for (const { id, name } of fullIds) {
+    let base = id;
+    let effort = null;
+    for (const suffix of ['-low', '-medium', '-high']) {
+      if (id.endsWith(suffix)) {
+        effort = suffix.slice(1);
+        base = id.slice(0, -suffix.length);
+        break;
+      }
+    }
+    if (!bases.has(base)) {
+      const baseName = (name || base).replace(/\s*\((Low|Medium|High)\)\s*$/, '');
+      bases.set(base, { id: base, name: `${baseName} (agy)`, efforts: [], defaultEffort: null });
+    }
+    const entry = bases.get(base);
+    if (effort && !entry.efforts.includes(effort)) entry.efforts.push(effort);
+  }
+  const catalog = [...bases.values()].filter(m => m.efforts.length > 0);
+  for (const m of catalog) {
+    m.defaultEffort = m.efforts.includes('medium') ? 'medium' : m.efforts[0];
+  }
+  return catalog;
+};
+
+const parseAgyModelsOutput = (stdout) => {
+  const fullIds = [];
+  for (const line of stdout.split('\n')) {
+    const [id, name] = line.split('\t');
+    if (!id || !/^[a-z0-9][a-z0-9._-]*$/i.test(id.trim())) continue;
+    fullIds.push({ id: id.trim(), name: (name || '').trim() });
+  }
+  return fullIds;
+};
+
+const persistModelsCache = (fullIds) => {
+  try {
+    const file = modelsCacheFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify({ fetchedAt: Date.now(), models: fullIds }, null, 2) + '\n');
+    fs.renameSync(`${file}.tmp`, file);
+  } catch {}
+};
+
+const loadModelsCache = () => {
+  try {
+    const cached = JSON.parse(fs.readFileSync(modelsCacheFile(), 'utf8'));
+    if (Array.isArray(cached.models) && cached.models.length > 0) {
+      const catalog = catalogFromFullIds(cached.models);
+      if (catalog.length > 0) {
+        modelCatalog = catalog;
+        modelsSource = 'cache';
+        modelsFetchedAt = cached.fetchedAt || 0;
+        console.log(`[agy-proxy] Model catalog from last-known-good cache (${catalog.length} bases, pulled ${new Date(modelsFetchedAt).toISOString()})`);
+      }
+    }
+  } catch { /* no cache yet */ }
+};
+
+const pullModelsLive = () => new Promise((resolve) => {
+  const child = spawn(AGY_BIN, ['models'], {
+    cwd: '/tmp',
+    env: { ...process.env, HOME: AGY_HOME },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let stdout = '';
+  let settled = false;
+  const done = (ok, fullIds) => {
+    if (settled) return;
+    settled = true;
+    resolve(ok ? fullIds : null);
+  };
+  const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} done(false); }, MODELS_PULL_TIMEOUT_MS);
+  child.stdout.on('data', d => { stdout += d; });
+  child.stderr.on('data', () => {});
+  child.on('error', () => { clearTimeout(timer); done(false); });
+  child.on('close', (code) => {
+    clearTimeout(timer);
+    if (code !== 0) return done(false);
+    const fullIds = parseAgyModelsOutput(stdout);
+    done(fullIds.length > 0, fullIds);
+  });
+});
+
+const refreshModels = () => {
+  if (modelsPullInFlight) return modelsPullInFlight;
+  modelsPullInFlight = (async () => {
+    const fullIds = await pullModelsLive();
+    if (fullIds) {
+      const catalog = catalogFromFullIds(fullIds);
+      if (catalog.length > 0) {
+        modelCatalog = catalog;
+        modelsSource = 'live';
+        modelsFetchedAt = Date.now();
+        persistModelsCache(fullIds);
+        console.log(`[agy-proxy] Model catalog pulled live from \`agy models\` (${catalog.length} bases, ${fullIds.length} ids)`);
+      }
+    } else {
+      console.warn('[agy-proxy] Live `agy models` pull failed; serving last-known-good catalog');
+    }
+    modelsPullInFlight = null;
+  })();
+  return modelsPullInFlight;
+};
+
+// Serve-stale refresh check, run on catalog reads.
+const maybeRefreshModels = () => {
+  if (Date.now() - modelsFetchedAt > MODELS_TTL_MS) refreshModels();
+};
+
+// Requests block only on the very first load (no cache, no pull yet),
+// and only up to the pull timeout; afterwards the catalog is always
+// served from memory while refreshes happen in the background.
+let initialModelsPull = null;
+const ensureInitialModels = async () => {
+  if (modelsFetchedAt > 0) return;
+  if (!initialModelsPull) initialModelsPull = refreshModels();
+  await Promise.race([
+    initialModelsPull,
+    new Promise(r => setTimeout(r, MODELS_PULL_TIMEOUT_MS + 5000))
+  ]);
+};
+
+loadModelsCache();
+refreshModels();
+
+const modelsStatus = () => ({
+  source: modelsSource,
+  bases: modelCatalog.length,
+  ids: modelCatalog.reduce((n, m) => n + 1 + m.efforts.length, 0),
+  fetchedAt: modelsFetchedAt ? new Date(modelsFetchedAt).toISOString() : null,
+  ttlMs: MODELS_TTL_MS
+});
+
 const resolveModelAndEffort = (requestedModel, requestedEffort) => {
   let modelStr = (requestedModel || 'gemini-3.8-flash').toLowerCase().trim();
   let effort = requestedEffort ? requestedEffort.toLowerCase().trim() : null;
@@ -171,8 +327,8 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
     }
   }
 
-  // Find base model config
-  const modelConfig = MODELS.find(m => m.id === modelStr || m.id.replace(/-/g, '') === modelStr.replace(/-/g, ''));
+  // Find base model config (in the live / last-known-good catalog)
+  const modelConfig = modelCatalog.find(m => m.id === modelStr || m.id.replace(/-/g, '') === modelStr.replace(/-/g, ''));
   if (!modelConfig) return null;
 
   // Resolve effort
@@ -629,35 +785,40 @@ const server = http.createServer((req, res) => {
       engine: 'agy-stream-json-resident',
       defaultModel: 'gemini-3.8-flash-medium',
       activeSessions: sessionStore.size,
+      models: modelsStatus(),
       warm: warmStatus()
     }, null, 2));
     return;
   }
 
-  // Models catalog
+  // Models catalog (live-pulled from `agy models`, see above)
   if (req.method === 'GET' && (pathname === '/v1/models' || pathname === '/models')) {
-    const now = Math.floor(Date.now() / 1000);
-    const data = [];
+    (async () => {
+      await ensureInitialModels();
+      maybeRefreshModels();
+      const now = Math.floor(Date.now() / 1000);
+      const data = [];
 
-    for (const m of MODELS) {
-      data.push({
-        id: m.id,
-        object: 'model',
-        created: now,
-        owned_by: 'antigravity-agy'
-      });
-      for (const eff of m.efforts) {
+      for (const m of modelCatalog) {
         data.push({
-          id: `${m.id}-${eff}`,
+          id: m.id,
           object: 'model',
           created: now,
           owned_by: 'antigravity-agy'
         });
+        for (const eff of m.efforts) {
+          data.push({
+            id: `${m.id}-${eff}`,
+            object: 'model',
+            created: now,
+            owned_by: 'antigravity-agy'
+          });
+        }
       }
-    }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ object: 'list', data }, null, 2));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ object: 'list', data }, null, 2));
+    })();
     return;
   }
 
@@ -685,8 +846,14 @@ const server = http.createServer((req, res) => {
 
       const stream = Boolean(body.stream);
       const requestedEffort = body.reasoning_effort || body.effort || (body.options && (body.options.reasoning_effort || body.options.effort));
+      await ensureInitialModels();
+      maybeRefreshModels();
       const resolved = resolveModelAndEffort(body.model, requestedEffort);
       if (!resolved) {
+        // Judged against the current live / last-known-good list; a
+        // miss also triggers an async re-pull so a model agy gained
+        // since the last pull is picked up without waiting for TTL.
+        refreshModels();
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: `Unknown model: ${body.model}` }));
         return;
@@ -773,9 +940,13 @@ const server = http.createServer((req, res) => {
           } : null;
 
           let result;
+          const turnStart = Date.now();
           try {
             result = await worker.runTurn(promptText, onDelta);
           } catch (err) {
+            const durationMs = Date.now() - turnStart;
+            console.log(`[agy-proxy] turn reqId=${reqId} model=${fullName} workerPid=${worker.pid} durationMs=${durationMs} status=error`);
+            try { if (!res.headersSent) res.setHeader('X-Agy-Turn-Ms', String(durationMs)); } catch {}
             retireWorker({ worker, lk });
             if (currentWorker === worker) currentWorker = null;
             // Fallback retry if resuming failed without output (#678's
@@ -818,6 +989,9 @@ const server = http.createServer((req, res) => {
           // Success: commit the session mapping, keep session workers
           // resident for their next turn, retire stateless workers (a
           // replacement spare is already warming).
+          const durationMs = Date.now() - turnStart;
+          console.log(`[agy-proxy] turn reqId=${reqId} model=${fullName} workerPid=${worker.pid} durationMs=${durationMs} status=ok`);
+          try { if (!res.headersSent) res.setHeader('X-Agy-Turn-Ms', String(durationMs)); } catch {}
           recordConversationId(result.conversationId);
           if (!lk) retireWorker({ worker, lk });
           if (currentWorker === worker) currentWorker = null;
