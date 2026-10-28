@@ -297,7 +297,12 @@ in
         # system antigravity-acp binary. Drew enabled all four
         # 2026-10-28. Claude/Codex ALSO work via their native runtime
         # plugins for chat bindings — ACP is the background-spawn path.
-        allowedAgents = [ "opencode" "claude" "codex" "agy" ];
+        allowedAgents = [
+          "opencode"
+          "claude"
+          "codex"
+          "agy"
+        ];
         dispatch.enabled = true;
       };
 
