@@ -598,7 +598,7 @@ func (s *Server) Tools() []Tool {
 			},"required":["calls"],"additionalProperties":false}`),
 		},
 		{
-			Name: "batch_call",
+			Name:        "batch_call",
 			Description: "Alias for mcpx_batch. Execute one or more tools in a single turn.",
 			InputSchema: schema(`{"type":"object","properties":{
 				"calls":{"type":"array","description":"List of tools to execute","items":{"type":"object","properties":{
