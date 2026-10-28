@@ -2712,7 +2712,9 @@ mod tests {
         let mut text = std::fs::read_to_string(&path).unwrap();
         text.push_str("not json\n");
         std::fs::write(&path, text).unwrap();
-        let error = Directory::replay(&path).err().expect("corrupt line must fail");
+        let error = Directory::replay(&path)
+            .err()
+            .expect("corrupt line must fail");
         assert!(
             format!("{error:#}").contains("is malformed"),
             "unexpected error: {error:#}"
