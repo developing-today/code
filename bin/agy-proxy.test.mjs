@@ -199,3 +199,26 @@ test('failed resume still retries once as a fresh conversation (#678)', async (t
   assert.match(sse, /Hello world/);
   assert.match(sse, /"finish_reason":"stop"/);
 });
+
+test("unknown model is a 400, never a silent fallback; Argon is listed and served", async (t) => {
+  const { port, stop } = await startProxy();
+  t.after(stop);
+  const messages = [{ role: "user", content: "hi" }];
+
+  const badRes = await post(port, { model: "gemini-9-nonexistent", messages });
+  assert.equal(badRes.status, 400, "unknown model must fail loudly, not fall back to the first model");
+  const badBody = JSON.parse(await badRes.text());
+  assert.match(badBody.error, /gemini-9-nonexistent/);
+
+  const listRes = await fetch(`http://127.0.0.1:${port}/v1/models`);
+  const list = JSON.parse(await listRes.text());
+  const ids = list.data.map((m) => m.id);
+  for (const id of ["gemini-4-argon", "gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high"]) {
+    assert.ok(ids.includes(id), `models list must include ${id}`);
+  }
+
+  const argonRes = await post(port, { model: "gemini-4-argon", messages });
+  assert.equal(argonRes.status, 200);
+  const argon = JSON.parse(await argonRes.text());
+  assert.equal(argon.model, "gemini-4-argon-medium");
+});
