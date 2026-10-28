@@ -17,7 +17,7 @@
 // - In fixtures mode there are no live probes to make: every service
 //   reports "fixtures", which is also the degraded-state test fixture.
 import type { Config } from "./config.ts";
-import { ageMsText, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
+import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
 import type { ProvenanceDetail } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
@@ -227,6 +227,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
   const cache = deps.cache ?? sharedProbeCache;
   const { cfg, feed } = inputs;
   const feedAgeMs = feed ? Math.max(0, now - Date.parse(feed.generatedAt)) : null;
+  const feedFutureMs = feed ? Date.parse(feed.generatedAt) - now : null;
   const diagnosis = inputs.diagnosis;
 
   const services: ServiceHealth[] = [];
@@ -245,9 +246,11 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       outcome =
         feed === null
           ? { state: "down", ok: false, detail: "no readable fleet feed" }
-          : feedAgeMs !== null && feedAgeMs > FEED_STALE_MS
-            ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — past the 15m freshness threshold` }
-            : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
+          : feedFutureMs !== null && feedFutureMs > GENERATED_AT_FUTURE_SKEW_MS
+            ? { state: "stale", ok: false, detail: `feed generatedAt ${feed.generatedAt} is >60s in the future — never fresh` }
+            : feedAgeMs !== null && feedAgeMs > FEED_STALE_MS
+              ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — past the 15m freshness threshold` }
+              : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
     } else if (def.probe === "section") {
       if (!diagnosis) {
         outcome = { state: "unknown", ok: null, detail: "this source reports no section diagnosis" };
