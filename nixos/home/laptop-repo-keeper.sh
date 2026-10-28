@@ -61,7 +61,7 @@ say "# repo-keeper $TS"
 for d in "${REPOS[@]}"; do
   name="$(basename "$d")"
   g() { git -C "$d" "$@"; }
-  gd="$(g rev-parse --git-dir 2>/dev/null)"
+  gd="$(g rev-parse --absolute-git-dir 2>/dev/null)"
   if [ -e "$d/.git/index.lock" ] || [ -e "$gd/MERGE_HEAD" ] || [ -d "$gd/rebase-merge" ] || [ -d "$gd/rebase-apply" ]; then
     say "- $name: BUSY (lock/merge/rebase in progress) — skipped"
     continue
