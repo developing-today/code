@@ -24,6 +24,7 @@ in
       "services/flatpak"
       "services/id-mail"
       "services/pm-stack"
+      "services/pm-apps"
       "services/power-guard"
       # "microvm"
       # "server"
@@ -62,6 +63,10 @@ in
         services.pm-stack.enable = true;
       }
       {
+        # PM app servers (code#1752): Kaneo + PostgreSQL, Grist, and
+        # Pad as oci-containers, ready-for-agent as a user service —
+        # the last hand-run servers, now flake-declared.
+        services.pm-apps.enable = true;
         # Power guard (code#1687): confirm critical battery readings
         # before UPower can hybrid-sleep the machine.
         services.power-guard.enable = true;

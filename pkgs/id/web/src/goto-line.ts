@@ -35,10 +35,23 @@ function getLineStarts(view: EditorView): number[] {
     if (!node.isTextblock) return true; // descend into block containers (lists, quotes, cells…)
     const contentStart = pos + 1;
     starts.push(contentStart);
-    const text = node.textContent;
-    for (let i = 0; i < text.length; i++) {
-      if (text[i] === "\n") starts.push(contentStart + i + 1);
-    }
+
+    let currentPos = contentStart;
+    node.forEach((child) => {
+      if (child.type.name === "hard_break") {
+        starts.push(currentPos + child.nodeSize);
+      } else if (child.isText) {
+        const text = child.text;
+        if (text) {
+          for (let i = 0; i < text.length; i++) {
+            if (text[i] === "\n") {
+              starts.push(currentPos + i + 1);
+            }
+          }
+        }
+      }
+      currentPos += child.nodeSize;
+    });
     return false; // inline content cannot contain another textblock
   });
   return starts;

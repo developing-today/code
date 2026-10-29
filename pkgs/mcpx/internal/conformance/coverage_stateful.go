@@ -21,6 +21,11 @@ func init() {
 		C("caching-ttl-negative-zero", "pool.TestPoolCacheTTLNegativeStale@2026-07-28"),
 		C("caching-stale-refetch", "pool.TestPoolCacheConcurrentExpiredCollapse@2026-07-28", "pool.TestPoolCacheTTLZeroStale@2026-07-28"),
 		C("caching-private-no-cross-auth", "daemon.TestSaveCacheSkipsPrivatePools@2026-07-28", "daemon.TestLoadCacheNeverSeedsPrivateEntry@2026-07-28", "pool.TestPoolCacheStaleServedOnRefetchError@2026-07-28"),
+		C("caching-notification-invalidates", "daemon.TestListChangedInvalidatesPoolCache@2026-07-28"),
+		// Retired without a cover (#1604): verdicts recorded in overrides/stateful.json,
+		// reasons in pagination-caching.md PG-11/PG-13 and on #1601:
+		// caching-may-refetch-early-serve-stale (declined -- refresh is synchronous),
+		// caching-page-refetch and caching-key-method-params (not applicable by construction).
 		S("caching-server-must-hint", "mcpserver.TestModernEnvelope/2026-07-28/caching/tools-list-has-ttlMs-and-cacheScope", "mcpserver.TestModernEnvelope/2026-07-28/caching/resources-read-has-ttlMs-and-cacheScope", "mcpserver.TestModernEnvelope/2026-07-28/caching/server-discover-has-ttlMs-and-cacheScope"),
 		S("cache-ttl-scope-required",
 			"mcpserver.TestModernEnvelope/2026-07-28/caching/server-discover-has-ttlMs-and-cacheScope",
@@ -116,9 +121,5 @@ func init() {
 		Gap{ID: "tasks-resource-limits", Side: Server, Issue: "#209", Why: "no maximum ttl and no cap on concurrent tasks per requestor"},
 		Gap{ID: "tasks-audit", Side: Server, Issue: "#209", Why: "task creation, completion and retrieval are not logged"},
 		Gap{ID: "ext-tasks-cancel-cooperative", Side: Server, Issue: "#209", Why: "tasks/cancel forces the cancelled status rather than letting the work reach its own terminal status"},
-		Gap{ID: "caching-may-refetch-early-serve-stale", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-page-refetch", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-key-method-params", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-notification-invalidates", Side: Client, Issue: "#257", Why: "unverified since subscriptions/listen landed upstream (#239): nothing tests that a modern list_changed empties the pool list cache"},
 	)
 }
