@@ -654,6 +654,75 @@ export function extractSaasServices(doc: string): SaasService[] {
   return services;
 }
 
+// --- Cloudflare live export overlay (#1048) ----------------------------------
+
+/** One metric row of a cloudflare-quota-export document. */
+export interface CloudflareExportMetric {
+  id: string;
+  used: number;
+  unit?: string;
+  source?: string;
+  detail?: string;
+}
+
+/** The file-export document written by pm-stack/cloudflare-export. */
+export interface CloudflareExportDoc {
+  service?: string;
+  source?: string;
+  status?: string;
+  measuredAt?: string | null;
+  billing?: { status?: string };
+  metrics?: CloudflareExportMetric[];
+}
+
+/** Freshness bound for preferring export values: the #1151 tick is
+ * 15 minutes, so > 30 min means the producer is unreachable/stale. */
+export const CLOUDFLARE_EXPORT_STALE_MS = 30 * 60 * 1000;
+
+/**
+ * Prefer a fresh cloudflare-export document's live values on the
+ * Cloudflare card (#1048): matching metric ids get `used` (and the
+ * derived percent) from the export, with the measured-at + source on
+ * the metric note. Limits stay the tracker's — the export carries no
+ * limits. A missing, failed, unparseable, or stale document changes
+ * nothing: the prose/null behaviour is the fallback, never an error.
+ */
+export function applyCloudflareExport(
+  services: SaasService[],
+  doc: CloudflareExportDoc | null,
+  nowMs: number = Date.now(),
+): SaasService[] {
+  if (!doc || doc.status !== "ok" || !doc.measuredAt || !Array.isArray(doc.metrics)) return services;
+  const measuredMs = Date.parse(doc.measuredAt);
+  if (!Number.isFinite(measuredMs)) return services;
+  if (nowMs - measuredMs > CLOUDFLARE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
+  const cf = services.find((s) => s.id === "cloudflare");
+  if (!cf) return services;
+  const byId = new Map(
+    doc.metrics
+      .filter((m) => m && typeof m.id === "string" && typeof m.used === "number" && Number.isFinite(m.used))
+      .map((m) => [m.id, m]),
+  );
+  if (!byId.size) return services;
+  cf.metrics = cf.metrics.map((m) => {
+    const live = byId.get(m.id);
+    if (!live) return m;
+    return {
+      ...m,
+      used: live.used,
+      percent:
+        m.limit != null && m.limit > 0 ? Math.round((live.used / m.limit) * 1000) / 10 : m.percent,
+      note: `Live via ${live.source ?? doc.source ?? "file-export/cloudflare"}, measured ${doc.measuredAt}.${live.detail ? ` ${live.detail}` : ""}`,
+    };
+  });
+  cf.measuredAt = doc.measuredAt.slice(0, 10);
+  cf.sourceClass = "api";
+  cf.sourceNote = `Cloudflare live collector (#1048): ${doc.source ?? "file-export/cloudflare"}, measured ${doc.measuredAt}; limits + plan from quota-view.md Part (b)${
+    doc.billing?.status === "invoice-only" ? "; billing invoice-only (subscriptions/billing 403 with the day-to-day token)" : ""
+  }`;
+  return services;
+}
+
 // --- PAYG lines (§1.2) -------------------------------------------------------
 
 /**

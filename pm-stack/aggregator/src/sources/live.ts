@@ -20,7 +20,8 @@ import {
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import { applyCloudflareExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import type { CloudflareExportDoc } from "../saas-extract.ts";
 import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { overlayQuotaCurrent, parseQuotaCurrent } from "../quota-current.ts";
@@ -839,8 +840,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           readFile(cfg.quotaViewFile, "utf8"),
           readFile(cfg.quotaRegistryFile, "utf8").catch(() => ""),
         ]);
+        const cfExport = await readFile(cfg.cloudflareExportFile, "utf8")
+          .then((text) => JSON.parse(text) as CloudflareExportDoc)
+          .catch(() => null);
         const partial = {
-          services: extractSaasServices(doc),
+          services: applyCloudflareExport(extractSaasServices(doc), cfExport),
           payg: extractPaygLines(doc, registryText),
           charges: extractCharges(doc, registryText),
           subscriptions: extractSubscriptions(doc),
