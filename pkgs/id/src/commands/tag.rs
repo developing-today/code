@@ -62,11 +62,20 @@ pub fn hex_encode(bytes: &[u8]) -> String {
     s
 }
 
-/// Decode a hex string (case-insensitive, optional `0x` prefix, whitespace ignored).
+/// Decode a hex string (case-insensitive, optional single `0x`/`0X`
+/// prefix, whitespace ignored).
 pub fn hex_decode(input: &str) -> Result<Vec<u8>> {
-    let cleaned: String = input
-        .trim()
-        .trim_start_matches("0x")
+    let trimmed = input.trim();
+    // Strip at most one prefix, in either spelling (#1804):
+    // `trim_start_matches("0x")` stripped repeatedly — silently
+    // accepting `0x0xAB` — and knew only the lowercase spelling, so
+    // `0XAB` was refused as an "invalid hex digit". A second prefix
+    // left in place fails digit parsing below, as it should.
+    let stripped = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    let cleaned: String = stripped
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect();
@@ -474,6 +483,21 @@ mod tests {
     fn hex_decode_rejects_bad_input() {
         assert!(hex_decode("abc").is_err(), "odd length");
         assert!(hex_decode("zz").is_err(), "not hex");
+    }
+
+    #[test]
+    fn hex_decode_prefix_spellings() {
+        // The documented case-insensitivity covers the prefix too
+        // (#1804): every single-prefix spelling decodes the same bytes.
+        let expected = vec![0xab, 0xcd];
+        assert_eq!(hex_decode("0xAB cd").unwrap(), expected);
+        assert_eq!(hex_decode("0XAB").unwrap(), vec![0xab]);
+        assert_eq!(hex_decode("0Xab cd").unwrap(), expected);
+        // At most one prefix is stripped: a doubled prefix is refused,
+        // never silently accepted as the bare bytes.
+        assert!(hex_decode("0x0xAB").is_err(), "doubled lowercase prefix");
+        assert!(hex_decode("0X0XAB").is_err(), "doubled uppercase prefix");
+        assert!(hex_decode("0x0XAB").is_err(), "doubled mixed prefix");
     }
 
     #[test]
