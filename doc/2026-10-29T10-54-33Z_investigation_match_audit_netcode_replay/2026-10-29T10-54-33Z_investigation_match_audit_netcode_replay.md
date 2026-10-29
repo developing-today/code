@@ -93,10 +93,13 @@ HEADER      match_id, world/program id + program build hash, rules/config hash,
             tick rate, RNG algorithm id + seed commitment, genesis (initial
             state hash or full initial state), player roster (ID public keys
             + roles), start tick, format version
-INPUTS      per-tick input records, delta-encoded, hash-chained:
-            each record = tick, player slot, input payload (game-defined
-            bytes: key up/down transitions, buttons bitmask, aim/analog
-            values), running chain hash
+INPUTS      per-tick input records, delta-encoded, grouped into blocks
+            (recommend one block per tick second); each block =
+            block header (first tick, record count) + records
+            (tick delta varint, player slot, input payload: key up/down
+            transitions, buttons bitmask, aim/analog values) + one
+            running chain hash H(prev_block_hash ‖ block_bytes); optional
+            2–4 B per-record CRC for corruption, not tamper, detection
 EVENTS      non-input journal events that affect the match (join/leave,
             pause, capability grants, relay path changes) — same chain
 CHECKPOINTS every N ticks (recommend N = tick_rate, i.e. 1 s): tick +
@@ -110,10 +113,11 @@ FOOTER      final tick, final state hash, result claim (as data, not as
 
 Design rules that matter:
 
-- **Hash chain over everything, in order.** Each record carries
-  `H(prev_hash ‖ record)`. Splicing, reordering, or truncating the log
-  breaks the chain; the footer signatures bind both ends. This is what
-  makes L1 (authenticity) cheap and certain.
+- **Hash chain over everything, in order.** Each block carries
+  `H(prev_block_hash ‖ block_bytes)` (and checkpoints/events chain the same
+  way). Splicing, reordering, or truncating the log breaks the chain; the
+  footer signatures bind both ends. This is what makes L1 (authenticity)
+  cheap and certain.
 - **Inputs are tick-indexed, never wall-clock-indexed.** Wall-clock times
   live only in the metadata section. The state machine consumes inputs at
   tick boundaries; anything that happened "between ticks" is normalized to
@@ -123,10 +127,24 @@ Design rules that matter:
   does not standardize what "aim" means. It standardizes identity, order,
   integrity, checkpoints, and provenance — the parts an auditor needs
   regardless of game.
-- **Checkpoints are the audit accelerator.** State hash every second lets
-  an auditor find the *first divergent tick* by binary search instead of
+- **Checkpoints are the audit accelerator, compared in order.** State hash
+  every second lets an auditor find the *first divergent tick* without
   replaying from genesis, and lets a light auditor verify a sampled segment
-  instead of the whole match (matters for §5's tiered audit).
+  instead of the whole match (matters for §5's tiered audit). The search is
+  a **prefix scan, not a binary search**: checkpoint equality is not
+  monotonic, because replayed and recorded states can diverge and later
+  reconverge (a position differs for a few ticks and returns to the same
+  place). A matching midpoint therefore does *not* prove the interval before
+  it is clean, and a binary search that assumes it would skip the first
+  divergence. Replay compares checkpoints in ascending tick order until the
+  first mismatch, then replays that single checkpoint interval at full
+  resolution to name the divergent tick. Where checkpoints are sparse, a
+  cumulative replay-history commitment (each checkpoint hashing the run of
+  checkpoints before it) restores a monotone predicate — but that is an
+  optimization the format does not need to require. Note also what the chain
+  does and does not do here: it authenticates the *submitted* checkpoints, it
+  does not prove that replay reproduced their prefixes — only the replay
+  comparison does that.
 - **Result is a claim inside the log, not a property of it.** The footer
   records what the participants say happened; the auditor's replay either
   reproduces it or doesn't. (How a reproduced result becomes an *attested*
@@ -139,8 +157,27 @@ styles:
 
 | Style | When | Size math |
 |---|---|---|
-| **Event-based** (record transitions only: key down/up, button change) | Turn-based, strategy, most keyboard play — inputs are sparse | ~4–10 B per transition (tick delta varint + player + code + chain amortized). A busy human produces ~2–6 transitions/s → **~50–200 KB per player-hour**, worst case low single-digit MB. Chess/turn-based: KBs per match, total. |
-| **Frame-based** (record every tick's full input state) | Analog aim/sticks, where "no change" is itself information | Fixed record ≈ 8 B/tick/player (tick implicit, buttons 2 B, aim 2×i16, misc). At 60 Hz: **≈1.7 MB per player-hour raw**; delta+RLE compression on real play typically cuts this 3–10×. A 5v5, 45-minute FPS match ≈ 10 players × 0.75 h × 1.7 MB ≈ **13 MB raw, ~2–5 MB compressed** — emailable, trivially storable. |
+| **Event-based** (record transitions only: key down/up, button change) | Turn-based, strategy, most keyboard play — inputs are sparse | ~4–10 B per transition (tick delta varint + player + code; chain hash amortized over a block, see below). A busy human produces ~2–6 transitions/s → **~50–200 KB per player-hour**, worst case low single-digit MB. Chess/turn-based: KBs per match, total. |
+| **Frame-based** (record every tick's full input state) | Analog aim/sticks, where "no change" is itself information | Fixed record ≈ 8 B/tick/player (tick implicit, buttons 2 B, aim 2×i16, misc), **excluding** the chain hash. At 60 Hz: **≈1.7 MB per player-hour raw**; delta+RLE compression on real play typically cuts this 3–10×. A 5v5, 45-minute FPS match ≈ 10 players × 0.75 h × 1.7 MB ≈ **13 MB raw, ~2–5 MB compressed** — emailable, trivially storable. |
+
+**Chain-hash overhead is amortized, not per record.** The 4–8 B record
+figures above are the input payload only. A naive format that stores a
+32-byte hash on every record would add 32 B/record — for the 10-player,
+60 Hz, 45-minute example that is 1,620,000 × 32 B ≈ **51.8 MB of
+effectively incompressible hash**, larger than everything else combined and
+enough to invalidate the "2–5 MB compressed match" conclusion. The format
+therefore chains **per block, not per record**: records are grouped into
+blocks (recommend one block per tick second, 60 ticks), and each block
+carries one chain hash `H(prev_block_hash ‖ block_bytes)`; the block hash is
+the unit the footer signs and the unit checkpoints reference. Overhead
+becomes 32 B per block per player ≈ 32 B/s → ≈ 86 KB per player-hour
+(≈ 0.9 MB for the 10-player, 45-minute match), which is noise next to the
+13 MB input payload, and a block is self-delimiting so a torn tail is
+detectable. Splicing, reordering, or truncation at *block* granularity
+still breaks the chain; a tamperer who edits inside a block must recompute
+that block's hash and every later one, exactly as before. If per-record
+tamper-evidence is wanted, add a 2–4 B per-record CRC (integrity against
+corruption, not against a rewriter) — never a full hash per record.
 
 Checkpoints: 32 B state hash per second ≈ 115 KB/hour; full snapshots are
 game-sized and sparse (1/minute), the only term that can dominate — for big
@@ -248,9 +285,21 @@ the pipeline (§5) reports them as flags, not verdicts of guilt.
 - **Superhuman reaction distribution:** not one fast reaction — a
   *distribution* with no human tail (e.g. sustained sub-100 ms responses
   to events that were not predictable from prior state).
-- **Frame-perfect sequences:** long runs of inputs landing on exact tick
-  boundaries with zero jitter — the TAS/tool-assist signature. Humans are
-  sloppy at the 1-tick scale; tools are not.
+- **Frame-perfect sequences — only as a *pre-quantization* signal, never
+  from tick-quantized records.** In a log recorded per §2.1, every input is
+  normalized to a tick boundary before storage and records keep only the
+  tick, not sub-tick arrival time, so honest human inputs also land exactly
+  on boundaries with zero observable jitter. A "zero jitter on tick
+  boundaries" test run over the stored records would flag normal recordings
+  by construction. The signal is therefore defined on a **separately
+  observed, higher-resolution input-arrival series** (recorder event-loop
+  timestamps or witness observation, retained in the sealed metadata of §4.1
+  precisely for this test), and is restricted to patterns that remain
+  distinguishable after quantization: long runs of exact-boundary inputs
+  *combined with* response latencies that are impossibly uniform or that
+  react to events before the observed RTT allowed them to be known (§4.2,
+  third bullet). Where only tick-quantized records exist, this flag is
+  reported as `INCONCLUSIVE — no sub-tick timing`, not as a positive.
 - **Aim/input geometry anomalies:** snap-to-target angular velocities,
   correction patterns that track information the player could not have
   had yet at the observed RTT (wallhack/aimbot tell, and the one place
