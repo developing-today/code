@@ -4,7 +4,7 @@
 // (SnapshotStore.readAll / byService) must read a compacted store
 // with no changes to callers, and compaction must be idempotent.
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SnapshotRecord } from "../src/model.ts";
@@ -14,6 +14,7 @@ import {
   expandRollup,
   rollupFileFor,
   shiftMonth,
+  withSnapshotStoreLock,
 } from "../src/snapshots.ts";
 
 const NOW = new Date("2026-10-29T12:00:00Z"); // cutoff month: 2025-09
@@ -276,6 +277,38 @@ describe("Codex review regressions (PR #2379)", () => {
       expect(JSON.parse(rollupText).count).toBe(6);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("withSnapshotStoreLock stale reclamation (PR #2379 Codex round 2)", () => {
+  test("concurrent reclaimers of an abandoned lock never overlap critical sections", async () => {
+    // Regression: reclamation used to rm the lock path unconditionally,
+    // so a slower reclaimer could delete the fresh lock a faster one
+    // had just acquired and both critical sections ran at once.
+    for (let trial = 0; trial < 20; trial++) {
+      const dir = await mkdtemp(join(tmpdir(), "snap-lock-"));
+      try {
+        const lockPath = join(dir, ".snapshots.lock");
+        await writeFile(lockPath, "dead-holder");
+        const past = new Date(Date.now() - 10 * 60_000);
+        await utimes(lockPath, past, past);
+        let active = 0;
+        let maxActive = 0;
+        await Promise.all(
+          Array.from({ length: 6 }, () =>
+            withSnapshotStoreLock(dir, async () => {
+              active++;
+              maxActive = Math.max(maxActive, active);
+              await new Promise((r) => setTimeout(r, 5));
+              active--;
+            }),
+          ),
+        );
+        expect(maxActive).toBe(1);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     }
   });
 });

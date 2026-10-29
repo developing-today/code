@@ -11,13 +11,17 @@
 // stdout (attach it to #1117 before the first real run).
 //
 // Usage: bun run scripts/compact-usage-snapshots.ts [--apply] [--months <n>]
-// Env: PM_AGG_SNAPSHOTS_DIR (default ~/.local/state/pm-aggregator/snapshots).
-import { homedir } from "node:os";
-import { join } from "node:path";
+// Env: PM_AGG_SNAPSHOTS_DIR (default: the aggregator package's
+// snapshots/ directory — the same store default as src/config.ts,
+// backfill-usage-snapshots.ts, and the quota gatherer, so running
+// this script in the standard installation compacts the store the
+// aggregator actually reads and writes).
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { SnapshotStore } from "../src/snapshots.ts";
 
-const dir =
-  process.env.PM_AGG_SNAPSHOTS_DIR ?? join(homedir(), ".local/state/pm-aggregator/snapshots");
+const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
+const dir = process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const apply = process.argv.includes("--apply");
 const monthsArg = process.argv.indexOf("--months");
 const retentionMonths = monthsArg >= 0 ? Number(process.argv[monthsArg + 1]) : 13;

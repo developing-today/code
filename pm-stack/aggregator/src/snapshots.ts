@@ -16,7 +16,7 @@
 // backfill runs later. Estimates are stored as a low/high pair with
 // unit "usd-est"; the 1.2×high counting rule applies at render, never
 // baked into history.
-import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SnapshotRecord, UsageSourceClass } from "./model.ts";
 
@@ -330,8 +330,58 @@ const LOCK_TIMEOUT_MS = 30_000;
 export async function withSnapshotStoreLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   await mkdir(dir, { recursive: true });
   const lockPath = join(dir, ".snapshots.lock");
+  const guardPath = join(dir, ".snapshots.reclaim.guard");
   const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
+
+  // Acquire the reclaim guard: a plain wx lock file whose critical
+  // sections are milliseconds long. Its own staleness uses the
+  // rename-and-verify reclaim below, which is safe here because the
+  // guard only ever serializes the *decision* to reclaim — the main
+  // lock is re-verified inside the guard before anything is removed.
+  const acquireGuard = async (): Promise<boolean> => {
+    for (;;) {
+      try {
+        await writeFile(guardPath, token, { flag: "wx" });
+        return true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        let st;
+        try {
+          st = await stat(guardPath);
+        } catch (statErr) {
+          if ((statErr as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw statErr;
+        }
+        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          const reclaimPath = `${guardPath}.reclaim-${token}`;
+          try {
+            await rename(guardPath, reclaimPath);
+          } catch (renameErr) {
+            if ((renameErr as NodeJS.ErrnoException).code === "ENOENT") continue;
+            throw renameErr;
+          }
+          const moved = await stat(reclaimPath).catch(() => null);
+          if (moved && moved.ino === st.ino && moved.mtimeMs === st.mtimeMs) {
+            await rm(reclaimPath, { force: true });
+          } else if (moved) {
+            await link(reclaimPath, guardPath).then(
+              () => rm(reclaimPath, { force: true }),
+              () => undefined,
+            );
+          }
+          continue;
+        }
+        if (Date.now() > deadline) return false; // another reclaimer is at work — just wait for the lock instead
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+  };
+  const releaseGuard = async (): Promise<void> => {
+    const cur = await readFile(guardPath, "utf8").catch(() => "");
+    if (cur === token) await rm(guardPath, { force: true });
+  };
+
   for (;;) {
     try {
       await writeFile(lockPath, token, { flag: "wx" });
@@ -341,15 +391,35 @@ export async function withSnapshotStoreLock<T>(dir: string, fn: () => Promise<T>
       // unwritable store dir, ENOSPC, ...) is permanent and must
       // surface instead of spinning past the deadline.
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      let st;
       try {
-        const st = await stat(lockPath);
-        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
-          await rm(lockPath, { force: true });
-          continue;
-        }
+        st = await stat(lockPath);
       } catch (statErr) {
         if ((statErr as NodeJS.ErrnoException).code === "ENOENT") continue; // lock vanished between attempts — retry at once
         throw statErr;
+      }
+      if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+        if (Date.now() > deadline) throw new Error(`snapshot store lock timeout: ${lockPath}`);
+        // The lock looks abandoned. Reclaimers are serialized by the
+        // guard, and staleness is re-verified *inside* the guard
+        // against the file identity statted there: a lock is removed
+        // only while no other reclaimer can be replacing it, and
+        // plain acquirers cannot create a lock while the stale one
+        // is present — so the file removed is always the abandoned
+        // one, never a fresh replacement. (Unserialized, a slower
+        // reclaimer's rm deleted the fresh lock a faster reclaimer
+        // had just acquired and both critical sections ran at once.)
+        if (await acquireGuard()) {
+          try {
+            const cur = await stat(lockPath).catch(() => null);
+            if (cur && cur.ino === st.ino && Date.now() - cur.mtimeMs > LOCK_STALE_MS) {
+              await rm(lockPath, { force: true });
+            }
+          } finally {
+            await releaseGuard();
+          }
+        }
+        continue;
       }
       if (Date.now() > deadline) throw new Error(`snapshot store lock timeout: ${lockPath}`);
       await new Promise((r) => setTimeout(r, 25));
