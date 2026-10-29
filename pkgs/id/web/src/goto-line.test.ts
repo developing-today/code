@@ -407,6 +407,35 @@ describe("go-to-line across textblocks (#745)", () => {
     // Trailing paragraph sits at pos 12; its text starts at pos 13.
     expect(view.state.selection.from).toBe(13);
   });
+
+  it("rich doc with hard_break counts as multiple lines and jumps correctly", () => {
+    const doc = richSchema.node("doc", null, [
+      richSchema.node("paragraph", null, [
+        richSchema.text("foo"),
+        richSchema.node("hard_break"),
+        richSchema.text("bar"),
+      ]),
+      richSchema.node("paragraph", null, [richSchema.text("baz")]),
+    ]);
+    const { view, container } = createViewFromDoc(richSchema, doc);
+
+    triggerGotoLine(view);
+    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    // 3 lines total: "foo", "bar", "baz"
+    expect(input.placeholder).toContain("3");
+    expect(input.max).toBe("3");
+
+    gotoLine(container, "2");
+    // First paragraph starts at pos 0, content at pos 1
+    // "foo" text size = 3, so hard_break starts at pos 4
+    // hard_break size = 1, so "bar" starts at pos 5
+    expect(view.state.selection.from).toBe(5);
+
+    triggerGotoLine(view);
+    gotoLine(container, "3");
+    // Second paragraph starts at pos 9, text "baz" at pos 10
+    expect(view.state.selection.from).toBe(10);
+  });
 });
 
 // ── Editor recreation (#718) ───────────────────────────────────────
