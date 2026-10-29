@@ -6584,6 +6584,31 @@
         "selection": "ordered",
         "autonomy": "rules"
       },
+      "workhorse-primary": {
+        "name": "Workhorse primary - TEMPORARY: DeepSeek plan / Muse Spark round-robin",
+        // TEMPORARY (2026-10-29, Drew, code#2173): workhorse's primary
+        // slot round-robins between the DeepSeek plan route
+        // (deepseek-flash#high — the standard operating procedure's
+        // primary, unchanged) and the direct Meta door
+        // meta/muse-spark-1.3 — that exact model on the Muse Spark
+        // plan (Meta Muse Code High Usage), deliberately NOT the
+        // contributor pool: the point is to wear down that specific
+        // plan's quota, which was pacing to strand ~half its weekly
+        // allowance at the 2026-11-02 reset while DeepSeek burned
+        // alone. Equal weights = ordinary round-robin alternation.
+        // Spark ALSO keeps its existing later seat in this tier
+        // (workhorse-weighted -> spark-plan#xhigh); this wrapper is
+        // additive and changes nothing else.
+        // TO REVERT to the all-DeepSeek standard operating procedure:
+        // delete (or comment out) this route and point workhorse's
+        // first target back at "opencode-route/deepseek-flash#high".
+        "targets": [
+          "opencode-route/deepseek-flash#high",
+          "meta/muse-spark-1.3"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
       "workhorse": {
         "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it",
         // 2026-10-27 pool redesign (Drew's structure): incremental —
@@ -6604,8 +6629,12 @@
         // The relief pool's members are unchanged in kind from the
         // balance pass (AA v4.3.2): Haiku #high 38 / 26.7s TTFT; Terra
         // #medium 41.3 / 1.43s; Spark #xhigh 45 / 19.1s / ~300 t/s.
+        // 2026-10-29 (code#2173): the primary target below is the
+        // TEMPORARY workhorse-primary wrapper (round-robin of
+        // deepseek-flash#high with meta/muse-spark-1.3) — see that
+        // route's comment for the revert steps.
         "targets": [
-          "opencode-route/deepseek-flash#high",
+          "opencode-route/workhorse-primary",
           "opencode-route/workhorse-weighted"
         ],
         "selection": "ordered",
