@@ -59,6 +59,17 @@ test("parseGraphqlUsage: every card metric id with the probed values", () => {
   for (const m of metrics) assert.equal(m.source, "cloudflare-graphql-analytics");
 });
 
+test("parseGraphqlUsage: r2-storage sums per-bucket peaks, not the max", () => {
+  const twoBuckets = structuredClone(ACCOUNT);
+  twoBuckets.r2StorageAdaptiveGroups = [
+    { dimensions: { bucketName: "a" }, max: { payloadSize: 6_000_000_000 } },
+    { dimensions: { bucketName: "b" }, max: { payloadSize: 6_000_000_000 } },
+  ];
+  const { metrics } = parseGraphqlUsage(twoBuckets, { now: NOW, cycleStart: START });
+  const byId = Object.fromEntries(metrics.map((m) => [m.id, m]));
+  assert.equal(byId["r2-storage"].used, 12); // 6 GB + 6 GB, not max 6 GB
+});
+
 test("parseGraphqlUsage: shape drift fails closed", () => {
   assert.throws(() => parseGraphqlUsage({}, { now: NOW, cycleStart: START }), /unparseable|missing/);
   const drifted = structuredClone(ACCOUNT);

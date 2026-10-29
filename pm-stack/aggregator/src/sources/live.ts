@@ -5,29 +5,19 @@
 // provenance strings say exactly which facet is live vs fixture-backed.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { Config } from "../config.ts";
 import { isAaSection } from "../aa.ts";
-import { isDnsSection } from "../dns.ts";
+import type { Config } from "../config.ts";
+import { buildAttentionFlags } from "../derive.ts";
+import { isDnsSection, summarizeDns } from "../dns.ts";
 import {
   diagnoseOrchestrationSection,
+  type FleetFeed,
   feedAgeText,
+  loadFeed,
   normalizeOrchestrationSection,
   orchestrationSectionProblem,
-  loadFeed,
-  type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
-import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
-import { buildAttentionFlags } from "../derive.ts";
-import { summarizeDns } from "../dns.ts";
-import { applyCloudflareExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
-import type { CloudflareExportDoc } from "../saas-extract.ts";
-import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
-import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
-import { overlayQuotaCurrent, parseQuotaCurrent } from "../quota-current.ts";
-import { SnapshotStore } from "../snapshots.ts";
-import { fixtureSource } from "./fixtures.ts";
-import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
   type AaFeedSection,
   type AttentionFlag,
@@ -41,18 +31,33 @@ import {
   type Provenance,
   type ProvenanceDetail,
   type ProvenanceFacet,
+  parseRef,
   type QuotaView,
   type RefKey,
   type RoadmapRow,
+  refsInText,
+  refUrl,
   type SessionFeedEntry,
   type SessionRecord,
   type SourceCoverage,
   type UsageView,
-  parseRef,
-  refsInText,
-  refUrl,
 } from "../model.ts";
+import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
+import { overlayQuotaCurrent, parseQuotaCurrent } from "../quota-current.ts";
+import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
+import type { CloudflareExportDoc } from "../saas-extract.ts";
+import {
+  applyCloudflareExport,
+  extractCharges,
+  extractPaygLines,
+  extractSaasServices,
+  extractSubscriptions,
+} from "../saas-extract.ts";
+import { SnapshotStore } from "../snapshots.ts";
 import type { Source } from "../source.ts";
+import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
+import { fixtureSource } from "./fixtures.ts";
+import { type MappedSessions, mapServerSessions } from "./opencode.ts";
 
 interface FetchResult {
   ok: boolean;
@@ -808,8 +813,14 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           : null;
       if (feed?.saas && feed.saas.length) {
         provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
+        // The Cloudflare live export overlays tracker prose on BOTH
+        // service sources — a healthy fleet feed must not keep stale
+        // prose values when a fresh export exists (Codex, PR #2228).
+        const cfExport = await readFile(cfg.cloudflareExportFile, "utf8")
+          .then((text) => JSON.parse(text) as CloudflareExportDoc)
+          .catch(() => null);
         const partial = {
-          services: feed.saas,
+          services: applyCloudflareExport(feed.saas, cfExport),
           payg: feed.payg ?? [],
           charges: feed.charges ?? [],
           subscriptions: feed.subscriptions ?? [],

@@ -78,11 +78,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         homedir(),
         "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
       ),
-    cloudflareExportFile: s(
-      env.PM_AGG_CLOUDFLARE_EXPORT,
-      join(homedir(), "atlas/cloudflare-export/latest.json"),
     ),
-    ),
+    cloudflareExportFile: s(env.PM_AGG_CLOUDFLARE_EXPORT, join(homedir(), "atlas/cloudflare-export/latest.json")),
     quotaRegistryFile: s(
       env.PM_AGG_QUOTA_REGISTRY,
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
