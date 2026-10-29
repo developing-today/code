@@ -2376,7 +2376,7 @@ fn test_held_messages_are_refused_past_the_byte_cap() {
                 "the tracked total is the first message's encoded length: {bytes}"
             );
         }
-        other => panic!("the second big message is refused: {other:?}"),
+        other => unreachable!("the second big message is refused: {other:?}"),
     }
 }
 
