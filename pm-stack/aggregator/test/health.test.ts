@@ -320,9 +320,21 @@ describe("pending comment counts (#1145)", () => {
       dashComment({ kind: "message", triageState: "new" }),
       dashComment({ kind: "message", triageState: "new" }),
       dashComment({ kind: "message", triageState: "triaged" }),
-      dashComment({ kind: "github", githubState: "pending", githubRef: "developing-today/code#1145" as DashComment["githubRef"] }),
-      dashComment({ kind: "github", githubState: "posted", githubRef: "developing-today/code#1145" as DashComment["githubRef"] }),
-      dashComment({ kind: "github", githubState: "failed", githubRef: "developing-today/code#1145" as DashComment["githubRef"] }),
+      dashComment({
+        kind: "github",
+        githubState: "pending",
+        githubRef: "developing-today/code#1145" as DashComment["githubRef"],
+      }),
+      dashComment({
+        kind: "github",
+        githubState: "posted",
+        githubRef: "developing-today/code#1145" as DashComment["githubRef"],
+      }),
+      dashComment({
+        kind: "github",
+        githubState: "failed",
+        githubRef: "developing-today/code#1145" as DashComment["githubRef"],
+      }),
       dashComment({ kind: "note" }),
     ]);
     expect(counts).toEqual({ pendingMessages: 2, pendingGithub: 1, total: 7 });
@@ -330,10 +342,11 @@ describe("pending comment counts (#1145)", () => {
 
   test("buildHealth carries the counts into the view and defaults to zero", async () => {
     const { fetcher } = fakeFetcher(allUp);
-    const withCounts = await buildHealth(
-      inputs({ comments: { pendingMessages: 3, pendingGithub: 2, total: 9 } }),
-      { fetcher, cache: createProbeCache(), now: NOW },
-    );
+    const withCounts = await buildHealth(inputs({ comments: { pendingMessages: 3, pendingGithub: 2, total: 9 } }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+    });
     expect(withCounts.comments).toEqual({ pendingMessages: 3, pendingGithub: 2, total: 9 });
     const without = await buildHealth(inputs(), { fetcher, cache: createProbeCache(), now: NOW });
     expect(without.comments).toEqual({ pendingMessages: 0, pendingGithub: 0, total: 0 });
