@@ -144,7 +144,12 @@ function aggFromRollup(r: SnapshotRollup): RollupAgg {
 
 function aggAddRecord(agg: RollupAgg, r: SnapshotRecord): void {
   const o = agg.rollup;
-  agg.keys.add(snapshotKey(r));
+  const key = snapshotKey(r);
+  // Recovery after an interrupted compaction (rollup published, raw
+  // file still present) re-reads records already folded into the
+  // rollup; count and aggregates must not grow twice for them.
+  if (agg.keys.has(key)) return;
+  agg.keys.add(key);
   o.count += 1;
   if (r.ts < o.firstTs) o.firstTs = r.ts;
   if (cmpValue(r.value, o.valueMin) < 0) {
@@ -331,15 +336,20 @@ export async function withSnapshotStoreLock<T>(dir: string, fn: () => Promise<T>
     try {
       await writeFile(lockPath, token, { flag: "wx" });
       break;
-    } catch {
+    } catch (err) {
+      // Only EEXIST means contention. Anything else (EACCES on an
+      // unwritable store dir, ENOSPC, ...) is permanent and must
+      // surface instead of spinning past the deadline.
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       try {
         const st = await stat(lockPath);
         if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
           await rm(lockPath, { force: true });
           continue;
         }
-      } catch {
-        continue; // lock vanished between attempts — retry at once
+      } catch (statErr) {
+        if ((statErr as NodeJS.ErrnoException).code === "ENOENT") continue; // lock vanished between attempts — retry at once
+        throw statErr;
       }
       if (Date.now() > deadline) throw new Error(`snapshot store lock timeout: ${lockPath}`);
       await new Promise((r) => setTimeout(r, 25));
@@ -506,7 +516,21 @@ export class SnapshotStore {
       const rollupName = rollupFileFor(month);
       const existing: SnapshotRollup[] = [];
       if (names.includes(rollupName)) {
-        const rollText = await readFile(join(this.dir, rollupName), "utf8").catch(() => "");
+        // An unreadable rollup must abort compaction: treating it as
+        // empty would overwrite previously compacted history with only
+        // the late raw records, and the raw file is deleted right after.
+        let rollText: string;
+        try {
+          rollText = await readFile(join(this.dir, rollupName), "utf8");
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+            rollText = "";
+          } else {
+            throw new Error(
+              `compaction aborted: cannot read existing rollup ${rollupName}: ${(err as Error).message}`,
+            );
+          }
+        }
         for (const line of rollText.split("\n")) {
           if (!line.trim()) continue;
           try {
