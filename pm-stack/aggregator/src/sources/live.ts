@@ -20,7 +20,8 @@ import {
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import { applySupabaseExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import type { SupabaseExportDoc } from "../saas-extract.ts";
 import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { overlayQuotaCurrent, parseQuotaCurrent } from "../quota-current.ts";
@@ -839,8 +840,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           readFile(cfg.quotaViewFile, "utf8"),
           readFile(cfg.quotaRegistryFile, "utf8").catch(() => ""),
         ]);
+        const supabaseExport = await readFile(cfg.supabaseExportFile, "utf8")
+          .then((text) => JSON.parse(text) as SupabaseExportDoc)
+          .catch(() => null);
         const partial = {
-          services: extractSaasServices(doc),
+          services: applySupabaseExport(extractSaasServices(doc), supabaseExport),
           payg: extractPaygLines(doc, registryText),
           charges: extractCharges(doc, registryText),
           subscriptions: extractSubscriptions(doc),

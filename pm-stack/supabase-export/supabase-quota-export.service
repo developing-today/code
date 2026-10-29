@@ -1,0 +1,8 @@
+[Unit]
+Description=Supabase usage exporter — code#1050
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+ExecStart=%h/.bun/bin/bun %h/atlas/supabase-export/supabase-quota-export.mjs --out-dir %h/atlas/supabase-export
