@@ -226,15 +226,28 @@ func (p Peer) Declared(name string) bool {
 //
 // Three gates, and all three are needed. The revision has to define
 // elicitation at all -- 2025-03-26 does not. The client has to have declared
-// it. And url mode has to be separately declared, because it arrived in
-// 2025-11-25 and a client that knows only form mode receives a request with
-// no `requestedSchema` and no way to render it.
+// it. And each mode has to be separately declared from 2025-11-25, when the
+// declaration gained sub-keys: url mode because it arrived then and a client
+// that knows only form mode receives a request with no `requestedSchema` and
+// no way to render it, and form mode because a client that declared only
+// url never agreed to a form -- {} remains the form-only declaration, and
+// below 2025-11-25 presence of the capability is the form declaration.
 func (p Peer) CanElicit(mode string) bool {
 	if !AtLeast(p.Version, "2025-06-18") || !p.Declared("elicitation") {
 		return false
 	}
 	if mode != "url" {
-		return true
+		if !AtLeast(p.Version, "2025-11-25") {
+			return true
+		}
+		var e struct {
+			Form json.RawMessage `json:"form"`
+			URL  json.RawMessage `json:"url"`
+		}
+		if json.Unmarshal(p.Caps["elicitation"], &e) != nil {
+			return false
+		}
+		return len(e.Form) > 0 || len(e.URL) == 0
 	}
 	if !AtLeast(p.Version, "2025-11-25") {
 		return false
