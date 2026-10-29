@@ -110,7 +110,7 @@ function openGotoLine(view: EditorView): void {
           const lineCount = Math.max(1, lineStarts.length);
           const pos =
             raw !== "" && Number.isInteger(line) && line >= 1 && line <= lineCount
-              ? lineStarts[line - 1] ?? null
+              ? (lineStarts[line - 1] ?? null)
               : null;
           if (pos === null || !activeView) {
             dialogInput?.select();
