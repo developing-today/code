@@ -45,7 +45,10 @@ DST_HASH=""
 [ -f "$DST/.deploy-tree-hash" ] && DST_HASH="$(cat "$DST/.deploy-tree-hash")"
 BUILD_VERSION="${DEPLOY_COMMIT:-tree:${SRC_HASH}}"
 live_version() {
-  curl -s --max-time 3 "http://127.0.0.1:4870/api/health" | grep -o '"version":"[^"]*"' | head -n 1 | cut -d'"' -f4 || true
+  # Parse with bun (already a hard dependency of this script): the API
+  # pretty-prints its JSON, so a fixed-string grep for the marker
+  # would silently never match (#1150, Codex review on PR 2432).
+  curl -s --max-time 3 "http://127.0.0.1:4870/api/health" | bun -e 'const t = await Bun.stdin.text(); try { console.log(JSON.parse(t).version ?? "") } catch { console.log("") }' || true
 }
 CHANGED=1
 if [ "$SRC_HASH" = "$DST_HASH" ] && systemctl --user is-active --quiet pm-aggregator.service && [ "$(live_version)" = "$BUILD_VERSION" ]; then
