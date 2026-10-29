@@ -220,10 +220,10 @@ wrote it.
 - **Gateway remote-auth (G2/G4):** enforce token authentication for
   non-loopback gateway callers, provision via the secrets manager by
   reference; verify the tailnet bind requires it. Filed as a follow-up
-  issue from this doc's PR pass.
+  issue from this doc's PR pass: **#2300**.
 - **Sandbox tailnet route (G3):** join the sandbox VM to the tailnet (or
   record the stated refusal and fall back to a relay design) so the
-  phase-2 direct-API path has a route. Filed as a follow-up issue.
+  phase-2 direct-API path has a route. Filed as a follow-up issue: **#2301**.
 - **OpenClaw inventory (G5):** one read-only pass over the agent's 15
   sessions and configuration, written up as a repo doc. Filed as a
   follow-up issue.
