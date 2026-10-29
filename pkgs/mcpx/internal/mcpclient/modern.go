@@ -286,6 +286,11 @@ func narrowCapabilities(own map[string]any, relayed json.RawMessage) map[string]
 // elicitation and sampling only -- so with the broker on, which is always,
 // every roots/list got "not implemented" while the roots sat configured.
 func (c *Client) answer(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
+	// Both sampling paths arrive here, so the era the request was made under
+	// is stamped once, for the relay that answers it to validate against.
+	// modern is the atomic mirror rather than Era: a concurrent recovery's
+	// finishLegacy writes Era, and this runs on the server's goroutine.
+	ctx = WithSamplingEra(ctx, SamplingEra{Negotiated: c.Negotiated, Era: c.modernEra()})
 	c.mu.Lock()
 	h := c.onElicit
 	roots := append([]Root(nil), c.roots...)
@@ -309,7 +314,7 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 				return out, nil
 			}
 			if !errors.Is(err, ErrNotRelayed) {
-				return nil, &rpcError{Code: -32603, Message: err.Error()}
+				return nil, rpcErrorFor(err)
 			}
 		}
 		if roots == nil {
@@ -340,7 +345,7 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 		if h != nil {
 			out, err := h(ctx, method, params)
 			if err != nil {
-				return nil, &rpcError{Code: -32603, Message: err.Error()}
+				return nil, rpcErrorFor(err)
 			}
 			if method == "elicitation/create" {
 				out = applyDefaults(out, params)
