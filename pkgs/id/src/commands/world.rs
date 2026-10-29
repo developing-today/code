@@ -667,22 +667,15 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             let (default, worlds) = result?;
             if json {
-                let worlds: Vec<serde_json::Value> = worlds
+                let worlds: Vec<crate::world_hub::WorldInfo> = worlds
                     .into_iter()
-                    .map(|(name, open)| {
-                        serde_json::json!({
-                            "name": name,
-                            "open": open,
-                            "default": name == default,
-                        })
-                    })
+                    .map(|(name, open)| crate::world_hub::WorldInfo { name, open })
                     .collect();
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "default": default,
-                        "worlds": worlds,
-                    }))?
+                    serde_json::to_string_pretty(&crate::world_hub::directory_json(
+                        &worlds, &default
+                    ))?
                 );
             } else {
                 for (name, open) in worlds {

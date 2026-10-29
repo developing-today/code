@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import http from 'node:http';
 import net from 'node:net';
-import { spawn, execSync } from 'node:child_process';
+import { spawn, execSync, execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -78,7 +78,14 @@ conn.commit()
   }
 };
 
-const MODELS = [
+// Static floor for the served model list (live-model rule, 2026-10-28):
+// only the last-resort fallback. The served list is pulled LIVE from
+// `codex debug models` (the CLI's own rendering of the upstream catalog;
+// see refreshLiveModels below) with a 60s TTL cache and last-known-good
+// fallback. All slugs the CLI reports are served, including
+// visibility:"hide" ones (gpt-reserve, codex-auto-review) — this floor
+// deliberately served them too.
+const STATIC_MODELS = [
   { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol (codex)', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'medium' },
   { id: 'gpt-6-astra', name: 'GPT-6 Astra (codex)', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'medium' },
   { id: 'gpt-6-sol', name: 'GPT-6 Sol (codex)', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'medium' },
@@ -107,6 +114,75 @@ const findCodexBinary = () => {
 
 const CODEX_BIN = findCodexBinary();
 
+// --- Live model list -------------------------------------------------------
+// `codex debug models` prints the CLI's current upstream catalog as JSON
+// ({models:[{slug, display_name, supported_reasoning_levels:[{effort}],
+// default_reasoning_level, visibility}]}). It answers in ~1s from the
+// CLI's own fetch/cache, so the TTL is short (60s) and a stale read is
+// refreshed inline; any failure serves the last-known-good (or floor).
+const MODEL_LIST_TTL_MS = 60 * 1000;
+let liveModelCache = { at: 0, models: null };
+let liveModelRefresh = null;
+
+const parseDebugModels = (text) => {
+  const parsed = JSON.parse(text);
+  const arr = Array.isArray(parsed) ? parsed : parsed.models;
+  if (!Array.isArray(arr)) throw new Error('debug models: no models array');
+  const models = [];
+  for (const m of arr) {
+    if (!m || typeof m.slug !== 'string' || !m.slug) continue;
+    const efforts = (m.supported_reasoning_levels || []).map(r => r && r.effort).filter(Boolean);
+    if (efforts.length === 0) continue;
+    models.push({
+      id: m.slug,
+      name: `${m.display_name || m.slug} (codex)`,
+      efforts,
+      defaultEffort: efforts.includes(m.default_reasoning_level) ? m.default_reasoning_level : efforts[0]
+    });
+  }
+  if (models.length < 3) throw new Error(`debug models: only ${models.length} usable models`);
+  return models;
+};
+
+const refreshLiveModels = () => {
+  if (liveModelRefresh) return liveModelRefresh;
+  liveModelRefresh = new Promise((resolve) => {
+    execFile(CODEX_BIN, ['debug', 'models'], {
+      timeout: 30000, maxBuffer: 16 * 1024 * 1024, input: ''
+    }, (err, stdout) => {
+      liveModelRefresh = null;
+      if (!err) {
+        try {
+          liveModelCache = { at: Date.now(), models: parseDebugModels(stdout) };
+        } catch (parseErr) {
+          console.warn(`[codex-proxy] live model parse failed (${parseErr.message}); serving last-known-good`);
+        }
+      } else {
+        console.warn(`[codex-proxy] \`codex debug models\` failed (${err.message}); serving last-known-good`);
+      }
+      resolve(liveModelCache.models);
+    });
+  });
+  return liveModelRefresh;
+};
+
+const getModelCatalog = async () => {
+  if (liveModelCache.models && Date.now() - liveModelCache.at <= MODEL_LIST_TTL_MS) {
+    return liveModelCache.models;
+  }
+  await refreshLiveModels();
+  return liveModelCache.models || STATIC_MODELS;
+};
+
+// Synchronous view for code paths that cannot await: last-known-good or
+// the static floor, with a background refresh triggered when stale.
+const getModelCatalogSync = () => {
+  if (!liveModelCache.models || Date.now() - liveModelCache.at > MODEL_LIST_TTL_MS) {
+    refreshLiveModels();
+  }
+  return liveModelCache.models || STATIC_MODELS;
+};
+
 // Transport selection (#480): 'app-server' (default) talks JSON-RPC to the
 // long-running codex app-server daemon over its WebSocket-over-Unix control
 // socket — no per-request CLI boot. 'exec-resume' is the previous warm
@@ -122,8 +198,8 @@ const appServerSocketPath = () =>
   process.env.CODEX_APP_SERVER_SOCKET ||
   path.join(os.homedir(), '.codex', 'app-server-control', 'app-server-control.sock');
 
-const resolveModelAndEffort = (requestedModel, requestedEffort) => {
-  let rawModel = (requestedModel || 'gpt-6.1-sol').trim();
+const resolveModelAndEffort = (requestedModel, requestedEffort, catalog = getModelCatalogSync()) => {
+  let rawModel = (requestedModel || '').trim();
   // Strip any provider prefix before '/' (e.g. 'openai-codex/', 'codex/', 'openai/', 'chatgpt/')
   let modelStr = rawModel.replace(/^.*\//, '').toLowerCase().trim();
   let effort = requestedEffort ? requestedEffort.toLowerCase().trim() : null;
@@ -138,9 +214,15 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
     }
   }
 
-  // Find base model config
-  const modelConfig = MODELS.find(m => m.id === modelStr || m.id.replace(/-/g, '') === modelStr.replace(/-/g, ''))
-    || MODELS[0]; // default to gpt-6.1-sol
+  // Find base model config in the live (or last-known-good/floor) catalog.
+  // No requested model at all -> the catalog's first entry is the default.
+  // An explicitly requested but unknown id returns null: the caller answers
+  // a clean 400. It must NEVER silently fall back to a default model (a
+  // fleet proxy once served a different model than requested with HTTP 200).
+  const modelConfig = !modelStr
+    ? catalog[0]
+    : catalog.find(m => m.id === modelStr || m.id.replace(/-/g, '') === modelStr.replace(/-/g, ''));
+  if (!modelConfig) return null;
 
   // Resolve effort
   if (!effort || !modelConfig.efforts.includes(effort)) {
@@ -886,7 +968,7 @@ const runCodexOnce = ({ args, prompt, emit, onSpawn }) =>
     });
   });
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
@@ -913,12 +995,13 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Models catalog
+  // Models catalog (live: `codex debug models`, TTL-cached with
+  // last-known-good/static-floor fallback — see refreshLiveModels)
   if (req.method === 'GET' && (pathname === '/v1/models' || pathname === '/models')) {
     const now = Math.floor(Date.now() / 1000);
     const data = [];
 
-    for (const m of MODELS) {
+    for (const m of await getModelCatalog()) {
       data.push({
         id: m.id,
         object: 'model',
@@ -952,7 +1035,7 @@ const server = http.createServer((req, res) => {
       }
     });
 
-    req.on('end', () => {
+    req.on('end', async () => {
       let body;
       try {
         body = JSON.parse(bodyText);
@@ -964,7 +1047,13 @@ const server = http.createServer((req, res) => {
 
       const stream = Boolean(body.stream);
       const reqReasoningEffort = body.reasoning_effort || (body.options && body.options.reasoning_effort);
-      const { baseModel, effort, fullName } = resolveModelAndEffort(body.model, reqReasoningEffort);
+      const resolvedModel = resolveModelAndEffort(body.model, reqReasoningEffort, await getModelCatalog());
+      if (!resolvedModel) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: `Unknown model "${body.model}": not in the live Codex catalog (see GET /v1/models)` } }));
+        return;
+      }
+      const { baseModel, effort, fullName } = resolvedModel;
       const prompt = formatPrompt(body.messages);
 
       if (!prompt || prompt.trim().length === 0) {

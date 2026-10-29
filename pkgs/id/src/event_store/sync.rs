@@ -1,7 +1,7 @@
 //! Range sync over the event store, on `/id-sync/1`.
 //!
 //! The sync set is every stored event and every fork proof header, one key each: the author,
-//! the sequence number, and the ID (see [`super::range`]). A session has three phases:
+//! the sequence number, and the ID (see [`super::range`]). A session has four phases:
 //!
 //! 1. **Reconciliation.** Messages alternate as flights of frames until one side answers with
 //!    only skips. The dialer opens the stream and sends the full range's fingerprint.
@@ -10,6 +10,13 @@
 //!    frame, then one frame per event. Both sides send at once.
 //! 3. **Apply.** The receiver verifies each event, checks it was expected, and decides the
 //!    events in batches, in one write transaction per batch, as the store's ingest does.
+//! 4. **Completion.** Each side, once it has applied what it received, sends one completion
+//!    frame (see [`APPLIED_FRAME`]), and ends the session only after reading the peer's.
+//!    A side that has returned therefore knows the peer applied what it sent: closing the
+//!    connection at that point cannot discard events the peer has received into its stream
+//!    buffers but not yet decided. Without the frame, the side that finishes first can
+//!    close while its last events are still in flight, and the peer's session dies with
+//!    the connection — the intermittent replication loss #792's two-node test caught.
 //!
 //! K, T, the frame budget and the session budget are local. The frame budget only has to stay
 //! under the frame cap. A session reads at most its session budget in reconciliation, and ends
@@ -51,6 +58,10 @@ const POSITION_LEN: usize = 40;
 
 /// The application close code when the pull policy refuses the peer. [`Cut`] closes with 1.
 const CLOSE_PULL_REFUSED: u32 = 2;
+
+/// The payload of the completion frame (phase 4): a side writes it once it has applied
+/// everything it received, and reads the peer's before ending the session.
+const APPLIED_FRAME: &[u8] = b"applied";
 
 /// A range session read past its session budget during reconciliation.
 ///
@@ -495,6 +506,13 @@ async fn run(
         Cut::Never | Cut::AfterFlights(_) => None,
     };
 
+    // The completion handshake (phase 4): the receiving half signals once it has
+    // applied what it received; only then does the sending half write its completion
+    // frame, and the receiving half ends the session only after reading the peer's.
+    // `notify_one` stores its permit, so a signal sent before the sending half waits
+    // is not lost.
+    let applied = tokio::sync::Notify::new();
+
     let sending = async {
         let count = u32::try_from(offers.len())?;
         let mut bytes = write_frame(&mut send, &count.to_be_bytes()).await?;
@@ -513,37 +531,27 @@ async fn run(
                 .context("an offered event is no longer stored")?;
             bytes += write_frame(&mut send, &record).await?;
         }
+        applied.notified().await;
+        bytes += write_frame(&mut send, APPLIED_FRAME).await?;
         send.finish()?;
         anyhow::Ok(bytes)
     };
 
     let receiving = async {
-        let count_frame = read_frame(&mut recv).await?;
-        let count: [u8; 4] = count_frame
-            .as_slice()
-            .try_into()
-            .map_err(|_err| anyhow!("count frame is not 4 bytes"))?;
-        let count = u32::from_be_bytes(count) as usize;
+        let received = receive_data(&mut recv, &store, &mut need, now_ms, &commits).await;
+        // Signal on every exit, error included: the sending half waits for this
+        // signal before it can finish, and a failed receive must not hold the
+        // session open until its deadline.
+        applied.notify_one();
+        let (count, tally) = received?;
+        // Applied: this side's completion frame is now released; wait for the
+        // peer's — the session ends only once the peer has applied what this
+        // side sent.
+        let completion = read_frame(&mut recv).await?;
         ensure!(
-            count == need.len(),
-            "peer offers {count} events, and {} are missing here",
-            need.len()
+            completion == APPLIED_FRAME,
+            "the peer ended its data phase without a completion frame"
         );
-        let mut pending: Vec<Event> = Vec::with_capacity(BATCH_EVENTS);
-        let mut tally = Tally::default();
-        for _ in 0..count {
-            let record = read_frame(&mut recv).await?;
-            let event = chain::decode(&record)?;
-            ensure!(
-                need.remove(event.id.as_bytes()),
-                "an event arrived that was not expected, or arrived twice"
-            );
-            pending.push(event);
-            if pending.len() == BATCH_EVENTS {
-                flush(&store, &mut pending, now_ms, &mut tally, &commits)?;
-            }
-        }
-        flush(&store, &mut pending, now_ms, &mut tally, &commits)?;
         anyhow::Ok((count, tally))
     };
 
@@ -558,6 +566,45 @@ async fn run(
     out.refused = tally.refused;
     out.forks = tally.forks;
     Ok(out)
+}
+
+/// The receiving half of the data phase: reads the peer's count frame and that many
+/// event frames, deciding each batch as it fills, and returns how many events arrived
+/// and how they were decided. The caller owns the completion handshake (phase 4).
+async fn receive_data(
+    recv: &mut RecvStream,
+    store: &Mutex<&mut EventStore>,
+    need: &mut HashSet<Id>,
+    now_ms: u64,
+    commits: &Option<CommitSignal>,
+) -> Result<(usize, Tally)> {
+    let count_frame = read_frame(recv).await?;
+    let count: [u8; 4] = count_frame
+        .as_slice()
+        .try_into()
+        .map_err(|_err| anyhow!("count frame is not 4 bytes"))?;
+    let count = u32::from_be_bytes(count) as usize;
+    ensure!(
+        count == need.len(),
+        "peer offers {count} events, and {} are missing here",
+        need.len()
+    );
+    let mut pending: Vec<Event> = Vec::with_capacity(BATCH_EVENTS);
+    let mut tally = Tally::default();
+    for _ in 0..count {
+        let record = read_frame(recv).await?;
+        let event = chain::decode(&record)?;
+        ensure!(
+            need.remove(event.id.as_bytes()),
+            "an event arrived that was not expected, or arrived twice"
+        );
+        pending.push(event);
+        if pending.len() == BATCH_EVENTS {
+            flush(store, &mut pending, now_ms, &mut tally, commits)?;
+        }
+    }
+    flush(store, &mut pending, now_ms, &mut tally, commits)?;
+    Ok((count, tally))
 }
 
 fn flush(

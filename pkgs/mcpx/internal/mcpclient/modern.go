@@ -104,6 +104,48 @@ func (c *Client) elicitModeDeclared(mode string) bool {
 	return false
 }
 
+// samplingShape enforces the sampling declaration mcpx made upstream.
+//
+// mcpx declares sampling as a bare {} -- no tools, no context (see
+// capabilities). A request that carries tools or toolChoice asks for a
+// capability that was never declared, so it is refused before any handler
+// sees it: "Server sends a sampling/createMessage request with tools when
+// the client did not declare sampling.tools: -32602." Answering anyway
+// would teach the server that undeclared works. includeContext is softer:
+// the field asks for context the client never offered to give, so it is
+// dropped and the request is answered without it, the same way a declared
+// "none" would read. includeContext "none" itself requests nothing, so it
+// passes untouched, like any field this check does not govern. A request
+// carrying none of these is returned untouched.
+func samplingShape(params json.RawMessage) (json.RawMessage, *rpcError) {
+	m := map[string]json.RawMessage{}
+	if len(params) > 0 && string(params) != "null" {
+		if err := json.Unmarshal(params, &m); err != nil {
+			// Not an object: not this check's shape to judge. The handler
+			// sees it as it arrived, as before.
+			return params, nil
+		}
+	}
+	carries := func(k string) bool {
+		v, ok := m[k]
+		return ok && string(v) != "null"
+	}
+	if carries("tools") || carries("toolChoice") {
+		return nil, &rpcError{Code: codeInvalidParams,
+			Message: "sampling request carries tools or toolChoice, but sampling.tools was not declared by this client"}
+	}
+	if raw, ok := m["includeContext"]; ok && string(raw) != "null" {
+		var what string
+		if err := json.Unmarshal(raw, &what); err != nil || what != "none" {
+			delete(m, "includeContext")
+			if b, err := json.Marshal(m); err == nil {
+				return b, nil
+			}
+		}
+	}
+	return params, nil
+}
+
 // withMeta adds the per-request metadata 2026-07-28 requires.
 //
 // Version and capabilities are required on every request -- the server MUST
@@ -287,6 +329,13 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 				return nil, &rpcError{Code: codeInvalidParams,
 					Message: fmt.Sprintf("elicitation mode %q was not declared by this client", p.Mode)}
 			}
+		}
+		if method == "sampling/createMessage" {
+			cleaned, serr := samplingShape(params)
+			if serr != nil {
+				return nil, serr
+			}
+			params = cleaned
 		}
 		if h != nil {
 			out, err := h(ctx, method, params)

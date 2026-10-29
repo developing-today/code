@@ -1,9 +1,14 @@
 name: nix ci
 
+# CI tier policy: see .github/ci-policy.md
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly backstop: the full flake check runs on main + nightly, not PRs.
+    - cron: "17 8 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -58,6 +63,8 @@ jobs:
 
   flake-check:
     name: Nix flake evaluation
+    # Main tier only (Phase 2, #1781): PRs keep the treefmt/format gate above.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

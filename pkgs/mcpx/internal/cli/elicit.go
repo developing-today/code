@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/dezren39/mcpx/internal/defaults"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,14 +32,13 @@ type ExitCoder interface {
 	ExitCode() int
 }
 
-// broker opens the question store, which lives beside the log index.
+// broker opens the question store (elicit.StorePath). The legacy
+// location beside the log index -- or under a configured logging.dir --
+// is honoured as a migration source only.
 func (a *App) broker() (*elicit.Broker, error) {
 	dir := firstNonEmpty(a.Settings().String("logging.dir"),
 		filepath.Join(a.Paths.State, "logs"))
-	if err := os.MkdirAll(dir, defaults.PublicDirMode); err != nil {
-		return nil, err
-	}
-	return elicit.Open(filepath.Join(dir, "elicit.db"))
+	return elicit.OpenAt(a.Paths.State, filepath.Join(dir, "elicit.db"))
 }
 
 // CmdElicit answers, lists and follows outstanding questions.

@@ -284,13 +284,15 @@ func (r *Registry) rootsViaBroker(ctx context.Context, server, key string, param
 	return result, nil
 }
 
-// OpenBroker opens the question store beside the log index.
+// OpenBroker opens the question store. The store lives in its own
+// owner-only directory under the state dir (elicit.StorePath); a store
+// left beside the log index by an older build is migrated on open.
 func OpenBroker(paths Paths) (*elicit.Broker, error) {
 	dir := filepath.Join(paths.State, "logs")
 	if err := os.MkdirAll(dir, defaults.PublicDirMode); err != nil {
 		return nil, err
 	}
-	return elicit.Open(filepath.Join(dir, "elicit.db"))
+	return elicit.OpenAt(paths.State, filepath.Join(dir, "elicit.db"))
 }
 
 // PublishLifecycle forwards a pool lifecycle event onto the bus.
