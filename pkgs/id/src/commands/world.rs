@@ -965,6 +965,29 @@ fn step_is_applied(step: &crate::world_manifest::ApplyStep) -> bool {
 /// [`WorldClient::fresh_session`]): the host serves admin frames one
 /// operation per stream, so a second operation on the same stream would
 /// write to a session that no longer has a receiver.
+/// Order steps for reachability (see [`apply_steps`]): cancellations
+/// first, then profile, grants and ceiling, then the module install,
+/// and schedule additions last. The sort is stable, so steps of the
+/// same kind keep their plan order.
+fn ordered_steps<'a>(
+    steps: &'a [crate::world_manifest::ApplyStep],
+) -> Vec<&'a crate::world_manifest::ApplyStep> {
+    use crate::world_manifest::ApplyStep;
+    fn rank(step: &ApplyStep) -> u8 {
+        match step {
+            ApplyStep::CancelSchedule { .. } => 0,
+            ApplyStep::SetProfile { .. } => 1,
+            ApplyStep::SetGrants { .. } => 2,
+            ApplyStep::SetCeiling { .. } => 3,
+            ApplyStep::InstallModule { .. } => 4,
+            ApplyStep::ScheduleAt { .. } => 5,
+        }
+    }
+    let mut ordered: Vec<&ApplyStep> = steps.iter().collect();
+    ordered.sort_by_key(|step| rank(step));
+    ordered
+}
+
 async fn apply_steps(
     client: &WorldClient,
     admin_token: &str,
