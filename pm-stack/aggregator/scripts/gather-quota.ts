@@ -280,13 +280,21 @@ async function runTurso(tickIso: string): Promise<ProviderRun> {
   const slug = process.env.TURSO_ORG_SLUG ?? "dezren39";
   try {
     const get = async (path: string): Promise<unknown> => {
-      const res = await withTimeout(
-        fetch(`${base}/v1/organizations/${slug}${path}`, { headers: { Authorization: `Bearer ${token}` } }),
+      // Fetch AND body parse inside the timeout, with an abort
+      // signal: a body that stalls after prompt headers must not
+      // hang the tick (Codex review, PR #2366).
+      return withTimeout(
+        (async () => {
+          const res = await fetch(`${base}/v1/organizations/${slug}${path}`, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          if (!res.ok) throw new Error(`turso ${path} HTTP ${res.status}`);
+          return res.json();
+        })(),
         timeoutMs,
         `turso ${path}`,
       );
-      if (!res.ok) throw new Error(`turso ${path} HTTP ${res.status}`);
-      return res.json();
     };
     const usage = (await get("/usage")) as TursoUsageDoc;
     const subscription = (await get("/subscription")) as TursoSubscriptionDoc;

@@ -240,6 +240,20 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
  * the CNY balance case is #1052's unit work; quota-current still
  * carries the label.
  */
+/**
+ * Snapshot units for Turso windows whose metric ALSO has a native-unit
+ * series (recordsFromSaasServices writes turso/{databases,storage,sync}
+ * in count/GB): the gatherer's records for those windows carry the
+ * native value + unit so both writers land on ONE axis. Rows windows
+ * have no native series (the store has no "rows" unit) and keep pct.
+ * Limits mirror TURSO_LIMITS below (storage/sync in GB).
+ */
+const TURSO_NATIVE_RECORDS: Record<string, { unit: SnapshotRecord["unit"]; limit: number }> = {
+  databases: { unit: "count", limit: 100 },
+  storage: { unit: "gb", limit: 5 },
+  sync: { unit: "gb", limit: 3 },
+};
+
 export function recordsFromEntries(
   entries: QuotaCurrentEntry[],
   lastAppended: ReadonlyMap<string, string>,
@@ -250,6 +264,26 @@ export function recordsFromEntries(
   for (const entry of entries) {
     if (entry.state !== "ok") continue;
     for (const w of entry.windows) {
+      const native = entry.serviceId === "turso" ? TURSO_NATIVE_RECORDS[w.name] : undefined;
+      if (native) {
+        if (w.value == null) continue;
+        const key = `${entry.serviceId}|${w.name}`;
+        const stamp = `${w.value}:${native.unit}`;
+        if (lastAppended.get(key) === stamp) continue;
+        appended.set(key, stamp);
+        records.push({
+          ts: w.measuredAt,
+          serviceId: entry.serviceId,
+          metricId: w.name,
+          value: w.value,
+          unit: native.unit,
+          limit: native.limit,
+          ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}),
+          source: entry.source.startsWith("file-export") ? "console" : "api",
+          observedBy,
+        });
+        continue;
+      }
       if (w.pctOfLimit == null) continue;
       const key = `${entry.serviceId}|${w.name}`;
       const stamp = `${w.pctOfLimit}`;

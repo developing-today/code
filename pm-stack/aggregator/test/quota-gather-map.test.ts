@@ -254,10 +254,18 @@ describe("entryFromTurso (#1049)", () => {
       expect(w.windowSeconds).toBe(2_678_400);
       expect(w.source).toBe("turso-api");
     }
-    // ...and the pct windows flow into §4 snapshot records (source api).
+    // ...and the windows flow into §4 snapshot records (source api):
+    // databases/storage/sync in their NATIVE units (the series
+    // recordsFromSaasServices already writes), rows in pct (the
+    // store has no "rows" unit and no native rows series exists).
     const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
-    expect(records.map((r) => r.metricId).sort()).toEqual(["databases", "rows-read", "rows-written", "storage", "sync"]);
-    expect(records.every((r) => r.serviceId === "turso" && r.source === "api" && r.unit === "pct")).toBe(true);
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect([...byMetric.keys()].sort()).toEqual(["databases", "rows-read", "rows-written", "storage", "sync"]);
+    expect(byMetric.get("databases")).toMatchObject({ value: 3, unit: "count", limit: 100, source: "api" });
+    expect(byMetric.get("storage")).toMatchObject({ value: 1.053323, unit: "gb", limit: 5, source: "api" });
+    expect(byMetric.get("sync")).toMatchObject({ value: 0.030409, unit: "gb", limit: 3, source: "api" });
+    expect(byMetric.get("rows-read")).toMatchObject({ value: 0.381, unit: "pct", limit: 100, source: "api" });
+    expect(byMetric.get("rows-written")).toMatchObject({ value: 0.3, unit: "pct", limit: 100, source: "api" });
   });
   test("missing metrics are omitted, never zeroed; a partial read is still ok", () => {
     const entry = entryFromTurso({ organization: { usage: { databases: 3 } } }, null, { measuredAt: at });

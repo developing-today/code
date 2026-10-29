@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
   overlayQuotaCurrent,
+  overlayTursoUsage,
   parseQuotaCurrent,
   QUOTA_CURRENT_FRESH_MS,
   QUOTA_CURRENT_FUTURE_SKEW_MS,
 } from "../src/quota-current.ts";
-import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaPool, QuotaView } from "../src/model.ts";
+import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaPool, QuotaView, SaasService } from "../src/model.ts";
 
 // The final visibility hop (#1151): the gatherer's quota-current.json
 // overlays the dated-read quota view. Fresh reads win; error/stale
@@ -284,5 +285,81 @@ describe("parseQuotaCurrent", () => {
     expect(parseQuotaCurrent({ version: 2, generatedAt: "x", providers: [] })).toBeNull();
     expect(parseQuotaCurrent({ version: 1, generatedAt: "x", providers: [{ providerId: "meta" }] })).toBeNull();
     expect(parseQuotaCurrent({ version: 1, generatedAt: "x", providers: "no" })).toBeNull();
+  });
+});
+
+describe("overlayTursoUsage (#1049)", () => {
+  const tursoSvc = (): SaasService => ({
+    id: "turso",
+    name: "Turso",
+    group: "database",
+    plan: "Starter Free $0",
+    status: "active",
+    metrics: [{ id: "databases", label: "Databases", used: 1, limit: 100, unit: "count", percent: 1, highlight: true }],
+    paygEstimate: null,
+    measuredAt: "2026-10-20T00:00:00.000Z",
+    sourceClass: "manual",
+    sourceNote: "quota-view.md Part (b)",
+    nextDate: "2026-10-31 cycle end",
+    cadenceDays: 7,
+    conflicts: [],
+    reads: [],
+  });
+  const tursoWin = (name: string, value: number, pct: number, measuredAt: string) => ({
+    name,
+    value,
+    pctOfLimit: pct,
+    valueLabel: null,
+    windowSeconds: 2_678_400,
+    resetsAt: "2026-11-01T04:00:00.000Z",
+    measuredAt,
+    source: "turso-api",
+    state: "ok" as const,
+  });
+  test("a fresh ok entry replaces the card metrics, stamp, and cycle end", () => {
+    const at = iso(5 * 60_000);
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([
+        entry({
+          serviceId: "turso",
+          providerId: "turso",
+          source: "turso-api",
+          measuredAt: at,
+          windows: [tursoWin("databases", 3, 3, at), tursoWin("storage", 1.053323, 21.066, at)],
+        }),
+      ]),
+      NOW,
+    );
+    const svc = out[0];
+    expect(svc.measuredAt).toBe(at);
+    expect(svc.sourceClass).toBe("api");
+    expect(svc.nextDate).toBe("cycle ends 2026-11-01");
+    expect(svc.metrics.map((m) => [m.id, m.used, m.unit, m.percent])).toEqual([
+      ["databases", 3, "count", 3],
+      ["storage", 1.053323, "gb", 21.066],
+    ]);
+  });
+  test("an error entry keeps the dated card and adds a dated conflict flag", () => {
+    const at = iso(5 * 60_000);
+    const out = overlayTursoUsage(
+      [tursoSvc()],
+      file([entry({ serviceId: "turso", providerId: "turso", source: "turso-api", state: "error", measuredAt: at, error: "turso /usage HTTP 401" })]),
+      NOW,
+    );
+    expect(out[0].measuredAt).toBe("2026-10-20T00:00:00.000Z");
+    expect(out[0].metrics[0].used).toBe(1);
+    expect(out[0].conflicts).toHaveLength(1);
+    expect(out[0].conflicts[0]).toContain("HTTP 401");
+  });
+  test("no turso entry or no turso card passes through unchanged", () => {
+    const services = [tursoSvc()];
+    expect(overlayTursoUsage(services, file([]), NOW)).toBe(services);
+    const other: SaasService = { ...tursoSvc(), id: "supabase", name: "Supabase" };
+    const arr = [other];
+    const at = iso(5 * 60_000);
+    expect(
+      overlayTursoUsage(arr, file([entry({ serviceId: "turso", providerId: "turso", source: "turso-api", measuredAt: at, windows: [tursoWin("databases", 3, 3, at)] })]), NOW),
+    ).toBe(arr);
   });
 });
