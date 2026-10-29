@@ -217,7 +217,19 @@ func withArgs(outer Fill, ref Ref, defs []Definition) Fill {
 			continue
 		}
 		value := def
-		if body, ok := outer[Placeholder(def)]; ok {
+		if refName, isRef := strings.CutPrefix(def, "@"); isRef && validName(refName) {
+			// A default spelled @name is a placeholder reference, not
+			// literal text: explicit arguments arrive with the @
+			// already stripped by readRef, so normalise the default
+			// the same way before resolving it against the outer fill
+			// (Codex review, PR #2442). Without this, wrap(entry =
+			// @entry) binds the parameter to its own spelling and the
+			// body refers to itself until the depth bound stops it.
+			value = refName
+			if body, ok := outer[Placeholder(refName)]; ok {
+				value = body
+			}
+		} else if body, ok := outer[Placeholder(def)]; ok {
 			value = body
 		}
 		inner[Placeholder(name)] = value

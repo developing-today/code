@@ -95,11 +95,11 @@ func splitArgs(s string) []string {
 			continue
 		}
 		switch c {
-		case '"', '\'':
+		case '"', '\'', '`':
 			quote = c
-		case '(':
+		case '(', '[', '{':
 			depth++
-		case ')':
+		case ')', ']', '}':
 			depth--
 		case ',':
 			if depth == 0 {
@@ -109,6 +109,48 @@ func splitArgs(s string) []string {
 		}
 	}
 	return append(out, s[start:])
+}
+
+// declarationParams extracts the parameter list that follows a
+// placeholder name on a declaration line: the text inside the balanced
+// parentheses that open the list. Text after the matching close — an
+// explanatory note, even one carrying parentheses of its own — is not
+// part of the declaration (Codex review, PR #2442: a greedy capture
+// through the last ')' on the line swallowed trailing text into a
+// parameter name). ok is false when the line opens no list, or the
+// list never closes.
+func declarationParams(rest string) (string, bool) {
+	rest = strings.TrimSpace(rest)
+	if !strings.HasPrefix(rest, "(") {
+		return "", false
+	}
+	depth := 0
+	var quote byte
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'', '`':
+			quote = c
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+			if depth == 0 {
+				return rest[1:i], true
+			}
+		}
+	}
+	return "", false
 }
 
 // parseParam splits one declared parameter token into its name and,
@@ -131,11 +173,11 @@ func parseParam(token string) (name, def string, hasDef bool) {
 			continue
 		}
 		switch c {
-		case '"', '\'':
+		case '"', '\'', '`':
 			quote = c
-		case '(':
+		case '(', '[', '{':
 			depth++
-		case ')':
+		case ')', ']', '}':
 			depth--
 		case '=':
 			if depth == 0 {
@@ -170,7 +212,7 @@ type Definition struct {
 // constant is visible to tooling. The filename is the least ceremony for a
 // directory of one-line fragments.
 var (
-	commentDecl = regexp.MustCompile(`^\s*(?://|#|/\*)\s*@mcpx:placeholder\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\((.*)\))?`)
+	commentDecl = regexp.MustCompile(`^\s*(?://|#|/\*)\s*@mcpx:placeholder\s+([A-Za-z_][A-Za-z0-9_]*)`)
 	constDecl   = regexp.MustCompile(`^\s*export\s+const\s+MCPX_PLACEHOLDER\s*=\s*["'` + "`" + `]([A-Za-z_][A-Za-z0-9_]*)["'` + "`" + `]`)
 )
 
@@ -214,10 +256,10 @@ func readDeclaration(f *os.File) (body, name string, params []string, defaults m
 	for sc.Scan() {
 		line := sc.Text()
 		if name == "" {
-			if m := commentDecl.FindStringSubmatch(line); m != nil {
-				name = m[1]
-				if m[3] != "" {
-					for _, token := range splitArgs(m[3]) {
+			if m := commentDecl.FindStringSubmatchIndex(line); m != nil {
+				name = line[m[2]:m[3]]
+				if inner, ok := declarationParams(line[m[1]:]); ok {
+					for _, token := range splitArgs(inner) {
 						pname, def, hasDef := parseParam(token)
 						if pname == "" {
 							continue
