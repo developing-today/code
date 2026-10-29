@@ -50,7 +50,13 @@ in
     agents.opencode.command = "/etc/profiles/per-user/user/bin/opencode acp";
   };
 
-  # Start after the provider proxies + mcpx it depends on.
+  # Start after the provider proxies + mcpx it depends on. The proxies
+  # are owned by the proxy-supervisor (transient fps-* units on the
+  # canonical ports), so the gateway must not Want the manual per-proxy
+  # units: a gateway restart would re-pull them, and the manual
+  # commandcode-proxy unit crash-loops on its already-taken port (#883).
+  # The gateway reaches the proxies by port, not by unit; only mcpx is
+  # a real unit dependency.
   systemd.user.services.openclaw-gateway = {
     Unit = {
       After = [
@@ -61,9 +67,6 @@ in
         "mcpx.service"
       ];
       Wants = [
-        "commandcode-proxy.service"
-        "design-code-proxy.service"
-        "agy-proxy.service"
         "mcpx.service"
       ];
     };
