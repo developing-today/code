@@ -62,6 +62,18 @@ function emptyDay(date: string): BillingDayAggregate {
   };
 }
 
+/** Codespaces compute rows are machine-hours, but the hub's
+ * `codespaces-hours` metric is core-hours (src/saas-extract.ts):
+ * one hour on an N-core machine consumes N core-hours (GitHub's
+ * Codespaces pricing multiplier). The core count is parsed from the
+ * SKU ("Codespaces 2-core"); a SKU with no parseable core count is
+ * taken at face value (x1) rather than dropped. */
+function codespacesCoreMultiplier(sku: unknown): number {
+  if (typeof sku !== "string") return 1;
+  const m = /(\d+)\s*-core/i.exec(sku);
+  return m ? Number(m[1]) : 1;
+}
+
 /** Per-day aggregates from raw endpoint items, oldest day first. */
 export function aggregateBillingUsage(items: BillingUsageItem[]): BillingDayAggregate[] {
   const byDate = new Map<string, BillingDayAggregate>();
@@ -70,11 +82,18 @@ export function aggregateBillingUsage(items: BillingUsageItem[]): BillingDayAggr
     const date = item.date.slice(0, 10);
     const day = byDate.get(date) ?? emptyDay(date);
     const qty = typeof item.quantity === "number" ? item.quantity : 0;
-    if (item.product === "actions" && item.unitType === "Minutes") day.actionsMinutes += qty;
-    else if (item.product === "actions" && item.unitType === "GigabyteHours")
+    // Classification is case-insensitive: the endpoint's documented
+    // response example spells product/unitType "Actions"/"minutes"
+    // while live rows arrive as "actions"/"Minutes" — both must
+    // classify identically, never silently drop to money-only.
+    const product = typeof item.product === "string" ? item.product.toLowerCase() : "";
+    const unit = typeof item.unitType === "string" ? item.unitType.toLowerCase() : "";
+    if (product === "actions" && unit === "minutes") day.actionsMinutes += qty;
+    else if (product === "actions" && unit === "gigabytehours")
       day.actionsStorageGbHours += qty;
-    else if (item.product === "codespaces" && item.unitType === "Hours") day.codespacesHours += qty;
-    else if (item.product === "codespaces" && item.unitType === "GigabyteHours")
+    else if (product === "codespaces" && unit === "hours")
+      day.codespacesHours += qty * codespacesCoreMultiplier(item.sku);
+    else if (product === "codespaces" && unit === "gigabytehours")
       day.codespacesStorageGbHours += qty;
     // Gross/net span every product the endpoint reports, known or not.
     if (typeof item.grossAmount === "number") day.grossUsd += item.grossAmount;

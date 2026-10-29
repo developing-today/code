@@ -39,7 +39,7 @@ describe("aggregateBillingUsage", () => {
       netUsd: 0,
     });
     expect(days[1].actionsMinutes).toBe(0);
-    expect(days[1].codespacesHours).toBe(2.7);
+    expect(days[1].codespacesHours).toBe(5.4);
     expect(days[1].codespacesStorageGbHours).toBe(1.4);
     expect(days[1].grossUsd).toBe(0.52);
     expect(days[1].netUsd).toBe(0.02);
@@ -48,7 +48,7 @@ describe("aggregateBillingUsage", () => {
   test("month totals sum the days", () => {
     const totals = summarizeBillingDays(aggregateBillingUsage(ITEMS));
     expect(totals.actionsMinutes).toBe(109);
-    expect(totals.codespacesHours).toBe(2.7);
+    expect(totals.codespacesHours).toBe(5.4);
     expect(totals.grossUsd).toBe(1.99);
     expect(totals.netUsd).toBe(0.02);
   });
@@ -67,7 +67,7 @@ describe("recordsFromBillingUsage", () => {
     // billing-net is 0 on day 1 (fully discounted) — no record.
     expect(day1.some((r) => r.metricId === "billing-net")).toBe(false);
     const cs = records.find((r) => r.metricId === "codespaces-hours");
-    expect(cs).toMatchObject({ ts: "2026-10-02T12:00:00Z", serviceId: "github", unit: "hours", value: 2.7, source: "api", observedBy: "test" });
+    expect(cs).toMatchObject({ ts: "2026-10-02T12:00:00Z", serviceId: "github", unit: "hours", value: 5.4, source: "api", observedBy: "test" });
   });
 
   test("every derived record passes the store's validation", () => {
@@ -83,5 +83,29 @@ describe("snapshot unit extension", () => {
     expect(isSnapshotRecord({ ...base, unit: "hours" })).toBe(true);
     expect(isSnapshotRecord({ ...base, unit: "gb-hours" })).toBe(true);
     expect(isSnapshotRecord({ ...base, unit: "parsecs" })).toBe(false);
+  });
+});
+
+describe("codex regression cases (PR #2236 review)", () => {
+  test("documented casing (Actions/minutes) classifies, not just the live casing", () => {
+    // The exact spelling in GitHub's billing usage API example.
+    const days = aggregateBillingUsage([
+      { date: "2026-10-03", product: "Actions", sku: "Actions Linux", unitType: "minutes", quantity: 100, grossAmount: 0.8, netAmount: 0 },
+    ]);
+    expect(days[0].actionsMinutes).toBe(100);
+    const records = recordsFromBillingUsage(
+      [{ date: "2026-10-03", product: "Actions", sku: "Actions Linux", unitType: "minutes", quantity: 100, grossAmount: 0.8, netAmount: 0 }],
+      "test",
+    );
+    expect(records.some((r) => r.metricId === "actions-minutes" && r.value === 100)).toBe(true);
+  });
+
+  test("codespaces machine-hours convert to core-hours by the SKU core count", () => {
+    const days = aggregateBillingUsage([
+      { date: "2026-10-03", product: "codespaces", sku: "Codespaces 4-core", unitType: "Hours", quantity: 1.5, grossAmount: 0, netAmount: 0 },
+      { date: "2026-10-03", product: "codespaces", sku: "Codespaces prebuild", unitType: "Hours", quantity: 2, grossAmount: 0, netAmount: 0 },
+    ]);
+    // 1.5 machine-hours x 4 cores = 6 core-hours; unparseable SKU counts at face value.
+    expect(days[0].codespacesHours).toBe(8);
   });
 });
