@@ -216,6 +216,11 @@ type Server struct {
 	// value here -- "immediately stale" -- so it is not a sentinel.
 	Cache Cache
 
+	// SessionMetaKeys is the configured list of _meta keys, in order,
+	// that a client may name its own session with
+	// (transport.sessionMetaKeys). Nil uses DefaultSessionMetaKeys.
+	SessionMetaKeys func() []string
+
 	// MaxCompletions caps a completion/complete reply, read on every
 	// request because the setting behind it is hot. Nil, or a value <= 0,
 	// uses the built-in default.
@@ -311,6 +316,17 @@ func New(b Backend, name, version string) *Server {
 		Cache: Cache{List: defaults.ProtoListMaxAge, Read: defaults.ProtoReadMaxAge}}
 }
 
+// sessionMetaKeys resolves the configured key list, falling back to the
+// defaults when the server was built without one or the setting is empty.
+func (s *Server) sessionMetaKeys() []string {
+	if s != nil && s.SessionMetaKeys != nil {
+		if keys := s.SessionMetaKeys(); len(keys) > 0 {
+			return keys
+		}
+	}
+	return DefaultSessionMetaKeys
+}
+
 // Cache is the ttlMs mcpx attaches to the results 2026-07-28 makes
 // cacheable.
 type Cache struct {
@@ -329,6 +345,7 @@ func (s *Server) WithExtras(extras []Extra) *Server {
 		backend: s.backend, name: s.name, version: s.version,
 		PageSize: s.PageSize, MaxCompletions: s.MaxCompletions, Cache: s.Cache,
 		Timing: s.Timing, OnCancel: s.OnCancel, Origins: s.Origins, Passthrough: s.Passthrough,
+		SessionMetaKeys: s.SessionMetaKeys,
 		// Notify comes along. Dropping it silently turned off every push
 		// capability the moment a single extra tool existed, and a client
 		// cannot detect a server that declared nothing.

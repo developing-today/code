@@ -113,7 +113,8 @@
       "127.0.0.1",
       "::1"
     ],
-    "allowedOrigins": []
+    "allowedOrigins": [],
+    "sessionMetaKeys": ["dev.mcpx/session", "ai.opencode/sessionID"]
   },
   "consumer": {
     "disambiguate": "never",

@@ -109,10 +109,11 @@ type Defaults struct {
 	// Transport governs how mcpx's own MCP server behaves on the wire, as
 	// opposed to what it says: keep-alives, shutdown, who may connect.
 	Transport struct {
-		SSEKeepAlive   string   `json:"sseKeepAlive"`
-		StdioDrain     string   `json:"stdioDrain"`
-		LoopbackHosts  []string `json:"loopbackHosts"`
-		AllowedOrigins []string `json:"allowedOrigins"`
+		SSEKeepAlive    string   `json:"sseKeepAlive"`
+		StdioDrain      string   `json:"stdioDrain"`
+		LoopbackHosts   []string `json:"loopbackHosts"`
+		AllowedOrigins  []string `json:"allowedOrigins"`
+		SessionMetaKeys []string `json:"sessionMetaKeys"`
 	} `json:"transport"`
 
 	// CLI governs how the command line renders what it did not write a
@@ -580,6 +581,9 @@ var (
 	TransportLoopbackHosts = builtin.Transport.LoopbackHosts
 	// TransportAllowedOrigins are further Origins allowed to reach /mcp.
 	TransportAllowedOrigins = builtin.Transport.AllowedOrigins
+	// TransportSessionMetaKeys are the _meta keys, in order, that a client
+	// may name its own session with; the first present key wins.
+	TransportSessionMetaKeys = builtin.Transport.SessionMetaKeys
 
 	CatalogBudget = builtin.Catalog.Budget
 

@@ -20,6 +20,19 @@ func transportSettings() []Setting {
 				"origins here, scheme and port included: https://app.example.com.",
 		},
 		{
+			Path: "transport.sessionMetaKeys", Scope: ScopeDaemon, Kind: KindList,
+			Default: defaults.CSV(defaults.TransportSessionMetaKeys), Repeatable: true,
+			Commands: []string{"daemon"},
+			Name:     "Session meta keys",
+			Short:    "_meta keys, in order, a client may name its own session with",
+			Long: "A client names its own session in a request's _meta, and the " +
+				"first key in this list that carries a non-empty string wins. " +
+				"The default reads dev.mcpx/session (mcpx's own key) and then " +
+				"ai.opencode/sessionID, the key OpenCode v2 sends on every " +
+				"tools/call, so each OpenCode session gets its own scope " +
+				"instead of sharing the daemon's. See docs/spec/identity.md.",
+		},
+		{
 			Path: "transport.sseKeepAlive", Scope: ScopeDaemon, Kind: KindDuration,
 			Default:  defaults.Str(defaults.TransportSSEKeepAlive),
 			Commands: []string{"daemon"},
