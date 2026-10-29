@@ -51,8 +51,11 @@ use crate::store_traits::{ChainLog, SharedEventStore};
 use crate::sync_method::{Answer, Request, SyncMethod, SyncStats, SyncSupport, choose};
 use crate::time::unix_ms;
 
-/// The ALPN for sync sessions. This is P3.1's ID, so range sync joins as a method of the same
-/// session, and the first frame of every session is the [`Request`].
+/// The ALPN for sync sessions. The design intent is that range sync joins as a method of
+/// the same session, and the first frame of every session is the [`Request`]. Until that
+/// dispatch is wired (#179), this ALPN is the handshake session's alone: `serve`'s range
+/// sessions (P3.1) moved to their own ALPN, `/id-range-sync/1`
+/// ([`crate::event_store::sync::ALPN`]), so no second session shape shares this one.
 pub const SYNC_ALPN: &[u8] = b"/id-sync/1";
 
 /// How long one side may spend on a session. A peer that stops answering ends it at this deadline.

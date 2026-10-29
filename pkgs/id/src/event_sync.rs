@@ -1,4 +1,8 @@
-//! `/id-sync/1` sessions for the node's own event store, as served by `id serve` (#792).
+//! `/id-range-sync/1` sessions for the node's own event store, as served by `id serve` (#792).
+//!
+//! The ALPN is [`crate::event_store::sync::ALPN`], split from `log_sync`'s `/id-sync/1`
+//! in #179: these sessions open with a range flight, not the handshake's `Request`
+//! first frame, and the two shapes no longer share an ALPN.
 //!
 //! The session itself is the range sync in [`crate::event_store::sync`]: reconciliation,
 //! then both sides send the events the other lacks, and the receiving store's own ingest
@@ -216,6 +220,16 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("the accepting side never applied {id}");
+    }
+
+    /// #179: the range sessions served here must not share an ALPN with the
+    /// `log_sync` handshake sessions, whose first frame is a `Request` — a range
+    /// session opens with a range flight, and the two shapes misread each other.
+    #[test]
+    fn test_range_alpn_is_distinct_from_handshake_alpn() {
+        assert_ne!(ALPN, crate::log_sync::SYNC_ALPN);
+        assert_eq!(ALPN, b"/id-range-sync/1");
+        assert_eq!(crate::log_sync::SYNC_ALPN, b"/id-sync/1");
     }
 
     /// The #792 acceptance test: a document revision published (saved) on node A is

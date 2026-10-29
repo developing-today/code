@@ -1,4 +1,14 @@
-//! Range sync over the event store, on `/id-sync/1`.
+//! Range sync over the event store, on `/id-range-sync/1`.
+//!
+//! The ALPN is this protocol's alone (#179). Range sessions used to share `/id-sync/1`
+//! with the `LogSync` handshake sessions in [`crate::log_sync`], whose first frame is a
+//! `Request` - two different session shapes on one ALPN, so a peer opening with one
+//! shape was misread by an acceptor expecting the other. The split is deliberate and
+//! documented here rather than silent: `/id-sync/1` is the handshake session's, and a
+//! range session is never a method of it until `log_sync`'s `Range` dispatch is wired.
+//! Both the dialer and the acceptor take the ALPN from [`ALPN`], so the two sides move
+//! together; a peer running an older build does not serve `/id-range-sync/1`, its dial
+//! fails, and `serve` retries on its next interval.
 //!
 //! The sync set is every stored event and every fork proof header, one key each: the author,
 //! the sequence number, and the ID (see [`super::range`]). A session has four phases:
@@ -44,8 +54,10 @@ use super::{
 use crate::chain::{self, Event};
 use crate::pull_policy::{PullGate, PullRefused};
 
-/// The protocol ID. The wire version only; K and T are not in it.
-pub const ALPN: &[u8] = b"/id-sync/1";
+/// The protocol ID. The wire version only; K and T are not in it. Distinct from
+/// `log_sync`'s `/id-sync/1` since #179 (see the module docs): the two session shapes
+/// no longer share an ALPN.
+pub const ALPN: &[u8] = b"/id-range-sync/1";
 
 /// The most messages one side writes in reconciliation before it gives up.
 const MAX_FLIGHTS: u32 = 10_000;

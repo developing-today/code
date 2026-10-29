@@ -7,7 +7,7 @@
 //!
 //! The CLI opens one store directory, named by `--event-store`, and nodes on one machine that
 //! share the directory see each other's events, as they share the group log. Between machines,
-//! `id serve` moves the events: it shares this store with the `/id-sync/1` range-sync sessions
+//! `id serve` moves the events: it shares this store with the `/id-range-sync/1` range-sync sessions
 //! in [`crate::event_sync`], so a revision one node signs into its store is in the sync set the
 //! next session carries to a peer (#792).
 //!
