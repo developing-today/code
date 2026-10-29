@@ -651,33 +651,36 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
       try {
         const cookie = await kaneoCookie();
         const board = await kaneoBoard(cfg, cookie);
-        if (board.length > 0) {
-          provenance.board = "live (Kaneo; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
-          let merged = board;
-          if (cfg.projector.baseUrl) {
-            merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
-            provenance.board = "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
-          }
-          // In-flight lane (see inFlightBoardItems above): synthetic
-          // entries from the fleet feed's orchestration section — the
-          // same feed read this source already uses for quota and
-          // orchestration — merged ahead of the Kaneo cards. The lane
-          // fails soft: no feed / no section = the Kaneo board alone.
-          try {
-            const feed = await getFeed();
-            const orchSection = feed?.orchestration ? normalizeOrchestrationSection(feed.orchestration) : null;
-            if (orchSection) {
-              const inFlight = inFlightBoardItems(orchSection, merged);
-              if (inFlight.length) {
-                provenance.board += ` + orchestrator in-flight (${inFlight.length} lined-up, section ${orchSection.generatedAt})`;
-                merged = [...inFlight, ...merged];
-              }
-            }
-          } catch {
-            /* the Kaneo board still renders without the lane */
-          }
-          return merged;
+        // A successfully fetched board is live data even when the
+        // done policy (#1146) filters it to empty: falling through to
+        // fixtures would replace the real (empty) board with
+        // illustrative work and hide the orchestrator in-flight lane
+        // merged below. Fixtures are only for a failed fetch (catch).
+        provenance.board = "live (Kaneo; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
+        let merged = board;
+        if (cfg.projector.baseUrl) {
+          merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
+          provenance.board = "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         }
+        // In-flight lane (see inFlightBoardItems above): synthetic
+        // entries from the fleet feed's orchestration section — the
+        // same feed read this source already uses for quota and
+        // orchestration — merged ahead of the Kaneo cards. The lane
+        // fails soft: no feed / no section = the Kaneo board alone.
+        try {
+          const feed = await getFeed();
+          const orchSection = feed?.orchestration ? normalizeOrchestrationSection(feed.orchestration) : null;
+          if (orchSection) {
+            const inFlight = inFlightBoardItems(orchSection, merged);
+            if (inFlight.length) {
+              provenance.board += ` + orchestrator in-flight (${inFlight.length} lined-up, section ${orchSection.generatedAt})`;
+              merged = [...inFlight, ...merged];
+            }
+          }
+        } catch {
+          /* the Kaneo board still renders without the lane */
+        }
+        return merged;
       } catch (err) {
         provenance.board = `fixtures (kaneo unreachable: ${err instanceof Error ? err.message : err})`;
       }

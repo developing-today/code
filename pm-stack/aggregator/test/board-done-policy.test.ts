@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadConfig } from "../src/config.ts";
 import type { BoardItem } from "../src/model.ts";
+import { liveSource } from "../src/sources/live.ts";
 import { renderBoardBody } from "../src/render.ts";
 import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../src/board-policy.ts";
 
@@ -67,5 +72,92 @@ describe("board done policy (#1146)", () => {
     expect(html.indexOf("Live work")).toBeLessThan(html.indexOf("Done recently"));
     // The recent card lives inside the expander, not a full column.
     expect(html.indexOf("Done recently")).toBeLessThan(html.indexOf("Recent finish"));
+  });
+});
+
+describe("live board: fully filtered is still live (Codex review, PR #2430)", () => {
+  test("board() returns the in-flight lane, not fixtures, when every Kaneo card is filtered", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-done-filter-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    const nowIso = new Date().toISOString();
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: nowIso,
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        orchestration: {
+          version: 1,
+          generatedAt: nowIso,
+          runId: "orch-test",
+          provenance: { sources: ["test"], runId: "orch-test" },
+          tiers: { needsDrew: [], needsOrchestrator: [] },
+          dependencies: [],
+          goals: [
+            {
+              goalId: null,
+              goal: "Keep the four repos healthy",
+              momentum: "moving",
+              summary: "",
+              linedUp: [{ title: "Live orchestrator task", status: "in-progress", horizon: "today", horizonWhy: "test" }],
+              progressedSinceLastRun: [],
+              stalled: [],
+              gaps: [],
+            },
+          ],
+          actions: [],
+        },
+      }),
+    );
+    const oldDone = new Date(Date.now() - 30 * DAY).toISOString();
+    const recent = new Date(Date.now() - 1 * DAY).toISOString();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      const json = (body: unknown, headers: Record<string, string> = {}) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json", ...headers } });
+      if (url.includes("/api/auth/sign-in/email")) return json({}, { "set-cookie": "session=test; Path=/" });
+      if (url.includes("/api/workspace")) return json([{ id: "ws1" }]);
+      if (url.includes("/api/project?")) return json([{ id: "p1", slug: "code", name: "Code" }]);
+      if (url.includes("/api/task/tasks/"))
+        return json({
+          data: {
+            columns: [
+              {
+                id: "done",
+                name: "Done",
+                tasks: [
+                  { id: "t-old", number: 1, title: "Ancient finish", status: "done", createdAt: oldDone, updatedAt: oldDone },
+                  { id: "t-ret", number: 2, title: "ROADMAP Done table omits merged PRs", status: "done", createdAt: recent, updatedAt: recent },
+                ],
+              },
+            ],
+          },
+          pagination: { totalPages: 1 },
+        });
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    try {
+      const cfg = loadConfig({
+        ...Bun.env,
+        PM_AGG_SOURCE: "live",
+        PM_AGG_FEED_FILE: feedFile,
+        PM_PROJECTOR_URL: "off",
+        KANEO_URL: "http://kaneo.test",
+        KANEO_ADMIN_EMAIL: "test@example.com",
+        KANEO_ADMIN_PASSWORD: "test-password",
+      });
+      const src = liveSource(cfg);
+      const board = await src.board();
+      // Every Kaneo card was filtered (aged-out + retired class), so the
+      // board is exactly the orchestrator in-flight lane — never the
+      // fixture board a failed fetch would serve.
+      expect(board.map((b) => b.title)).toEqual(["Live orchestrator task"]);
+      expect(board[0]?.source).toBe("orchestrator");
+      expect(src.provenance().board).toContain("live (Kaneo");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
