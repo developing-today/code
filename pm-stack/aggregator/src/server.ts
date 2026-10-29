@@ -15,6 +15,7 @@ import { loadFeed } from "./feed.ts";
 import { buildHealth, recordRender, type HealthView } from "./health.ts";
 import { PAGES } from "./pages.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
+import { reconcileRoadmap, roadmapDriftReport } from "./roadmap-reconcile.ts";
 import type { DashComment, RefKey } from "./model.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
@@ -229,8 +230,12 @@ async function boardContext() {
 async function roadmapContext() {
   const rows = await source.roadmap();
   const refs = allRefs(rows);
-  const items = await source.items(refs);
-  return { rows, items };
+  const [items, pool] = await Promise.all([source.items(refs), source.projects().catch(() => [])]);
+  // #1144: reconcile the Grist rows against the Project's Kind=Epic
+  // pool items on every roadmap read, so the page flag and the JSON
+  // drift report always describe the same pass as the rows themselves.
+  const reconciliation = reconcileRoadmap(rows, pool);
+  return { rows, items, reconciliation };
 }
 
 async function attentionContext() {
@@ -476,10 +481,10 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/roadmap") {
-    const { rows, items } = await roadmapContext();
+    const { rows, items, reconciliation } = await roadmapContext();
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
-    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail()));
+    return html(renderRoadmap(rows, items, prov(), grain, await commentsStore.counts(), provDetail(), reconciliation));
   }
 
   if (path === "/quota") {
@@ -645,8 +650,8 @@ async function handler(req: Request): Promise<Response> {
     return json({ board, items: [...items.values()] });
   }
   if (path === "/api/roadmap.json") {
-    const { rows, items } = await roadmapContext();
-    return json({ rows, items: [...items.values()] });
+    const { rows, items, reconciliation } = await roadmapContext();
+    return json({ rows, items: [...items.values()], drift: roadmapDriftReport(reconciliation) });
   }
   if (path === "/api/quota.json") {
     // Extended in place for the hub (design §1.1): the pools/burn/choices
