@@ -53,6 +53,14 @@ const MAX_FLIGHTS: u32 = 10_000;
 /// Events the receiver decides in one write transaction.
 const BATCH_EVENTS: usize = 256;
 
+/// Bytes the receiver buffers in one write transaction.
+///
+/// The count bound alone does not bound memory: 256 events of a megabyte each decide a
+/// quarter gigabyte in one transaction. Whichever bound is reached first ends the batch, so a
+/// batch of small events keeps the throughput of [`BATCH_EVENTS`] while a batch of large ones
+/// stays bounded by bytes.
+const BATCH_BYTES: usize = 8 << 20;
+
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
 
@@ -590,6 +598,7 @@ async fn receive_data(
         need.len()
     );
     let mut pending: Vec<Event> = Vec::with_capacity(BATCH_EVENTS);
+    let mut pending_bytes: usize = 0;
     let mut tally = Tally::default();
     for _ in 0..count {
         let record = read_frame(recv).await?;
@@ -598,13 +607,25 @@ async fn receive_data(
             need.remove(event.id.as_bytes()),
             "an event arrived that was not expected, or arrived twice"
         );
+        // Measured on the wire frame, not the decoded event: the frame is what was
+        // buffered, and it is what the peer actually spent.
+        pending_bytes += record.len();
         pending.push(event);
-        if pending.len() == BATCH_EVENTS {
+        if batch_is_full(pending.len(), pending_bytes) {
             flush(store, &mut pending, now_ms, &mut tally, commits)?;
+            pending_bytes = 0;
         }
     }
     flush(store, &mut pending, now_ms, &mut tally, commits)?;
     Ok((count, tally))
+}
+
+/// Whether the batch holding `events` events and `bytes` bytes must commit now.
+///
+/// Extracted so the two bounds can be tested without a session: the count bound keeps small
+/// events cheap, the byte bound keeps one large event from riding in behind 255 small ones.
+fn batch_is_full(events: usize, bytes: usize) -> bool {
+    events >= BATCH_EVENTS || bytes >= BATCH_BYTES
 }
 
 fn flush(
@@ -633,6 +654,20 @@ fn flush(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::time::Duration;
+
+    #[test]
+    fn batch_bounds_end_on_count_or_bytes() {
+        // Below both bounds: keep buffering.
+        assert!(!batch_is_full(0, 0));
+        assert!(!batch_is_full(BATCH_EVENTS - 1, BATCH_BYTES - 1));
+        // The count bound still ends a batch of small events.
+        assert!(batch_is_full(BATCH_EVENTS, 1));
+        // The byte bound ends a batch that the count bound would let through: one
+        // event of BATCH_BYTES with 255 small ones behind it.
+        assert!(batch_is_full(1, BATCH_BYTES));
+        // One oversized event flushes on its own rather than waiting for 256 peers.
+        assert!(batch_is_full(1, BATCH_BYTES * 2));
+    }
 
     use super::*;
     use crate::chain::ChainExt;
