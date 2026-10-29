@@ -339,6 +339,55 @@ export async function withSnapshotStoreLock<T>(dir: string, fn: () => Promise<T>
   // rename-and-verify reclaim below, which is safe here because the
   // guard only ever serializes the *decision* to reclaim — the main
   // lock is re-verified inside the guard before anything is removed.
+  //
+  // Restore protocol (Codex round 3 on PR #2379): a reclaimer that
+  // renames the guard may find it moved a *live* guard (a faster
+  // reclaimer had already replaced the abandoned one). The moved
+  // guard is linked back — but if its owner released it while it was
+  // moved aside, the restored file would be an ownerless orphan and
+  // waiters would stall until it went stale. So releaseGuard leaves
+  // a release tombstone whenever it cannot remove its own guard
+  // file, and the restorer (and, as a backstop, any later acquirer
+  // that finds a tombstoned guard token) deletes a restored guard
+  // whose owner has tombstoned its release. A guard is only ever
+  // deleted under its owner's token, and a tombstone is only ever
+  // written by that token's owner at release time.
+  const releasedPathFor = (t: string): string =>
+    `${guardPath}.released-${t.replace(/[^a-zA-Z0-9.-]/g, "_")}`;
+  const restoreGuard = async (reclaimPath: string): Promise<void> => {
+    const movedToken = await readFile(reclaimPath, "utf8").catch(() => "");
+    try {
+      await link(reclaimPath, guardPath);
+    } catch {
+      await rm(reclaimPath, { force: true });
+      return; // a guard is already in place — the moved file is superseded
+    }
+    await rm(reclaimPath, { force: true });
+    if (!movedToken) return;
+    // Poll briefly for the owner's release tombstone: the owner
+    // releases the guard immediately after its (millisecond) critical
+    // section, so a tombstone appears promptly or not at all — in
+    // which case the owner is still holding the restored guard and
+    // will remove it itself at release.
+    for (let i = 0; i < 200; i++) {
+      const cur = await readFile(guardPath, "utf8").catch(() => "");
+      if (cur !== movedToken) return; // released or replaced — not ours to touch
+      const tomb = await stat(releasedPathFor(movedToken)).catch(() => null);
+      const lockToken = await readFile(lockPath, "utf8").catch(() => "");
+      if (tomb || lockToken === movedToken) {
+        // Tombstone: the owner released the guard while it was moved.
+        // Main-lock token: the owner uses the same token there and
+        // creates it immediately after releasing the guard, so its
+        // presence proves the same release. Either way the restored
+        // guard is ownerless.
+        const again = await readFile(guardPath, "utf8").catch(() => "");
+        if (again === movedToken) await rm(guardPath, { force: true });
+        await rm(releasedPathFor(movedToken), { force: true });
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  };
   const acquireGuard = async (): Promise<boolean> => {
     for (;;) {
       try {
@@ -346,6 +395,19 @@ export async function withSnapshotStoreLock<T>(dir: string, fn: () => Promise<T>
         return true;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        // Backstop orphan sweep: a guard whose owner tombstoned its
+        // release is ownerless (see restore protocol above) — remove
+        // it instead of waiting for it to go stale.
+        const heldToken = await readFile(guardPath, "utf8").catch(() => "");
+        if (heldToken && heldToken !== token) {
+          const tomb = await stat(releasedPathFor(heldToken)).catch(() => null);
+          if (tomb) {
+            const again = await readFile(guardPath, "utf8").catch(() => "");
+            if (again === heldToken) await rm(guardPath, { force: true });
+            await rm(releasedPathFor(heldToken), { force: true });
+            continue;
+          }
+        }
         let st;
         try {
           st = await stat(guardPath);
@@ -365,10 +427,7 @@ export async function withSnapshotStoreLock<T>(dir: string, fn: () => Promise<T>
           if (moved && moved.ino === st.ino && moved.mtimeMs === st.mtimeMs) {
             await rm(reclaimPath, { force: true });
           } else if (moved) {
-            await link(reclaimPath, guardPath).then(
-              () => rm(reclaimPath, { force: true }),
-              () => undefined,
-            );
+            await restoreGuard(reclaimPath);
           }
           continue;
         }
@@ -379,7 +438,14 @@ export async function withSnapshotStoreLock<T>(dir: string, fn: () => Promise<T>
   };
   const releaseGuard = async (): Promise<void> => {
     const cur = await readFile(guardPath, "utf8").catch(() => "");
-    if (cur === token) await rm(guardPath, { force: true });
+    if (cur === token) {
+      await rm(guardPath, { force: true });
+    } else {
+      // Our guard file was moved aside by a stale reclaimer (or is
+      // already gone): leave a release tombstone so whoever restores
+      // the moved file can tell it is an orphan, not a held guard.
+      await writeFile(releasedPathFor(token), token).catch(() => undefined);
+    }
   };
 
   for (;;) {
@@ -430,6 +496,15 @@ export async function withSnapshotStoreLock<T>(dir: string, fn: () => Promise<T>
   } finally {
     const cur = await readFile(lockPath, "utf8").catch(() => "");
     if (cur === token) await rm(lockPath, { force: true });
+    // Final orphan sweep: the guard is only ever held transiently
+    // during a reclaim, long before fn() ran, so a guard file still
+    // bearing our token here is a restored orphan (see the restore
+    // protocol above) — remove it and our release tombstone. If no
+    // restorer consumed the tombstone and no guard was restored,
+    // this just removes the tombstone.
+    const guardCur = await readFile(guardPath, "utf8").catch(() => "");
+    if (guardCur === token) await rm(guardPath, { force: true });
+    await rm(releasedPathFor(token), { force: true });
   }
 }
 

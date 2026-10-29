@@ -311,4 +311,42 @@ describe("withSnapshotStoreLock stale reclamation (PR #2379 Codex round 2)", () 
       }
     }
   });
+
+  test("both lockfiles abandoned: concurrent reclaimers all complete, never overlap", async () => {
+    // Regression (Codex round 3): when BOTH the main lock and the
+    // reclaim guard were abandoned, a reclaimer could rename a fresh
+    // guard another contender had just acquired and link it back
+    // after its owner had already released it — recreating an
+    // ownerless guard that stalled everyone else into a lock
+    // timeout. Seeding both files stale and running twelve
+    // concurrent 2 ms callbacks reproduced the timeout.
+    for (let trial = 0; trial < 20; trial++) {
+      const dir = await mkdtemp(join(tmpdir(), "snap-lock-"));
+      try {
+        const past = new Date(Date.now() - 10 * 60_000);
+        for (const name of [".snapshots.lock", ".snapshots.reclaim.guard"]) {
+          const f = join(dir, name);
+          await writeFile(f, "dead-holder");
+          await utimes(f, past, past);
+        }
+        let active = 0;
+        let maxActive = 0;
+        await Promise.all(
+          Array.from({ length: 12 }, () =>
+            withSnapshotStoreLock(dir, async () => {
+              active++;
+              maxActive = Math.max(maxActive, active);
+              await new Promise((r) => setTimeout(r, 2));
+              active--;
+            }),
+          ),
+        );
+        expect(maxActive).toBe(1);
+        // No guard, lock, reclaim, or tombstone debris is left behind.
+        expect(await readdir(dir)).toEqual([]);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+  }, 30_000);
 });
