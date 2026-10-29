@@ -301,22 +301,36 @@ func (s *Server) Listen(tcpPort int) error {
 	// failure here is fatal to Listen — a daemon that was asked for a
 	// tsnet route and silently does not have one would be found out by
 	// the first remote caller, not by its operator.
-	if hostname := s.set.String("daemon.tsnet.hostname"); hostname != "" {
-		tsLn, err := tsnetTransport{
-			hostname: hostname,
-			stateDir: filepath.Join(s.paths.State, "tsnet"),
-			authKey:  envTSNetAuthKey(),
-		}.Listen()
-		if err != nil {
-			unixLn.Close()
-			tcpLn.Close()
-			return err
-		}
-		s.tsnetLn = newConnListener(tsLn, &s.conns, nil)
+	if err := s.listenTSNet(); err != nil {
+		unixLn.Close()
+		tcpLn.Close()
+		return err
 	}
 	s.endpoint = "http://" + tcpLn.Addr().String()
 	s.started = time.Now()
 	return s.publish()
+}
+
+// listenTSNet starts the daemon's tsnet identity listener when
+// daemon.tsnet.hostname names one, and records it on the server. It is
+// shared by Listen, by a takeover successor (which must recreate the
+// listener: the node is in-process state and cannot be passed), and by
+// a handover that did not commit (which must give the route back).
+func (s *Server) listenTSNet() error {
+	hostname := s.set.String("daemon.tsnet.hostname")
+	if hostname == "" {
+		return nil
+	}
+	tsLn, err := tsnetTransport{
+		hostname: hostname,
+		stateDir: filepath.Join(s.paths.State, "tsnet"),
+		authKey:  envTSNetAuthKey(),
+	}.Listen()
+	if err != nil {
+		return err
+	}
+	s.tsnetLn = newConnListener(tsLn, &s.conns, nil)
+	return nil
 }
 
 // publish writes the daemon record clients find the daemon by.
