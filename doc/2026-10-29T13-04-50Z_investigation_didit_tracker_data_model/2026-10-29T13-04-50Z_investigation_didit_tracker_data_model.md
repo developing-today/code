@@ -24,12 +24,12 @@ service.
 Three findings shape the design:
 
 1. **Expectations are not events and must not be stored as if they were.** "Twice a day" and
-   "every 2–4h while awake" are *predicates over windows of recorded events*. They are declared
+   "every 2–4h while awake" are _predicates over windows of recorded events_. They are declared
    as data, evaluated offline against the event set, and never materialised as a mutable "due"
    row. This keeps them correct across devices with no server clock and no write contention.
 2. **One record with a subject set and per-subject detail slots** answers per-entity cardinality
    better than one event per entity. The dog-care examples force this: "walked both, one peed and
-   the other did not" is *one act* with divergent detail, and splitting it into two events both
+   the other did not" is _one act_ with divergent detail, and splitting it into two events both
    loses the shared act and doubles the write.
 3. **Opinions are separate, later events that name the record.** The substrate is append-only
    (`event_store/mod.rs:1-30`), so mutation is not on the table anyway — but the useful part is
@@ -61,7 +61,7 @@ pub struct Event {
 ```
 
 The header commits to the payload: "the header commits to its BLAKE3 hash, and the body itself is
-not part of the event" (`chain.rs:274-276`). So the body is *content-addressed by the signature*,
+not part of the event" (`chain.rs:274-276`). So the body is _content-addressed by the signature_,
 which matters twice: an app can store bodies separately from headers, and a projection can carry
 the header (and therefore authorship and time) without the body.
 
@@ -87,7 +87,7 @@ pub struct ChainExt {
 `kind` is a free string; existing kinds are namespaced by area — `tag.set` / `tag.clear`
 (`tag_claims.rs:34,37`), `device.add` / `device.revoke` (`groups/mod.rs:41,44`),
 `group.policy` (the S5 golden body, `chain.rs:733`). `after` is the causal frontier, so a record
-can name what it supersedes or responds to *without* an extra index.
+can name what it supersedes or responds to _without_ an extra index.
 
 **Decision D0 — the tracker is three new `kind` values, no new envelope fields.** `didit.entity`,
 `didit.record`, `didit.expectation`, `didit.opinion` (four, all `didit.`-prefixed). Reasons: the
@@ -162,7 +162,7 @@ same dog independently converge instead of forking the household's entity set. R
 events with `after` naming the previous one; the ID never changes, because records reference it.
 
 **Why not a tag?** Tag claims (`tag.set`/`tag.clear`, `tag_claims.rs:34-37`) give a live key→value
-index, and an entity *could* be a tag. It is a separate kind because an entity has a lifecycle
+index, and an entity _could_ be a tag. It is a separate kind because an entity has a lifecycle
 (retired, renamed, aliased) that a last-writer-wins tag cannot express, and because records must
 be able to reference an entity that a later `tag.clear` should not erase.
 
@@ -350,7 +350,7 @@ is that a subject-set query must test set membership rather than equality — a 
 { subjects: [dogA], act: "water", at: 1761814800, tz_offset_minutes: -300 }
 ```
 
-No `measure`, no `details`, no `note`. The record exists to say *it happened*. If a household
+No `measure`, no `details`, no `note`. The record exists to say _it happened_. If a household
 later wants amounts, they add a `measure` in new records; old records remain valid, and an
 expectation of `count_per_period` does not care about the measure at all.
 
@@ -400,14 +400,14 @@ records requires `Read`; writing requires `Write` (`groups/mod.rs:64`). No track
 All of these are filters over an event set the client already replicates; none needs a new index
 in the store, and each maps to a linear scan plus the existing range/waiting machinery.
 
-| Question | Shape |
-|---|---|
-| Did dogB go out today? | records where `act = "outside"` and `dogB ∈ subjects` and `at` in today's active span |
-| What did we do for dogA this week? | records with `dogA ∈ subjects`, grouped by `act`, ordered by `at` |
-| Which walks had a bad outcome? | records where `act = "walked"` and any `details[*].outcome` matches |
-| Was the twice-daily feed met on Tuesday? | `evaluate(expectations, records, tuesday)` |
-| What do people think of that walk? | opinions where `record_id ∈ about` |
-| One dog vs both | `len(subjects)` — cardinality is a field, not a count of events |
+| Question                                 | Shape                                                                                 |
+| ---------------------------------------- | ------------------------------------------------------------------------------------- |
+| Did dogB go out today?                   | records where `act = "outside"` and `dogB ∈ subjects` and `at` in today's active span |
+| What did we do for dogA this week?       | records with `dogA ∈ subjects`, grouped by `act`, ordered by `at`                     |
+| Which walks had a bad outcome?           | records where `act = "walked"` and any `details[*].outcome` matches                   |
+| Was the twice-daily feed met on Tuesday? | `evaluate(expectations, records, tuesday)`                                            |
+| What do people think of that walk?       | opinions where `record_id ∈ about`                                                    |
+| One dog vs both                          | `len(subjects)` — cardinality is a field, not a count of events                       |
 
 The set-membership cost of D4 is real but small: the tracker's working set is a household's
 records over weeks, not a global corpus.
@@ -432,7 +432,7 @@ detail". Two mechanisms already exist and the tracker should use both rather tha
 default a foreign app receives is summary. Because both are derived, no stored copy can drift, and
 redaction is a projection choice rather than a delete.
 
-What is *not* solved: summary projection still reveals `subjects` and `act`, which is a
+What is _not_ solved: summary projection still reveals `subjects` and `act`, which is a
 behavioural graph (who walked which dog when). That is a real privacy decision for the design
 round, not a schema defect — noted in §9.
 
@@ -458,7 +458,7 @@ No test here needs a running node; all of it is library-level.
 ## 9. Open questions for the design phase
 
 1. **Whose clock decides a window boundary?** A record carries the author's `at` and
-   `tz_offset_minutes`; the *expectation* carries an IANA `tz`. When a travelling author records
+   `tz_offset_minutes`; the _expectation_ carries an IANA `tz`. When a travelling author records
    at 23:00 UTC-8 for a household on UTC-5, "today" is ambiguous. Proposal: evaluate in the
    expectation's `tz`, using record `at` converted to it, and let a `tz_offset_minutes` disagreeing
    with the expectation's tz be visible in the UI rather than silently coerced. This is the one
