@@ -5,6 +5,8 @@
 # using .github/scripts/id-bench-compare.sh. The report lands in the job
 # summary and as a run artifact.
 #
+# Main tier only (Phase 2, #1781): benchmarks no longer run on PRs.
+#
 # NON-BLOCKING BY DESIGN: this workflow is separate from the required
 # "nix flake check" gate in id-check.yml, the bench step is
 # continue-on-error, and the compare script always exits 0. A regression
@@ -15,14 +17,11 @@
 
 name: id bench
 
+# CI tier policy: see .github/ci-policy.md
+
 on:
   push:
     branches: [main]
-    paths:
-      - "pkgs/id/**"
-      - ".github/workflows/id-bench.yml"
-      - ".github/scripts/id-bench-compare.sh"
-  pull_request:
     paths:
       - "pkgs/id/**"
       - ".github/workflows/id-bench.yml"

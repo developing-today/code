@@ -11,6 +11,11 @@ on:
 permissions:
   contents: write
 
+# CI tier policy: see .github/ci-policy.md
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dump_contexts_to_log:
     runs-on: ubuntu-latest
