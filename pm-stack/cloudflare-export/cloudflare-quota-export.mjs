@@ -45,6 +45,17 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const SOURCE = "file-export/cloudflare";
+/**
+ * Per-request deadline for Cloudflare API calls. The systemd unit
+ * (cloudflare-quota-export.service) kills the exporter at
+ * TimeoutStartSec=120, and Bun's default fetch idle timeout is five
+ * minutes - without an explicit bound, a stalled request is killed
+ * together with the process before main() can write its failure
+ * document, leaving a stale latest.json inside the aggregator's
+ * freshness window. 30s leaves room for the run's sequential calls
+ * plus the failure write.
+ */
+export const API_REQUEST_TIMEOUT_MS = 30_000;
 export const API_BASE = "https://api.cloudflare.com/client/v4";
 /** The analytics scopes the day-to-day token needs for this collector. */
 export const ANALYTICS_SCOPES = [
@@ -286,6 +297,7 @@ async function apiJson(path, token, init = {}) {
   try {
     res = await fetch(`${API_BASE}${path}`, {
       ...init,
+      signal: AbortSignal.timeout(API_REQUEST_TIMEOUT_MS),
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     });
   } catch (e) {

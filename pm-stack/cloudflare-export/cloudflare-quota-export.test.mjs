@@ -6,6 +6,7 @@ import {
   classifyBilling,
   classifyR2,
   cycleStartUtc,
+  API_REQUEST_TIMEOUT_MS,
   failureDocument,
   foldKv,
   parseGraphqlUsage,
@@ -35,6 +36,14 @@ const ACCOUNT = {
 };
 const NOW = new Date("2026-10-29T10:00:00Z");
 const START = cycleStartUtc(NOW);
+
+test("API_REQUEST_TIMEOUT_MS: bounded below the 120s service deadline", () => {
+  // cloudflare-quota-export.service has TimeoutStartSec=120; a stalled
+  // request must abort well before that so main() can write a failure
+  // document instead of being killed with a stale latest.json in place.
+  assert.ok(API_REQUEST_TIMEOUT_MS > 0);
+  assert.ok(API_REQUEST_TIMEOUT_MS < 120_000);
+});
 
 test("cycleStartUtc: first of the month, UTC", () => {
   assert.equal(START.toISOString(), "2026-10-01T00:00:00.000Z");
