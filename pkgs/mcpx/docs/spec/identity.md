@@ -1,7 +1,7 @@
 # Who an MCP request is from
 
 mcpx's own MCP server passes every call on to an upstream server, and which
-*instance* of that server answers depends on its `scope`: one per session, per
+_instance_ of that server answers depends on its `scope`: one per session, per
 cwd, per pid, per repository, or per call. So every request has to answer the
 question "who is asking?", and the answer has to come from the transport, not
 from the process.
@@ -27,12 +27,12 @@ arrived on, and puts it in the request's context
 (`internal/mcpserver/identity.go`). The backend builds the daemon call context
 from that (`mcpCaller` in `internal/cli/serve.go`):
 
-| request arrives on | identity | session | cwd / pid |
-| --- | --- | --- | --- |
-| stdio (`mcpx serve`) | the process | `$MCPX_SESSION_ID`, else `mcp-<pid>` | the process's |
-| a legacy Streamable HTTP session | its `Mcp-Session-Id` | `mcp-<session id>` | unknown |
-| any request carrying a session key from `transport.sessionMetaKeys` (default: `_meta["dev.mcpx/session"]`, then `_meta["ai.opencode/sessionID"]`) | that name | the name, verbatim | unknown |
-| a 2026-07-28 request without it, or a legacy POST outside a session | none | none: a fresh call id | unknown |
+| request arrives on                                                                                                                                | identity             | session                              | cwd / pid     |
+| ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ------------------------------------ | ------------- |
+| stdio (`mcpx serve`)                                                                                                                              | the process          | `$MCPX_SESSION_ID`, else `mcp-<pid>` | the process's |
+| a legacy Streamable HTTP session                                                                                                                  | its `Mcp-Session-Id` | `mcp-<session id>`                   | unknown       |
+| any request carrying a session key from `transport.sessionMetaKeys` (default: `_meta["dev.mcpx/session"]`, then `_meta["ai.opencode/sessionID"]`) | that name            | the name, verbatim                   | unknown       |
+| a 2026-07-28 request without it, or a legacy POST outside a session                                                                               | none                 | none: a fresh call id                | unknown       |
 
 The rows are in precedence order except that an explicit session key
 wins over the connection's own identity. When a request carries more
