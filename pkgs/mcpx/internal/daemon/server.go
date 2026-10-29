@@ -323,7 +323,7 @@ func (s *Server) listenTSNet() error {
 	}
 	tsLn, err := tsnetTransport{
 		hostname: hostname,
-		stateDir: filepath.Join(s.paths.State, "tsnet"),
+		stateDir: s.tsnetStateDir(),
 		authKey:  envTSNetAuthKey(),
 	}.Listen()
 	if err != nil {
@@ -331,6 +331,31 @@ func (s *Server) listenTSNet() error {
 	}
 	s.tsnetLn = newConnListener(tsLn, &s.conns, nil)
 	return nil
+}
+
+// tsnetStateDir is where this daemon's tsnet node keeps its identity
+// (its node keys) across restarts. It is keyed by the daemon's
+// configuration identity -- the same config file-set fingerprint that
+// keys the socket and info file in Paths.ForConfig. Paths.ForConfig
+// keys Socket and Info but leaves State shared, so without this key
+// two daemons serving different configurations out of one state
+// directory would share one node-state directory: the second daemon
+// would load the first daemon's node keys, tsnet would ignore its
+// auth key (persisted state wins), and both would compete for one
+// tailnet identity. tsnet requires a unique state directory per
+// service. The key is the file set, not the contents, so it is stable
+// across a takeover: the successor runs the same configuration and
+// lands on the same directory, keeping the identity. A daemon with no
+// configuration keeps the unkeyed directory -- it is the only daemon
+// its state directory can hold.
+func (s *Server) tsnetStateDir() string {
+	dir := filepath.Join(s.paths.State, "tsnet")
+	if cfg := s.currentConfig(); cfg != nil {
+		if key := FingerprintConfig(cfg.Sources); key != "" {
+			dir = filepath.Join(dir, key)
+		}
+	}
+	return dir
 }
 
 // publish writes the daemon record clients find the daemon by.

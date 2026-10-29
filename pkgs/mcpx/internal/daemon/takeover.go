@@ -453,6 +453,13 @@ func (s *Server) closeTSNetNode() {
 		return
 	}
 	s.tsnetLn = nil
+	// Stop the tracked wrapper before closing the node. stop marks the
+	// listener stopped, so the serve loop's blocked Accept converts the
+	// tsnet listener-close error to http.ErrServerClosed instead of
+	// forwarding it to httpErr, where Serve would treat it as fatal and
+	// shut this predecessor down (socket and info file included) while
+	// the successor is still committing.
+	cl.stop()
 	if err := tl.CloseNode(); err != nil {
 		s.logger.Printf("takeover: closing the tsnet node: %v", err)
 	}
