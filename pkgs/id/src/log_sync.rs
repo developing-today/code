@@ -395,10 +395,7 @@ async fn run_range_sync(
 }
 
 /// Writes one handshake message as a frame on the raw stream.
-async fn send_message<T: Serialize>(
-    send: &mut SendStream,
-    message: &T,
-) -> Result<(), SyncError> {
+async fn send_message<T: Serialize>(send: &mut SendStream, message: &T) -> Result<(), SyncError> {
     let bytes =
         postcard::to_allocvec(message).map_err(|error| SyncError::Frame(error.to_string()))?;
     write_frame(send, &bytes)
@@ -1521,7 +1518,11 @@ mod tests {
         .unwrap();
         let ranged_answered = results.recv().await.unwrap().unwrap();
         assert_eq!(ranged.method, SyncMethod::Range);
-        assert_eq!(ranged_answered.method, SyncMethod::Range, "both sides ran Range");
+        assert_eq!(
+            ranged_answered.method,
+            SyncMethod::Range,
+            "both sides ran Range"
+        );
         assert_eq!(
             ranged.received.accepted, 5,
             "B lacked bob 0 to 3 and alice 5"

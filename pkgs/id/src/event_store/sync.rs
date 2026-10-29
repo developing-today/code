@@ -297,7 +297,15 @@ pub(crate) async fn sync_on_streams<S: RangeStore>(
     now_ms: u64,
 ) -> Result<Outcome> {
     run_session(
-        store, send, recv, initiator, params, now_ms, Cut::Never, None, None,
+        store,
+        send,
+        recv,
+        initiator,
+        params,
+        now_ms,
+        Cut::Never,
+        None,
+        None,
     )
     .await
 }
@@ -482,9 +490,7 @@ async fn read_flight(recv: &mut RecvStream, budget: &mut ReadBudget) -> Result<V
 }
 
 /// Locks the store for one step. The lock is never held across an await.
-fn lock<'a, 'b, S: RangeStore>(
-    store: &'a Mutex<&'b mut S>,
-) -> Result<MutexGuard<'a, &'b mut S>> {
+fn lock<'a, 'b, S: RangeStore>(store: &'a Mutex<&'b mut S>) -> Result<MutexGuard<'a, &'b mut S>> {
     store
         .lock()
         .map_err(|_err| anyhow!("the event store lock is poisoned"))
@@ -564,15 +570,7 @@ async fn run_session<S: RangeStore>(
     // 1. Reconciliation. The same loop as S7's session, with each message as frames.
     let mut learned: Vec<Id> = Vec::new();
     if initiator {
-        write_flight(
-            send,
-            conn,
-            &mut out,
-            &[party.full_range()],
-            params,
-            &cut,
-        )
-        .await?;
+        write_flight(send, conn, &mut out, &[party.full_range()], params, &cut).await?;
     }
     loop {
         let incoming = read_flight(recv, &mut budget).await?;
@@ -736,7 +734,7 @@ fn flush<S: RangeStore>(
     let events = std::mem::take(pending);
     let committed = events.len();
     let mut guard = lock(store)?;
-    apply_batch(&mut guard, events, now_ms, tally)?;
+    apply_batch(&mut **guard, events, now_ms, tally)?;
     // Only a batch that committed is reported: an error above ends the batch, and
     // nothing in it commits.
     if let Some(signal) = commits {
