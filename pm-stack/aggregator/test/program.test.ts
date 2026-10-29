@@ -248,6 +248,9 @@ describe("project registry", () => {
     ]) {
       expect(cloudNext).toContain(svc);
     }
+    // boats.cloud caveat (CodeRabbit nitpick on PR #2406): it stays unverified and untouched.
+    expect(cloudNext).toContain("unverified");
+    expect(cloudNext).toContain("untouched");
     const cloudLongTerm = (cloud.editorial?.longTerm ?? []).map((e) => `${e.title} ${e.detail}`).join("\n");
     expect(cloudLongTerm).toContain("Egress offload");
     expect(cloudLongTerm).toContain("zero-egress");
