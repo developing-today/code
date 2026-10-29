@@ -297,14 +297,23 @@ the pipeline (§5) reports them as flags, not verdicts of guilt.
   precisely for this test), and is restricted to patterns that remain
   distinguishable after quantization: long runs of exact-boundary inputs
   *combined with* response latencies that are impossibly uniform or that
-  react to events before the observed RTT allowed them to be known (§4.2,
-  third bullet). Where only tick-quantized records exist, this flag is
+  react to events before observed one-way delivery timing allowed
+  them to be known (§4.2, third bullet). Where only tick-quantized records exist, this flag is
   reported as `INCONCLUSIVE — no sub-tick timing`, not as a positive.
 - **Aim/input geometry anomalies:** snap-to-target angular velocities,
   correction patterns that track information the player could not have
-  had yet at the observed RTT (wallhack/aimbot tell, and the one place
-  the RTT metadata is decisive: input that reacts to an event *before*
-  that event could have reached the player is impossible, not unlikely).
+  had yet when it could first have reached them (wallhack/aimbot tell).
+  **Correction (Codex review, PR #2252):** observed RTT is *not* a lower
+  bound on one-way event delivery — paths are asymmetric (a 10 ms
+  observer-to-player leg plus a 190 ms return leg yields a 200 ms RTT,
+  yet an honest player can receive the event and produce an input after
+  ~110 ms including reaction time). The "reacted before the event could
+  have arrived" inference is therefore valid only from **independently
+  observed event-delivery and input-arrival timestamps with conservative
+  one-way bounds** (witness/relay observation, §4.1 metadata), never from
+  RTT alone; with only RTT samples this flag is reported
+  `INCONCLUSIVE — no one-way delivery timing`, like the tick-quantized
+  case above.
 - **Entropy collapse:** input streams that are statistically too regular
   (macro/script) or identical across matches/accounts (replayed or shared
   input streams wearing different identities — the hash chain makes the
@@ -332,8 +341,10 @@ flowchart LR
   C -->|fail| X1[Verdict: INVALID RECORD]
   C -->|pass| D[L2 Deterministic replay<br/>pinned build, log-driven clock,<br/>checkpoint comparison]
   D -->|divergence| X2[Verdict: REPLAY DIVERGES<br/>at tick T - result not<br/>reproduced]
-  D -->|reproduced| E[Result claim confirmed<br/>as output of the inputs]
+  D -->|full-history replay reproduced| E[Result claim confirmed<br/>as output of the inputs]
+  D -->|sampled segments reproduced| E2[Verdict: PARTIALLY VERIFIED<br/>checked intervals listed -<br/>NOT a result confirmation]
   E --> F[L3 Plausibility screen<br/>observed metadata +\br/>input statistics vs<br/>stakes profile]
+  E2 --> F
   F -->|flags| X3[Verdict: TECHNICALLY VALID,<br/>FLAGGED - flags listed,<br/>human review]
   F -->|no flags| X4[Verdict: TECHNICALLY VALID,<br/>NO FLAGS at depth D]
   X4 --> G[Attestation hand-off<br/>to #2037/#2039 result flow]
@@ -349,13 +360,23 @@ Properties the sketch is enforcing:
 - **Tiered depth at L2/L3.** Full replay for disputes and prize matches;
   checkpoint-sampled segment replay for routine spot checks (possible
   only because §2.1 put snapshots in the log); L3 screen depth scales
-  with the stakes field in the metadata.
+  with the stakes field in the metadata. **Correction (Codex review,
+  PR #2252):** the two depths produce *different verdicts*. Sampled
+  replay success is `PARTIALLY VERIFIED — intervals <list>`: it does not
+  establish that the snapshots follow from genesis, or that the final
+  result follows from the full input history — a signed log can carry a
+  fabricated snapshot after an invalid transition and still reproduce
+  every sampled segment outside it (L1 authenticates the submitted
+  bytes, not their state-machine validity). `Result claim confirmed` is
+  reserved for replay covering the complete history, or an independently
+  verified prefix plus full replay of the remainder.
 - **The auditor is a role, not a server.** Anyone with the log and the
   pinned build can re-run L0–L2 — public verifiability is the point of
   doing this in ID instead of on a central server. L3's sealed metadata
   is the only part restricted to the designated auditor/witness.
-- **Verdict vocabulary is closed and honest** (the four X-boxes above,
-  plus `INCONCLUSIVE — <missing input>`). In particular there is no
+- **Verdict vocabulary is closed and honest** (the verdict boxes above,
+  plus `PARTIALLY VERIFIED — intervals <list>` and
+  `INCONCLUSIVE — <missing input>`). In particular there is no
   "PROVEN FAIR" verdict, and "FLAGGED" names the flags and their
   false-positive context instead of pronouncing cheating.
 - **Hand-off, not absorption:** the audit output (verdict + evidence
