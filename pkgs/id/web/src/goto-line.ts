@@ -35,10 +35,17 @@ function getLineStarts(view: EditorView): number[] {
     if (!node.isTextblock) return true; // descend into block containers (lists, quotes, cells…)
     const contentStart = pos + 1;
     starts.push(contentStart);
-    const text = node.textContent;
-    for (let i = 0; i < text.length; i++) {
-      if (text[i] === "\n") starts.push(contentStart + i + 1);
-    }
+    // ⚡ Bolt optimization: iterate inline children with node.forEach to avoid string allocations
+    // from node.textContent and accurately account for hard_break nodes.
+    node.forEach((child, offset) => {
+      if (child.isText && child.text) {
+        for (let i = 0; i < child.text.length; i++) {
+          if (child.text[i] === "\n") starts.push(contentStart + offset + i + 1);
+        }
+      } else if (child.type.name === "hard_break") {
+        starts.push(contentStart + offset + child.nodeSize);
+      }
+    });
     return false; // inline content cannot contain another textblock
   });
   return starts;
@@ -97,10 +104,13 @@ function openGotoLine(view: EditorView): void {
           // the user can correct it; the cursor does not move.
           const raw = (dialogInput?.value ?? "").trim();
           const line = Number(raw);
-          const lineCount = activeView ? getLineCount(activeView) : 0;
+          // ⚡ Bolt optimization: compute lineStarts once instead of calling getLineCount()
+          // and getLineStartPos() sequentially, which caused redundant O(N) AST traversals.
+          const lineStarts = activeView ? getLineStarts(activeView) : [];
+          const lineCount = Math.max(1, lineStarts.length);
           const pos =
-            activeView && raw !== "" && Number.isInteger(line) && line >= 1 && line <= lineCount
-              ? getLineStartPos(activeView, line)
+            raw !== "" && Number.isInteger(line) && line >= 1 && line <= lineCount
+              ? lineStarts[line - 1] ?? null
               : null;
           if (pos === null || !activeView) {
             dialogInput?.select();
