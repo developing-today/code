@@ -216,6 +216,19 @@ impl WorldClient {
         })
     }
 
+    /// Open another session on this client's connection, addressed to the
+    /// same world as this client. Admin frames are served one operation per
+    /// stream (the session ends with the reply), so a caller performing
+    /// several operations in sequence - `id world apply` is one - opens a
+    /// fresh session per operation instead of reusing a finished stream.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the host refuses another stream on this connection.
+    pub async fn fresh_session(&self) -> Result<Self> {
+        self.open_session(self.world.as_deref()).await
+    }
+
     /// Address this client's frames to `world` instead of the host's default.
     #[must_use]
     pub fn with_world(mut self, world: Option<&str>) -> Self {
@@ -1485,6 +1498,79 @@ mod tests {
         client_ep.close().await;
         router.shutdown().await.unwrap();
         ep.close().await;
+    }
+
+    /// #807: `id world apply`'s hash path - download a stored module as
+    /// admin, then install the bytes - sequenced on ONE connection. Admin
+    /// frames are served one operation per stream, so each operation runs
+    /// on a fresh session; on a reused stream the install would write to a
+    /// session the host already finished.
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn apply_hash_path_sequences_fresh_sessions_on_one_connection() {
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm2 = include_bytes!("../examples/roc-chat/roc-chat.wasm");
+        let ep = endpoint().await;
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+        let service =
+            WorldService::new(world, Some("admin".to_owned())).with_blob_store(blobs.clone());
+        let router = Router::builder(ep.clone())
+            .accept(WORLD_ALPN, WorldProtocol::new(service))
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        let client_ep = endpoint().await;
+        let client = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+
+        let hash = client
+            .fresh_session()
+            .await
+            .unwrap()
+            .install_wasm("admin", wasm, 7)
+            .await
+            .unwrap();
+        let hash2 = client
+            .fresh_session()
+            .await
+            .unwrap()
+            .install_wasm("admin", wasm2, 7)
+            .await
+            .unwrap();
+        assert_ne!(hash, hash2);
+
+        let stored = client
+            .fresh_session()
+            .await
+            .unwrap()
+            .download_module_admin("admin", &hash)
+            .await
+            .unwrap();
+        assert_eq!(stored, wasm.as_slice());
+        let reinstalled = client
+            .fresh_session()
+            .await
+            .unwrap()
+            .install_wasm("admin", &stored, 7)
+            .await
+            .unwrap();
+        assert_eq!(reinstalled, hash);
+
+        client.close();
+        client_ep.close().await;
+        ep.close().await;
+        router.shutdown().await.unwrap();
     }
 
     #[cfg(feature = "sandbox")]

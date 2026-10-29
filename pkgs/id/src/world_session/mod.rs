@@ -681,25 +681,40 @@ impl WorldService {
         Ok(bytes.to_vec())
     }
 
-    /// Read a stored module's bytes by hash, active or not, from the blob
-    /// store every install pins into. The caller must already have
+    /// Read a stored module's bytes by hash, active or not: from the blob
+    /// store Wasm installs pin into, or from the module directory native
+    /// installs are saved to. The caller must already have
     /// authenticated as an admin. A hash the host never installed is
     /// unavailable: the bytes of a module it does not hold cannot be
     /// conjured, and the error says so by kind.
     pub async fn stored_module_bytes(&self, expected_hash: &str) -> Result<Vec<u8>, InstallError> {
-        let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?;
         let hash: iroh_blobs::Hash = expected_hash
             .parse()
             .map_err(|_| InstallError::InvalidUpload)?;
-        let bytes = blobs
-            .blobs()
-            .get_bytes(hash)
-            .await
-            .map_err(|_| InstallError::Unavailable)?;
-        if bytes.len() > MAX_WORLD_MODULE_BYTES || module_hash(&bytes) != expected_hash {
-            return Err(InstallError::Unavailable);
+        // Wasm installs are pinned in the blob store; native installs are
+        // saved only in the module directory (they are never offered for
+        // peer download), so a stored native module is read from there.
+        if let Some(blobs) = self.blobs.as_ref()
+            && let Ok(bytes) = blobs.blobs().get_bytes(hash).await
+            && bytes.len() <= MAX_WORLD_MODULE_BYTES
+            && module_hash(&bytes) == expected_hash
+        {
+            return Ok(bytes.to_vec());
         }
-        Ok(bytes.to_vec())
+        if let Some(modules) = self.module_dir.clone() {
+            let requested = expected_hash.to_owned();
+            let loaded = tokio::task::spawn_blocking(move || modules.load(&requested))
+                .await
+                .map_err(|_| InstallError::Unavailable)?
+                .map_err(|_| InstallError::Unavailable)?;
+            if loaded.len() <= MAX_WORLD_MODULE_BYTES {
+                return Ok(loaded);
+            }
+        }
+        if self.blobs.is_none() && self.module_dir.is_none() {
+            return Err(InstallError::Disabled);
+        }
+        Err(InstallError::Unavailable)
     }
 
     /// Hash of the currently active module, if the world runs one.
