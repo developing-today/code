@@ -20,6 +20,7 @@ import type {
   SessionRecord,
   SnapshotRecord,
 } from "./model.ts";
+import type { UnmatchedCharge } from "./charges-match.ts";
 
 export interface FleetFeed {
   version: 1;
@@ -43,6 +44,10 @@ export interface FleetFeed {
   payg?: PaygLine[];
   /** Hub charges evidence (§2.4), from the same dated records. */
   charges?: ChargeRow[];
+  /** Unmatched SaaS/AI-looking charges surfaced for classification
+   * (#1057): only charges the collector has never surfaced before
+   * (persisted state decides), so each appears exactly once. */
+  chargesUnmatched?: UnmatchedCharge[];
   /** Hub subscriptions strip rows (Q5: renewal-only). */
   subscriptions?: { name: string; plan: string; renewsAt: string | null }[];
   /** Usage snapshot records (hub §4 writers): derived by the collector

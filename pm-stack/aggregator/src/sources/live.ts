@@ -817,7 +817,16 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: buildAttentionFlags(feed.quota, partial),
+          attention: [
+            ...buildAttentionFlags(feed.quota, partial),
+            ...(feed.chargesUnmatched ?? []).map((u) => ({
+              kind: "unmatched-charge" as const,
+              label: `Unmatched SaaS charge - ${u.merchant}`,
+              detail: `${u.amountUsd.toFixed(2)} on ${u.at} via ${u.source === "plaid" ? "Plaid" : "Gmail alert"} - classify it or add the service to the hub registry.`,
+              href: "#quota",
+              severity: u.amountUsd,
+            })),
+          ],
           domains,
           history,
         };

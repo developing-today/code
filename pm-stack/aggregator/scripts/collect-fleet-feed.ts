@@ -52,6 +52,13 @@
 // and check-usage append records there; each collection drains it into
 // the feed's snapshots field for the laptop store to ingest),
 // SUPABASE_PROJECT_REF (default: the muse-dev project),
+// CHARGES_EXPORT_PATH (the #1057 charges producer export —
+// ChargeCandidate[] JSON written by a Muse-side producer holding
+// the Plaid/Gmail connectors; when present and parseable, the hub
+// charges section comes from the auto-matcher in src/charges-match.ts
+// instead of the prose extractor), CHARGES_SURFACED_STATE_PATH (the
+// persisted keys of unmatched SaaS charges already surfaced in the
+// feed, so each one surfaces exactly once),
 // AA_OPENCODE_CONFIG_PATH (default: the repo's .opencode/opencode.jsonc).
 import { execFile } from "node:child_process";
 import { access, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
@@ -73,6 +80,13 @@ import type {
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
+import { matchCharges, type UnmatchedCharge } from "../src/charges-match.ts";
+import {
+  parseChargeCandidatesExport,
+  parseSurfacedState,
+  planUnmatchedSurfacing,
+  serviceRefsFromSaas,
+} from "../src/charges-collect.ts";
 import type { ChargeRow, PaygLine, SaasService, SnapshotRecord } from "../src/model.ts";
 import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from "../src/snapshot-records.ts";
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
@@ -102,6 +116,9 @@ const dnsRegisterPath =
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
 const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
+const chargesExportPath = process.env.CHARGES_EXPORT_PATH ?? join(HOME, "atlas/charges-export/latest.json");
+const chargesSurfacedStatePath =
+  process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
@@ -380,6 +397,8 @@ async function main(): Promise<void> {
   let saas: SaasService[] | undefined;
   let payg: PaygLine[] | undefined;
   let charges: ChargeRow[] | undefined;
+  let chargesUnmatched: UnmatchedCharge[] | undefined;
+  let pendingSurfacedKeys: string[] | undefined;
   let subscriptions: FleetFeed["subscriptions"];
   if (quotaViewText) {
     let registryText = "";
@@ -391,6 +410,23 @@ async function main(): Promise<void> {
     saas = extractSaasServices(quotaViewText);
     payg = extractPaygLines(quotaViewText, registryText);
     charges = extractCharges(quotaViewText, registryText);
+    // --- charges auto-match (#1057): a producer export, when present
+    // and parseable, replaces the prose evidence with matched rows ---
+    try {
+      const candidates = parseChargeCandidatesExport(await readFile(chargesExportPath, "utf8"));
+      if (candidates && saas) {
+        const matched = matchCharges(candidates, serviceRefsFromSaas(saas));
+        charges = matched.rows;
+        const stateText = await readFile(chargesSurfacedStatePath, "utf8").catch(() => "");
+        const plan = planUnmatchedSurfacing(matched.unmatchedSaas, parseSurfacedState(stateText));
+        chargesUnmatched = plan.fresh;
+        pendingSurfacedKeys = plan.nextKeys;
+      } else if (candidates === null) {
+        console.error("collector: charges export unparseable; keeping prose-extracted charges");
+      }
+    } catch {
+      // No export yet: prose extraction stays in charge (fail-soft).
+    }
     subscriptions = extractSubscriptions(quotaViewText);
   }
 
@@ -563,12 +599,25 @@ async function main(): Promise<void> {
     ...(saas ? { saas } : {}),
     ...(payg ? { payg } : {}),
     ...(charges ? { charges } : {}),
+    ...(chargesUnmatched?.length ? { chargesUnmatched } : {}),
     ...(subscriptions ? { subscriptions } : {}),
     ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
     ...(projects ? { projects } : {}),
     aa,
   };
   await writeFile(outPath, JSON.stringify(feed, null, 2));
+  if (pendingSurfacedKeys) {
+    await writeFile(chargesSurfacedStatePath, JSON.stringify({ surfacedKeys: pendingSurfacedKeys }, null, 2)).catch(
+      (err) => console.error("collector: could not persist charges surfaced state (" + err + "); unmatched charges may re-surface"),
+    );
+    console.log(
+      "collector: charges auto-match - " +
+        (charges?.length ?? 0) +
+        " rows, " +
+        (chargesUnmatched?.length ?? 0) +
+        " newly surfaced unmatched SaaS",
+    );
+  }
   const withReads = pools.filter((p) => p.windows.length > 0).length;
   console.log(
     `collector: wrote ${outPath} — ${pools.length} pools (${withReads} with reads), ${attention.length} sessions (sandbox + jules${jules ? `, ${jules.tracked} jules tracked` : ""})` +
