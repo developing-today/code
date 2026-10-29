@@ -67,9 +67,19 @@ which also means there is no way to restore one.
 - `AccountSignedUp { id, name, digest }` — "only the digest of its secret is stored"
   (`directory.rs:145`). `sign_up` (`directory.rs:561`) generates 32 random bytes, derives
   `id` from the public half (`directory.rs:573`), stores `SHA-256(secret)`, and returns
-  `acct.<id>.<secret>` **to the caller exactly once**. The server therefore cannot *sign*
-  as the user, but it did *see* the bearer secret at creation, which is a weaker guarantee
-  than "never held".
+  `acct.<id>.<secret>` **to the caller exactly once**. That does **not** make the
+  model noncustodial in effect (corrected per Codex review, PR #2278): the signing
+  key is deterministically derived from the secret (`signing_key`,
+  `directory.rs:1769`), and `authenticate` (`directory.rs:1432-1457`) reconstructs
+  and returns that key every time the credential is presented —
+  `prepare_request_friend` (`directory.rs:1130`) and `publish` (`directory.rs:1372`)
+  then sign account objects with it. So the server-side code path *does* sign as the
+  account whenever the bearer credential is presented, and anyone who saw the secret
+  once — at creation, in a log, in transit — can re-derive the key and sign
+  indefinitely. Digest-only persistent storage proves the secret is not *stored*; it
+  does not establish an inability to sign. This exposure belongs to
+  `AccountSignedUp` only; `AccountKeyed` (below) has no bearer credential to derive
+  from.
 - `AccountKeyed { id, name }` — "a new account whose ID is its own public key, so it has
   no secret: the key proves itself on each sign-in" (`directory.rs:155`). This is the model
   that satisfies LIST 7 without qualification, and the hosted edition should default to it.
@@ -233,8 +243,16 @@ store (ciphertext only, keyed by a hash of the identity public key), and optiona
 guardian. This is the single highest-value slice: it turns "lost device = identity gone"
 into "lost device + passphrase = identity back". Costs: passphrase strength becomes the
 weakest link (Argon2id parameters are the mitigation), and an attacker who steals the blob
-gets an offline guessing target — mitigate with a high memory cost and by never storing the
-blob and the salt together if the user opts for file-only.
+gets an offline guessing target — mitigate with a high memory cost. The salt is
+**not** a secret and must not be treated as one (corrected per Codex review,
+PR #2278): the backup envelope's cleartext header carries the salt and the Argon2id
+parameters beside the ciphertext, in every placement including the file-only
+export. Separating the salt from the ciphertext would create a second required
+recovery artifact with no storage or recovery path of its own — if the salt stayed
+on the lost device, the passphrase plus the saved backup could not derive the
+unwrap key and the L1 promise would fail. Splitting the salt off is only legitimate
+as an explicit opt-in where the salt is independently backed up and listed as a
+recovery prerequisite.
 
 ### 4.3 Post-loss without a backup: what can and cannot be rebuilt
 
@@ -296,16 +314,31 @@ in every group, and a device removal looks like a person leaving.
 - One **identity key** per person (ideally threshold, §4.4).
 - One **device key** per device, with a device certificate
   `Sign_identity("device:D,not_after:t,scopes:…")`.
-- The directory records device certs as account keys; group membership continues to be by
-  identity key, and the roster's member key is the identity's verifying key.
+- The directory records device certs as account keys; group membership is *authorized*
+  by identity key, while the encryption roster's recipients are the per-device keys
+  (see the removal bullet below for why the roster cannot be identity-only).
 - Adding a device: existing device (or identity key) signs the cert; the new device gets a
   welcome for each group so it can decrypt going forward, and epoch history only as far as
   the welcome carries (`encryption/welcome.rs`, `recent:N` bundles in `scheme.rs`).
-- Removing a device: revoke the cert, rotate group keys once. This is the existing
-  `AccountKeyRemoved` path plus a normal membership rotation.
+- Removing a device: revoke the cert **and remove that device's own encryption
+  recipient**, then rotate group keys once. Cert revocation alone does not exclude
+  anyone from group content (corrected per Codex review, PR #2278):
+  `AccountKeyRemoved` only deletes an account *sign-in* key, while
+  `encryption/scheme.rs::Session::update` distributes the new epoch secret to every
+  current roster member — with an identity-only roster there is no device-specific
+  recipient to exclude, and a revoked device that retained the identity's encryption
+  state keeps receiving new epochs. Exclusion therefore requires device-level
+  recipients in the encryption roster: the roster entry removed on revocation is the
+  *device* key, and the identity key's role is authorizing roster changes (via the
+  device certs), not being the sole recipient. Per-device membership is retained at
+  the encryption layer even though the account layer groups keys by identity. A
+  device that was given a wrapped copy of the identity key itself (§5.3) cannot be
+  excluded this way at all — it holds the identity, and only identity rotation (a
+  new identity key plus succession, §4.4) cuts it off.
 
-This keeps the "one person, many keys" fact in the account layer where it already lives,
-and stops device churn from being a group-membership event for every world the user is in.
+This keeps the "one person, many keys" fact in the account layer where it already lives.
+Device churn no longer reads as a person joining or leaving a group; it is a recipient
+change under one continuing identity membership — the price of making exclusion real.
 
 ### 5.3 Multi-device as recovery (the cheap win)
 
@@ -498,10 +531,14 @@ why it is written down here.
    delegation chain that can only be signed if something of the old authority survived.
 5. **Guardian liveness over years** — shares die with devices, people stop answering, and
    resharing needs a live identity. No proactive-reshare design is proposed here.
-6. **Account secret seen by the server at sign-up** — `sign_up` (`directory.rs:561`)
-   returns `acct.<id>.<secret>` after the server generated it; the digest means the server
-   cannot *later* sign, but it saw the bearer secret once. `AccountKeyed` avoids this
-   entirely and should be the hosted default.
+6. **Bearer-backed accounts are server-signable** — `sign_up` (`directory.rs:561`)
+   returns `acct.<id>.<secret>` after the server generated it, and the signing key is
+   derived from that secret (`signing_key`, `directory.rs:1769`), so `authenticate`
+   (`directory.rs:1432-1457`) reconstructs it on every presentation and the publish /
+   friend-request paths sign with it. Digest-only storage therefore does not make the
+   server unable to sign — only unable to sign *without the secret*, which it
+   generated and saw. Anyone retaining the secret retains signing power.
+   `AccountKeyed` avoids this entirely and should be the hosted default.
 7. **Replay-hardening of recovery proofs** — needs persisted single-use records; today's
    machinery is an in-memory 4096-entry cache that a restart forgets
    (`directory_auth.rs:39`).
