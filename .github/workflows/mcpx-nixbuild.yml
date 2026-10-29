@@ -1,5 +1,7 @@
 name: mcpx nix build
 
+# CI tier policy: see .github/ci-policy.md
+
 # Narrow package-build verification (#297).
 #
 # The mcpx workflow's PR gate is a direct-Go test job — it no longer builds
@@ -17,18 +19,18 @@ name: mcpx nix build
 
 on:
   pull_request:
+    # PR tier (Phase 2, #1781): builds fire on PRs only for class-3
+    # changes (lockfiles, module roots, flake files, build definitions,
+    # workflow files, shared libs); on push to main they always run.
     paths:
       - "pkgs/mcpx/go.mod"
       - "pkgs/mcpx/go.sum"
       - "pkgs/mcpx/package.nix"
-      - ".github/workflows/mcpx-nixbuild.yml"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/**"
   push:
     branches: [main]
-    paths:
-      - "pkgs/mcpx/go.mod"
-      - "pkgs/mcpx/go.sum"
-      - "pkgs/mcpx/package.nix"
-      - ".github/workflows/mcpx-nixbuild.yml"
 
 permissions:
   contents: read

@@ -416,3 +416,82 @@ func TestInputRequestsOfOneRoundAreAskedTogetherUnderTheirKeys(t *testing.T) {
 		t.Errorf("each question should carry its server's key, saw %v", keys)
 	}
 }
+
+// Sampling shape enforcement reaches the modern era through the same
+// answer() the legacy wire uses: an input_required sampling request that
+// carries tools is refused before the handler runs, and an undeclared
+// includeContext is dropped from what the handler sees.
+func TestModernSamplingShape(t *testing.T) {
+	ask := func(samplingParams map[string]any) func(string, map[string]any) any {
+		return func(method string, params map[string]any) any {
+			switch method {
+			case "server/discover":
+				return modernDiscover(params)
+			case "tools/call":
+				if _, ok := params["inputResponses"]; ok {
+					return map[string]any{"resultType": "complete", "content": []any{}}
+				}
+				return map[string]any{
+					"resultType": "input_required",
+					"inputRequests": map[string]any{
+						"q": map[string]any{"method": "sampling/createMessage", "params": samplingParams},
+					},
+				}
+			}
+			return nil
+		}
+	}
+	base := map[string]any{
+		"messages":  []any{map[string]any{"role": "user", "content": map[string]any{"type": "text", "text": "hi"}}},
+		"maxTokens": 100,
+	}
+
+	t.Run("2026-07-28/sampling/tools-without-capability-is-32602", func(t *testing.T) {
+		withTools := map[string]any{"tools": []any{map[string]any{"name": "lookup"}}}
+		for k, v := range base {
+			withTools[k] = v
+		}
+		calls := 0
+		c := dialModern(t, newScripted(ask(withTools)), mcpclient.Options{
+			OnServerRequest: func(context.Context, string, json.RawMessage) (any, error) {
+				calls++
+				return map[string]any{"role": "assistant", "model": "m", "stopReason": "endTurn"}, nil
+			},
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := c.CallTool(ctx, "ask", map[string]any{})
+		if err == nil || !strings.Contains(err.Error(), "sampling.tools") {
+			t.Fatalf("tools-carrying sampling request not refused naming sampling.tools: %v", err)
+		}
+		if calls != 0 {
+			t.Fatalf("handler invoked %d times for a refused request", calls)
+		}
+	})
+
+	t.Run("2026-07-28/sampling/includecontext-without-capability-is-dropped", func(t *testing.T) {
+		withContext := map[string]any{"includeContext": "allServers"}
+		for k, v := range base {
+			withContext[k] = v
+		}
+		var got map[string]any
+		c := dialModern(t, newScripted(ask(withContext)), mcpclient.Options{
+			OnServerRequest: func(_ context.Context, _ string, raw json.RawMessage) (any, error) {
+				_ = json.Unmarshal(raw, &got)
+				return map[string]any{"role": "assistant", "model": "m", "stopReason": "endTurn",
+					"content": map[string]any{"type": "text", "text": "ok"}}, nil
+			},
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := c.CallTool(ctx, "ask", map[string]any{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := got["includeContext"]; ok {
+			t.Errorf("handler saw includeContext the client never declared: %v", got)
+		}
+		if _, ok := got["messages"]; !ok {
+			t.Errorf("handler lost the rest of the request: %v", got)
+		}
+	})
+}

@@ -663,7 +663,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		if sessionKey == "" {
 			sessionKey = os.Getenv("MCPX_SESSION_ID")
 		}
-		res, err := c.Intent(ctx, *promptFlag, "run", nil, sessionKey)
+		res, err := c.Intent(ctx, *promptFlag, "run", nil, sessionKey, "", "")
 		if err != nil {
 			return err
 		}
