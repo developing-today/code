@@ -29,7 +29,11 @@ mkdir -p "$DST" "$HOME/.config/systemd/user"
 # live: the source commit when the package sits in a git checkout,
 # else the tree hash. The tree hash covers exactly the files the copy
 # below installs; the last deployed hash is kept in $DST so an
-# unchanged tree is a true no-op (no copy, no restart).
+# unchanged tree is a true no-op (no copy, no restart). Deployment
+# inputs that are not in the tree — the tailnet bind address, the SOPS
+# env source and the unit file — are hashed separately (see
+# deploy_inputs_hash), so rotating a credential or editing the unit is
+# a real change instead of a silent no-op.
 DEPLOY_COMMIT="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)"
 tree_hash() {
   local root="$1"
@@ -43,6 +47,23 @@ tree_hash() {
 SRC_HASH="$(tree_hash "$SRC")"
 DST_HASH=""
 [ -f "$DST/.deploy-tree-hash" ] && DST_HASH="$(cat "$DST/.deploy-tree-hash")"
+# Deployment inputs the tree hash cannot see (#1150, Codex P2 on PR 2432):
+# TAILNET_IP is rendered into .env, and both the SOPS file and the unit
+# are installed verbatim. Hashing the SOPS *ciphertext* and the unit file
+# keeps this comparison secret-free (no value is ever decrypted or
+# printed here) while making a rotated credential or an edited unit a
+# real change. A missing file hashes as "absent" so the first run that
+# gains one is also a change.
+deploy_inputs_hash() {
+  {
+    printf 'TAILNET_IP=%s\n' "$TAILNET_IP"
+    if [ -f "$SOPS" ]; then sha256sum "$SOPS"; else echo "sops:absent"; fi
+    if [ -f "$UNIT_SRC" ]; then sha256sum "$UNIT_SRC"; else echo "unit:absent"; fi
+  } | sha256sum | cut -d' ' -f1
+}
+SRC_INPUTS="$(deploy_inputs_hash)"
+DST_INPUTS=""
+[ -f "$DST/.deploy-inputs-hash" ] && DST_INPUTS="$(cat "$DST/.deploy-inputs-hash")"
 BUILD_VERSION="${DEPLOY_COMMIT:-tree:${SRC_HASH}}"
 live_version() {
   # Parse with bun (already a hard dependency of this script): the API
@@ -51,9 +72,11 @@ live_version() {
   curl -s --max-time 3 "http://127.0.0.1:4870/api/health" | bun -e 'const t = await Bun.stdin.text(); try { console.log(JSON.parse(t).version ?? "") } catch { console.log("") }' || true
 }
 CHANGED=1
-if [ "$SRC_HASH" = "$DST_HASH" ] && systemctl --user is-active --quiet pm-aggregator.service && [ "$(live_version)" = "$BUILD_VERSION" ]; then
+if [ "$SRC_HASH" = "$DST_HASH" ] && [ "$SRC_INPUTS" = "$DST_INPUTS" ] && systemctl --user is-active --quiet pm-aggregator.service && [ "$(live_version)" = "$BUILD_VERSION" ]; then
   CHANGED=0
-  echo "aggregator tree unchanged (hash ${SRC_HASH:0:12}, version ${BUILD_VERSION}) - no copy, no restart"
+  echo "aggregator unchanged (tree ${SRC_HASH:0:12}, inputs ${SRC_INPUTS:0:12}, version ${BUILD_VERSION}) - no copy, no restart"
+elif [ "$SRC_HASH" = "$DST_HASH" ] && [ "$SRC_INPUTS" != "$DST_INPUTS" ]; then
+  echo "aggregator tree unchanged but deployment inputs changed (tailnet/SOPS/unit) - re-rendering env and restarting"
 fi
 
 if [ "$CHANGED" -eq 1 ]; then
@@ -90,6 +113,7 @@ cp "$UNIT_SRC" "$UNIT_DST"
 cd "$DST"
 bun install --silent
 echo "$SRC_HASH" > "$DST/.deploy-tree-hash"
+echo "$SRC_INPUTS" > "$DST/.deploy-inputs-hash"
 fi
 
 systemctl --user daemon-reload
