@@ -74,7 +74,7 @@ request = ["world.host", "world.join", "blob.read", "blob.write"]
                              # world-apply manifest / operator, never here
 
 [resources]
-files = ["assets/**", "templates/**"]   # packaged + content-hashed as a set
+files = ["assets/**", "web/templates/**"]   # packaged + content-hashed as a set
 ```
 
 Design notes:
@@ -167,8 +167,14 @@ same capability requests. Mode is a rendering choice declared in one
 place; switching an app from adapter to direct changes only
 `[interfaces.web]` and adds `web/direct/` — it never forks the program.
 That is the parity guarantee LIST 6 asks for, stated as a testable
-property: *any app must run in adapter mode with its direct frontend
-deleted.*
+property, scoped to the apps it can apply to: *any program-backed app
+must run in adapter mode with its direct frontend deleted.* A
+frontend-only direct app — one with no `[program]`, which §2 explicitly
+accepts — is exempt: the adapter renders a hosted program (the existing
+`world_page_handler` returns 404 when no world is active), so with no
+program there is nothing for adapter mode to render. Such an app gains
+the parity guarantee only if it later gains an adapter-compatible
+backing program.
 
 ## 5. Pack step (proposal, not built here)
 
