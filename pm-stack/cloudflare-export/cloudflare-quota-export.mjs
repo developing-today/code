@@ -102,19 +102,33 @@ export const R2_FREE = new Set([
   "DeleteBucketLifecycleConfiguration",
 ]);
 
+/** Response statuses Cloudflare does not bill for R2 (pricing FAQ:
+ * HTTP 401 and authentication/permission-related HTTP 403 are excluded
+ * from billing). R2 403s are authorization failures, so both codes are
+ * dropped here; every other failure (404, 409, 5xx, ...) stays counted,
+ * because those remain billable. Groups without a responseStatusCode
+ * dimension (older payloads) are counted as before. */
+export const R2_NONBILLABLE_STATUSES = new Set([401, 403]);
+
 export function classifyR2(groups) {
   let classA = 0;
   let classB = 0;
+  let nonbillable = 0;
   const unclassified = [];
   for (const g of groups ?? []) {
     const action = g?.dimensions?.actionType;
     const requests = num(g?.sum?.requests, `r2.${String(action)}.requests`);
+    const status = g?.dimensions?.responseStatusCode;
+    if (status != null && R2_NONBILLABLE_STATUSES.has(Number(status))) {
+      nonbillable += requests;
+      continue;
+    }
     if (R2_CLASS_A.has(action)) classA += requests;
     else if (R2_CLASS_B.has(action)) classB += requests;
     else if (R2_FREE.has(action)) continue;
     else unclassified.push(action);
   }
-  return { classA, classB, unclassified };
+  return { classA, classB, unclassified, nonbillable };
 }
 
 /** Fold KV action types onto the card's two metrics: reads, and
@@ -166,9 +180,13 @@ export function parseGraphqlUsage(account, { now = new Date(), cycleStart } = {}
   push("r2-class-b", r2.classB, "ops");
 
   const storageGroups = account?.r2StorageAdaptiveGroups;
-  if (!Array.isArray(storageGroups) || storageGroups.length === 0) {
+  if (!Array.isArray(storageGroups)) {
     throw new ExportError("unparseable", 6, "graphql: r2StorageAdaptiveGroups missing");
   }
+  // An empty array is legitimate: the storage dataset holds one
+  // observation per bucket, so an account with no bucket observations
+  // reports zero storage - it must not fail the whole export and
+  // discard the other services' readings.
   // payloadSize is per bucket: each group is one bucket's peak over the
   // window, so the account total is the SUM of the per-bucket peaks —
   // an account-wide max would report the largest single bucket only.
@@ -179,6 +197,9 @@ export function parseGraphqlUsage(account, { now = new Date(), cycleStart } = {}
   const saturated = storageGroups.length >= R2_STORAGE_GROUP_LIMIT;
   push("r2-storage", round2(payloadBytes / 1e9), "gb", {
     detail:
+      (storageGroups.length === 0
+        ? "no R2 bucket storage observations in the cycle window (r2StorageAdaptiveGroups empty); reporting zero "
+        : "") +
       `sum of per-bucket max payloadSize ${payloadBytes} bytes across ${storageGroups.length} bucket group(s) in the cycle window (r2StorageAdaptiveGroups)` +
       (saturated
         ? ` — group count hit the ${R2_STORAGE_GROUP_LIMIT} query limit, so buckets beyond it are excluded and this total is a LOWER BOUND`
@@ -288,7 +309,7 @@ const GRAPHQL_QUERY = `query($a: string!, $s: Time!, $e: Time!) {
       kvOperationsAdaptiveGroups(limit: 100, filter: { datetime_geq: $s, datetime_leq: $e }) { dimensions { actionType } sum { requests } }
       d1AnalyticsAdaptiveGroups(limit: 100, filter: { datetime_geq: $s, datetime_leq: $e }) { sum { rowsRead rowsWritten } }
       queueMessageOperationsAdaptiveGroups(limit: 100, filter: { datetime_geq: $s, datetime_leq: $e }) { sum { billableOperations } }
-      r2OperationsAdaptiveGroups(limit: 100, filter: { datetime_geq: $s, datetime_leq: $e }) { dimensions { actionType } sum { requests } }
+      r2OperationsAdaptiveGroups(limit: 1000, filter: { datetime_geq: $s, datetime_leq: $e }) { dimensions { actionType responseStatusCode } sum { requests } }
       r2StorageAdaptiveGroups(limit: 10000, filter: { datetime_geq: $s, datetime_leq: $e }) { dimensions { bucketName } max { payloadSize } }
       aiInferenceAdaptiveGroups(limit: 100, filter: { datetime_geq: $s, datetime_leq: $e }) { sum { totalNeurons } }
     }

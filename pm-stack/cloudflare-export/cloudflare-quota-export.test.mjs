@@ -100,9 +100,34 @@ test("parseGraphqlUsage: shape drift fails closed", () => {
   const drifted = structuredClone(ACCOUNT);
   drifted.workersInvocationsAdaptive = [{ sum: { requests: "many", cpuTimeUs: 1 } }];
   assert.throws(() => parseGraphqlUsage(drifted, { now: NOW, cycleStart: START }), /not a finite/);
+  const missingStorage = structuredClone(ACCOUNT);
+  delete missingStorage.r2StorageAdaptiveGroups;
+  assert.throws(() => parseGraphqlUsage(missingStorage, { now: NOW, cycleStart: START }), /r2Storage/);
+});
+
+test("parseGraphqlUsage: empty r2 storage is zero, other metrics survive", () => {
   const noStorage = structuredClone(ACCOUNT);
   noStorage.r2StorageAdaptiveGroups = [];
-  assert.throws(() => parseGraphqlUsage(noStorage, { now: NOW, cycleStart: START }), /r2Storage/);
+  const { metrics } = parseGraphqlUsage(noStorage, { now: NOW, cycleStart: START });
+  const byId = Object.fromEntries(metrics.map((m) => [m.id, m]));
+  assert.equal(byId["r2-storage"].used, 0);
+  assert.match(byId["r2-storage"].detail, /no R2 bucket storage observations/);
+  assert.equal(byId["workers-requests"].used, 75225);
+  assert.equal(byId["r2-class-a"].used, 465);
+});
+
+test("classifyR2: 401/403 auth failures are nonbillable, other failures still count", () => {
+  const r = classifyR2([
+    { dimensions: { actionType: "GetObject", responseStatusCode: 200 }, sum: { requests: 100 } },
+    { dimensions: { actionType: "GetObject", responseStatusCode: 401 }, sum: { requests: 40 } },
+    { dimensions: { actionType: "PutObject", responseStatusCode: 403 }, sum: { requests: 30 } },
+    { dimensions: { actionType: "GetObject", responseStatusCode: 404 }, sum: { requests: 7 } },
+    { dimensions: { actionType: "PutObject" }, sum: { requests: 5 } },
+  ]);
+  assert.equal(r.classB, 107); // 200 + billable 404
+  assert.equal(r.classA, 5); // no-status group counted as before; 403 excluded
+  assert.equal(r.nonbillable, 70);
+  assert.deepEqual(r.unclassified, []);
 });
 
 test("classifyR2: unknown actions are reported, never guessed into a class", () => {
