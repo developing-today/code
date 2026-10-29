@@ -2237,10 +2237,16 @@ export function attentionSections(
       : undefined;
   const tierAct = (item: TierItem) => {
     const objectRef = tierItemObjectRef(item);
+    // #1148 watchdog cards describe the aggregator's CURRENT diagnosis,
+    // not the publisher's possibly-obsolete section, so the #1152 gate
+    // must not disable them: the orchestration-outage card is exactly
+    // the one that has to stay actionable while the tier source is
+    // absent/invalid/stale (Codex P2, PR #2431).
+    const disabledReason = item.source === "watchdog" ? undefined : sectionDisabledReason;
     return {
       actions: act?.actionsByObject?.get(objectRef),
       identities: act?.identities,
-      ...(sectionDisabledReason ? { disabledReason: sectionDisabledReason } : {}),
+      ...(disabledReason ? { disabledReason } : {}),
       comments: act?.commentsByObject?.get(objectRef),
       commentOpts: act?.commentOpts,
     };

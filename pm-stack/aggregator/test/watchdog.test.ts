@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { buildAttention } from "../src/derive.ts";
-import { tierItemObjectRef } from "../src/render.ts";
+import { attentionSections, tierItemObjectRef } from "../src/render.ts";
 import type { SectionDiagnosis } from "../src/feed.ts";
+import type { OrchestrationSection, TierItem } from "../src/model.ts";
 import {
   watchdogTierItems,
   WATCHDOG_FEED_STALE_MS,
@@ -137,5 +138,40 @@ describe("watchdog derivation (#1148)", () => {
     // (two derivations concatenated) still yields one card per input.
     const view2 = buildAttention([], null, NOW, undefined, [...items, ...items].filter((v, idx, a) => a.indexOf(v) === idx || true));
     expect(new Set(view2.orchestratorExtra.map((i) => i.id)).size).toBe(view2.orchestratorExtra.length);
+  });
+
+  test("watchdog cards stay actionable while the tier source is absent; published cards stay gated (Codex P2, PR #2431)", () => {
+    const published: TierItem = {
+      id: "pub-1",
+      kind: "task",
+      title: "Published orchestrator item XYZ",
+      source: "tracked",
+      reason: "Published by the orchestrator.",
+      since: iso(NOW - 60_000),
+      lastSeenAt: iso(NOW - 60_000),
+    };
+    const section: OrchestrationSection = {
+      version: 1,
+      generatedAt: iso(NOW),
+      runId: "orch-test",
+      provenance: { sources: ["fixture"] },
+      tiers: { needsDrew: [], needsOrchestrator: [published] },
+      dependencies: [],
+      goals: [],
+      actions: [],
+    };
+    const watchdog = watchdogTierItems(healthy({ orchestration: { state: "absent" } }));
+    expect(watchdog.map((i) => i.id)).toEqual(["watchdog:orchestration"]);
+    const view = buildAttention([], section, NOW, { state: "absent" }, watchdog);
+    const { queues } = attentionSections(view, [], undefined, { identities: [], actionsByObject: new Map() });
+    const pubAt = queues.indexOf("Published orchestrator item XYZ");
+    const wdAt = queues.indexOf("Watchdog: orchestration section is absent");
+    expect(pubAt).toBeGreaterThanOrEqual(0);
+    expect(wdAt).toBeGreaterThan(pubAt);
+    // The published card sits behind the section gate (its controls are
+    // in a disabled fieldset); the watchdog card — a live aggregator
+    // observation — does not.
+    expect(queues.slice(pubAt, wdAt)).toContain("<fieldset disabled>");
+    expect(queues.slice(wdAt)).not.toContain("<fieldset disabled>");
   });
 });
