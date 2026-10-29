@@ -12,7 +12,7 @@ import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, fin
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
 import { loadFeed } from "./feed.ts";
-import { buildHealth, recordRender, type HealthView } from "./health.ts";
+import { buildHealth, recordRender, summarizeItemCoverage, type HealthView, type ItemsCoverage } from "./health.ts";
 import { PAGES } from "./pages.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import type { DashComment, RefKey } from "./model.ts";
@@ -87,12 +87,16 @@ const source = pickSource();
  * which is precisely what health exists to report.
  */
 let lastPrimedAt = 0;
+/** #1141: item coverage measured by the latest priming pass (below),
+ *  from the same board items() resolution that sets facet provenance. */
+let lastItemsCoverage: ItemsCoverage | null = null;
 let priming: Promise<void> | null = null;
 async function ensureProvenancePrimed(): Promise<void> {
   if (Date.now() - lastPrimedAt < 60_000) return;
   priming ??= (async () => {
     try {
       const { items } = await boardContext();
+      lastItemsCoverage = summarizeItemCoverage(items);
       const refs = [...items.keys()];
       await Promise.allSettled([
         source.roadmap(),
@@ -138,6 +142,7 @@ async function healthContext(): Promise<HealthView> {
     feedFileMtimeMs,
     diagnosis: source.diagnostics?.().orchestration,
     detail: source.provenanceDetail?.(),
+    itemsCoverage: lastItemsCoverage,
     comments: await commentsStore.pendingCounts().catch(() => undefined),
   });
 }
