@@ -61,6 +61,14 @@
   // route is deliberate — compaction and summaries have to read a lot, so
   // the slot is a real tier, not the cheapest model on any plan.
   "small_model": "opencode-route/speed",
+  // Messaging embeddings OFF (2026-10-29, Drew): the messaging.embedding
+  // tier defaults to a local Qwen3-Embedding llama-server that autostarts
+  // with every OpenCode process (standing server + OpenChamber managed
+  // instance). Tier off disables it; semantic message search degrades to
+  // the fuzzy FTS fallback. Re-enable by removing this key.
+  "messaging": {
+    "embedding": "off"
+  },
   "provider": {
     "claude-code": {
       "npm": "@ai-sdk/openai-compatible",
@@ -5248,18 +5256,21 @@
           "id": "cline-pass/muse-spark-1.3-contributor",
           "name": "Muse Spark 1.3 Contributor (ClinePass)"
         },
-        "qwen3.8-max": {
-          "id": "cline-pass/qwen3.8-max",
-          "name": "Qwen3.8 Max (ClinePass)"
-        },
-        "qwen3.7-max": {
-          "id": "cline-pass/qwen3.7-max",
-          "name": "Qwen3.7 Max (ClinePass)"
-        },
-        "qwen3.7-plus": {
-          "id": "cline-pass/qwen3.7-plus",
-          "name": "Qwen3.7 Plus (ClinePass)"
-        },
+        // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//        "qwen3.8-max": {
+//          "id": "cline-pass/qwen3.8-max",
+//          "name": "Qwen3.8 Max (ClinePass)"
+//        },
+        // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//        "qwen3.7-max": {
+//          "id": "cline-pass/qwen3.7-max",
+//          "name": "Qwen3.7 Max (ClinePass)"
+//        },
+        // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//        "qwen3.7-plus": {
+//          "id": "cline-pass/qwen3.7-plus",
+//          "name": "Qwen3.7 Plus (ClinePass)"
+//        },
         "glm-5.2": {
           "id": "cline-pass/glm-5.2",
           "name": "GLM-5.2 (ClinePass)"
@@ -5395,36 +5406,46 @@
                 "xiaomi/mimo-v2.5": {
                       "name": "Mimo v2.5 (Command Code)"
                 },
-                "qwen/qwen3.8-omni-flash": {
-                      "name": "qwen3.8 Omni Flash (Command Code)"
-                },
-                "qwen/qwen3.8-max-0902": {
-                      "name": "qwen3.8 Max 0902 (Command Code)"
-                },
-                "qwen/qwen3.8-max": {
-                      "name": "qwen3.8 Max (Command Code)"
-                },
-                "qwen/qwen3.8-27b": {
-                      "name": "qwen3.8 27b (Command Code)"
-                },
-                "qwen/qwen3.8-flash": {
-                      "name": "qwen3.8 Flash (Command Code)"
-                },
-                "qwen/qwen3.7-max": {
-                      "name": "qwen3.7 Max (Command Code)"
-                },
-                "qwen/qwen3.7-plus": {
-                      "name": "qwen3.7 Plus (Command Code)"
-                },
-                "qwen/qwen3.7-flash": {
-                      "name": "qwen3.7 Flash (Command Code)"
-                },
-                "qwen/qwen3.6-max-preview": {
-                      "name": "qwen3.6 Max Preview (Command Code)"
-                },
-                "qwen/qwen3.6-plus": {
-                      "name": "qwen3.6 Plus (Command Code)"
-                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-omni-flash": {
+//                      "name": "qwen3.8 Omni Flash (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-max-0902": {
+//                      "name": "qwen3.8 Max 0902 (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-max": {
+//                      "name": "qwen3.8 Max (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-27b": {
+//                      "name": "qwen3.8 27b (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-flash": {
+//                      "name": "qwen3.8 Flash (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.7-max": {
+//                      "name": "qwen3.7 Max (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.7-plus": {
+//                      "name": "qwen3.7 Plus (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.7-flash": {
+//                      "name": "qwen3.7 Flash (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.6-max-preview": {
+//                      "name": "qwen3.6 Max Preview (Command Code)"
+//                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.6-plus": {
+//                      "name": "qwen3.6 Plus (Command Code)"
+//                },
                 "meituan/longcat-2.0": {
                       "name": "LongCat 2.0 (Command Code)"
                 },
@@ -5602,9 +5623,10 @@
                 "ornith/ornith-1.5-122b": {
                       "name": "Ornith 1.5 122b (Command Code)"
                 },
-                "qwen/qwen3.8-max-prime": {
-                      "name": "qwen3.8 Max Prime (Command Code)"
-                },
+                // PARKED 2026-10-29 (Drew): qwen models disabled - definitions retained; durable knob tracked in developing-today/code#2218.
+//                "qwen/qwen3.8-max-prime": {
+//                      "name": "qwen3.8 Max Prime (Command Code)"
+//                },
                 "reflection/beam:free": {
                       "name": "beam:free (Command Code)"
                 },
