@@ -104,7 +104,7 @@ pub struct Outcome {
     pub sent: usize,
     /// Events this side received.
     pub received: usize,
-    /// Received events that were stored: applied, or voided.
+    /// Received events that were stored and applied.
     pub accepted: usize,
     /// Received events the store already held.
     pub duplicates: usize,
@@ -114,6 +114,9 @@ pub struct Outcome {
     pub refused: usize,
     /// Forks that received events revealed.
     pub forks: usize,
+    /// Received events that were stored but voided: they count as present, but do not
+    /// apply. Counted separately from the accepted count, mirroring the log sync tally.
+    pub voided: usize,
     /// The symmetric difference, as this side learned it.
     pub learned: HashSet<Id>,
 }
@@ -679,6 +682,7 @@ async fn run_session<S: RangeStore>(
     out.waiting = tally.waiting;
     out.refused = tally.refused;
     out.forks = tally.forks;
+    out.voided = tally.voided;
     Ok(out)
 }
 
@@ -1019,6 +1023,51 @@ mod tests {
         );
         // The original, the rival that proves the fork, and the 20 unrelated events.
         assert_eq!(store.sync_entries().unwrap().len(), 22);
+    }
+
+    /// A received event that the store voids is counted in the outcome voided
+    /// count, not folded into accepted and not dropped (Codex finding on PR 2214).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_a_range_session_counts_voided_events() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        let events = chain_of(1, 5, b"x");
+        fill(&mut a, &events);
+        fill(&mut b, &events[..3]);
+        // B holds a rival at sequence 1, so author 1 has forked in B and the
+        // events from sequence 1 on are voided there.
+        let rival = chain::sign(
+            &signer(1),
+            1,
+            Some(events[0].id),
+            Some(b"other"),
+            ChainExt {
+                kind: "message".to_owned(),
+                group: None,
+                after: Vec::new(),
+                tag: None,
+                document: None,
+                removes: None,
+            },
+        )
+        .unwrap();
+        let outcome = b.ingest_events(vec![rival], NOW).unwrap();
+        assert!(matches!(outcome[0], Ingest::Fork { .. }), "{outcome:?}");
+        let (da, db) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        let (_da, db) = (da.unwrap(), db.unwrap());
+        assert_eq!(
+            db.voided, 2,
+            "events 3 and 4 arrive above the fork point in B and are stored voided"
+        );
+        assert_eq!(db.accepted, 0, "voided events are not counted as accepted");
     }
 
     /// Prefix lengths of two sides' chains, so each side holds some events the other lacks.

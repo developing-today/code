@@ -382,9 +382,7 @@ async fn run_range_sync(
             held: count(ranged.waiting),
             refused: count(ranged.refused),
             forks: count(ranged.forks),
-            // The range outcome does not split out voided events; they arrive as
-            // accepted-or-refused decisions of the store's ingest, counted above.
-            voided: 0,
+            voided: count(ranged.voided),
         },
         metrics: LogSyncMetrics {
             sent_operations: count(ranged.sent),
