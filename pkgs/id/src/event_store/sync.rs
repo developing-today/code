@@ -53,6 +53,15 @@ const MAX_FLIGHTS: u32 = 10_000;
 /// Events the receiver decides in one write transaction.
 const BATCH_EVENTS: usize = 256;
 
+/// Encoded bytes the receiver decides in one write transaction. A batch fills on
+/// whichever bound it reaches first, this or [`BATCH_EVENTS`]: one frame may carry
+/// up to [`range::FRAME_CAP`] bytes, so a count-only bound could buffer 256 maximum
+/// frames into a single transaction. The frame budget is the unit the rest of the
+/// module already reasons in, so a batch holds at most about one frame budget of
+/// payload. A single event larger than this bound is decided alone: it is never
+/// split, and its size alone is never an error.
+const BATCH_BYTES: usize = range::DEFAULT_FRAME_BUDGET;
+
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
 
@@ -590,17 +599,29 @@ async fn receive_data(
         need.len()
     );
     let mut pending: Vec<Event> = Vec::with_capacity(BATCH_EVENTS);
+    let mut pending_bytes: usize = 0;
     let mut tally = Tally::default();
     for _ in 0..count {
         let record = read_frame(recv).await?;
+        let record_len = record.len();
         let event = chain::decode(&record)?;
         ensure!(
             need.remove(event.id.as_bytes()),
             "an event arrived that was not expected, or arrived twice"
         );
+        // A batch is bounded by bytes as well as by count: flush before this
+        // event if it would carry the batch past the byte bound. An empty batch
+        // always takes the event, so one larger than the bound forms a batch of
+        // its own rather than being refused.
+        if !pending.is_empty() && pending_bytes + record_len > BATCH_BYTES {
+            flush(store, &mut pending, now_ms, &mut tally, commits)?;
+            pending_bytes = 0;
+        }
         pending.push(event);
+        pending_bytes += record_len;
         if pending.len() == BATCH_EVENTS {
             flush(store, &mut pending, now_ms, &mut tally, commits)?;
+            pending_bytes = 0;
         }
     }
     flush(store, &mut pending, now_ms, &mut tally, commits)?;
@@ -1061,6 +1082,69 @@ mod tests {
         );
         assert_eq!(second_b.duplicates + second_a.duplicates, 0, "no duplicate");
         assert_eq!(second_a.accepted, 0);
+    }
+
+    /// #180: the data phase decides batches bounded by bytes as well as by count.
+    /// Each event here encodes to about 1.5 MiB, so the 4 MiB byte bound fills a
+    /// batch after two events while the count bound (256) is nowhere near. A cut
+    /// after four records, waiting until the receiver has committed four, leaves
+    /// exactly those four in the receiving store: two whole byte-bound batches,
+    /// where a count-only receiver would have committed nothing at all (its one
+    /// partial batch dies with the session, as in the interruption test above).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_data_phase_batches_are_bounded_by_bytes_as_well_as_count() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        let body = vec![7u8; 3 << 19];
+        for n in 1..=5u64 {
+            fill(&mut a, &chain_of(n, 1, &body));
+        }
+        let (first_a, first_b) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::AfterRecordsWhenCommitted {
+                records: 4,
+                signal: CommitSignal::default(),
+                committed: 4,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(first_a.is_err(), "the cut ends the dialer's session");
+        assert!(first_b.is_err(), "the acceptor sees the connection close");
+        assert_eq!(
+            ids(&b).len(),
+            4,
+            "two byte-bound batches of two events each were committed"
+        );
+    }
+
+    /// #180: a single event larger than the byte bound is decided alone and does
+    /// not error: the session completes, the oversize event is stored, and the
+    /// small events after it batch normally.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_an_event_larger_than_the_byte_bound_is_decided_alone() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        let big = vec![9u8; BATCH_BYTES + (1 << 20)];
+        fill(&mut a, &chain_of(1, 1, &big));
+        populate(&mut a, &[(2, 2)]);
+        let total = ids(&a);
+        let (out_a, out_b) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        out_a.unwrap();
+        let out_b = out_b.unwrap();
+        assert_eq!(ids(&b), total, "the oversize event and the rest all arrive");
+        assert_eq!(out_b.accepted, total.len());
     }
 
     /// P3.1c: a peer that never clears `more` must not make the reader buffer without bound. This
