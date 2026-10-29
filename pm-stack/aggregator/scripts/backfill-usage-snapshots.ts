@@ -8,9 +8,13 @@
 // guessed. Re-running is safe — the store dedupes on (service, metric,
 // ts, value).
 //
-// The DeepSeek balance (¥44.63) is deliberately NOT backfilled: the
-// §4 unit enum (pct|usd|count|gb|tokens) has no CNY, and recording it
-// as USD would corrupt the record.
+// The DeepSeek PAYG reserve balance (#1052) is backfilled as a unit
+// "cny" record at its own dated read — ¥44.63, 2026-10-25, the value
+// and date this script's own pooled note carries. It is stored in yuan
+// and never converted: recording it as USD is exactly the corruption
+// the v1 deviation avoided. Issue #1052 also quotes a 2026-10-24 read
+// of CNY 44.64; that is a different observation with no dated source
+// line here, so no record is invented for it.
 //
 // Usage: bun run scripts/backfill-usage-snapshots.ts [--dir <storeDir>]
 // Env: PM_AGG_SNAPSHOTS_DIR, QUOTA_VIEW_PATH, QUOTA_REGISTRY_PATH.
@@ -19,6 +23,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sectionOf } from "../src/quota-extract.ts";
+import { recordsFromDeepseekBalance } from "../src/snapshot-records.ts";
 import { SnapshotStore } from "../src/snapshots.ts";
 import type { SnapshotRecord } from "../src/model.ts";
 
@@ -416,6 +421,11 @@ async function main(): Promise<void> {
       "github comped minutes (October)",
     );
   }
+
+  // --- DeepSeek PAYG reserve balance (#1052) --------------------------------
+  // The dated ¥ read the v1 backfill skipped; the cny unit exists now,
+  // so the balance keeps its own yuan value and date.
+  for (const r of recordsFromDeepseekBalance(doc, BY_VIEW)) push(r, "deepseek balance (cny)");
 
   const store = new SnapshotStore(storeDir);
   const appended = await store.append(records);

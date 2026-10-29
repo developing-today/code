@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAttentionFlags, freshness, projectPace, resetMarkers } from "../src/derive.ts";
 import { countedEstimate, type QuotaView, type SnapshotRecord } from "../src/model.ts";
-import { renderQuota, renderServiceDetail } from "../src/render.ts";
+import { renderQuota, renderServiceDetail, fmtMetricValue } from "../src/render.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
 import { SnapshotStore, snapshotFileFor } from "../src/snapshots.ts";
 import { fixtureSource } from "../src/sources/fixtures.ts";
@@ -281,6 +281,31 @@ describe("hub renders", () => {
     expect(html).toContain("Charges this period");
     expect(html).toContain("/quota/service/turso");
     expect(html).toContain("measured");
+  });
+  test("PAYG card shows the DeepSeek ¥ balance with its measured-at (#1052)", async () => {
+    const src = fixtureSource();
+    const usage = await src.usage();
+    const rec: SnapshotRecord = {
+      ts: "2026-10-25T12:00:00Z",
+      serviceId: "deepseek:api",
+      metricId: "credits_balance",
+      value: 44.63,
+      unit: "cny",
+      source: "api",
+      observedBy: "backfill:quota-view.md",
+    };
+    usage.history = { ...usage.history, "deepseek:api": [rec] };
+    const html = renderQuota(await src.quota(), src.provenance(), usage);
+    expect(html).toContain("DeepSeek PAYG reserve balance");
+    expect(html).toContain("¥44.63");
+    expect(html).toContain("measured 2026-10-25");
+  });
+  test("no cny record → no balance line; fmtMetricValue renders cny in yuan", async () => {
+    const src = fixtureSource();
+    const html = renderQuota(await src.quota(), src.provenance(), await src.usage());
+    expect(html).not.toContain("DeepSeek PAYG reserve balance");
+    expect(fmtMetricValue(44.63, "cny")).toBe("¥44.63");
+    expect(fmtMetricValue(null, "cny")).toBe("not measured");
   });
   test("legacy two-arg renderQuota still renders the pools page", async () => {
     const src = fixtureSource();

@@ -236,9 +236,9 @@ export function entryFromResult(result: QuotaProviderResult, tickIso: string): Q
  * windows), so keying on resetsAt would append noise points for
  * readings that did not move. A window roll still shows up — as the
  * value change it causes. The record itself carries the current
- * resetsAt. Label-only windows (balances) yield no record in v1 —
- * the CNY balance case is #1052's unit work; quota-current still
- * carries the label.
+ * resetsAt. Label-only USD windows (balances) still yield no record;
+ * a label carrying a yuan balance (#1052) yields a unit "cny" record
+ * with the same value-moved stamping, stored in yuan exactly as read.
  */
 export function recordsFromEntries(
   entries: QuotaCurrentEntry[],
@@ -250,22 +250,45 @@ export function recordsFromEntries(
   for (const entry of entries) {
     if (entry.state !== "ok") continue;
     for (const w of entry.windows) {
-      if (w.pctOfLimit == null) continue;
       const key = `${entry.serviceId}|${w.name}`;
-      const stamp = `${w.pctOfLimit}`;
+      const source = entry.source.startsWith("file-export") ? "console" : "api";
+      if (w.pctOfLimit != null) {
+        const stamp = `${w.pctOfLimit}`;
+        if (lastAppended.get(key) === stamp) continue;
+        appended.set(key, stamp);
+        records.push({
+          ts: w.measuredAt,
+          serviceId: entry.serviceId,
+          metricId: w.name,
+          value: w.pctOfLimit,
+          unit: "pct",
+          limit: 100,
+          ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}),
+          // File exports are console reads by another route; module
+          // providers are API reads.
+          source,
+          observedBy,
+        });
+        continue;
+      }
+      // CNY balance (#1052): the DeepSeek reserve's label is "¥44.29"
+      // — a yuan figure is its own unit, never converted. Same
+      // value-moved dedupe as pct windows, so the store gains a point
+      // when the balance actually moves.
+      const cny = w.valueLabel == null ? null : /^¥\s*([\d,]+(?:\.\d+)?)/.exec(w.valueLabel.trim());
+      if (!cny) continue;
+      const value = Number(cny[1].replace(/,/g, ""));
+      if (!Number.isFinite(value)) continue;
+      const stamp = `${value}`;
       if (lastAppended.get(key) === stamp) continue;
       appended.set(key, stamp);
       records.push({
         ts: w.measuredAt,
         serviceId: entry.serviceId,
         metricId: w.name,
-        value: w.pctOfLimit,
-        unit: "pct",
-        limit: 100,
-        ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}),
-        // File exports are console reads by another route; module
-        // providers are API reads.
-        source: entry.source.startsWith("file-export") ? "console" : "api",
+        value,
+        unit: "cny",
+        source,
         observedBy,
       });
     }
