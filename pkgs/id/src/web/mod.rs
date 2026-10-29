@@ -197,7 +197,31 @@ impl AppState {
             &events_dir,
             p2panda_core::SigningKey::from_bytes(&secret_key),
         )?));
+        Self::with_local_events(
+            store,
+            peers,
+            node_id,
+            tag_store,
+            secret_key,
+            identity_db_path,
+            local_events,
+        )
+        .await
+    }
 
+    /// Create a new application state over a `local_events` store the caller already
+    /// opened and shares — `id serve` shares one instance between this state and the
+    /// `/id-sync/1` sync handler, so revisions saved here are the revisions sync
+    /// carries, with no second opener on the store's directory (#792).
+    pub async fn with_local_events(
+        store: Store,
+        peers: Option<PeerDiscovery>,
+        node_id: String,
+        tag_store: Arc<TagStore>,
+        secret_key: [u8; 32],
+        identity_db_path: std::path::PathBuf,
+        local_events: Arc<Mutex<crate::local_events::LocalEvents>>,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
             store,
             collab: Arc::new(CollabState::new()),
@@ -287,7 +311,7 @@ pub async fn web_router(
     world: Option<crate::world_hub::WorldHub>,
     cookie_secure: bool,
 ) -> anyhow::Result<Router> {
-    let mut state = AppState::new(
+    let state = AppState::new(
         store,
         peers,
         node_id,
@@ -296,18 +320,54 @@ pub async fn web_router(
         identity_db_path,
     )
     .await?;
+    Ok(finish_router(state, security, world, cookie_secure))
+}
+
+/// Like [`web_router`], but over a caller-opened, shared `local_events` store (see
+/// [`AppState::with_local_events`]).
+#[allow(clippy::too_many_arguments)]
+pub async fn web_router_with_local_events(
+    store: Store,
+    peers: Option<PeerDiscovery>,
+    node_id: String,
+    tag_store: Arc<TagStore>,
+    secret_key: [u8; 32],
+    identity_db_path: std::path::PathBuf,
+    security: WebSecurity,
+    world: Option<crate::world_hub::WorldHub>,
+    cookie_secure: bool,
+    local_events: Arc<Mutex<crate::local_events::LocalEvents>>,
+) -> anyhow::Result<Router> {
+    let state = AppState::with_local_events(
+        store,
+        peers,
+        node_id,
+        tag_store,
+        secret_key,
+        identity_db_path,
+        local_events,
+    )
+    .await?;
+    Ok(finish_router(state, security, world, cookie_secure))
+}
+
+/// Applies the world/cookie settings and the security layer to a built state.
+fn finish_router(
+    mut state: AppState,
+    security: WebSecurity,
+    world: Option<crate::world_hub::WorldHub>,
+    cookie_secure: bool,
+) -> Router {
     state.world = world;
     state.cookie_secure = cookie_secure;
     let security = WebSecurity {
         cookie_secure,
         ..security
     };
-    Ok(
-        create_router(state).layer(axum::middleware::from_fn_with_state(
-            Arc::new(security),
-            security::guard,
-        )),
-    )
+    create_router(state).layer(axum::middleware::from_fn_with_state(
+        Arc::new(security),
+        security::guard,
+    ))
 }
 
 #[cfg(test)]

@@ -5,9 +5,11 @@
 //! [`EventStore::ingest`], the path sync uses. The store checks the signature and applies the event.
 //! So these events are signed, unlike the group log's (P6.7a), which trusts the caller's name.
 //!
-//! The store stands in for sync. The CLI opens one store directory, named by `--event-store`, and
-//! nodes on one machine that share the directory see each other's events, as they share the group
-//! log. Nothing here moves events between machines.
+//! The CLI opens one store directory, named by `--event-store`, and nodes on one machine that
+//! share the directory see each other's events, as they share the group log. Between machines,
+//! `id serve` moves the events: it shares this store with the `/id-sync/1` range-sync sessions
+//! in [`crate::event_sync`], so a revision one node signs into its store is in the sync set the
+//! next session carries to a peer (#792).
 //!
 //! The reads walk every applied event, which is fine for the CLI and is not an index. The document
 //! and tag rules are the ones in [`crate::documents`] and [`crate::tag_claims`].
@@ -153,6 +155,34 @@ impl LocalEvents {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let store = EventStore::open(dir, WaitingLimits::default(), now_ms())?;
         Ok(Self { store, key })
+    }
+
+    /// Runs one range-sync session over `conn` against this node's store: the session
+    /// [`crate::event_store::sync::sync_over`] drives, with this store as its sync set.
+    /// `initiator` is the side that dialed. Every event that arrives is decided by the
+    /// store's own ingest, so a tampered or unsigned event is refused, never applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the peer breaks the protocol, the session passes `deadline`,
+    /// `gate` refuses the peer, or the store fails.
+    pub async fn sync_session(
+        &mut self,
+        conn: &iroh::endpoint::Connection,
+        initiator: bool,
+        deadline: std::time::Duration,
+        gate: &crate::pull_policy::PullGate,
+    ) -> Result<crate::event_store::sync::Outcome> {
+        crate::event_store::sync::sync_over(
+            &mut self.store,
+            conn,
+            initiator,
+            crate::event_store::range::Params::default(),
+            now_ms(),
+            deadline,
+            gate,
+        )
+        .await
     }
 
     /// The account the node's events are signed as.
