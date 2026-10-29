@@ -87,6 +87,15 @@ describe("applySupabaseExport", () => {
     expect(supabaseCard(out).plan).toContain("measured 2026-10-29T14:55:00Z");
   });
 
+  test("an accepted export without a valid billing measurement clears billed to unknown", () => {
+    const noBilling = applySupabaseExport(extractSaasServices(VIEW), freshDoc({ billing: null as unknown as SupabaseExportDoc["billing"] }), NOW);
+    expect(supabaseCard(noBilling).billedUsd).toBeNull();
+    expect(supabaseCard(noBilling).sourceClass).toBe("api"); // the rest of the overlay still applied
+    expect(metricOf(noBilling, "db-size").used).toBe(1.154);
+    const unmeasured = applySupabaseExport(extractSaasServices(VIEW), freshDoc({ billing: { plan: "free" } }), NOW);
+    expect(supabaseCard(unmeasured).billedUsd).toBeNull();
+  });
+
   test("a stale export falls back to exactly today's card", () => {
     const base = extractSaasServices(VIEW);
     const out = applySupabaseExport(base, freshDoc({ measuredAt: "2026-10-29T12:00:00Z" }), NOW);

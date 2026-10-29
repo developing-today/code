@@ -693,7 +693,9 @@ export const SUPABASE_EXPORT_STALE_MS = 30 * 60 * 1000;
  * Matching metric ids take `used`, `limit`, `unit` and a measured-at/source
  * note from the export; a metric the probe could not measure keeps today's
  * null-but-recorded behaviour with the export's gap detail. `billedUsd`
- * becomes the export's measured addon read instead of the hardcoded 0.
+ * becomes the export's measured addon read instead of the hardcoded 0 —
+ * or unknown (null) when the accepted export carries no valid billing
+ * measurement, so a failed billing probe never renders as $0.00 billed.
  * Missing, failed, unparseable or stale documents change nothing.
  */
 export function applySupabaseExport(
@@ -737,8 +739,15 @@ export function applySupabaseExport(
       note: parts.join(" ").slice(0, 600),
     };
   });
-  if (doc.billing && typeof doc.billing.billedUsd === "number" && Number.isFinite(doc.billing.billedUsd)) {
+  if (doc.billing && doc.billing.measured !== false && typeof doc.billing.billedUsd === "number" && Number.isFinite(doc.billing.billedUsd)) {
     supabase.billedUsd = doc.billing.billedUsd;
+  } else {
+    // Codex P2 (PR #2369 re-review, 2026-10-29): an accepted export with no
+    // valid billing measurement must not keep the hardcoded 0 from
+    // extractSaasServices — the card is stamped fresh/api below, so $0.00
+    // would read as a measured billed amount. Unknown (null) renders as
+    // no billed line at all.
+    supabase.billedUsd = null;
   }
   supabase.plan = doc.billing?.plan ? `Free plan (${doc.project ?? "supabase"}); measured ${doc.measuredAt}` : supabase.plan;
   supabase.measuredAt = doc.measuredAt.slice(0, 10);
