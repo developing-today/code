@@ -6,6 +6,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Config } from "../config.ts";
+import { applyBoardDonePolicy, isRetiredDoneTableTitle } from "../board-policy.ts";
 import { isAaSection } from "../aa.ts";
 import { isDnsSection } from "../dns.ts";
 import {
@@ -81,6 +82,7 @@ interface KaneoTask {
   status: string;
   priority?: string;
   createdAt?: string;
+  updatedAt?: string;
   externalLinks?: {
     resourceType: string;
     externalId: string;
@@ -137,10 +139,15 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
     }
     // The curated in-flight set, not every open issue: in-progress,
     // in-review, and done (recent) columns only. To-do is the backlog.
+    // "Done (recent)" is enforced, not just commented (#1146): done
+    // cards older than 7 days drop off below via applyBoardDonePolicy,
+    // and the retired ROADMAP Done-table bookkeeping class is filtered
+    // here at the aggregator (the board provenance states the filter).
     const wipStatuses = new Set(["in-progress", "in-review", "done"]);
     for (const col of all) {
       if (!wipStatuses.has(col.id)) continue;
       for (const t of col.tasks) {
+        if (isRetiredDoneTableTitle(t.title)) continue;
         const links: Link[] = (t.externalLinks ?? [])
           .filter((l) => l.resourceType === "issue" || l.resourceType === "pull_request")
           .map((l) => {
@@ -156,14 +163,14 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
           source: "kaneo",
           status: col.id,
           priority: t.priority,
-          updatedAt: t.createdAt,
+          updatedAt: t.updatedAt ?? t.createdAt,
           kaneoUrl: cfg.kaneo.baseUrl,
           links,
         });
       }
     }
   }
-  return out;
+  return applyBoardDonePolicy(out);
 }
 
 // --- Grist --------------------------------------------------------------
@@ -645,11 +652,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         const cookie = await kaneoCookie();
         const board = await kaneoBoard(cfg, cookie);
         if (board.length > 0) {
-          provenance.board = "live (Kaneo)";
+          provenance.board = "live (Kaneo; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
           let merged = board;
           if (cfg.projector.baseUrl) {
             merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
-            provenance.board = "live (Kaneo + projector links)";
+            provenance.board = "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
           }
           // In-flight lane (see inFlightBoardItems above): synthetic
           // entries from the fleet feed's orchestration section — the
