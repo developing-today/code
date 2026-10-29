@@ -1686,3 +1686,94 @@ fn test_a_grant_by_a_member_who_was_re_added_stands_in_every_mode() {
         );
     }
 }
+
+/// Removal-sorts-first variant of the device-authored grant case: the removal's ID
+/// (s0) is smaller than the device grant's (dv1), so canonical order applies the
+/// removal BEFORE the grant is judged. Under weak remove the grant still stands:
+/// its authority is judged at its own causal position (design §6.3).
+#[test]
+fn test_a_device_authored_grant_stands_under_weak_remove_when_the_removal_sorts_first() {
+    let g = id("g");
+    let events = vec![
+        custom(
+            "g",
+            1,
+            &[],
+            with_removal(Removal::Weak, Some(Delegation::KeepPrior)),
+        ),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        add("a1", 1, g, 3, Role::Write, &["a0"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
+        device_add("dv0", 2, g, 50, Role::Write, &["d0"]),
+        remove("s0", 1, g, 2, &["a0"]),
+        delegate("dv1", 50, g, 3, Role::Write, false, &["dv0", "d0"]),
+    ];
+    let weak = project(&events);
+    assert_eq!(outcome(&weak, "dv1"), Outcome::Applied);
+    assert!(
+        weak.grant_in_force(&id("dv1")),
+        "weak remove stands a device-authored grant even when the removal sorts first"
+    );
+}
+
+/// Removal-sorts-first variant of the Admin-scoped device grant case: the
+/// removal (s0) is applied before the device grant (dv0) in canonical order.
+/// Under weak remove the author's Admin status at the grant's causal position
+/// is what counts, so the grant stands (design §6.3).
+#[test]
+fn test_an_admin_scoped_device_grant_stands_under_weak_remove_when_the_removal_sorts_first() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[], with_removal(Removal::Weak, None)),
+        add("a0", 1, g, 2, Role::Admin, &["g"]),
+        device_add("dv0", 2, g, 50, Role::Admin, &["a0"]),
+        remove("s0", 1, g, 2, &["a0"]),
+        add("a1", 1, g, 2, Role::Write, &["s0"]),
+    ];
+    let weak = project(&events);
+    assert_eq!(outcome(&weak, "dv0"), Outcome::Applied);
+    assert!(
+        weak.active_devices(&g, &key(2)).contains(&key(50)),
+        "weak remove stands an Admin-scoped device grant even when the removal sorts first"
+    );
+}
+
+/// The Admin-scoped device grant above without a re-add: the grant is judged
+/// Applied at its causal position (design §6.3). The account still ends
+/// removed, so it has no active devices at the head — that is the documented
+/// head-view cascade, not a refusal of the grant.
+#[test]
+fn test_an_admin_scoped_device_grant_is_applied_under_weak_remove_without_a_readd() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[], with_removal(Removal::Weak, None)),
+        add("a0", 1, g, 2, Role::Admin, &["g"]),
+        device_add("dv0", 2, g, 50, Role::Admin, &["a0"]),
+        remove("s0", 1, g, 2, &["a0"]),
+    ];
+    let weak = project(&events);
+    assert_eq!(outcome(&weak, "dv0"), Outcome::Applied);
+    assert!(
+        weak.active_devices(&g, &key(2)).is_empty(),
+        "a removed account has no active devices at the head"
+    );
+}
+
+/// The device-authored delegation case with the removal authored after both
+/// member adds (a wider causal past, still concurrent with the delegation).
+#[test]
+fn test_a_device_authored_grant_stands_under_weak_remove_with_a_wide_removal_past() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[], with_removal(Removal::Weak, Some(Delegation::KeepPrior))),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        add("a1", 1, g, 3, Role::Write, &["a0"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
+        device_add("dv0", 2, g, 50, Role::Write, &["d0"]),
+        remove("s0", 1, g, 2, &["a0", "a1"]),
+        delegate("dv1", 50, g, 3, Role::Write, false, &["dv0", "d0"]),
+    ];
+    let weak = project(&events);
+    assert_eq!(outcome(&weak, "dv1"), Outcome::Applied);
+    assert!(weak.grant_in_force(&id("dv1")));
+}
