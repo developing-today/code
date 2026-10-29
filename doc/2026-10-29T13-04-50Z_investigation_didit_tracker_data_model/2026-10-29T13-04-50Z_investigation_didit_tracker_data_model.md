@@ -61,9 +61,14 @@ pub struct Event {
 ```
 
 The header commits to the payload: "the header commits to its BLAKE3 hash, and the body itself is
-not part of the event" (`chain.rs:274-276`). So the body is _content-addressed by the signature_,
+not part of the event" (`chain.rs:282-289`). So the body is _content-addressed by the signature_,
 which matters twice: an app can store bodies separately from headers, and a projection can carry
-the header (and therefore authorship and time) without the body.
+the header (and therefore authorship) without the body.
+
+**The envelope carries no timestamp.** `ChainExt` has no time field, and time appears in the store
+only as the local arrival clock on waiting rows (`event_store/waiting_rows.rs:39-40`). That is not
+an oversight to route around: it is why a tracker record's `at` lives in the _body_ (§3.2), and why
+§9's clock question cannot be answered by the substrate.
 
 The signed extension is the extension point a new application kind uses:
 
@@ -89,11 +94,16 @@ pub struct ChainExt {
 `group.policy` (the S5 golden body, `chain.rs:733`). `after` is the causal frontier, so a record
 can name what it supersedes or responds to _without_ an extra index.
 
-**Decision D0 — the tracker is three new `kind` values, no new envelope fields.** `didit.entity`,
-`didit.record`, `didit.expectation`, `didit.opinion` (four, all `didit.`-prefixed). Reasons: the
-`kind` string is already the extension point; adding envelope fields would change the signed
-header format and therefore every existing verifier. A prefix keeps the tracker's kinds from
-colliding with group and tag kinds.
+**Decision D0 — the tracker is four new `kind` values, no new envelope fields.** `didit.entity`,
+`didit.record`, `didit.expectation`, `didit.opinion`, all `didit.`-prefixed. Reasons: `kind` is
+already the extension point, and `LocalEvents::record(kind, tag, document, removes, required_after)`
+is already a generic constructor for a new kind (`local_events.rs:499-523`) — no store change, no
+migration. Adding envelope fields would change the signed header format and therefore every
+existing verifier. A prefix keeps the tracker's kinds from colliding with `tag.*`, `document.*` and
+`device.*`.
+
+One hard limit comes with this choice: signed header CBOR caps text at 512 bytes and arrays at 512
+(`chain.rs:37-46`), so subject sets and detail maps belong in the body, not the header.
 
 ### 1.2 Group state is a fold, not a row
 
@@ -103,10 +113,17 @@ through `crate::membership`, which wraps p2panda-auth, and roles are ordered
 `Pull < Read < Write < Manage < Admin` (`groups/mod.rs:64`). `device.add` / `device.revoke`
 already exist, which is how one account writes from more than one device.
 
-**Consequence for the tracker:** evaluation is the same shape as `fold` — a pure function over
+Two limits on that precedent, stated because they are easy to over-read. The group fold runs over
+`groups.jsonl`, an append-only JSONL log whose events are **not signed** (`groups/log.rs:1-14`),
+not over the event store; and encryption epochs — which rotate on create, update, add, remove and
+recovery, never on a timer (`encryption/mod.rs:18-19`; `encryption/scheme.rs:236`) — live in the
+encryption scheme, not on `ChainExt`.
+
+**Consequence for the tracker:** evaluation has the same _shape_ as `fold` — a pure function over
 `(expectations, records, entities)` producing `(satisfied, due, overdue, violated)` per expectation
-per window. It can be recomputed on any device from the same event set, which is what makes
-offline and multi-device use work.
+per window — but it is its own function over signed events, not a reuse of `groups::fold`. It can be
+recomputed on any device from the same event set, which is what makes offline and multi-device use
+work.
 
 ### 1.3 Documents are opaque blobs
 
@@ -397,8 +414,12 @@ records requires `Read`; writing requires `Write` (`groups/mod.rs:64`). No track
 
 ## 6. Query shapes the schema must support
 
-All of these are filters over an event set the client already replicates; none needs a new index
-in the store, and each maps to a linear scan plus the existing range/waiting machinery.
+All of these are filters over an event set the client already replicates. Nothing needs a new
+index: reads walk every applied event today (`local_events.rs:18-20`), and the network side is
+whole-store set reconciliation, not a filtered query (`event_store/sync.rs:193-201`). So the
+tracker's cost model is "scan the household's applied events, filter by kind and subject", and the
+only thing the schema must guarantee is that the filters are cheap — which is why `act`, `subjects`
+and `at` are top-level body fields rather than nested structure.
 
 | Question                                 | Shape                                                                                 |
 | ---------------------------------------- | ------------------------------------------------------------------------------------- |
