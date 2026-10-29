@@ -4,18 +4,250 @@
 // the owning jobs (fleet-feed collector, stewardship-cycle, the Jules
 // keeper) and the one-shot backfill script; the aggregator only reads.
 //
+// Retention (§6, #1117): raw monthly files are kept for 13 months,
+// then compacted in place into monthly rollup files
+// (`usage-YYYY-MM.rollup.jsonl`) that keep min/max/last per
+// service+metric and are kept indefinitely. SnapshotStore.readAll
+// expands rollups back into records, so existing readers see a
+// compacted store unchanged in shape.
+//
 // Records keep their original observation timestamp and source class —
 // backfilled prose observations stay dated 2026-10-20 even when the
 // backfill runs later. Estimates are stored as a low/high pair with
 // unit "usd-est"; the 1.2×high counting rule applies at render, never
 // baked into history.
-import { appendFile, mkdir, readdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SnapshotRecord, UsageSourceClass } from "./model.ts";
 
 const SOURCES: ReadonlySet<string> = new Set(["api", "console", "manual", "estimate", "invoice"]);
 const UNITS: ReadonlySet<string> = new Set(["pct", "usd", "count", "gb", "tokens", "usd-est"]);
 const FILE_RE = /^usage-(\d{4}-\d{2})\.jsonl$/;
+
+const ROLLUP_RE = /^usage-(\d{4}-\d{2})\.rollup\.jsonl$/;
+
+/** The rollup file a month's raw file compacts into. */
+export function rollupFileFor(month: string): string {
+  return `usage-${month}.rollup.jsonl`;
+}
+
+/**
+ * One month's compaction of every record for one
+ * service+metric+unit+source: the count of raw records it replaces
+ * and their min/max/last values (each with the timestamp it was
+ * observed at). Estimate pairs ({low, high}) order by low, then high.
+ * `resetsAt`/`limit` are the last non-null values seen, so a quota
+ * window's reset effect survives compaction on the `last` record.
+ */
+export interface SnapshotRollup {
+  kind: "snapshot-rollup/v1";
+  month: string;
+  serviceId: string;
+  metricId: string;
+  unit: SnapshotRecord["unit"];
+  source: SnapshotRecord["source"];
+  observedBy: string;
+  count: number;
+  firstTs: string;
+  lastTs: string;
+  valueMin: SnapshotRecord["value"];
+  minTs: string;
+  valueMax: SnapshotRecord["value"];
+  maxTs: string;
+  valueLast: SnapshotRecord["value"];
+  resetsAt?: string | null;
+  limit?: number | null;
+}
+
+function rollupOrderKey(v: SnapshotRecord["value"]): [number, number] {
+  return typeof v === "number" ? [v, v] : [v.low, v.high];
+}
+
+function cmpValue(a: SnapshotRecord["value"], b: SnapshotRecord["value"]): number {
+  const [al, ah] = rollupOrderKey(a);
+  const [bl, bh] = rollupOrderKey(b);
+  return al - bl || ah - bh;
+}
+
+/** Structural validation for one rollup line (store reads). */
+export function isSnapshotRollup(v: unknown): v is SnapshotRollup {
+  if (typeof v !== "object" || v === null) return false;
+  const r = v as Partial<SnapshotRollup>;
+  if (r.kind !== "snapshot-rollup/v1") return false;
+  if (typeof r.month !== "string" || !/^\d{4}-\d{2}$/.test(r.month)) return false;
+  if (typeof r.serviceId !== "string" || r.serviceId === "") return false;
+  if (typeof r.metricId !== "string" || r.metricId === "") return false;
+  if (typeof r.unit !== "string" || !UNITS.has(r.unit)) return false;
+  if (typeof r.source !== "string" || !SOURCES.has(r.source)) return false;
+  if (typeof r.count !== "number" || !(r.count >= 1)) return false;
+  const val = (x: unknown): boolean =>
+    (typeof x === "number" && Number.isFinite(x)) ||
+    (typeof x === "object" &&
+      x !== null &&
+      typeof (x as { low?: unknown }).low === "number" &&
+      typeof (x as { high?: unknown }).high === "number");
+  return val(r.valueMin) && val(r.valueMax) && val(r.valueLast);
+}
+
+interface RollupAgg {
+  rollup: SnapshotRollup;
+}
+
+function aggFromRecord(month: string, r: SnapshotRecord): RollupAgg {
+  return {
+    rollup: {
+      kind: "snapshot-rollup/v1",
+      month,
+      serviceId: r.serviceId,
+      metricId: r.metricId,
+      unit: r.unit,
+      source: r.source,
+      observedBy: r.observedBy,
+      count: 1,
+      firstTs: r.ts,
+      lastTs: r.ts,
+      valueMin: r.value,
+      minTs: r.ts,
+      valueMax: r.value,
+      maxTs: r.ts,
+      valueLast: r.value,
+      ...(r.resetsAt !== undefined ? { resetsAt: r.resetsAt } : {}),
+      ...(r.limit !== undefined ? { limit: r.limit } : {}),
+    },
+  };
+}
+
+function aggFromRollup(r: SnapshotRollup): RollupAgg {
+  return { rollup: { ...r } };
+}
+
+function aggAddRecord(agg: RollupAgg, r: SnapshotRecord): void {
+  const o = agg.rollup;
+  o.count += 1;
+  if (r.ts < o.firstTs) o.firstTs = r.ts;
+  if (cmpValue(r.value, o.valueMin) < 0) {
+    o.valueMin = r.value;
+    o.minTs = r.ts;
+  }
+  if (cmpValue(r.value, o.valueMax) > 0) {
+    o.valueMax = r.value;
+    o.maxTs = r.ts;
+  }
+  if (r.ts >= o.lastTs) {
+    o.lastTs = r.ts;
+    o.valueLast = r.value;
+    o.observedBy = r.observedBy;
+    if (r.resetsAt != null) o.resetsAt = r.resetsAt;
+    if (r.limit !== undefined) o.limit = r.limit;
+  }
+}
+
+function rollupGroupKey(serviceId: string, metricId: string, unit: string, source: string): string {
+  return `${serviceId}|${metricId}|${unit}|${source}`;
+}
+
+/**
+ * Compact one month's records into rollups: one per
+ * service+metric+unit+source, sorted for a stable file. Existing
+ * rollups for the month seed the aggregates (their counts and
+ * min/max/last survive), so re-compacting after late raw records
+ * arrive for an already-compacted month merges instead of losing
+ * history.
+ */
+export function compactRecordsToRollups(
+  month: string,
+  records: SnapshotRecord[],
+  existing: SnapshotRollup[] = [],
+): SnapshotRollup[] {
+  const aggs = new Map<string, RollupAgg>();
+  for (const r of existing) {
+    aggs.set(rollupGroupKey(r.serviceId, r.metricId, r.unit, r.source), aggFromRollup(r));
+  }
+  const sorted = [...records].sort((a, b) => a.ts.localeCompare(b.ts));
+  for (const r of sorted) {
+    const k = rollupGroupKey(r.serviceId, r.metricId, r.unit, r.source);
+    const agg = aggs.get(k);
+    if (agg) aggAddRecord(agg, r);
+    else aggs.set(k, aggFromRecord(month, r));
+  }
+  return [...aggs.values()]
+    .map((a) => a.rollup)
+    .sort((a, b) =>
+      rollupGroupKey(a.serviceId, a.metricId, a.unit, a.source).localeCompare(
+        rollupGroupKey(b.serviceId, b.metricId, b.unit, b.source),
+      ),
+    );
+}
+
+/**
+ * Expand a rollup back into records for the existing reading path:
+ * min, max, and last (deduped when they coincide). The `last` record
+ * carries the preserved resetsAt/limit, so latest-value readers and
+ * reset markers behave as they did on the raw store.
+ */
+export function expandRollup(r: SnapshotRollup): SnapshotRecord[] {
+  const base = {
+    serviceId: r.serviceId,
+    metricId: r.metricId,
+    unit: r.unit,
+    source: r.source,
+    observedBy: r.observedBy,
+  };
+  const out: SnapshotRecord[] = [];
+  const seen = new Set<string>();
+  const push = (rec: SnapshotRecord): void => {
+    const k = snapshotKey(rec);
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(rec);
+  };
+  // Last first: when min or max IS the last observation (same ts and
+  // value), the dedupe keeps the record that carries resetsAt/limit.
+  push({
+    ...base,
+    ts: r.lastTs,
+    value: r.valueLast,
+    ...(r.resetsAt !== undefined ? { resetsAt: r.resetsAt } : {}),
+    ...(r.limit !== undefined ? { limit: r.limit } : {}),
+  });
+  push({ ...base, ts: r.minTs, value: r.valueMin });
+  push({ ...base, ts: r.maxTs, value: r.valueMax });
+  return out.sort((a, b) => a.ts.localeCompare(b.ts));
+}
+
+/** `YYYY-MM` shifted by whole months (negative = earlier). */
+export function shiftMonth(month: string, delta: number): string {
+  const [y, m] = month.split("-").map(Number);
+  const total = y * 12 + (m - 1) + delta;
+  const yy = Math.floor(total / 12);
+  const mm = (total % 12) + 1;
+  return `${yy}-${String(mm).padStart(2, "0")}`;
+}
+
+/** Per-service before/after counts for one compacted month. */
+export interface CompactionServiceCounts {
+  before: number;
+  after: number;
+}
+
+export interface CompactionMonthReport {
+  month: string;
+  /** Raw records read from the month's raw file. */
+  recordsBefore: number;
+  /** Rollup records the month is represented by afterwards. */
+  recordsAfter: number;
+  perService: Record<string, CompactionServiceCounts>;
+  dryRun: boolean;
+  /** True when nothing was (or would be) changed for this month. */
+  unchanged: boolean;
+}
+
+export interface CompactionReport {
+  /** Oldest month still kept raw; older months were eligible. */
+  cutoffMonth: string;
+  months: CompactionMonthReport[];
+  dryRun: boolean;
+}
 
 /** The monthly file a record belongs in, by its own timestamp. */
 export function snapshotFileFor(ts: string): string {
@@ -53,7 +285,7 @@ export class SnapshotStore {
   async readAll(): Promise<SnapshotRecord[]> {
     let names: string[];
     try {
-      names = (await readdir(this.dir)).filter((n) => FILE_RE.test(n)).sort();
+      names = (await readdir(this.dir)).filter((n) => FILE_RE.test(n) || ROLLUP_RE.test(n)).sort();
     } catch {
       return []; // no store yet — history simply has not started
     }
@@ -65,11 +297,16 @@ export class SnapshotStore {
       } catch {
         continue;
       }
+      const isRollup = ROLLUP_RE.test(name);
       for (const line of text.split("\n")) {
         if (!line.trim()) continue;
         try {
           const parsed: unknown = JSON.parse(line);
-          if (isSnapshotRecord(parsed)) out.push(parsed);
+          if (isRollup) {
+            if (isSnapshotRollup(parsed)) out.push(...expandRollup(parsed));
+          } else if (isSnapshotRecord(parsed)) {
+            out.push(parsed);
+          }
         } catch {
           // one bad line never poisons the store
         }
@@ -114,6 +351,87 @@ export class SnapshotStore {
       await appendFile(join(this.dir, file), lines, "utf8");
     }
     return fresh.length;
+  }
+
+  /**
+   * Retention (§6, #1117): compact every raw monthly file older
+   * than `retentionMonths` (default 13) into its rollup file, then
+   * remove the raw file. Months at or newer than the cutoff stay
+   * raw. Idempotent: a month with no raw file is skipped, and a
+   * month whose raw file reappears (late writer) merges into the
+   * existing rollup on the next run. With `dryRun`, the same report
+   * is computed and nothing on disk changes.
+   */
+  async compact(opts: { now?: Date; retentionMonths?: number; dryRun?: boolean } = {}): Promise<CompactionReport> {
+    const now = opts.now ?? new Date();
+    const retentionMonths = opts.retentionMonths ?? 13;
+    const dryRun = opts.dryRun ?? false;
+    const currentMonth = now.toISOString().slice(0, 7);
+    const cutoffMonth = shiftMonth(currentMonth, -retentionMonths);
+    const report: CompactionReport = { cutoffMonth, months: [], dryRun };
+    let names: string[];
+    try {
+      names = (await readdir(this.dir)).sort();
+    } catch {
+      return report; // no store yet — nothing to compact
+    }
+    for (const name of names) {
+      const m = FILE_RE.exec(name);
+      if (!m) continue;
+      const month = m[1];
+      if (month > cutoffMonth) continue; // still within the raw window
+      const rawText = await readFile(join(this.dir, name), "utf8").catch(() => "");
+      const records: SnapshotRecord[] = [];
+      for (const line of rawText.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const parsed: unknown = JSON.parse(line);
+          if (isSnapshotRecord(parsed)) records.push(parsed);
+        } catch {
+          // malformed lines are dropped by compaction, as reads skip them
+        }
+      }
+      const rollupName = rollupFileFor(month);
+      const existing: SnapshotRollup[] = [];
+      if (names.includes(rollupName)) {
+        const rollText = await readFile(join(this.dir, rollupName), "utf8").catch(() => "");
+        for (const line of rollText.split("\n")) {
+          if (!line.trim()) continue;
+          try {
+            const parsed: unknown = JSON.parse(line);
+            if (isSnapshotRollup(parsed)) existing.push(parsed);
+          } catch {
+            // a bad rollup line never blocks compaction of the raw file
+          }
+        }
+      }
+      const rollups = compactRecordsToRollups(month, records, existing);
+      const perService: Record<string, CompactionServiceCounts> = {};
+      for (const r of records) {
+        (perService[r.serviceId] ??= { before: 0, after: 0 }).before += 1;
+      }
+      for (const r of existing) {
+        (perService[r.serviceId] ??= { before: 0, after: 0 }).before += r.count;
+      }
+      for (const r of rollups) {
+        (perService[r.serviceId] ??= { before: 0, after: 0 }).after += 1;
+      }
+      const monthReport: CompactionMonthReport = {
+        month,
+        recordsBefore: records.length + existing.reduce((n, r) => n + r.count, 0),
+        recordsAfter: rollups.length,
+        perService,
+        dryRun,
+        unchanged: records.length === 0,
+      };
+      report.months.push(monthReport);
+      if (dryRun || records.length === 0) continue;
+      const tmp = join(this.dir, `.${rollupName}.tmp`);
+      await writeFile(tmp, rollups.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+      await rename(tmp, join(this.dir, rollupName));
+      await rm(join(this.dir, name));
+    }
+    return report;
   }
 }
 
