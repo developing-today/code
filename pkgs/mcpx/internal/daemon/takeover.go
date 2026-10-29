@@ -362,6 +362,17 @@ func (s *Server) passConns(ul, tl *connListener, grace time.Duration) ([]*handof
 	s.conns.setHandingOver(true)
 	ul.stop()
 	tl.stop()
+	// The tailnet listener stops accepting here too, before the sweep
+	// below and long before Registry.Detach: a tailnet connection
+	// accepted after the sweep would be gathered by nobody, then reach
+	// a pool Detach has already closed — or be cut by the node shutdown
+	// in closeTSNetNode instead of drained. Stopping the tracked
+	// wrapper closes only its inner listener; the node stays this
+	// process's until closeTSNetNode, and restoreHTTP listens on the
+	// same node again if the handover does not commit.
+	if cl, ok := s.tsnetLn.(*connListener); ok && cl != nil {
+		cl.stop()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
 	tick := time.NewTicker(defaults.TakeoverPoll)
@@ -509,6 +520,18 @@ func (s *Server) restoreHTTP(unixF, tcpF *os.File, passing []*handoffConn) error
 		// restored, and a daemon that serves nothing helps no one.
 		if err := s.listenTSNet(); err != nil {
 			s.logger.Printf("takeover: restoring the tsnet listener: %v", err)
+		}
+	} else if cl, ok := s.tsnetLn.(*connListener); ok && cl != nil && cl.isStopped() {
+		// passConns stopped the tailnet listener but the node was
+		// never closed (closeTSNetNode runs only on the commit
+		// path): listen on the same node again instead of joining
+		// a second one.
+		if tl, ok := cl.inner.(*tsnetListener); ok {
+			if ln, err := tl.node.Listen(); err != nil {
+				s.logger.Printf("takeover: restoring the tsnet listener: %v", err)
+			} else {
+				s.tsnetLn = newConnListener(ln, &s.conns, nil)
+			}
 		}
 	}
 	s.startHTTP()

@@ -224,6 +224,29 @@ type TSNetDialer struct {
 	once sync.Once
 	node *tsnetNode
 	err  error
+
+	joinOnce sync.Once
+	joinErr  error
+}
+
+// ensureJoined waits for the ephemeral node to join the tailnet, once,
+// with the tsnet up budget (daemon.tsnetUpTimeout) rather than any
+// single request's deadline. A cold join — registration plus auth —
+// routinely takes longer than the client's short health-probe timeout
+// (autostart.pingTimeout, 2s): bounding the first Up by the caller's
+// context made Connect reject a healthy daemon before sending its real
+// request, and every retry in a new process paid the same cold join
+// because client state is in memory only. After a successful join the
+// wait is a no-op; a failed join is reported once, with the reason.
+func (d *TSNetDialer) ensureJoined() error {
+	d.joinOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), tsnetUpTimeout)
+		defer cancel()
+		if _, err := d.node.server.Up(ctx); err != nil {
+			d.joinErr = fmt.Errorf("tsnet client did not join the tailnet within %s: %w", tsnetUpTimeout, err)
+		}
+	})
+	return d.joinErr
 }
 
 // NewTSNetDialer builds a dialer for one client hostname (the name this
@@ -244,6 +267,9 @@ func (d *TSNetDialer) DialContext(ctx context.Context, _, addr string) (net.Conn
 	})
 	if d.err != nil {
 		return nil, d.err
+	}
+	if err := d.ensureJoined(); err != nil {
+		return nil, err
 	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
