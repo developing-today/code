@@ -90,10 +90,19 @@ this + #2034 (ephemeral live data vs the chained event graph).
 | App-level checked chunking above the frame cap already exists for MLS welcomes (split into headered chunks, joiner reassembles in order, one-chunk fast path) | `pkgs/id/src/encryption/welcome.rs`; tests in `pkgs/id/src/encryption/tests.rs` (~L816–890) |
 | Chunked flights under the frame cap were already needed once at bootstrap (512 KiB budget under the 1 MiB stream cap) | phase-3 doc, P3.1c |
 
-**Gap statement:** today a message reaches exactly the peers its sender can
-connect to (directly or via pairwise sync with each). There is no mechanism by
-which member C's message reaches member E when E is only connected to member
-D. That is the gap #2035 asks to close.
+**Gap statement, narrowed (Codex review, PR #2246):** for *stored* events,
+eventual transitive delivery already exists and must not be treated as
+absent: `EventStore::sync_entries`
+(`pkgs/id/src/event_store/sync.rs`) enumerates all stored event hashes
+without filtering by origin, so C->D followed by D->E range sync already
+delivers C's event to E with no C-E connection, and the web-enabled serve
+loop reconciles periodically with discovered peers
+(`pkgs/id/src/commands/serve.rs`, the `/id-sync/1` offer loop). What is
+missing is **immediate, group-aware live fan-out with hop metadata**: no
+mechanism pushes member C's message to member E promptly when E is only
+connected to member D, and nothing records the bridge path. That live
+fan-out gap — not eventual transitive delivery — is what #2035 asks to
+close.
 
 ## 2. The relay model
 
@@ -149,7 +158,7 @@ The division of labour for protocol v1 (#2036):
 | iroh-gossip | Swarm membership (HyParView), broadcast-tree fan-out, duplicate suppression, missed-message repair |
 | ID messaging layer | Group membership (who may speak/read — gossip topics are open to anyone who knows the topic ID, so the topic ID is a capability at most, never the access control), origin signing, prev-hash chaining, hop records, dedupe by message ID as the *semantic* check behind gossip's transport dedupe, ingest verification (same posture as `event_sync`: verify, refuse tampered) |
 
-Two cautions the synthesis must resolve:
+Three cautions the synthesis must resolve:
 
 - **Topic ≠ group.** A gossip topic is a swarm, not an authorisation domain.
   Non-members who learn a topic ID can inject unsigned/garbage broadcasts;
@@ -159,11 +168,26 @@ Two cautions the synthesis must resolve:
 - **Gossip delivery is eventual, not ordered.** That is safe for the chained
   class precisely because of chaining (§2.4). It is the wrong tool for media
   (§3) and for ephemeral live data that needs sender-order (§2.5).
+- **Stock gossip forwards before ID ingest can approve (Codex review,
+  PR #2246).** iroh-gossip's protocol pushes a received broadcast to eager
+  peers on receipt; the application's receive event is not a
+  forwarding-approval callback. So signature/membership checks in ID's
+  receive handler **cannot** enforce "do not relay what you would not
+  accept" (§2.2, first caution) against stock gossip, and ID hop records
+  and the hop cap (§2.3) cannot be appended or enforced on those automatic
+  forwards either — invalid traffic from a non-member who knows the topic
+  still propagates. Protocol v1 therefore owes one of: (a) a
+  validation/forwarding extension or patch to the substrate that gates
+  eager push on ID's verify step, or (b) a revised forwarding design in
+  which gossip supplies swarm membership/repair only and ID-controlled
+  forwarding carries the traffic. Presenting application ingest above
+  stock gossip as sufficient is not an option.
 
 ### 2.3 The relayed-message envelope
 
 ```
-message_id      = BLAKE3(origin_id ‖ group_id ‖ origin_seq ‖ content_hash)
+message_id      = BLAKE3(canonical bytes of the complete signed envelope below,
+                       excluding only the mutable hop chain)
 signed envelope (origin signature covers all of it):
     origin_id, group_id, origin_seq
     prev[]            — hashes of the origin's previous messages / graph heads
@@ -187,6 +211,16 @@ Rules:
   (matches the LIST 10 audit pattern: a third party can replay who handled
   what). A relay that strips the hop chain harms audit, not validity — the
   next relay starts a fresh chain and the message still verifies.
+- **Dedupe identity covers the full signed envelope (Codex review,
+  PR #2246).** `message_id` hashes the complete canonical signed envelope
+  — the same posture as `pkgs/id/src/chain.rs`, where an event's ID is
+  `Hash::digest` of its complete header bytes — and excludes only the
+  unsigned, mutable hop chain. Two envelopes from one origin with the same
+  group, sequence, and content but different `prev[]` therefore get
+  **different** IDs: the second is not deduped away, so downstream members
+  can observe the fork, matching the event store's rule of retaining
+  conflicting headers as fork proofs that freeze the author's chain
+  (`pkgs/id/src/event_store/mod.rs`).
 - **Dedupe is by `message_id`, at every member, before relaying.** Seen-set
   retention only needs to cover the gossip repair window for the chained
   class (the graph itself is the long-term record) and seconds for the
@@ -284,7 +318,19 @@ media (recorded clips as blobs) rather than stacking forwarding latency.
 Opt-in per session: all of a session's traffic — messaging fan-out root and
 media alike — routes through one chosen relay (a member's always-on machine,
 a self-host Iroh relay from the P7.1 kit, or in the limit a server Drew runs)
-so participants see only the relay's address, never each other's. Costs,
+so participants see only the relay's address, never each other's.
+**Isolation requirement (Codex review, PR #2246):** routing traffic
+through the relay does not by itself deliver that promise. QUIC address
+discovery exposes a peer's direct addresses to the peers it connects to
+(documented in `pkgs/id/src/invites/mod.rs`), and the checked-in
+`research-round2/iroh-allowlist/RESULTS.md` distinguishes relay-only
+transports (`clear_ip_transports`) from merely filtering published
+addresses. This mode therefore requires one of: (a) direct transports and
+candidate exchange disabled for the session (relay-only transport
+posture), or (b) application-level proxy connections under which
+participants never connect to one another at all. Without one of those,
+the proposed privacy mode can expose exactly the IPs it promises to hide.
+Costs,
 stated so the choice is informed: +1 leg of latency on every packet, all
 session bandwidth concentrated on the relay, relay learns session metadata
 (not content). This mode *is* Drew's "optional privacy proxy" — a mode, not
