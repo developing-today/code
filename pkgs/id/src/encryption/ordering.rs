@@ -3,9 +3,11 @@
 //! The crate's orderer (`MessageOrderer`) is test-only, so the adapter brings its own with the same
 //! rules. A message names the heads it can see: the latest control messages of the concurrent
 //! branches. It always names its author's own latest control message, and it names at most
-//! [`MAX_PARENTS`]. A publish that would name more is refused (P4.7). A message is delivered once
-//! every message it names is delivered. Nothing is delivered before the device is welcomed: a create
-//! or a welcome opens delivery, and earlier messages wait in the queue.
+//! [`MAX_PARENTS`]. A publish that would name more is refused, unless the session asked for a merge:
+//! then the list is cut to [`MAX_PARENTS`], own latest kept, so a group above the cap can publish
+//! again (P4.7). A message is delivered once every message it names is delivered. Nothing is
+//! delivered before the device is welcomed: a create or a welcome opens delivery, and earlier
+//! messages wait in the queue.
 //!
 //! Application messages are never named by other messages, so the adapter may leave one out
 //! without stalling anything. [`super::scheme`] does that for messages whose group secret the
@@ -25,7 +27,8 @@ use thiserror::Error;
 use super::roster::Roster;
 
 /// The most parents a message may name (P4.7, N22). A publish that would name more is refused, and
-/// nothing is dropped from the list.
+/// nothing is dropped from the list, unless it is a merge: then up to this many are named and the
+/// rest stay heads for a later merge.
 pub const MAX_PARENTS: usize = 32;
 
 /// One published group message: a control message with its direct messages, or an application
@@ -182,6 +185,7 @@ impl Orderer {
             deliverable: VecDeque::new(),
             welcomed: false,
             welcome: None,
+            merge_next: false,
         }
     }
 }
@@ -212,9 +216,19 @@ pub struct OrdererState {
     /// The create or welcome that opened delivery. It is delivered before any pending message that
     /// is not in its own past (P4.7).
     welcome: Option<Hash>,
+    /// Set by the session just before a merge update, so that publish cuts the parent list to
+    /// [`MAX_PARENTS`] instead of refusing (P4.7).
+    #[serde(default)]
+    merge_next: bool,
 }
 
 impl OrdererState {
+    /// Asks the next publish to be a merge: it names up to [`MAX_PARENTS`] of the heads instead of
+    /// all of them, so the ones it leaves stay heads and the count falls (P4.7).
+    pub fn begin_merge(&mut self) {
+        self.merge_next = true;
+    }
+
     /// The parents a message published now names: our own latest control message, then the heads.
     pub fn parent_list(&self) -> Vec<Hash> {
         let mut parents: Vec<Hash> = self.own.into_iter().collect();
@@ -259,14 +273,20 @@ impl OrdererState {
     }
 
     /// Publishes our own message. It names the parents, and it is ready. A message whose parents
-    /// would be more than [`MAX_PARENTS`] is refused, and no sequence number is used.
+    /// would be more than [`MAX_PARENTS`] is refused and no sequence number is used, unless it is a
+    /// merge: then it names the first [`MAX_PARENTS`] (own latest first) and the rest stay heads
+    /// (P4.7).
     fn publish(&mut self, content: Content) -> Result<Envelope, OrdererError> {
-        let parents = self.parent_list();
+        let merge = std::mem::take(&mut self.merge_next);
+        let mut parents = self.parent_list();
         if parents.len() > MAX_PARENTS {
-            return Err(OrdererError::TooManyParents {
-                count: parents.len(),
-                cap: MAX_PARENTS,
-            });
+            if !merge {
+                return Err(OrdererError::TooManyParents {
+                    count: parents.len(),
+                    cap: MAX_PARENTS,
+                });
+            }
+            parents.truncate(MAX_PARENTS);
         }
         let seq = self.next_seq;
         self.next_seq += 1;

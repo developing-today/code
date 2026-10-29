@@ -15,7 +15,7 @@
 | P4.4 Scheme v1                        | scheme  | done   | d22f6987, 3b671bb4 |                                       |                                           |
 | P4.5 recent:N and full                | history | done   | 6b2a9005, 67207add |                                       |                                           |
 | P4.6 Lazy full history                | history | done   | 25d7d814           |                                       |                                           |
-| P4.7 Heads rule                       | heads   | done   | 6001cfdd, e1fee2ce | 8 new (4 heads, 4 concurrency)        | cap 32, refusal not merge; open epoch gap |
+| P4.7 Heads rule                       | heads   | done   | 6001cfdd, e1fee2ce | 8 new (4 heads, 4 concurrency)        | cap 32, merge above the cap (2979); open epoch gap |
 | P4.8 Rotation policy and PCS recovery | warn    | done   | 205a5483           | 4 rotation and recovery tests         | `Session::recover`; no CLI command yet    |
 | P4.9 Warnings                         | warn    | done   | 4b82eff2           | 11 warning tests (9 unit, 2 property) | pure evaluator; not yet wired into serve  |
 | P4.10 scheme none notice              | warn    | done   | a95c52ae           | 4 notice tests                        | function only; no UI yet                  |
@@ -86,7 +86,7 @@ Commits on `p4-heads` (not pushed):
 
 - A control message names the heads: the delivered or published control messages that no delivered or published control message names. It also names its author's own latest control message, even when a later message covers it. Application messages name the same list.
 - At most 32 parents, own latest included. A publish that would name more is refused with `SchemeError::TooManyParents { count, cap }`. The check runs before the crate call, for update, send, add, remove and recovery. A refusal leaves the epoch and the roster as they were, and nothing is dropped from the parents.
-- The merge in the plan (P4.7: merge when the heads would exceed the cap) is not built. A group with more than 32 heads cannot publish until a member sees fewer of them. This is open.
+- The merge in the plan (P4.7: merge when the heads would exceed the cap) is built (queue task 2979). While a change's parents would exceed 32, the session first publishes update merges: each is an update naming up to 32 heads, own latest first, and the heads it leaves stay heads. Each merge turns 32 parents into one, so the count falls by at least 31 and the loop ends. The change that follows names at most the cap, including the last merge and the heads the merge left. Every `Session` change that can merge returns all the messages to broadcast, merges first: a member without the merge cannot deliver the change that names it. `TooManyParents` remains as the orderer's guard for a publish that skipped the merge; it is not reachable through the `Session` API.
 - The rule it replaces named the latest control message of each author. That list grew with the number of authors. At 33 authors it went past 32 with no check, and it named messages that a later head already covered.
 
 ### Findings
@@ -99,12 +99,11 @@ Commits on `p4-heads` (not pushed):
 
 - `test_concurrent_updates_and_sends_converge` and `test_a_concurrent_add_and_sends_converge`, 16 cases each. Two or three admins each make one change from the group as it was: an update, a send, or the add of member 4. Each member then hears the changes it did not make, one at a time, in its own shuffled order, with the members taking turns. At the end every member has the same roster and the same epoch set, and reads every send by another member. A local run at 128 cases passed.
 - A property that mixed updates, sends and an add found the open gap above. The add and the updates are therefore in separate properties.
-- Heads: `test_a_message_names_the_heads_and_not_every_authors_latest` (red before the change), `test_an_author_names_its_own_latest_even_when_a_later_message_covers_it`, `test_a_message_may_name_32_parents`, and `test_a_message_naming_33_parents_is_refused_and_the_state_is_kept` (red before the change). The last one checks that an update and a send are both refused at 33 parents, and that the epoch and the roster are unchanged.
-- Results: the encryption module has 73 passed and 1 ignored (the P4.11 benchmark). The full `cargo test --lib` has 1172 passed, 0 failed and 4 ignored. Clippy reports nothing in `src/encryption`.
+- Heads: `test_a_message_names_the_heads_and_not_every_authors_latest` (red before the change), `test_an_author_names_its_own_latest_even_when_a_later_message_covers_it`, `test_a_message_may_name_32_parents`, and `test_a_group_above_32_heads_merges_and_publishes_again`. The last one was the refusal test at 33 parents; it now checks the merge: a publish above the cap returns a merge naming 32 of the 33 parents and the change that follows, the left head and the merge are both named by that change, and every member of the 33 ends on the same roster and epoch set and reads a message sent after the merge.
+- Results after the merge (queue task 2979): the encryption module has 71 passed and 1 ignored (the P4.11 benchmark). The count fell by one because the 33-parent refusal test became the merge test. The full `cargo test --lib` has 1172 passed, 0 failed and 4 ignored. Clippy reports nothing in `src/encryption`.
 
 ### Open
 
-- The merge rule for more than 32 heads (above).
 - The open epoch gap for a concurrent update and add (above).
 - The S10 scenarios at 40 members are not reproduced. Concurrency is tested with 2 or 3 admins, and 33 members only for the cap. Storms and partitions at scale are open.
 - Concurrent removals, and a removal concurrent with an update, are not in the properties.
@@ -122,4 +121,4 @@ Commits on `p4-heads` (not pushed):
 - The failure is `serve_tests::test_world_module_shared_over_iroh_and_web_presentations`: the server stalls after `world: records document ready` and never prints `node:`. It fails the same way on the phase-3 tip (3a51589d), so phase 4 did not cause it. Issue #190.
 - One earlier run failed `test_an_interrupted_session_restarts_without_duplicates` under load and passed alone three times. Issue #188.
 - Not run in this pass: `just crash-gate` and the nix checks.
-- Open from the tracks: the heads merge for groups above 32 heads (issue #189), the joiner that misses an update made without knowing a concurrent add (issue #189), the held-message cap (issue #186), and stalled delivery on missing pre-join controls (issue #187).
+- Open from the tracks: the joiner that misses an update made without knowing a concurrent add (issue #189, resolved by lazy history in P4.6), the held-message cap (issue #186), and stalled delivery on missing pre-join controls (issue #187).
