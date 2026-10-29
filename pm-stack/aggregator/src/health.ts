@@ -122,6 +122,13 @@ export interface HealthView {
   /** The aggregator process itself is up if it assembled this view. */
   status: "ok";
   mode: "live" | "fixtures";
+  /** Deployed build marker (#1150): the commit install.sh deployed,
+   *  carried into the process via PM_AGG_BUILD_VERSION in the service
+   *  env file, or "unknown" for a process nobody deployed that way.
+   *  install.sh polls /api/health after a restart and fails loudly
+   *  when this does not match the tree it just deployed — a deploy
+   *  that cannot prove it is live is a failed deploy. */
+  version: string;
   generatedAt: string;
   bootAt: string;
   degraded: boolean;
@@ -212,6 +219,9 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
 
 export interface HealthInputs {
   mode: "live" | "fixtures";
+  /** Build marker override (tests); defaults to the deployed
+   *  PM_AGG_BUILD_VERSION env value, else "unknown". */
+  version?: string;
   cfg: Config;
   feed: FleetFeed | null;
   feedFileMtimeMs: number | null;
@@ -224,6 +234,11 @@ export interface HealthDeps {
   fetcher?: ProbeFetch;
   cache?: ProbeCache;
   now?: number;
+}
+
+export function resolveBuildVersion(env: Record<string, string | undefined> = process.env): string {
+  const v = env.PM_AGG_BUILD_VERSION?.trim();
+  return v ? v : "unknown";
 }
 
 export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): Promise<HealthView> {
@@ -321,6 +336,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
   return {
     status: "ok",
     mode: inputs.mode,
+    version: inputs.version ?? resolveBuildVersion(),
     generatedAt: new Date(now).toISOString(),
     bootAt: new Date(BOOT_AT).toISOString(),
     degraded,

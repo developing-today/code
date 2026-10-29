@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
 import { loadConfig } from "../src/config.ts";
 import type { FleetFeed, SectionDiagnosis } from "../src/feed.ts";
-import { buildHealth, createProbeCache, recordRender, type HealthInputs, type ProbeFetch } from "../src/health.ts";
+import { buildHealth, createProbeCache, recordRender, resolveBuildVersion, type HealthInputs, type ProbeFetch } from "../src/health.ts";
 import { pendingCommentCounts } from "../src/comments.ts";
 import type { DashComment } from "../src/model.ts";
 import { renderHealth } from "../src/render.ts";
@@ -375,5 +375,22 @@ describe("pending comment counts (#1145)", () => {
     expect(html).toContain("3 messages awaiting triage");
     expect(html).toContain("2 GitHub comments awaiting posting");
     expect(html).toContain("9 comments in the store");
+  });
+});
+
+describe("buildHealth version marker (#1150)", () => {
+  test("exposes the deployed build version and defaults to unknown", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const deployed = await buildHealth(inputs({ version: "abc1234deadbeef" }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+    });
+    expect(deployed.version).toBe("abc1234deadbeef");
+    const unmarked = await buildHealth(inputs(), { fetcher, cache: createProbeCache(), now: NOW });
+    expect(unmarked.version).toBe(resolveBuildVersion());
+    expect(resolveBuildVersion({})).toBe("unknown");
+    expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "  v1  " })).toBe("v1");
+    expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "   " })).toBe("unknown");
   });
 });
