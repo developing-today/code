@@ -1002,6 +1002,14 @@ in
     Install.WantedBy = [ "sockets.target" ];
   };
 
+  # The provider proxies are owned by the proxy-supervisor (transient
+  # fps-* units on the canonical ports), so OpenChamber must not Want
+  # the manual per-proxy units: a restart would re-pull them, and the
+  # manual design-code-proxy unit fights the supervisor's instance for
+  # its already-taken port (#883). OpenChamber reaches the proxies by
+  # port, not by unit; only mcpx is a real unit dependency. The manual
+  # units stay declared in this file as one-off fallbacks, and the
+  # After ordering entries stay (ordering only, harmless).
   systemd.user.services.openchamber = {
     Unit = {
       Description = "OpenChamber server";
@@ -1018,10 +1026,6 @@ in
       Wants = [
         "network-online.target"
         "mcpx.service"
-        "clef-proxy.service"
-        "codex-proxy.service"
-        "antigravity-ls-proxy.service"
-        "design-code-proxy.service"
       ];
       Requires = [ "openchamber.socket" ];
     };
