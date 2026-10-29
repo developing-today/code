@@ -14,7 +14,6 @@ func init() {
 	// are neither retained forever nor broadcast on the bus.
 	const retentionPrune = "elicit.TestOpenPrunesTerminalRowsPastTheAgeBound@2024-11-05,2025-03-26,2025-06-18,2025-11-25,2026-07-28"
 	const summaryEvents = "daemon.TestElicitEventsAreSummaryOnly@2024-11-05,2025-03-26,2025-06-18,2025-11-25,2026-07-28"
-	const samplingPrune = "elicit.TestOpenPrunesTerminalSamplingRows@2026-07-28"
 	const storeMigrated = "elicit.TestOpenAtMigratesLegacyStore@2025-11-25,2026-07-28"
 	register(
 		C("elicitation-client-32602-on-undeclared-mode", "mcpclient.TestElicitationDeclarations/2025-11-25/elicitation/undeclared-mode-is-32602"),
@@ -31,7 +30,6 @@ func init() {
 		S("elicitation-state-storage-protected", storeProtected, storeMigrated),
 		S("sampling-both-handle-sensitive-data", summaryEvents, retentionPrune),
 		C("sampling-both-handle-sensitive-data", summaryEvents, retentionPrune),
-		C("sampling-messages-not-retained-between-requests", samplingPrune),
 		SReq("conformance.TestClientFeaturesServer",
 			"sampling-tool-result-message-only-tool-results",
 			"sampling-tool-use-result-balance",
@@ -121,6 +119,7 @@ func init() {
 		Gap{ID: "sampling-client-user-approval-controls", Side: Client, Issue: "#256", Why: "a sampling request is routed to the agent audience; nothing lets a person review or edit the prompt or the result"},
 		Gap{ID: "sampling-both-validate-message-content", Side: Client, Issue: "#256", Why: "sampling messages and results are relayed without validation"},
 		Gap{ID: "sampling-both-validate-message-content", Side: Server, Issue: "#256", Why: "sampling messages and results are relayed without validation"},
+		Gap{ID: "sampling-messages-not-retained-between-requests", Side: Client, Issue: "#255", Why: "terminal sampling rows are now pruned past the #1677 age bound, but a sampling request's messages are still retained in elicit.db between separate requests until that bound; the SHOULD NOT is not met"},
 		Gap{ID: "sampling-client-rate-limit", Side: Client, Issue: "#257", Why: "no per-server or per-session limit on sampling requests"},
 		Gap{ID: "elicitation-client-rate-limit", Side: Client, Issue: "#257", Why: "no per-server limit on elicitation requests"},
 		Gap{ID: "sampling-client-errors-user-rejected-and-tool-shape", Side: Client, Issue: "#256", Why: "every refusal or failure is -32603; neither -1 nor -32602 is produced"},
