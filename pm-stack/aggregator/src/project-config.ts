@@ -285,6 +285,12 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
             "The Nix check had no recorded success in 392 runs and the fast lane's exit (median PR feedback under 15 min) has never been measured. A red check must mean something before Phase 12 stacks on it.",
           refs: [code(229)],
         },
+        {
+          title: "Coverage: this page's pool is a subset of the id project",
+          detail:
+            "The live sections above draw on the Project #4 pool (Area=id-train) — a curated subset, not the whole project. GitHub search counted 327 open app/id issues on 2026-10-29, far more than the pool carries; read the pool as the prioritized slice, and the open app/id backlog as the project's full surface. Widening pool coverage is the orchestrator's label-gated auto-add plus an explicit backfill decision, tracked on the issue.",
+          refs: [code(1125)],
+        },
       ],
     },
   },
