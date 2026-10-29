@@ -1,15 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/dezren39/mcpx/main/schema/mcpx.schema.json",
   "mcpServers": {
-    "codedb": {
-      "command": "/home/user/bin/codedb",
-      "args": [
-        "mcp"
-      ],
-      "env": {
-        "CODEDB_NO_TELEMETRY": "1"
-      }
-    },
     "fff": {
       "command": "/home/user/.local/bin/fff-mcp",
       "args": []
@@ -121,6 +112,17 @@
       "args": [
         "/home/user/.local/share/opencode/worktree"
       ]
+    }
+  },
+  "disabledMcpServers": {
+    "codedb": {
+      "command": "/home/user/bin/codedb",
+      "args": [
+        "mcp"
+      ],
+      "env": {
+        "CODEDB_NO_TELEMETRY": "1"
+      }
     }
   },
   "repair": {
