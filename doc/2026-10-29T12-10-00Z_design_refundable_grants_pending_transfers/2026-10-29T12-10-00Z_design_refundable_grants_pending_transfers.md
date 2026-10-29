@@ -189,9 +189,9 @@ The pending transfer introduces failure modes the posted design did not have. Al
 
 ## 8. Follow-ups filed from this design
 
-1. **Grant service implementation** — control-plane `grant` table, the three endpoints, TB transfer codes, idempotency on `steam_key_hash`, void-and-reissue for partial refunds.
-2. **Grant vesting reconciler and drift alarm** — sweep pending grants past `window_ends_at`, post with retry, alert on control-plane/ledger drift, handle `Expired`.
-3. **Decision: grant refund window and pending-token spendability** — the §3 pin, filed for review with the recommendation attached rather than assumed.
+1. **Grant service implementation** — [#2294](https://github.com/developing-today/code/issues/2294): control-plane `grant` table, the three endpoints, TB transfer codes, idempotency on `steam_key_hash`, void-and-reissue for partial refunds.
+2. **Grant vesting reconciler and drift alarm** — [#2295](https://github.com/developing-today/code/issues/2295): sweep pending grants past `window_ends_at`, post with retry, alert on control-plane/ledger drift, handle `Expired`.
+3. **Decision: grant refund window and pending-token spendability** — [#2296](https://github.com/developing-today/code/issues/2296): the §3 pin, filed for review with the recommendation attached rather than assumed.
 
 ## 9. Open questions
 
