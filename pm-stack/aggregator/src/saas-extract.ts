@@ -664,6 +664,8 @@ export interface CloudflareExportMetric {
   unit?: string;
   source?: string;
   detail?: string;
+  /** `used` is a lower bound (capped query), not an exact total. */
+  lowerBound?: boolean;
 }
 
 /** The file-export document written by pm-stack/cloudflare-export. */
@@ -672,6 +674,7 @@ export interface CloudflareExportDoc {
   source?: string;
   status?: string;
   measuredAt?: string | null;
+  cycleStart?: string;
   billing?: { status?: string };
   metrics?: CloudflareExportMetric[];
 }
@@ -697,6 +700,19 @@ export function applyCloudflareExport(
   const measuredMs = Date.parse(doc.measuredAt);
   if (!Number.isFinite(measuredMs)) return services;
   if (nowMs - measuredMs > CLOUDFLARE_EXPORT_STALE_MS || measuredMs > nowMs + 5 * 60 * 1000) return services;
+  // A tick that ran just before a UTC month rollover carries the
+  // previous cycle's totals; overlaying them would compare a full month
+  // against a fresh one's limits. Documents without cycleStart (older
+  // producers) stay backwards compatible.
+  if (doc.cycleStart) {
+    const cycleMs = Date.parse(doc.cycleStart);
+    if (!Number.isFinite(cycleMs)) return services;
+    const cycle = new Date(cycleMs);
+    const current = new Date(nowMs);
+    if (cycle.getUTCFullYear() !== current.getUTCFullYear() || cycle.getUTCMonth() !== current.getUTCMonth()) {
+      return services;
+    }
+  }
   const cf = services.find((s) => s.id === "cloudflare");
   if (!cf) return services;
   const byId = new Map(
@@ -711,6 +727,7 @@ export function applyCloudflareExport(
     return {
       ...m,
       used: live.used,
+      ...(live.lowerBound ? { lowerBound: true } : {}),
       percent: m.limit != null && m.limit > 0 ? Math.round((live.used / m.limit) * 1000) / 10 : m.percent,
       note: `Live via ${live.source ?? doc.source ?? "file-export/cloudflare"}, measured ${doc.measuredAt}.${live.detail ? ` ${live.detail}` : ""}`,
     };

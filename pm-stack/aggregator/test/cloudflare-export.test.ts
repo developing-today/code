@@ -29,6 +29,7 @@ const freshDoc = (): CloudflareExportDoc => ({
   source: "file-export/cloudflare",
   status: "ok",
   measuredAt: "2026-10-29T10:00:00.000Z",
+  cycleStart: "2026-10-01T00:00:00.000Z",
   billing: { status: "invoice-only" },
   metrics: [
     { id: "workers-requests", used: 75225, unit: "count", source: "cloudflare-graphql-analytics" },
@@ -71,5 +72,22 @@ describe("applyCloudflareExport", () => {
       const cf = services.find((s) => s.id === "cloudflare")!;
       expect(cf.metrics.find((m) => m.id === "workers-requests")!.used).toBeNull();
     }
+  });
+
+  test("previous cycle's document keeps the prose fallback at a month rollover", () => {
+    const doc = freshDoc();
+    doc.cycleStart = "2026-09-01T00:00:00.000Z";
+    const services = applyCloudflareExport(extractSaasServices(VIEW), doc, NOW);
+    const cf = services.find((s) => s.id === "cloudflare")!;
+    expect(cf.metrics.find((m) => m.id === "workers-requests")!.used).toBeNull();
+    expect(cf.sourceClass).toBe("manual");
+  });
+
+  test("a lower-bound metric carries the marker onto the card", () => {
+    const doc = freshDoc();
+    doc.metrics = doc.metrics!.map((m) => (m.id === "r2-storage" ? { ...m, lowerBound: true } : m));
+    const services = applyCloudflareExport(extractSaasServices(VIEW), doc, NOW);
+    const cf = services.find((s) => s.id === "cloudflare")!;
+    expect(cf.metrics.find((m) => m.id === "r2-storage")!.lowerBound).toBe(true);
   });
 });

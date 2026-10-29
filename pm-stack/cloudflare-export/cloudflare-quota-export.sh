@@ -40,7 +40,7 @@ SECRET_ID="$(bws secret list 2>/dev/null | jq -r '.[] | select(.key=="cloudflare
 if [[ -z $SECRET_ID ]]; then
   fail_through_exporter "Bitwarden secret cloudflare.api-token-day-to-day not found" "$@"
 fi
-CLOUDFLARE_API_TOKEN="$(bws secret get "$SECRET_ID" 2>/dev/null | jq -r .value)" || CLOUDFLARE_API_TOKEN=""
+CLOUDFLARE_API_TOKEN="$(bws secret get "$SECRET_ID" 2>/dev/null | jq -er .value)" || CLOUDFLARE_API_TOKEN=""
 export CLOUDFLARE_API_TOKEN
 if [[ -z $CLOUDFLARE_API_TOKEN ]]; then
   fail_through_exporter "could not read the day-to-day token value" "$@"

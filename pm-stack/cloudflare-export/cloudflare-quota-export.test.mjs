@@ -93,6 +93,18 @@ test("parseGraphqlUsage: r2-storage total covers every bucket group, saturation 
   const sat = parseGraphqlUsage(saturated, { now: NOW, cycleStart: START });
   const satById = Object.fromEntries(sat.metrics.map((m) => [m.id, m]));
   assert.match(satById["r2-storage"].detail, /LOWER BOUND/);
+  assert.equal(satById["r2-storage"].lowerBound, true);
+  assert.equal(coveredById["r2-storage"].lowerBound, undefined);
+});
+
+test("classifyR2/foldKv: a missing groups field fails closed, not zero", () => {
+  assert.throws(() => classifyR2(undefined), /r2OperationsAdaptiveGroups missing/);
+  assert.throws(() => classifyR2(null), /r2OperationsAdaptiveGroups missing/);
+  assert.throws(() => foldKv(undefined), /kvOperationsAdaptiveGroups missing/);
+  assert.throws(() => foldKv(null), /kvOperationsAdaptiveGroups missing/);
+  // Present-but-empty still means "no operations".
+  assert.deepEqual(foldKv([]), { reads: 0, writes: 0 });
+  assert.equal(classifyR2([]).classA, 0);
 });
 
 test("parseGraphqlUsage: shape drift fails closed", () => {

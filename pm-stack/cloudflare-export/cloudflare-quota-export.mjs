@@ -111,11 +111,16 @@ export const R2_FREE = new Set([
 export const R2_NONBILLABLE_STATUSES = new Set([401, 403]);
 
 export function classifyR2(groups) {
+  // Fail closed: a missing/null groups field is shape drift, not "zero
+  // operations". Only a present, empty array means no R2 requests.
+  if (!Array.isArray(groups)) {
+    throw new ExportError("unparseable", 6, "graphql: r2OperationsAdaptiveGroups missing");
+  }
   let classA = 0;
   let classB = 0;
   let nonbillable = 0;
   const unclassified = [];
-  for (const g of groups ?? []) {
+  for (const g of groups) {
     const action = g?.dimensions?.actionType;
     const requests = num(g?.sum?.requests, `r2.${String(action)}.requests`);
     const status = g?.dimensions?.responseStatusCode;
@@ -134,9 +139,14 @@ export function classifyR2(groups) {
 /** Fold KV action types onto the card's two metrics: reads, and
  * writes/deletes/lists combined (the card's own grouping). */
 export function foldKv(groups) {
+  // Same fail-closed rule as firstSum/classifyR2: a missing KV groups
+  // field must not be published as a successful zero reading.
+  if (!Array.isArray(groups)) {
+    throw new ExportError("unparseable", 6, "graphql: kvOperationsAdaptiveGroups missing");
+  }
   let reads = 0;
   let writes = 0;
-  for (const g of groups ?? []) {
+  for (const g of groups) {
     const requests = num(g?.sum?.requests, `kv.${String(g?.dimensions?.actionType)}.requests`);
     if (g?.dimensions?.actionType === "read") reads += requests;
     else writes += requests; // write, delete, list — and any future write-side action
@@ -196,6 +206,9 @@ export function parseGraphqlUsage(account, { now = new Date(), cycleStart } = {}
   }
   const saturated = storageGroups.length >= R2_STORAGE_GROUP_LIMIT;
   push("r2-storage", round2(payloadBytes / 1e9), "gb", {
+    // Explicit marker (not just prose) so consumers can qualify derived
+    // percentages as "at least N%" instead of understating them.
+    ...(saturated ? { lowerBound: true } : {}),
     detail:
       (storageGroups.length === 0
         ? "no R2 bucket storage observations in the cycle window (r2StorageAdaptiveGroups empty); reporting zero "
@@ -326,9 +339,22 @@ export async function run({ token, accountId, now = new Date() } = {}) {
   }
   let acct = accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID ?? null;
   if (!acct) {
-    const accounts = await apiJson("/accounts?per_page=1", token);
+    // Ask for two so a multi-account token is visible: picking result[0]
+    // silently would export an arbitrary account's usage.
+    const accounts = await apiJson("/accounts?per_page=2", token);
     if (accounts.status === 401 || accounts.status === 403) throw scopeError("GET /accounts", accounts.status);
-    acct = accounts.body?.result?.[0]?.id;
+    const visible = accounts.body?.result;
+    if (!Array.isArray(visible)) {
+      throw new ExportError("unparseable", 6, "GET /accounts: result is not a list");
+    }
+    if (visible.length !== 1) {
+      throw new ExportError(
+        "unparseable",
+        6,
+        `GET /accounts: token sees ${visible.length} account(s); set CLOUDFLARE_ACCOUNT_ID to choose one`,
+      );
+    }
+    acct = visible[0]?.id;
     if (!acct) throw new ExportError("unparseable", 6, "GET /accounts: no account in result");
   }
 
