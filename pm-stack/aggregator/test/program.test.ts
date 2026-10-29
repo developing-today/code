@@ -195,6 +195,22 @@ describe("project registry", () => {
     expect(labGaps).toContain("2026-10-21");
     expect(lab.editorial?.gaps.some((e) => (e.refs ?? []).includes("developing-today/code#1091"))).toBe(true);
 
+    // #1124 residuals: the pre-seed dezren39/nix#501-#508 predecessor set is
+    // tracked and explained, and the Grist-vs-Project status disagreement
+    // for #1080/#1081 is surfaced as an honest gap naming both readings.
+    for (const n of [501, 502, 503, 504, 505, 506, 507, 508]) {
+      expect(lab.trackedRefs).toContain(`dezren39/nix#${n}`);
+    }
+    expect(labGaps).toContain("dezren39/nix (#501-#508)");
+    expect(labGaps).toContain("Hardware inventory + firmware/BMC audit");
+    expect(labGaps).toContain("In progress / Q4 2026");
+    expect(labGaps).toContain("Todo / planned");
+    const disagreement = (lab.editorial?.gaps ?? []).find((e) => e.title.includes("Status sources disagree"));
+    expect(disagreement?.refs).toContain("developing-today/code#1080");
+    expect(disagreement?.refs).toContain("developing-today/code#1081");
+    expect(disagreement?.refs).toContain("dezren39/nix#501");
+    expect(disagreement?.refs).toContain("dezren39/nix#502");
+
     const id = projectConfigById("id")!;
     for (const n of [1076, 1077, 1078, 1235, 1239, 1240]) {
       expect(id.trackedRefs).toContain(`developing-today/code#${n}`);
