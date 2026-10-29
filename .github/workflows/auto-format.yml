@@ -1,0 +1,92 @@
+name: auto-format
+
+# CI tier policy: see .github/ci-policy.md — formatting is mechanical
+# and NEVER gates a merge: no treefmt/format context is in the basic
+# tier or the required checks. Instead this workflow runs treefmt on
+# every push to main (plus a nightly sweep) and commits any fixes
+# directly to main as the github-actions bot. The fix lands within
+# seconds of the merge that introduced the drift — well before the
+# main-tier full check would file a breakage for it.
+#
+# Loop safety, two layers:
+#   1. Pushes made with GITHUB_TOKEN do not trigger workflow runs at
+#      all (GitHub suppresses them), so the bot's own fix commit
+#      cannot retrigger this workflow.
+#   2. If the token is ever swapped for a PAT/App token, the job
+#      below still skips any push whose head commit is the bot's own
+#      format commit.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Nightly sweep over the last day's changed files.
+    - cron: "47 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One format pass at a time on main; a pass is never cancelled
+# mid-commit.
+concurrency:
+  group: auto-format-main
+  cancel-in-progress: false
+
+jobs:
+  treefmt:
+    name: treefmt auto-format
+    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'style(treefmt):') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - name: Format changed files with treefmt and commit any fixes
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          changed_file="$(mktemp)"
+          trap 'rm -f "$changed_file"' EXIT
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            git log --since="25 hours ago" --pretty=format: --name-only \
+              | sort -u | while IFS= read -r f; do
+                  [[ -n "$f" && -f "$f" ]] && printf '%s\n' "$f"
+                done > "$changed_file"
+          else
+            base_sha="$BEFORE_SHA"
+            if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+              base_sha="$(git rev-parse HEAD^)"
+            fi
+            git diff --name-only --diff-filter=ACMR "$base_sha...$GITHUB_SHA" > "$changed_file"
+          fi
+          mapfile -t changed_files < "$changed_file"
+          if ((${#changed_files[@]} == 0)); then
+            echo "No changed files to format."
+            exit 0
+          fi
+          printf 'Formatting %s file(s):\n' "${#changed_files[@]}"
+          printf '  %s\n' "${changed_files[@]}"
+          nix run .#format -- "${changed_files[@]}"
+          if git diff --quiet; then
+            echo "treefmt made no changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "style(treefmt): auto-format on main"
+          for attempt in 1 2; do
+            if git push origin HEAD:main; then
+              echo "Pushed auto-format commit."
+              exit 0
+            fi
+            echo "Push raced a newer main; rebasing (attempt $attempt)."
+            git pull --rebase origin main
+          done
+          git push origin HEAD:main
