@@ -14,28 +14,28 @@ the deliverable.
 
 ## TL;DR verdict
 
-**TigerBeetle fits the *ledger core* of this design well, and does NOT do most
+**TigerBeetle fits the _ledger core_ of this design well, and does NOT do most
 of the things around it.** It is an excellent, very fast, strictly-serializable
-double-entry *engine*: accounts, transfers, balance invariants, atomic linked
+double-entry _engine_: accounts, transfers, balance invariants, atomic linked
 batches, two-phase holds, idempotent creation. Everything that makes Drew's
-idea a *product* — currency names, who may issue, exchange rates and who
+idea a _product_ — currency names, who may issue, exchange rates and who
 authorized them, conversion logic, per-coin identity, refunds-as-policy,
 revocation/freezing, user authentication, the ID-graph representation — lives
 **outside** TigerBeetle, in an application/control-plane layer we would have
 to build and operate ourselves.
 
-| Drew's hope | Reality |
-|---|---|
-| "Supports any number of currencies" | **Mostly true, with a hard ceiling and no registry.** A currency = a `ledger` value, a bare `u32` integer on accounts/transfers. No creation call, no name, no metadata in TigerBeetle. Ceiling = 2³²−1 ledgers per cluster, shared with every other use of ledgers (tenancy partitioning etc.). |
-| "Supports conversions, so we don't hand-roll them" | **False as stated.** Cross-ledger transfers are *forbidden*. A conversion is an application-composed pair of linked same-ledger transfers through a liquidity provider's two accounts, at a rate the *application* computes. TigerBeetle only guarantees the pair is atomic. |
-| "Handles double-entry so we don't have to" | **Half true.** TigerBeetle *enforces* the invariant (every transfer is one debit + one credit; sums stay equal; balance-limit flags are checked atomically). It does **not** design your chart of accounts: issuer, liquidity, fee, burn, user accounts and their flags/codes are your design, per currency. |
-| "A cluster of 3, one running, others backups" | **Wrong mental model.** All replicas run and participate in Viewstamped Replication consensus continuously. There is no passive backup. And the vendor's production recommendation is **6 replicas across 3 sites**, not 3 replicas total. |
-| "Maybe it IDs every single coin" | **No.** Balance-only. There is no coin, UTXO, serial number, or lot object. A transfer moves an integer amount between two accounts; individual units are indistinguishable. |
-| "Refunds / revocations supported" | **Only as compensating transfers you issue.** Posted transfers are immutable and undeletable. A "refund" is a new opposite transfer; a "revocation" is a clawback transfer that can *fail* if the holder has already spent the balance. No freeze/clawback primitive exists. |
-| "Users issue tokens of themselves" | **Modelable, not built-in.** Minting = a transfer out of an issuer account you designate, on that currency's ledger. Who is allowed to mint, supply caps, and the link to an Iroh/ID identity are entirely application-layer (TigerBeetle has **no authentication at all**). |
+| Drew's hope                                        | Reality                                                                                                                                                                                                                                                                                                      |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| "Supports any number of currencies"                | **Mostly true, with a hard ceiling and no registry.** A currency = a `ledger` value, a bare `u32` integer on accounts/transfers. No creation call, no name, no metadata in TigerBeetle. Ceiling = 2³²−1 ledgers per cluster, shared with every other use of ledgers (tenancy partitioning etc.).             |
+| "Supports conversions, so we don't hand-roll them" | **False as stated.** Cross-ledger transfers are _forbidden_. A conversion is an application-composed pair of linked same-ledger transfers through a liquidity provider's two accounts, at a rate the _application_ computes. TigerBeetle only guarantees the pair is atomic.                                 |
+| "Handles double-entry so we don't have to"         | **Half true.** TigerBeetle _enforces_ the invariant (every transfer is one debit + one credit; sums stay equal; balance-limit flags are checked atomically). It does **not** design your chart of accounts: issuer, liquidity, fee, burn, user accounts and their flags/codes are your design, per currency. |
+| "A cluster of 3, one running, others backups"      | **Wrong mental model.** All replicas run and participate in Viewstamped Replication consensus continuously. There is no passive backup. And the vendor's production recommendation is **6 replicas across 3 sites**, not 3 replicas total.                                                                   |
+| "Maybe it IDs every single coin"                   | **No.** Balance-only. There is no coin, UTXO, serial number, or lot object. A transfer moves an integer amount between two accounts; individual units are indistinguishable.                                                                                                                                 |
+| "Refunds / revocations supported"                  | **Only as compensating transfers you issue.** Posted transfers are immutable and undeletable. A "refund" is a new opposite transfer; a "revocation" is a clawback transfer that can _fail_ if the holder has already spent the balance. No freeze/clawback primitive exists.                                 |
+| "Users issue tokens of themselves"                 | **Modelable, not built-in.** Minting = a transfer out of an issuer account you designate, on that currency's ledger. Who is allowed to mint, supply caps, and the link to an Iroh/ID identity are entirely application-layer (TigerBeetle has **no authentication at all**).                                 |
 
-**Bottom line:** Adopt TigerBeetle, if at all, as the *settlement core behind
-our own currency service* — never exposed to users, fronted by a control plane
+**Bottom line:** Adopt TigerBeetle, if at all, as the _settlement core behind
+our own currency service_ — never exposed to users, fronted by a control plane
 that owns currency registration, issuance policy, rates, and corrections. Budget
 the real work accordingly: the cluster is the easy part; the currency service
 around it is the project.
@@ -64,14 +64,14 @@ Facts:
   `Code uint16`.) So the theoretical maximum is **4,294,967,295 distinct
   ledgers in one cluster** — far beyond plausible need, but it is a finite,
   cluster-wide namespace, and the same namespace is also the documented tool
-  for *other* partitioning (e.g. one ledger per tenant, per-tenant-per-currency
+  for _other_ partitioning (e.g. one ledger per tenant, per-tenant-per-currency
   in multi-tenant setups, per the Data Modeling page). Spending one ledger per
   user-created token is the intended pattern, but ledger allocation becomes a
   governed resource, not an infinite one.
 - **There is no "create currency" operation, and none is needed to start.**
   A ledger springs into existence implicitly when the first account is created
   with that integer. Creating a new token at runtime = allocate an unused u32
-  in *our* registry, then create accounts on it. No DDL, no restart, no cluster
+  in _our_ registry, then create accounts on it. No DDL, no restart, no cluster
   reconfiguration. This part of Drew's "on the fly" requirement genuinely works.
 - **Everything human about the currency lives elsewhere.** Name ("Chuck E.
   Cheese tokens", "dt", game coins), symbol, issuer ID, asset scale (decimal
@@ -81,7 +81,7 @@ Facts:
   convention (Data Modeling, single-page docs). The docs' System Architecture
   page is explicit that ledger/account/transfer string names and metadata
   belong in a general-purpose (OLGP) database — the "control plane" — with
-  TigerBeetle in the data plane, and that the API service should *cache* ledger
+  TigerBeetle in the data plane, and that the API service should _cache_ ledger
   metadata rather than look it up per transfer.
 - **A ledger's scale is effectively immutable.** "Accounts and transfers are
   immutable once created. In order to change the asset scale of a ledger, you
@@ -111,7 +111,7 @@ There is no mint verb. The conventional pattern:
    does not support authentication. You should never allow untrusted users or
    services to interact with it directly." (System Architecture, single-page
    docs.) The ID-graph signature layer (a signed "I issue 100 of myself to ID
-   Y" object) would be verified in our service *before* it submits the
+   Y" object) would be verified in our service _before_ it submits the
    TigerBeetle transfer; TigerBeetle never sees the signature.
 
 **Fit to the ID graph:** TigerBeetle knows nothing about the graph. The
@@ -121,7 +121,7 @@ ID in a transfer's `user_data_128` (128-bit, indexed) — the docs explicitly
 sanction `user_data_*` (128/64/32) as pointers to control-plane records and as
 group identifiers for related transfers. Reconciliation between the two
 systems is our problem to design (e.g. TigerBeetle is authoritative for
-balances of *centralized* tokens; the graph is authoritative for claims).
+balances of _centralized_ tokens; the graph is authoritative for claims).
 
 ---
 
@@ -144,7 +144,7 @@ A conversion is a **composed pair (or chain), not one transfer**:
 - "The transfer amounts vary according to the exchange rate" — i.e. **the
   application computes both amounts**; the rate exists nowhere in TigerBeetle.
   The docs advise rounding in the liquidity provider's favour to deter
-  arbitrage, and recording any fee/spread as an *additional* linked transfer
+  arbitrage, and recording any fee/spread as an _additional_ linked transfer
   (A₁ → L₁) rather than folding it into the rate, so rate and spread remain
   auditable.
 - Atomicity is real: linked chains execute in order, each step's effects
@@ -154,8 +154,8 @@ A conversion is a **composed pair (or chain), not one transfer**:
 - Caveat: **the linkage itself is not persisted.** "After the chain of linked
   events has executed, the fact that they were linked will not be saved. To
   save the association… it must be encoded into the data model, for example by
-  adding an ID to one of the user data fields." So the conversion *as an
-  event* (rate, parties, authorization) must be recorded by us, conventionally
+  adding an ID to one of the user data fields." So the conversion _as an
+  event_ (rate, parties, authorization) must be recorded by us, conventionally
   by stamping the same conversion ID into `user_data_128` on both legs.
 
 ### What this means for Drew's "authorized conversions"
@@ -166,21 +166,21 @@ semantics are ours**:
 
 - The "liquidity provider" for a user-token pair is whoever holds inventory of
   both tokens — realistically our central finance service, or the issuing ID
-  itself. Somebody must *fund* L₁/L₂; conversions fail (atomically, cleanly)
+  itself. Somebody must _fund_ L₁/L₂; conversions fail (atomically, cleanly)
   when the relevant liquidity account lacks balance. TigerBeetle provides no
   AMM, no order book, no rate discovery, no standing-offer object.
 - An "authorization" (rate + who may use it + expiry + caps) is a control-plane
   record. Our API reads it, computes the two amounts, checks the balances/
   invariants, and submits the linked pair. TigerBeetle's System Architecture
   page lists "Apply exchange rates for currency exchange transactions" as a
-  duty of the *stateless API service*, confirming the split.
+  duty of the _stateless API service_, confirming the split.
 - Each direction is a separate authorized rate, exactly as Drew sketched —
   because each direction is just a separate pair of transfers our service
   chooses to offer.
 
 ### Two-phase (pending) transfers — the other native primitive
 
-TigerBeetle *does* natively support two-phase transfers (Two-Phase Transfers,
+TigerBeetle _does_ natively support two-phase transfers (Two-Phase Transfers,
 single-page docs):
 
 - `flags.pending` creates a transfer that reserves amounts in
@@ -192,13 +192,13 @@ single-page docs):
   on expiry the full amount is automatically restored.
 - A pending transfer resolves **at most once**; double-post/void attempts
   return `pending_transfer_already_posted` / `…_voided` / `…_expired`.
-- Balance invariants are checked at *reserve* time, so a hold that would break
+- Balance invariants are checked at _reserve_ time, so a hold that would break
   `debits_must_not_exceed_credits` fails immediately rather than at posting.
 
 This is genuinely useful for the token system: holds for purchases ("reserve
 500 premium tokens while the Steam key is validated"), escrowed game stakes,
 and the closing-account mechanism (§5). It is a same-ledger primitive; a
-two-phase *conversion* would be two pending flows our service orchestrates,
+two-phase _conversion_ would be two pending flows our service orchestrates,
 with the linked-chain atomicity applying within each submission batch.
 
 ---
@@ -217,7 +217,7 @@ double-entry accounting, an account balance is the difference between the
 two." There is:
 
 - **No coin/unit object**, no serial numbers, no UTXO set, no lot/FIFO
-  tracking. Transferring 10 of token X from A to B does not identify *which*
+  tracking. Transferring 10 of token X from A to B does not identify _which_
   10; units of a ledger are perfectly fungible by construction.
 - **No per-unit provenance.** You cannot express "this specific premium token
   came from Steam key K and is revocable if K is refunded" inside TigerBeetle.
@@ -226,7 +226,7 @@ two." There is:
 - Emulation options, both bad at scale: (a) one account per coin — turns every
   coin into a 128-bit account record in an unsharded cluster and every payment
   into an account-selection problem; (b) treat `user_data_*` on transfers as a
-  batch/lot tag — gives lot-level *annotation*, still not enforceable per-coin
+  batch/lot tag — gives lot-level _annotation_, still not enforceable per-coin
   balances. Neither is a documented pattern. **Design assumption should be:
   tokens on TigerBeetle are fungible balances, full stop.** If a game truly
   needs individually-tracked items, those are ID-graph objects, not currency.
@@ -247,11 +247,11 @@ requests in order" (Time / VSR, single-page docs). It uses flexible quorums
 3/6 replicas but electing a new primary needs 4/6 (Cluster Recommendations;
 Safety, single-page docs).
 
-**Correcting Drew's assumption directly:** in a 3-node cluster it is *not*
+**Correcting Drew's assumption directly:** in a 3-node cluster it is _not_
 "only one ever running, others are backups" in the cold-standby sense. All
 three replicas run the server continuously, receive the replicated log, apply
 the same state machine, and participate in quorum and the fault-tolerant
-"cluster time". The primary is a *role*, not a machine class; if it fails, a
+"cluster time". The primary is a _role_, not a machine class; if it fails, a
 view change promotes a backup automatically — provided a quorum survives. If
 too many replicas are lost, the cluster "will correctly remain unavailable…
 designed to operate correctly or else to shut down safely" rather than risk
@@ -264,19 +264,19 @@ inconsistency ([Cluster Recommendations](https://docs.tigerbeetle.com/operating/
   in three ways: "**Each replica runs on a dedicated machine. Six replicas are
   used rather than three.** There's a supervisor process to restart a replica
   process after a crash." (Deploy, single-page docs.)
-- With 3 replicas, fault tolerance is *one* replica: the cluster tolerates a
+- With 3 replicas, fault tolerance is _one_ replica: the cluster tolerates a
   minority being offline (Jepsen's analysis likewise notes TigerBeetle
   "can continue running safely with a minority of nodes offline" —
   [Jepsen: TigerBeetle 0.16.11](https://jepsen.io/analyses/tigerbeetle-0.16.11)).
   Losing any 2 of 3 — one whole cloud out of three, plus a hiccup, or a cloud
-  + a botched upgrade — halts all currency operations until recovery.
+  - a botched upgrade — halts all currency operations until recovery.
 - The recommended topology is **6 replicas across 3 sites, 2 per site**, so
   "the loss of an entire site would not impair the availability of the
   cluster", with sites "within a few milliseconds of each other, since each
   transaction must be replicated across sites before being committed"
   ([Cluster Recommendations](https://docs.tigerbeetle.com/operating/cluster/)).
-  "One in each cloud" with 3 total replicas gives site-loss *survival of
-  data*, but with only 1 replica per site in a 3-node cluster, losing one
+  "One in each cloud" with 3 total replicas gives site-loss _survival of
+  data_, but with only 1 replica per site in a 3-node cluster, losing one
   site leaves 2 — available, with zero remaining fault tolerance.
 - **Cross-cloud latency is a real cost.** Every commit waits for quorum
   replication. Spreading 3 replicas across three distant cloud providers/EC2
@@ -293,7 +293,7 @@ From the official Hardware / Deploy docs (single-page):
   are development-only).
 - One statically-linked binary + one data file per replica; format each data
   file once with matching `--cluster` (128-bit cluster ID), `--replica-count`,
-  and a unique `--replica` index; start with the *same ordered* `--addresses`
+  and a unique `--replica` index; start with the _same ordered_ `--addresses`
   list on every replica and client.
 - **Cluster size cannot be changed after creation** in the current version:
   "In the current version of TigerBeetle, cluster size can not be changed
@@ -309,7 +309,7 @@ From the official Hardware / Deploy docs (single-page):
 - Data file preallocates and grows automatically; capacity is substantial but
   finite — docs cite ~16 TiB for ~40 billion transfers, and note ext4's
   16 TiB file limit (XFS supported, less tested).
-- Replica *replacement* after total data-file loss is a sharp edge: Jepsen
+- Replica _replacement_ after total data-file loss is a sharp edge: Jepsen
   found no documented membership-replacement procedure; the undocumented
   reformat-and-repair path "may be unsafe" in a narrow quorum scenario
   ([Jepsen](https://jepsen.io/analyses/tigerbeetle-0.16.11)). Current CLI does
@@ -318,10 +318,10 @@ From the official Hardware / Deploy docs (single-page):
 
 **Translation to Drew's sketch:** "three machines, currency ops go to those
 EC2s" is buildable and cheap (3 small Linux VMs, 1 core each, NVMe, ECC where
-available). But price it as an *always-on consensus cluster that halts if 2 of
-3 die*, not as primary+backups — and strongly consider the vendor-recommended
+available). But price it as an _always-on consensus cluster that halts if 2 of
+3 die_, not as primary+backups — and strongly consider the vendor-recommended
 6 replicas / 3 sites if real money (Steam revenue) depends on it. Either way,
-*all* currency traffic funnels to this one cluster: it is a central system by
+_all_ currency traffic funnels to this one cluster: it is a central system by
 design, in tension with the ID project's peer-to-peer direction (see §6).
 
 ---
@@ -332,7 +332,7 @@ design, in tension with the ID project's peer-to-peer direction (see §6).
 
 - **Ledgers:** ≤ 2³²−1 per cluster (u32, non-zero) — not a practical ceiling
   for token count, but ledger IDs are a managed allocation.
-- **Accounts & transfers:** IDs are 128-bit, unique *per cluster* (not per
+- **Accounts & transfers:** IDs are 128-bit, unique _per cluster_ (not per
   ledger). Throughput is the design centre (docs target ~1M transfers/sec via
   batching; max batch 8,189 events per request). The binding constraints for
   us are structural, not TPS:
@@ -354,7 +354,7 @@ design, in tension with the ID project's peer-to-peer direction (see §6).
 
 ### Idempotency — strong, with one discipline required
 
-- `Account.id` and `Transfer.id` *are* the idempotency keys: "Events that
+- `Account.id` and `Transfer.id` _are_ the idempotency keys: "Events that
   create objects are idempotent. The first event to create an object with a
   given `id` will receive the `ok` result. Subsequent events… will receive the
   `exists` result." Requests execute at most once; clients retry until reply
@@ -366,13 +366,13 @@ design, in tension with the ID project's peer-to-peer direction (see §6).
   retry, a lost reply becomes a double-spend — TigerBeetle cannot recognise
   the retry as the same operation (Reliable Transaction Submission,
   single-page docs).
-- Resubmitting an existing ID with *different* fields returns
+- Resubmitting an existing ID with _different_ fields returns
   `exists_with_different_<field>` errors rather than silently succeeding —
   good for detecting bugs, but our API must treat `exists` (identical) as
   success and the `exists_with_different_*` family as a hard error.
 - Prefer TigerBeetle's time-based IDs: "Random identifiers are not
   recommended – they can't take advantage of all of the LSM optimizations.
-  (Random identifiers have *significantly* lower throughput than
+  (Random identifiers have _significantly_ lower throughput than
   strictly-increasing ULIDs)." For a system whose native IDs are Iroh keys,
   the mapping ID-identity → TigerBeetle account ID and → transfer IDs must be
   generated in TB-friendly (monotonic) form by our service, not derived
@@ -380,9 +380,9 @@ design, in tension with the ID project's peer-to-peer direction (see §6).
 
 ### Corrections, refunds, revocations — the sharpest mismatch
 
-- **Posted transfers are immutable and undeletable.** "Transfers *cannot be
-  modified* after creation… Transfers *cannot be deleted* after creation."
-  (Transfer reference, single-page docs.) The only "undo" for a *pending*
+- **Posted transfers are immutable and undeletable.** "Transfers _cannot be
+  modified_ after creation… Transfers _cannot be deleted_ after creation."
+  (Transfer reference, single-page docs.) The only "undo" for a _pending_
   transfer is voiding it before it posts.
 - **Refunds = correcting transfers.** The documented pattern: submit new
   transfer(s) in the opposite direction, tagged with a dedicated
@@ -393,14 +393,14 @@ design, in tension with the ID project's peer-to-peer direction (see §6).
 - **A refund/revocation can fail.** A clawback is an ordinary transfer: if the
   holder's account has `debits_must_not_exceed_credits` (as user accounts
   should) and they have already spent or moved the tokens, the revocation
-  transfer is *rejected* (`exceeds_credits`). TigerBeetle offers no override,
+  transfer is _rejected_ (`exceeds_credits`). TigerBeetle offers no override,
   no freeze flag that seizes funds, and no negative-balance forcing for
   constrained accounts. Practical mitigations are all design choices we must
   make up front:
-  - Delay finality: deliver redeemable value via *pending* transfers with a
+  - Delay finality: deliver redeemable value via _pending_ transfers with a
     timeout window (voidable while the Steam refund window is open) — fits
     §2's two-phase primitive, at the cost of delayed usability.
-  - Keep premium-token accounts *unconstrained* and accept negative balances
+  - Keep premium-token accounts _unconstrained_ and accept negative balances
     as debt records — weakens the core invariant for exactly the accounts
     that matter most.
   - Control-plane holds/freezes: our API refuses new transfers from a flagged
@@ -412,7 +412,7 @@ design, in tension with the ID project's peer-to-peer direction (see §6).
   for voiding two-phase transfers that are still pending", and closure is
   reversible by voiding the closing pending transfer (Closing Accounts,
   single-page docs). Useful for retiring a token (zero everyone out, close
-  issuer accounts) — but *retiring a currency* has no primitive: the ledger,
+  issuer accounts) — but _retiring a currency_ has no primitive: the ledger,
   its accounts and history persist forever; "sunsetting" is a control-plane
   flag that stops our API honouring it.
 - **No built-in supply audit.** Proving "total issued = Σ balances" is a
@@ -423,9 +423,9 @@ design, in tension with the ID project's peer-to-peer direction (see §6).
 
 - No authentication, no authorization, no per-user permissions, no TLS-level
   user identity in the database itself; the docs warn untrusted processes must
-  not reach the server *or its data file*. Every ID signature check, issuance
+  not reach the server _or its data file_. Every ID signature check, issuance
   permission, conversion authorization and abuse control (rate limits, blocks)
-  sits in the gateway service. (TigerBeetle can, amusingly, *implement* rate
+  sits in the gateway service. (TigerBeetle can, amusingly, _implement_ rate
   limiting via its leaky-bucket recipe — pending transfers on a dedicated
   ledger — but the decision to invoke it remains ours.)
 
@@ -453,7 +453,7 @@ design, in tension with the ID project's peer-to-peer direction (see §6).
    inventory funding, rounding and fees are our service's code (§2).
 5. **"Tokens buy real services (Steam key → 500 premium tokens)"** — ✅ as
    mint-on-redemption transfers, with the refund caveat: Steam refunds map to
-   correcting/clawback transfers that *can fail after spend-down*; the
+   correcting/clawback transfers that _can fail after spend-down_; the
    pending-transfer hold pattern is the cleanest mitigation and should be in
    the design from day one.
 6. **"One TigerBeetle cluster, 3 machines across clouds"** — ⚠️ buildable,
@@ -480,7 +480,7 @@ design, in tension with the ID project's peer-to-peer direction (see §6).
 2. **Account factory:** per currency — issuer, liquidity (per conversion
    pair/direction), fee, burn accounts; per user — holder accounts with
    `debits_must_not_exceed_credits`, history flags where needed.
-3. **Gateway API:** the *only* TigerBeetle client; verifies ID signatures,
+3. **Gateway API:** the _only_ TigerBeetle client; verifies ID signatures,
    issuance/conversion authorizations, abuse controls; generates/persists
    idempotency IDs correctly; batches transfers.
 4. **Conversion engine:** rate records, amount computation + rounding policy,

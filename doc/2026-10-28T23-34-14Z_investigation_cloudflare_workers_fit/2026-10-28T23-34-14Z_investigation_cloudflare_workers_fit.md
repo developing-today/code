@@ -43,7 +43,7 @@ and the live-connection holder, and it costs nothing while idle.
   consensus are needed inside one user's store. For ID this matches the existing
   semantics well — a single user's graph/journal is already effectively
   single-writer (its owner), so serialization is a feature, not a bottleneck,
-  until one object must serve many *other* users' writes (see shared worlds, §6).
+  until one object must serve many _other_ users' writes (see shared worlds, §6).
 - Throughput ceiling per object: a **soft limit of ~1,000 requests/second** per
   individual object; beyond that, requests queue and then return "overloaded"
   errors ([DO limits](https://developers.cloudflare.com/durable-objects/platform/limits/)).
@@ -54,26 +54,26 @@ and the live-connection holder, and it costs nothing while idle.
 From [DO limits](https://developers.cloudflare.com/durable-objects/platform/limits/)
 (SQLite-backed objects, the recommended backend):
 
-| Limit | Value |
-|---|---|
-| Storage per Durable Object | **10 GB** (Workers Paid); **1 GB** on Free |
-| Storage per account | Unlimited (Paid) / 5 GB (Free) |
-| Number of objects | Unlimited |
-| Max Durable Object classes per account | 500 (Paid) / 100 (Free) |
-| Row / string / BLOB size | **2 MB** max |
-| KV key+value combined | 2 MB max |
-| Columns per table | 100 |
-| SQL statement length | 100 KB |
-| Bound parameters per query | 100 |
-| WebSocket received message size | 32 MiB |
-| CPU per request | 30 s default, configurable to 5 min |
+| Limit                                  | Value                                      |
+| -------------------------------------- | ------------------------------------------ |
+| Storage per Durable Object             | **10 GB** (Workers Paid); **1 GB** on Free |
+| Storage per account                    | Unlimited (Paid) / 5 GB (Free)             |
+| Number of objects                      | Unlimited                                  |
+| Max Durable Object classes per account | 500 (Paid) / 100 (Free)                    |
+| Row / string / BLOB size               | **2 MB** max                               |
+| KV key+value combined                  | 2 MB max                                   |
+| Columns per table                      | 100                                        |
+| SQL statement length                   | 100 KB                                     |
+| Bound parameters per query             | 100                                        |
+| WebSocket received message size        | 32 MiB                                     |
+| CPU per request                        | 30 s default, configurable to 5 min        |
 
 Consequences for ID:
 
 - Signed graph objects, tag rows, journal entries, membership/invite records all
   fit comfortably as SQLite rows — they are small, structured, and indexed.
 - **Blobs do not belong in the per-user SQLite.** Anything over 2 MB cannot be a
-  row at all, and a 10 GB per-object ceiling is the user's *entire* hosted store.
+  row at all, and a 10 GB per-object ceiling is the user's _entire_ hosted store.
   Blob bytes go to R2 (§3.3); SQLite keeps hash → R2-key metadata.
 - Point-in-time recovery exists for DO SQLite (30-day bookmark window is a
   platform feature of the storage API), which is a reasonable analogue of journal
@@ -100,7 +100,7 @@ Consequences for ID:
   many small logical messages into one WebSocket frame to cut per-message
   overhead — directly relevant to LIST 8/9's "many small packets" traffic.
 
-**Conclusion:** a per-user DO *can* act as that user's always-reachable server —
+**Conclusion:** a per-user DO _can_ act as that user's always-reachable server —
 holding WebSocket connections from the user's own clients and from guests,
 fanning out graph updates, and sleeping (unbilled) between events. What it
 cannot do is hold an Iroh/QUIC session or a raw inbound TCP listener (§2.2).
@@ -111,15 +111,15 @@ cannot do is hold an Iroh/QUIC session or a raw inbound TCP listener (§2.2).
 
 From [Workers limits](https://developers.cloudflare.com/workers/platform/limits/):
 
-| Limit | Free | Paid |
-|---|---|---|
-| CPU time per HTTP request | 10 ms | 30 s default, **5 min max** |
-| Memory per isolate | **128 MB** | **128 MB** (does not increase with plan) |
-| Subrequests per invocation | 50 | 10,000 |
-| Simultaneous outgoing connections | 6 | 6 |
-| Requests | 100,000/day | unlimited (billed) |
-| Worker bundle size | 64 MiB uncompressed | 64 MiB |
-| Startup (global scope) | 1 s CPU | 1 s CPU |
+| Limit                             | Free                | Paid                                     |
+| --------------------------------- | ------------------- | ---------------------------------------- |
+| CPU time per HTTP request         | 10 ms               | 30 s default, **5 min max**              |
+| Memory per isolate                | **128 MB**          | **128 MB** (does not increase with plan) |
+| Subrequests per invocation        | 50                  | 10,000                                   |
+| Simultaneous outgoing connections | 6                   | 6                                        |
+| Requests                          | 100,000/day         | unlimited (billed)                       |
+| Worker bundle size                | 64 MiB uncompressed | 64 MiB                                   |
+| Startup (global scope)            | 1 s CPU             | 1 s CPU                                  |
 
 Notes that matter for ID:
 
@@ -128,7 +128,7 @@ Notes that matter for ID:
   the budget to watch — a full-graph sync or a large journal replay must be
   chunked across invocations, alarms, or Queue/Workflow steps rather than run
   in one request.
-- 128 MB is per *isolate*, shared by concurrent requests, and includes Wasm
+- 128 MB is per _isolate_, shared by concurrent requests, and includes Wasm
   allocations. No in-memory whole-graph working set: the graph must live in
   SQLite/R2 and be paged through, which ID's storage layer mostly already does
   on disk — but any code that loads a whole doc/world into RAM needs rework.
@@ -136,7 +136,7 @@ Notes that matter for ID:
   wall-clock duration for HTTP-triggered work is unlimited while the client
   stays connected, and DO alarm handlers get 15 minutes of wall time
   ([DO limits](https://developers.cloudflare.com/durable-object
-...[truncated 15581 chars]s/platform/limits/)).
+  ...[truncated 15581 chars]s/platform/limits/)).
 
 ### 2.1 Wasm support
 
@@ -172,7 +172,7 @@ edges must be rewritten against Fetch/WebSocket/SQLite APIs regardless.
 peer**. It cannot join the swarm, accept QUIC connections, hole-punch, or speak
 to a native `id serve` node over Iroh protocols. What it can be:
 
-1. A **hosted home server** speaking ID's *application* semantics (signed
+1. A **hosted home server** speaking ID's _application_ semantics (signed
    objects, graph, journals) over HTTPS + WebSocket to browsers and to native
    clients that add an HTTPS/WS transport.
 2. A **bridge/gateway**: native Iroh nodes and the hosted edition exchange
@@ -184,7 +184,7 @@ to a native `id serve` node over Iroh protocols. What it can be:
    services (e.g. MQTT brokers — relevant to LIST 6's ESP32/Home Assistant
    path), but not for Iroh.
 
-This is a *subset by design*, exactly as Drew framed it ("acting as actual
+This is a _subset by design_, exactly as Drew framed it ("acting as actual
 servers, or technically peer-to-peer servers, sort of"): the hosted node is a
 peer in the graph/trust sense, not in the QUIC sense.
 
@@ -197,11 +197,11 @@ peer in the graph/trust sense, not in the QUIC sense.
 - Identity: `namespace.idFromName("google:" + sub)` gives a stable, globally
   unique object per user; unlimited objects per account (§1.2).
 - The same unit holds compute + strongly consistent SQLite + live WebSockets,
-  which is precisely "a SQLite for each user" *and* their server.
+  which is precisely "a SQLite for each user" _and_ their server.
 - No provisioning step: an object (and its database) materializes on first
   request. No per-user binding or API bookkeeping.
 - Caps: 10 GB/user store, ~1,000 req/s soft per user, single-threaded per
-  user — all acceptable for a personal graph store; a *shared* world with many
+  user — all acceptable for a personal graph store; a _shared_ world with many
   writers would need its own DO (per world, not per user) and inherits the
   same per-object throughput ceiling.
 
@@ -209,14 +209,14 @@ peer in the graph/trust sense, not in the QUIC sense.
 
 From [D1 limits](https://developers.cloudflare.com/d1/platform/limits/):
 
-| Limit | Free | Paid |
-|---|---|---|
-| Databases per account | 10 | **50,000** |
-| Max database size | 500 MB | 10 GB |
-| Total storage per account | 5 GB | **1 TB** |
-| Queries per Worker invocation | 50 | 1,000 |
-| Max SQL query duration | 30 s | 30 s |
-| Row size | 2 MB | 2 MB |
+| Limit                         | Free   | Paid       |
+| ----------------------------- | ------ | ---------- |
+| Databases per account         | 10     | **50,000** |
+| Max database size             | 500 MB | 10 GB      |
+| Total storage per account     | 5 GB   | **1 TB**   |
+| Queries per Worker invocation | 50     | 1,000      |
+| Max SQL query duration        | 30 s   | 30 s       |
+| Row size                      | 2 MB   | 2 MB       |
 
 Cloudflare explicitly designs D1 for "horizontal scale out across multiple,
 smaller (10 GB) databases, such as per-user, per-tenant or per-entity
@@ -232,8 +232,8 @@ weaker than Option A:
   be statically bound; every query becomes dynamic-routing bookkeeping.
 - **No live connections, no compute at the data:** D1 is query-only. The
   WebSocket fan-out and write serialization logic still needs a DO in front,
-  so D1-per-user *adds* a layer instead of replacing one.
-- Where D1 *does* fit: a single shared **directory/registry database**
+  so D1-per-user _adds_ a layer instead of replacing one.
+- Where D1 _does_ fit: a single shared **directory/registry database**
   (Google-subject → user record, public-server directory, name resolution for
   LIST 13's @/# lookup), where cross-user SQL queries are the point and
   read replication helps. One D1 (or a few), not one per user.
@@ -256,15 +256,15 @@ weaker than Option A:
 
 ### 3.4 Comparison summary
 
-| Criterion | DO-SQLite per user | D1 per user | R2 / KV |
-|---|---|---|---|
-| Per-user cap | 10 GB | 10 GB | R2: ~unlimited |
-| Account ceiling | Unlimited storage (Paid) | 50k DBs, 1 TB | — |
-| Consistency | Strong, serialized | Single-writer primary | R2: object-level; KV: eventual |
-| Live WebSockets | **Yes, in the same unit** | No | No |
-| Provisioning | None (name-derived) | API per user | Bucket/namespace once |
-| Cross-user queries | No (by design) | Awkward (per-DB routing) | No |
-| Best ID role | **Per-user graph + journal + server** | Shared directory DB | R2: blobs; KV: public cache |
+| Criterion          | DO-SQLite per user                    | D1 per user              | R2 / KV                        |
+| ------------------ | ------------------------------------- | ------------------------ | ------------------------------ |
+| Per-user cap       | 10 GB                                 | 10 GB                    | R2: ~unlimited                 |
+| Account ceiling    | Unlimited storage (Paid)              | 50k DBs, 1 TB            | —                              |
+| Consistency        | Strong, serialized                    | Single-writer primary    | R2: object-level; KV: eventual |
+| Live WebSockets    | **Yes, in the same unit**             | No                       | No                             |
+| Provisioning       | None (name-derived)                   | API per user             | Bucket/namespace once          |
+| Cross-user queries | No (by design)                        | Awkward (per-DB routing) | No                             |
+| Best ID role       | **Per-user graph + journal + server** | Shared directory DB      | R2: blobs; KV: public cache    |
 
 ---
 
@@ -306,8 +306,8 @@ Email addresses change; `sub` does not. So:
 
 ### 4.3 Binding Google identity → ID (Iroh) identity — the part SSO does not solve
 
-A Google login proves *account* identity; an ID identity is an Ed25519-style
-keypair whose public key *is* the ID. These must be explicitly bound, and the
+A Google login proves _account_ identity; an ID identity is an Ed25519-style
+keypair whose public key _is_ the ID. These must be explicitly bound, and the
 binding design is a real decision for the ID program (flagged, not settled
 here):
 
@@ -315,7 +315,7 @@ here):
    "this key claims hosted account `google:<sub-hash>`", and/or the hosted
    account (once logged in) records the user's public key after the user signs
    a login-issued challenge with their native node. The binding record lives
-   in the directory D1 + the user's DO. Result: hosted data is *theirs* in
+   in the directory D1 + the user's DO. Result: hosted data is _theirs_ in
    the same trust graph; Google is only the door, not the identity.
 2. **Custodial key:** the hosted edition generates/holds a key for the user
    server-side. Zero-friction, but the operator can sign as the user — this
@@ -336,9 +336,9 @@ a validated identity JWT to the application
 [Generic OIDC](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/generic-oidc/)).
 
 Trade-off: Access removes the hand-rolled OIDC code and is the faster pilot
-path, but it is built to *gate applications*, not to be a consumer identity
+path, but it is built to _gate applications_, not to be a consumer identity
 system — session/policy semantics, per-user provisioning hooks, and JWT claim
-contents are Access-shaped. For a public hosted ID service where sign-up *is*
+contents are Access-shaped. For a public hosted ID service where sign-up _is_
 the product, hand-rolled OIDC in the Worker (§4.1) keeps identity semantics
 under ID's control. Recommendation: pilot with hand-rolled OIDC; it is ~one
 endpoint plus JWT verification; keep Access for admin/operator surfaces.
@@ -351,16 +351,16 @@ All rates Workers Paid (after the $5/mo account minimum), from
 [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/)
 and [DO pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/):
 
-| Primitive | Billed per | Included | Overage |
-|---|---|---|---|
-| Workers | **request** + **CPU time** (no duration charge) | 10M req/mo; 30M CPU-ms/mo | $0.30/M req; $0.02/M CPU-ms |
-| Worker static assets | nothing | free, unlimited | — |
-| Durable Objects | **request** + **duration (GB-s)** + rows | 1M req/mo; 400,000 GB-s/mo | $0.15/M req; $12.50/M GB-s |
-| DO-SQLite / D1 rows | **rows read** / **rows written** | 25B read/mo; 50M written/mo | $0.001/M read; **$1.00/M written** |
-| DO-SQLite storage | GB-month | 5 GB-mo | $0.20/GB-mo |
-| D1 storage | GB-month | 5 GB | $0.75/GB-mo |
-| R2 | storage + operations, **egress free** | 10 GB-mo; 1M Class A; 10M Class B | $0.015/GB-mo; $4.50/M Class A (writes/lists); $0.36/M Class B (reads) |
-| KV | reads / writes / storage | 10M reads; 1M writes/mo | $0.50/M reads; **$5.00/M writes** |
+| Primitive            | Billed per                                      | Included                          | Overage                                                               |
+| -------------------- | ----------------------------------------------- | --------------------------------- | --------------------------------------------------------------------- |
+| Workers              | **request** + **CPU time** (no duration charge) | 10M req/mo; 30M CPU-ms/mo         | $0.30/M req; $0.02/M CPU-ms                                           |
+| Worker static assets | nothing                                         | free, unlimited                   | —                                                                     |
+| Durable Objects      | **request** + **duration (GB-s)** + rows        | 1M req/mo; 400,000 GB-s/mo        | $0.15/M req; $12.50/M GB-s                                            |
+| DO-SQLite / D1 rows  | **rows read** / **rows written**                | 25B read/mo; 50M written/mo       | $0.001/M read; **$1.00/M written**                                    |
+| DO-SQLite storage    | GB-month                                        | 5 GB-mo                           | $0.20/GB-mo                                                           |
+| D1 storage           | GB-month                                        | 5 GB                              | $0.75/GB-mo                                                           |
+| R2                   | storage + operations, **egress free**           | 10 GB-mo; 1M Class A; 10M Class B | $0.015/GB-mo; $4.50/M Class A (writes/lists); $0.36/M Class B (reads) |
+| KV                   | reads / writes / storage                        | 10M reads; 1M writes/mo           | $0.50/M reads; **$5.00/M writes**                                     |
 
 Key mechanics for ID's design:
 
@@ -381,19 +381,19 @@ Key mechanics for ID's design:
   (50M writes/mo included), but chatty patterns — one row per keystroke,
   per-presence-ping, per-index-touch (indexed writes count extra rows) —
   must be batched. This lands directly on LIST 8/9: ephemeral live traffic
-  should flow over WebSockets *without* journaling every packet (consistent
+  should flow over WebSockets _without_ journaling every packet (consistent
   with LIST 9's low-retention ephemeral tier), and only settled events become
   rows.
 - **WebSocket message billing is discounted 20:1** for DO requests (100
   incoming messages bill as 5 requests), and outgoing messages and protocol
-  pings are free — live sync is cheap *if* hibernated and batched.
+  pings are free — live sync is cheap _if_ hibernated and batched.
 - **Egress is free** on Workers and R2, so serving blobs/pages to many
   readers costs operations, not bandwidth — well matched to LIST 14's
   "pull data by ID from whoever has it" reads, at least for the hosted leg.
 
 **Per-user idle cost, concretely:** a dormant user with a 100 MB graph store
 costs ≈ $0.02/mo in storage and nothing else, account-wide meters aside.
-Cost scales with *activity and writes*, not with registered users.
+Cost scales with _activity and writes_, not with registered users.
 
 ---
 
@@ -404,28 +404,28 @@ Legend: **fits** = maps onto a primitive with no semantic change ·
 **does-not-fit** = cannot run on Workers; excluded from the hosted edition or
 handled by a bridge/native node.
 
-| ID component (pkgs/id) | Workers primitive | Verdict | Notes |
-|---|---|---|---|
-| Iroh QUIC transport (`start_node`, QUIC/hole-punching) | — none (no UDP, no inbound listen) | **does-not-fit** | §2.2. Hosted edition is not an Iroh peer. |
-| Iroh relay / DERP-style relaying | Worker + DO (HTTPS/WS relay) | **fits-with-changes** | Becomes an application-layer store-and-forward relay over WebSocket; LIST 9's optional privacy-relay role fits here. |
-| Peer discovery (mDNS, DHT — discovery.rs, dht.rs) | Directory D1 + KV | **fits-with-changes** | mDNS/DHT do not exist at the edge; replaced by a central directory lookup (Google-key → hosted endpoint / public node addresses). Loses decentralization for the hosted leg only. |
-| P2P RPC protocol (protocol.rs, postcard MetaRequest/Response) | HTTPS + WebSocket RPC into the user's DO | **fits-with-changes** | Same request/response semantics and serialization can be reused; transport and connection model rewritten. |
-| Blob store (store.rs, content-addressed) | **R2** + hash index in DO-SQLite | **fits** | Content addressing maps 1:1; bytes in R2 (≤5 TiB/object), metadata rows in SQLite; write-once suits R2's 1 write/s/key. |
-| Tag/graph dual index (tags.rs, tuple.rs, NamespacePair docs) | DO-SQLite tables (alpha/omega as SQL indexes) | **fits-with-changes** | CRDT doc sync replaced by single-writer serialized SQL inside the owner's DO — simpler locally; cross-user/shared namespaces need an explicit merge protocol over the bridge (§2.2). |
-| Signed objects / chains (chain.rs, tag_claims.rs, envelope) | DO-SQLite rows + Wasm/JS verification | **fits** | Verification is pure compute; must be chunked to CPU limits for bulk import/replay. |
-| Event store / journal (event_store/, log_sync.rs) | DO-SQLite append tables + DO alarms | **fits-with-changes** | Append + replay fits; replay of long journals must be incremental (CPU/wall limits). Sync becomes push/pull over HTTPS/WS, not gossip. |
-| Gossip (Iroh gossip) | WebSocket fan-out from DOs | **fits-with-changes** | Only reaches hosted/connected subscribers; no epidemic propagation. Native gossip stays native-side of the bridge. |
-| Identity (node keypair, `id id`) | Google `sub` binding + signed claim (§4.3) | **fits-with-changes** | SSO is the door; the ID key remains the identity. Custodial-key shortcut explicitly *not* recommended. |
-| Access / invites / groups / membership (access.rs, invite.rs, groups/, membership/) | DO-SQLite rows, enforced in the DO | **fits** | Per-user DO is the natural enforcement point; allowed-writer lists (LIST 7) are SQL rows. |
-| Worlds — shared journaled world state (world_store.rs, world_records.rs) | One DO **per world** + its SQLite | **fits-with-changes** | Journal in SQLite; all writers serialize through the world DO (~1,000 req/s soft cap per world). |
-| Worlds — sandboxed program execution (sandbox.rs, world_compile.rs, world_native.rs) | Wasm in Worker/DO | **fits-with-changes** | Only if the world VM is single-threaded, syscall-light Wasm (§2.1); native-code worlds do not fit. CPU-capped per event (30 s default / 5 min max) — long turns must checkpoint into the journal. |
-| Worlds — web rendering (web/, Axum UI) | Worker serving HTML/assets + world DO | **fits** | Static assets free; dynamic rendering is ordinary Worker work. |
-| Worlds — SSH rendering (world_ssh.rs) | — | **does-not-fit** | No inbound TCP/SSH listener in the GA runtime (§2.2). SSH stays a native-node surface. (Inbound TCP via Spectrum is only newly announced/beta — not a foundation to design on.) |
-| Collaborative editor / live sessions (web WebSocket editing) | DO + Hibernation WebSockets | **fits** | The platform's flagship use case; batch small messages per §1.3. |
-| REPL / CLI (repl/, cli.rs) | Native client → HTTPS/WS API | **fits-with-changes** | CLI stays native; it gains a "hosted remote" transport beside Iroh remotes. |
-| Scheduled/background work (sync, expiry, cleanup) | Cron Triggers + DO alarms + Queues | **fits** | Alarms wake individual user/world DOs; no always-on daemon. |
-| Large media / file transfer | R2 + HTTP range/streaming | **fits** | Egress free; chunked/BitTorrent-style swarming (LIST 14) does **not** fit — hosted leg serves whole objects over HTTP only. |
-| Abuse controls (LIST 8: rate limits, budgets, blocks) | DO per user/topic as the serialization point + Worker-level checks | **fits** | A DO is a natural rate-limit/budget counter with strong consistency; per-IP/ID/topic budgets are rows + checks on the write path. Row-write pricing (§5) argues for coarse-grained counters. |
+| ID component (pkgs/id)                                                               | Workers primitive                                                  | Verdict               | Notes                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Iroh QUIC transport (`start_node`, QUIC/hole-punching)                               | — none (no UDP, no inbound listen)                                 | **does-not-fit**      | §2.2. Hosted edition is not an Iroh peer.                                                                                                                                                         |
+| Iroh relay / DERP-style relaying                                                     | Worker + DO (HTTPS/WS relay)                                       | **fits-with-changes** | Becomes an application-layer store-and-forward relay over WebSocket; LIST 9's optional privacy-relay role fits here.                                                                              |
+| Peer discovery (mDNS, DHT — discovery.rs, dht.rs)                                    | Directory D1 + KV                                                  | **fits-with-changes** | mDNS/DHT do not exist at the edge; replaced by a central directory lookup (Google-key → hosted endpoint / public node addresses). Loses decentralization for the hosted leg only.                 |
+| P2P RPC protocol (protocol.rs, postcard MetaRequest/Response)                        | HTTPS + WebSocket RPC into the user's DO                           | **fits-with-changes** | Same request/response semantics and serialization can be reused; transport and connection model rewritten.                                                                                        |
+| Blob store (store.rs, content-addressed)                                             | **R2** + hash index in DO-SQLite                                   | **fits**              | Content addressing maps 1:1; bytes in R2 (≤5 TiB/object), metadata rows in SQLite; write-once suits R2's 1 write/s/key.                                                                           |
+| Tag/graph dual index (tags.rs, tuple.rs, NamespacePair docs)                         | DO-SQLite tables (alpha/omega as SQL indexes)                      | **fits-with-changes** | CRDT doc sync replaced by single-writer serialized SQL inside the owner's DO — simpler locally; cross-user/shared namespaces need an explicit merge protocol over the bridge (§2.2).              |
+| Signed objects / chains (chain.rs, tag_claims.rs, envelope)                          | DO-SQLite rows + Wasm/JS verification                              | **fits**              | Verification is pure compute; must be chunked to CPU limits for bulk import/replay.                                                                                                               |
+| Event store / journal (event_store/, log_sync.rs)                                    | DO-SQLite append tables + DO alarms                                | **fits-with-changes** | Append + replay fits; replay of long journals must be incremental (CPU/wall limits). Sync becomes push/pull over HTTPS/WS, not gossip.                                                            |
+| Gossip (Iroh gossip)                                                                 | WebSocket fan-out from DOs                                         | **fits-with-changes** | Only reaches hosted/connected subscribers; no epidemic propagation. Native gossip stays native-side of the bridge.                                                                                |
+| Identity (node keypair, `id id`)                                                     | Google `sub` binding + signed claim (§4.3)                         | **fits-with-changes** | SSO is the door; the ID key remains the identity. Custodial-key shortcut explicitly _not_ recommended.                                                                                            |
+| Access / invites / groups / membership (access.rs, invite.rs, groups/, membership/)  | DO-SQLite rows, enforced in the DO                                 | **fits**              | Per-user DO is the natural enforcement point; allowed-writer lists (LIST 7) are SQL rows.                                                                                                         |
+| Worlds — shared journaled world state (world_store.rs, world_records.rs)             | One DO **per world** + its SQLite                                  | **fits-with-changes** | Journal in SQLite; all writers serialize through the world DO (~1,000 req/s soft cap per world).                                                                                                  |
+| Worlds — sandboxed program execution (sandbox.rs, world_compile.rs, world_native.rs) | Wasm in Worker/DO                                                  | **fits-with-changes** | Only if the world VM is single-threaded, syscall-light Wasm (§2.1); native-code worlds do not fit. CPU-capped per event (30 s default / 5 min max) — long turns must checkpoint into the journal. |
+| Worlds — web rendering (web/, Axum UI)                                               | Worker serving HTML/assets + world DO                              | **fits**              | Static assets free; dynamic rendering is ordinary Worker work.                                                                                                                                    |
+| Worlds — SSH rendering (world_ssh.rs)                                                | —                                                                  | **does-not-fit**      | No inbound TCP/SSH listener in the GA runtime (§2.2). SSH stays a native-node surface. (Inbound TCP via Spectrum is only newly announced/beta — not a foundation to design on.)                   |
+| Collaborative editor / live sessions (web WebSocket editing)                         | DO + Hibernation WebSockets                                        | **fits**              | The platform's flagship use case; batch small messages per §1.3.                                                                                                                                  |
+| REPL / CLI (repl/, cli.rs)                                                           | Native client → HTTPS/WS API                                       | **fits-with-changes** | CLI stays native; it gains a "hosted remote" transport beside Iroh remotes.                                                                                                                       |
+| Scheduled/background work (sync, expiry, cleanup)                                    | Cron Triggers + DO alarms + Queues                                 | **fits**              | Alarms wake individual user/world DOs; no always-on daemon.                                                                                                                                       |
+| Large media / file transfer                                                          | R2 + HTTP range/streaming                                          | **fits**              | Egress free; chunked/BitTorrent-style swarming (LIST 14) does **not** fit — hosted leg serves whole objects over HTTP only.                                                                       |
+| Abuse controls (LIST 8: rate limits, budgets, blocks)                                | DO per user/topic as the serialization point + Worker-level checks | **fits**              | A DO is a natural rate-limit/budget counter with strong consistency; per-IP/ID/topic budgets are rows + checks on the write path. Row-write pricing (§5) argues for coarse-grained counters.      |
 
 ---
 
