@@ -34,8 +34,13 @@ way is *identity* — and identity is what the plugin adds:
 
 Hosts that only speak MCP need no plugin at all: point them at
 `mcpx serve --transport stdio` or the daemon's `/mcp` endpoint and mcpx is
-just an MCP server to them. MCP carries no harness session, so those hosts
-get no session scoping — that is the trade the plugin exists to avoid.
+just an MCP server to them. Session scoping still works there, but it is
+mcpx's own transport session — a stable per-process key (`mcp-<pid>` for a
+stdio server) — not the harness's session. What those hosts do not get is
+*harness-session identity*: nothing ties the MCP connection to the agent
+session that spawned it, so two agents sharing one MCP server process
+share its session scope too. That identity is the trade the plugin exists
+to provide.
 
 ### mcpx plugins: extending mcpx
 
@@ -63,7 +68,7 @@ no support is claimed before an adapter exists.
 | claude code | no | shell + `AGENTS.md`; MCP | unknown | adapter design: `docs/opencode-plugin.md` §5 |
 | pi | no | unknown | unknown | adapter design: `docs/opencode-plugin.md` §5 |
 | manus | no | unknown | unknown | adapter design: `docs/opencode-plugin.md` §5 |
-| any MCP host | not needed | `/mcp` or stdio | none (MCP carries no harness session) | — |
+| any MCP host | not needed | `/mcp` or stdio | no harness session; mcpx derives its own transport session (`mcp-<pid>` for stdio) | `internal/cli/serve.go` |
 
 One runtime note: the portable core dials the socket with Bun's
 `fetch(url, {unix})`. A Node-based harness cannot use that option, so it
@@ -81,7 +86,7 @@ The opencode plugin uses four hooks (`docs/opencode-plugin.md` §2.2):
 
 | hook | what it carries for mcpx | without it |
 | --- | --- | --- |
-| `shell.env` | `MCPX_SESSION_ID`, `MCPX_CALL_ID` and the rest of the injected environment, per shell command | no ids: calls are attributed to "unknown" and leases fall back to whole-daemon scope |
+| `shell.env` | `MCPX_SESSION_ID`, `MCPX_CALL_ID` and the rest of the injected environment, per shell command | no ids: calls are attributed to "unknown" and session-scoped leases fall back to **per-call isolation** — each invocation gets its own lease keyed by its call id, so state does not persist across commands and anything stateful must happen inside one invocation |
 | `experimental.chat.system.transform` | the opt-in system-prompt line saying mcpx exists | the opt-in tools still work when named; the model may never reach for mcpx |
 | the `tool` map | the opt-in tools `mcpx_discover`, `mcpx_exec`, `mcpx_observe` | mcpx is shell-only, which is the default anyway |
 | `tool.execute.after` | one timing record per tool call, into mcpx's log | no harness timings; `mcpx stats` covers mcpx alone |
@@ -106,7 +111,7 @@ ladder and stopping at the first answer (full design:
 | 1 | the choice remembered for this directory, still answering | every session after the first |
 | 2 | the `daemon-*.json` info files the daemon publishes | **the usual case; no binary needed** |
 | 3 | `GET /v1/resolve` against any live daemon | two or more candidates |
-| 4 | spawn `mcpx --json status` | a binary exists and the daemons are too old for rung 3 — the only rung that runs the binary, and never under `backend: v1` or `bin: ""` |
+| 4 | spawn `mcpx --json status` | a binary exists and the daemons are too old for rung 3 — the only rung that runs the binary. `backend: v1` does **not** suppress this spawn: the backend guard governs the tool-execution fallback, and discovery still spawns when no daemon is discoverable. Only `bin: ""` forbids spawning outright |
 | 5 | ask the user (toast, picker, or `mcpx_daemon_select`) | still ambiguous, and someone is there |
 | 6 | the best candidate, with a warning | headless, or unanswered — the ladder never fails just because there are two |
 
@@ -153,8 +158,8 @@ plugin README's hand-maintained table exactly that way.
 | `socket` *(not a setting)* | `MCPX_SOCKET` | — | a socket named outright. Stops the ladder. |
 | `bin` | `MCPX_PLUGIN_BIN` | `mcpx` | the binary for rung 4. `""` forbids spawning anything. |
 | `binArgs` | `MCPX_PLUGIN_BIN_ARGS` | — | arguments put in front of every plugin invocation of mcpx (the case this exists for is `--config` or `--profile`). |
-| `backend` | `MCPX_PLUGIN_BACKEND` | `auto` | `auto` prefers the socket and spawns only as a fallback; `v1` never spawns; `cli` never uses the socket. |
-| `discoveryRetry` | `MCPX_PLUGIN_DISCOVERY_RETRY` | `60s` | how long the plugin waits before looking for mcpx again after a failed lookup, so an editor without mcpx does not pay for a failed spawn on every keystroke. |
+| `backend` | `MCPX_PLUGIN_BACKEND` | `auto` | `auto` prefers the socket and spawns only as a fallback; `v1` refuses the spawn fallback for tool execution (discovery may still spawn when no daemon is discoverable — `bin: ""` is the way to forbid spawning entirely); `cli` never uses the socket. |
+| `discoveryRetry` *(environment only)* | `MCPX_PLUGIN_DISCOVERY_RETRY` | `60s` | how long the plugin waits before looking for mcpx again after a failed lookup, so an editor without mcpx does not pay for a failed spawn on every keystroke. Declared in the registry, but the adapter reads it from the environment only — passing it as a plugin option is silently ignored. |
 | `toolTiming` | `MCPX_PLUGIN_TOOL_TIMING` | off | record opencode's tool timings into mcpx's log, so one `mcpx stats` covers both. |
 | `env` | `MCPX_PLUGIN_ENV` | `full` | how much session context is injected into each command's environment: `minimal`, `standard`, `full` (the lists are under [opencode v1 plugin](#opencode-v1-plugin)). |
 | `instructions` | `MCPX_PLUGIN_INSTRUCTIONS` | off | add mcpx usage guidance to the system prompt. |
