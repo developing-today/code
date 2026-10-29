@@ -9,14 +9,16 @@
 //   so a human refreshing — or a watchdog polling — never fans out to
 //   five services per hit. A failed probe renders as a failed probe,
 //   with its error and its age; nothing here invents a state.
-// - The projector (off by config) is never probed and never red.
+// - A service whose topology row is probe:"off" (the projector when
+//   unconfigured) is never probed and never red.
 // - Page health is an in-process render registry (server.ts records
 //   each successful page render), never self-HTTP: a route nobody has
 //   opened is labelled "not rendered since boot", not fake-green.
 // - In fixtures mode there are no live probes to make: every service
 //   reports "fixtures", which is also the degraded-state test fixture.
+import type { PendingCommentCounts } from "./comments.ts";
 import type { Config } from "./config.ts";
-import { ageMsText, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
+import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
 import type { ProvenanceDetail } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
@@ -143,6 +145,9 @@ export interface HealthView {
   };
   pages: PageHealth[];
   facets: ProvenanceDetail | null;
+  /** Dashboard comment loops (#1145): pending triage/posting counts,
+   *  so an unworked comment queue is visible on /health. */
+  comments: PendingCommentCounts;
 }
 
 // --- Render registry -------------------------------------------------------
@@ -212,6 +217,7 @@ export interface HealthInputs {
   feedFileMtimeMs: number | null;
   diagnosis?: SectionDiagnosis;
   detail?: ProvenanceDetail;
+  comments?: PendingCommentCounts;
 }
 
 export interface HealthDeps {
@@ -226,6 +232,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
   const cache = deps.cache ?? sharedProbeCache;
   const { cfg, feed } = inputs;
   const feedAgeMs = feed ? Math.max(0, now - Date.parse(feed.generatedAt)) : null;
+  const feedFutureMs = feed ? Date.parse(feed.generatedAt) - now : null;
   const diagnosis = inputs.diagnosis;
 
   const services: ServiceHealth[] = [];
@@ -244,9 +251,15 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       outcome =
         feed === null
           ? { state: "down", ok: false, detail: "no readable fleet feed" }
-          : feedAgeMs !== null && feedAgeMs > FEED_STALE_MS
-            ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — past the 15m freshness threshold` }
-            : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
+          : feedFutureMs !== null && feedFutureMs > GENERATED_AT_FUTURE_SKEW_MS
+            ? {
+                state: "stale",
+                ok: false,
+                detail: `feed generatedAt ${feed.generatedAt} is >60s in the future — never fresh`,
+              }
+            : feedAgeMs !== null && feedAgeMs > FEED_STALE_MS
+              ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — past the 15m freshness threshold` }
+              : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
     } else if (def.probe === "section") {
       if (!diagnosis) {
         outcome = { state: "unknown", ok: null, detail: "this source reports no section diagnosis" };
@@ -337,5 +350,6 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     },
     pages: pageHealth(now),
     facets: inputs.detail ?? null,
+    comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },
   };
 }

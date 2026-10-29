@@ -278,6 +278,72 @@ func TestExecWatchFollowsARepointedLinkByWhatItRuns(t *testing.T) {
 	waitGone(t, pid)
 }
 
+// The cross-directory counterpart of the re-pointed-link test above
+// (#1531, Phase 2 proof): a live pool whose link is re-pointed at a
+// byte-identical script in a different directory restarts within the watch
+// ticks, because a script's identity includes its resolved directory. The
+// restart is logged exactly once, and the neighbour pool is untouched.
+func TestExecWatchRestartsAScriptRePointedAtAnIdenticalCopyInAnotherDirectory(t *testing.T) {
+	setExecWatch(t, execTick)
+	fake := testsupport.FakeMCPBinary(t)
+	state := t.TempDir()
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	scriptA := filepath.Join(dirA, "mcp-server")
+	scriptB := filepath.Join(dirB, "mcp-server")
+	writeWrapper(t, fake, scriptA, "same program")
+	writeWrapper(t, fake, scriptB, "same program")
+	if a, b := mustRead(t, scriptA), mustRead(t, scriptB); !bytes.Equal(a, b) {
+		t.Fatal("the cross-directory copy is not byte-identical to the original script")
+	}
+	link := filepath.Join(state, "mcp-server")
+	if err := os.Symlink(scriptA, link); err != nil {
+		t.Fatal(err)
+	}
+	log := recordLifecycle(t)
+
+	cfg := &config.Config{MCPServers: map[string]*config.Server{
+		"a": {Name: "a", Command: fake},
+		"b": {Name: "b", Command: link},
+	}}
+	r, err := NewRegistry(cfg, Paths{State: state, Cache: state}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	pa, _ := r.Pool("a")
+	pb, _ := r.Pool("b")
+	pidA, pidB := childPID(t, pa), childPID(t, pb)
+
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(scriptB, link); err != nil {
+		t.Fatal(err)
+	}
+	var pidB2 int
+	waitFor(t, 2*time.Second, "a script re-pointed at a byte-identical copy in another directory kept its child", func() bool {
+		pidB2 = livePID(pb)
+		return pidB2 != 0 && pidB2 != pidB
+	})
+	waitGone(t, pidB)
+
+	// Let several more checks run: the restart must stay a single event.
+	time.Sleep(10 * execTick)
+	if n := log.count("server.restart", "b", map[string]string{"reason": "executable changed"}); n != 1 {
+		t.Fatalf("pool b logged %d restarts for executable changed, want exactly 1", n)
+	}
+	if n := log.count("server.restart", "a", nil); n != 0 {
+		t.Fatalf("the neighbour pool logged %d restarts", n)
+	}
+	if got := livePID(pa); got != pidA {
+		t.Fatalf("the neighbour pool was restarted: pid %d -> %d", pidA, got)
+	}
+	if got := servedPID(t, pb); got != pidB2 {
+		t.Fatalf("the call was served by pid %d, not the restarted child %d", got, pidB2)
+	}
+}
+
 // A child whose executable is deleted keeps serving, with one warning however
 // many checks see the gap. When the file returns, the child is kept if the
 // bytes are the same and replaced if they are not.

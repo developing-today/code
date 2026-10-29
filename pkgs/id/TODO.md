@@ -12,50 +12,27 @@
 
 ---
 
-- consider removing the mail outbox (`--world-mail-outbox`), which writes confirmation codes to disk. Decide after the envelope outbox and mail paths settle.
+- Mail outbox removal decision: see #1795.
 
-- cursors that are inactive and losing opacity should slowly stop strobing. once they hit minimum opacity until timeout they reactivating them should enable full strobing.
-- ensure cursors become totally visible when a client hovers on them.
-- i'm not totally sure the cursors are actually reducing opacity. review the code make sure it seems right.
-- add client logs for when a cursor first gets marked as inactive, when it reaches minimum, when it is removed
-- add server logs for all messages sent and received, client disconnects, inactivity, page loads, etc.
-
-- validate that inactive cursor is based on websocket inactive / lack of client pong or other activity. cursor being idle in one place shouldn't cause it to be hidden if the client is still connected. a connected clients cursor should always be visible on other clients.
-- add client logging for hover/unhover
-
-- make a toggle in the ui for modifying cursor visibility, full minimal hidden (full is now, minimal is just the cursors themselves are shown, hidden doesn't show cursor info at all even though it is still tracked internally.). cursors include their highlight state, so minimal just removes the tooltip.
-- if a minimal cursor is hovered show the tooltip for at least 1 second, if the tooltip or cursor aren't hovered then re-hide after one second.
-
-- if a user clicks a cursor tooltip it should get slightly larger for at least 1 second and return to previous state if not hovered after 1 second. (so if a minimal is hovered to tooltip and then clicked to big, and then the mouse doesnt hover anymore, it should revert to tooltip after 1 second and then back to minimal after 1 more second)
-
-- a big cursor tooltip should have a '-' button to hide the cursor tooltip immediately as just a cursor and if the tooltip is already hidden by default (so the tooltip was a cursor only, someone hovered to get the tooltip shown, then clicked the shown tooltip), a plus button should be made in the same place minus was instead to allow that cursor tooltip to be shown by default. so 'full' should have a list of minimized and 'minimal' should have a list of restored.
-
-- a big cursor tooltip should have a pin/unpin button which doesn't allow the big tooltip from hiding. if a cursor was hidden and someone pins it it is still hidden so on-unpin it goes back to hover timeout and if timed out goes back to a cursor. pinned cursors should be visible regardless of cursor visibility toggle, so one can pin a cursor in full or minimal and that cursor will be visible in hidden mode.
+- Cursor presence UX remainder: see #1790.
 
 ---
 
-- the website header/footer sometimes are doubling themselves, please fix this bug. it seems to happen most often when clicking on a page like 'settings' or something. or maybe if a page is still open when a server is redeployed?
+- Web shell header/footer doubling: dropped — superseded by the Datastar/SPA rewrite (#1073); see the disposition on #1294. File fresh with a repro if it recurs.
 
-- user's client id should be shown on the settings page, right now it just shows 0's. each new tab can still generate a new random id, but changing pages from within the website shouldn't generate a new id. later we may implement stronger persistence options, but right now as long as clicking around uses the same id that's good. opening a page in a new tab can behave either way i don't care so long as a fresh reload from a new tab autogenerates. does server make the id right now? if so continue doing that, we dont have an authorize mechanism. a user shouldn't be able to spoof another user's id because it's server controlled. maybe let the websocket persist with page transitions? if this isn't possible with default js/browser mechanics, maybe htmx can help load new page / update then update the url location, without actually 'loading' a new page.
-- allow setting 'name' in the settings and push that name to the server, all other clients should get a new cursor message with the same/current cursor state and the name set. names don't need to be sent every time. they should be sent when a user sets their name or renames themselves and they should be sent when a new client joins a page because they dont have any cursor info yet. the settings page should show their name under the id but above the theme selection.
-- the themes on the settings page the names of them are on top of the icons. ensure the names are below their respective icons with proper spaces no overlap, the color of each name should correspond to the color used in the theme-- not the color of the current theme.
+- Web settings: see #1792.
 
 ---
 
-- RUST_LOG env var is fine, but support setting log level by cmdline input. link to this document in appropriate places https://docs.rs/env_logger/latest/env_logger/
-- use structured logging everywhere. in each server and web client log send a json log message. update the slog messages to have appropriate context and properties for the given log message, configure trace ids and use contexts or properties to mark what the log is from. include a nanosecond rfc timestamp including timezone, default to host timezone fallback utc. allow overriding time zone.
-- enable being able to log to a file, enable being able to change the log file location by command line, consider if it's possible to send different log levels to different places. consider if stdout can show info while one log file has up to debug logs and another has up to info logs, for instance.
+- Structured logging: see #1791.
 
 ---
 
-- build variants can that file be made by the cargo build command somehow? instead of in justfile / build.sh it's an additional artifact of the build itself?
-- add this to the just file and nix flake, to allow formatting the justfile automatically, use --check in the ci version and fmt in fmt which should be used in fix https://just.systems/man/en/formatting-and-dumping-justfiles.html
-- justfile cargo test maybe doesn't need all feature for some of the subcomponent tests. verify what this does, i guess if lib has web features it should be included. don't make new test types without checking.
-- just ci is running multiple tests in a row, i see it repeated the 237 test blocks and it may be repeating more tests in some of the smaller groups like the 54/14 tests. does the just command need changes?
+- Build hygiene: see #1797.
 
 ---
 
-- currently prosemirror is sending json inside a binary compacted message, how efficient is this? would there be any advantage to making this actually binary or compressing/uncompressing it? consider client vs server calculation cost, speed/latency, wire/memory size
+- ProseMirror wire format: see #1796.
 
 ---
 
@@ -70,15 +47,12 @@
 
 ---
 
-- implement a method to send files from one server to another in cli/repl and website
-- implement a method for each client to give petnames to any other clients/servers/nodes they interact with, and have those petnames be used in the cli/repl and website instead of the actual names. should be able to assign any arbitrary node id but ideally have a convienient ways to assign petnames to nodes that are interacted with in the repl/website.
+- Send files server-to-server: see #1794.
+- Petnames: dropped — already implemented in `src/petname.rs`; the local-vs-shared scope remainder is in #1793. See the disposition on #1294.
 
 ---
 
-- can we add tags to files/nodes and have those tags be searchable in the cli/repl/website? each client/node that added the tag should be linked to the tag so we can show that information in the cli/repl/website and use it for searching/organizing. if 2 clients add the same tag to a node/file, that should be reflected in the cli/repl/website and show that both clients added that tag, in the order they added it with timestamps. (get all files from x node that have the word 'yz' in them etc should be doable, not reinventing sql just allowing extended search/metadata.)
-- can each uploaded file be linked to the node/time that uploaded it? (maybe use tags for this? or whatever is best) implement at least a rudimentary way to show this information in the cli/repl/website, and use it for searching/organizing files. ideally we could also show this information in the file listing in the cli/repl/website, and have a way to sort/filter by upload time/node.
-- can tags/petnames be able to be either local to the client or shared across clients, and can we have a way to specify which when creating/editing a tag/petname? some way to organize/review existing petnames/tags would be good too.
-- allow each node to self-publish information about themselves, their preferred name, maybe just helpers to add public tags to their own node id and then update the various interfaces to be able to poll and pull that info. (priority would be something like "clients private alias for some node, clients public alias, the other node's public alias for themselves, any other public aliases the client/server are aware of,
+- Tags provenance and uploaded-file origin: see #1793.
 
 ---
 

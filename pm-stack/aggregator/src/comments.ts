@@ -96,13 +96,22 @@ export function newCommentId(now = new Date()): string {
 
 export class CommentsStore {
   private comments: DashComment[] = [];
-  private loaded = false;
+  private loadPromise: Promise<void> | null = null;
+  private writeChain: Promise<void> = Promise.resolve();
+  private writeSeq = 0;
 
   constructor(private readonly file: string) {}
 
+  // The load is memoized as a single promise (#1509): the old
+  // loaded-flag version let concurrent first callers proceed before
+  // the read finished, and the read's completion then reset the
+  // in-memory array, wiping records those callers had just pushed.
   async load(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
+    if (!this.loadPromise) this.loadPromise = this.doLoad();
+    return this.loadPromise;
+  }
+
+  private async doLoad(): Promise<void> {
     try {
       const parsed: unknown = JSON.parse(await readFile(this.file, "utf8"));
       if (typeof parsed === "object" && parsed !== null && Array.isArray((parsed as CommentsFile).comments)) {
@@ -115,12 +124,24 @@ export class CommentsStore {
     }
   }
 
-  private async persist(): Promise<void> {
-    const data: CommentsFile = { version: 1, comments: this.comments };
-    await mkdir(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp-${process.pid}`;
-    await writeFile(tmp, JSON.stringify(data, null, 2));
-    await rename(tmp, this.file);
+  // Persists are serialized through a per-store promise chain and each
+  // write lands on a unique temp path (#1509): concurrent adds used to
+  // share one pid-only temp path, so the first rename won and the rest
+  // threw ENOENT while their records stayed in memory - fulfilled calls
+  // diverged from what was on disk. The snapshot is taken when the
+  // queued write actually runs, so the last write always carries the
+  // full current state; a failed write still rejects its own caller but
+  // does not poison the chain for later writes.
+  private persist(): Promise<void> {
+    const run = this.writeChain.then(async () => {
+      const data: CommentsFile = { version: 1, comments: this.comments };
+      await mkdir(dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;
+      await writeFile(tmp, JSON.stringify(data, null, 2));
+      await rename(tmp, this.file);
+    });
+    this.writeChain = run.catch(() => {});
+    return run;
   }
 
   async all(): Promise<DashComment[]> {
@@ -130,6 +151,14 @@ export class CommentsStore {
 
   async forObject(objectRef: string): Promise<DashComment[]> {
     return (await this.all()).filter((c) => c.objectRef === objectRef);
+  }
+
+  /** Comments grouped by object ref, oldest first — the per-card
+   *  comment boxes (#1446) render from this. */
+  async byObject(): Promise<Map<string, DashComment[]>> {
+    const out = new Map<string, DashComment[]>();
+    for (const c of await this.all()) out.set(c.objectRef, [...(out.get(c.objectRef) ?? []), c]);
+    return out;
   }
 
   /** Counts per object ref, for 💬 badges across the views. */
@@ -154,6 +183,11 @@ export class CommentsStore {
     this.comments.push(comment);
     await this.persist();
     return comment;
+  }
+
+  /** Pending triage/posting counts (#1145), for the health view. */
+  async pendingCounts(): Promise<PendingCommentCounts> {
+    return pendingCommentCounts(await this.all());
   }
 
   async markTriaged(ids: string[]): Promise<number> {
@@ -183,6 +217,27 @@ export class CommentsStore {
     await this.persist();
     return c;
   }
+}
+
+/** Pending-work counts for the dashboard comment loops (#1145): a
+ *  message comment is pending until the orchestrator triages it
+ *  (triageState "new"); a github comment is pending until a fleet
+ *  poster lands it (githubState "pending"). The health view publishes
+ *  these so an unworked queue is visible instead of silent. */
+export interface PendingCommentCounts {
+  pendingMessages: number;
+  pendingGithub: number;
+  total: number;
+}
+
+export function pendingCommentCounts(comments: DashComment[]): PendingCommentCounts {
+  let pendingMessages = 0;
+  let pendingGithub = 0;
+  for (const c of comments) {
+    if (c.kind === "message" && c.triageState === "new") pendingMessages++;
+    if (c.kind === "github" && c.githubState === "pending") pendingGithub++;
+  }
+  return { pendingMessages, pendingGithub, total: comments.length };
 }
 
 /** The URL a posted GitHub comment lives at, for rendering. */

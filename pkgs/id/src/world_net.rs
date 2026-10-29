@@ -759,6 +759,36 @@ impl WorldClient {
         ))
     }
 
+    /// Query the world's host metrics (F11.7): counters and histograms
+    /// for commands, journal appends, checkpoints, frame bytes, queue
+    /// depth, and live sessions.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the capability is refused, or if
+    /// the host is too old to know the `metrics` frame.
+    pub async fn metrics(&mut self, capability: &str) -> Result<crate::world::MetricsSnapshot> {
+        self.send_json(&serde_json::json!({
+            "type": "metrics",
+            "capability": capability,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        match reply["type"].as_str() {
+            Some("metrics") => serde_json::from_value(reply["metrics"].clone())
+                .context("host sent invalid metrics"),
+            _ => bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused to report metrics")
+            ),
+        }
+    }
+
     /// Query module state, including observed build provenance where available.
     /// Older hosts that do not send provenance continue to decode as `None`.
     pub async fn info_details(&mut self, capability: &str) -> Result<WorldModuleInfo> {

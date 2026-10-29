@@ -149,6 +149,39 @@ impl SearchOptions {
     }
 }
 
+/// Build the local write path for a downloaded find/search match.
+///
+/// A match name is untrusted input: in remote mode both the name and the
+/// blob content come from the queried node, so the name must never be used
+/// as a filesystem path verbatim (`../` and absolute names would overwrite
+/// arbitrary local files — issue #1614). The write path is derived from the
+/// name's final path component only (`Path::file_name` ruling), optionally
+/// under `dir`. A name with no final component (`..`, `/`, a trailing
+/// separator, empty) is refused and nothing is written. Ordinary
+/// single-segment names produce byte-identical paths to the previous
+/// verbatim behaviour.
+fn download_output_path(dir: Option<&str>, name: &str) -> Result<String> {
+    if name.is_empty() || name.ends_with('/') {
+        bail!(
+            "refusing download of match with unsafe name {:?}: no final path component",
+            name
+        );
+    }
+    let Some(file_name) = std::path::Path::new(name)
+        .file_name()
+        .and_then(|c| c.to_str())
+    else {
+        bail!(
+            "refusing download of match with unsafe name {:?}: no final path component",
+            name
+        );
+    };
+    Ok(match dir {
+        Some(dir) => format!("{}/{}", dir, file_name),
+        None => file_name.to_owned(),
+    })
+}
+
 /// Find files matching queries and output their content.
 ///
 /// This is the main handler for the `id find` command. It searches for blobs
@@ -177,6 +210,7 @@ impl SearchOptions {
 ///
 /// Returns an error if no matches are found for any query.
 ///
+
 /// # Example
 ///
 /// ```bash
@@ -234,7 +268,7 @@ pub async fn cmd_find(
             for m in &all_matches {
                 let key = format!("{}:{}", m.hash, m.name);
                 if seen.insert(key) {
-                    let output_path = format!("{}/{}", dir_path, m.name);
+                    let output_path = download_output_path(Some(dir_path), &m.name)?;
                     if let Some(ref node_str) = node {
                         let node_id: EndpointId = node_str.parse()?;
                         cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
@@ -265,24 +299,32 @@ pub async fn cmd_find(
     // Single match or first match mode
     if all_matches.len() == 1 {
         let m = &all_matches[0];
-        let output = if to_stdout { "-" } else { &m.name };
+        let output = if to_stdout {
+            "-".to_owned()
+        } else {
+            download_output_path(None, &m.name)?
+        };
         if let Some(node_str) = node {
             let node_id: EndpointId = node_str.parse()?;
-            cmd_get_one_remote(node_id, &m.name, output, no_relay).await?;
+            cmd_get_one_remote(node_id, &m.name, &output, no_relay).await?;
         } else {
-            cmd_get_one(&m.name, output, false, false).await?;
+            cmd_get_one(&m.name, &output, false, false).await?;
         }
     } else {
         // Multiple matches - print them and use first one
         eprintln!("found {} matches (using first):", all_matches.len());
         print_matches_cli(&all_matches, format);
         let m = &all_matches[0];
-        let output = if to_stdout { "-" } else { &m.name };
+        let output = if to_stdout {
+            "-".to_owned()
+        } else {
+            download_output_path(None, &m.name)?
+        };
         if let Some(node_str) = node {
             let node_id: EndpointId = node_str.parse()?;
-            cmd_get_one_remote(node_id, &m.name, output, no_relay).await?;
+            cmd_get_one_remote(node_id, &m.name, &output, no_relay).await?;
         } else {
-            cmd_get_one(&m.name, output, false, false).await?;
+            cmd_get_one(&m.name, &output, false, false).await?;
         }
     }
     Ok(())
@@ -366,7 +408,7 @@ pub async fn cmd_search(
             for m in &all_matches {
                 let key = format!("{}:{}", m.hash, m.name);
                 if seen.insert(key) {
-                    let output_path = format!("{}/{}", dir_path, m.name);
+                    let output_path = download_output_path(Some(dir_path), &m.name)?;
                     if let Some(ref node_str) = node {
                         let node_id: EndpointId = node_str.parse()?;
                         cmd_get_one_remote(node_id, &m.name, &output_path, no_relay).await?;
@@ -904,7 +946,7 @@ pub async fn cmd_find_matches(
         })?;
         send.write_all(&req).await?;
         send.finish()?;
-        let resp_buf = recv.read_to_end(64 * 1024).await?;
+        let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
         let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
@@ -991,6 +1033,43 @@ mod tests {
     #[test]
     fn test_match_kind_no_match() {
         assert_eq!(match_kind("goodbye", "hello"), None);
+    }
+
+    #[test]
+    fn test_download_output_path_ordinary_name_byte_identical() {
+        assert_eq!(
+            download_output_path(None, "plain.txt").unwrap(),
+            "plain.txt"
+        );
+        assert_eq!(
+            download_output_path(Some("out"), "plain.txt").unwrap(),
+            "out/plain.txt"
+        );
+    }
+
+    #[test]
+    fn test_download_output_path_confines_traversal_to_final_component() {
+        assert_eq!(
+            download_output_path(Some("out"), "../victim.txt").unwrap(),
+            "out/victim.txt"
+        );
+        assert_eq!(download_output_path(None, "../../x").unwrap(), "x");
+        assert_eq!(
+            download_output_path(Some("out"), "/tmp/x").unwrap(),
+            "out/x"
+        );
+        assert_eq!(download_output_path(None, "/tmp/x").unwrap(), "x");
+    }
+
+    #[test]
+    fn test_download_output_path_refuses_names_without_final_component() {
+        for name in ["..", "/", "", "foo/", "../", "."] {
+            assert!(
+                download_output_path(None, name).is_err(),
+                "expected refusal for {name:?}"
+            );
+            assert!(download_output_path(Some("out"), name).is_err());
+        }
     }
 
     #[test]

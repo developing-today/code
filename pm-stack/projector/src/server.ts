@@ -193,6 +193,9 @@ export function serve(db: Client, env: ServerEnv, port: number): Bun.Server {
   return Bun.serve({
     port,
     hostname: env.HOSTNAME ?? "127.0.0.1",
+    // A reconcile poll runs for minutes; Bun's 10s default idle timeout
+    // closed the socket mid-poll and the caller saw an empty reply.
+    idleTimeout: 255,
     async fetch(req) {
       return handleRequest(req, db, env);
     },

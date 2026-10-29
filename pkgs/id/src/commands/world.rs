@@ -601,6 +601,9 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 let info = client.info_details(&capability).await?;
                 let caps = client.caps(&capability).await?;
                 let profile = client.execution_profile(None, Some(&capability)).await?;
+                // Host metrics (F11.7) ride along when the host knows the
+                // metrics frame; an older host simply omits the object.
+                let metrics = client.metrics(&capability).await.ok();
                 Ok::<serde_json::Value, anyhow::Error>(serde_json::json!({
                     "world_id": info.world_id,
                     "active_module_hash": info.active_module_hash,
@@ -608,6 +611,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                     "current_sequence": info.current_sequence,
                     "caps": caps,
                     "profile": profile,
+                    "metrics": metrics,
                 }))
             }
             .await;
@@ -643,6 +647,13 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             seed,
             allow_partial,
         } => replay_fixture(&module, &fixture, seed, allow_partial),
+        #[cfg(feature = "sandbox")]
+        WorldCommand::Verify {
+            module,
+            fixture,
+            seed,
+            allow_partial,
+        } => verify_fixture(&module, &fixture, seed, allow_partial),
         WorldCommand::List {
             node,
             admin_token,
@@ -656,22 +667,15 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             let (default, worlds) = result?;
             if json {
-                let worlds: Vec<serde_json::Value> = worlds
+                let worlds: Vec<crate::world_hub::WorldInfo> = worlds
                     .into_iter()
-                    .map(|(name, open)| {
-                        serde_json::json!({
-                            "name": name,
-                            "open": open,
-                            "default": name == default,
-                        })
-                    })
+                    .map(|(name, open)| crate::world_hub::WorldInfo { name, open })
                     .collect();
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "default": default,
-                        "worlds": worlds,
-                    }))?
+                    serde_json::to_string_pretty(&crate::world_hub::directory_json(
+                        &worlds, &default
+                    ))?
                 );
             } else {
                 for (name, open) in worlds {
@@ -1066,6 +1070,59 @@ fn replay_fixture(
             );
         }
         bail!("the replayed records differ from the fixture's");
+    }
+    Ok(())
+}
+
+/// Verify a fixture's determinism offline and print the verdict.
+///
+/// The verdict line comes first. When the two replays diverge, the first
+/// diverging record is printed and the command fails, after the first
+/// replay's records and view are printed.
+///
+/// # Errors
+///
+/// An unreadable or oversized file, a module the fixture was not recorded
+/// under, a refused replay, or two replays that diverge.
+#[cfg(feature = "sandbox")]
+fn verify_fixture(
+    module: &std::path::Path,
+    fixture_path: &std::path::Path,
+    seed: u64,
+    allow_partial: bool,
+) -> Result<()> {
+    let wasm = read_bounded(
+        module,
+        crate::world_session::MAX_WORLD_MODULE_BYTES as u64,
+        "module",
+    )?;
+    let text = String::from_utf8(read_bounded(
+        fixture_path,
+        crate::world_fixture::MAX_FIXTURE_BYTES,
+        "fixture",
+    )?)
+    .context("the fixture is not UTF-8")?;
+    let fixture = crate::world_fixture::decode(&text)?;
+    crate::world_fixture::check_module(&fixture.header, &wasm)?;
+    let runner = crate::sandbox::Sandbox::compile(&wasm, crate::sandbox::SandboxLimits::default())?;
+    let verification = crate::world_fixture::verify(&runner, seed, &fixture, allow_partial)?;
+    match &verification.divergence {
+        None => println!(
+            "records verify (two replays agree at all {} steps)",
+            verification.steps
+        ),
+        Some(divergence) => println!("records diverge ({divergence})"),
+    }
+    if let Some(records) = &verification.first.records {
+        let value: serde_json::Value =
+            serde_json::from_str(records).context("the replayed records")?;
+        println!("records: {}", serde_json::to_string_pretty(&value)?);
+    }
+    if let Some(view) = &verification.first.view {
+        println!("view:\n{view}");
+    }
+    if let Some(divergence) = &verification.divergence {
+        bail!("the two replays diverge: {divergence}");
     }
     Ok(())
 }

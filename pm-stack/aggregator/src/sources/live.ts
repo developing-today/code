@@ -29,6 +29,7 @@ import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
   type AaFeedSection,
+  type AttentionFlag,
   type BoardItem,
   type Comment,
   type DnsSection,
@@ -309,23 +310,51 @@ export function mergeLinks(existing: Link[], extra: Link[]): Link[] {
 const RELATIONS = new Set<string>(["tracks", "implements", "relates"]);
 const asRelation = (v: string): Link["relation"] => (RELATIONS.has(v) ? (v as Link["relation"]) : "relates");
 
+/**
+ * Refs travel in the query string, and the projector (Bun.serve) rejects
+ * request lines past ~16KB with HTTP 431 — at ~30 encoded chars per ref
+ * that ceiling is only ~500 refs, which the board prime outgrew on
+ * 2026-10-27: the prime's comments/items reads failed over to fixtures
+ * while single-item pages (a handful of refs) stayed live. Chunk every
+ * multi-ref read so each request stays far below the limit.
+ */
+const PROJECTOR_REFS_PER_REQUEST = 200;
+
+function refChunks(refs: RefKey[]): RefKey[][] {
+  const chunks: RefKey[][] = [];
+  for (let i = 0; i < refs.length; i += PROJECTOR_REFS_PER_REQUEST) {
+    chunks.push(refs.slice(i, i + PROJECTOR_REFS_PER_REQUEST));
+  }
+  return chunks;
+}
+
 export async function projectorItems(baseUrl: string, refs: RefKey[]): Promise<Map<RefKey, GhItem> | null> {
   if (refs.length === 0) return new Map();
   // Refs contain `#` — they must be percent-encoded or the `#` starts a
   // fragment and the projector never sees the number.
-  const r = await getJson(`${baseUrl}/items?refs=${encodeURIComponent(refs.join(","))}`);
-  if (!r.ok) return null;
-  const rows = (r.json as { items?: ProjectorItemRow[] }).items ?? [];
-  return new Map(rows.map((row) => [row.ref, mapProjectorItem(row)] as const));
+  const out = new Map<RefKey, GhItem>();
+  for (const chunk of refChunks(refs)) {
+    const r = await getJson(`${baseUrl}/items?refs=${encodeURIComponent(chunk.join(","))}`);
+    if (!r.ok) return null;
+    const rows = (r.json as { items?: ProjectorItemRow[] }).items ?? [];
+    for (const row of rows) out.set(row.ref, mapProjectorItem(row));
+  }
+  return out;
 }
 
 export async function projectorComments(baseUrl: string, refs: RefKey[]): Promise<Comment[] | null> {
   if (refs.length === 0) return [];
-  const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(refs.join(","))}`);
-  if (!r.ok) return null;
-  return ((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
-    .map(mapProjectorComment)
-    .filter((c) => !c.deleted);
+  const out: Comment[] = [];
+  for (const chunk of refChunks(refs)) {
+    const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(chunk.join(","))}`);
+    if (!r.ok) return null;
+    out.push(
+      ...((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
+        .map(mapProjectorComment)
+        .filter((c) => !c.deleted),
+    );
+  }
+  return out;
 }
 
 /** Registry links for one subject (kaneo:/grist:/gh:), from GET /links. */
@@ -573,6 +602,8 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
   // is the aggregator's own data (like comments.json); a failed write
   // never breaks the read.
   let registryStore: SessionRecord[] | null = null;
+  let registryWriteChain: Promise<void> = Promise.resolve();
+  let registryWriteSeq = 0;
   async function loadRegistryStore(): Promise<SessionRecord[]> {
     if (registryStore) return registryStore;
     try {
@@ -589,11 +620,18 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
     const changed = merged.length !== current.length || merged.some((r, i) => r !== current[i]);
     registryStore = merged;
     if (changed) {
-      try {
+      // Serialized writes + unique temp path per write (#1509): the
+      // pid-only temp path raced concurrent merges the same way the
+      // comments/actions stores did, and the catch below hid the loss.
+      const write = registryWriteChain.then(async () => {
         await mkdir(dirname(cfg.registryFile), { recursive: true });
-        const tmp = `${cfg.registryFile}.tmp-${process.pid}`;
+        const tmp = `${cfg.registryFile}.tmp-${process.pid}-${++registryWriteSeq}`;
         await writeFile(tmp, JSON.stringify(merged, null, 2));
         await rename(tmp, cfg.registryFile);
+      });
+      registryWriteChain = write.catch(() => {});
+      try {
+        await write;
       } catch {
         /* durability is best-effort; the in-memory merge still serves */
       }
@@ -775,12 +813,23 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           charges: feed.charges ?? [],
           subscriptions: feed.subscriptions ?? [],
         };
+        // Charges auto-matching (#1057): the feed carries only
+        // first-time unmatched SaaS/AI charges (the collector's
+        // surfaced-state guarantees exactly-once), so each becomes
+        // an attention flag here and never repeats on later feeds.
+        const chargeFlags: AttentionFlag[] = (feed.chargesAttention ?? []).map((u) => ({
+          kind: "unmatched-charge",
+          label: `${u.merchant} — unrecognized SaaS/AI charge`,
+          detail: `$${u.amountUsd.toFixed(2)} on ${u.at} via ${u.source === "plaid" ? "Plaid" : "Gmail alert"} — no hub service matched; classify it or add the service`,
+          href: "/quota",
+          severity: u.amountUsd,
+        }));
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: buildAttentionFlags(feed.quota, partial),
+          attention: [...buildAttentionFlags(feed.quota, partial), ...chargeFlags],
           domains,
           history,
         };

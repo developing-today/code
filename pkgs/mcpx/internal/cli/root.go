@@ -341,6 +341,12 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The daemon's one task store, shared with its MCP surface at
+	// MCPServer() (issue #1555). Set here, where the daemon server
+	// exists in this process; commands that never build one leave it
+	// nil and their MCP servers keep private stores.
+	a.daemonStore = srv.TaskStore()
+
 	// mcpx's own MCP server, on the listeners the daemon already has. Built
 	// here because the daemon cannot import the CLI that builds it, and
 	// mounted rather than given a listener of its own: two HTTP servers with

@@ -1,5 +1,7 @@
 name: mcpx conformance
 
+# CI tier policy: see .github/ci-policy.md
+
 # The official MCP conformance suite (github.com/modelcontextprotocol/conformance) against mcpx,
 # one job per leg. A leg is one side of the protocol (mcpx as a server, or as a client) checked
 # against one spec revision. The suite has frozen requirement sets for 2025-11-25 and 2026-07-28;
@@ -54,6 +56,10 @@ env:
 jobs:
   leg:
     name: ${{ matrix.leg }}
+    # Main tier only (Phase 2, #1781): the conformance legs move off PRs.
+    # The spec-parity job below stays on PRs: measured exec 28s on run
+    # 40801660942 (2026-10-29), well under the 5m fast-leg limit.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -343,14 +349,14 @@ jobs:
   records:
     name: compare with the records
     needs: leg
-    if: always()
+    if: always() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
           sparse-checkout: pkgs/mcpx/scripts
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: counts-*
           path: counts

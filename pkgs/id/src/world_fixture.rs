@@ -5,6 +5,8 @@
 //! join capability; [`replay`] runs one offline through the sandbox under a
 //! seed the operator supplies. A fixture holds no seed, no capability, and no
 //! module bytes, and it adds no authority to the capability that recorded it.
+//! [`verify`] replays a fixture twice and compares the records after every
+//! event, as the determinism self-check behind `id world verify`.
 //! The design record is `doc/2026-10-17T09-00-00Z_feature_world_fixtures`.
 
 use std::time::Duration;
@@ -158,6 +160,115 @@ pub struct Replayed {
     pub verdict: Verdict,
 }
 
+/// The records of one replay at one step: after the event at `sequence`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordSnapshot {
+    /// Sequence of the event after which the records were read.
+    pub sequence: u64,
+    /// The program's records at that step (empty when it keeps none).
+    pub records: Records,
+}
+
+/// The first step at which two replays of the same fixture disagree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Divergence {
+    /// Sequence of the event after which the records first differ.
+    pub sequence: u64,
+    /// The first record key, in sorted order, whose value differs.
+    pub key: String,
+    /// The key's value in the first replay (`None`: the key is absent).
+    pub first: Option<Value>,
+    /// The key's value in the second replay (`None`: the key is absent).
+    pub second: Option<Value>,
+}
+
+impl std::fmt::Display for Divergence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = |v: &Option<Value>| {
+            v.as_ref()
+                .map_or_else(|| "<absent>".to_owned(), Value::to_string)
+        };
+        write!(
+            f,
+            "sequence {}: record `{}` differs (first replay: {}, second replay: {})",
+            self.sequence,
+            self.key,
+            value(&self.first),
+            value(&self.second)
+        )
+    }
+}
+
+/// The outcome of [`verify`]: two replays of one fixture, compared step by step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Verification {
+    /// The first replay, as [`replay`] would return it.
+    pub first: Replayed,
+    /// The second replay, as [`replay`] would return it.
+    pub second: Replayed,
+    /// How many record snapshots were compared.
+    pub steps: usize,
+    /// The first divergence between the two replays, if any.
+    pub divergence: Option<Divergence>,
+}
+
+impl Verification {
+    /// True when the two replays agreed at every compared step.
+    #[must_use]
+    pub const fn is_deterministic(&self) -> bool {
+        self.divergence.is_none()
+    }
+}
+
+/// Compare two step-by-step record sequences from replays of the same
+/// fixture and report the first divergence, if any.
+///
+/// Steps are compared in order; within a step, record keys are compared in
+/// sorted (map) order, so the reported divergence is the earliest step and,
+/// inside it, the first differing key. A step present in only one sequence
+/// diverges at that step.
+#[must_use]
+pub fn first_divergence(first: &[RecordSnapshot], second: &[RecordSnapshot]) -> Option<Divergence> {
+    let steps = first.len().max(second.len());
+    for index in 0..steps {
+        let (Some(a), Some(b)) = (first.get(index), second.get(index)) else {
+            // One sequence ended: the extra step is the divergence.
+            let extra = first.get(index).or(second.get(index))?;
+            let key = extra
+                .records
+                .keys()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "<records>".to_owned());
+            return Some(Divergence {
+                sequence: extra.sequence,
+                key: key.clone(),
+                first: first.get(index).and_then(|s| s.records.get(&key)).cloned(),
+                second: second.get(index).and_then(|s| s.records.get(&key)).cloned(),
+            });
+        };
+        if a.records == b.records {
+            continue;
+        }
+        // First key, in sorted order, whose value differs (or is absent).
+        let mut keys: Vec<&String> = a.records.keys().chain(b.records.keys()).collect();
+        keys.sort();
+        keys.dedup();
+        for key in keys {
+            let (va, vb) = (a.records.get(key), b.records.get(key));
+            if va != vb {
+                return Some(Divergence {
+                    sequence: a.sequence.max(b.sequence),
+                    key: key.clone(),
+                    first: va.cloned(),
+                    second: vb.cloned(),
+                });
+            }
+        }
+    }
+    None
+}
+
 /// Serialize a fixture: the header line, then one line per event.
 ///
 /// The same header and events always give the same text.
@@ -291,6 +402,113 @@ pub fn replay(
         view: Some(view),
         verdict,
     })
+}
+
+/// Verify a fixture's determinism: replay it twice under `seed` and compare
+/// the records after every event the program sees, plus the final records.
+///
+/// This is the self-check behind `id world verify` (F11.16). [`replay`]
+/// compares one replay against the records the fixture's header recorded;
+/// `verify` compares two fresh replays against each other, so it also catches
+/// a divergence that appears mid-stream and later reconverges, and it does not
+/// trust the header.
+///
+/// Caveat (#242): host-originated events are not retained in the event
+/// stream, so a live recording never contains them. Verification covers the
+/// fixture's recorded events only: both replays omit host events equally, so
+/// a guest whose live behaviour depended on them can pass verify while still
+/// replaying to a header mismatch. Verify proves the recorded fixture
+/// replays deterministically, nothing more.
+///
+/// # Errors
+///
+/// The same refusals as [`replay`], from either run.
+#[cfg(feature = "sandbox")]
+pub fn verify(
+    runner: &Sandbox,
+    seed: u64,
+    fixture: &Fixture,
+    allow_partial: bool,
+) -> Result<Verification> {
+    let (first, first_steps) = replay_collecting(runner, seed, fixture, allow_partial)?;
+    let (second, second_steps) = replay_collecting(runner, seed, fixture, allow_partial)?;
+    let steps = first_steps.len().max(second_steps.len());
+    let divergence = first_divergence(&first_steps, &second_steps);
+    Ok(Verification {
+        first,
+        second,
+        steps,
+        divergence,
+    })
+}
+
+/// Replay a fixture exactly as [`replay`] does, also collecting the records
+/// after every event the program sees (and at the head) as snapshots.
+/// `records` is documented as a pure function of state and the sandbox resets
+/// fuel per guest call, so reading it per step cannot disturb the replay.
+#[cfg(feature = "sandbox")]
+fn replay_collecting(
+    runner: &Sandbox,
+    seed: u64,
+    fixture: &Fixture,
+    allow_partial: bool,
+) -> Result<(Replayed, Vec<RecordSnapshot>)> {
+    let header = &fixture.header;
+    ensure!(
+        header.complete || allow_partial,
+        "the fixture is partial: its history does not start at sequence 1, so a fresh replay cannot reproduce it; pass --allow-partial to replay the retained window, whose records are then not compared"
+    );
+    ensure!(
+        header.module_hash.is_some(),
+        "the fixture records no active module, so there is nothing to replay"
+    );
+    let start = replay_start(&fixture.events)?;
+    let mut world = runner.instantiate(seed)?;
+    let mut snapshots = Vec::new();
+    for event in &fixture.events[start..] {
+        if let Some(world_event) = replay_event(event) {
+            WorldProgram::update(&mut world, &world_event)
+                .with_context(|| format!("replay sequence {}", world_event.sequence))?;
+            snapshots.push(RecordSnapshot {
+                sequence: world_event.sequence,
+                records: snapshot_records(&mut world)?,
+            });
+        }
+    }
+    let records = WorldProgram::records(&mut world).context("replay records")?;
+    let view = String::from_utf8(world.view()?).context("the replayed view is not UTF-8")?;
+    let verdict = verdict(header, records.as_deref())?;
+    let final_records = match records.as_deref() {
+        Some(text) => parse_records(text).context("the replayed records")?,
+        None => Records::new(),
+    };
+    if snapshots
+        .last()
+        .is_none_or(|snapshot| snapshot.sequence != header.current_sequence)
+    {
+        snapshots.push(RecordSnapshot {
+            sequence: header.current_sequence,
+            records: final_records,
+        });
+    }
+    Ok((
+        Replayed {
+            records,
+            view: Some(view),
+            verdict,
+        },
+        snapshots,
+    ))
+}
+
+/// The records of a replay in progress; a program that keeps none reads as
+/// an empty map, as in [`verdict`].
+#[cfg(feature = "sandbox")]
+fn snapshot_records(world: &mut impl WorldProgram) -> Result<Records> {
+    match WorldProgram::records(world).context("replay records")? {
+        Some(text) => parse_records(&text).context("the replayed records"),
+        None => Ok(Records::new()),
+    }
 }
 
 /// The header line, with its keys in a fixed order.
@@ -810,6 +1028,68 @@ mod tests {
         assert!(decode(&partial).is_ok(), "a partial window must decode");
     }
 
+    fn snapshot(sequence: u64, records: &str) -> RecordSnapshot {
+        RecordSnapshot {
+            sequence,
+            records: parse_records(records).unwrap(),
+        }
+    }
+
+    #[test]
+    fn identical_record_sequences_have_no_divergence() {
+        let steps = vec![
+            snapshot(1, r#"{"board":"---------","plays":0}"#),
+            snapshot(3, r#"{"board":"X--------","plays":1}"#),
+        ];
+        assert_eq!(first_divergence(&steps, &steps.clone()), None);
+        assert_eq!(first_divergence(&[], &[]), None);
+    }
+
+    #[test]
+    fn first_divergence_reports_the_earliest_step_and_first_key() {
+        let first = vec![
+            snapshot(1, r#"{"board":"---------","plays":0}"#),
+            snapshot(3, r#"{"board":"X--------","plays":1}"#),
+            snapshot(5, r#"{"board":"XO-------","plays":2}"#),
+        ];
+        let second = vec![
+            snapshot(1, r#"{"board":"---------","plays":0}"#),
+            snapshot(3, r#"{"board":"X--------","plays":9}"#),
+            snapshot(5, r#"{"board":"XX-------","plays":2}"#),
+        ];
+        let divergence = first_divergence(&first, &second).unwrap();
+        assert_eq!(divergence.sequence, 3);
+        assert_eq!(divergence.key, "plays");
+        assert_eq!(divergence.first, Some(serde_json::json!(1)));
+        assert_eq!(divergence.second, Some(serde_json::json!(9)));
+        assert_eq!(
+            divergence.to_string(),
+            "sequence 3: record `plays` differs (first replay: 1, second replay: 9)"
+        );
+    }
+
+    #[test]
+    fn first_divergence_reports_a_key_absent_from_one_replay() {
+        let first = vec![snapshot(2, r#"{"winner":"X"}"#)];
+        let second = vec![snapshot(2, r#"{}"#)];
+        let divergence = first_divergence(&first, &second).unwrap();
+        assert_eq!(divergence.sequence, 2);
+        assert_eq!(divergence.key, "winner");
+        assert_eq!(divergence.first, Some(serde_json::json!("X")));
+        assert_eq!(divergence.second, None);
+        assert!(divergence.to_string().contains("<absent>"));
+    }
+
+    #[test]
+    fn first_divergence_reports_an_extra_step() {
+        let first = vec![snapshot(1, r#"{"plays":0}"#), snapshot(2, r#"{"plays":1}"#)];
+        let second = vec![snapshot(1, r#"{"plays":0}"#)];
+        let divergence = first_divergence(&first, &second).unwrap();
+        assert_eq!(divergence.sequence, 2);
+        assert_eq!(divergence.key, "plays");
+        assert_eq!(divergence.second, None);
+    }
+
     #[test]
     fn check_module_refuses_a_different_module() {
         let wasm: &[u8] = include_bytes!("../examples/tic-tac-toe/tic-tac-toe.wasm");
@@ -887,6 +1167,47 @@ mod tests {
                 *live
             );
             assert!(replayed.view.unwrap().contains("winner=X"));
+        }
+
+        #[test]
+        fn verify_agrees_with_itself_on_a_checked_in_game() {
+            let (runner, fixture) = checked_in_game();
+            let verification = verify(&runner, 7, &fixture, false).unwrap();
+            assert!(verification.is_deterministic());
+            assert_eq!(verification.divergence, None);
+            assert_eq!(verification.first.verdict, Verdict::Match);
+            assert_eq!(verification.second.verdict, Verdict::Match);
+            assert_eq!(verification.first.records, verification.second.records);
+            // One snapshot per move the program saw, at the head.
+            assert_eq!(verification.steps, 5);
+        }
+
+        #[test]
+        fn a_nondeterministic_guest_fails_verify() {
+            // The sandbox gives a guest no nondeterminism channel: it receives
+            // no imports (no clock, no random source; see sandbox.rs), so no
+            // checked-in guest can actually produce different records on a
+            // second instantiation. The failure is therefore exercised at the
+            // comparison layer verify() is built on, with a test double for
+            // the one channel such a guest would use: records that depend on
+            // a value which changes between instantiations (here a counter
+            // standing in for e.g. a wall clock or an entropy read). The
+            // double's second "replay" must be caught, at the first step
+            // where its records move.
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static INSTANTIATION: AtomicU64 = AtomicU64::new(0);
+            let run = || {
+                let n = INSTANTIATION.fetch_add(1, Ordering::SeqCst);
+                vec![
+                    snapshot(1, r#"{"plays":0}"#),
+                    snapshot(2, &format!(r#"{{"plays":1,"roll":{n}}}"#)),
+                ]
+            };
+            let divergence =
+                first_divergence(&run(), &run()).expect("a nondeterministic guest must diverge");
+            assert_eq!(divergence.sequence, 2);
+            assert_eq!(divergence.key, "roll");
+            assert_ne!(divergence.first, divergence.second);
         }
 
         #[test]

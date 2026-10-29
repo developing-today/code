@@ -146,6 +146,108 @@ describe("richSchema", () => {
   });
 });
 
+// ============================================================================
+// #1436: code_block attrs round-trip (markdown codec mirror)
+// ============================================================================
+
+describe("richSchema code_block attrs (#1436)", () => {
+  it("declares params and htmlBlock attrs defaulting to null", () => {
+    const spec = richSchema.nodes.code_block.spec;
+    expect(spec.attrs?.params).toEqual({ default: null });
+    expect(spec.attrs?.htmlBlock).toEqual({ default: null });
+    // Inherited basic-schema fields are preserved.
+    expect(spec.content).toBe("text*");
+    expect(spec.marks).toBe("");
+    expect(spec.group).toBe("block");
+    expect(spec.code).toBe(true);
+    expect(spec.defining).toBe(true);
+  });
+
+  it("preserves {params: html, htmlBlock: true} through fromJSON -> toJSON", () => {
+    const json = {
+      type: "doc",
+      content: [
+        {
+          type: "code_block",
+          attrs: { params: "html", htmlBlock: true },
+          content: [{ type: "text", text: "<p>hi</p>" }],
+        },
+      ],
+    };
+    const doc = richSchema.nodeFromJSON(json);
+    const out = doc.toJSON();
+    expect(out.content[0].attrs).toEqual({ params: "html", htmlBlock: true });
+    expect(out.content[0].content).toEqual([{ type: "text", text: "<p>hi</p>" }]);
+  });
+
+  it("preserves an authored fence {params: rust} (no htmlBlock) through fromJSON -> toJSON", () => {
+    const json = {
+      type: "doc",
+      content: [
+        {
+          type: "code_block",
+          attrs: { params: "rust" },
+          content: [{ type: "text", text: "fn main() {}" }],
+        },
+      ],
+    };
+    const doc = richSchema.nodeFromJSON(json);
+    const out = doc.toJSON();
+    expect(out.content[0].attrs.params).toBe("rust");
+    expect(out.content[0].attrs.htmlBlock ?? null).toBeNull();
+  });
+});
+
+// ============================================================================
+// #1469: bullet_list / ordered_list tight attrs round-trip (codec mirror)
+// ============================================================================
+
+describe("richSchema list tight attrs (#1469)", () => {
+  const item = (text: string) => ({
+    type: "list_item",
+    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+  });
+
+  it("declares tight on bullet_list, preserving the inherited spec", () => {
+    const spec = richSchema.nodes.bullet_list.spec;
+    expect(spec.attrs?.tight).toEqual({ default: true });
+    // Inherited prosemirror-schema-list fields are preserved.
+    expect(spec.content).toBe("list_item+");
+    expect(spec.group).toBe("block");
+    expect(spec.parseDOM).toEqual([{ tag: "ul" }]);
+  });
+
+  it("declares tight and order on ordered_list, preserving the inherited spec", () => {
+    const spec = richSchema.nodes.ordered_list.spec;
+    expect(spec.attrs?.tight).toEqual({ default: true });
+    expect(spec.attrs?.order).toEqual({ default: 1, validate: "number" });
+    // Inherited prosemirror-schema-list fields are preserved.
+    expect(spec.content).toBe("list_item+");
+    expect(spec.group).toBe("block");
+    expect(spec.parseDOM?.[0].tag).toBe("ol");
+  });
+
+  it.each([true, false])("preserves bullet_list tight=%s through fromJSON -> toJSON", (tight) => {
+    const json = {
+      type: "doc",
+      content: [{ type: "bullet_list", attrs: { tight }, content: [item("a"), item("b")] }],
+    };
+    const out = richSchema.nodeFromJSON(json).toJSON();
+    expect(out.content[0].attrs).toEqual({ tight });
+    expect(out.content[0].content).toEqual([item("a"), item("b")]);
+  });
+
+  it.each([true, false])("preserves ordered_list {order: 3, tight: %s} through fromJSON -> toJSON", (tight) => {
+    const json = {
+      type: "doc",
+      content: [{ type: "ordered_list", attrs: { order: 3, tight }, content: [item("a"), item("b")] }],
+    };
+    const out = richSchema.nodeFromJSON(json).toJSON();
+    expect(out.content[0].attrs).toEqual({ order: 3, tight });
+    expect(out.content[0].content).toEqual([item("a"), item("b")]);
+  });
+});
+
 describe("rawSchema", () => {
   it("has doc node type", () => {
     expect(rawSchema.nodes.doc).toBeDefined();

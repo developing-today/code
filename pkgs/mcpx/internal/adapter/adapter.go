@@ -45,7 +45,7 @@ type Spec struct {
 	// Instructions explain conventions the schemas cannot, exactly as a real
 	// server's initialize does.
 	Instructions string `json:"instructions,omitempty"`
-	// Timeout bounds every invocation. Empty means 60s.
+	// Timeout bounds every invocation. Empty or zero means 60s.
 	Timeout string `json:"timeout,omitempty"`
 	// Tools are the subcommands worth exposing.
 	Tools []ToolSpec `json:"tools"`
@@ -66,7 +66,7 @@ type ToolSpec struct {
 	// JSON parses the output as JSON before returning it, so a caller gets
 	// structure rather than a string containing structure.
 	JSON bool `json:"json,omitempty"`
-	// Timeout overrides the server's for this tool.
+	// Timeout overrides the server's for this tool. Empty or zero inherits it.
 	Timeout string `json:"timeout,omitempty"`
 }
 
@@ -145,6 +145,14 @@ func (s Spec) Validate() error {
 	return nil
 }
 
+// parseDuration resolves a timeout string against a fallback.
+//
+// Zero is unset: an empty string or an explicit zero ("0s") yields the
+// fallback, so at Call a zero tool timeout inherits the server timeout and
+// a zero server timeout yields the 60s default. A negative duration is
+// never a timeout - it would hand context.WithTimeout an already-expired
+// context and fail every call instantly - so it is an error naming the
+// offending value, which Validate surfaces at both levels.
 func parseDuration(v string, fallback time.Duration) (time.Duration, error) {
 	if strings.TrimSpace(v) == "" {
 		return fallback, nil
@@ -152,6 +160,12 @@ func parseDuration(v string, fallback time.Duration) (time.Duration, error) {
 	d, err := time.ParseDuration(v)
 	if err != nil {
 		return 0, fmt.Errorf("is not a duration: %q", v)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("is a negative duration: %q", v)
+	}
+	if d == 0 {
+		return fallback, nil
 	}
 	return d, nil
 }
@@ -227,6 +241,8 @@ func (s Spec) Call(ctx context.Context, tool string, args map[string]any) (*Resu
 	}
 	full := append(append([]string{}, s.Args...), argv...)
 
+	// Zero is unset (see parseDuration): a tool timeout of zero inherits
+	// the server timeout, and a server timeout of zero gets the default.
 	timeout, _ := parseDuration(spec.Timeout, 0)
 	if timeout == 0 {
 		timeout, _ = parseDuration(s.Timeout, time.Minute)

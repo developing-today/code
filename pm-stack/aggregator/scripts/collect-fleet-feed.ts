@@ -11,6 +11,16 @@
 //   - the sandbox OpenCode server API — sandbox session feed entries
 //     (shared mapper, src/sources/opencode.ts) + live per-pool burn
 //     attribution for the quota view.
+//   - charges-candidates.json — the Muse-side producer's
+//     (#1057, scripts/produce-charge-candidates.ts) Plaid + Gmail
+//     charge candidates for the period. The collector runs the pure
+//     matcher (src/charges-match.ts) over them, merges the rows with
+//     the hand-fed registry/quota-view charges (auto wins on a
+//     duplicate), and surfaces unmatched SaaS/AI-looking charges in
+//     the feed's chargesAttention exactly once — charges-surfaced-
+//     state.json persists the keys already shown. Absent file = the
+//     pre-#1057 hand-fed charges only. No balances or debt data ever
+//     pass through: candidates are charge evidence only.
 //   - jules-review-state.json — keeper supervision entries annotate
 //     matching sessions as evidence.
 //   - orchestration.json — the orchestration job's latest section
@@ -51,6 +61,8 @@
 // USAGE_SNAPSHOT_OUTBOX_PATH (the §4 writers' outbox JSONL — stewardship
 // and check-usage append records there; each collection drains it into
 // the feed's snapshots field for the laptop store to ingest),
+// CHARGE_CANDIDATES_PATH / CHARGES_SURFACED_STATE_PATH (#1057: the
+// producer's candidates file and the collector's surfaced-once state),
 // SUPABASE_PROJECT_REF (default: the muse-dev project),
 // AA_OPENCODE_CONFIG_PATH (default: the repo's .opencode/opencode.jsonc).
 import { execFile } from "node:child_process";
@@ -70,6 +82,8 @@ import type {
   SessionFeedEntry,
   SessionRecord,
 } from "../src/model.ts";
+import { matchCharges, type UnmatchedCharge } from "../src/charges-match.ts";
+import { filterNewUnmatched, mergeChargeRows, parseChargeCandidates } from "../src/charges-collect.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../src/saas-extract.ts";
@@ -102,6 +116,8 @@ const dnsRegisterPath =
 const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN, "claude-launch-records.jsonl");
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
 const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
+const chargeCandidatesPath = process.env.CHARGE_CANDIDATES_PATH ?? join(HIDDEN, "charges-candidates.json");
+const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
@@ -394,6 +410,45 @@ async function main(): Promise<void> {
     subscriptions = extractSubscriptions(quotaViewText);
   }
 
+  // --- charges auto-matching (#1057) -------------------------------------
+  // The producer's candidates (Plaid + Gmail) run through the pure
+  // matcher; auto rows merge over the hand-fed rows above, and
+  // unmatched SaaS/AI charges surface exactly once via the persisted
+  // surfaced-state. Fail-soft like every other section: no readable
+  // candidates file = the hand-fed charges stand as they were.
+  let chargesAttention: UnmatchedCharge[] | undefined;
+  try {
+    const candidates = parseChargeCandidates(JSON.parse(await readFile(chargeCandidatesPath, "utf8")));
+    if (candidates.length) {
+      const auto = matchCharges(
+        candidates,
+        (saas ?? []).map((s) => ({ name: s.name })),
+      );
+      charges = mergeChargeRows(auto.rows, charges ?? []);
+      let surfaced = new Set<string>();
+      try {
+        const state: unknown = JSON.parse(await readFile(chargesSurfacedStatePath, "utf8"));
+        const keys = (state as { surfaced?: unknown }).surfaced;
+        if (Array.isArray(keys)) surfaced = new Set(keys.filter((k): k is string => typeof k === "string"));
+      } catch {
+        /* no state yet: everything unmatched is new */
+      }
+      const { fresh, keys } = filterNewUnmatched(auto.unmatchedSaas, surfaced);
+      if (fresh.length) {
+        chargesAttention = fresh;
+        await writeFile(
+          chargesSurfacedStatePath,
+          JSON.stringify({ version: 1, surfaced: keys, updatedAt: now.toISOString() }, null, 2),
+        );
+      }
+      console.log(
+        `collector: charges auto-match — ${auto.rows.length} rows from ${candidates.length} candidates, ${fresh.length} new unmatched surfaced`,
+      );
+    }
+  } catch {
+    console.error("collector: charge candidates unreadable; hub charges stay hand-fed only this run");
+  }
+
   // --- sandbox attention + burn -------------------------------------------
   let attention: SessionFeedEntry[] = [];
   try {
@@ -563,6 +618,7 @@ async function main(): Promise<void> {
     ...(saas ? { saas } : {}),
     ...(payg ? { payg } : {}),
     ...(charges ? { charges } : {}),
+    ...(chargesAttention ? { chargesAttention } : {}),
     ...(subscriptions ? { subscriptions } : {}),
     ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
     ...(projects ? { projects } : {}),

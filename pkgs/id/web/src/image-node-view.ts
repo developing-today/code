@@ -25,6 +25,11 @@ export class ImageNodeView implements NodeView {
 
   // Resize state
   private resizing = false;
+  // Sign applied to the horizontal drag delta: the west handles (nw/sw)
+  // sit on the LEFT edge, so for them dragging left (negative dx) must
+  // GROW the image and dragging right must shrink it — the opposite of
+  // the east handles (#1389).
+  private dxSign = 1;
   private startX = 0;
   private startY = 0;
   private startWidth = 0;
@@ -161,8 +166,9 @@ export class ImageNodeView implements NodeView {
 
   // ── Resize ──
 
-  private startResize(e: MouseEvent, _corner: string): void {
+  private startResize(e: MouseEvent, corner: string): void {
     this.resizing = true;
+    this.dxSign = corner === "nw" || corner === "sw" ? -1 : 1;
     this.startX = e.clientX;
     this.startY = e.clientY;
     this.startWidth = this.img.offsetWidth || this.img.naturalWidth || 200;
@@ -181,8 +187,10 @@ export class ImageNodeView implements NodeView {
     if (!this.resizing) return;
 
     const dx = e.clientX - this.startX;
-    // Use horizontal delta to maintain aspect ratio
-    let newWidth = Math.max(50, this.startWidth + dx);
+    // Use horizontal delta to maintain aspect ratio. West handles invert
+    // the delta (#1389); the min/max clamps below apply after the sign
+    // fix, so they bound the final width for every corner.
+    let newWidth = Math.max(50, this.startWidth + this.dxSign * dx);
     let newHeight = Math.round(newWidth / this.aspectRatio);
 
     // Clamp to reasonable bounds

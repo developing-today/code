@@ -10,6 +10,7 @@ Concretely:
 
 - `id world record NODE --capability CAP [--out FILE]` joins a world with a capability and writes its fixture.
 - `id world replay --module FILE.wasm --fixture FILE --seed N [--allow-partial]` runs the fixture in the sandbox, prints a one-line verdict, and exits nonzero when the records differ.
+- `id world verify --module FILE.wasm --fixture FILE --seed N [--allow-partial]` (F11.16, #544) replays the fixture twice and compares the records after every event the program sees, prints a one-line verdict first, reports the first diverging record (sequence, key, and both values), and exits nonzero at the first divergence. Where `replay` checks one run against the header's records, `verify` checks two fresh runs against each other, so it does not trust the header and also catches a divergence that appears mid-stream and later reconverges.
 
 ## Format
 
@@ -38,10 +39,11 @@ JSON Lines. Line 1 is the header; each following line is one retained, sequenced
 6. **Replay uses the live path.** Input and system events go through `WorldProgram::update`, the same call the actor makes, so Input keeps its UTF-8 check and a host event is delivered as participant 0. Chat is not passed to the program.
 7. **Verdicts.** `Match` and `Mismatch` compare the header's records with the replayed ones as parsed maps, so key order and whitespace do not matter. A partial window, or a fixture with no records, is `NotCompared` with a reason. Only `Mismatch` exits nonzero.
 8. **Partial replay needs an explicit flag.** An incomplete fixture is refused unless `--allow-partial` is set, and its result is never compared.
+9. **Verify compares two replays, never the live world.** `verify` reuses the replay path twice under the same seed and compares step by step (`world_fixture::verify` / `first_divergence`). Reading `records` per step is safe: it is a pure function of state, and the sandbox resets fuel per guest call. A partial window verified with `--allow-partial` is still compared run-to-run; only the header comparison is skipped.
 
 ## Limits
 
-- **Host events are not in the stream.** Presence changes, capability results, and ticks reach the program as host events, but the actor never retains them in the event stream, so a recording cannot include them. A program that consumes them (`territory` consumes presence) replays to different records, and the header's records check reports `Mismatch`. A fixture is a faithful replay only for programs that do not depend on host events. The check catches this, but the fixture cannot repair it.
+- **Host events are not in the stream.** Presence changes, capability results, and ticks reach the program as host events, but the actor never retains them in the event stream, so a recording cannot include them. A program that consumes them (`territory` consumes presence) replays to different records, and the header's records check reports `Mismatch`. A fixture is a faithful replay only for programs that do not depend on host events. The check catches this, but the fixture cannot repair it. `verify` inherits this limit (#242): both of its replays omit host events equally, so verify can pass for a guest whose live behaviour depended on them — it proves the recorded fixture replays deterministically, nothing more.
 - **Recording joins the world.** The recorder's own presence is delivered to presence-aware programs, after the recorded head. The recording is unaffected, and the live world sees a join, as `logs` already does.
 - **Retention bounds complete recordings.** `WorldLimits::default()` retains 1024 events. A longer history yields a partial window; it replays only with `--allow-partial`, and its result is not compared.
 - **A partial window replays from a fresh instance.** It usually does not match the live state. Including the program's snapshot at the window's start would make partial windows exact (follow-up).
@@ -69,6 +71,8 @@ JSON Lines. Line 1 is the header; each following line is one retained, sequenced
 ## Verification
 
 Unit tests in `src/world_fixture.rs`: the round trip of every kind and of the null header variants; strict decode (unknown version, malformed lines, window errors); replay of the checked-in tic-tac-toe against the live instance's records; a partial fixture refused without `--allow-partial`; a reinstall window refused; a tampered header reported as `Mismatch`; a `territory` fixture that omits host events reported as `Mismatch`; the module check. An iroh test records a live world through `WorldClient` and replays it, and a second one records a trimmed history as incomplete. CLI parse tests cover `record` and `replay`.
+
+For `verify` (F11.16, #544): unit tests cover `first_divergence` (identical sequences pass; the earliest step and first differing key are reported with both values; a key absent from one replay and an extra step are divergences), `verify` passes on the checked-in tic-tac-toe game, and a comparison-layer test double stands in for a deliberately nondeterministic guest — the sandbox gives guests no imports (no clock, no random source), so no checked-in guest can actually vary between instantiations; the double's records depend on a per-instantiation counter, the channel such a guest would use, and verify's comparison must catch it. A CLI parse test covers `verify`.
 
 ## References
 

@@ -7,197 +7,14 @@ import "@starfederation/datastar";
 import { initHome } from "./home";
 import "./world";
 import "./world";
+import { AutoSaveManager, type SaveResult } from "./auto-save";
 import { type CollabConnection, initCollab } from "./collab";
 import { type EditorInstance, getEditorState } from "./editor";
+import { updateHeaderSubtitle } from "./header-subtitle";
 import { identityNeedsRefresh } from "./identity-refresh";
+import { closeImageBrowser } from "./image-browser";
+import { createNavigation } from "./navigation";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
-
-/** Result from saveFile() for AutoSaveManager to process */
-type SaveResult = { ok: true } | { ok: false; retryAfterMs?: number };
-
-// =============================================================================
-// Auto-save Manager
-// =============================================================================
-
-const AUTOSAVE_DEBOUNCE_MS = 2000;
-
-type SaveState = "idle" | "unsaved" | "saving" | "saved" | "rate-limited" | "error";
-
-class AutoSaveManager {
-  state: SaveState = "idle";
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private retryTimer: ReturnType<typeof setTimeout> | null = null;
-  private savedResetTimer: ReturnType<typeof setTimeout> | null = null;
-  private saveFn: () => Promise<SaveResult>;
-
-  constructor(saveFn: () => Promise<SaveResult>) {
-    this.saveFn = saveFn;
-  }
-
-  /** Called when user makes a local edit (editor:change event) */
-  onContentChange(): void {
-    // Clear any pending timers
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    if (this.savedResetTimer !== null) {
-      clearTimeout(this.savedResetTimer);
-      this.savedResetTimer = null;
-    }
-
-    this.state = "unsaved";
-    this.updateIndicator();
-
-    // Start debounce — save after 2s of no edits
-    this.debounceTimer = setTimeout(() => {
-      this.debounceTimer = null;
-      this.triggerSave();
-    }, AUTOSAVE_DEBOUNCE_MS);
-  }
-
-  /** Called when another client saves (NewVersion received) */
-  onNewVersion(): void {
-    // Cancel any pending save — their version is newer
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    if (this.retryTimer !== null) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
-    }
-    if (this.savedResetTimer !== null) {
-      clearTimeout(this.savedResetTimer);
-      this.savedResetTimer = null;
-    }
-
-    this.state = "saved";
-    this.updateIndicator();
-
-    // Reset indicator after 2s
-    this.savedResetTimer = setTimeout(() => {
-      this.savedResetTimer = null;
-      if (this.state === "saved") {
-        this.state = "idle";
-        this.updateIndicator();
-      }
-    }, 2000);
-  }
-
-  /** Manual save — Ctrl+S or button click. Cancels debounce and saves immediately. */
-  saveNow(): void {
-    // Cancel debounce timer — we're saving right now
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    // Don't save if already saving (button is disabled anyway)
-    if (this.state === "saving" || this.state === "rate-limited") {
-      return;
-    }
-    this.triggerSave();
-  }
-
-  /** Clean up all timers (called when editor closes) */
-  cancel(): void {
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    if (this.retryTimer !== null) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
-    }
-    if (this.savedResetTimer !== null) {
-      clearTimeout(this.savedResetTimer);
-      this.savedResetTimer = null;
-    }
-    this.state = "idle";
-    this.updateIndicator();
-  }
-
-  /** Execute the save and handle the result */
-  private async triggerSave(): Promise<void> {
-    this.state = "saving";
-    this.updateIndicator();
-
-    const result = await this.saveFn();
-    this.onSaveResult(result);
-  }
-
-  /** Transition state based on save outcome */
-  private onSaveResult(result: SaveResult): void {
-    if (result.ok) {
-      this.state = "saved";
-      this.updateIndicator();
-
-      // Reset to idle after 2s
-      this.savedResetTimer = setTimeout(() => {
-        this.savedResetTimer = null;
-        if (this.state === "saved") {
-          this.state = "idle";
-          this.updateIndicator();
-        }
-      }, 2000);
-    } else if (result.retryAfterMs) {
-      // Rate limited — schedule retry
-      this.state = "rate-limited";
-      this.updateIndicator();
-
-      this.retryTimer = setTimeout(() => {
-        this.retryTimer = null;
-        this.triggerSave();
-      }, result.retryAfterMs);
-    } else {
-      // Generic error — don't auto-retry (prevents infinite loops on network outage)
-      this.state = "error";
-      this.updateIndicator();
-
-      // Show error for 2s, then revert to "save •" (content is still unsaved)
-      this.savedResetTimer = setTimeout(() => {
-        this.savedResetTimer = null;
-        if (this.state === "error") {
-          this.state = "unsaved";
-          this.updateIndicator();
-        }
-      }, 2000);
-    }
-  }
-
-  /** Update the save button text/state to reflect current state */
-  updateIndicator(): void {
-    const saveBtn = document.getElementById("save-btn") as HTMLButtonElement | null;
-    if (!saveBtn) return;
-
-    switch (this.state) {
-      case "idle":
-        saveBtn.textContent = "save";
-        saveBtn.disabled = false;
-        break;
-      case "unsaved":
-        saveBtn.textContent = "save \u2022";
-        saveBtn.disabled = false;
-        break;
-      case "saving":
-        saveBtn.textContent = "saving\u2026";
-        saveBtn.disabled = true;
-        break;
-      case "saved":
-        saveBtn.textContent = "saved \u2713";
-        saveBtn.disabled = false;
-        break;
-      case "rate-limited":
-        saveBtn.textContent = "retry\u2026";
-        saveBtn.disabled = true;
-        break;
-      case "error":
-        saveBtn.textContent = "error!";
-        saveBtn.disabled = false;
-        break;
-    }
-  }
-}
 
 declare global {
   interface Window {
@@ -538,22 +355,6 @@ function initScrollShowHeader(
 }
 
 /**
- * Update header subtitle based on navigation state.
- * Shows "p2p file sharing" on initial load, or last filename as link after navigation.
- */
-function updateHeaderSubtitle(lastFilename: string | null, lastFilePath: string | null, hasHistory: boolean): void {
-  const subtitle = document.getElementById("header-subtitle");
-  if (!subtitle) return;
-
-  if (lastFilename && lastFilePath && hasHistory) {
-    // Create a link to the last file
-    subtitle.innerHTML = `// <a href="${lastFilePath}" data-nav>${lastFilename}</a>`;
-  } else {
-    subtitle.textContent = "// p2p file sharing";
-  }
-}
-
-/**
  * Update back link based on app navigation history.
  * If there's history, use SPA navigation. Otherwise, grey out but still allow browser back.
  */
@@ -625,68 +426,11 @@ let peersRefreshInterval: ReturnType<typeof setInterval> | null = null;
 // Track search debounce timer
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-/**
- * Fetch a URL and replace the innerHTML of a target element.
- * Used for partial page updates (search, pagination, tags WS refresh, peers auto-refresh).
- */
-async function fetchPartial(url: string, targetSelector: string): Promise<void> {
-  try {
-    const response = await fetch(url, {
-      headers: { "X-Partial-Request": "true" },
-    });
-    if (!response.ok) {
-      console.error("[id] fetchPartial failed:", response.status, response.statusText);
-      return;
-    }
-    const html = await response.text();
-    const target = document.querySelector(targetSelector);
-    if (target) {
-      target.innerHTML = html;
-      onPartialSwapped(targetSelector);
-    }
-  } catch (err) {
-    console.error("[id] fetchPartial error:", err);
-  }
-}
-
-/**
- * Navigate to a URL by fetching it as a partial and swapping #main content.
- * Used by [data-nav] link clicks, programmatic navigation, and popstate.
- */
-async function navigateTo(url: string, pushUrl: boolean = true): Promise<void> {
-  // Close editor before navigation
-  const app = (window as unknown as Record<string, IdApp>).idApp;
-  if (app?.collab) {
-    app.closeEditor();
-  }
-
-  try {
-    const response = await fetch(url, {
-      headers: { "X-Partial-Request": "true" },
-    });
-    if (!response.ok) {
-      console.error("[id] navigateTo failed:", response.status, response.statusText);
-      // Fallback to full page navigation
-      window.location.href = url;
-      return;
-    }
-    const html = await response.text();
-    const main = document.getElementById("main");
-    if (main) {
-      main.innerHTML = html;
-      if (pushUrl) {
-        window.history.pushState(null, "", url);
-      }
-      onMainSwapped();
-    } else {
-      // No #main element, fallback
-      window.location.href = url;
-    }
-  } catch (err) {
-    console.error("[id] navigateTo error:", err);
-    window.location.href = url;
-  }
-}
+// Navigation + partial swaps live in navigation.ts, with supersession
+// (#1462): only the most recently issued request may write the DOM, push
+// history, or run swap side effects. The swap callbacks are function
+// declarations below, hoisted, so they can be wired in here.
+const { fetchPartial, navigateTo } = createNavigation({ onPartialSwapped, onMainSwapped });
 
 /**
  * Called after #main content is swapped. Handles re-initialization of UI components
@@ -1262,6 +1006,10 @@ async function init(): Promise<void> {
     },
 
     closeEditor(): void {
+      // The image browser overlay lives on document.body and holds the
+      // editor view in its closures — close it before the view is
+      // destroyed or it stays stuck over the next document (#1381).
+      closeImageBrowser();
       // Cancel auto-save timers and remove editor:change listener
       if (this.autoSave) {
         this.autoSave.cancel();

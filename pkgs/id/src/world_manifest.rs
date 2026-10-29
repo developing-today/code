@@ -179,7 +179,9 @@ impl WorldManifest {
             "module_hash and module_source are mutually exclusive"
         );
         if let Some(hash) = &self.module_hash {
-            let valid = hash.len() <= MAX_NAME_BYTES && hash.bytes().all(|b| b.is_ascii_hexdigit());
+            let valid = !hash.is_empty()
+                && hash.len() <= MAX_NAME_BYTES
+                && hash.bytes().all(|b| b.is_ascii_hexdigit());
             ensure!(
                 valid,
                 "module hash must be 1 to {MAX_NAME_BYTES} hex digits"
@@ -216,6 +218,24 @@ pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
             source: desired.module_source.clone(),
             seed: desired.seed.unwrap_or(current.seed),
         });
+    } else if let Some(seed) = desired.seed {
+        // Seed is part of install identity (#1519): a seed-only difference
+        // still needs a reinstall carrying the new seed, or diff would
+        // report "no drift" for a change that is then never applied. With
+        // no module installed and none desired there is no installed
+        // program whose seed could change, so a seed difference alone
+        // emits nothing there.
+        if seed != current.seed && (desired.module_hash.is_some() || current.module_hash.is_some())
+        {
+            steps.push(ApplyStep::InstallModule {
+                hash: desired
+                    .module_hash
+                    .clone()
+                    .or_else(|| current.module_hash.clone()),
+                source: desired.module_source.clone(),
+                seed,
+            });
+        }
     }
 
     // Grants: an omitted field leaves the live set alone; a present one
@@ -234,9 +254,18 @@ pub fn plan(desired: &WorldManifest, current: &WorldState) -> Vec<ApplyStep> {
 
     // Ceiling: an omitted field leaves the live ceiling alone, so a manifest
     // that never mentions the ceiling can never widen it; a present list
-    // replaces it when it differs.
+    // replaces it when the SET differs (compared as sets, like grants --
+    // #1519: a reorder of the same names is not drift). The step carries
+    // the desired list in its declared order. A live ceiling of None is
+    // the whole catalog, which no present list equals as a set.
     if let Some(ceiling) = &desired.ceiling {
-        if current.ceiling.as_deref() != Some(ceiling.as_slice()) {
+        let desired_set: std::collections::BTreeSet<&str> =
+            ceiling.iter().map(String::as_str).collect();
+        let current_set: Option<std::collections::BTreeSet<&str>> = current
+            .ceiling
+            .as_ref()
+            .map(|names| names.iter().map(String::as_str).collect());
+        if current_set.as_ref() != Some(&desired_set) {
             steps.push(ApplyStep::SetCeiling {
                 ceiling: Some(ceiling.clone()),
             });
@@ -580,6 +609,7 @@ wasm_fuel = 5_000_000
         assert!(parse("ceiling = [\"*\"]").is_err());
         assert!(parse("ceiling = [\"time.nwo\"]").is_err());
         assert!(parse("module_hash = \"not-hex!\"").is_err());
+        assert!(parse("module_hash = \"\"").is_err());
         assert!(parse("module_hash = \"abc\"\nmodule_source = \"main.roc\"").is_err());
         assert!(parse("schedules = { \"bad\nid\" = 1 }").is_err());
         assert!(parse("schedules = { \"a\" = 0 }").is_err());
@@ -603,6 +633,128 @@ wasm_fuel = 5_000_000
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn a_seed_only_change_reinstalls_with_the_new_seed() {
+        // #1519: seed is part of install identity -- a seed-only difference
+        // must plan exactly one install carrying the new seed, and diff
+        // must render it instead of reporting "no drift".
+        let manifest = parse("module_hash = \"abc\"\nseed = 99").unwrap();
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            seed: 7,
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(
+            matches!(
+                steps[0],
+                ApplyStep::InstallModule {
+                    ref hash,
+                    source: None,
+                    seed: 99
+                } if hash.as_deref() == Some("abc")
+            ),
+            "{steps:?}"
+        );
+        let d = diff(&manifest, &state);
+        assert!(d.contains("seed 99"), "{d}");
+        // Applying the step reconciles: a second plan is empty.
+        let mut applied = state.clone();
+        apply(&steps, &mut applied).unwrap();
+        assert!(plan(&manifest, &applied).is_empty());
+    }
+
+    #[test]
+    fn a_seed_change_with_a_module_change_is_one_step() {
+        // #1519: the module-change install already carries the desired
+        // seed -- no second install step for the seed.
+        let manifest = parse("module_hash = \"def456\"\nseed = 99").unwrap();
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            seed: 7,
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(
+            matches!(steps[0], ApplyStep::InstallModule { seed: 99, .. }),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn a_seed_only_change_on_an_installed_module_keeps_its_hash() {
+        // #1519: the manifest need not repeat the hash -- the reinstall
+        // targets the live module.
+        let manifest = parse("seed = 99").unwrap();
+        let state = WorldState {
+            module_hash: Some("abc".to_owned()),
+            seed: 7,
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(
+            matches!(
+                steps[0],
+                ApplyStep::InstallModule {
+                    ref hash,
+                    source: None,
+                    seed: 99
+                } if hash.as_deref() == Some("abc")
+            ),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn a_seed_difference_with_no_module_anywhere_installs_nothing() {
+        // #1519 ruling: no installed program and none desired -- there is
+        // nothing whose seed could change.
+        let manifest = parse("seed = 99").unwrap();
+        assert!(plan(&manifest, &WorldState::default()).is_empty());
+        let state = WorldState {
+            seed: 7,
+            ..WorldState::default()
+        };
+        assert!(plan(&manifest, &state).is_empty());
+    }
+
+    #[test]
+    fn a_ceiling_reorder_is_not_drift() {
+        // #1519: ceiling compares as a set, like grants -- reordering the
+        // same names plans nothing.
+        let manifest = parse("ceiling = [\"chat.say\", \"time.now\"]").unwrap();
+        let state = WorldState {
+            ceiling: Some(vec!["time.now".to_owned(), "chat.say".to_owned()]),
+            ..WorldState::default()
+        };
+        assert!(plan(&manifest, &state).is_empty());
+    }
+
+    #[test]
+    fn a_ceiling_set_change_still_drifts_in_declared_order() {
+        // #1519: a genuinely different set still plans SetCeiling carrying
+        // the desired list in declared order.
+        let manifest = parse("ceiling = [\"chat.say\", \"records.read\"]").unwrap();
+        let state = WorldState {
+            ceiling: Some(vec!["time.now".to_owned(), "chat.say".to_owned()]),
+            ..WorldState::default()
+        };
+        let steps = plan(&manifest, &state);
+        assert_eq!(steps.len(), 1, "{steps:?}");
+        assert!(
+            matches!(
+                steps[0],
+                ApplyStep::SetCeiling { ref ceiling }
+                    if ceiling.as_deref()
+                        == Some(&["chat.say".to_owned(), "records.read".to_owned()][..])
+            ),
+            "{steps:?}"
+        );
     }
 
     #[test]

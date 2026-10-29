@@ -1182,7 +1182,7 @@ export interface ChargeRow {
  * projected unbilled PAYG over $5 (unbilled accrual only, Q3 default).
  */
 export interface AttentionFlag {
-  kind: "over-limit" | "payg-unbilled";
+  kind: "over-limit" | "payg-unbilled" | "unmatched-charge";
   label: string;
   detail: string;
   href: string;

@@ -18,33 +18,33 @@ today every HTTP host of the daemon is one caller. The full list of state mcpx k
 
 Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
 
-| ID | Difference | Labels | Where it exists | mcpx @ 05c78b2 | Value | Effort | Risk |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| PM-01 | One stateful session per client–server connection | `2026-07-28 removes` | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 —` | ✓ — legacy caps and version held per `Conn` | + low | S | low |
-| PM-02 | Server must not use earlier requests on a connection as context | `2026-07-28 has` | `25-11 — · 26-07 MUST` | ✓ — modern path reads `_meta` first | + med | S | low |
-| PM-03 | Cross-request state named by an explicit identifier each request | `2026-07-28 has` | `25-11 — · 26-07 MUST (handles are a pattern)` | partial — tasks are handles; pool key is not | + high | S | med |
-| PM-04 | A connection or process is not a conversation | `2026-07-28 has` | `25-11 — · 26-07 SHOULD/SHOULD NOT` | partial — pool scope keyed on a process id | + high | S | high |
-| PM-05 | Server state carried through the client in `requestState` | `2026-07-28 has` `has better replacement` | `25-11 — · 26-07 ✓` | partial — token names daemon-side call; bound to session | + med | M | med |
-| PM-06 | A broken stream loses the request; client re-issues | `2026-07-28 has` | `25-03..25-11 resumable · 26-07 lost` | n/a — upstream retry policy not examined | + low | S | med |
-| PM-07 | State that 2026 still permits | `2026-07-28 has` | `26-07 listen, tasks, requestState, handles, legacy sessions` | ✓ — tasks and legacy sessions allowed | + low | S | low |
-| PM-08 | Request with neither modern `_meta` nor a prior `initialize` | `specs conflict` | `26-07 silent for dual-era stdio; HTTP MAY assume 2025-03-26` | acc. — served as 2025-03-26 | + low | S | low |
-| PM-09 | What "supports 2026-07-28" minimally means | `2026-07-28 has` | `24-11..25-11 base + lifecycle · 26-07 base + versioning + patterns` | partial — discover and listen shapes wrong | + high | M | high |
-| PM-10 | Every HTTP MCP host shares one pool session key | `opencode v2 has` `mcpx missing` | mcpx `/mcp` | ✗ — key is the daemon's pid (#211) | + high | S | high |
-| PM-11 | Stateful server isolation per caller | `mcpx has, others don't` `opencode v1 has` `opencode v2 has` | `mcpx per session · opencode v1 per directory · v2 per Location · lootbox shared · CF per execution id` | ✓ — session-scoped process leases | + high | S | med |
-| PM-12 | `/v1/exec` session-scoped instances outlive the run | `mcpx missing` | mcpx only | ✗ — never marked ephemeral; waits for idle reap (#219) | + med | S | med |
-| PM-13 | MCP surface built once per daemon, never rebuilt | `mcpx missing` | mcpx only | ✗ — `sync.Once`; new adapters invisible (#219) | + med | S | med |
-| PM-14 | Daemon's MCP server calls the daemon over its own socket | `mcpx has, others don't` | mcpx only | ✓ — one path for stdio and HTTP | − latency | M | low |
-| PM-15 | `/v1/protocol` reports `nativeElicit` from the default | `mcpx missing` | mcpx only | ✗ — compiled default, not the setting (#219) | + low | S | low |
-| PM-16 | opencode process topology: one process vs shared daemon | `opencode v1 has` `opencode v2 has` | `opencode v1 TUI + Worker per window · v2 background daemon` | n/a — mcpx is already a daemon | + med | S | med |
-| PM-17 | MCP connection scope: per directory vs per Location | `opencode v1 has` `opencode v2 has` | `opencode v1 per directory per process · v2 per Location per daemon` | n/a — mcpx must tell sessions apart | + med | S | med |
-| PM-18 | When MCP servers start: awaited all vs forked each | `opencode v1 has` `opencode v2 has` | `opencode v1 all at first use · v2 async per server` | n/a — mcpx connect time matters on v1 | + low | S | low |
-| PM-19 | MCP server lifetime: instance vs daemon, never idle | `opencode v1 has` `opencode v2 has` | `opencode v1 until dispose/exit · v2 no idle TTL` | n/a — `mcpx serve` may live for days | + low | S | med |
-| PM-20 | No automatic restart when an MCP server dies | `opencode v1 has` `opencode v2 has` | `opencode v1 failed · v2 failed` | n/a — a dead `mcpx serve` stays dead | + med | S | med |
-| PM-21 | opencode database filename depends on release channel | `opencode v1 has` `opencode v2 has` `mcpx missing` | `opencode.db: v1 latest/beta/prod · v2 also dev/next` | ✗ — `mcpx stats opencode` reads `opencode.db` only (#219) | + low | S | med |
-| PM-22 | lootbox connects every server at startup and pings | `lootbox has` | `lootbox fork (monitor) · deployed upstream (no monitor)` | n/a — lazy pools, min 0 | + low | S | low |
-| PM-23 | lootbox re-fetches every schema on every discovery | `lootbox has` `has better replacement` | lootbox | ✓ — persisted cache invalidated by list_changed | − none | S | low |
-| PM-24 | lootbox multi-instance strategies and port rewriting | `lootbox has` `has better replacement` | lootbox fork only | n/a — isolates callers, not daemons | − misplaced | S | low |
-| PM-25 | Per-run script and client setup | `lootbox has` `has better replacement` | `lootbox HTTP import + --reload · mcpx content-addressed on disk` | ✓ — compile cache stays warm | − none | S | low |
+| ID    | Difference                                                       | Labels                                                       | Where it exists                                                                                         | mcpx @ 05c78b2                                                                                                          | Value       | Effort | Risk |
+| ----- | ---------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ----------- | ------ | ---- |
+| PM-01 | One stateful session per client–server connection                | `2026-07-28 removes`                                         | `24-11 ✓ · 25-03 ✓ · 25-06 ✓ · 25-11 ✓ · 26-07 —`                                                       | ✓ — legacy caps and version held per `Conn`                                                                             | + low       | S      | low  |
+| PM-02 | Server must not use earlier requests on a connection as context  | `2026-07-28 has`                                             | `25-11 — · 26-07 MUST`                                                                                  | ✓ — modern path reads `_meta` first                                                                                     | + med       | S      | low  |
+| PM-03 | Cross-request state named by an explicit identifier each request | `2026-07-28 has`                                             | `25-11 — · 26-07 MUST (handles are a pattern)`                                                          | partial — tasks are handles; pool key is not                                                                            | + high      | S      | med  |
+| PM-04 | A connection or process is not a conversation                    | `2026-07-28 has`                                             | `25-11 — · 26-07 SHOULD/SHOULD NOT`                                                                     | partial — pool scope keyed on a process id                                                                              | + high      | S      | high |
+| PM-05 | Server state carried through the client in `requestState`        | `2026-07-28 has` `has better replacement`                    | `25-11 — · 26-07 ✓`                                                                                     | partial — token names daemon-side call; bound to session                                                                | + med       | M      | med  |
+| PM-06 | A broken stream loses the request; client re-issues              | `2026-07-28 has` `mcpx has`                                  | `25-03..25-11 resumable · 26-07 lost`                                                                   | ✓ — modern broken-stream requests re-issued once with a new id; tools/call gated on readOnlyHint/idempotentHint (#1638) | + low       | S      | med  |
+| PM-07 | State that 2026 still permits                                    | `2026-07-28 has`                                             | `26-07 listen, tasks, requestState, handles, legacy sessions`                                           | ✓ — tasks and legacy sessions allowed                                                                                   | + low       | S      | low  |
+| PM-08 | Request with neither modern `_meta` nor a prior `initialize`     | `specs conflict`                                             | `26-07 silent for dual-era stdio; HTTP MAY assume 2025-03-26`                                           | acc. — served as 2025-03-26                                                                                             | + low       | S      | low  |
+| PM-09 | What "supports 2026-07-28" minimally means                       | `2026-07-28 has`                                             | `24-11..25-11 base + lifecycle · 26-07 base + versioning + patterns`                                    | partial — discover and listen shapes wrong                                                                              | + high      | M      | high |
+| PM-10 | Every HTTP MCP host shares one pool session key                  | `opencode v2 has` `mcpx missing`                             | mcpx `/mcp`                                                                                             | ✗ — key is the daemon's pid (#211)                                                                                      | + high      | S      | high |
+| PM-11 | Stateful server isolation per caller                             | `mcpx has, others don't` `opencode v1 has` `opencode v2 has` | `mcpx per session · opencode v1 per directory · v2 per Location · lootbox shared · CF per execution id` | ✓ — session-scoped process leases                                                                                       | + high      | S      | med  |
+| PM-12 | `/v1/exec` session-scoped instances outlive the run              | `mcpx missing`                                               | mcpx only                                                                                               | ✗ — never marked ephemeral; waits for idle reap (#219)                                                                  | + med       | S      | med  |
+| PM-13 | MCP surface built once per daemon, never rebuilt                 | `mcpx missing`                                               | mcpx only                                                                                               | ✗ — `sync.Once`; new adapters invisible (#219)                                                                          | + med       | S      | med  |
+| PM-14 | Daemon's MCP server calls the daemon over its own socket         | `mcpx has, others don't`                                     | mcpx only                                                                                               | ✓ — one path for stdio and HTTP                                                                                         | − latency   | M      | low  |
+| PM-15 | `/v1/protocol` reports `nativeElicit` from the default           | `mcpx missing`                                               | mcpx only                                                                                               | ✗ — compiled default, not the setting (#219)                                                                            | + low       | S      | low  |
+| PM-16 | opencode process topology: one process vs shared daemon          | `opencode v1 has` `opencode v2 has`                          | `opencode v1 TUI + Worker per window · v2 background daemon`                                            | n/a — mcpx is already a daemon                                                                                          | + med       | S      | med  |
+| PM-17 | MCP connection scope: per directory vs per Location              | `opencode v1 has` `opencode v2 has`                          | `opencode v1 per directory per process · v2 per Location per daemon`                                    | n/a — mcpx must tell sessions apart                                                                                     | + med       | S      | med  |
+| PM-18 | When MCP servers start: awaited all vs forked each               | `opencode v1 has` `opencode v2 has`                          | `opencode v1 all at first use · v2 async per server`                                                    | n/a — mcpx connect time matters on v1                                                                                   | + low       | S      | low  |
+| PM-19 | MCP server lifetime: instance vs daemon, never idle              | `opencode v1 has` `opencode v2 has`                          | `opencode v1 until dispose/exit · v2 no idle TTL`                                                       | n/a — `mcpx serve` may live for days                                                                                    | + low       | S      | med  |
+| PM-20 | No automatic restart when an MCP server dies                     | `opencode v1 has` `opencode v2 has`                          | `opencode v1 failed · v2 failed`                                                                        | n/a — a dead `mcpx serve` stays dead                                                                                    | + med       | S      | med  |
+| PM-21 | opencode database filename depends on release channel            | `opencode v1 has` `opencode v2 has` `mcpx missing`           | `opencode.db: v1 latest/beta/prod · v2 also dev/next`                                                   | ✗ — `mcpx stats opencode` reads `opencode.db` only (#219)                                                               | + low       | S      | med  |
+| PM-22 | lootbox connects every server at startup and pings               | `lootbox has`                                                | `lootbox fork (monitor) · deployed upstream (no monitor)`                                               | n/a — lazy pools, min 0                                                                                                 | + low       | S      | low  |
+| PM-23 | lootbox re-fetches every schema on every discovery               | `lootbox has` `has better replacement`                       | lootbox                                                                                                 | ✓ — persisted cache invalidated by list_changed                                                                         | − none      | S      | low  |
+| PM-24 | lootbox multi-instance strategies and port rewriting             | `lootbox has` `has better replacement`                       | lootbox fork only                                                                                       | n/a — isolates callers, not daemons                                                                                     | − misplaced | S      | low  |
+| PM-25 | Per-run script and client setup                                  | `lootbox has` `has better replacement`                       | `lootbox HTTP import + --reload · mcpx content-addressed on disk`                                       | ✓ — compile cache stays warm                                                                                            | − none      | S      | low  |
 
 ## PM-01 One stateful session per client–server connection
 
@@ -135,15 +135,27 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** No redelivery: if a response stream breaks, the in-flight request is lost and the client MUST re-issue it
   with a new id; on stdio a crash means restart and retry.
 - **Where.** 2026-07-28. 2025-03-26 through 2025-11-25 had SSE resumability instead (transports area).
-- **mcpx @ 05c78b2.** Not examined for upstream calls (pool retry policy). Restart backoff settings exist in
-  `plumbing` (`internal/defaults/defaults.json:49-50`).
+- **mcpx (as built, #1638 / PR #1645).** Examined, and implemented for upstream calls: on a modern-era connection a
+  request whose response stream breaks unanswered is re-issued exactly once with a new id, in `Client.roundTrip`
+  (`internal/mcpclient/client.go`). Stream-lost identity is a data marker, never the message: the synthesized error
+  carries code `codeStreamLost` (-32000) plus data `{mcpxStreamLost: true}`, and `isStreamLost` requires both — the
+  receive loop's own -32000 "connection closed" and any server-sent -32000 carry no marker and are never re-issued
+  (transport death is a different mechanism, and a server's own error is an answer). Modern era only: legacy
+  connections keep the transport's `resume()` mechanism. A call whose caller context is cancelled is never
+  re-issued, and a second marked failure surfaces to the caller. Covered by `TestModernReissueBrokenRequest`
+  (`internal/mcpclient/reissue_test.go:107`); the conformance gap
+  `streamable-http-client-reissue-broken-request` was retired by PR #1645.
 - **Value to mcpx.** + low: retry-on-crash is spec-aligned for modern upstreams.
 - **Effort.** S.
-- **Risk.** Med: re-issuing a non-idempotent tool executes it twice; nothing makes the server deduplicate, and
-  `idempotentHint`/`destructiveHint` are the only signal (an unwritten hazard).
-- **Detail.** The MUST applies to the client's intent to get a result; mcpx as a proxy has to decide whether a lost
-  upstream call is retried or surfaced to the host.
-- **Sources.** `2026-07-28/changelog.mdx:28` "A broken response stream loses the in-flight request; clients **MUST** re-issue it as a new request with a new request ID"; `2026-07-28/basic/transports/stdio.mdx:112` "Because the protocol is stateless, any in-flight requests are simply lost and"
+- **Risk.** Med: re-issuing a non-idempotent tool executes it twice and nothing makes the server deduplicate; the
+  annotation gate below is the containment, and its residual is that annotations are the server's own claim — a
+  tool that lies about `idempotentHint` can still run twice.
+- **Detail.** The MUST applies to the client's intent to get a result, and this entry's earlier text left the proxy
+  decision to mcpx. Settled by #1638, recorded as mcpx's proxy decision: every method re-issues automatically
+  except `tools/call`, which re-issues only when the tool's list-time annotations declare `readOnlyHint` or
+  `idempotentHint` (hints retained at `ListTools` by `recordToolHints`, consulted via `toolCallReissueAllowed`).
+  An ungated `tools/call` surfaces the stream-lost error to the host instead of risking a double execution.
+- **Sources.** `2026-07-28/changelog.mdx:28` "A broken response stream loses the in-flight request; clients **MUST** re-issue it as a new request with a new request ID"; `2026-07-28/basic/transports/stdio.mdx:112` "Because the protocol is stateless, any in-flight requests are simply lost and"; `internal/mcpclient/client.go` (`roundTrip`, `isStreamLost`, `recordToolHints`); `internal/mcpclient/reissue_test.go:107`; `internal/conformance/coverage_transport.go:20`
 
 ## PM-07 State that 2026 still permits
 
@@ -306,13 +318,13 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Risk.** Med: under v2 one server, one plugin instance per Location and one MCP connection per server per Location
   serve every window (PM-11).
 - **Detail.** v2's `Mode` is `"default" | "service" | "stdio"`, and the service may be registered with the OS. `opencode
-  serve`/`run` in v1 put the server on the main thread.
+serve`/`run` in v1 put the server on the main thread.
 - **Sources.** `v1:packages/opencode/src/cli/cmd/tui.ts:210` "const worker = new Worker(file, {"; `v1:packages/opencode/src/cli/cmd/tui.ts:246`; `v2:packages/cli/src/commands/handlers/default.ts:31`; `v2:packages/cli/src/services/service-config.ts:35` "return 0xc0de"; `v2:packages/cli/src/services/server-connection.ts:41`; `v2:packages/cli/package.json:7`
 
 ## PM-17 MCP connection scope: per directory vs per Location
 
 - **What.** v1 keeps MCP clients in `InstanceState`, a cache keyed by directory; v2 keeps a `ServerEntry {client?,
-  tools?, prompts?}` map in a Location-scoped service (directory plus workspace id). All sessions of that directory or
+tools?, prompts?}` map in a Location-scoped service (directory plus workspace id). All sessions of that directory or
   Location share each server's single connection.
 - **Where.** opencode v1 and v2.
 - **mcpx @ 05c78b2.** n/a; opencode will never give mcpx more than one connection per server entry per place, so mcpx
@@ -422,7 +434,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Risk.** Low.
 - **Detail.** `per-session` does what `warn` does without the warning: it registers a session and spawns one shared
   client, although the README says "Spawn independent server per session".
-- **Sources.** `.lootbox/src/lib/rpc/managers/mcp_integration_manager.ts:200-216`; `ASSESSMENT.md:95-96` "The abstraction is at the wrong level: the thing that needs isolating is the caller, not the process."; `.lootbox/README.md:417` "| `per-session`  | Spawn independent server per session                |"
+- **Sources.** `.lootbox/src/lib/rpc/managers/mcp_integration_manager.ts:200-216`; `ASSESSMENT.md:95-96` "The abstraction is at the wrong level: the thing that needs isolating is the caller, not the process."; `.lootbox/README.md:417` "| `per-session` | Spawn independent server per session |"
 
 ## PM-25 Per-run script and client setup
 

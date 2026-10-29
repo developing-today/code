@@ -285,6 +285,18 @@ func handCommands() []Command {
 			Usage: "[--all]", Summary: "stop the daemon for this configuration, or all of them",
 		},
 		{
+			Name: "supervise", Group: "daemon",
+			Local:   "Runs in its own process as the re-exec target of the supervised transport; it serves no API.",
+			Usage:   "--socket <path> -- <command> [args...]",
+			Summary: "run one stdio server child under a supervisor (internal)",
+			Detail: "Phase 1 of the stdio supervisor design (#1384, #1385). The " +
+				"supervisor owns the child's pipes for the child's whole life and " +
+				"serves one attached daemon at a time over a unix socket, so the " +
+				"child survives a daemon restart. Spawned detached by the " +
+				"supervised transport when a server sets mcpx.supervised; not " +
+				"meant to be run by hand.",
+		},
+		{
 			Name: "daemon", Group: "daemon",
 			Local:   "Starts a daemon, which a daemon's own API cannot do.",
 			Usage:   "[--detached]",

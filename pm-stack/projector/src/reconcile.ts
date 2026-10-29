@@ -60,8 +60,11 @@ async function reconcileStream(
 
   if (stream === "issue_comments" || stream === "review_comments") {
     const kind = stream === "issue_comments" ? "issue_comment" : "review_comment";
+    // The repo-wide collections are /issues/comments and /pulls/comments —
+    // there is no /issue_comments or /review_comments path (both 404).
     // These endpoints do not support `since`; pull the full list and upsert.
-    const rows = await listResource<Record<string, any>>(auth, `repos/${repo}/${kind}s?per_page=100`, fetchFn);
+    const collection = stream === "issue_comments" ? "issues/comments" : "pulls/comments";
+    const rows = await listResource<Record<string, any>>(auth, `repos/${repo}/${collection}?per_page=100`, fetchFn);
     let cursor: string | null = null;
     for (const c of rows) {
       // The API comment objects carry the containing issue/PR only via URL;

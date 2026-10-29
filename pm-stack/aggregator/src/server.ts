@@ -8,7 +8,7 @@
 // apply actions; the dashboard only records them.
 import { stat } from "node:fs/promises";
 import { ActionsStore, validateNewAction } from "./actions.ts";
-import { checkActionAgainstItem, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
+import { checkActionAgainstItem, effectiveNeedsOrder, effectiveStandingAuto, findTierItem } from "./tier-items.ts";
 import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
 import { loadFeed } from "./feed.ts";
@@ -26,10 +26,15 @@ import {
 } from "./project-config.ts";
 import { identitiesFromRecords } from "./registry.ts";
 import {
+  attentionFragment,
+  attentionSections,
   ghObjectRef,
   renderAa,
   renderAttention,
+  renderAttentionShell,
   renderBoard,
+  renderBoardBody,
+  renderBoardShell,
   renderDiscuss,
   renderDns,
   renderHealth,
@@ -43,6 +48,8 @@ import {
   renderServiceDetail,
   renderSessions,
   renderToday,
+  renderTodayBody,
+  renderTodayShell,
   type CommentFormOpts,
 } from "./render.ts";
 import type { Source } from "./source.ts";
@@ -131,6 +138,7 @@ async function healthContext(): Promise<HealthView> {
     feedFileMtimeMs,
     diagnosis: source.diagnostics?.().orchestration,
     detail: source.provenanceDetail?.(),
+    comments: await commentsStore.pendingCounts().catch(() => undefined),
   });
 }
 
@@ -189,6 +197,28 @@ function html(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
 }
 
+// Self-unregistering service worker, served at /sw.js on purpose. Until
+// 2026-10-27 this origin (the laptop's tailnet-serve address) fronted the
+// opencode web app, which registered a Workbox service worker that keeps
+// serving the opencode shell from cache even though the origin now serves
+// the dashboard. Browsers holding that registration pick this script up
+// on their next update check: it installs, unregisters itself, and
+// reloads open tabs into the dashboard. Harmless for fresh browsers --
+// it removes itself immediately.
+const SW_KILL_SWITCH = `self.addEventListener('install', () => { self.skipWaiting(); });
+self.addEventListener('activate', async () => {
+  try { await self.registration.unregister(); } catch {}
+  const cs = await self.clients.matchAll({ type: 'window' });
+  for (const c of cs) { try { c.navigate(c.url); } catch {} }
+});
+`;
+
+function serviceWorkerKillSwitch(): Response {
+  return new Response(SW_KILL_SWITCH, {
+    headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" },
+  });
+}
+
 async function boardContext() {
   const board = await source.board();
   const refs = allRefs(board);
@@ -209,6 +239,66 @@ async function attentionContext() {
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
   return { view: buildAttention(feed, summary, Date.now(), diagnosis), coverage };
+}
+
+/**
+ * One Datastar patch-elements event (#1444). The fragment root
+ * carries its own id + data-on-load attributes, so "outer" mode
+ * replaces the shell's placeholder with a self-refreshing container.
+ */
+function ssePatch(selector: string, elementHtml: string): string {
+  const lines = elementHtml
+    .split("\n")
+    .map((l) => `data: elements ${l}`)
+    .join("\n");
+  return `event: datastar-patch-elements\ndata: mode outer\ndata: selector ${selector}\n${lines}\n\n`;
+}
+
+function sseResponse(body: string): Response {
+  return new Response(body, {
+    headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache" },
+  });
+}
+
+/** The render inputs the board page and its fragment share. */
+async function boardRender() {
+  const { board, items } = await boardContext();
+  const [pool, formOpts, actionsByObject, counts] = await Promise.all([
+    source.projects().catch(() => []),
+    commentFormOpts(),
+    actionsStore.byObject(),
+    commentsStore.counts(),
+  ]);
+  const act = {
+    actionsByObject,
+    poolByRef: new Map(pool.map((p) => [p.ref, p])),
+    identities: formOpts.identities,
+  };
+  return { board, items, counts, act };
+}
+
+/** The render inputs the attention page and its fragments share:
+ *  the view, the action/comment stores grouped by object, and the
+ *  effective Needs-you order preference (#1456). */
+async function attentionRender() {
+  const { view, coverage } = await attentionContext();
+  const [formOpts, actionsByObject, commentsByObject, counts, allActions] = await Promise.all([
+    commentFormOpts(),
+    actionsStore.byObject(),
+    commentsStore.byObject(),
+    commentsStore.counts(),
+    actionsStore.all(),
+  ]);
+  const order = effectiveNeedsOrder(allActions);
+  const act = {
+    actionsByObject,
+    identities: formOpts.identities,
+    commentsByObject,
+    commentOpts: formOpts,
+    needsOrder: order.order,
+    needsOrderPending: order.pending,
+  };
+  return { view, coverage, counts, act };
 }
 
 async function todayContext() {
@@ -236,7 +326,14 @@ async function handler(req: Request): Promise<Response> {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
-      const comment = await commentsStore.add(parsed.value);
+      // #1509: a persistence failure is a server error, not bad input -
+      // only the validation/body-parse path above earns a 400.
+      let comment;
+      try {
+        comment = await commentsStore.add(parsed.value);
+      } catch (err) {
+        return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+      }
       return json({ comment }, 201);
     } catch (err) {
       return json({ error: `invalid comment: ${err instanceof Error ? err.message : err}` }, 400);
@@ -290,7 +387,14 @@ async function handler(req: Request): Promise<Response> {
           if (problem) return json({ error: problem }, 400);
         }
       }
-      const { action, created } = await actionsStore.add(parsed.value);
+      // #1509: persistence failure -> 5xx (see /api/comments above).
+      let added;
+      try {
+        added = await actionsStore.add(parsed.value);
+      } catch (err) {
+        return json({ error: `action persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+      }
+      const { action, created } = added;
       return json(created ? { action } : { action, deduped: true }, created ? 201 : 200);
     } catch (err) {
       return json({ error: `invalid action: ${err instanceof Error ? err.message : err}` }, 400);
@@ -344,24 +448,31 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/" || path === "/board") {
-    const { board, items } = await boardContext();
-    const [pool, formOpts, actionsByObject] = await Promise.all([
-      source.projects().catch(() => []),
-      commentFormOpts(),
-      actionsStore.byObject(),
-    ]);
-    return html(
-      renderBoard(board, items, prov(), await commentsStore.counts(), provDetail(), {
-        actionsByObject,
-        poolByRef: new Map(pool.map((p) => [p.ref, p])),
-        identities: formOpts.identities,
-      }),
-    );
+    // #1444: the board is the heaviest page — shell first, board as a
+    // fragment. ?full=1 (and the /board alias) keep the full render.
+    if (path === "/" && url.searchParams.get("full") !== "1") {
+      return html(renderBoardShell(prov(), provDetail()));
+    }
+    const { board, items, counts, act } = await boardRender();
+    return html(renderBoard(board, items, prov(), counts, provDetail(), act));
+  }
+  if (path === "/frag/board") {
+    const { board, items, counts, act } = await boardRender();
+    const wrapped = `<div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')">${renderBoardBody(board, items, counts, act)}</div>`;
+    return sseResponse(ssePatch("#board-main", wrapped));
   }
 
   if (path === "/today") {
+    if (url.searchParams.get("full") !== "1") {
+      return html(renderTodayShell(prov(), provDetail()));
+    }
     const { today, view, coverage, quota } = await todayContext();
     return html(renderToday(today, view, quota, coverage, prov(), provDetail()));
+  }
+  if (path === "/frag/today") {
+    const { today, view, coverage, quota } = await todayContext();
+    const wrapped = `<div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on-dashrefresh__window="@get('/frag/today')">${renderTodayBody(today, view, quota, coverage)}</div>`;
+    return sseResponse(ssePatch("#today-main", wrapped));
   }
 
   if (path === "/roadmap") {
@@ -387,14 +498,29 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (path === "/attention") {
-    const { view, coverage } = await attentionContext();
-    const [formOpts, actionsByObject] = await Promise.all([commentFormOpts(), actionsStore.byObject()]);
-    return html(
-      renderAttention(view, coverage, prov(), await commentsStore.counts(), provDetail(), {
-        actionsByObject,
-        identities: formOpts.identities,
-      }),
-    );
+    // #1444: shell first; header/queues/sessions stream in as
+    // fragments. ?full=1 keeps the full server render (no-JS path).
+    if (url.searchParams.get("full") !== "1") {
+      return html(renderAttentionShell(prov(), provDetail()));
+    }
+    const { view, coverage, counts, act } = await attentionRender();
+    return html(renderAttention(view, coverage, prov(), counts, provDetail(), act));
+  }
+  const attnFragMatch = /^\/frag\/attention\/(header|queues|sessions)$/.exec(path);
+  if (attnFragMatch) {
+    const section = attnFragMatch[1] as "header" | "queues" | "sessions";
+    const { view, coverage, counts, act } = await attentionRender();
+    const sections = attentionSections(view, coverage, counts, act);
+    return sseResponse(ssePatch(`#attn-${section}`, attentionFragment(section, sections[section])));
+  }
+  if (path === "/assets/datastar.js") {
+    // The vendored Datastar bundle (#1444) — a static asset, never a
+    // service worker; /sw.js keeps serving the kill switch.
+    const file = Bun.file(new URL("./assets/datastar.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
   }
 
   if (path === "/dns") {
@@ -570,6 +696,11 @@ async function handler(req: Request): Promise<Response> {
     const section = await source.orchestration();
     return json(section ?? { status: "absent", reason: "no orchestration run has published yet" });
   }
+  if (path === "/sw.js") {
+    // Kill switch for the opencode service worker stranded on this
+    // origin (see SW_KILL_SWITCH above) -- never a real worker here.
+    return serviceWorkerKillSwitch();
+  }
   if (path === "/api/health") {
     // #1267: prime first — health's answer must not depend on
     // request order. `sections` carries the structured diagnosis
@@ -591,6 +722,7 @@ async function handler(req: Request): Promise<Response> {
     body.feed = { generatedAt: view.feed.generatedAt, fileMtime: view.feed.fileMtime };
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
+    body.comments = view.comments;
     body.degraded = view.degraded;
     return json(body);
   }

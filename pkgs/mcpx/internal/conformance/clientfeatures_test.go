@@ -103,6 +103,60 @@ func TestClientFeaturesServer(t *testing.T) {
 			}
 		})
 	}
+	srvSide("sampling-server-no-tools-without-capability", func(t *testing.T, rev string) {
+		// A tools-carrying sampling question is offered only to a client
+		// that declared sampling.tools; a bare sampling declaration is
+		// refused whole, never stripped and degraded (#1755).
+		toolsQ := mcpserver.Question{ID: "s", Method: "sampling/createMessage", Server: "up",
+			Params: json.RawMessage(`{"messages":[{"role":"user","content":{"type":"text","text":"weather?"}}],"maxTokens":50,"tools":[{"name":"get","inputSchema":{"type":"object"}}]}`)}
+		plainQ := mcpserver.Question{ID: "p", Method: "sampling/createMessage", Server: "up",
+			Params: json.RawMessage(`{"messages":[{"role":"user","content":{"type":"text","text":"hi"}}],"maxTokens":5}`)}
+		if isModern(rev) {
+			srv, _ := newServer(t)
+			srv.Ask = newAsker("done", plainQ, toolsQ)
+			ss := stdioServer(t, srv)
+			r := resultOf(t, ss.request(t, rev, "tools/call", paramsWith(rev, `{"sampling":{}}`, callThatAsks())))
+			ir := asMap(r["inputRequests"])
+			if ir["s"] != nil {
+				t.Errorf("tools-carrying question offered to a client without sampling.tools: %v", ir)
+			}
+			if ir["p"] == nil {
+				t.Errorf("plain question missing beside the refused one: %v", ir)
+			}
+		} else {
+			if m := relayed(t, rev, map[string]any{"sampling": map[string]any{}}, toolsQ); m != nil {
+				t.Errorf("tools-carrying question relayed to a client without sampling.tools: %v", m)
+			}
+		}
+	})
+	srvSide("sampling-server-includecontext-only-with-context-capability", func(t *testing.T, rev string) {
+		// includeContext reaches only a client that declared
+		// sampling.context; for anyone else it is dropped and the rest
+		// of the question passes unchanged (#1755).
+		q := mcpserver.Question{ID: "s", Method: "sampling/createMessage", Server: "up",
+			Params: json.RawMessage(`{"messages":[{"role":"user","content":{"type":"text","text":"hi"}}],"maxTokens":5,"includeContext":"allServers"}`)}
+		sent := func(capsJSON string, caps map[string]any) map[string]any {
+			if isModern(rev) {
+				srv, _ := newServer(t)
+				srv.Ask = newAsker("done", q)
+				ss := stdioServer(t, srv)
+				r := resultOf(t, ss.request(t, rev, "tools/call", paramsWith(rev, capsJSON, callThatAsks())))
+				return asMap(asMap(asMap(r["inputRequests"])["s"])["params"])
+			}
+			return asMap(relayed(t, rev, caps, q)["params"])
+		}
+		bare := sent(`{"sampling":{}}`, map[string]any{"sampling": map[string]any{}})
+		if bare["includeContext"] != nil {
+			t.Errorf("includeContext relayed to a client without sampling.context: %v", bare)
+		}
+		if bare["maxTokens"] == nil {
+			t.Errorf("the rest of the question must pass unchanged: %v", bare)
+		}
+		full := sent(`{"sampling":{"context":{}}}`, map[string]any{"sampling": map[string]any{"context": map[string]any{}}})
+		if full["includeContext"] != "allServers" {
+			t.Errorf("includeContext must pass verbatim to a client that declared sampling.context: %v", full)
+		}
+	})
 	srvSide("sampling-deprecated-new-impls-should-not-adopt", func(t *testing.T, rev string) {
 		// mcpx originates no sampling of its own: a modern call with
 		// nothing upstream asking is answered without any request.
