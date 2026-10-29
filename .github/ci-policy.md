@@ -15,7 +15,7 @@ suite runs on main and is NOT a merge gate.**
 
 In this repo the PR tier is named **basic**: job display names in
 the check list carry the tier — PR-tier jobs are prefixed
-`basic: ` (`basic: treefmt check`, `basic: spec parity`,
+`basic: ` (`basic: proxy port fallbacks`, `basic: spec parity`,
 `basic: nix flake check (<check>)`, `basic: go build`, ...), and
 jobs that run only on main/nightly are prefixed
 `full (main tier): `. One deliberate exception: the `id`
@@ -24,6 +24,16 @@ workflow's aggregator job keeps its historical status name
 has always used — while the matrix jobs under it carry the tier
 prefix (the same exception opencode made for its branch-required
 aggregator).
+
+**Formatting is not a merge gate.** No treefmt/format context is
+in the basic tier or the required checks. Formatting is
+auto-fixed on main instead: the `auto-format` workflow
+(`.github/workflows/auto-format.yml`) runs treefmt on every
+push to main (plus a nightly sweep) and commits any fixes
+directly to main as the github-actions bot
+(`style(treefmt): auto-format on main`). The fix lands within
+seconds of the merge that introduced the drift — well before
+the main-tier full check would file a breakage for it.
 
 Workflow names (`nix ci`, `id`, `mcpx`, `mcpx conformance`,
 `mcpx nix build`, `go modules build`, `identity build`,
@@ -50,14 +60,14 @@ main-breakage rate (issues labelled `main-broken`) proves out.
 
 ## Tier assignment in this repo (after #1781)
 
-| workflow                                                       | PR tier                                                                                             | main tier                                    | nightly                                                          |
-| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------- |
-| nix ci                                                         | treefmt/format gate only                                                                            | treefmt + full flake-check                   | schedule in nix-ci.yml                                           |
-| id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job       | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
-| mcpx conformance                                               | spec-parity leg only (measured 28s exec, run 40801660942, 2026-10-29 — under the 5m fast-leg limit) | all conformance legs + records + spec-parity | — (main covers it)                                               |
-| id bench                                                       | — (removed)                                                                                         | yes                                          | —                                                                |
-| go modules build / identity build / map build / mcpx nix build | class-3 paths only (see each workflow)                                                              | always (push to main, no path filter)        | —                                                                |
-| mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                 | —                                                                |
+| workflow                                                       | PR tier                                                                                             | main tier                                                                    | nightly                                                          |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| nix ci                                                         | proxy port fallbacks only                                                                           | full flake-check (formatting auto-fixed on main by the auto-format workflow) | schedule in nix-ci.yml                                           |
+| id                                                             | guard + affected-crate matrix (`id-pr-checks.txt`)                                                  | + full `nix flake check ./pkgs/id` job                                       | schedule in id-check.yml + id-e2e-nightly.yml (full flake check) |
+| mcpx conformance                                               | spec-parity leg only (measured 28s exec, run 40801660942, 2026-10-29 — under the 5m fast-leg limit) | all conformance legs + records + spec-parity                                 | — (main covers it)                                               |
+| id bench                                                       | — (removed)                                                                                         | yes                                                                          | —                                                                |
+| go modules build / identity build / map build / mcpx nix build | class-3 paths only (see each workflow)                                                              | always (push to main, no path filter)                                        | —                                                                |
+| mcpx, lab-ops-hub, mod-tidy, research-workflow                 | unchanged path-gated PR checks (already PR-tier weight)                                             | push to main                                                                 | —                                                                |
 
 ## Coverage rule
 
