@@ -51,6 +51,15 @@ func (c *Client) modernEra() Era {
 	return EraLegacy
 }
 
+// negotiatedVersion is the negotiated version as the atomic mirror sees
+// it, safe to read while a concurrent recovery may be writing Negotiated.
+// Every path that settles a version publishes the mirror (finishLegacy,
+// probe, Resume), so a client with no mirror has settled none.
+func (c *Client) negotiatedVersion() string {
+	v, _ := c.negotiated.Load().(string)
+	return v
+}
+
 // rpcErrorFor is a handler error as the JSON-RPC error the server hears.
 //
 // A handler that knows the code its failure stands for says so with an

@@ -288,9 +288,10 @@ func narrowCapabilities(own map[string]any, relayed json.RawMessage) map[string]
 func (c *Client) answer(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
 	// Both sampling paths arrive here, so the era the request was made under
 	// is stamped once, for the relay that answers it to validate against.
-	// modern is the atomic mirror rather than Era: a concurrent recovery's
-	// finishLegacy writes Era, and this runs on the server's goroutine.
-	ctx = WithSamplingEra(ctx, SamplingEra{Negotiated: c.Negotiated, Era: c.modernEra()})
+	// modern and negotiated are the atomic mirrors rather than Era and
+	// Negotiated: a concurrent recovery's finishLegacy writes both, and
+	// this runs on the server's goroutine.
+	ctx = WithSamplingEra(ctx, SamplingEra{Negotiated: c.negotiatedVersion(), Era: c.modernEra()})
 	c.mu.Lock()
 	h := c.onElicit
 	roots := append([]Root(nil), c.roots...)
