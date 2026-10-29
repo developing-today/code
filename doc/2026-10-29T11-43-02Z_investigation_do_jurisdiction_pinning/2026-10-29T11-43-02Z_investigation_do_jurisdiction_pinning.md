@@ -432,7 +432,8 @@ Since nothing moves, a jurisdiction change is: copy and verify the user's R2
 blobs into the destination jurisdiction's bucket → export the user's graph +
 journal → create the DO in the target jurisdiction → import → verify
 hashes/signatures → switch the directory record → delete the old object and
-its now-copied source blobs. That is a freeze-window operation on a live
+the source blobs that no other account in the source jurisdiction still
+references (see the shared-blob rule below). That is a freeze-window operation on a live
 account. Consequences:
 
 - **Blobs are copied first, and verified, or the import references bytes that
@@ -451,6 +452,18 @@ account. Consequences:
   Note the interaction with dedup: because blob dedup is jurisdiction-local
   (§2.3), the destination bucket must be sized for the full copy, not for the
   incremental bytes.
+- **A copied source blob is not automatically a deletable source blob.**
+  Content-addressed keys are identical for every account in the jurisdiction
+  and dedupe is jurisdiction-local (§4.3), so the same hash the migrated
+  account references may also be referenced by other accounts that are not
+  moving. Deleting it on the strength of the migrated account's destination
+  read-back alone would make those accounts' attachments unavailable.
+  Source deletion is therefore conditional: before deleting a source
+  object, sweep the remaining accounts' exported graphs in the source
+  jurisdiction for the hash; delete only hashes with no remaining
+  references, and leave shared hashes to shared-blob garbage collection
+  (a reference-count or mark-and-sweep pass over the bucket), never to the
+  migration itself.
 - the directory record needs a `jurisdiction_pending` state and a migration flag,
 - the bridge protocol (#2044 §7) must tolerate a user's object id changing,
 - signed objects are transport- and location-independent, so signatures survive the
