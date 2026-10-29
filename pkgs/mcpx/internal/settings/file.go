@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/dezren39/mcpx/internal/refdoc"
 )
 
 func mustJSON(v any) string {
@@ -239,6 +241,8 @@ func (s *Schema) JSON(includePlumbing bool) string {
 		EnumAlias  map[string][]string `json:"enumAliases,omitempty"`
 		Bare       string              `json:"bare,omitempty"`
 		Repeatable bool                `json:"repeatable,omitempty"`
+		Scope      string              `json:"scope"`
+		Hot        bool                `json:"hot"`
 		Commands   []string            `json:"commands,omitempty"`
 		Plumbing   bool                `json:"plumbing,omitempty"`
 		Bootstrap  bool                `json:"bootstrap,omitempty"`
@@ -254,9 +258,96 @@ func (s *Schema) JSON(includePlumbing bool) string {
 			Flag: set.FlagName(), FlagAlias: set.FlagAliases,
 			Env: set.EnvName(), EnvAlias: set.EnvAliases,
 			Enum: set.Enum, EnumAlias: set.EnumAliases, Bare: set.Bare, Repeatable: set.Repeatable,
+			Scope: set.Scope.String(), Hot: set.Hot,
 			Commands: set.Commands, Plumbing: set.Plumbing, Bootstrap: set.Bootstrap,
 		})
 	}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	return string(b)
+}
+
+// MarkdownOptions controls Schema.Markdown.
+type MarkdownOptions struct {
+	// Long adds a definition list under each section's table with
+	// every setting's Long paragraph, for the site page. The
+	// committed table stays compact without it.
+	Long bool
+	// Plumbing includes internal settings, marked *(plumbing)* in
+	// the governs column as in docs/configuration.md. Without it
+	// they are omitted, as Describe and JSON omit them.
+	Plumbing bool
+}
+
+// Markdown renders the schema as the generated settings reference
+// (#1846 step 2): one ### section per top-level key, each wrapped in
+// a refdoc Region so the book can include a single section, with
+// today's columns (setting, kind, default, scope, hot, flag,
+// variable, governs). An empty default renders as *(empty)*, never
+// as an empty cell. The output is built only from the schema — no
+// resolved values, no environment — so it is byte-for-byte
+// deterministic.
+func (s *Schema) Markdown(opts MarkdownOptions) string {
+	groups := map[string][]Setting{}
+	for _, set := range s.All() {
+		if set.Plumbing && !opts.Plumbing {
+			continue
+		}
+		head := strings.SplitN(set.Path, ".", 2)[0]
+		groups[head] = append(groups[head], set)
+	}
+	names := make([]string, 0, len(groups))
+	for n := range groups {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	headers := []string{"setting", "kind", "default", "scope", "hot", "flag", "variable", "governs"}
+	var sections []string
+	for _, n := range names {
+		var rows [][]string
+		for _, set := range groups[n] {
+			def := "`" + set.Default + "`"
+			if set.Default == "" {
+				def = "*(empty)*"
+			}
+			flags := []string{"`--" + set.FlagName() + "`"}
+			for _, a := range set.FlagAliases {
+				flags = append(flags, "`--"+a+"`")
+			}
+			envs := []string{"`" + set.EnvName() + "`"}
+			for _, a := range set.EnvAliases {
+				envs = append(envs, "`"+a+"`")
+			}
+			governs := set.Short
+			if len(set.Enum) > 0 {
+				governs += "; one of " + set.EnumWords()
+			}
+			if set.Plumbing {
+				governs = "*(plumbing)* " + governs
+			}
+			hot := "no"
+			if set.Hot {
+				hot = "yes"
+			}
+			rows = append(rows, []string{
+				"`" + set.Path + "`", set.Kind.String(), def, set.Scope.String(), hot,
+				strings.Join(flags, ", "), strings.Join(envs, ", "), governs,
+			})
+		}
+		body := "### " + n + "\n\n" + strings.TrimRight(refdoc.Table(headers, rows), "\n")
+		if opts.Long {
+			var dl []string
+			for _, set := range groups[n] {
+				if set.Long == "" {
+					continue
+				}
+				dl = append(dl, "`"+set.Path+"`\n:   "+set.Long)
+			}
+			if len(dl) > 0 {
+				body += "\n\n" + strings.Join(dl, "\n\n")
+			}
+		}
+		sections = append(sections, strings.TrimRight(refdoc.Region(n, body), "\n"))
+	}
+	return strings.Join(sections, "\n\n") + "\n"
 }
