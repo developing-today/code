@@ -101,6 +101,17 @@ pub trait SyncSupport: Debug + Send + Sync {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LogSyncOnly;
 
+/// Runs both methods: `LogSync`, and range sync as a method of the same handshake
+/// session (#179, wired in `log_sync::run_agreed`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LogAndRange;
+
+impl SyncSupport for LogAndRange {
+    fn supports(&self, _method: SyncMethod) -> bool {
+        true
+    }
+}
+
 impl SyncSupport for LogSyncOnly {
     fn supports(&self, method: SyncMethod) -> bool {
         method == SyncMethod::Log
@@ -218,5 +229,11 @@ mod tests {
     fn test_log_sync_only_supports_log() {
         assert!(LogSyncOnly.supports(SyncMethod::Log));
         assert!(!LogSyncOnly.supports(SyncMethod::Range));
+    }
+
+    #[test]
+    fn test_log_and_range_supports_both() {
+        assert!(LogAndRange.supports(SyncMethod::Log));
+        assert!(LogAndRange.supports(SyncMethod::Range));
     }
 }
