@@ -1068,12 +1068,48 @@ impl WorldClient {
         capability: &str,
         expected_hash: &str,
     ) -> Result<Vec<u8>> {
-        self.send_json(&serde_json::json!({
-            "type": "download_module",
-            "capability": capability,
-            "module_hash": expected_hash,
-        }))
-        .await?;
+        self.download_module_with(
+            serde_json::json!({
+                "type": "download_module",
+                "capability": capability,
+                "module_hash": expected_hash,
+            }),
+            expected_hash,
+        )
+        .await
+    }
+
+    /// Download a stored module by hash as an admin, whether or not it is
+    /// the active module (#807). The host serves only modules it holds in
+    /// its blob store; a hash it never installed is refused.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a bad admin token, a hash the host does not hold, a hash
+    /// mismatch, oversize or a truncated transfer.
+    pub async fn download_module_admin(
+        &mut self,
+        admin_token: &str,
+        expected_hash: &str,
+    ) -> Result<Vec<u8>> {
+        self.download_module_with(
+            serde_json::json!({
+                "type": "download_module_admin",
+                "admin_token": admin_token,
+                "module_hash": expected_hash,
+            }),
+            expected_hash,
+        )
+        .await
+    }
+
+    /// Send one module-download frame and read the transfer it starts.
+    async fn download_module_with(
+        &mut self,
+        frame: serde_json::Value,
+        expected_hash: &str,
+    ) -> Result<Vec<u8>> {
+        self.send_json(&frame).await?;
         let begin = self
             .recv_json()
             .await?
@@ -1526,6 +1562,52 @@ mod tests {
                 .is_err()
         );
         wrong.close();
+
+        // #807: a second install makes the first module non-active. The
+        // participant download then refuses it, but an admin can still fetch
+        // the stored bytes by hash - the path `id world apply` uses to
+        // install the module a manifest names.
+        let wasm2 = include_bytes!("../examples/roc-chat/roc-chat.wasm");
+        let mut admin2 = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        let hash2 = admin2.install_wasm("admin", wasm2, 7).await.unwrap();
+        admin2.close();
+        assert_ne!(hash2, hash);
+
+        let mut fetch2 = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        assert!(
+            fetch2.download_module(&capability, &hash).await.is_err(),
+            "the first module is no longer the active one"
+        );
+        fetch2.close();
+
+        let mut admin_fetch = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        let stored = admin_fetch
+            .download_module_admin("admin", &hash)
+            .await
+            .unwrap();
+        admin_fetch.close();
+        assert_eq!(stored, wasm.as_slice());
+
+        let mut bad_admin = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        assert!(bad_admin.download_module_admin("wrong", &hash).await.is_err());
+        bad_admin.close();
+
+        let mut missing = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        assert!(missing
+            .download_module_admin("admin", &"0".repeat(64))
+            .await
+            .is_err());
+        missing.close();
 
         // Without a capability, nothing is disclosed.
         let mut anon = WorldClient::connect(&client_ep, addr).await.unwrap();

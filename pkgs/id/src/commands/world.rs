@@ -1009,7 +1009,7 @@ async fn apply_steps(
                 } else if let Some(hash) = hash {
                     // The module is already on the host: fetch its bytes by
                     // hash and install them under the manifest's seed.
-                    let wasm = client.download_module(capability, hash).await?;
+                    let wasm = client.download_module_admin(admin_token, hash).await?;
                     client.install_wasm(admin_token, &wasm, *seed).await?;
                 } else {
                     anyhow::bail!("install_module step names neither a hash nor a source");
@@ -1785,7 +1785,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.2"
+            "3 frames conform to shell contract v1.3"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

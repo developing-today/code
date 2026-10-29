@@ -681,6 +681,30 @@ impl WorldService {
         Ok(bytes.to_vec())
     }
 
+    /// Read a stored module's bytes by hash, active or not, from the blob
+    /// store every install pins into. The caller must already have
+    /// authenticated as an admin. A hash the host never installed is
+    /// unavailable: the bytes of a module it does not hold cannot be
+    /// conjured, and the error says so by kind.
+    pub async fn stored_module_bytes(
+        &self,
+        expected_hash: &str,
+    ) -> Result<Vec<u8>, InstallError> {
+        let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?;
+        let hash: iroh_blobs::Hash = expected_hash
+            .parse()
+            .map_err(|_| InstallError::InvalidUpload)?;
+        let bytes = blobs
+            .blobs()
+            .get_bytes(hash)
+            .await
+            .map_err(|_| InstallError::Unavailable)?;
+        if bytes.len() > MAX_WORLD_MODULE_BYTES || module_hash(&bytes) != expected_hash {
+            return Err(InstallError::Unavailable);
+        }
+        Ok(bytes.to_vec())
+    }
+
     /// Hash of the currently active module, if the world runs one.
     pub async fn active_module_hash(&self) -> Option<String> {
         self.module_hash.read().await.clone()
@@ -1225,6 +1249,16 @@ async fn run_world_session<I: SessionIo>(service: &WorldService, io: &mut I, fra
                 }
             }
         }
+        ClientFrame::DownloadModuleAdmin {
+            admin_token,
+            module_hash,
+        } => {
+            if let Err(message) =
+                download_module_admin_session(service, io, &admin_token, &module_hash).await
+            {
+                let _ = send_error(service.frame_meter(), io, message).await;
+            }
+        }
         ClientFrame::WorldState {
             admin_token,
             capability,
@@ -1612,11 +1646,42 @@ async fn download_module_session<I: SessionIo>(
         .module_bytes(&active_hash)
         .await
         .map_err(|_| "module bytes are unavailable")?;
+    send_module_bytes(service, io, active_hash, &bytes).await
+}
+
+/// The admin module download (#807): any module the host holds in its blob
+/// store, by hash, active or not - so `id world apply` can install the
+/// module a manifest names when another module is currently active.
+async fn download_module_admin_session<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    admin_token: &str,
+    requested_hash: &str,
+) -> Result<(), &'static str> {
+    if admin_token.len() > MAX_ADMIN_TOKEN_BYTES
+        || service.authorize_admin(Some(admin_token)).is_err()
+    {
+        return Err("admin denied");
+    }
+    let bytes = service
+        .stored_module_bytes(requested_hash)
+        .await
+        .map_err(|_| "the host does not hold a module with that hash")?;
+    send_module_bytes(service, io, requested_hash.to_owned(), &bytes).await
+}
+
+/// Stream one module's bytes as a begin/chunk/end transfer naming `module_hash`.
+async fn send_module_bytes<I: SessionIo>(
+    service: &WorldService,
+    io: &mut I,
+    module_hash: String,
+    bytes: &[u8],
+) -> Result<(), &'static str> {
     if !send_json(
         service.frame_meter(),
         io,
         &ServerFrame::ModuleBegin {
-            module_hash: active_hash.clone(),
+            module_hash: module_hash.clone(),
             total_bytes: bytes.len(),
         },
     )
@@ -1641,9 +1706,7 @@ async fn download_module_session<I: SessionIo>(
     if !send_json(
         service.frame_meter(),
         io,
-        &ServerFrame::ModuleEnd {
-            module_hash: active_hash,
-        },
+        &ServerFrame::ModuleEnd { module_hash },
     )
     .await
     {
