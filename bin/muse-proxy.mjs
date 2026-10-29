@@ -617,7 +617,8 @@ const warmHost = {
             if (params.usage) {
               usage = {
                 promptTokens: params.usage.inputTokens,
-                completionTokens: params.usage.outputTokens
+                completionTokens: params.usage.outputTokens,
+                cacheReadTokens: typeof params.usage.cacheReadTokens === 'number' ? params.usage.cacheReadTokens : 0
               };
             }
             break;
@@ -630,7 +631,8 @@ const warmHost = {
                 deltasText,
                 fullText: lastFinalText ?? lastAgentText ?? deltasText,
                 promptTokens: usage?.promptTokens,
-                completionTokens: usage?.completionTokens
+                completionTokens: usage?.completionTokens,
+                cacheReadTokens: usage?.cacheReadTokens
               });
             }
             break;
@@ -787,6 +789,9 @@ const tryWarmChat = async ({ messages, baseModel, effort, fullName, stream, res,
   if (completionTokens === 0 && fullContent.length > 0) {
     completionTokens = Math.max(1, Math.ceil(fullContent.length / 4));
   }
+  const cacheReadTokens = (typeof result.cacheReadTokens === 'number' && result.cacheReadTokens > 0)
+    ? result.cacheReadTokens
+    : 0;
 
   if (stream) {
     if (unstreamedSuffix.length > 0) writeChunk(unstreamedSuffix);
@@ -808,7 +813,8 @@ const tryWarmChat = async ({ messages, baseModel, effort, fullName, stream, res,
       usage: {
         prompt_tokens: promptTokens,
         completion_tokens: completionTokens,
-        total_tokens: promptTokens + completionTokens
+        total_tokens: promptTokens + completionTokens,
+        ...(cacheReadTokens > 0 ? { prompt_tokens_details: { cached_tokens: cacheReadTokens } } : {})
       }
     };
     res.write(`data: ${JSON.stringify(endChunk)}\n\n`);
@@ -829,7 +835,8 @@ const tryWarmChat = async ({ messages, baseModel, effort, fullName, stream, res,
       usage: {
         prompt_tokens: promptTokens,
         completion_tokens: completionTokens,
-        total_tokens: promptTokens + completionTokens
+        total_tokens: promptTokens + completionTokens,
+        ...(cacheReadTokens > 0 ? { prompt_tokens_details: { cached_tokens: cacheReadTokens } } : {})
       }
     }, null, 2));
   }

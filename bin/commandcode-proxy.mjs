@@ -789,7 +789,7 @@ const acp = {
       }
       const promptTokens = r.promptTokens > 0 ? r.promptTokens : Math.max(1, Math.ceil(text.length / 4));
       const completionTokens = r.completionTokens > 0 ? r.completionTokens : Math.max(1, Math.ceil(r.fullContent.length / 4));
-      return { failed: false, detail: null, fullContent: r.fullContent, promptTokens, completionTokens, capturedSessionId: thread.sessionId };
+      return { failed: false, detail: null, fullContent: r.fullContent, promptTokens, completionTokens, cacheReadTokens: r.cacheReadTokens || 0, capturedSessionId: thread.sessionId };
     } catch (err) {
       return { failed: true, detail: `ACP failed: ${err.message}`, fullContent: '', promptTokens: 0, completionTokens: 0, capturedSessionId: thread ? thread.sessionId : null };
     } finally {
@@ -1243,7 +1243,8 @@ const server = http.createServer((req, res) => {
             usage: {
               prompt_tokens: result.promptTokens,
               completion_tokens: result.completionTokens,
-              total_tokens: result.promptTokens + result.completionTokens
+              total_tokens: result.promptTokens + result.completionTokens,
+              ...(result.cacheReadTokens > 0 ? { prompt_tokens_details: { cached_tokens: result.cacheReadTokens } } : {})
             }
           };
           res.write(`data: ${JSON.stringify(endChunk)}\n\n`);
@@ -1267,7 +1268,8 @@ const server = http.createServer((req, res) => {
             usage: {
               prompt_tokens: result.promptTokens,
               completion_tokens: result.completionTokens,
-              total_tokens: result.promptTokens + result.completionTokens
+              total_tokens: result.promptTokens + result.completionTokens,
+              ...(result.cacheReadTokens > 0 ? { prompt_tokens_details: { cached_tokens: result.cacheReadTokens } } : {})
             }
           }, null, 2));
         }
