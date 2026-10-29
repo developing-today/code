@@ -32,7 +32,7 @@
 // - service probes: a failed probe (ok === false) for Kaneo, Grist,
 //   or Pad breaches immediately; the probe cache (60 s, health.ts)
 //   is the debounce.
-import { ageMsText, ORCHESTRATION_STALE_MS, type SectionDiagnosis } from "./feed.ts";
+import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, ORCHESTRATION_STALE_MS, type SectionDiagnosis } from "./feed.ts";
 import type { TierItem } from "./model.ts";
 
 /** Feed freshness bound — mirrors health.ts / live.ts FEED_STALE_MS. */
@@ -112,8 +112,24 @@ export function watchdogTierItems(inputs: WatchdogInputs): TierItem[] {
     if (!out.has(it.id)) out.set(it.id, it);
   };
 
-  // Fleet feed: stale past 15 min, or absent entirely.
-  if (inputs.feedAgeMs === null) {
+  // Fleet feed: future-dated (buildHealth's own failure diagnosis -
+  // a generatedAt >60s ahead is never fresh, and its clamped age of 0
+  // must not suppress this alarm until the future time + 15m),
+  // stale past 15 min, or absent entirely.
+  const feedFutureMs = inputs.feedGeneratedAt ? Date.parse(inputs.feedGeneratedAt) - now : NaN;
+  if (!Number.isNaN(feedFutureMs) && feedFutureMs > GENERATED_AT_FUTURE_SKEW_MS) {
+    put(
+      item(
+        "fleet-feed",
+        `Watchdog: fleet feed is future-dated - generatedAt is ${ageMsText(feedFutureMs)} ahead of the aggregator clock`,
+        "watchdog: feed future-dated",
+        "buildHealth diagnoses a feed generatedAt more than 60s in the future as a failed, never-fresh feed (#1148 watchdog); the clamped age of 0 must not silence the watchdog for the whole skew.",
+        now,
+        now,
+        "Check the fleet-feed collector's clock and the feed file it pushes; the card clears itself when a feed with a sane generatedAt lands.",
+      ),
+    );
+  } else if (inputs.feedAgeMs === null) {
     put(
       item(
         "fleet-feed",

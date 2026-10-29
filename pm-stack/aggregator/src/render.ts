@@ -494,6 +494,14 @@ function layout(
 export const sessionObjectRef = (id: string): string => `session:${id}`;
 export const ghObjectRef = (ref: RefKey): string => `gh:${ref}`;
 export function tierItemObjectRef(item: TierItem): string {
+  // Watchdog items (#1148) all carry the implementation issue as their
+  // display ref, but each watchdog:<input> is an independent object:
+  // keying them all by the shared gh: ref would give every watchdog
+  // card the same DOM id, actions, dismissal state, and comment
+  // thread, so dismissing one input's card would suppress them all
+  // (Codex P1 on PR #2431). Watchdog cards key by their unique id;
+  // the gh: ref still renders as the card's issue link.
+  if (item.source === "watchdog") return `orch:${item.id}`;
   return item.ref ? ghObjectRef(item.ref) : `orch:${item.id}`;
 }
 

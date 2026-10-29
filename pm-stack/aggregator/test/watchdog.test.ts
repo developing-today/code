@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildAttention } from "../src/derive.ts";
+import { tierItemObjectRef } from "../src/render.ts";
 import type { SectionDiagnosis } from "../src/feed.ts";
 import {
   watchdogTierItems,
@@ -101,11 +102,37 @@ describe("watchdog derivation (#1148)", () => {
     expect(watchdogTierItems(healthy())).toEqual([]);
   });
 
+  test("a future-dated feed produces exactly one fleet-feed item despite the clamped zero age (Codex P2, PR #2431)", () => {
+    // buildHealth clamps a future generatedAt's age to 0 and diagnoses
+    // the failure itself; the watchdog must honor that diagnosis, not
+    // wait for the future timestamp + 15m.
+    const items = watchdogTierItems(healthy({ feedAgeMs: 0, feedGeneratedAt: iso(NOW + 24 * 60 * 60_000) }));
+    expect(items.map((i) => i.id)).toEqual(["watchdog:fleet-feed"]);
+    expect(items[0]!.state).toContain("future-dated");
+  });
+
+  test("each watchdog item keys an independent object ref, not the shared issue ref (Codex P1, PR #2431)", () => {
+    const items = watchdogTierItems(
+      healthy({
+        feedAgeMs: WATCHDOG_FEED_STALE_MS + 60_000,
+        feedGeneratedAt: iso(NOW - (WATCHDOG_FEED_STALE_MS + 60_000)),
+        probes: [{ id: "kaneo", name: "Kaneo", ok: false, detail: "HTTP 503", probedAt: iso(NOW) }],
+      }),
+    );
+    expect(items.length).toBeGreaterThanOrEqual(2);
+    const refs = items.map((i) => tierItemObjectRef(i));
+    expect(new Set(refs).size).toBe(refs.length);
+    for (const r of refs) expect(r).not.toContain("1148");
+  });
+
   test("watchdog items merge into buildAttention's orchestrator extras and never the drew tier", () => {
     const items = watchdogTierItems(healthy({ feedAgeMs: 60 * 60_000, feedGeneratedAt: iso(NOW - 60 * 60_000) }));
     const view = buildAttention([], null, NOW, undefined, items);
     expect(view.drewExtra).toEqual([]);
     expect(view.orchestratorExtra.map((i) => i.id)).toEqual(items.map((i) => i.id));
+    // The JSON surfaces publish the derived items from view.watchdog
+    // (Codex P2, PR #2431): it carries exactly the merged watchdog set.
+    expect(view.watchdog.map((i) => i.id)).toEqual(items.map((i) => i.id));
     // Merging is idempotent by id: passing the same items twice over
     // (two derivations concatenated) still yields one card per input.
     const view2 = buildAttention([], null, NOW, undefined, [...items, ...items].filter((v, idx, a) => a.indexOf(v) === idx || true));

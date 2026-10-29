@@ -371,6 +371,10 @@ export interface TierSourceInfo {
 export interface AttentionView {
   drew: TieredEntry[];
   orchestrator: TieredEntry[];
+  /** The deduped #1148 watchdog items merged into orchestratorExtra,
+   *  exposed separately so JSON surfaces can publish the derived
+   *  queue items without re-deriving them. */
+  watchdog: TierItem[];
   /** #899 tier items that are not live sessions (decisions, tasks, gaps). */
   drewExtra: TierItem[];
   orchestratorExtra: TierItem[];
@@ -455,6 +459,7 @@ export function buildAttention(
   return {
     drew: all.filter((e) => e.tier === "needs-drew"),
     orchestrator: all.filter((e) => e.tier === "needs-orchestrator"),
+    watchdog: watchdogExtra,
     drewExtra: extras(section?.tiers.needsDrew),
     orchestratorExtra: [...publishedExtra, ...watchdogExtra],
     all,
