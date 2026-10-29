@@ -47,6 +47,8 @@ type Defaults struct {
 		Trace    bool     `json:"trace"`
 	} `json:"logging"`
 	Daemon struct {
+		TSNetUpTimeout string `json:"tsnetUpTimeout"`
+
 		ReapInterval string `json:"reapInterval"`
 		SaveInterval string `json:"saveInterval"`
 	} `json:"daemon"`
@@ -476,6 +478,7 @@ var (
 	LogTrace    = builtin.Logging.Trace
 
 	ReapInterval           = mustDur(builtin.Daemon.ReapInterval, "daemon.reapInterval")
+	DaemonTSNetUpTimeout       = mustDur(builtin.Daemon.TSNetUpTimeout, "daemon.tsnetUpTimeout")
 	SaveInterval           = mustDur(builtin.Daemon.SaveInterval, "daemon.saveInterval")
 	SecretRequestRetention = mustDur(builtin.Secrets.RequestRetention, "secrets.requestRetention")
 

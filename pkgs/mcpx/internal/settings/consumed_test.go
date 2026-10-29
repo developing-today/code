@@ -77,6 +77,7 @@ var unreadAllowed = map[string]string{
 	// decide it. It is read now -- cli.adoptSettings warns when an entry
 	// names a file instead of a directory (#278) -- so it no longer
 	// belongs on this list. Deciding the search path itself remains #5's.
+	"daemon.tsnetUpTimeout": "read by transport_tsnet.go without an accessor",
 	"paths.configFile": "a bootstrap setting: it names the file the settings are " +
 		"read from, so config.SearchPathFrom reads MCPX_CONFIG before any Set " +
 		"exists, and the global --config reaches App.ConfigPath the same way.",
