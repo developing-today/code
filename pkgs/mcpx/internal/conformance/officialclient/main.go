@@ -384,12 +384,8 @@ func (m *mcpx) answerElicitations(ctx context.Context) func() {
 			fmt.Fprintf(os.Stderr, "-poll: %v\n", err)
 			return
 		}
-		logs := filepath.Join(m.dir, "state", "logs")
-		if err := os.MkdirAll(logs, 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "elicit store: %v\n", err)
-			return
-		}
-		b, err := elicit.Open(filepath.Join(logs, "elicit.db"))
+		state := filepath.Join(m.dir, "state")
+		b, err := elicit.OpenAt(state, filepath.Join(state, "logs", "elicit.db"))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "elicit store: %v\n", err)
 			return

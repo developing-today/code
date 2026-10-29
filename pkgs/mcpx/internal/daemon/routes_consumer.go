@@ -363,6 +363,8 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 		Autonomy     string         `json:"autonomy"`
 		Placeholders map[string]any `json:"placeholders"`
 		Session      string         `json:"session"`
+		Provider     string         `json:"provider"`
+		Model        string         `json:"model"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -399,46 +401,56 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	out.setLevel(level)
 	if !settings.AutonomyAtLeast(level.Value, "propose") {
 		// Generating a script nobody may see would spend a model's time on
-		// nothing, so below propose there is no sampling request at all.
+		// nothing, so below propose there is no generation at all.
 		out.Model = "none"
 		out.Message = belowPropose(level.Value)
 		writeJSON(w, 200, out)
 		return
 	}
-	prov := s.resolveProvider()
+	prov := s.resolveProviderFor(req.Provider, req.Model)
+	// The model actually used, for the Resolution: the caller's model
+	// when supplied, the daemon's configured one otherwise.
+	model := req.Model
+	if model == "" {
+		model = s.providerConfig().Model
+	}
 	// prompt.sample is whether mcpx may ask a model at all. A CLI found on
 	// this machine is not permission to ask one, so only "ask" lifts the
-	// default; without it a host with opencode installed paid the full
-	// sampling deadline on every unmatched prompt.
-	if pol.PromptSample != "ask" || (s.reg.broker == nil && prov == nil) {
+	// default; without it a host with opencode installed paid for a model
+	// call on every unmatched prompt. A caller naming a provider or model
+	// on this request has asked, for this request.
+	asked := pol.PromptSample == "ask" || req.Provider != "" || req.Model != ""
+	if !asked || prov == nil {
 		out.Model = "none"
-		out.Message = "no recipe matched, and generating one is off " +
-			"(prompt.sample is " + pol.PromptSample + "). " +
-			"The ranked recipes above are everything mcpx can offer deterministically."
+		if !asked {
+			out.Message = "no recipe matched, and generating one is off " +
+				"(prompt.sample is " + pol.PromptSample + "). " +
+				"The ranked recipes above are everything mcpx can offer deterministically."
+		} else {
+			out.Message = "no recipe matched, and no model provider is " +
+				"available: mcpx has no model of its own, and neither the " +
+				"daemon's repair.provider settings nor this request's " +
+				"provider/model named a usable one. " +
+				"The ranked recipes above are everything mcpx can offer deterministically."
+		}
 		writeJSON(w, 200, out)
 		return
 	}
 
-	source, id, err := s.generate(r.Context(), req.Prompt, req.Session)
+	source, used, err := s.generate(r.Context(), req.Prompt, prov, model)
 	if err != nil {
 		out.Model = "none"
-		out.Message = fmt.Sprintf(
-			"no recipe matched, and no model answered the sampling request within %s "+
-				"(elicitation %s). mcpx has no model of its own: generation needs "+
-				"whatever drives it -- the agent, the opencode plugin, or an MCP "+
-				"client that declared sampling -- to answer. The ranked recipes "+
-				"above are everything mcpx can offer without one.",
-			pol.PromptSampleTimeout, id)
+		out.Message = "no recipe matched, and no model answered. " +
+			"mcpx has no model of its own: generation needs a provider " +
+			"-- the daemon's repair.provider/repair.model settings, or " +
+			"this request's provider/model -- to answer. The ranked " +
+			"recipes above are everything mcpx can offer without one."
 		writeJSON(w, 200, out)
 		return
 	}
 
 	out.Generated = true
-	if strings.HasPrefix(id, "provider:") {
-		out.Model = id
-	} else {
-		out.Model = "sampling"
-	}
+	out.Model = used
 	out.Source = source
 	cat := s.reg.DiagnoseCatalog()
 	val := scripting.Validate(source, &cat)

@@ -102,6 +102,61 @@ const resolveModel = (model) => {
   return '@cf/cloudflare/clef-flash';
 };
 
+// --- Live model list (2026-10-28 standing rule) ---------------------------
+// This proxy is a single-purpose SystemOne endpoint, not a chat router:
+// its model universe is the Clef family inside Cloudflare's Workers AI
+// catalog. That catalog IS queryable live — GET
+// /client/v4/accounts/<id>/ai/models/search with the same inference token
+// the data path uses — so GET /v1/models serves the live Clef subset
+// (which gained @cf/cloudflare/clef-omni upstream without any code change
+// here) with a 5-minute TTL cache and last-known-good fallback to the
+// static floor below.
+const STATIC_MODELS = ['@cf/cloudflare/clef', '@cf/cloudflare/clef-flash'];
+const MODEL_LIST_TTL_MS = 5 * 60 * 1000;
+let liveModelCache = { at: 0, models: null };
+let liveModelRefresh = null;
+
+const refreshLiveModels = (authHeader) => {
+  if (liveModelRefresh) return liveModelRefresh;
+  liveModelRefresh = (async () => {
+    try {
+      const { accountId, token } = getCredentials(authHeader);
+      if (!token) throw new Error('no Cloudflare token available');
+      const names = [];
+      for (let page = 1; page <= 10; page++) {
+        const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/models/search?per_page=100&page=${page}`;
+        const res = await fetch(url, {
+          headers: { 'Authorization': `Bearer ${token}` },
+          signal: AbortSignal.timeout(10000)
+        });
+        if (!res.ok) throw new Error(`models search HTTP ${res.status}`);
+        const data = await res.json();
+        const result = Array.isArray(data?.result) ? data.result : [];
+        if (result.length === 0) break;
+        for (const m of result) {
+          if (typeof m?.name === 'string' && m.name.toLowerCase().includes('clef')) names.push(m.name);
+        }
+        if (result.length < 100) break;
+      }
+      if (names.length === 0) throw new Error('models search returned no Clef models');
+      liveModelCache = { at: Date.now(), models: [...new Set(names)].sort() };
+    } catch (err) {
+      console.warn(`[clef-proxy] live model refresh failed (${err.message}); serving last-known-good`);
+    } finally {
+      liveModelRefresh = null;
+    }
+    return liveModelCache.models || STATIC_MODELS;
+  })();
+  return liveModelRefresh;
+};
+
+const getServedModels = async (authHeader) => {
+  if (liveModelCache.models && Date.now() - liveModelCache.at <= MODEL_LIST_TTL_MS) {
+    return liveModelCache.models;
+  }
+  return refreshLiveModels(authHeader);
+};
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || HOST}`);
   const pathname = url.pathname.replace(/\/+$/, '') || '/';
@@ -115,6 +170,18 @@ const server = http.createServer(async (req, res) => {
       defaultModel: '@cf/cloudflare/clef-flash',
       endpoint: '/v1/systemone'
     }, null, 2));
+    return;
+  }
+
+  if (req.method === 'GET' && (pathname === '/v1/models' || pathname === '/models')) {
+    getServedModels(req.headers['authorization']).then((models) => {
+      const now = Math.floor(Date.now() / 1000);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        object: 'list',
+        data: models.map(id => ({ id, object: 'model', created: now, owned_by: 'cloudflare-workers-ai' }))
+      }, null, 2));
+    });
     return;
   }
 
