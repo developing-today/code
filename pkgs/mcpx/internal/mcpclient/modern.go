@@ -340,6 +340,15 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 		if h != nil {
 			out, err := h(ctx, method, params)
 			if err != nil {
+				// A typed handler error names its own code: a sampling
+				// refusal is -1, a tool-shape violation -32602 (see
+				// CodedError). Flattening those to -32603 would tell the
+				// upstream an internal failure happened and invite a
+				// retry of a request a person already refused.
+				var ce *CodedError
+				if errors.As(err, &ce) {
+					return nil, &rpcError{Code: ce.Code, Message: ce.Message}
+				}
 				return nil, &rpcError{Code: -32603, Message: err.Error()}
 			}
 			if method == "elicitation/create" {
