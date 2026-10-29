@@ -1,0 +1,78 @@
+name: repo sweeper
+
+# CI tier policy: see .github/ci-policy.md (fleet design #1779;
+# event-bot consolidation, Drew directive 2026-10-29).
+#
+# This ONE scheduled workflow replaces the event-triggered
+# auto-assign.yml, deleted in the same change. Auto Assign fired on
+# every issues / pull_request_target opened event (and PR reopened /
+# synchronize) just to assign the maintainer — bookkeeping nobody
+# waits on synchronously, so it runs here instead as one
+# deterministic pass every 15 minutes: every open issue and PR that
+# lacks the maintainer assignee gets it. Worst-case assignment
+# latency is now ~15 minutes instead of seconds; the accepted
+# trade-off, and the same consolidation opencode and openchamber
+# made with their repo-sweeper.yml.
+#
+# Audit of this repo's other event-triggered workflows (2026-10-29):
+# nothing else is event-based issue/PR management. Kept event-based,
+# deliberately NOT folded in: jules.yml — a human applies the
+# `jules` label and waits for Jules to start work, and its
+# workflow_run leg is the ci-failure-fix remediation chain (#304);
+# a synchronous human-initiated handoff, not bookkeeping.
+# main-broken.yml is workflow_run-triggered (the Phase 3 watcher),
+# not issue management. Everything else is a pull_request/push
+# validation check, a schedule, or a release workflow.
+#
+# Schedule/dispatch only: never add issues or pull_request_target
+# triggers here. Pairing queue/cancel expressions with those events
+# is a GitHub validation hazard (openchamber#84); the fixed
+# cancel-in-progress below is safe only because this workflow has
+# no such triggers.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# Exactly one live sweeper run: a new tick cancels a still-running
+# previous sweep (the pass is an idempotent assignee sync).
+concurrency:
+  group: repo-sweeper
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  sweep:
+    name: repo sweep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Assign maintainer to open issues and PRs (absorbed Auto Assign)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const maintainer = 'dezren39';
+            // listForRepo returns issues and PRs together (a PR item
+            // carries a pull_request link). This reproduces Auto
+            // Assign's end state without the per-event fan-out:
+            // every open issue/PR assigned to the maintainer.
+            const items = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            let assigned = 0;
+            for (const item of items) {
+              if (item.assignees.some((a) => a.login === maintainer)) continue;
+              await github.rest.issues.addAssignees({
+                owner, repo, issue_number: item.number, assignees: [maintainer],
+              });
+              assigned += 1;
+              core.info(`Assigned ${maintainer} to #${item.number}`);
+            }
+            core.info(`Swept ${items.length} open issue(s)/PR(s); assigned ${assigned}.`);
