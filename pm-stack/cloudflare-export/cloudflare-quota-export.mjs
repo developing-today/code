@@ -176,8 +176,13 @@ export function parseGraphqlUsage(account, { now = new Date(), cycleStart } = {}
   for (const g of storageGroups) {
     payloadBytes += num(g?.max?.payloadSize, "r2storage.payloadSize");
   }
+  const saturated = storageGroups.length >= R2_STORAGE_GROUP_LIMIT;
   push("r2-storage", round2(payloadBytes / 1e9), "gb", {
-    detail: `sum of per-bucket max payloadSize ${payloadBytes} bytes across the cycle window (r2StorageAdaptiveGroups)`,
+    detail:
+      `sum of per-bucket max payloadSize ${payloadBytes} bytes across ${storageGroups.length} bucket group(s) in the cycle window (r2StorageAdaptiveGroups)` +
+      (saturated
+        ? ` — group count hit the ${R2_STORAGE_GROUP_LIMIT} query limit, so buckets beyond it are excluded and this total is a LOWER BOUND`
+        : ""),
   });
 
   const neuronsTotal = firstSum(account?.aiInferenceAdaptiveGroups, "totalNeurons", "ai");
@@ -270,6 +275,12 @@ function scopeError(what, status) {
   );
 }
 
+// One group per bucket: the group limit must cover every bucket on the
+// account or the storage total silently drops the rest. 10000 is the
+// GraphQL Analytics API's maximum limit; parseGraphqlUsage flags the
+// total as a lower bound if a result ever saturates it.
+export const R2_STORAGE_GROUP_LIMIT = 10000;
+
 const GRAPHQL_QUERY = `query($a: string!, $s: Time!, $e: Time!) {
   viewer {
     accounts(filter: { accountTag: $a }) {
@@ -278,7 +289,7 @@ const GRAPHQL_QUERY = `query($a: string!, $s: Time!, $e: Time!) {
       d1AnalyticsAdaptiveGroups(limit: 100, filter: { datetime_geq: $s, datetime_leq: $e }) { sum { rowsRead rowsWritten } }
       queueMessageOperationsAdaptiveGroups(limit: 100, filter: { datetime_geq: $s, datetime_leq: $e }) { sum { billableOperations } }
       r2OperationsAdaptiveGroups(limit: 100, filter: { datetime_geq: $s, datetime_leq: $e }) { dimensions { actionType } sum { requests } }
-      r2StorageAdaptiveGroups(limit: 100, filter: { datetime_geq: $s, datetime_leq: $e }) { dimensions { bucketName } max { payloadSize } }
+      r2StorageAdaptiveGroups(limit: 10000, filter: { datetime_geq: $s, datetime_leq: $e }) { dimensions { bucketName } max { payloadSize } }
       aiInferenceAdaptiveGroups(limit: 100, filter: { datetime_geq: $s, datetime_leq: $e }) { sum { totalNeurons } }
     }
   }

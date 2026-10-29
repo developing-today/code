@@ -9,6 +9,7 @@ import {
   failureDocument,
   foldKv,
   parseGraphqlUsage,
+  R2_STORAGE_GROUP_LIMIT,
   successDocument,
 } from "./cloudflare-quota-export.mjs";
 
@@ -68,6 +69,30 @@ test("parseGraphqlUsage: r2-storage sums per-bucket peaks, not the max", () => {
   const { metrics } = parseGraphqlUsage(twoBuckets, { now: NOW, cycleStart: START });
   const byId = Object.fromEntries(metrics.map((m) => [m.id, m]));
   assert.equal(byId["r2-storage"].used, 12); // 6 GB + 6 GB, not max 6 GB
+});
+
+test("parseGraphqlUsage: r2-storage total covers every bucket group, saturation is flagged", () => {
+  // Detail states how many bucket groups the total covers.
+  const twoBuckets = structuredClone(ACCOUNT);
+  twoBuckets.r2StorageAdaptiveGroups = [
+    { dimensions: { bucketName: "a" }, max: { payloadSize: 1_000_000_000 } },
+    { dimensions: { bucketName: "b" }, max: { payloadSize: 2_000_000_000 } },
+  ];
+  const covered = parseGraphqlUsage(twoBuckets, { now: NOW, cycleStart: START });
+  const coveredById = Object.fromEntries(covered.metrics.map((m) => [m.id, m]));
+  assert.match(coveredById["r2-storage"].detail, /across 2 bucket group\(s\)/);
+  assert.doesNotMatch(coveredById["r2-storage"].detail, /LOWER BOUND/);
+
+  // A result at the query limit may exclude further buckets: the total
+  // must say it is a lower bound instead of silently under-reporting.
+  const saturated = structuredClone(ACCOUNT);
+  saturated.r2StorageAdaptiveGroups = Array.from({ length: R2_STORAGE_GROUP_LIMIT }, (_, i) => ({
+    dimensions: { bucketName: `b${i}` },
+    max: { payloadSize: 1_000_000 },
+  }));
+  const sat = parseGraphqlUsage(saturated, { now: NOW, cycleStart: START });
+  const satById = Object.fromEntries(sat.metrics.map((m) => [m.id, m]));
+  assert.match(satById["r2-storage"].detail, /LOWER BOUND/);
 });
 
 test("parseGraphqlUsage: shape drift fails closed", () => {
