@@ -1597,16 +1597,23 @@ mod tests {
         let mut bad_admin = WorldClient::connect(&client_ep, addr.clone())
             .await
             .unwrap();
-        assert!(bad_admin.download_module_admin("wrong", &hash).await.is_err());
+        assert!(
+            bad_admin
+                .download_module_admin("wrong", &hash)
+                .await
+                .is_err()
+        );
         bad_admin.close();
 
         let mut missing = WorldClient::connect(&client_ep, addr.clone())
             .await
             .unwrap();
-        assert!(missing
-            .download_module_admin("admin", &"0".repeat(64))
-            .await
-            .is_err());
+        assert!(
+            missing
+                .download_module_admin("admin", &"0".repeat(64))
+                .await
+                .is_err()
+        );
         missing.close();
 
         // Without a capability, nothing is disclosed.

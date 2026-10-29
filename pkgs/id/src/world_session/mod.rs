@@ -686,10 +686,7 @@ impl WorldService {
     /// authenticated as an admin. A hash the host never installed is
     /// unavailable: the bytes of a module it does not hold cannot be
     /// conjured, and the error says so by kind.
-    pub async fn stored_module_bytes(
-        &self,
-        expected_hash: &str,
-    ) -> Result<Vec<u8>, InstallError> {
+    pub async fn stored_module_bytes(&self, expected_hash: &str) -> Result<Vec<u8>, InstallError> {
         let blobs = self.blobs.as_ref().ok_or(InstallError::Disabled)?;
         let hash: iroh_blobs::Hash = expected_hash
             .parse()
@@ -2423,6 +2420,7 @@ async fn handle_client_frame<I: SessionIo>(
         | ClientFrame::SetFileScope { .. }
         | ClientFrame::Compile { .. }
         | ClientFrame::DownloadModule { .. }
+        | ClientFrame::DownloadModuleAdmin { .. }
         | ClientFrame::InstallBegin { .. }
         | ClientFrame::InstallChunk { .. }
         | ClientFrame::InstallEnd => {
