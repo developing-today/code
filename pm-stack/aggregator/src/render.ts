@@ -56,6 +56,7 @@ import {
   type ProjectPoolItem,
   type Provenance,
   type ProvenanceDetail,
+  type QuotaState,
   type QuotaView,
   type RefKey,
   type RoadmapRow,
@@ -1436,7 +1437,7 @@ export function renderBoard(
     "Cross-repo WIP board",
     `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p>${renderBoardBody(board, items, counts, act)}`,
     provenance,
-    "/",
+    "/board",
     act?.identities ? ACTION_SCRIPT : "",
     detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
   );
@@ -1447,9 +1448,9 @@ export function renderBoard(
 export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')"><div class="skel">Loading the board…</div></div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')"><div class="skel">Loading the board…</div></div>`,
     provenance,
-    "/",
+    "/board",
     ACTION_SCRIPT,
     detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
   );
@@ -1604,7 +1605,7 @@ ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><tr><th>When</th><th>Kind</th><th>Author</th><th>Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
 ${sessionSection}${statusSection}${dashSection}`,
     provenance,
-    "/",
+    "/board",
     extras ? COMMENT_SCRIPT + (extras.statusRequest ? ACTION_SCRIPT : "") : "",
   );
 }
@@ -2503,6 +2504,141 @@ export function renderTodayShell(provenance: Provenance, detail?: ProvenanceDeta
     "/today",
     "",
     detail ? freshnessChips(detail, ["orchestration", "quota", "attention"]) : "",
+  );
+}
+
+// --- Overview / front door (#1134) -------------------------------------------
+// "/" is the stack front door: one glance at what needs Drew, what is
+// moving, what is broken, and where the quotas sit. Every number here
+// is derived from the same source views the dedicated pages render
+// (attention, the Project pool, quota, health, the board) — the
+// overview owns no data of its own, so its counts cannot drift from
+// their source pages. deriveOverview is pure, so the HTML page and
+// /api/overview.json serve the identical summary.
+
+export interface OverviewData {
+  attention: AttentionView;
+  pool: ProjectPoolItem[];
+  quota: QuotaView;
+  health: HealthView;
+  board: BoardItem[];
+}
+
+export interface OverviewSummary {
+  needsYou: { count: number; top: { title: string; detail?: string }[] };
+  projects: { repo: string; total: number; inProgress: number; inReview: number; done: number }[];
+  quota: { provider: string; plan: string; state: QuotaState; worstPercent: number | null }[];
+  health: { degraded: boolean; up: number; down: number; total: number; feedAgeMs: number | null };
+  recentDone: { title: string; repo: string }[];
+  inProgress: { title: string; repo: string }[];
+}
+
+export function deriveOverview(data: OverviewData): OverviewSummary {
+  const top: { title: string; detail?: string }[] = [
+    ...data.attention.drewExtra.map((t) => ({ title: t.title, detail: t.reason })),
+    ...data.attention.drew.map((e) => ({ title: e.title ?? e.sessionId, detail: e.drewReason })),
+  ].slice(0, 5);
+  const byRepo = new Map<string, { repo: string; total: number; inProgress: number; inReview: number; done: number }>();
+  for (const item of data.pool) {
+    const row = byRepo.get(item.repo) ?? { repo: item.repo, total: 0, inProgress: 0, inReview: 0, done: 0 };
+    row.total += 1;
+    if (item.status === "In Progress") row.inProgress += 1;
+    else if (item.status === "In Review") row.inReview += 1;
+    else if (item.status === "Done") row.done += 1;
+    byRepo.set(item.repo, row);
+  }
+  const quota = data.quota.pools.map((pool) => {
+    const percents = pool.windows.map((w) => w.percent).filter((x): x is number => x !== undefined);
+    return {
+      provider: pool.provider,
+      plan: pool.plan,
+      state: pool.state,
+      worstPercent: percents.length ? Math.max(...percents) : null,
+    };
+  });
+  const services = data.health.services;
+  const byRecency = (a: BoardItem, b: BoardItem) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+  return {
+    needsYou: { count: data.attention.drew.length + data.attention.drewExtra.length, top },
+    projects: [...byRepo.values()].sort((a, b) => b.total - a.total || a.repo.localeCompare(b.repo)),
+    quota,
+    health: {
+      degraded: data.health.degraded,
+      up: services.filter((svc) => svc.ok === true).length,
+      down: services.filter((svc) => svc.ok === false).length,
+      total: services.length,
+      feedAgeMs: data.health.feed.ageMs,
+    },
+    recentDone: data.board
+      .filter((b) => b.status === "done")
+      .sort(byRecency)
+      .slice(0, 5)
+      .map((b) => ({ title: b.title, repo: b.repo })),
+    inProgress: data.board
+      .filter((b) => b.status === "in-progress" || b.status === "in-flight")
+      .slice(0, 5)
+      .map((b) => ({ title: b.title, repo: b.repo })),
+  };
+}
+
+export function renderOverviewBody(summary: OverviewSummary): string {
+  const needs = summary.needsYou.count
+    ? `<div class="banner drew"><strong>${summary.needsYou.count} item${summary.needsYou.count === 1 ? "" : "s"} need you</strong> — <a href="/attention">review them</a></div>`
+    : `<p class="muted">Nothing needs you right now.</p>`;
+  const topItems = summary.needsYou.top.length
+    ? `<ul>${summary.needsYou.top.map((t) => `<li><strong>${esc(t.title)}</strong>${t.detail ? ` — ${esc(t.detail)}` : ""}</li>`).join("")}</ul>`
+    : "";
+  const projectCards = summary.projects.length
+    ? summary.projects
+        .map(
+          (proj) =>
+            `<div class="card"><strong>${esc(proj.repo)}</strong> <span class="muted">${proj.total} tracked</span><br>${proj.inProgress} in progress · ${proj.inReview} in review · ${proj.done} done — <a href="/projects">projects</a></div>`,
+        )
+        .join("")
+    : `<p class="muted">No Project pool items collected yet.</p>`;
+  const quotaStrip = summary.quota.length
+    ? summary.quota
+        .map((pool) => {
+          const pct = pool.worstPercent !== null ? ` · ${Math.round(pool.worstPercent)}% of tightest window` : "";
+          return `<div class="card"><strong>${esc(pool.provider)}</strong> <span class="muted">${esc(pool.plan)}</span> <span class="badge ${esc(pool.state)}">${esc(pool.state)}</span>${pct}</div>`;
+        })
+        .join("")
+    : `<p class="muted">No quota pools measured yet.</p>`;
+  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  const itemList = (items: { title: string; repo: string }[], empty: string) =>
+    items.length
+      ? `<ul>${items.map((i) => `<li>${esc(i.title)}${i.repo ? ` <span class="muted">${esc(i.repo)}</span>` : ""}</li>`).join("")}</ul>`
+      : `<p class="muted">${empty}</p>`;
+  return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
+<h2>Needs you (${summary.needsYou.count})</h2>${needs}${topItems}
+<h2>Projects</h2>${projectCards}
+<h2>Quota</h2>${quotaStrip}
+<h2>Health</h2>${healthStrip}
+<h2>In progress</h2>${itemList(summary.inProgress, "Nothing in progress on the board.")}
+<h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}`;
+}
+
+/** The overview page (#1134): full server render. */
+export function renderOverview(data: OverviewData, provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout(
+    "Overview",
+    `<h1>Overview</h1>${renderOverviewBody(deriveOverview(data))}`,
+    provenance,
+    "/",
+    "",
+    detail ? freshnessChips(detail, ["board", "quota", "attention"]) : "",
+  );
+}
+
+/** The Datastar shell for / (#1134, on the #1444 pattern). */
+export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout(
+    "Overview",
+    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on-dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
+    provenance,
+    "/",
+    "",
+    detail ? freshnessChips(detail, ["board", "quota", "attention"]) : "",
   );
 }
 

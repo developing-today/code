@@ -23,6 +23,13 @@ export interface PageDef {
 
 export const PAGES: PageDef[] = [
   {
+    id: "overview",
+    title: "Overview",
+    route: "/",
+    api: "/api/overview.json",
+    blurb: "The stack front door (#1134): needs-you, projects, quotas, and health at a glance.",
+  },
+  {
     id: "today",
     title: "Today",
     route: "/today",
@@ -36,7 +43,7 @@ export const PAGES: PageDef[] = [
     api: "/api/attention.json",
     blurb: "NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.",
   },
-  { id: "board", title: "Board", route: "/", api: "/api/board.json", blurb: "The curated cross-repo WIP board." },
+  { id: "board", title: "Board", route: "/board", api: "/api/board.json", blurb: "The curated cross-repo WIP board." },
   {
     id: "roadmap",
     title: "Roadmap",

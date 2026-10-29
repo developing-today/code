@@ -45,11 +45,19 @@ describe("server boots from fixtures", () => {
     expect(body.source.board).toBe("fixtures");
   });
 
-  test("board page renders", async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("Cross-repo WIP board");
+  test("front door renders the overview, board lives at /board (#1134)", async () => {
+    const root = await fetch(`http://127.0.0.1:${port}/`);
+    expect(root.status).toBe(200);
+    const rootHtml = await root.text();
+    expect(rootHtml).toContain("Overview");
+    const full = await (await fetch(`http://127.0.0.1:${port}/?full=1`)).text();
+    expect(full).toContain("Needs you");
+    const board = await fetch(`http://127.0.0.1:${port}/board`);
+    expect(board.status).toBe(200);
+    expect(await board.text()).toContain("Cross-repo WIP board");
+    const api = await (await fetch(`http://127.0.0.1:${port}/api/overview.json`)).json();
+    expect(api.needsYou.count).toBeGreaterThanOrEqual(0);
+    expect(Array.isArray(api.projects)).toBe(true);
   });
 
   test("sw.js serves the self-unregistering kill switch", async () => {
