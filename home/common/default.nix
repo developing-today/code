@@ -84,7 +84,92 @@ let
     mcpx
     mcpxStart
   ];
+  # Post-start single-instance assertion for the unit below: counts the
+  # OpenChamber web servers (the start script has exec'd into one by the
+  # time this runs) and fails the start loudly if there is not exactly
+  # one. See the guard in openchamberStart for why a second server can
+  # otherwise survive a restart unnoticed (dezren39/nix#1117).
+  openchamberSingleInstanceCheck = pkgs.writeShellScript "openchamber-single-instance-check" ''
+    count=0
+    for proc in /proc/[0-9]*; do
+      pid="''${proc#/proc/}"
+      [ "$pid" = "$$" ] && continue
+      # The pattern text itself rides in the argv of anything inspecting
+      # the fleet (a grep, a diagnostic shell), so a cmdline match alone
+      # is not proof: the process must actually be the node server.
+      exe="$(readlink "$proc/exe" 2>/dev/null)" || continue
+      case "$exe" in
+        */node | */openchamber) ;;
+        *) continue ;;
+      esac
+      cmd="$(cat "$proc/cmdline" 2>/dev/null | tr '\0' ' ')"
+      case "$cmd" in
+        *"/bin/openchamber serve"* | *"cli.js serve"*) ;;
+        *) continue ;;
+      esac
+      case "$cmd" in
+        *"--port 3000"*) count=$((count + 1)) ;;
+      esac
+    done
+    if [ "$count" -ne 1 ]; then
+      echo "openchamber: expected exactly 1 server on port 3000 after start, found $count" >&2
+      exit 1
+    fi
+  '';
   openchamberStart = pkgs.writeShellScript "openchamber-serve" ''
+    # Single-instance guard (dezren39/nix#1117). The unit below is
+    # socket-activated with KillMode=process: a stop terminates only the
+    # tracked main process, so a server that is no longer the tracked
+    # main -- a self-handoff predecessor systemd has lost track of --
+    # survives in the cgroup still holding the listen socket systemd
+    # handed it. The next start passes the same socket to a new server
+    # and both accept() on it, so /api/version answers alternate between
+    # instances. Reap any leftover server before taking the socket over.
+    # Only the web server is matched (its managed OpenCode serves a
+    # different port and must stay up for adoption), and this script's
+    # own pid is excluded -- it execs into the new server below.
+    leftovers=""
+    for proc in /proc/[0-9]*; do
+      pid="''${proc#/proc/}"
+      [ "$pid" = "$$" ] && continue
+      # The pattern text itself rides in the argv of anything inspecting
+      # the fleet (a grep, a diagnostic shell), so a cmdline match alone
+      # is not proof: the process must actually be the node server.
+      exe="$(readlink "$proc/exe" 2>/dev/null)" || continue
+      case "$exe" in
+        */node | */openchamber) ;;
+        *) continue ;;
+      esac
+      cmd="$(cat "$proc/cmdline" 2>/dev/null | tr '\0' ' ')"
+      case "$cmd" in
+        *"/bin/openchamber serve"* | *"cli.js serve"*) ;;
+        *) continue ;;
+      esac
+      case "$cmd" in
+        *"--port 3000"*) leftovers="$leftovers $pid" ;;
+      esac
+    done
+    if [ -n "$leftovers" ]; then
+      echo "openchamber-serve: reaping leftover server(s):$leftovers" >&2
+      for pid in $leftovers; do
+        kill -TERM "$pid" 2>/dev/null || true
+      done
+      # OpenChamber drains HTTP for up to 10 s on SIGTERM.
+      for _ in $(seq 1 100); do
+        alive=0
+        for pid in $leftovers; do
+          kill -0 "$pid" 2>/dev/null && alive=1
+        done
+        [ "$alive" = 0 ] && break
+        sleep 0.1
+      done
+      for pid in $leftovers; do
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "openchamber-serve: pid $pid ignored SIGTERM; killing" >&2
+          kill -KILL "$pid" 2>/dev/null || true
+        fi
+      done
+    fi
     pw="$HOME/.config/openchamber/ui-password"
     if [ -r "$pw" ]; then
       export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
@@ -1028,8 +1113,13 @@ in
     Service = {
       ExecStart = "${openchamberStart}";
       ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
+      # Fail the start loudly if the start script's single-instance
+      # guard left anything but exactly one server on the port.
+      ExecStartPost = "${openchamberSingleInstanceCheck}";
       # Stopping OpenChamber leaves its managed OpenCode running; the next
-      # OpenChamber adopts it, so sessions survive a restart.
+      # OpenChamber adopts it, so sessions survive a restart. The same
+      # KillMode lets an untracked server survive a stop with the socket
+      # attached -- the start script reaps leftovers (dezren39/nix#1117).
       KillMode = "process";
       # A self-handoff successor names itself the main pid (MAINPID=) from a child process.
       # With NotifyAccess=none systemd ignores it, so the unit stops when the old process exits.
