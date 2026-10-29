@@ -8,10 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use p2panda_core::Hash;
 use proptest::prelude::*;
 
-use super::policy::{Delegation, Join, OnMemberRemoved, Policy, RoleRules, Template};
+use super::policy::{Delegation, Join, OnMemberRemoved, Policy, Removal, RoleRules, Template};
 use super::{
-    Body, Create, Delegate, Event, Key, MemberOp, Outcome, Pair, Projection, Refusal, Role, fold,
-    friendship_id,
+    Body, Create, Delegate, DeviceOp, Event, Key, MemberOp, Outcome, Pair, Projection, Refusal, Role,
+    fold, friendship_id,
 };
 use crate::rejection::Reason;
 
@@ -794,6 +794,117 @@ fn test_a_group_without_a_delegation_setting_cascades() {
     assert_eq!(
         with_mode(Some(Delegation::KeepPrior)).delegation_mode(),
         Delegation::KeepPrior
+    );
+}
+
+fn with_removal(removal: Removal, mode: Option<Delegation>) -> Policy {
+    Policy {
+        removal,
+        delegation: mode,
+        ..Policy::default()
+    }
+}
+
+fn device_add(
+    name: &str,
+    by: u8,
+    group: Hash,
+    device: u8,
+    scope: Role,
+    after_names: &[&str],
+) -> Event {
+    event(
+        name,
+        by,
+        after_names,
+        Some(group),
+        Body::Device(DeviceOp::Add {
+            device: key(device),
+            scope,
+        }),
+    )
+}
+
+/// Design §6.4's week-late case, adapted to weak remove (§6.3): Joe (2) grants Write to Dan (3)
+/// without having seen his own removal. `keep_prior` makes the grant a fact about the past, so the
+/// removal's strength alone decides whether the concurrent grant stands.
+fn late_grant_events(removal: Removal) -> Vec<Event> {
+    let g = id("g");
+    vec![
+        custom("g", 1, &[], with_removal(removal, Some(Delegation::KeepPrior))),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        add("a1", 1, g, 3, Role::Write, &["a0"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
+        delegate("d1", 2, g, 3, Role::Write, true, &["d0"]),
+        remove("r0", 1, g, 2, &["a0"]),
+    ]
+}
+
+#[test]
+fn test_a_concurrent_grant_stands_under_weak_remove() {
+    let weak = project(&late_grant_events(Removal::Weak));
+    assert_eq!(outcome(&weak, "d1"), Outcome::Applied);
+    assert!(
+        weak.grant_in_force(&id("d1")),
+        "weak remove stands a grant concurrent with it"
+    );
+    assert!(role_of(&weak, id("g"), 2).is_none(), "2 is removed");
+}
+
+#[test]
+fn test_a_concurrent_grant_is_void_under_strong_remove() {
+    let strong = project(&late_grant_events(Removal::Strong));
+    assert!(
+        !strong.grant_in_force(&id("d1")),
+        "strong remove voids a grant concurrent with it, whether the fold refuses it at the head or \
+         applies it and voids the link"
+    );
+}
+
+#[test]
+fn test_weak_remove_still_invalidates_events_after_the_removal() {
+    let g = id("g");
+    let mut events = late_grant_events(Removal::Weak);
+    events.push(delegate("d2", 2, g, 4, Role::Read, false, &["r0"]));
+    let weak = project(&events);
+    assert_eq!(outcome(&weak, "r0"), Outcome::Applied);
+    assert_eq!(
+        outcome(&weak, "d2"),
+        Outcome::Refused(Refusal::NotActive),
+        "an event by the removed member in the removal's causal future is invalid"
+    );
+}
+
+/// Joe (2) authorizes device 50 without having seen his own removal, and is then re-added. The
+/// device grant is concurrent with the removal, so only the removal's strength decides it.
+fn late_device_events(removal: Removal) -> Vec<Event> {
+    let g = id("g");
+    vec![
+        custom("g", 1, &[], with_removal(removal, None)),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        device_add("dv0", 2, g, 50, Role::Write, &["a0"]),
+        remove("r0", 1, g, 2, &["a0"]),
+        add("a1", 1, g, 2, Role::Write, &["r0"]),
+    ]
+}
+
+#[test]
+fn test_a_concurrent_device_grant_stands_under_weak_remove() {
+    let g = id("g");
+    let weak = project(&late_device_events(Removal::Weak));
+    assert!(
+        weak.active_devices(&g, &key(2)).contains(&key(50)),
+        "weak remove stands a device grant concurrent with it"
+    );
+}
+
+#[test]
+fn test_a_concurrent_device_grant_is_void_under_strong_remove() {
+    let g = id("g");
+    let strong = project(&late_device_events(Removal::Strong));
+    assert!(
+        strong.active_devices(&g, &key(2)).is_empty(),
+        "strong remove voids a device grant concurrent with it"
     );
 }
 

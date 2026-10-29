@@ -31,8 +31,9 @@ pub enum OnMemberRemoved {
     Dissolve,
 }
 
-/// How a removal takes effect (design §6). Strong is the default. The rules belong to the voiding
-/// track; this module only records the setting.
+/// How a removal takes effect (design §6). Strong is the default. The voiding track reads this
+/// setting: strong remove voids the events concurrent with a removal, weak remove stands them and
+/// applies only the authority check (design §6.2 and §6.3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Removal {
     /// Strong remove, the default.

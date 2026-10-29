@@ -363,6 +363,24 @@ impl Membership {
         Ok(self.access_at(&deps, AuthId::Group(group), AuthId::Key(member)))
     }
 
+    /// The same as [`Membership::access_at_position`], borrowing the layer immutably. A caller
+    /// that holds the state can ask about a position this way; it copies the frontier index rather
+    /// than memoising into it, so prefer the mutable method on a hot path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MembershipError`] when an `after` hash is not indexed.
+    pub fn access_at_position_shared(
+        &self,
+        after: &[Hash],
+        group: Hash,
+        member: [u8; 32],
+    ) -> Result<Option<Access<()>>, MembershipError> {
+        let mut index = self.index.clone();
+        let deps: HashSet<Hash> = index.frontier(after, group)?.into_iter().collect();
+        Ok(self.access_at(&deps, AuthId::Group(group), AuthId::Key(member)))
+    }
+
     /// The accounts that hold manage access in `group` at the causal position that `after` names.
     /// Empty when the group does not exist there. Delegation takes these as its roots (design
     /// §7.2).
