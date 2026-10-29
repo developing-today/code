@@ -199,6 +199,20 @@ describe("disabled_providers enforcement (#1114)", () => {
     for (const id of named) expect(disabled.has(poolProviderId(id))).toBe(false);
   });
 
+  test("the Claude pool's door is claude-code: disabling it filters anthropic:claude-pro", () => {
+    expect(poolProviderId("anthropic:claude-pro")).toBe("claude-code");
+    const filtered: Array<[string, string]> = [];
+    const disabled = disabledProvidersFromConfig(
+      JSON.stringify({ disabled_providers: ["claude-code"], provider: {} }),
+    );
+    const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
+    expect(pools.map((p) => p.id)).not.toContain("anthropic:claude-pro");
+    expect(filtered).toContainEqual(["anthropic:claude-pro", "claude-code"]);
+    const choices = computeChoices(pools, NOW.getTime());
+    const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
+    expect(named).not.toContain("anthropic:claude-pro");
+  });
+
   test("the issue's fixture disabled set (openrouter/copilot) emits no pool for them", () => {
     const disabled = disabledProvidersFromConfig(
       JSON.stringify({ disabled_providers: ["openrouter", "github-copilot"], provider: {} }),

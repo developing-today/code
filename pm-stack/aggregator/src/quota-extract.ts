@@ -345,9 +345,26 @@ const SHELL_POOLS: QuotaPool[] = [
   },
 ];
 
-/** The opencode provider id a pool id belongs to ("openai" in "openai:codex"). */
+/**
+ * Pools whose consuming opencode provider ("door") is NOT the pool-id
+ * prefix. Source of truth: `poolFor` in scripts/collect-fleet-feed.ts,
+ * which attributes sessions to pools by door provider — the Claude Pro
+ * pool is burned exclusively through the `claude-code` provider (there
+ * is no `anthropic` provider in the deployed config), so disabling
+ * `claude-code` must filter `anthropic:claude-pro`. Every other pool's
+ * door is its prefix.
+ */
+const POOL_DOOR_PROVIDER_IDS: Record<string, string> = {
+  "anthropic:claude-pro": "claude-code",
+};
+
+/**
+ * The opencode provider id whose disablement filters a pool: the pool's
+ * door provider ("openai" in "openai:codex"; "claude-code" for
+ * "anthropic:claude-pro").
+ */
 export function poolProviderId(poolId: string): string {
-  return poolId.split(":")[0];
+  return POOL_DOOR_PROVIDER_IDS[poolId] ?? poolId.split(":")[0];
 }
 
 /**
@@ -357,8 +374,10 @@ export function poolProviderId(poolId: string): string {
  * disabled_providers set is filtered out HERE, at pool assembly — never
  * at render time — so quota.json and the guidance derived from these
  * pools can never name a disabled provider. Matching is exact provider-id
- * equality: "openai" is not "openai-codex", "opendesign" is not
- * "open-design", "opencode-go" is not "opencode". A filtered pool is
+ * equality against the pool's DOOR provider (poolProviderId): "openai" is
+ * not "openai-codex", "opendesign" is not "open-design", "opencode-go" is
+ * not "opencode" — and "anthropic:claude-pro" answers to "claude-code",
+ * its only door. A filtered pool is
  * reported through onFiltered (visibly noted, never silently dropped).
  */
 export function extractQuotaPools(
