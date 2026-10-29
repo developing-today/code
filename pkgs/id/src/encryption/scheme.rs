@@ -174,7 +174,9 @@ pub enum SchemeError {
     /// The held set is at a cap, so a message this device cannot read yet is refused instead
     /// of held (#186). The check runs before any crate call, so the session is not poisoned,
     /// and no held message is dropped to make room: the refusal is of the new arrival only.
-    #[error("the session already holds {count} unreadable messages ({bytes} encoded bytes), and one more would pass the cap of {cap_count} messages or {cap_bytes} bytes, so it is refused")]
+    #[error(
+        "the session already holds {count} unreadable messages ({bytes} encoded bytes), and one more would pass the cap of {cap_count} messages or {cap_bytes} bytes, so it is refused"
+    )]
     HeldFull {
         /// The messages the session already holds.
         count: usize,
@@ -228,8 +230,10 @@ pub struct Session {
     /// crate until their group secret arrives (P4.5). The set is bounded by
     /// [`MAX_HELD_MESSAGES`] and [`MAX_HELD_BYTES`] (#186), enforced by refusing NEW arrivals
     /// at the cap - a held message is never evicted or expired in-session, and leaves only
-    /// through `release`, when its secret arrives.
-    held: Vec<Envelope>,
+    /// through `release`, when its secret arrives. Each entry carries the message's
+    /// CBOR-encoded length, recorded when it was held, so the byte total below is kept
+    /// without ever re-encoding the set.
+    held: Vec<(Envelope, usize)>,
     /// The held messages' total CBOR-encoded length, kept as they are held and released so
     /// the byte cap is checked without re-encoding the set per arrival.
     held_bytes: usize,
@@ -429,7 +433,7 @@ impl Session {
         self.check_scheme(message)?;
         let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
         if !Self::can_read(y, message) {
-            if self.held.iter().any(|held| held.id() == message.id()) {
+            if self.held.iter().any(|(held, _)| held.id() == message.id()) {
                 return Ok(vec![Received::Withheld(message.id())]);
             }
             // The bound is checked here, before the push and before any crate call, so a
@@ -443,7 +447,7 @@ impl Session {
                     cap_bytes: MAX_HELD_BYTES,
                 });
             }
-            self.held.push(message.clone());
+            self.held.push((message.clone(), bytes));
             self.held_bytes += bytes;
             return Ok(vec![Received::Withheld(message.id())]);
         }
@@ -457,7 +461,7 @@ impl Session {
     pub fn request_history(&self) -> Option<HistoryRequest> {
         let y = self.state.as_ref()?;
         let mut wanted = BTreeSet::new();
-        for message in &self.held {
+        for (message, _) in &self.held {
             if let GroupMessageContent::Application {
                 group_secret_id, ..
             } = message.content()
@@ -575,22 +579,19 @@ impl Session {
     /// Gives the crate each held message whose secret the device now holds, in arrival order.
     fn release(&mut self) -> Result<Vec<Received>, SchemeError> {
         let held = std::mem::take(&mut self.held);
-        let (ready, waiting): (Vec<Envelope>, Vec<Envelope>) = match self.state.as_ref() {
-            Some(y) => held
-                .into_iter()
-                .partition(|message| Self::can_read(y, message)),
-            None => (Vec::new(), held),
-        };
+        let (ready, waiting): (Vec<(Envelope, usize)>, Vec<(Envelope, usize)>) =
+            match self.state.as_ref() {
+                Some(y) => held
+                    .into_iter()
+                    .partition(|(message, _)| Self::can_read(y, message)),
+                None => (Vec::new(), held),
+            };
+        // The byte total is re-summed from the encoded lengths recorded when the waiting
+        // messages were held - the waiting set itself is never re-encoded (#186).
+        self.held_bytes = waiting.iter().map(|(_, bytes)| bytes).sum();
         self.held = waiting;
-        self.held_bytes = self
-            .held
-            .iter()
-            .map(held_len)
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .sum();
         let mut read = Vec::new();
-        for message in &ready {
+        for (message, _) in &ready {
             read.extend(self.receive(message)?);
         }
         Ok(read)

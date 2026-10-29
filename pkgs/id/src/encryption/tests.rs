@@ -2345,8 +2345,11 @@ fn test_held_messages_are_refused_past_the_count_cap() {
 fn test_held_messages_are_refused_past_the_byte_cap() {
     let mut cast = removed_member_cast();
     let rng = Rng::default();
-    // One message over half the byte cap: two of them cannot both be held.
-    let big = vec![7_u8; 9 * 1024 * 1024];
+    // One message over half the byte cap: two of them cannot both be held. The
+    // plaintext is 6 MiB, but the ciphertext is a plain `Vec<u8>` (no `serde_bytes`),
+    // so CBOR encodes it as an integer array at ~1.9 bytes per byte - roughly
+    // 12 MiB encoded: over half the 16 MiB cap, under the cap itself.
+    let big = vec![7_u8; 6 * 1024 * 1024];
     let first = cast.session_mut(1).send(&big, &rng).expect("send");
     assert_eq!(
         cast.session_mut(3).process(&first).expect("process"),
@@ -2381,7 +2384,7 @@ fn test_held_messages_are_refused_past_the_byte_cap() {
 fn test_a_release_frees_the_held_budget_and_the_session_is_not_poisoned() {
     let mut cast = removed_member_cast();
     let rng = Rng::default();
-    let big = vec![9_u8; 9 * 1024 * 1024];
+    let big = vec![9_u8; 6 * 1024 * 1024];
     let held = cast.session_mut(1).send(&big, &rng).expect("send");
     assert_eq!(
         cast.session_mut(3).process(&held).expect("process"),
