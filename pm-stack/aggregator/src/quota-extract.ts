@@ -345,10 +345,34 @@ const SHELL_POOLS: QuotaPool[] = [
   },
 ];
 
-/** Extract every pool's freshest dated read from the quota view text. */
-export function extractQuotaPools(quotaViewText: string, now = new Date()): QuotaPool[] {
+/** The opencode provider id a pool id belongs to ("openai" in "openai:codex"). */
+export function poolProviderId(poolId: string): string {
+  return poolId.split(":")[0];
+}
+
+/**
+ * Extract every pool's freshest dated read from the quota view text.
+ *
+ * #1114: a pool whose provider id is in the deployed opencode config's
+ * disabled_providers set is filtered out HERE, at pool assembly — never
+ * at render time — so quota.json and the guidance derived from these
+ * pools can never name a disabled provider. Matching is exact provider-id
+ * equality: "openai" is not "openai-codex", "opendesign" is not
+ * "open-design", "opencode-go" is not "opencode". A filtered pool is
+ * reported through onFiltered (visibly noted, never silently dropped).
+ */
+export function extractQuotaPools(
+  quotaViewText: string,
+  now = new Date(),
+  disabledProviderIds: ReadonlySet<string> = new Set(),
+  onFiltered?: (poolId: string, providerId: string) => void,
+): QuotaPool[] {
   const pools: QuotaPool[] = [];
   for (const spec of POOL_SPECS) {
+    if (disabledProviderIds.has(poolProviderId(spec.id))) {
+      onFiltered?.(spec.id, poolProviderId(spec.id));
+      continue;
+    }
     const section = sectionOf(quotaViewText, spec.heading);
     let raw: Raw | null = null;
     try {
@@ -383,5 +407,10 @@ export function extractQuotaPools(quotaViewText: string, now = new Date()): Quot
     }
     pools.push(pool);
   }
-  return [...pools, ...SHELL_POOLS.map((p) => ({ ...p }))];
+  const shells = SHELL_POOLS.filter((p) => {
+    if (!disabledProviderIds.has(poolProviderId(p.id))) return true;
+    onFiltered?.(p.id, poolProviderId(p.id));
+    return false;
+  });
+  return [...pools, ...shells.map((p) => ({ ...p }))];
 }

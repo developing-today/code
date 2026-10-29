@@ -772,6 +772,32 @@ function catalogRates(prices: AaPrice[]): Map<string, CatalogRate> {
   return out;
 }
 
+/** The disabled_providers set of a parsed opencode config root. */
+function disabledProvidersFromRoot(root: { disabled_providers?: unknown }): Set<string> {
+  return new Set(
+    Array.isArray(root.disabled_providers)
+      ? root.disabled_providers.filter((d): d is string => typeof d === "string")
+      : [],
+  );
+}
+
+/**
+ * The deployed opencode config's disabled_providers set, parsed with the
+ * same JSONC handling as the AA catalog (#1114). An unparseable config
+ * yields an empty set — callers fail soft and keep every pool, exactly as
+ * the catalog does when the config cannot be read.
+ */
+export function disabledProvidersFromConfig(text: string): Set<string> {
+  let cfg: unknown;
+  try {
+    cfg = JSON.parse(stripJsonComments(text));
+  } catch {
+    return new Set();
+  }
+  if (typeof cfg !== "object" || cfg === null) return new Set();
+  return disabledProvidersFromRoot(cfg as { disabled_providers?: unknown });
+}
+
 export function aaCatalogFromConfig(
   text: string,
   measured: { configs: AaConfig[]; rankings: AaRanking[] },
@@ -790,11 +816,7 @@ export function aaCatalogFromConfig(
     experimental?: { model_routes?: unknown };
   };
   if (typeof root.provider !== "object" || root.provider === null) return null;
-  const disabled = new Set(
-    Array.isArray(root.disabled_providers)
-      ? root.disabled_providers.filter((d): d is string => typeof d === "string")
-      : [],
-  );
+  const disabled = disabledProvidersFromRoot(root);
   const leafSets = routeLeafSets(root);
   const rates = prices ? catalogRates(prices) : null;
   const routesByLeaf = new Map<string, string[]>();
