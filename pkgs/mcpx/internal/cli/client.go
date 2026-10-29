@@ -151,6 +151,28 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 		}
 		return c
 	}
+	// A tsnet:// endpoint names a daemon by tailnet identity (#1967). The
+	// client joins the tailnet as an ephemeral node to dial it; there is
+	// no address to fall back to, and the dialer says so when it cannot
+	// join (no TS_AUTHKEY) instead of retrying the name as plain TCP.
+	if host, port, isTSNet, perr := daemon.ParseTSNetEndpoint(c.endpoint); isTSNet {
+		dialer := daemon.NewTSNetDialer("mcpx-client")
+		dial := dialer.DialContext
+		if perr != nil {
+			dial = func(context.Context, string, string) (net.Conn, error) { return nil, perr }
+		}
+		c.endpoint = "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+		c.hc = &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				DialContext:         dial,
+				MaxIdleConns:        set.Int("http.remoteIdleConns"),
+				MaxIdleConnsPerHost: set.Int("http.remoteIdleConns"),
+				IdleConnTimeout:     idle,
+			},
+		}
+		return c
+	}
 	c.hc = &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{

@@ -77,6 +77,10 @@ type Server struct {
 	// daemon's only accept path, so a handover can see every connection.
 	tcpLn  net.Listener
 	unixLn net.Listener
+	// tsnetLn is set only when daemon.tsnet.hostname names a tailnet
+	// identity for this daemon (#1967); nil on every daemon that did not
+	// ask for one.
+	tsnetLn net.Listener
 	// conns tracks every connection the HTTP server holds, for a handover.
 	conns    connTracker
 	endpoint string
@@ -249,18 +253,33 @@ func (s *Server) Registry() *Registry { return s.reg }
 // Endpoint is the loopback base URL once Listen has run.
 func (s *Server) Endpoint() string { return s.endpoint }
 
+// TSNetStatus reports this daemon's tailnet identity and, per peer,
+// whether traffic is direct or relayed. ok is false on a daemon with no
+// tsnet listener.
+func (s *Server) TSNetStatus(ctx context.Context) (status TSNetStatus, ok bool, err error) {
+	cl, isConn := s.tsnetLn.(*connListener)
+	if !isConn || cl == nil {
+		return TSNetStatus{}, false, nil
+	}
+	tl, isTSNet := cl.inner.(*tsnetListener)
+	if !isTSNet {
+		return TSNetStatus{}, false, nil
+	}
+	status, err = tl.Status(ctx)
+	if err != nil {
+		return TSNetStatus{}, true, err
+	}
+	return status, true, nil
+}
+
 // Listen binds both listeners and publishes the daemon record.
 func (s *Server) Listen(tcpPort int) error {
 	// A stale socket from a crashed daemon must not block a fresh one.
 	if err := s.clearStaleSocket(); err != nil {
 		return err
 	}
-	unixLn, err := net.Listen("unix", s.paths.Socket)
+	unixLn, err := unixTransport{socket: s.paths.Socket}.Listen()
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", s.paths.Socket, err)
-	}
-	if err := os.Chmod(s.paths.Socket, defaults.PrivateMode); err != nil {
-		unixLn.Close()
 		return err
 	}
 	// Loopback unless told otherwise. Binding wider is a deliberate act:
@@ -270,13 +289,31 @@ func (s *Server) Listen(tcpPort int) error {
 	if host == "" {
 		host = s.set.String("daemon.address")
 	}
-	tcpLn, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(tcpPort)))
+	tcpLn, err := tcpTransport{address: net.JoinHostPort(host, strconv.Itoa(tcpPort))}.Listen()
 	if err != nil {
 		unixLn.Close()
-		return fmt.Errorf("listen tcp: %w", err)
+		return err
 	}
 	s.unixLn = newConnListener(unixLn, &s.conns, nil)
 	s.tcpLn = newConnListener(tcpLn, &s.conns, nil)
+	// An identity listener, when one is named: the same API on the
+	// daemon's tailnet, reachable by name from another network. A
+	// failure here is fatal to Listen — a daemon that was asked for a
+	// tsnet route and silently does not have one would be found out by
+	// the first remote caller, not by its operator.
+	if hostname := s.set.String("daemon.tsnet.hostname"); hostname != "" {
+		tsLn, err := tsnetTransport{
+			hostname: hostname,
+			stateDir: filepath.Join(s.paths.State, "tsnet"),
+			authKey:  envTSNetAuthKey(),
+		}.Listen()
+		if err != nil {
+			unixLn.Close()
+			tcpLn.Close()
+			return err
+		}
+		s.tsnetLn = newConnListener(tsLn, &s.conns, nil)
+	}
 	s.endpoint = "http://" + tcpLn.Addr().String()
 	s.started = time.Now()
 	return s.publish()
@@ -310,7 +347,11 @@ func (s *Server) startHTTP() {
 		ConnState:         s.observeConn,
 	}
 	s.httpSrv = srv
-	for _, ln := range []net.Listener{s.unixLn, s.tcpLn} {
+	listeners := []net.Listener{s.unixLn, s.tcpLn}
+	if s.tsnetLn != nil {
+		listeners = append(listeners, s.tsnetLn)
+	}
+	for _, ln := range listeners {
 		s.httpServing.Add(1)
 		go func() {
 			err := srv.Serve(ln)
