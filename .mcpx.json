@@ -1,6 +1,17 @@
 {
   "$schema": "https://raw.githubusercontent.com/dezren39/mcpx/main/schema/mcpx.schema.json",
   "mcpServers": {
+    "codex-connectors": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@wileai/codex-connectors-mcp@0.1.1"
+      ],
+      "env": {
+        "CODEX_CONNECTORS_ALLOW": "Airtable, ChatGPT Space, Codex Document Control, Context.dev, Context7, DigitalOcean, Dropbox, Engram, Exa, Firecrawl, GitHub, Gmail, Google Calendar, Google Drive, HAPI MCP Registry, Hotline, Lovable, Neon, OpenAI Platform, Parallel Search, Pets, Plugin Management, Railway, Remote Desktop Commander, Replit, Safety Settings, Search Service, Sites, Slack, Sprites, Stack Overflow For Agents, Supabase, tldraw, Todoist: To Do List & Calendar, Vercel, Walmart, Wolfram",
+        "CODEX_CONNECTORS_MODE": "compact"
+      }
+    },
     "codedb": {
       "command": "/home/user/bin/codedb",
       "args": [
