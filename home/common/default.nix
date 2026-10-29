@@ -796,6 +796,12 @@ in
       }
       {
         name = "opencode-route-proxy";
+        # swap, not the supervisor default "ab": OpenClaw's provider
+        # base URL is the literal canonical port (18750) and nothing
+        # consumes the endpoint record to follow an ab roll to 19750,
+        # so the door would strand. swap validates the new build on
+        # the alternate port, then restarts it on the canonical port.
+        strategy = "swap";
         canonicalPort = opencodeRouteProxyPort;
         portEnv = "OPENCODE_ROUTE_PROXY_PORT";
         command = [
