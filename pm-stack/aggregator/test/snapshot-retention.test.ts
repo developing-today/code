@@ -171,3 +171,111 @@ describe("SnapshotStore.compact", () => {
     }
   });
 });
+
+describe("Codex review regressions (PR #2379)", () => {
+  test("append stays deduped after compaction: replaying a batch appends nothing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-retention-"));
+    try {
+      const store = new SnapshotStore(dir);
+      const batch = [1, 2, 3, 4].map((v, i) =>
+        rec(`2025-06-0${i + 2}T12:00:00Z`, "svc-a", "weekly", v),
+      );
+      expect(await store.append(batch)).toBe(4);
+      await store.compact({ now: NOW });
+      // The batch's non-extreme observations (2, 3) are no longer in
+      // the expanded history — only the rollup keys remember them.
+      expect(await store.append(batch)).toBe(0);
+      expect((await readdir(dir)).filter((n) => n === "usage-2025-06.jsonl")).toEqual([]);
+      expect((await store.rollupKeys()).length).toBe(4);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("late records merge quota metadata on its own clock, matching one-pass compaction", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-retention-"));
+    const dir2 = await mkdtemp(join(tmpdir(), "snap-retention-"));
+    try {
+      const late = rec("2025-06-20T12:00:00Z", "svc-a", "weekly", 10);
+      const early = rec("2025-06-02T12:00:00Z", "svc-a", "weekly", 40, {
+        limit: 100,
+        resetsAt: "2025-06-08T00:00:00Z",
+      });
+      // Incremental: compact the late record first, then merge the early one.
+      const inc = new SnapshotStore(dir);
+      await inc.append([late]);
+      await inc.compact({ now: NOW });
+      await inc.append([early]);
+      await inc.compact({ now: NOW });
+      // One-pass: both records compacted together.
+      const one = new SnapshotStore(dir2);
+      await one.append([late, early]);
+      await one.compact({ now: NOW });
+      const incRollups = await readFile(join(dir, rollupFileFor("2025-06")), "utf8");
+      const oneRollups = await readFile(join(dir2, rollupFileFor("2025-06")), "utf8");
+      expect(JSON.parse(incRollups)).toEqual(JSON.parse(oneRollups));
+      const last = (await inc.readAll()).at(-1);
+      expect(last?.resetsAt).toBe("2025-06-08T00:00:00Z");
+      expect(last?.limit).toBe(100);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+      await rm(dir2, { recursive: true, force: true });
+    }
+  });
+
+  test("a malformed rollup line (missing timestamps) never poisons readAll", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-retention-"));
+    try {
+      await writeFile(
+        join(dir, rollupFileFor("2025-06")),
+        JSON.stringify({
+          kind: "snapshot-rollup/v1",
+          month: "2025-06",
+          serviceId: "svc-a",
+          metricId: "weekly",
+          unit: "pct",
+          source: "api",
+          count: 3,
+          valueMin: 1,
+          valueMax: 1,
+          valueLast: 1,
+        }) + "\n",
+      );
+      await writeFile(
+        join(dir, "usage-2026-10.jsonl"),
+        JSON.stringify(rec("2026-10-05T12:00:00Z", "svc-a", "weekly", 12)) + "\n",
+      );
+      const all = await new SnapshotStore(dir).readAll();
+      expect(all).toHaveLength(1);
+      expect(all[0].value).toBe(12);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("concurrent append + compact lose no observations", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-retention-"));
+    try {
+      const a = new SnapshotStore(dir);
+      const b = new SnapshotStore(dir);
+      const batches = Array.from({ length: 6 }, (_, i) => [
+        rec(`2025-06-1${i}T12:00:00Z`, "svc-a", "weekly", i + 1),
+      ]);
+      await Promise.all([
+        (async () => {
+          for (const batch of batches) await a.append(batch);
+        })(),
+        (async () => {
+          for (let i = 0; i < 6; i++) await b.compact({ now: NOW });
+        })(),
+      ]);
+      await b.compact({ now: NOW });
+      // Every appended observation is durably remembered exactly once.
+      expect((await b.rollupKeys()).length).toBe(6);
+      const rollupText = await readFile(join(dir, rollupFileFor("2025-06")), "utf8");
+      expect(JSON.parse(rollupText).count).toBe(6);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

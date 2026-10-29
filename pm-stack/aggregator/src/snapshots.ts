@@ -16,7 +16,7 @@
 // backfill runs later. Estimates are stored as a low/high pair with
 // unit "usd-est"; the 1.2×high counting rule applies at render, never
 // baked into history.
-import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SnapshotRecord, UsageSourceClass } from "./model.ts";
 
@@ -56,7 +56,15 @@ export interface SnapshotRollup {
   maxTs: string;
   valueLast: SnapshotRecord["value"];
   resetsAt?: string | null;
+  /** Timestamp of the observation `resetsAt` came from (metadata is
+   * merged on its own clock, independently of the last value). */
+  resetsAtTs?: string;
   limit?: number | null;
+  /** Timestamp of the observation `limit` came from. */
+  limitTs?: string;
+  /** Dedupe keys (snapshotKey form) of every compacted observation,
+   * so SnapshotStore.append stays safe to re-run after compaction. */
+  keys: string[];
 }
 
 function rollupOrderKey(v: SnapshotRecord["value"]): [number, number] {
@@ -80,6 +88,11 @@ export function isSnapshotRollup(v: unknown): v is SnapshotRollup {
   if (typeof r.unit !== "string" || !UNITS.has(r.unit)) return false;
   if (typeof r.source !== "string" || !SOURCES.has(r.source)) return false;
   if (typeof r.count !== "number" || !(r.count >= 1)) return false;
+  if (typeof r.observedBy !== "string" || r.observedBy === "") return false;
+  for (const f of [r.firstTs, r.lastTs, r.minTs, r.maxTs]) {
+    if (typeof f !== "string" || Number.isNaN(Date.parse(f))) return false;
+  }
+  if (r.keys !== undefined && (!Array.isArray(r.keys) || r.keys.some((k) => typeof k !== "string"))) return false;
   const val = (x: unknown): boolean =>
     (typeof x === "number" && Number.isFinite(x)) ||
     (typeof x === "object" &&
@@ -91,10 +104,12 @@ export function isSnapshotRollup(v: unknown): v is SnapshotRollup {
 
 interface RollupAgg {
   rollup: SnapshotRollup;
+  keys: Set<string>;
 }
 
 function aggFromRecord(month: string, r: SnapshotRecord): RollupAgg {
   return {
+    keys: new Set([snapshotKey(r)]),
     rollup: {
       kind: "snapshot-rollup/v1",
       month,
@@ -111,18 +126,25 @@ function aggFromRecord(month: string, r: SnapshotRecord): RollupAgg {
       valueMax: r.value,
       maxTs: r.ts,
       valueLast: r.value,
-      ...(r.resetsAt !== undefined ? { resetsAt: r.resetsAt } : {}),
-      ...(r.limit !== undefined ? { limit: r.limit } : {}),
+      keys: [],
+      ...(r.resetsAt != null ? { resetsAt: r.resetsAt, resetsAtTs: r.ts } : {}),
+      ...(r.limit != null ? { limit: r.limit, limitTs: r.ts } : {}),
     },
   };
 }
 
 function aggFromRollup(r: SnapshotRollup): RollupAgg {
-  return { rollup: { ...r } };
+  const rollup = { ...r };
+  // Rollups written before the metadata clocks existed: their
+  // metadata came from the last observation by construction.
+  if (rollup.resetsAt != null && rollup.resetsAtTs === undefined) rollup.resetsAtTs = rollup.lastTs;
+  if (rollup.limit != null && rollup.limitTs === undefined) rollup.limitTs = rollup.lastTs;
+  return { rollup, keys: new Set(r.keys ?? []) };
 }
 
 function aggAddRecord(agg: RollupAgg, r: SnapshotRecord): void {
   const o = agg.rollup;
+  agg.keys.add(snapshotKey(r));
   o.count += 1;
   if (r.ts < o.firstTs) o.firstTs = r.ts;
   if (cmpValue(r.value, o.valueMin) < 0) {
@@ -137,8 +159,18 @@ function aggAddRecord(agg: RollupAgg, r: SnapshotRecord): void {
     o.lastTs = r.ts;
     o.valueLast = r.value;
     o.observedBy = r.observedBy;
-    if (r.resetsAt != null) o.resetsAt = r.resetsAt;
-    if (r.limit !== undefined) o.limit = r.limit;
+  }
+  // Quota metadata merges on its own clock: a late record that
+  // predates lastTs still contributes its resetsAt/limit when it is
+  // the freshest observation carrying them, exactly as a one-pass
+  // compaction of the whole month would.
+  if (r.resetsAt != null && r.ts >= (o.resetsAtTs ?? "")) {
+    o.resetsAt = r.resetsAt;
+    o.resetsAtTs = r.ts;
+  }
+  if (r.limit != null && r.ts >= (o.limitTs ?? "")) {
+    o.limit = r.limit;
+    o.limitTs = r.ts;
   }
 }
 
@@ -171,7 +203,7 @@ export function compactRecordsToRollups(
     else aggs.set(k, aggFromRecord(month, r));
   }
   return [...aggs.values()]
-    .map((a) => a.rollup)
+    .map((a) => ({ ...a.rollup, keys: [...a.keys].sort() }))
     .sort((a, b) =>
       rollupGroupKey(a.serviceId, a.metricId, a.unit, a.source).localeCompare(
         rollupGroupKey(b.serviceId, b.metricId, b.unit, b.source),
@@ -278,6 +310,49 @@ export function snapshotKey(r: SnapshotRecord): string {
   return `${r.serviceId}|${r.metricId}|${r.ts}|${v}`;
 }
 
+const LOCK_STALE_MS = 120_000;
+const LOCK_TIMEOUT_MS = 30_000;
+
+/**
+ * Serialize store mutations (append, compact) across processes with
+ * a lockfile in the store dir: compaction's read/publish/delete
+ * sequence must never overlap an append to the same month, or the
+ * appended records would be deleted without entering the rollup.
+ * A lock older than LOCK_STALE_MS is treated as abandoned (its
+ * holder died) and stolen; failing to acquire within
+ * LOCK_TIMEOUT_MS is an error, never a silent unlocked write.
+ */
+export async function withSnapshotStoreLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  await mkdir(dir, { recursive: true });
+  const lockPath = join(dir, ".snapshots.lock");
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      await writeFile(lockPath, token, { flag: "wx" });
+      break;
+    } catch {
+      try {
+        const st = await stat(lockPath);
+        if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+          await rm(lockPath, { force: true });
+          continue;
+        }
+      } catch {
+        continue; // lock vanished between attempts — retry at once
+      }
+      if (Date.now() > deadline) throw new Error(`snapshot store lock timeout: ${lockPath}`);
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    const cur = await readFile(lockPath, "utf8").catch(() => "");
+    if (cur === token) await rm(lockPath, { force: true });
+  }
+}
+
 export class SnapshotStore {
   constructor(private readonly dir: string) {}
 
@@ -324,15 +399,47 @@ export class SnapshotStore {
     return grouped;
   }
 
+  /** Dedupe keys of every observation already compacted into rollups. */
+  async rollupKeys(): Promise<string[]> {
+    let names: string[];
+    try {
+      names = (await readdir(this.dir)).filter((n) => ROLLUP_RE.test(n)).sort();
+    } catch {
+      return [];
+    }
+    const out: string[] = [];
+    for (const name of names) {
+      const text = await readFile(join(this.dir, name), "utf8").catch(() => "");
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const parsed: unknown = JSON.parse(line);
+          if (isSnapshotRollup(parsed)) out.push(...(parsed.keys ?? []));
+        } catch {
+          // one bad line never poisons the store
+        }
+      }
+    }
+    return out;
+  }
+
   /**
    * Append records, skipping any already present (same dedupe key), so
    * writers and the backfill are safe to re-run. Returns how many were
    * actually appended. Records land in their own month's file.
+   * Dedupe consults rollup keys too: observations compacted out of
+   * the raw files stay known, so replaying a historical batch after
+   * compaction appends nothing.
    */
   async append(records: SnapshotRecord[]): Promise<number> {
+    return withSnapshotStoreLock(this.dir, () => this.appendLocked(records));
+  }
+
+  private async appendLocked(records: SnapshotRecord[]): Promise<number> {
     const valid = records.filter(isSnapshotRecord);
     if (!valid.length) return 0;
     const seen = new Set((await this.readAll()).map(snapshotKey));
+    for (const k of await this.rollupKeys()) seen.add(k);
     const fresh = valid.filter((r) => {
       const k = snapshotKey(r);
       if (seen.has(k)) return false; // stored already, or earlier in this batch
@@ -363,6 +470,11 @@ export class SnapshotStore {
    * is computed and nothing on disk changes.
    */
   async compact(opts: { now?: Date; retentionMonths?: number; dryRun?: boolean } = {}): Promise<CompactionReport> {
+    if (opts.dryRun) return this.compactInner(opts);
+    return withSnapshotStoreLock(this.dir, () => this.compactInner(opts));
+  }
+
+  private async compactInner(opts: { now?: Date; retentionMonths?: number; dryRun?: boolean }): Promise<CompactionReport> {
     const now = opts.now ?? new Date();
     const retentionMonths = opts.retentionMonths ?? 13;
     const dryRun = opts.dryRun ?? false;
