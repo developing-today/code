@@ -35,13 +35,13 @@ so a silent no-op can never be recorded as success.
 Checked 2026-10-29 against
 [Rate limits for the REST API](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
 
-| Limit                          | Value                                                     |
-| ------------------------------ | --------------------------------------------------------- |
-| Content creation per minute    | ~80 content-generating requests                            |
-| Content creation per hour      | ~500 content-generating requests                           |
-| Concurrent requests            | 100 (shared across REST and GraphQL)                       |
-| Points per endpoint per minute | 900 REST; 2 000 GraphQL                                    |
-| CPU time                       | 90 s per 60 s wall clock (≤ 60 s of it GraphQL)            |
+| Limit                          | Value                                           |
+| ------------------------------ | ----------------------------------------------- |
+| Content creation per minute    | ~80 content-generating requests                 |
+| Content creation per hour      | ~500 content-generating requests                |
+| Concurrent requests            | 100 (shared across REST and GraphQL)            |
+| Points per endpoint per minute | 900 REST; 2 000 GraphQL                         |
+| CPU time                       | 90 s per 60 s wall clock (≤ 60 s of it GraphQL) |
 
 Facts that matter for the design, all from that page:
 
@@ -64,12 +64,12 @@ Source: GitHub API. Issues and PRs from
 `repos/developing-today/code/issues/comments`, bucketed by `created_at`
 on the laptop on 2026-10-29.
 
-| Day (UTC)   | Issues + PRs | Comments | Total events |
-| ----------- | ------------ | -------- | ------------ |
-| 2026-10-26  | 107          | not pulled¹ | —         |
-| 2026-10-27  | 494          | 1 363    | 1 857        |
-| 2026-10-28  | 479          | 2 437    | 2 916        |
-| 2026-10-29² | 217          | 1 325    | 1 542        |
+| Day (UTC)   | Issues + PRs | Comments    | Total events |
+| ----------- | ------------ | ----------- | ------------ |
+| 2026-10-26  | 107          | not pulled¹ | —            |
+| 2026-10-27  | 494          | 1 363       | 1 857        |
+| 2026-10-28  | 479          | 2 437       | 2 916        |
+| 2026-10-29² | 217          | 1 325       | 1 542        |
 
 ¹ The comment pull used `since=2026-10-27T00:00:00Z` (5 129 comments),
 so 26 October has no comment census.
@@ -77,14 +77,14 @@ so 26 October has no comment census.
 
 Peak windows:
 
-| Window                | Events | Composition                     |
-| --------------------- | ------ | ------------------------------- |
-| 2026-10-28 22:00Z hour| 511    | 359 comments + 152 issues/PRs   |
-| 2026-10-27 03:00Z hour| 367    | —                                |
-| 2026-10-29 01:00Z hour| 252    | the batch-2 program filing      |
-| 2026-10-29 01:00Z min | 39     | highest minute                  |
-| 2026-10-27 03:44Z min | 36     | —                                |
-| Ten-minute stretches | 144, 129, 95, 95, 88, 84 | all under the 80/min ceiling |
+| Window                 | Events                   | Composition                   |
+| ---------------------- | ------------------------ | ----------------------------- |
+| 2026-10-28 22:00Z hour | 511                      | 359 comments + 152 issues/PRs |
+| 2026-10-27 03:00Z hour | 367                      | —                             |
+| 2026-10-29 01:00Z hour | 252                      | the batch-2 program filing    |
+| 2026-10-29 01:00Z min  | 39                       | highest minute                |
+| 2026-10-27 03:44Z min  | 36                       | —                             |
+| Ten-minute stretches   | 144, 129, 95, 95, 88, 84 | all under the 80/min ceiling  |
 
 The 22:00Z hour sits at the documented 500/hour ceiling for this one
 repository. `openchamber`, `opencode` and `nix` added roughly 288 more
@@ -169,14 +169,14 @@ res = throttle.create_issue(title, body, labels)        # gh call + verify
 Throttle parameters, chosen at ~60 % of the documented ceiling to leave
 room for interactive and web-UI use:
 
-| Control                     | Value                                   |
-| --------------------------- | --------------------------------------- |
-| Account-wide sustained      | 45 creations/minute, 300/hour           |
-| Minimum spacing per POST    | 1 s (documented best practice)          |
-| In-flight content calls     | ≤ 8 (documented concurrency ceiling 100)|
-| Per-lane share              | 50/hour sustained, reclaimable when idle|
-| Breakage reserve            | 75/hour held for priority-10 work only  |
-| Bulk program batch          | ≤ 20 issues per 30-minute window        |
+| Control                  | Value                                    |
+| ------------------------ | ---------------------------------------- |
+| Account-wide sustained   | 45 creations/minute, 300/hour            |
+| Minimum spacing per POST | 1 s (documented best practice)           |
+| In-flight content calls  | ≤ 8 (documented concurrency ceiling 100) |
+| Per-lane share           | 50/hour sustained, reclaimable when idle |
+| Breakage reserve         | 75/hour held for priority-10 work only   |
+| Bulk program batch       | ≤ 20 issues per 30-minute window         |
 
 Fairness: lanes reserve against their own hourly share first; unused
 share returns to a common pool at the next minute boundary, so an idle
@@ -220,7 +220,7 @@ the reserve and preempts batches, never interactive work.
   with this file as its spec.
 - Rollout: ledger + verify-by-read first (they are additive and fix the
   silent-success bug), then the throttle in warn-only mode (log what it
-  *would* have delayed for a week), then enforcing.
+  _would_ have delayed for a week), then enforcing.
 - Success measure: no 403 on creation for 14 days, and the per-hour
   account total staying under 300 while queue throughput is unchanged.
 
