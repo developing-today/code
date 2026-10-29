@@ -54,6 +54,7 @@ concurrency:
 
 jobs:
   workflow-contract:
+    name: "basic: workflow-contract (${{ matrix.python-version }})"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:

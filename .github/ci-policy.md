@@ -8,6 +8,32 @@ Every workflow touched by the tier redesign carries the header
 comment `CI tier policy: see .github/ci-policy.md`. Tuning the tiers
 means editing THIS table by PR — never ad-hoc pipeline changes.
 
+## Merge requirement
+
+**Merge requirement: the basic-validation (PR) tier only. The full
+suite runs on main and is NOT a merge gate.**
+
+In this repo the PR tier is named **basic**: job display names in
+the check list carry the tier — PR-tier jobs are prefixed
+`basic: ` (`basic: treefmt check`, `basic: spec parity`,
+`basic: nix flake check (<check>)`, `basic: go build`, ...), and
+jobs that run only on main/nightly are prefixed
+`full (main tier): `. One deliberate exception: the `id`
+workflow's aggregator job keeps its historical status name
+`nix flake check` — the required status context branch protection
+has always used — while the matrix jobs under it carry the tier
+prefix (the same exception opencode made for its branch-required
+aggregator).
+
+Workflow names (`nix ci`, `id`, `mcpx`, `mcpx conformance`,
+`mcpx nix build`, `go modules build`, `identity build`,
+`map build`, `id bench`) are deliberately NOT renamed:
+`main-broken.yml` (the Phase 3 watcher) and `jules.yml` reference
+them by name in their `workflow_run` triggers. If branch rules
+ever require checks by name, require the `basic`-prefixed names
+(plus `nix flake check` for `id`) — full main-tier jobs must
+never become merge requirements.
+
 ## Change classes (§3.3 of the design)
 
 | class | trigger paths (examples) | PR tier |
@@ -57,5 +83,17 @@ push-to-main, by `github.ref` otherwise, `cancel-in-progress: true`
 — PR/branch runs cancel on supersede; main runs are never
 cancelled. Exceptions: `jules.yml` (load-bearing cip=false, #304)
 and scheduled singleton/deploy workflows (cip=false) are NOT
-touched. Issue-event workflows (auto-assign) use a per-issue group
-so cancel-in-progress can only supersede a run for the same issue.
+touched. Issue/PR management is NOT event-triggered: `repo-sweeper.yml`
+runs every 15 minutes (`*/15 * * * *`, one live run: group
+`repo-sweeper`, `cancel-in-progress: true` — safe because the
+sweeper is schedule/dispatch-only) and performs the management
+duties in one deterministic pass. It replaced `auto-assign.yml`
+(assign the maintainer to open issues/PRs). Kept event-based,
+deliberately: `jules.yml` — a human applies the `jules` label
+and waits for Jules to start, and its `workflow_run` leg is
+the ci-failure-fix remediation chain (#304); a synchronous
+human-initiated handoff, not management bookkeeping. Never
+pair `queue: max` with a cancel-in-progress expression that
+can evaluate true for `issues`/`pull_request_target` events
+(a GitHub validation error, openchamber#84) — the sweeper
+stays schedule-only for this reason.

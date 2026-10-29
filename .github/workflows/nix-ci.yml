@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   treefmt:
-    name: treefmt check
+    name: "basic: treefmt check"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -62,7 +62,7 @@ jobs:
           nix run .#format-check -- "${changed_files[@]}"
 
   flake-check:
-    name: Nix flake evaluation
+    name: "full (main tier): Nix flake evaluation"
     # Main tier only (Phase 2, #1781): PRs keep the treefmt/format gate above.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
