@@ -436,7 +436,10 @@ export type OrchestrationSource =
   | "claude"
   | "backlog"
   | "tracked"
-  | "github";
+  | "github"
+  /** Aggregator-synthesized watchdog items (#1148): derived live from
+   *  health/probe diagnoses, never published by the orchestrator. */
+  | "watchdog";
 
 /** A prerequisite: "blocked by X; X is being worked by session S". */
 export interface DependencyRef {

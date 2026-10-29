@@ -388,6 +388,7 @@ export function buildAttention(
   section?: OrchestrationSection | null,
   now = Date.now(),
   diagnosis?: SectionDiagnosis,
+  watchdogItems: TierItem[] = [],
 ): AttentionView {
   // The tier source's state (#1139): the caller's diagnosis when it
   // has one (the live source tracks it in Source.diagnostics()); else
@@ -438,11 +439,24 @@ export function buildAttention(
       const sid = tierItemSessionId(item);
       return !(sid && knownIds.has(sid));
     });
+  // #1148: watchdog items are aggregator-derived NEEDS ORCHESTRATOR
+  // cards, merged alongside the orchestrator-published extras. They
+  // are never session items, so they skip the extras() session
+  // filtering; dedupe is by stable watchdog id, and a published item
+  // with the same id (there cannot be one today) would win.
+  const publishedExtra = extras(section?.tiers.needsOrchestrator);
+  const publishedIds = new Set(publishedExtra.map((i) => i.id));
+  const seenWatchdog = new Set<string>();
+  const watchdogExtra = watchdogItems.filter((i) => {
+    if (publishedIds.has(i.id) || seenWatchdog.has(i.id)) return false;
+    seenWatchdog.add(i.id);
+    return true;
+  });
   return {
     drew: all.filter((e) => e.tier === "needs-drew"),
     orchestrator: all.filter((e) => e.tier === "needs-orchestrator"),
     drewExtra: extras(section?.tiers.needsDrew),
-    orchestratorExtra: extras(section?.tiers.needsOrchestrator),
+    orchestratorExtra: [...publishedExtra, ...watchdogExtra],
     all,
     expiredCount: expired.length,
     tierSource,

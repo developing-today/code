@@ -13,6 +13,7 @@ import { CommentsStore, validateNewComment } from "./comments.ts";
 import { loadConfig } from "./config.ts";
 import { loadFeed } from "./feed.ts";
 import { buildHealth, recordRender, type HealthView } from "./health.ts";
+import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { PAGES } from "./pages.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
 import type { DashComment, RefKey } from "./model.ts";
@@ -238,7 +239,27 @@ async function attentionContext() {
   // Read the diagnosis AFTER orchestration() has run: the live source
   // recomputes it on every orchestration read (#1139).
   const diagnosis = source.diagnostics?.().orchestration;
-  return { view: buildAttention(feed, summary, Date.now(), diagnosis), coverage };
+  // #1148: the watchdog derives NEEDS ORCHESTRATOR items from the
+  // current diagnoses (feed age + probes via the health assembly —
+  // its probe cache keeps this cheap — plus the orchestration
+  // diagnosis and registry facet age). Live mode only: fixtures mode
+  // has no real inputs to watch. Derived per request, never stored,
+  // so recovery clears the cards on the next render.
+  let watchdog: ReturnType<typeof watchdogTierItems> = [];
+  if (cfg.source === "live") {
+    const health = await healthContext();
+    watchdog = watchdogTierItems({
+      now: Date.now(),
+      feedAgeMs: health.feed.ageMs,
+      feedGeneratedAt: health.feed.generatedAt,
+      ...(diagnosis ? { orchestration: diagnosis } : {}),
+      ...(source.provenanceDetail ? { registryAgeMs: source.provenanceDetail().registry.ageMs } : {}),
+      probes: health.services
+        .filter((s) => WATCHDOG_PROBE_SERVICE_IDS.includes(s.def.id))
+        .map((s) => ({ id: s.def.id, name: s.def.name, ok: s.ok, detail: s.detail, ...(s.probedAt ? { probedAt: s.probedAt } : {}) })),
+    });
+  }
+  return { view: buildAttention(feed, summary, Date.now(), diagnosis, watchdog), coverage };
 }
 
 /**
