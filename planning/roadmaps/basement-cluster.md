@@ -12,7 +12,7 @@ The earlier v1.9-era Talos test cluster (the layout in [`doc/talos-addresses.md`
 | ------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------ | ----- |
 | Hardware inventory and first-node selection | planned | Gather hardware stats for all ~12 machines and pick the first 3–5 cluster nodes.                                         | #1080 |
 | Firmware, BIOS and BMC audit                | planned | Confirm firmware versions and every setting are identical across the core machines, verified by routine KVM screenshots. | #1081 |
-| Basement power and space                    | planned | Dedicated 20A circuits, cleanup and rack layout, so the first nodes can actually run.                                    | #1083 |
+| Basement power and space                    | planned | Dedicated 20A circuits, cleanup and rack layout, so the first nodes can actually run.                                    | #1083 · [electrician brief](basement-cluster-electrician-brief.md) |
 
 ## Next
 
