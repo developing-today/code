@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { poolState, windowPercent } from "../src/derive.ts";
 import { disabledProvidersFromConfig } from "../src/aa.ts";
-import { extractQuotaPools, poolProviderId } from "../src/quota-extract.ts";
+import { extractQuotaPools, poolProviderId, poolProviderIds } from "../src/quota-extract.ts";
 import { computeChoices } from "../src/quota-guidance.ts";
 
 // A synthetic quota view carrying the same dated-read phrasing the
@@ -233,6 +233,36 @@ describe("disabled_providers enforcement (#1114)", () => {
       expect(named.map((id) => poolProviderId(id))).not.toContain(keeper);
       expect(named).not.toContain(keeper);
     }
+  });
+
+  test("antigravity pools answer to antigravity-ls/antigravity-agy/google jointly: filtered only when every door is disabled", () => {
+    // There is no "antigravity" provider: poolFor attributes the two
+    // antigravity pools to these three doors (Codex P2 on PR #2377).
+    for (const id of ["antigravity:gemini", "antigravity:claude-gpt"]) {
+      expect(poolProviderIds(id)).toEqual(["antigravity-ls", "antigravity-agy", "google"]);
+    }
+    // One usable door remaining (the deployed set disables google alone)
+    // keeps both pools.
+    const partial = extractQuotaPools(VIEW, NOW, new Set(["antigravity-ls", "antigravity-agy"])).map((p) => p.id);
+    expect(partial).toContain("antigravity:gemini");
+    expect(partial).toContain("antigravity:claude-gpt");
+    const deployedLike = extractQuotaPools(VIEW, NOW, new Set(["google"])).map((p) => p.id);
+    expect(deployedLike).toContain("antigravity:gemini");
+    expect(deployedLike).toContain("antigravity:claude-gpt");
+    // Every door disabled: both pools filtered at assembly, visibly
+    // noted, and guidance never names them.
+    const filtered: Array<[string, string]> = [];
+    const disabled = new Set(["antigravity-ls", "antigravity-agy", "google"]);
+    const pools = extractQuotaPools(VIEW, NOW, disabled, (poolId, providerId) => filtered.push([poolId, providerId]));
+    const ids = pools.map((p) => p.id);
+    expect(ids).not.toContain("antigravity:gemini");
+    expect(ids).not.toContain("antigravity:claude-gpt");
+    expect(filtered).toContainEqual(["antigravity:gemini", "antigravity-ls,antigravity-agy,google"]);
+    expect(filtered).toContainEqual(["antigravity:claude-gpt", "antigravity-ls,antigravity-agy,google"]);
+    const choices = computeChoices(pools, NOW.getTime());
+    const named = [...choices.hasHeadroom, ...choices.burnBeforeReset, ...choices.doNotStart];
+    expect(named).not.toContain("antigravity:gemini");
+    expect(named).not.toContain("antigravity:claude-gpt");
   });
 
   test("exact-match only: near-miss disabled ids do not filter lookalike pools", () => {

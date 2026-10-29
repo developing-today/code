@@ -354,7 +354,7 @@ const SHELL_POOLS: QuotaPool[] = [
  * `claude-code` must filter `anthropic:claude-pro`. Every other pool's
  * door is its prefix.
  */
-const POOL_DOOR_PROVIDER_IDS: Record<string, string> = {
+const POOL_DOOR_PROVIDER_ID: Record<string, string> = {
   "anthropic:claude-pro": "claude-code",
 };
 
@@ -364,7 +364,35 @@ const POOL_DOOR_PROVIDER_IDS: Record<string, string> = {
  * "anthropic:claude-pro").
  */
 export function poolProviderId(poolId: string): string {
-  return POOL_DOOR_PROVIDER_IDS[poolId] ?? poolId.split(":")[0];
+  return POOL_DOOR_PROVIDER_ID[poolId] ?? poolId.split(":")[0];
+}
+
+/**
+ * Pools consumed through SEVERAL door providers, none of which is the
+ * pool-id prefix: there is no `antigravity` provider in the deployed
+ * config — the two Antigravity pools are burned through the
+ * `antigravity-ls`, `antigravity-agy` and `google` providers (the same
+ * three doors `poolFor` in scripts/collect-fleet-feed.ts attributes to
+ * them). Such a pool is filtered only when EVERY door is disabled; one
+ * usable door remaining keeps it, because sessions can still burn it.
+ */
+const POOL_DOOR_PROVIDER_IDS: Record<string, string[]> = {
+  "antigravity:gemini": ["antigravity-ls", "antigravity-agy", "google"],
+  "antigravity:claude-gpt": ["antigravity-ls", "antigravity-agy", "google"],
+};
+
+/** Every opencode provider id that can burn a pool (its doors). */
+export function poolProviderIds(poolId: string): string[] {
+  return POOL_DOOR_PROVIDER_IDS[poolId] ?? [poolProviderId(poolId)];
+}
+
+/**
+ * True when a pool must be filtered for the given disabled set: single-
+ * door pools when their door is disabled, multi-door pools only when
+ * every door is disabled.
+ */
+export function poolFilteredByDisabled(poolId: string, disabledProviderIds: ReadonlySet<string>): boolean {
+  return poolProviderIds(poolId).every((id) => disabledProviderIds.has(id));
 }
 
 /**
@@ -374,10 +402,12 @@ export function poolProviderId(poolId: string): string {
  * disabled_providers set is filtered out HERE, at pool assembly — never
  * at render time — so quota.json and the guidance derived from these
  * pools can never name a disabled provider. Matching is exact provider-id
- * equality against the pool's DOOR provider (poolProviderId): "openai" is
+ * equality against the pool's DOOR provider(s) (poolProviderIds): "openai" is
  * not "openai-codex", "opendesign" is not "open-design", "opencode-go" is
- * not "opencode" — and "anthropic:claude-pro" answers to "claude-code",
- * its only door. A filtered pool is
+ * not "opencode" — "anthropic:claude-pro" answers to "claude-code",
+ * its only door, and the antigravity pools answer to antigravity-ls /
+ * antigravity-agy / google jointly (filtered only when all three are
+ * disabled). A filtered pool is
  * reported through onFiltered (visibly noted, never silently dropped).
  */
 export function extractQuotaPools(
@@ -388,8 +418,8 @@ export function extractQuotaPools(
 ): QuotaPool[] {
   const pools: QuotaPool[] = [];
   for (const spec of POOL_SPECS) {
-    if (disabledProviderIds.has(poolProviderId(spec.id))) {
-      onFiltered?.(spec.id, poolProviderId(spec.id));
+    if (poolFilteredByDisabled(spec.id, disabledProviderIds)) {
+      onFiltered?.(spec.id, poolProviderIds(spec.id).join(","));
       continue;
     }
     const section = sectionOf(quotaViewText, spec.heading);
@@ -427,8 +457,8 @@ export function extractQuotaPools(
     pools.push(pool);
   }
   const shells = SHELL_POOLS.filter((p) => {
-    if (!disabledProviderIds.has(poolProviderId(p.id))) return true;
-    onFiltered?.(p.id, poolProviderId(p.id));
+    if (!poolFilteredByDisabled(p.id, disabledProviderIds)) return true;
+    onFiltered?.(p.id, poolProviderIds(p.id).join(","));
     return false;
   });
   return [...pools, ...shells.map((p) => ({ ...p }))];
