@@ -372,7 +372,13 @@ L2 setup therefore requires durable replication of the wrapped blob (server-stor
 ciphertext, or copies held alongside the guardian shares) as a hard prerequisite.
 
 Guardians are identified by their **account keys**, learned at an invite acceptance and
-confirmed out of band (a petname plus a 6-character fingerprint, `petname.rs:16`). The
+confirmed out of band by comparison of the **full account key** (the full hex verifying
+key) over an authenticated channel — not by the petname fingerprint (corrected per
+Codex review, PR #2278): `petname.rs:16`'s fingerprint is the first 6 hex characters
+(24 bits) of the account ID, a contact-display disambiguator an attacker can match by
+grinding keys, so it authenticates nothing and a substituted invitation could pass it
+and receive a recovery share. Where a short form is needed, derive a safety number of
+at least 128 bits from the full key; never reuse the display prefix as one. The
 Seitan token key must not be reused as the guardian identity — it is single-use by design
 (`seitan/mod.rs:6-9`). Note explicitly: today's Seitan is an invite proof, **not** a
 safety-number comparison, so "SEITAN-verified contact" means "we completed an invite whose
