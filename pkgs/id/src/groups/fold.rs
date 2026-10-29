@@ -1075,7 +1075,14 @@ impl Engine {
         };
         let mut admin: Option<bool> = None;
         for event in order {
-            if !past.contains(&event.id) || !self.settled.contains(&event.id) {
+            if !past.contains(&event.id) {
+                continue;
+            }
+            // The group's creation is never in the settled set (it is not a candidate
+            // event), but it seeds the replay: an Admin assigned at creation has no
+            // MemberOp::Add to recover the status from.
+            let is_creation = event.id == *group && matches!(event.body, Body::Create(_));
+            if !is_creation && !self.settled.contains(&event.id) {
                 continue;
             }
             match &event.body {

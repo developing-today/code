@@ -1738,6 +1738,33 @@ fn test_an_admin_scoped_device_grant_stands_under_weak_remove_when_the_removal_s
     );
 }
 
+/// Creation-assigned Admin variant of the removal-sorts-first case: the Admin
+/// was named in the group Create (no MemberOp::Add ever names them), so the
+/// causal Admin replay in admin_for must seed from the creation event itself.
+/// The removal (s0) sorts before the device grant (dv0); under weak remove the
+/// grant stands (design 6.3).
+#[test]
+fn test_an_admin_scoped_device_grant_stands_under_weak_remove_for_a_creation_admin() {
+    let g = id("g");
+    let events = vec![
+        custom(
+            "g",
+            1,
+            &[(2, Role::Admin)],
+            with_removal(Removal::Weak, None),
+        ),
+        device_add("dv0", 2, g, 50, Role::Admin, &["g"]),
+        remove("s0", 1, g, 2, &["g"]),
+        add("a1", 1, g, 2, Role::Write, &["s0"]),
+    ];
+    let weak = project(&events);
+    assert_eq!(outcome(&weak, "dv0"), Outcome::Applied);
+    assert!(
+        weak.active_devices(&g, &key(2)).contains(&key(50)),
+        "weak remove stands an Admin-scoped device grant for an Admin assigned at creation"
+    );
+}
+
 /// The Admin-scoped device grant above without a re-add: the grant is judged
 /// Applied at its causal position (design §6.3). The account still ends
 /// removed, so it has no active devices at the head — that is the documented
