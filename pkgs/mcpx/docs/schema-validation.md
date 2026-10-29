@@ -44,6 +44,7 @@ is the validator the binary carries.
 - **Errors are flat and path-carrying.** A failed validation returns
   one line per problem in the form `$.count: got string, want integer`,
   so a caller can show a tool user exactly what to fix.
+
 ## Output policy: `structuredContent` is warn-only
 
 Tool **inputs** are enforced: `internal/mcpclient` validates CallTool
