@@ -296,6 +296,10 @@ impl Session {
             return Err(SchemeError::NotInModel(short(added)));
         }
         let added_key = member_of(added)?;
+        // The policy is checked before the merge, not only inside the change step: a refusal after
+        // the merge would drop merge envelopes the session has already absorbed, and a later
+        // publish would name a merge nobody received (P4.7).
+        self.check_policy(view)?;
         let mut messages = self.merge_heads(rng)?;
         // The bundle is cut from the state before the change takes it, so the welcome carries the
         // window the mode allows and the roster check still runs on the fold's view.
@@ -328,6 +332,10 @@ impl Session {
             return Err(SchemeError::NotInModel(short(added)));
         }
         let added_key = member_of(added)?;
+        // The policy is checked before the merge, not only inside the change step: a refusal after
+        // the merge would drop merge envelopes the session has already absorbed, and a later
+        // publish would name a merge nobody received (P4.7).
+        self.check_policy(view)?;
         let mut messages = self.merge_heads(rng)?;
         messages.push(self.change(view, |y| EncryptionGroup::add_from_join(y, added_key, rng))?);
         messages.push(self.change(view, |y| EncryptionGroup::update(y, rng))?);
@@ -348,6 +356,8 @@ impl Session {
             return Err(SchemeError::StillInModel(short(removed)));
         }
         let removed_key = member_of(removed)?;
+        // The policy is checked before the merge, for the reason the add paths give (P4.7).
+        self.check_policy(view)?;
         let mut messages = self.merge_heads(rng)?;
         messages.push(self.change(view, |y| EncryptionGroup::remove(y, removed_key, rng))?);
         Ok(messages)

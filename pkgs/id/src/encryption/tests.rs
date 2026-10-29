@@ -2125,6 +2125,42 @@ fn test_a_group_above_32_heads_merges_and_publishes_again() {
     }
 }
 
+#[test]
+fn test_a_refused_change_above_the_cap_loses_no_merge() {
+    // Everyone hears all 32 concurrent updates, so member 1 sits on 33 parents, one above the
+    // cap: its next publish has to merge first (P4.7).
+    let (mut cast, _create, updates) = concurrent_updates(32);
+    for (author, update) in (2..=33u8).zip(&updates) {
+        let rest: Vec<u8> = (1..=33).filter(|seed| *seed != author).collect();
+        cast.deliver(update, &rest);
+    }
+    let rng = Rng::default();
+
+    // A removal whose view names no scheme is refused by the policy check. The refusal must
+    // come before any merge: a merge absorbed by the session but never broadcast would leave
+    // the group waiting on a parent it never received.
+    let mut view = cast.view();
+    view.members.remove(&id(33));
+    view.policy = Policy::default();
+    let result = cast.session_mut(1).remove(&view, id(33), &rng);
+    assert!(matches!(result, Err(SchemeError::NoScheme)), "{result:?}");
+
+    // The merge is still member 1's to publish: its next update returns the merge and then the
+    // update, the group takes both, and it publishes application messages again.
+    let published = cast
+        .session_mut(1)
+        .update(&rng)
+        .expect("a merge, then the update");
+    assert_eq!(published.len(), 2, "the refusal lost no merge");
+    for member in &published {
+        cast.deliver(member, &(2..=33).collect::<Vec<u8>>());
+    }
+    let message = cast.send(1, "after the refused change");
+    for read in cast.deliver(&message, &(2..=33).collect::<Vec<u8>>()) {
+        assert_eq!(read, vec![text("after the refused change")]);
+    }
+}
+
 /// A seeded shuffle, so a proptest case replays one delivery order.
 fn shuffled<T>(items: Vec<T>, seed: u64) -> Vec<T> {
     let mut keyed: Vec<(u64, T)> = items
