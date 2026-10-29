@@ -234,8 +234,16 @@ impl LocalEvents {
         self.record(SET_KIND, Some(op), None, None, &[])
     }
 
-    /// Clears every live claim named `name` on `subject`, whoever set it. It returns how many it
-    /// cleared, and the clear's event ID. Nothing to clear is an error.
+    /// Clears every live claim named `name` on `subject`, whoever set it. Nothing to clear is an
+    /// error.
+    ///
+    /// One `tag.clear` event names at most [`MAX_CLEAR_CLAIMS`] claims, so a name with more live
+    /// claims than that is cleared by several events, in the order [`EventStore::tag_claims`]
+    /// returns the claims. The returned count is the total cleared across all of those events,
+    /// and the returned ID is the final event's — the one whose recording completes the clear.
+    ///
+    /// The events are append-only: if recording one of them fails, the ones already recorded
+    /// stay, the error is returned, and calling this again clears what is left.
     ///
     /// A claim is removed only when it sits in the clear's causal past, so each sub-clear
     /// names the current head of every author whose claims it names as a required head of
@@ -248,7 +256,7 @@ impl LocalEvents {
     ///
     /// # Errors
     ///
-    /// Fails if no live claim matches, or the store cannot record the event.
+    /// Fails if no live claim matches, or the store cannot record an event.
     pub fn clear_tag(&mut self, subject: Hash, name: &str) -> Result<(usize, Hash)> {
         let claims: Vec<Claim> = self
             .store
@@ -278,14 +286,19 @@ impl LocalEvents {
         let mut group_authors = 0usize;
         for author in authors {
             let authored = by_author.remove(&author).unwrap_or_default();
-            if !group.is_empty()
-                && (group_authors == MAX_AFTER || group.len() + authored.len() > MAX_CLEAR_CLAIMS)
-            {
-                groups.push(std::mem::take(&mut group));
-                group_authors = 0;
+            // One author alone can hold more claims than a single clear may
+            // name (#1720), so pack each author's claims in cap-sized segments.
+            for segment in authored.chunks(MAX_CLEAR_CLAIMS) {
+                if !group.is_empty()
+                    && (group_authors == MAX_AFTER
+                        || group.len() + segment.len() > MAX_CLEAR_CLAIMS)
+                {
+                    groups.push(std::mem::take(&mut group));
+                    group_authors = 0;
+                }
+                group_authors += 1;
+                group.extend(segment.iter().cloned());
             }
-            group_authors += 1;
-            group.extend(authored);
         }
         if !group.is_empty() {
             groups.push(group);
@@ -698,5 +711,102 @@ mod tests {
         assert!(check_tag("topic", Some("plans")).is_ok());
         assert!(check_tag("", None).is_err());
         assert!(check_tag("e\u{301}", None).is_err());
+    }
+
+    fn open_events() -> (tempfile::TempDir, LocalEvents) {
+        let dir = tempfile::tempdir().unwrap();
+        let events = LocalEvents::open(dir.path(), SigningKey::from_bytes(&[7; 32])).unwrap();
+        (dir, events)
+    }
+
+    fn publish_subject(events: &mut LocalEvents) -> Hash {
+        events.publish("text/plain", b"hello", &[]).unwrap().id
+    }
+
+    fn set_claims(events: &mut LocalEvents, subject: Hash, name: &str, count: usize) {
+        for i in 0..count {
+            events.set_tag(subject, name, Some(&i.to_string())).unwrap();
+        }
+    }
+
+    fn clear_chunks(events: &LocalEvents, subject: Hash) -> Vec<(Hash, usize)> {
+        events
+            .events_on(subject)
+            .unwrap()
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Entry::Clear { id, claims, .. } => Some((id, claims.len())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_clear_tag_chunks_a_clear_over_the_claim_cap() {
+        // Regression for #1720: a name with more live claims than one tag.clear
+        // may name (MAX_CLEAR_CLAIMS) could never be cleared at all.
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        let other_subject = publish_subject(&mut events);
+        set_claims(&mut events, subject, "topic", MAX_CLEAR_CLAIMS + 1);
+        events.set_tag(subject, "keep", None).unwrap();
+        events.set_tag(other_subject, "topic", None).unwrap();
+
+        let (count, event) = events.clear_tag(subject, "topic").unwrap();
+
+        assert_eq!(count, MAX_CLEAR_CLAIMS + 1);
+        let chunks = clear_chunks(&events, subject);
+        assert_eq!(
+            chunks.iter().map(|(_, size)| *size).collect::<Vec<_>>(),
+            vec![MAX_CLEAR_CLAIMS, 1]
+        );
+        // The returned ID is the final chunk's, the one that completes the clear.
+        assert_eq!(chunks.last().unwrap().0, event);
+        assert!(
+            events
+                .tags_on(subject)
+                .unwrap()
+                .iter()
+                .all(|claim| claim.name != "topic")
+        );
+        // Other names, and the same name on other subjects, are untouched.
+        assert_eq!(events.tags_on(subject).unwrap().len(), 1);
+        assert_eq!(events.tags_on(other_subject).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_clear_tag_chunks_600_claims_into_three_events() {
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        set_claims(&mut events, subject, "topic", 600);
+
+        let (count, event) = events.clear_tag(subject, "topic").unwrap();
+
+        assert_eq!(count, 600);
+        let chunks = clear_chunks(&events, subject);
+        assert_eq!(
+            chunks.iter().map(|(_, size)| *size).collect::<Vec<_>>(),
+            vec![
+                MAX_CLEAR_CLAIMS,
+                MAX_CLEAR_CLAIMS,
+                600 - 2 * MAX_CLEAR_CLAIMS
+            ]
+        );
+        assert_eq!(chunks.last().unwrap().0, event);
+        assert!(events.tags_on(subject).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_clear_tag_at_or_under_the_cap_records_one_event() {
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        set_claims(&mut events, subject, "topic", 3);
+
+        let (count, event) = events.clear_tag(subject, "topic").unwrap();
+
+        assert_eq!(count, 3);
+        assert_eq!(clear_chunks(&events, subject), vec![(event, 3)]);
+        // Nothing left to clear is still an error.
+        assert!(events.clear_tag(subject, "topic").is_err());
     }
 }
