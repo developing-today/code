@@ -12,6 +12,7 @@ This page is the map. The detail lives in the pages it links to: the
 and the generated [parity table](./parity.md).
 
 <a id="abstract-interfaces"></a>
+
 ## Abstract interfaces
 
 mcpx declares each thing it can do **once**, as an operation — an
@@ -91,6 +92,7 @@ lean on both:
   [cli-commands](./cli.md#cli-commands).
 
 <a id="client-interfaces"></a>
+
 ## Client interfaces
 
 Every way code can drive mcpx, with the smallest useful snippet for

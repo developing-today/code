@@ -8,6 +8,7 @@ it does goes through the daemon's `/v1` API, and anything a person
 can do here, a script or a plugin can do there.
 
 <a id="cli"></a>
+
 ## The CLI
 
 ### The loop
@@ -63,12 +64,12 @@ was a snippet would replace a clear error with a baffling one.
 
 ### Exit codes worth knowing
 
-| code | meaning |
-| --- | --- |
-| 0 | success |
-| 1 | the command failed; the error is on stderr |
-| 2 | an unknown command, an unknown global flag, or a settings conflict — including a contradiction in a config file, which is reported once, before dispatch |
-| 75 | `EX_TEMPFAIL`: a call is waiting on an elicitation — a question a server has asked its client. Not a failure: answer it (`mcpx elicit`) and retry |
+| code | meaning                                                                                                                                                  |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | success                                                                                                                                                  |
+| 1    | the command failed; the error is on stderr                                                                                                               |
+| 2    | an unknown command, an unknown global flag, or a settings conflict — including a contradiction in a config file, which is reported once, before dispatch |
+| 75   | `EX_TEMPFAIL`: a call is waiting on an elicitation — a question a server has asked its client. Not a failure: answer it (`mcpx elicit`) and retry        |
 
 ### The man page and shell completions
 
@@ -84,6 +85,7 @@ The Nix package installs both for you: the man page to
 `share/man/man1/mcpx.1`, and completions for all three shells.
 
 <a id="cli-arguments"></a>
+
 ## CLI arguments
 
 Flags come in **two kinds**, and most confusion about mcpx flags
@@ -95,16 +97,16 @@ A short list, parsed by hand in `cmd/mcpx/main.go` before any
 subcommand is chosen. These, and only these, have fixed global
 meanings:
 
-| flag | what it does |
-| --- | --- |
-| `--json` | one machine-readable document instead of human output |
-| `--tui` | open the TUI browser (also a subcommand) |
-| `--profile <a,b>` | add profiles to the active set |
-| `--skip-default` | narrow the active set to exactly the named profiles |
-| `--all-profiles` | activate every profile |
-| `--config <file>` | use this config file alone |
-| `--version`, `-v` | print the version and exit |
-| `--help`, `-h` | print help and exit |
+| flag              | what it does                                          |
+| ----------------- | ----------------------------------------------------- |
+| `--json`          | one machine-readable document instead of human output |
+| `--tui`           | open the TUI browser (also a subcommand)              |
+| `--profile <a,b>` | add profiles to the active set                        |
+| `--skip-default`  | narrow the active set to exactly the named profiles   |
+| `--all-profiles`  | activate every profile                                |
+| `--config <file>` | use this config file alone                            |
+| `--version`, `-v` | print the version and exit                            |
+| `--help`, `-h`    | print help and exit                                   |
 
 One extension to that list: a setting that **every** command
 accepts is also accepted as a global flag, so
@@ -153,6 +155,7 @@ code 2, rather than by whichever command happens to read the
 value first.
 
 <a id="cli-commands"></a>
+
 ## CLI commands
 
 The command table is **generated, and this page does not copy
@@ -174,14 +177,14 @@ happen silently again.
 What prose can usefully add over the generated table is the
 grouping `mcpx help` presents, and what each group is for:
 
-| group | what is in it |
-| --- | --- |
-| **running** | doing the work: `run`, `exec`, `scripts`, `skills`, `recipes`, `prompt`, `proxy`, `embeddings`, `feedback` |
-| **discovery** | finding out what exists before paying for its schemas: `ls`, `catalog`, `types`, `search`, `call`, `batch`, `client`, `schema`, `prompts`, `resources`, `openapi` |
-| **daemon** | the daemon's own lifecycle: `status`, `daemons`, `refresh`, `reload`, `upgrade`, `restart`, `stop`, `supervise`, `daemon`, `serve` |
-| **configuration** | shaping mcpx itself: `config`, `settings`, `servers`, `secrets`, `init`, `registry`, `api`, `adapter`, plus `help`, `man` and `completion` |
-| **inspection** | looking at what happened: `diagnose`, `elicit`, `doctor`, `tui`, `explore`, `dashboard`, `interactions`, `log`, `stats` |
-| **operations** | one generated command per `/v1` operation (for example `mcpx artifact list`) — these exist the moment an operation is declared, with flags from its parameters |
+| group             | what is in it                                                                                                                                                     |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **running**       | doing the work: `run`, `exec`, `scripts`, `skills`, `recipes`, `prompt`, `proxy`, `embeddings`, `feedback`                                                        |
+| **discovery**     | finding out what exists before paying for its schemas: `ls`, `catalog`, `types`, `search`, `call`, `batch`, `client`, `schema`, `prompts`, `resources`, `openapi` |
+| **daemon**        | the daemon's own lifecycle: `status`, `daemons`, `refresh`, `reload`, `upgrade`, `restart`, `stop`, `supervise`, `daemon`, `serve`                                |
+| **configuration** | shaping mcpx itself: `config`, `settings`, `servers`, `secrets`, `init`, `registry`, `api`, `adapter`, plus `help`, `man` and `completion`                        |
+| **inspection**    | looking at what happened: `diagnose`, `elicit`, `doctor`, `tui`, `explore`, `dashboard`, `interactions`, `log`, `stats`                                           |
+| **operations**    | one generated command per `/v1` operation (for example `mcpx artifact list`) — these exist the moment an operation is declared, with flags from its parameters    |
 
 For any one command, `mcpx help <command>` is the reference: it
 is printed from the same declaration the table is generated

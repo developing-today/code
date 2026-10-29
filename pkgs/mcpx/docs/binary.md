@@ -1,6 +1,7 @@
 # The binary
 
 <a id="binary"></a>
+
 ## Binary
 
 mcpx ships as **one Go binary**, built from `cmd/mcpx`. This page
@@ -20,15 +21,15 @@ The version is `0.1.0`, hard-coded as the default in
 Everything else is the module's direct dependencies. `go.mod` is
 the source of truth — seven direct requirements:
 
-| module | what it is for |
-| --- | --- |
-| `modernc.org/sqlite` | the log index: a pure-Go translation of SQLite, not a cgo binding |
-| `github.com/charmbracelet/bubbletea` | the full-screen browser, `mcpx tui` |
-| `github.com/charmbracelet/bubbles` | its widgets |
-| `github.com/charmbracelet/lipgloss` | its layout |
-| `gopkg.in/yaml.v3` | OpenAPI documents, which are published as YAML as often as JSON |
-| `github.com/santhosh-tekuri/jsonschema/v6` | JSON Schema validation (`internal/schemaval`) |
-| `github.com/tetratelabs/wazero` | the WebAssembly runtime behind wasm tool sources and embeddings (`internal/wasmtools`) |
+| module                                     | what it is for                                                                         |
+| ------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `modernc.org/sqlite`                       | the log index: a pure-Go translation of SQLite, not a cgo binding                      |
+| `github.com/charmbracelet/bubbletea`       | the full-screen browser, `mcpx tui`                                                    |
+| `github.com/charmbracelet/bubbles`         | its widgets                                                                            |
+| `github.com/charmbracelet/lipgloss`        | its layout                                                                             |
+| `gopkg.in/yaml.v3`                         | OpenAPI documents, which are published as YAML as often as JSON                        |
+| `github.com/santhosh-tekuri/jsonschema/v6` | JSON Schema validation (`internal/schemaval`)                                          |
+| `github.com/tetratelabs/wazero`            | the WebAssembly runtime behind wasm tool sources and embeddings (`internal/wasmtools`) |
 
 The three charmbracelet modules are one decision: about 1.2 MB in
 the stripped binary, in exchange for not hand-writing terminal

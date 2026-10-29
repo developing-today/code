@@ -1,6 +1,7 @@
 # Scripts
 
 <a id="script"></a>
+
 ## Script
 
 A script is TypeScript (or JavaScript) that calls tools through
@@ -73,7 +74,7 @@ portable way to read them.
 
 `script.runtime` (`--runtime`) chooses; the default order is
 **deno, then bun, then node** — the first in
-`script.runtimeOrder` that is installed *and* can enforce the
+`script.runtimeOrder` that is installed _and_ can enforce the
 permission profile asked for. A runtime that cannot enforce the
 profile is skipped under `auto`, never silently weakened.
 [runtimes.md](./runtimes.md) is the full page on choosing,
@@ -117,7 +118,7 @@ produced, say) are delivered from each arrangement is
 
 - **`mcpx diagnose`** checks a script before it runs — most
   valuably against the daemon's record of what each tool's
-  schema *used to be*, so a call broken by a schema change is
+  schema _used to be_, so a call broken by a schema change is
   reported as two facts ("the argument became required; you
   wrote none") rather than as a bare failure at run time.
 - **Automatic preflight** (`diagnose.preflight`) runs those
