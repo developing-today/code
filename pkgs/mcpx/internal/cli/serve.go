@@ -487,6 +487,10 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	// A function, because completion.maxValues is hot: the daemon's /mcp
 	// is built once and a value copied here never followed a change.
 	srv.MaxCompletions = func() int { return a.Settings().Int("completion.maxValues") }
+	// Hot for the same reason: the daemon's /mcp is built once, and a client
+	// that starts sending a session _meta key after a settings change should
+	// get its own scope without a restart.
+	srv.SessionMetaKeys = func() []string { return a.Settings().List("transport.sessionMetaKeys") }
 	// The ask loop's five bounds. They were read from internal/defaults at
 	// the point of use, so the settings that name them did nothing.
 	srv.Timing = mcpserver.Timing{
