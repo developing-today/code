@@ -25,6 +25,7 @@ import {
   refUrl,
 } from "../model.ts";
 import { buildAttentionFlags } from "../derive.ts";
+import { gristDocUrl } from "../service-links.ts";
 import { recordFromSessionEntry } from "../registry.ts";
 import type { Source } from "../source.ts";
 
@@ -208,6 +209,7 @@ export const FIXTURE_ROADMAP: RoadmapRow[] = (seed.rows as SeedRow[]).map((r, i)
     source: r.Source,
     notes: r.Notes,
     links: [...refs].map((ref) => link(ref)),
+    gristUrl: gristDocUrl(GRIST_DOC),
   };
 });
 
