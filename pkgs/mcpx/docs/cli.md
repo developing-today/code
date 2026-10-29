@@ -64,12 +64,12 @@ was a snippet would replace a clear error with a baffling one.
 
 ### Exit codes worth knowing
 
-| code | meaning                                                                                                                                                  |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | success                                                                                                                                                  |
-| 1    | the command failed; the error is on stderr                                                                                                               |
-| 2    | an unknown command, an unknown global flag, or a settings conflict — including a contradiction in a config file, which is reported once, before dispatch |
-| 75   | `EX_TEMPFAIL`: a call is waiting on an elicitation — a question a server has asked its client. Not a failure: answer it (`mcpx elicit`) and retry        |
+| code | meaning                                                                                                                                                                                                                                                                              |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | success                                                                                                                                                                                                                                                                              |
+| 1    | the command failed; the error is on stderr                                                                                                                                                                                                                                           |
+| 2    | an unknown command, an unknown global flag, or a settings conflict — including a contradiction in a config file, which is reported once, before dispatch                                                                                                                             |
+| 75   | `EX_TEMPFAIL`: a call stopped to ask a question (an elicitation). Not a failure, and not a cue to retry: the call continues as a task — answer with `mcpx elicit answer …`, then collect the original call's result with `mcpx task result <id>`. Retrying would start a second call |
 
 ### The man page and shell completions
 

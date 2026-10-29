@@ -81,12 +81,13 @@ profile is skipped under `auto`, never silently weakened.
 declaring and constraining runtimes; the two limits a script
 writer hits first:
 
-- **Node runs only erasable TypeScript.** Node is invoked with
-  type transformation, not full compilation: syntax TypeScript
-  would erase (annotations, interfaces) is fine, and syntax it
-  would have to generate code for — an `enum` is the classic
-  case — fails. Write erasable TypeScript if the script must
-  run on node.
+- **Node transforms TypeScript; it does not merely strip it.**
+  Node is invoked with `--experimental-transform-types`, chosen
+  over strip-only mode precisely because strip mode rejects
+  non-erasable TypeScript — `enum`, value namespaces, parameter
+  properties — that Node itself runs fine once types are
+  transformed. An `enum` in a script is guarded by a test
+  (`TestNodeRunsNonErasableTypeScript`), not a limitation.
 - **Typechecking is Deno-only.** `--typecheck` /
   `script.typecheck` runs the check (via `deno check`) before
   the run and only applies when Deno is the runtime.
