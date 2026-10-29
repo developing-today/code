@@ -226,7 +226,7 @@ wrote it.
   phase-2 direct-API path has a route. Filed as a follow-up issue: **#2301**.
 - **OpenClaw inventory (G5):** one read-only pass over the agent's 15
   sessions and configuration, written up as a repo doc. Filed as a
-  follow-up issue.
+  follow-up issue: **#2302**.
 
 No follow-up in this list builds the permanent comms feature ahead of the
 review round on this doc; #1029's channel setup is the exception because
