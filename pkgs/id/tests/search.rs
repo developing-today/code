@@ -17,11 +17,11 @@
 
 use std::collections::BTreeMap;
 
-use id::chain::{sign, ChainExt, Event};
-use id::documents::{DocumentRef, DOCUMENT_KIND};
+use id::chain::{ChainExt, Event, sign};
+use id::documents::{DOCUMENT_KIND, DocumentRef};
 use id::event_store::{EventStore, Ingest};
-use id::search::{search, search_store, search_store_terms, search_terms, Hit, Term, ValueMatch};
-use id::tag_claims::{Claim, TagOp, CLEAR_KIND, SET_KIND};
+use id::search::{Hit, Term, ValueMatch, search, search_store, search_store_terms, search_terms};
+use id::tag_claims::{CLEAR_KIND, Claim, SET_KIND, TagOp};
 use id::waiting::WaitingLimits;
 use p2panda_core::{Hash, SeqNum, SigningKey};
 use proptest::prelude::*;
@@ -240,12 +240,16 @@ fn test_a_cleared_claim_is_not_returned() {
         deliver(&mut store, event);
     }
 
-    assert!(search_store(&store, "city", ValueMatch::Any)
-        .unwrap()
-        .is_empty());
-    assert!(search_store(&store, "city", ValueMatch::Exact("Seattle"))
-        .unwrap()
-        .is_empty());
+    assert!(
+        search_store(&store, "city", ValueMatch::Any)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        search_store(&store, "city", ValueMatch::Exact("Seattle"))
+            .unwrap()
+            .is_empty()
+    );
     // The clear removes only the claim it names.
     let names = search_store(&store, "name", ValueMatch::Any).unwrap();
     assert_eq!(shape(&names), vec![(subject, vec![kept.id])]);
@@ -357,26 +361,32 @@ fn test_hits_are_ordered_by_subject_then_claim_and_do_not_depend_on_delivery_ord
         .find(|(subject, _)| *subject == subjects[0])
         .unwrap();
     assert_eq!(on_first.1.len(), 2, "both claims on the first subject");
-    assert!(on_first
-        .1
-        .windows(2)
-        .all(|pair| pair[0].as_bytes() < pair[1].as_bytes()));
+    assert!(
+        on_first
+            .1
+            .windows(2)
+            .all(|pair| pair[0].as_bytes() < pair[1].as_bytes())
+    );
 }
 
 #[test]
 fn test_a_search_matches_nothing_on_an_empty_store_or_an_unknown_name() {
     let (_dir, store) = open();
-    assert!(search_store(&store, "city", ValueMatch::Any)
-        .unwrap()
-        .is_empty());
+    assert!(
+        search_store(&store, "city", ValueMatch::Any)
+            .unwrap()
+            .is_empty()
+    );
 
     let mut a = Writer::new(1);
     let claim = a.set(Hash::digest(b"s"), "city", Some("Seattle"), vec![]);
     let (_dir2, mut store) = open();
     deliver(&mut store, &claim);
-    assert!(search_store(&store, "state", ValueMatch::Any)
-        .unwrap()
-        .is_empty());
+    assert!(
+        search_store(&store, "state", ValueMatch::Any)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// The live claims' IDs, sorted by ID bytes.
@@ -470,9 +480,11 @@ fn test_search_by_author_returns_only_that_authors_claims() {
         vec![(subject, vec![seattle.id])]
     );
     // An author with no claims matches nothing.
-    assert!(search_store_terms(&store, &[Term::Author([9; 32])])
-        .unwrap()
-        .is_empty());
+    assert!(
+        search_store_terms(&store, &[Term::Author([9; 32])])
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
