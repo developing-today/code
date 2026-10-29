@@ -29,6 +29,7 @@ import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
   type AaFeedSection,
+  type AttentionFlag,
   type BoardItem,
   type Comment,
   type DnsSection,
@@ -812,12 +813,23 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           charges: feed.charges ?? [],
           subscriptions: feed.subscriptions ?? [],
         };
+        // Charges auto-matching (#1057): the feed carries only
+        // first-time unmatched SaaS/AI charges (the collector's
+        // surfaced-state guarantees exactly-once), so each becomes
+        // an attention flag here and never repeats on later feeds.
+        const chargeFlags: AttentionFlag[] = (feed.chargesAttention ?? []).map((u) => ({
+          kind: "unmatched-charge",
+          label: `${u.merchant} — unrecognized SaaS/AI charge`,
+          detail: `$${u.amountUsd.toFixed(2)} on ${u.at} via ${u.source === "plaid" ? "Plaid" : "Gmail alert"} — no hub service matched; classify it or add the service`,
+          href: "/quota",
+          severity: u.amountUsd,
+        }));
         return {
           ...partial,
           chargesNote: partial.charges.length
             ? undefined
             : "No charge evidence in the feed's records yet — rows appear as Plaid/Gmail receipt evidence is recorded (§2.4).",
-          attention: buildAttentionFlags(feed.quota, partial),
+          attention: [...buildAttentionFlags(feed.quota, partial), ...chargeFlags],
           domains,
           history,
         };

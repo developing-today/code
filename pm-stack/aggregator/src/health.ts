@@ -16,6 +16,7 @@
 //   opened is labelled "not rendered since boot", not fake-green.
 // - In fixtures mode there are no live probes to make: every service
 //   reports "fixtures", which is also the degraded-state test fixture.
+import type { PendingCommentCounts } from "./comments.ts";
 import type { Config } from "./config.ts";
 import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
 import type { ProvenanceDetail } from "./model.ts";
@@ -144,6 +145,9 @@ export interface HealthView {
   };
   pages: PageHealth[];
   facets: ProvenanceDetail | null;
+  /** Dashboard comment loops (#1145): pending triage/posting counts,
+   *  so an unworked comment queue is visible on /health. */
+  comments: PendingCommentCounts;
 }
 
 // --- Render registry -------------------------------------------------------
@@ -213,6 +217,7 @@ export interface HealthInputs {
   feedFileMtimeMs: number | null;
   diagnosis?: SectionDiagnosis;
   detail?: ProvenanceDetail;
+  comments?: PendingCommentCounts;
 }
 
 export interface HealthDeps {
@@ -345,5 +350,6 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     },
     pages: pageHealth(now),
     facets: inputs.detail ?? null,
+    comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },
   };
 }

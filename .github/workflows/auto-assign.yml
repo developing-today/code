@@ -9,8 +9,11 @@ concurrency:
   # events github.ref is always the default/base branch, so a ref-keyed group
   # is one repo-wide group and a burst of opened events silently replaces the
   # pending run (queue: single is the default), dropping its assignment (#302).
+  # The group below is per-target, so cancel-in-progress only ever supersedes
+  # a stale run for the SAME issue/PR; the assignment is idempotent and the
+  # newest event wins (Phase 1, #1780). CI tier policy: see .github/ci-policy.md
   group: ${{ github.workflow }}-${{ github.event.issue.number || github.event.pull_request.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run:

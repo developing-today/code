@@ -185,6 +185,11 @@ export class CommentsStore {
     return comment;
   }
 
+  /** Pending triage/posting counts (#1145), for the health view. */
+  async pendingCounts(): Promise<PendingCommentCounts> {
+    return pendingCommentCounts(await this.all());
+  }
+
   async markTriaged(ids: string[]): Promise<number> {
     await this.load();
     const wanted = new Set(ids);
@@ -212,6 +217,27 @@ export class CommentsStore {
     await this.persist();
     return c;
   }
+}
+
+/** Pending-work counts for the dashboard comment loops (#1145): a
+ *  message comment is pending until the orchestrator triages it
+ *  (triageState "new"); a github comment is pending until a fleet
+ *  poster lands it (githubState "pending"). The health view publishes
+ *  these so an unworked queue is visible instead of silent. */
+export interface PendingCommentCounts {
+  pendingMessages: number;
+  pendingGithub: number;
+  total: number;
+}
+
+export function pendingCommentCounts(comments: DashComment[]): PendingCommentCounts {
+  let pendingMessages = 0;
+  let pendingGithub = 0;
+  for (const c of comments) {
+    if (c.kind === "message" && c.triageState === "new") pendingMessages++;
+    if (c.kind === "github" && c.githubState === "pending") pendingGithub++;
+  }
+  return { pendingMessages, pendingGithub, total: comments.length };
 }
 
 /** The URL a posted GitHub comment lives at, for rendering. */

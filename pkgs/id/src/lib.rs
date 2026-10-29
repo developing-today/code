@@ -181,6 +181,7 @@ pub mod envelope_net;
 #[cfg(feature = "world")]
 pub mod envelope_outbox;
 pub mod event_store;
+pub mod event_sync;
 pub mod fileops;
 pub mod frames;
 pub mod groups;
