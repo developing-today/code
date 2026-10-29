@@ -50,7 +50,7 @@ relative to `pkgs/mcpx/`. Three corrections to the refs as quoted in
 | 53 | common config | `configuration#common-config` | `docs/configuration.md` "Where a value can come from", "Scope", "Hot", "Reaching them"; `internal/config/config.go` (search path); `internal/cli/manual.go` entries `config`, `settings`, `init` | #1848 | link to the settings table; no copy |
 | 54 | server config | `configuration#server-config` | `internal/config/config.go` (server block); `docs/story.md` "Sharing and scope", "Profiles and aliases", "Remote servers without a shim"; `docs/configuration.md` "Servers"; `internal/cli/manual.go` `servers` | #1848 | open: a JSON Schema for the file (`pool.*` rows are generated) |
 | 55 | client config | `configuration#client-config` | `docs/configuration.md` "Scope: who reads it"; registry rows with scope `client` and `call` (`internal/settings/registry.go`) | #1848 | the client- and call-scoped settings, filtered from the registry |
-| 56 | env vars | `configuration#env-vars` | `docs/configuration.md` "variable" column; the non-registry names in the flags below | #1848 | registry names generated; the others hand-written until declared |
+| 56 | env vars | `configuration#env-vars` | `docs/configuration.md` "variable" column; `docs/environment.md`, generated from `settings.ScriptEnv()` (`internal/settings/scriptenv.go`) and held to the setters by a test; the names neither source declares, listed below | #1848 | registry names and the script environment both generated; only the names neither declares are hand-written |
 | 57 | client modes | `modes#client-modes` | `docs/story.md` "Running without a daemon", "One daemon, many clients"; `docs/exec.md` "Where a script runs"; `AGENTS.md` "Profiles" | #1848 | — |
 | 58 | transport options | `modes#transport-options` | `docs/protocol.md` §5; `docs/story.md` "What each transport costs", "Server-sent events, not WebSockets", "Lossless reconnection", "Remote servers without a shim"; `docs/dependencies.md` "Network" | #1848 | — |
 | 59 | server modes | `modes#server-modes` | `docs/story.md` "mcpx speaks MCP", "Sharing and scope"; `docs/protocol.md` §5 | #1848 | — |
@@ -123,21 +123,30 @@ they touch, with their state re-verified at HEAD `5a34fa70`
 Two smaller points from #1848 that pages must also get right:
 
 - **Env vars outside the registry** (touches
-  `configuration#env-vars`): many `MCPX_*` names appear in non-test
-  code and not in `docs/configuration.md` — config selection
-  (`MCPX_CONFIG`), caller identity (`MCPX_SESSION_ID`,
-  `MCPX_PARENT_SESSION_ID`, set by
-  `plugin/opencode/mcpx-session.ts`), names the generated client
-  reads (`MCPX_ENDPOINT`, `MCPX_SESSION`, `MCPX_SOCKET`,
-  `MCPX_CONFIG_PATH`, `MCPX_RUNTIME` in `internal/codegen/emit.go`),
-  plugin-only options, and harness context. An env-var page
-  generated only from the registry would leave all of these out.
+  `configuration#env-vars`): the registry is not the only declaration
+  there is. `settings.ScriptEnv()` (`internal/settings/scriptenv.go`)
+  declares the environment mcpx and the plugin hand to a script —
+  `MCPX_SESSION`, `MCPX_SESSION_ID`, `MCPX_PARENT_SESSION_ID`,
+  `MCPX_EPHEMERAL`, `MCPX_RUN`, `MCPX_INPUT`, `MCPX_ENDPOINT`,
+  `MCPX_SOCKET`, `MCPX_ARTIFACTS_LOCAL`, `MCPX_CWD`, `MCPX_PID`,
+  `MCPX_ENTRY`, `MCPX_CLIENT`, `MCPX_CONFIG_PATH`,
+  `MCPX_SCRIPT_DIRS`, `MCPX_RUNTIME` — and `docs/environment.md` is
+  generated from it, with a test holding the two directions together
+  (`scriptenv_test.go`). So the caller identity the plugin sets
+  (`plugin/opencode/mcpx-session.ts`) and the names the generated
+  client reads (`internal/codegen/emit.go`) are already declared, not
+  hand-written. What an env-var page must add beyond the two
+  generators is the small remainder neither declares — config
+  selection (`MCPX_CONFIG`) and harness context — and it should link
+  the generated page rather than copy it.
 - **Upstream "sse" is not the legacy SSE transport** (touches
   `modes#transport-options`): `POST /v1/servers` accepts
   `transport: stdio|http|sse` (`internal/api/ops_settings.go`), but
   the pool builds only a stdio transport or Streamable HTTP
   (`internal/pool/pool.go`, `internal/mcpclient/http.go`) whose
-  replies may arrive as an SSE stream. There is no client for the
-  deprecated 2024-11-05 HTTP+SSE transport; the transport page must
-  say this, not imply support for SSE-only servers (#1848 open
-  question 5).
+  replies may arrive as an SSE stream. Separately, the deprecated
+  2024-11-05 HTTP+SSE transport does have a client —
+  `LegacySSETransport` (`NewLegacySSE`, `internal/mcpclient/sse.go`) —
+  so the transport page must document that fallback rather than deny
+  it, and say which paths reach it, while still not implying that
+  `transport: sse` means an SSE-only server (#1848 open question 5).
