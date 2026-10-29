@@ -2522,10 +2522,16 @@ export interface OverviewData {
   quota: QuotaView;
   health: HealthView;
   board: BoardItem[];
+  /** Dashboard actions by object ref, so the needs-you summary applies
+   *  the same render-time suppression as /attention (Codex review on
+   *  PR 2424). Absent in tests and fixture renders: nothing suppressed. */
+  actionsByObject?: Map<string, DashAction[]>;
 }
 
 export interface OverviewSummary {
-  needsYou: { count: number; top: { title: string; detail?: string }[] };
+  /** count is null when the tier source is not present: the queue is
+   *  unknown, never a confident zero (Codex review on PR 2424). */
+  needsYou: { count: number | null; tierState: string; top: { title: string; detail?: string }[] };
   projects: { repo: string; total: number; inProgress: number; inReview: number; done: number }[];
   quota: { provider: string; plan: string; state: QuotaState; worstPercent: number | null }[];
   health: { degraded: boolean; up: number; down: number; total: number; feedAgeMs: number | null };
@@ -2534,10 +2540,23 @@ export interface OverviewSummary {
 }
 
 export function deriveOverview(data: OverviewData): OverviewSummary {
-  const top: { title: string; detail?: string }[] = [
-    ...data.attention.drewExtra.map((t) => ({ title: t.title, detail: t.reason })),
-    ...data.attention.drew.map((e) => ({ title: e.title ?? e.sessionId, detail: e.drewReason })),
-  ].slice(0, 5);
+  // The needs-you summary must agree with /attention on the same data:
+  // suppressed entries (snoozed / dismissed / marked done — pending
+  // counts, exactly as on the attention page) leave the count and the
+  // top list, and when the tier source is not present the count is
+  // unknown rather than an authoritative number over a partial queue.
+  const now = Date.now();
+  const suppressed = (objectRef: string): boolean =>
+    cardState(data.actionsByObject?.get(objectRef), now).suppressed !== null;
+  const drewVisible = data.attention.drew.filter((e) => !suppressed(sessionObjectRef(e.sessionId)));
+  const drewExtraVisible = data.attention.drewExtra.filter((item) => !suppressed(tierItemObjectRef(item)));
+  const tierPresent = data.attention.tierSource.present;
+  const top: { title: string; detail?: string }[] = tierPresent
+    ? [
+        ...drewExtraVisible.map((t) => ({ title: t.title, detail: t.reason })),
+        ...drewVisible.map((e) => ({ title: e.title ?? e.sessionId, detail: e.drewReason })),
+      ].slice(0, 5)
+    : [];
   const byRepo = new Map<string, { repo: string; total: number; inProgress: number; inReview: number; done: number }>();
   for (const item of data.pool) {
     const row = byRepo.get(item.repo) ?? { repo: item.repo, total: 0, inProgress: 0, inReview: 0, done: 0 };
@@ -2559,7 +2578,11 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
   const services = data.health.services;
   const byRecency = (a: BoardItem, b: BoardItem) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
   return {
-    needsYou: { count: data.attention.drew.length + data.attention.drewExtra.length, top },
+    needsYou: {
+      count: tierPresent ? drewVisible.length + drewExtraVisible.length : null,
+      tierState: data.attention.tierSource.state,
+      top,
+    },
     projects: [...byRepo.values()].sort((a, b) => b.total - a.total || a.repo.localeCompare(b.repo)),
     quota,
     health: {
@@ -2574,17 +2597,28 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
       .sort(byRecency)
       .slice(0, 5)
       .map((b) => ({ title: b.title, repo: b.repo })),
+    // In-flight board entries carry their real status in orchStatus
+    // (in-progress | queued | blocked): only the running ones belong
+    // under "In progress" — queued/blocked entries must not fill the
+    // list ahead of running work (Codex review on PR 2424).
     inProgress: data.board
-      .filter((b) => b.status === "in-progress" || b.status === "in-flight")
+      .filter(
+        (b) =>
+          b.status === "in-progress" ||
+          (b.status === "in-flight" && (b.orchStatus === undefined || b.orchStatus === "in-progress")),
+      )
       .slice(0, 5)
       .map((b) => ({ title: b.title, repo: b.repo })),
   };
 }
 
 export function renderOverviewBody(summary: OverviewSummary): string {
-  const needs = summary.needsYou.count
-    ? `<div class="banner drew"><strong>${summary.needsYou.count} item${summary.needsYou.count === 1 ? "" : "s"} need you</strong> — <a href="/attention">review them</a></div>`
-    : `<p class="muted">Nothing needs you right now.</p>`;
+  const needs =
+    summary.needsYou.count === null
+      ? `<div class="banner">Needs-you count <strong>unknown</strong> — the tier source is ${esc(summary.needsYou.tierState)}, so the orchestrator's published queues are not reflected here. <a href="/attention">Needs you</a></div>`
+      : summary.needsYou.count
+        ? `<div class="banner drew"><strong>${summary.needsYou.count} item${summary.needsYou.count === 1 ? "" : "s"} need you</strong> — <a href="/attention">review them</a></div>${summary.needsYou.tierState === "stale" ? `<p class="muted">Tier source stale — this count is its last published state and may have moved since.</p>` : ""}`
+        : `<p class="muted">Nothing needs you right now.</p>`;
   const topItems = summary.needsYou.top.length
     ? `<ul>${summary.needsYou.top.map((t) => `<li><strong>${esc(t.title)}</strong>${t.detail ? ` — ${esc(t.detail)}` : ""}</li>`).join("")}</ul>`
     : "";
@@ -2610,7 +2644,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
       ? `<ul>${items.map((i) => `<li>${esc(i.title)}${i.repo ? ` <span class="muted">${esc(i.repo)}</span>` : ""}</li>`).join("")}</ul>`
       : `<p class="muted">${empty}</p>`;
   return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
-<h2>Needs you (${summary.needsYou.count})</h2>${needs}${topItems}
+<h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
 <h2>Projects</h2>${projectCards}
 <h2>Quota</h2>${quotaStrip}
 <h2>Health</h2>${healthStrip}

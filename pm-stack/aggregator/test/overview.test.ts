@@ -182,3 +182,68 @@ describe("overview front door (#1134)", () => {
     expect(html).not.toContain("Cross-repo WIP board</h1>");
   });
 });
+
+describe("overview Codex fixes (PR 2424 review)", () => {
+  const FUTURE = new Date(Date.now() + 86_400_000).toISOString();
+
+  test("absent tier source: needs-you count is unknown, never a confident zero or list", () => {
+    const absent: OverviewData = {
+      ...data,
+      attention: { ...data.attention, tierSource: { present: false, state: "absent" } },
+    };
+    const summary = deriveOverview(absent);
+    expect(summary.needsYou.count).toBeNull();
+    expect(summary.needsYou.tierState).toBe("absent");
+    expect(summary.needsYou.top).toEqual([]);
+    const html = renderOverview(absent, {
+      board: "x", roadmap: "x", items: "x", comments: "x", quota: "x", usage: "x",
+      attention: "x", orchestration: "x", dns: "x", registry: "x", aa: "x",
+    });
+    expect(html).toContain("Needs you (unknown)");
+    expect(html).not.toContain("Nothing needs you right now.");
+  });
+
+  test("suppressed needs-you items leave the overview count and top list", () => {
+    const snooze = {
+      id: "da-ov-1",
+      clientToken: "ct-ov-1",
+      kind: "triage",
+      verb: "snooze",
+      objectRef: "orch:developing-today/code#42",
+      payload: { until: FUTURE },
+      author: { kind: "drew", id: "drew", label: "Drew" },
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+      state: "new",
+    } as never;
+    const withActions: OverviewData = {
+      ...data,
+      actionsByObject: new Map([["orch:developing-today/code#42", [snooze]]]),
+    };
+    const summary = deriveOverview(withActions);
+    expect(summary.needsYou.count).toBe(1);
+    expect(summary.needsYou.top.map((t) => t.title)).toEqual(["Approve the other thing"]);
+  });
+
+  test("in-flight list holds running work only — blocked entries cannot crowd it out", () => {
+    const blocked = Array.from({ length: 5 }, (_, i) => ({
+      id: `orch:blocked-${i}`,
+      title: `Blocked thing ${i}`,
+      repo: "developing-today/code",
+      source: "orchestrator" as const,
+      status: "in-flight",
+      orchStatus: "blocked",
+      links: [],
+    }));
+    const running = {
+      id: "orch:running",
+      title: "Running thing",
+      repo: "developing-today/code",
+      source: "orchestrator" as const,
+      status: "in-flight",
+      orchStatus: "in-progress",
+      links: [],
+    };
+    const summary = deriveOverview({ ...data, board: [...blocked, running] });
+    expect(summary.inProgress.map((i) => i.title)).toEqual(["Running thing"]);
+  });
+});

@@ -320,14 +320,15 @@ async function todayContext() {
  *  the attention view, the Project pool, quota, the health view, and
  *  the board — the same contexts the dedicated pages render from. */
 async function overviewContext() {
-  const [{ view }, pool, quota, health, { board }] = await Promise.all([
+  const [{ view }, pool, quota, health, { board }, actionsByObject] = await Promise.all([
     attentionContext(),
     source.projects().catch(() => [] as ProjectPoolItem[]),
     source.quota(),
     healthContext(),
     boardContext(),
+    actionsStore.byObject().catch(() => new Map()),
   ]);
-  return { attention: view, pool, quota, health, board };
+  return { attention: view, pool, quota, health, board, actionsByObject };
 }
 
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);

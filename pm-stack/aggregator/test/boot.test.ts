@@ -56,7 +56,11 @@ describe("server boots from fixtures", () => {
     expect(board.status).toBe(200);
     expect(await board.text()).toContain("Cross-repo WIP board");
     const api = await (await fetch(`http://127.0.0.1:${port}/api/overview.json`)).json();
-    expect(api.needsYou.count).toBeGreaterThanOrEqual(0);
+    // Fixtures carry no orchestration section, so the tier source is
+    // absent and the needs-you count is honestly null (unknown) --
+    // never a confident number over a partial queue (PR 2424 review).
+    expect(api.needsYou.count).toBeNull();
+    expect(api.needsYou.tierState).toBe("absent");
     expect(Array.isArray(api.projects)).toBe(true);
   });
 
