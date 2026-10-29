@@ -92,7 +92,9 @@ A match log is a single append-only, hash-chained stream in five parts:
 HEADER      match_id, world/program id + program build hash, rules/config hash,
             tick rate, RNG algorithm id + seed commitment, genesis (initial
             state hash or full initial state), player roster (ID public keys
-            + roles), start tick, format version
+            + roles), start tick, format version, per-player header
+            signatures over the header hash (taken before the first input
+            tick — see design rules)
 INPUTS      per-tick input records, delta-encoded, grouped into blocks
             (recommend one block per tick second); each block =
             block header (first tick, record count) + records
@@ -106,9 +108,10 @@ CHECKPOINTS every N ticks (recommend N = tick_rate, i.e. 1 s): tick +
             state hash; every M checkpoints (recommend M = 60): full state
             snapshot, so replay can start mid-log and auditors can spot-check
 FOOTER      final tick, final state hash, result claim (as data, not as
-            verdict), per-player signatures over (header hash ‖ final chain
-            hash), optional witness/relay countersignatures over the
-            metadata section (§4)
+            verdict), the RNG seed reveal (plaintext seed, checked against
+            the header's seed commitment), per-player signatures over
+            (header hash ‖ final chain hash ‖ seed reveal), optional
+            witness/relay countersignatures over the metadata section (§4)
 ```
 
 Design rules that matter:
@@ -118,6 +121,17 @@ Design rules that matter:
   way). Splicing, reordering, or truncating the log breaks the chain; the
   footer signatures bind both ends. This is what makes L1 (authenticity)
   cheap and certain.
+- **The header is signed before play, not only bound at the end.** Each
+  player signs the header hash *before the first input tick*; those
+  signatures travel in the log's prologue and in the sealed metadata, and
+  the auditor verifies them before it accepts anything downstream. Footer
+  signatures over `header hash ‖ final chain hash` alone are insufficient:
+  a participant who controls log assembly can swap the header — the seed
+  commitment, the program build hash — after seeing opponent inputs,
+  regenerate the chain and checkpoints, and then collect footer signatures
+  on the rewritten log. With a pre-signed header, a seed reveal in the
+  footer that does not match the commitment in the signed header is an L1
+  failure, not a judgement call.
 - **Inputs are tick-indexed, never wall-clock-indexed.** Wall-clock times
   live only in the metadata section. The state machine consumes inputs at
   tick boundaries; anything that happened "between ticks" is normalized to
@@ -128,23 +142,28 @@ Design rules that matter:
   integrity, checkpoints, and provenance — the parts an auditor needs
   regardless of game.
 - **Checkpoints are the audit accelerator, compared in order.** State hash
-  every second lets an auditor find the *first divergent tick* without
-  replaying from genesis, and lets a light auditor verify a sampled segment
-  instead of the whole match (matters for §5's tiered audit). The search is
-  a **prefix scan, not a binary search**: checkpoint equality is not
+  every second lets an auditor find the *first divergent checkpoint interval*
+  without replaying from genesis, and lets a light auditor verify a sampled
+  segment instead of the whole match (matters for §5's tiered audit). The
+  search is a **prefix scan, not a binary search**: checkpoint equality is not
   monotonic, because replayed and recorded states can diverge and later
   reconverge (a position differs for a few ticks and returns to the same
   place). A matching midpoint therefore does *not* prove the interval before
   it is clean, and a binary search that assumes it would skip the first
   divergence. Replay compares checkpoints in ascending tick order until the
   first mismatch, then replays that single checkpoint interval at full
-  resolution to name the divergent tick. Where checkpoints are sparse, a
-  cumulative replay-history commitment (each checkpoint hashing the run of
-  checkpoints before it) restores a monotone predicate — but that is an
-  optimization the format does not need to require. Note also what the chain
-  does and does not do here: it authenticates the *submitted* checkpoints, it
-  does not prove that replay reproduced their prefixes — only the replay
-  comparison does that.
+  resolution. Because the log commits to state hashes only at checkpoints,
+  replay can name the **first mismatching checkpoint interval**, not an
+  intra-interval tick: two different divergences inside one interval are
+  indistinguishable to the comparison. Naming the exact tick would require
+  per-tick state commitments, which the format deliberately does not require —
+  add them only if tick-level attribution is needed for a dispute. Where
+  checkpoints are sparse, a cumulative replay-history commitment (each
+  checkpoint hashing the run of checkpoints before it) restores a monotone
+  predicate — but that is an optimization the format does not need to require.
+  Note also what the chain does and does not do here: it authenticates the
+  *submitted* checkpoints, it does not prove that replay reproduced their
+  prefixes — only the replay comparison does that.
 - **Result is a claim inside the log, not a property of it.** The footer
   records what the participants say happened; the auditor's replay either
   reproduces it or doesn't. (How a reproduced result becomes an *attested*
@@ -207,9 +226,10 @@ order they will bite:
    seam: live mode reads wall/monotonic time, replay mode reads the log.
    Any world-program-visible time must come through it.
 4. **Seeded, versioned RNG.** Seed committed in the header (hash of seed
-   revealed in footer, so players can't grind seeds against a known
-   opponent log mid-match), algorithm identified by id+version. "Whatever
-   the runtime does" is not an RNG spec.
+   revealed in the footer and covered by the footer signature; the header
+   itself is signed by each player before the first input tick, so players
+   can't grind seeds against a known opponent log mid-match), algorithm
+   identified by id+version. "Whatever the runtime does" is not an RNG spec.
 5. **Float discipline.** The dangerous one for Roc/Wasm worlds. Options, in
    descending order of safety: (a) fixed-point/integer simulation for
    anything competitive; (b) strict IEEE semantics with NaN
@@ -270,12 +290,17 @@ Per player, per match. `O` = observed/countersigned, `S` = self-reported
 **Privacy note (a real design constraint, not boilerplate):** observed IP
 is the most sensitive field here and the one Drew's directive explicitly
 names ("known IP"). Recommendation for the synthesis: the *public* log
-carries a salted hash of the IP (season-scoped salt, so continuity checks
-work without disclosure); the full IP lives only in an auditor-sealed
-metadata section, encrypted to the auditor/witness keys, opened only when
-an audit is actually invoked. Competitive integrity does not require
-publishing every player's IP forever, and a design that does will
-(rightly) be refused by players.
+carries a **keyed pseudonym** — a season-scoped HMAC of the IP under a
+secret key held by the auditor/witness, never in the public log — so
+continuity checks work without disclosure. A plain salted hash is not
+enough: the IPv4 space is only 2^32 candidates, so anyone holding the
+season salt can hash every address once and recover the IP behind a
+published value without opening the sealed metadata; even a "public"
+season salt offers no protection against that enumeration. The full IP
+lives only in an auditor-sealed metadata section, encrypted to the
+auditor/witness keys, opened only when an audit is actually invoked.
+Competitive integrity does not require publishing every player's IP
+forever, and a design that does will (rightly) be refused by players.
 
 ### 4.2 Cheating signals the screen looks for
 
@@ -337,22 +362,32 @@ pipeline should say it in those words.
 ```mermaid
 flowchart LR
   A[Log submitted<br/>to auditor] --> B[L0 Parse + provenance<br/>format version, roster,<br/>program/rules hashes]
-  B --> C[L1 Integrity<br/>hash chain, footer signatures,<br/>header/footer binding]
+  B --> C[L1 Integrity<br/>hash chain, pre-match<br/>header signatures, footer<br/>signatures, header/footer binding]
   C -->|fail| X1[Verdict: INVALID RECORD]
   C -->|pass| D[L2 Deterministic replay<br/>pinned build, log-driven clock,<br/>checkpoint comparison]
-  D -->|divergence| X2[Verdict: REPLAY DIVERGES<br/>at tick T - result not<br/>reproduced]
+  D -->|divergence| X2[Verdict: REPLAY DIVERGES<br/>at checkpoint interval<br/>t1..t2 - result not<br/>reproduced]
   D -->|full-history replay reproduced| E[Result claim confirmed<br/>as output of the inputs]
   D -->|sampled segments reproduced| E2[Verdict: PARTIALLY VERIFIED<br/>checked intervals listed -<br/>NOT a result confirmation]
   E --> F[L3 Plausibility screen<br/>observed metadata +\br/>input statistics vs<br/>stakes profile]
   E2 --> F
-  F -->|flags| X3[Verdict: TECHNICALLY VALID,<br/>FLAGGED - flags listed,<br/>human review]
-  F -->|no flags| X4[Verdict: TECHNICALLY VALID,<br/>NO FLAGS at depth D]
-  X4 --> G[Attestation hand-off<br/>to #2037/#2039 result flow]
+  F -->|flags| X3[Verdict: TECHNICALLY VALID, basis:<br/>full-history or partial<br/>FLAGGED - flags listed,<br/>human review]
+  F -->|no flags| X4[Verdict: TECHNICALLY VALID, basis:<br/>full-history or partial<br/>NO FLAGS at depth D]
+  X4 --> G[Attestation hand-off<br/>to #2037/#2039 result flow<br/>basis and interval list<br/>carried through]
   X3 --> G
 ```
 
 Properties the sketch is enforcing:
 
+- **`<basis>` is not optional: every L3 outcome and the hand-off inherit
+  it from L2.** It is `full-history` when L2 replayed the complete
+  history, and `PARTIALLY VERIFIED — intervals <list>` when L2 verified
+  sampled segments. The L3 node is shared by both replay paths, so
+  relabeling the boxes alone is not the fix: the qualifier and the *same
+  interval list* must travel with both L3 outcomes and with the
+  attestation hand-off record. A sampled-only result that reaches
+  #2037/#2039 labeled plainly `TECHNICALLY VALID` would be read by a
+  consumer — which sees the label, not the audit history — as a result
+  confirmation, which the tiered-depth rule below says it is not.
 - **Cheap layers first, and each layer's verdict is final for its claim.**
   L1 failure ends the audit — there is nothing to replay if the record
   itself is tampered. L2 divergence ends it differently: the log is
@@ -378,11 +413,15 @@ Properties the sketch is enforcing:
   plus `PARTIALLY VERIFIED — intervals <list>` and
   `INCONCLUSIVE — <missing input>`). In particular there is no
   "PROVEN FAIR" verdict, and "FLAGGED" names the flags and their
-  false-positive context instead of pronouncing cheating.
+  false-positive context instead of pronouncing cheating. A
+  `TECHNICALLY VALID` verdict is always written with its basis
+  (`full-history`, or the `PARTIALLY VERIFIED` qualifier and interval
+  list); the bare form does not exist.
 - **Hand-off, not absorption:** the audit output (verdict + evidence
-  references) is an *input* to the attestation flow of #2037/#2039, which
-  decides what the result means for records, rankings, and currencies.
-  The auditor decides nothing about prizes or bans.
+  references + the L2 basis and interval list) is an *input* to the
+  attestation flow of #2037/#2039, which decides what the result means for
+  records, rankings, and currencies. The auditor decides nothing about
+  prizes or bans.
 
 ---
 
