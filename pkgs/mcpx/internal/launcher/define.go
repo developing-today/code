@@ -81,8 +81,22 @@ func splitArgs(s string) []string {
 	var out []string
 	depth := 0
 	start := 0
+	var quote byte
 	for i := 0; i < len(s); i++ {
-		switch s[i] {
+		c := s[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++ // an escaped character inside quotes is data, not syntax
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
 		case '(':
 			depth++
 		case ')':
@@ -97,6 +111,41 @@ func splitArgs(s string) []string {
 	return append(out, s[start:])
 }
 
+// parseParam splits one declared parameter token into its name and,
+// for the `name = value` spelling (#1852), its default. The `=` must
+// sit at the top level: one inside quotes or parentheses belongs to
+// the value. A token without a top-level `=` has no default.
+func parseParam(token string) (name, def string, hasDef bool) {
+	depth := 0
+	var quote byte
+	for i := 0; i < len(token); i++ {
+		c := token[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
+		case '(':
+			depth++
+		case ')':
+			depth--
+		case '=':
+			if depth == 0 {
+				return strings.TrimSpace(token[:i]), strings.TrimSpace(token[i+1:]), true
+			}
+		}
+	}
+	return strings.TrimSpace(token), "", false
+}
+
 // Definition is a placeholder a user declared, rather than one built in.
 type Definition struct {
 	Name Placeholder
@@ -105,6 +154,11 @@ type Definition struct {
 	// Params are the names its arguments bind to, usable inside Body as
 	// @param.
 	Params []string
+	// Defaults maps a parameter name to the default its declaration
+	// gave it (`label = "unnamed"`, #1852). The value is kept verbatim,
+	// exactly as if the use had written it as the argument: a use that
+	// omits the argument binds the default, an explicit argument wins.
+	Defaults map[string]string
 	// From is the file it was declared in.
 	From string
 }
@@ -116,7 +170,7 @@ type Definition struct {
 // constant is visible to tooling. The filename is the least ceremony for a
 // directory of one-line fragments.
 var (
-	commentDecl = regexp.MustCompile(`^\s*(?://|#|/\*)\s*@mcpx:placeholder\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\(([^)]*)\))?`)
+	commentDecl = regexp.MustCompile(`^\s*(?://|#|/\*)\s*@mcpx:placeholder\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\((.*)\))?`)
 	constDecl   = regexp.MustCompile(`^\s*export\s+const\s+MCPX_PLACEHOLDER\s*=\s*["'` + "`" + `]([A-Za-z_][A-Za-z0-9_]*)["'` + "`" + `]`)
 )
 
@@ -133,7 +187,7 @@ func LoadDefinitions(paths []string) ([]Definition, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading placeholder from %s: %w", path, err)
 		}
-		body, name, params := readDeclaration(f)
+		body, name, params, defaults := readDeclaration(f)
 		f.Close()
 
 		if name == "" {
@@ -147,13 +201,13 @@ func LoadDefinitions(paths []string) ([]Definition, error) {
 			}
 		}
 		out = append(out, Definition{
-			Name: Placeholder(name), Body: body, Params: params, From: path,
+			Name: Placeholder(name), Body: body, Params: params, Defaults: defaults, From: path,
 		})
 	}
 	return out, nil
 }
 
-func readDeclaration(f *os.File) (body, name string, params []string) {
+func readDeclaration(f *os.File) (body, name string, params []string, defaults map[string]string) {
 	var b strings.Builder
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
@@ -163,9 +217,17 @@ func readDeclaration(f *os.File) (body, name string, params []string) {
 			if m := commentDecl.FindStringSubmatch(line); m != nil {
 				name = m[1]
 				if m[3] != "" {
-					for _, p := range strings.Split(m[3], ",") {
-						if p = strings.TrimSpace(p); p != "" {
-							params = append(params, p)
+					for _, token := range splitArgs(m[3]) {
+						pname, def, hasDef := parseParam(token)
+						if pname == "" {
+							continue
+						}
+						params = append(params, pname)
+						if hasDef {
+							if defaults == nil {
+								defaults = map[string]string{}
+							}
+							defaults[pname] = def
 						}
 					}
 				}
@@ -179,7 +241,7 @@ func readDeclaration(f *os.File) (body, name string, params []string) {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	return strings.TrimRight(b.String(), "\n"), name, params
+	return strings.TrimRight(b.String(), "\n"), name, params, defaults
 }
 
 func validName(s string) bool {

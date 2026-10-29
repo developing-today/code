@@ -138,3 +138,60 @@ func TestTwoFilesClaimingOneNameIsRefused(t *testing.T) {
 		t.Errorf("both files should be named: %v", err)
 	}
 }
+
+func TestADeclarationCanGiveAParameterADefault(t *testing.T) {
+	// #1852: `label = "unnamed"` declares a parameter named label whose
+	// default is the value after the `=`, not a parameter literally
+	// named `label = "unnamed"`.
+	dir := t.TempDir()
+	p := write(t, dir, "timed.ts", "// @mcpx:placeholder timed(body, label = \"unnamed\")\nrun(@label, () => { @body });\n")
+	defs, err := launcher.LoadDefinitions([]string{p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(defs[0].Params, ",") != "body,label" {
+		t.Errorf("params: got %v", defs[0].Params)
+	}
+	if defs[0].Defaults["label"] != `"unnamed"` {
+		t.Errorf("defaults: got %v", defs[0].Defaults)
+	}
+}
+
+func TestADefaultContainingACommaDoesNotCorruptTheSplit(t *testing.T) {
+	dir := t.TempDir()
+	p := write(t, dir, "timed.ts", "// @mcpx:placeholder timed(body, label = \"a, b\", mode = fast)\nrun(@label);\n")
+	defs, err := launcher.LoadDefinitions([]string{p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(defs[0].Params, ",") != "body,label,mode" {
+		t.Errorf("params: got %v", defs[0].Params)
+	}
+	if defs[0].Defaults["label"] != `"a, b"` || defs[0].Defaults["mode"] != "fast" {
+		t.Errorf("defaults: got %v", defs[0].Defaults)
+	}
+}
+
+func TestADefaultAppliesWhenTheUseOmitsTheArgument(t *testing.T) {
+	dir := t.TempDir()
+	p := write(t, dir, "timed.ts", "// @mcpx:placeholder timed(body, label = \"unnamed\")\nrun(@label, () => { @body });\n")
+	defs, _ := launcher.LoadDefinitions([]string{p})
+	fill, _ := launcher.Bind(launcher.Fill{launcher.Entry: "ENTRY"}, defs)
+
+	expand := func(text string) string {
+		got, err := launcher.Expand(launcher.Template{Text: text, Name: "t"}, fill, launcher.Options{Defs: defs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := expand("@timed(entry)"); got != `run("unnamed", () => { ENTRY });` {
+		t.Errorf("omitted argument should bind the default: got %q", got)
+	}
+	if got := expand(`@timed(entry, "custom")`); got != `run("custom", () => { ENTRY });` {
+		t.Errorf("an explicit argument should win over the default: got %q", got)
+	}
+	if got := expand("@timed"); !strings.Contains(got, `"unnamed"`) {
+		t.Errorf("a bare use omits every argument, so the default should still bind: got %q", got)
+	}
+}

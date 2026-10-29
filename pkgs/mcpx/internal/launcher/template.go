@@ -145,7 +145,10 @@ func expand(text string, fill Fill, opt Options, counts map[Placeholder]int, dep
 		// outer one for the parameter names, so @console(header, prefix)
 		// reaches exactly those fragments and nothing leaks back out.
 		inner := fill
-		if ref.HasArgs {
+		if ref.HasArgs || defHasDefaults(opt.Defs, ref.Name) {
+			// A bare use of a placeholder whose declaration carries
+			// defaults still binds them (#1852): omitting the
+			// parentheses omits every argument.
 			inner = withArgs(fill, ref, opt.Defs)
 		}
 		sub, err := expand(body, inner, opt, counts, depth+1)
@@ -156,6 +159,17 @@ func expand(text string, fill Fill, opt Options, counts map[Placeholder]int, dep
 		i = j + ref.Width
 	}
 	return b.String(), nil
+}
+
+// defHasDefaults reports whether the named definition declares any
+// parameter default (#1852).
+func defHasDefaults(defs []Definition, name Placeholder) bool {
+	for _, d := range defs {
+		if d.Name == name {
+			return len(d.Defaults) > 0
+		}
+	}
+	return false
 }
 
 // withArgs layers a definition's parameters over the outer fill.
@@ -169,9 +183,11 @@ func withArgs(outer Fill, ref Ref, defs []Definition) Fill {
 		inner[k] = v
 	}
 	var params []string
+	var defaults map[string]string
 	for _, d := range defs {
 		if d.Name == ref.Name {
 			params = d.Params
+			defaults = d.Defaults
 			break
 		}
 	}
@@ -188,6 +204,25 @@ func withArgs(outer Fill, ref Ref, defs []Definition) Fill {
 		}
 		inner[Placeholder(fmt.Sprint(i+1))] = value
 	}
+	// Defaults (#1852): a parameter the use did not supply binds its
+	// declared default, resolved exactly like an argument — a default
+	// naming another placeholder expands to it, anything else is used
+	// verbatim (quotes included, as an explicit quoted argument is).
+	for i, name := range params {
+		if i < len(ref.Args) {
+			continue // an explicit argument always wins
+		}
+		def, ok := defaults[name]
+		if !ok {
+			continue
+		}
+		value := def
+		if body, ok := outer[Placeholder(def)]; ok {
+			value = body
+		}
+		inner[Placeholder(name)] = value
+		inner[Placeholder(fmt.Sprint(i+1))] = value
+	}
 	joined := make([]string, 0, len(ref.Args))
 	for _, a := range ref.Args {
 		if body, ok := outer[Placeholder(a)]; ok {
@@ -196,7 +231,11 @@ func withArgs(outer Fill, ref Ref, defs []Definition) Fill {
 		}
 		joined = append(joined, a)
 	}
-	inner["args"] = strings.Join(joined, "\n")
+	if ref.HasArgs {
+		// @args is the arguments the use actually passed; a bare use
+		// (defaults only) leaves the outer @args alone.
+		inner["args"] = strings.Join(joined, "\n")
+	}
 	return inner
 }
 
