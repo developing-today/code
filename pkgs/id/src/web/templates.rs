@@ -164,7 +164,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
          value=\"{}\" />",
         search_value
     );
-    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" /> show auto/archive</label>");
+    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" aria-label=\"Show auto and archive files\" /> show auto/archive</label>");
     let _ = write!(
         html,
         "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",
@@ -786,15 +786,15 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
     <h2 class="font-bold">Join or invite</h2>
     <label class="form-control max-w-xl">
       <span class="label-text">Display name</span>
-      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest">
+      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest" aria-label="Display name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">World <span class="opacity-60">(blank for the server's default)</span></span>
-      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*">
+      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*" aria-label="World name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">Guest capability</span>
-      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability">
+      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability" aria-label="Guest capability">
     </label>
     <div class="flex flex-wrap gap-2">
       <button data-world-join class="btn btn-primary" type="button">Join world</button>

@@ -113,8 +113,8 @@ function createPanel(container: HTMLElement): HTMLElement {
     </div>
     <div class="search-panel-row search-replace-row" id="search-replace-row" style="display:none">
       <input type="text" id="replace-input" class="search-field" placeholder="Replace…" aria-label="Replace with" autocomplete="off" spellcheck="false" />
-      <button class="search-btn" id="replace-one" title="Replace">Replace</button>
-      <button class="search-btn" id="replace-all" title="Replace all">All</button>
+      <button class="search-btn" id="replace-one" title="Replace match" aria-label="Replace match">Replace</button>
+      <button class="search-btn" id="replace-all" title="Replace all matches" aria-label="Replace all matches">All</button>
     </div>
   `;
 
