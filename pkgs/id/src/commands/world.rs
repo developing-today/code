@@ -929,6 +929,14 @@ fn step_is_applied(step: &crate::world_manifest::ApplyStep) -> bool {
 /// set/cancel — each journaled by the host. Returns how many of the steps
 /// were actually applied, so the caller's summary cannot claim credit for
 /// any step whose apply path is missing (#818).
+///
+/// The steps run in an order that makes the plan's result reachable, not
+/// strictly in plan order (#807): schedule cancels first, so a manifest
+/// that replaces ids at the pending-schedule capacity frees the slots its
+/// additions need; the execution profile next, so a module installed in
+/// the same apply is instantiated under the manifest's profile, not the
+/// previous one (a profile applies on the next install); then the
+/// remaining steps in plan order, with schedule additions last.
 async fn apply_steps(
     client: &mut WorldClient,
     admin_token: &str,
@@ -937,7 +945,29 @@ async fn apply_steps(
 ) -> Result<usize> {
     use crate::world_manifest::ApplyStep;
     let applied = steps.iter().filter(|step| step_is_applied(step)).count();
-    for step in steps {
+    let ordered: Vec<&ApplyStep> = steps
+        .iter()
+        .filter(|step| matches!(step, ApplyStep::CancelSchedule { .. }))
+        .chain(
+            steps
+                .iter()
+                .filter(|step| matches!(step, ApplyStep::SetProfile { .. })),
+        )
+        .chain(steps.iter().filter(|step| {
+            !matches!(
+                step,
+                ApplyStep::CancelSchedule { .. }
+                    | ApplyStep::SetProfile { .. }
+                    | ApplyStep::ScheduleAt { .. }
+            )
+        }))
+        .chain(
+            steps
+                .iter()
+                .filter(|step| matches!(step, ApplyStep::ScheduleAt { .. })),
+        )
+        .collect();
+    for step in ordered {
         match step {
             ApplyStep::SetGrants { grants } => {
                 let current: crate::world_caps::CapsReport =
