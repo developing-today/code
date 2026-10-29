@@ -471,12 +471,32 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
             "Open checks, live collectors per service, daily + event-driven console reads, dashboard provenance, and the free-services completion pass.",
           refs: [code(1047)],
         },
+        {
+          title: "OCI signup resolution",
+          detail:
+            "The Oracle Cloud signup is still pending; the CPCOE-29381 follow-up is scheduled. The target is the Always-Free allocation (a hard allocation, not metered billing) — the account is not to be upgraded to pay-as-you-go.",
+        },
+        {
+          title: "Free-services pass — adoption decisions",
+          detail:
+            "The 2026-10-26 SaaS review list — boats.cloud, quic.cloud, Backblaze B2, OVHcloud, Railway, Render, DigitalOcean, Hetzner, Heroku, GCP, AWS — was evaluated on 2026-10-29 in the workspace tracker (ai-subscriptions/free-services-to-check.md), each service with an overage verdict under the no-surprise-bills guardrail. What remains is the per-service adopt/skip decision; boats.cloud stays unverified and untouched (no official site resolves).",
+        },
       ],
       longTerm: [
         {
           title: "Every plan paced against its reset",
           detail:
             "Usage percentages refreshed on a daily cadence, allotments aimed at ~100% use, and any claimed plan change diffed against the dated evidence baseline before the tracker moves.",
+        },
+        {
+          title: "Egress offload",
+          detail:
+            "Bulk egress rides zero-egress lanes (Cloudflare R2 charges no egress; Backblaze B2 egress is free via listed partners such as Cloudflare) so metered clouds carry compute and storage, not bandwidth bills.",
+        },
+        {
+          title: "Always-free maximization",
+          detail:
+            "Always-free allocations (OCI Always Free, the Cloudflare/Turso/Supabase free tiers, vendor free plans that wall rather than bill) are filled first, and paid allotments are paced to ~100% use before any new spend is added.",
         },
       ],
       gaps: [
