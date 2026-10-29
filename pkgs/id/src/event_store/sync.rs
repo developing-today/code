@@ -1025,10 +1025,15 @@ mod tests {
         assert_eq!(store.sync_entries().unwrap().len(), 22);
     }
 
-    /// A received event that the store voids is counted in the outcome voided
-    /// count, not folded into accepted and not dropped (Codex finding on PR 2214).
+    /// A range session counts every disposition it decides, including the arrivals it does
+    /// not store (Codex finding on PR 2214: the tally had a voided count the outcome dropped).
+    ///
+    /// The shape matters. An event above its author's fork point that arrives *after* the
+    /// fork is refused as frozen (`ingest.rs`, "Known limit: a rival refused as frozen"), so
+    /// it is counted as refused, and the voided count stays zero: voided labels an event the
+    /// store keeps without applying, not an arrival it turns away.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_a_range_session_counts_voided_events() {
+    async fn test_a_range_session_counts_frozen_arrivals_as_refused() {
         let (_da, mut a) = open();
         let (_db, mut b) = open();
         let events = chain_of(1, 5, b"x");
@@ -1062,12 +1067,21 @@ mod tests {
         )
         .await
         .unwrap();
-        let (_da, db) = (da.unwrap(), db.unwrap());
+        let (da, db) = (da.unwrap(), db.unwrap());
+        assert_eq!(da.sent, 2, "events 4 and 5 are missing on B's side");
         assert_eq!(
-            db.voided, 2,
-            "events 3 and 4 arrive above the fork point in B and are stored voided"
+            db.received, 2,
+            "both above the fork point are received and turned away: {db:?}"
         );
-        assert_eq!(db.accepted, 0, "voided events are not counted as accepted");
+        assert_eq!(
+            db.refused, 2,
+            "events 4 and 5 arrive above the fork point, so they are frozen: {db:?}"
+        );
+        assert_eq!(db.accepted, 0, "a frozen arrival is not accepted: {db:?}");
+        assert_eq!(
+            db.voided, 0,
+            "voided counts stored-but-unapplied events, not refused arrivals: {db:?}"
+        );
     }
 
     /// Prefix lengths of two sides' chains, so each side holds some events the other lacks.
