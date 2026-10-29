@@ -197,7 +197,7 @@ export const PROJECT_CONFIGS: ProjectConfig[] = [
         {
           title: "Predecessor epics live in dezren39/nix (#501-#508)",
           detail:
-            "This program was pre-seeded by a parallel epic set in dezren39/nix, all since closed there: #501 (inventory the basement fleet) and #502 (baseline cluster services and networking) are the pre-seed pair behind code #1080 and #1081, #503 (Talos bootstrap on one node) overlaps code #1086, #504 (storage services) overlaps code #1085, #505 decided the hardware and distro path, #506 weighed Proxmox before Talos, #507 planned lab networking, power, UPS and rack layout, and #508 is the nix-side program epic. They are tracked above alongside the code epics so the page shows the full lineage instead of only the code-side half.",
+            "This program was pre-seeded by a parallel epic set in dezren39/nix, all since closed there: #501 (hardware inventory and hardware-stats gathering) is the pre-seed of code #1080, #502 (BMC/BIOS configuration audit) of code #1081, #503 (TALM bootstrap for non-identical drives) overlaps code #1086, #504 (storage pools: RAID10 HDD and NVMe tiers) overlaps code #1085, #505 covers the egress strategy and #507 (OCI always-free maximization) the cloud extension behind code #1091, #506 is a boats.dev research spike with no code-side epic, and #508 is the nix-side program epic. They are tracked above alongside the code epics so the page shows the full lineage instead of only the code-side half.",
           refs: [nix(501), nix(502), nix(503), nix(504), nix(505), nix(506), nix(507), nix(508)],
         },
         {
