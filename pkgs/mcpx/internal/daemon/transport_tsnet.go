@@ -10,10 +10,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"tailscale.com/ipn/store/mem"
 	"tailscale.com/tsnet"
+
+	"github.com/dezren39/mcpx/internal/defaults"
 )
 
 // Identity transport (#1967): a daemon reachable by its tailnet identity
@@ -50,7 +51,7 @@ func (t tsnetTransport) Name() string { return "tsnet" }
 // asynchronous: without this wait a daemon with an expired or revoked
 // auth key would report startup success while its identity route never
 // joins the tailnet.
-const tsnetUpTimeout = 30 * time.Second
+var tsnetUpTimeout = defaults.TSNetUpTimeout
 
 func (t tsnetTransport) Listen() (net.Listener, error) {
 	node, err := newTSNetNode(t.hostname, t.stateDir, t.authKey, false)
