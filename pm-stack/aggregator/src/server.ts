@@ -138,6 +138,7 @@ async function healthContext(): Promise<HealthView> {
     feedFileMtimeMs,
     diagnosis: source.diagnostics?.().orchestration,
     detail: source.provenanceDetail?.(),
+    comments: await commentsStore.pendingCounts().catch(() => undefined),
   });
 }
 
