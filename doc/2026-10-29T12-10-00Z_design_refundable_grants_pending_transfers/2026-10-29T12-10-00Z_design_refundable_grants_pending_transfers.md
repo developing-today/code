@@ -12,7 +12,7 @@
 
 **The premise holds, with one correction that changes the product story.**
 
-Granting premium tokens as a *pending* (two-phase) transfer does close the clawback failure mode from #2040 — but only for refunds that arrive **while the grant is still pending**. Once a grant posts, the tokens are ordinary posted balance, spending is unrestricted, and a refund after that point is again a clawback that can fail (`exceeds_credits`). So the design is not "refunds always work"; it is **"the refund window and the vesting window are made the same window"**, which is exactly how Steam itself works. The residual exposure is a refund that arrives late, and that is a bounded, explicitly-handled case rather than the default one.
+Granting premium tokens as a _pending_ (two-phase) transfer does close the clawback failure mode from #2040 — but only for refunds that arrive **while the grant is still pending**. Once a grant posts, the tokens are ordinary posted balance, spending is unrestricted, and a refund after that point is again a clawback that can fail (`exceeds_credits`). So the design is not "refunds always work"; it is **"the refund window and the vesting window are made the same window"**, which is exactly how Steam itself works. The residual exposure is a refund that arrives late, and that is a bounded, explicitly-handled case rather than the default one.
 
 The cost is delayed usability: pending credits are not spendable posted balance (`credits_pending`, not `credits_posted`), so the user holds tokens they cannot spend until the window closes. That is the whole trade, and it is a product decision, not an engineering one — §3 surfaces it rather than defaulting it.
 
@@ -29,7 +29,7 @@ From #2040, in TigerBeetle's own terms:
 - There is **no freeze, seizure, or negative-balance forcing** primitive. Any "freeze" is our gateway refusing to submit transfers, which only binds traffic that goes through the gateway.
 - A pending transfer, by contrast, **reserves** value: `debits_pending` on the source account, `credits_pending` on the destination. The reservation is released by exactly one of three outcomes: `post_pending_transfer` (all or part), `void_pending_transfer` (releases the whole hold), or `timeout` (auto-restores the whole hold). Resolution happens **at most once**; repeat attempts return `pending_transfer_already_posted` / `_voided` / `_expired`.
 
-The mismatch the issue names is therefore structural: minting on redemption gives the user a posted, spendable balance the instant the key validates, and the refund arrives later with nothing left to take back. A pending transfer inverts that ordering — value is *promised* at redemption and *delivered* at window close — so the refund decision happens while the value is still revocable.
+The mismatch the issue names is therefore structural: minting on redemption gives the user a posted, spendable balance the instant the key validates, and the refund arrives later with nothing left to take back. A pending transfer inverts that ordering — value is _promised_ at redemption and _delivered_ at window close — so the refund decision happens while the value is still revocable.
 
 ## 2. The design
 
@@ -55,10 +55,10 @@ stateDiagram-v2
 
 Per currency (ledger), as in the #2040 account factory:
 
-| Account | Flags | Role |
-|---|---|---|
-| `issuer.grant_pool` | none (issuer may go negative by policy, or be pre-funded) | debits side of every grant; holds supply |
-| `user.<id>.premium` | `debits_must_not_exceed_credits` | credits side; `credits_pending` while a grant is unvested |
+| Account             | Flags                                                     | Role                                                      |
+| ------------------- | --------------------------------------------------------- | --------------------------------------------------------- |
+| `issuer.grant_pool` | none (issuer may go negative by policy, or be pre-funded) | debits side of every grant; holds supply                  |
+| `user.<id>.premium` | `debits_must_not_exceed_credits`                          | credits side; `credits_pending` while a grant is unvested |
 
 One grant = **one pending transfer**, not a stream of small ones:
 
@@ -69,7 +69,7 @@ One grant = **one pending transfer**, not a stream of small ones:
 
 Vesting is a second transfer with `flags.post_pending_transfer` + `pending_id`, `amount = N` (full) or `N' < N` (partial). Voiding is `flags.void_pending_transfer` + `pending_id`.
 
-Reserve-time invariants are a feature here: a hold that would break `debits_must_not_exceed_credits` fails at *reserve* time, not at posting, so a bad grant is rejected at the API boundary rather than silently failing 14 days later.
+Reserve-time invariants are a feature here: a hold that would break `debits_must_not_exceed_credits` fails at _reserve_ time, not at posting, so a bad grant is rejected at the API boundary rather than silently failing 14 days later.
 
 ### 2.3 Control-plane record (the part TigerBeetle cannot hold)
 
@@ -89,7 +89,7 @@ grant(
 )
 ```
 
-The DB is a *projection* with intent; TigerBeetle is the truth about money. Every state change is written intent-first, transfer-second, confirm-third, so a crash between the two leaves a reconcilable row rather than an orphaned hold (§6.3).
+The DB is a _projection_ with intent; TigerBeetle is the truth about money. Every state change is written intent-first, transfer-second, confirm-third, so a crash between the two leaves a reconcilable row rather than an orphaned hold (§6.3).
 
 ### 2.4 API surface (gateway, #2062)
 
@@ -107,27 +107,27 @@ GET  /users/{id}/grants                           -> list, for the "pending toke
 
 This is the one decision in the design that is not ours to bury. The intake review on #2065 flagged it: window length trades **refund safety** against **how long a paying user stares at unusable tokens**.
 
-| Option | Refund exposure closed | User waits | Notes |
-|---|---|---|---|
-| **A. 14 days** (Steam's refund window) | Essentially all Steam refunds | Up to 14 days | Matches the platform's own rule; the "why can't I spend this" answer is "same rule as Steam" |
-| B. 48 hours | Refunds inside 48h only | 2 days | Steam allows 14 days; this leaves an 12-day hole that is *worse* than it looks, because it is a hole nobody expects |
-| C. Hybrid: 14 days, early vest on evidence | Most, sooner | Hours to 14 days | Needs a trustworthy "refund window closed" signal; Steam does not reliably expose one, so early vest would rest on our own heuristics |
-| D. No window (post immediately, clawback later) | None | 0 | This is the status quo the issue exists to replace |
+| Option                                          | Refund exposure closed        | User waits       | Notes                                                                                                                                 |
+| ----------------------------------------------- | ----------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **A. 14 days** (Steam's refund window)          | Essentially all Steam refunds | Up to 14 days    | Matches the platform's own rule; the "why can't I spend this" answer is "same rule as Steam"                                          |
+| B. 48 hours                                     | Refunds inside 48h only       | 2 days           | Steam allows 14 days; this leaves an 12-day hole that is _worse_ than it looks, because it is a hole nobody expects                   |
+| C. Hybrid: 14 days, early vest on evidence      | Most, sooner                  | Hours to 14 days | Needs a trustworthy "refund window closed" signal; Steam does not reliably expose one, so early vest would rest on our own heuristics |
+| D. No window (post immediately, clawback later) | None                          | 0                | This is the status quo the issue exists to replace                                                                                    |
 
-**Recommendation: A (14 days), with C as a later refinement only if a real signal appears.** Rationale: A is the only option where the rule the user experiences is the same rule that protects the ledger, so the UX story and the accounting story cannot drift apart. B and C both create a window where the product *looks* safe and is not. The recommendation is a default for the design, not a decision taken on Drew's behalf — filed as its own decision issue so it can be overridden cheaply before anything is built (see §8).
+**Recommendation: A (14 days), with C as a later refinement only if a real signal appears.** Rationale: A is the only option where the rule the user experiences is the same rule that protects the ledger, so the UX story and the accounting story cannot drift apart. B and C both create a window where the product _looks_ safe and is not. The recommendation is a default for the design, not a decision taken on Drew's behalf — filed as its own decision issue so it can be overridden cheaply before anything is built (see §8).
 
 A second, smaller pin sits underneath: **what a pending grant may be spent on.** Recommendation: nothing — pending credits are not spendable, full stop. Allowing "pending tokens count for purchases" reintroduces the clawback problem through the front door.
 
 ## 4. Partial posting
 
-TigerBeetle posts *all or part* of a hold (`amount` on the post transfer; posting less restores the remainder), but **voiding is all-or-nothing** — there is no partial void. That asymmetry decides the semantics:
+TigerBeetle posts _all or part_ of a hold (`amount` on the post transfer; posting less restores the remainder), but **voiding is all-or-nothing** — there is no partial void. That asymmetry decides the semantics:
 
-| Situation | Handling |
-|---|---|
-| Full refund before vest | Void the hold. One transfer, whole grant released. |
-| **Partial refund before vest** (e.g. a bundle where one item is refunded) | **Void the whole hold, then issue a new pending transfer for the remainder**, linked by the same grant id lineage in the control plane and a `correction_of` field. Two transfers, both auditable; the alternative — posting the reduced amount — would leave the refunded part as a *posted* credit we then have to claw back, i.e. the original bug. |
-| Partial vest at window close by policy (e.g. grant tiers) | Post the vested fraction with `post_pending_transfer` `amount = N'`; the remainder is auto-restored. Only correct when the *policy* vests partially, not when a refund reduced the grant. |
-| Refund arrives after vest | Not a partial-posting problem — clawback path, §6. |
+| Situation                                                                 | Handling                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Full refund before vest                                                   | Void the hold. One transfer, whole grant released.                                                                                                                                                                                                                                                                                                     |
+| **Partial refund before vest** (e.g. a bundle where one item is refunded) | **Void the whole hold, then issue a new pending transfer for the remainder**, linked by the same grant id lineage in the control plane and a `correction_of` field. Two transfers, both auditable; the alternative — posting the reduced amount — would leave the refunded part as a _posted_ credit we then have to claw back, i.e. the original bug. |
+| Partial vest at window close by policy (e.g. grant tiers)                 | Post the vested fraction with `post_pending_transfer` `amount = N'`; the remainder is auto-restored. Only correct when the _policy_ vests partially, not when a refund reduced the grant.                                                                                                                                                              |
+| Refund arrives after vest                                                 | Not a partial-posting problem — clawback path, §6.                                                                                                                                                                                                                                                                                                     |
 
 The rule to state plainly in the implementation: **partial posting is for policy, void-and-reissue is for refunds.** Mixing them is how a refunded amount ends up posted.
 
@@ -148,13 +148,13 @@ Two details that matter more than they look:
 
 ### 6.1 Side by side
 
-| | Status quo (post at redemption) | This design (pending until window close) |
-|---|---|---|
-| Refund during window | Clawback transfer; **fails** if spent (`exceeds_credits`) | **Void the hold** — cannot fail, nothing was spendable |
-| Refund after window | Same clawback failure | Same clawback failure, but the window is now the *same* window Steam uses, so this is the rare case, not the normal one |
-| Tokens spendable | Immediately | After the window |
-| Ledger state on refund | Original transfer stands + failed corrective | Reservation released; original never posted |
-| Needs a freeze primitive | Yes (does not exist) | No |
+|                          | Status quo (post at redemption)                           | This design (pending until window close)                                                                                |
+| ------------------------ | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Refund during window     | Clawback transfer; **fails** if spent (`exceeds_credits`) | **Void the hold** — cannot fail, nothing was spendable                                                                  |
+| Refund after window      | Same clawback failure                                     | Same clawback failure, but the window is now the _same_ window Steam uses, so this is the rare case, not the normal one |
+| Tokens spendable         | Immediately                                               | After the window                                                                                                        |
+| Ledger state on refund   | Original transfer stands + failed corrective              | Reservation released; original never posted                                                                             |
+| Needs a freeze primitive | Yes (does not exist)                                      | No                                                                                                                      |
 
 **Closed:** every refund that arrives inside the window — which is the case the issue was filed about. **Not closed, and cannot be:** a refund that arrives after the tokens posted and were spent. No ledger primitive fixes that; TigerBeetle explicitly offers none (#2040 §5).
 
@@ -172,18 +172,18 @@ Exposure is bounded by (late-refund rate × per-grant value), and both are measu
 
 The pending transfer introduces failure modes the posted design did not have. All are reconcilable:
 
-| Failure | Effect | Handling |
-|---|---|---|
-| Service dies between reserve and vest | Hold sits until `timeout`, then auto-restores → user's paid grant evaporates | `timeout` = window + slack (recommend +72h); reconciler sweeps `state=pending AND window_ends_at < now` and posts. `Expired` is a reconcilable state, not a loss. |
-| Vest submitted twice (retry) | Second attempt → `pending_transfer_already_posted` | Treat as success; confirm state from the control plane. |
-| Refund and vest race | At most one resolves; the loser gets `already_posted` / `already_voided` | Correct by construction; log which won. If post won, fall to §6.2. |
-| Refund arrives after the reconciler posted | Clawback path | §6.2. |
-| Control plane and ledger drift | Grant row says posted, ledger says pending | Reconciliation job compares `pending_transfer_id` resolution against row state; drift is an alert, not a silent fix. |
+| Failure                                    | Effect                                                                       | Handling                                                                                                                                                          |
+| ------------------------------------------ | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Service dies between reserve and vest      | Hold sits until `timeout`, then auto-restores → user's paid grant evaporates | `timeout` = window + slack (recommend +72h); reconciler sweeps `state=pending AND window_ends_at < now` and posts. `Expired` is a reconcilable state, not a loss. |
+| Vest submitted twice (retry)               | Second attempt → `pending_transfer_already_posted`                           | Treat as success; confirm state from the control plane.                                                                                                           |
+| Refund and vest race                       | At most one resolves; the loser gets `already_posted` / `already_voided`     | Correct by construction; log which won. If post won, fall to §6.2.                                                                                                |
+| Refund arrives after the reconciler posted | Clawback path                                                                | §6.2.                                                                                                                                                             |
+| Control plane and ledger drift             | Grant row says posted, ledger says pending                                   | Reconciliation job compares `pending_transfer_id` resolution against row state; drift is an alert, not a silent fix.                                              |
 
 ## 7. Interaction with the rest of the program
 
-- **#2062 (control plane / gateway):** this design *needs* it — grant records, key→grant linkage, the only TB client. No new capability required beyond a `grant` table and three endpoints.
-- **#2063 (conversions):** pending grants interact with conversion in one place — a conversion out of a pending balance must be refused (pending credits are not spendable, §3). Conversions *of* posted premium tokens are unaffected.
+- **#2062 (control plane / gateway):** this design _needs_ it — grant records, key→grant linkage, the only TB client. No new capability required beyond a `grant` table and three endpoints.
+- **#2063 (conversions):** pending grants interact with conversion in one place — a conversion out of a pending balance must be refused (pending credits are not spendable, §3). Conversions _of_ posted premium tokens are unaffected.
 - **#2042 (tokens for real services):** this is the refund half of that investigation; the "what a token buys" half is separate and unaffected.
 - **#2043 (currencies v1):** the grant state machine belongs in the v1 currency design as the canonical example of the pending primitive, and as the reason the `grant_pool`/holder account pair exists per currency.
 
