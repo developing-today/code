@@ -48,6 +48,19 @@
   // what agent configs already default to; restore the Haiku default when
   // claude-code is re-enabled.
   "default": "opencode-route/workhorse",
+  // The v2 default-model key is "model" (config normalize.ts reads only
+  // input.model; the "default" key above is not consumed by the 2.x schema
+  // and the server otherwise falls back to its first-available model —
+  // which was commandcode/gpt-5.6-terra, failing over to gpt-6-luna.
+  // Verified 2026-10-29 against /api/model/default. Drew’s ruling: a
+  // session with no model chosen resolves to the workhorse route.
+  "model": "opencode-route/workhorse",
+  // Small-model slot (2026-10-29, Drew): the route `speed`, never a direct
+  // provider leaf. OpenChamber’s small-model resolver reads this key (or
+  // the title agent’s model) when no settings override applies; a capable
+  // route is deliberate — compaction and summaries have to read a lot, so
+  // the slot is a real tier, not the cheapest model on any plan.
+  "small_model": "opencode-route/speed",
   "provider": {
     "claude-code": {
       "npm": "@ai-sdk/openai-compatible",
