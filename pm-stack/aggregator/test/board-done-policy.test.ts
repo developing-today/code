@@ -160,4 +160,47 @@ describe("live board: fully filtered is still live (Codex review, PR #2430)", ()
       globalThis.fetch = realFetch;
     }
   });
+
+  test("board() serves fixtures when every Kaneo task read fails (503), not a live empty board", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-done-filter-"));
+    const feedFile = join(dir, "fleet-feed.json");
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+      }),
+    );
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown) => {
+      const url = String(input);
+      const json = (body: unknown, headers: Record<string, string> = {}) =>
+        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json", ...headers } });
+      if (url.includes("/api/auth/sign-in/email")) return json({}, { "set-cookie": "session=test; Path=/" });
+      if (url.includes("/api/workspace")) return json([{ id: "ws1" }]);
+      if (url.includes("/api/project?")) return json([{ id: "p1", slug: "code", name: "Code" }]);
+      if (url.includes("/api/task/tasks/")) return new Response("unavailable", { status: 503 });
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    try {
+      const cfg = loadConfig({
+        ...Bun.env,
+        PM_AGG_SOURCE: "live",
+        PM_AGG_FEED_FILE: feedFile,
+        PM_PROJECTOR_URL: "off",
+        KANEO_URL: "http://kaneo.test",
+        KANEO_ADMIN_EMAIL: "test@example.com",
+        KANEO_ADMIN_PASSWORD: "test-password",
+      });
+      const src = liveSource(cfg);
+      const board = await src.board();
+      expect(src.provenance().board).toContain("fixtures (kaneo unreachable");
+      expect(src.provenance().board).toContain("kaneo task reads failed for every project");
+      expect(board.length).toBeGreaterThan(0); // the fixture board, not an empty live board
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
 });

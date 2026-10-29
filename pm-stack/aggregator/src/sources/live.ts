@@ -126,11 +126,18 @@ async function kaneoProjects(
 async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
   const projects = await kaneoProjects(cfg, cookie);
   const out: BoardItem[] = [];
+  // A task read that fails on every project is a failed fetch, not a
+  // successfully empty board (Codex review, PR #2430): board() must
+  // reach its catch path and serve fixtures with that provenance,
+  // while a successful read the done policy filters to empty stays
+  // live. Partial data (at least one page read) is still served.
+  let anyTaskPageRead = false;
   for (const p of projects) {
     const all: KaneoColumn[] = [];
     for (let page = 1; ; page++) {
       const r = await getJson(`${cfg.kaneo.baseUrl}/api/task/tasks/${p.id}?page=${page}`, { Cookie: cookie });
       if (!r.ok) break;
+      anyTaskPageRead = true;
       const body = r.json as { data?: { columns?: KaneoColumn[] }; pagination?: { totalPages: number } };
       const cols = body.data?.columns ?? [];
       all.push(...cols);
@@ -170,6 +177,7 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
       }
     }
   }
+  if (projects.length > 0 && !anyTaskPageRead) throw new Error("kaneo task reads failed for every project");
   return applyBoardDonePolicy(out);
 }
 
