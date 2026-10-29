@@ -2567,7 +2567,10 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
     byRepo.set(item.repo, row);
   }
   const quota = data.quota.pools.map((pool) => {
-    const percents = pool.windows.map((w) => w.percent).filter((x): x is number => x !== undefined);
+    // #1134 review (Codex P2): derive from used/limit with the shared
+    // helper — a window that carries `used` and `limit` but no explicit
+    // `percent` must not silently drop out of the tightest-window figure.
+    const percents = pool.windows.map((w) => windowPercent(w));
     return {
       provider: pool.provider,
       plan: pool.plan,
@@ -2613,12 +2616,15 @@ export function deriveOverview(data: OverviewData): OverviewSummary {
 }
 
 export function renderOverviewBody(summary: OverviewSummary): string {
+  // #1134 review (Codex P2): the stale note is about the tier source, not
+  // about the count, so an empty last published queue must still say it.
+  const staleNote = `<p class="muted">Tier source stale — this is its last published state and may have moved since.</p>`;
   const needs =
     summary.needsYou.count === null
       ? `<div class="banner">Needs-you count <strong>unknown</strong> — the tier source is ${esc(summary.needsYou.tierState)}, so the orchestrator's published queues are not reflected here. <a href="/attention">Needs you</a></div>`
       : summary.needsYou.count
-        ? `<div class="banner drew"><strong>${summary.needsYou.count} item${summary.needsYou.count === 1 ? "" : "s"} need you</strong> — <a href="/attention">review them</a></div>${summary.needsYou.tierState === "stale" ? `<p class="muted">Tier source stale — this count is its last published state and may have moved since.</p>` : ""}`
-        : `<p class="muted">Nothing needs you right now.</p>`;
+        ? `<div class="banner drew"><strong>${summary.needsYou.count} item${summary.needsYou.count === 1 ? "" : "s"} need you</strong> — <a href="/attention">review them</a></div>${summary.needsYou.tierState === "stale" ? staleNote : ""}`
+        : `<p class="muted">Nothing needs you right now.</p>${summary.needsYou.tierState === "stale" ? staleNote : ""}`;
   const topItems = summary.needsYou.top.length
     ? `<ul>${summary.needsYou.top.map((t) => `<li><strong>${esc(t.title)}</strong>${t.detail ? ` — ${esc(t.detail)}` : ""}</li>`).join("")}</ul>`
     : "";

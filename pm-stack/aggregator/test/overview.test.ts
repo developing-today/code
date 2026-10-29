@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { PAGES, pageByRoute } from "../src/pages.ts";
-import { deriveOverview, renderOverview, type OverviewData } from "../src/render.ts";
+import { deriveOverview, renderOverview, renderOverviewBody, type OverviewData } from "../src/render.ts";
 import type { HealthView } from "../src/health.ts";
 
 // #1134: "/" is the aggregator front door. The overview's numbers are
@@ -201,6 +201,35 @@ describe("overview Codex fixes (PR 2424 review)", () => {
     });
     expect(html).toContain("Needs you (unknown)");
     expect(html).not.toContain("Nothing needs you right now.");
+  });
+
+  test("quota strip derives the tightest window from used/limit when percent is absent", () => {
+    const noPercent: OverviewData = {
+      ...data,
+      quota: {
+        ...data.quota,
+        pools: [
+          {
+            ...data.quota.pools[0],
+            windows: [
+              { name: "weekly", unit: "tokens", limit: 100, used: 92, resetsAt: null },
+              { name: "daily", unit: "tokens", limit: 100, used: 40, resetsAt: null, percent: 41 },
+            ],
+          },
+        ],
+      },
+    };
+    const summary = deriveOverview(noPercent);
+    // 92% comes from used/limit alone: a window without an explicit
+    // percent must still count towards the tightest window.
+    expect(summary.quota[0]?.worstPercent).toBeCloseTo(92, 5);
+  });
+
+  test("stale tier source with an empty last published queue still warns", () => {
+    const summary = deriveOverview(data);
+    const html = renderOverviewBody({ ...summary, needsYou: { count: 0, tierState: "stale", top: [] } });
+    expect(html).toContain("Nothing needs you right now.");
+    expect(html).toContain("Tier source stale");
   });
 
   test("suppressed needs-you items leave the overview count and top list", () => {
