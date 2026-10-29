@@ -50,7 +50,9 @@
    Record the jurisdiction field at account creation from day one (it is cheap and
    cannot be retrofitted), but do not expose a user-facing choice until there is a
    customer who needs it. Default everyone to one jurisdiction and say so plainly in
-   the privacy policy. See §4 for the consequence of each answer.
+   the privacy policy — as a statement about **durable** storage, with the global
+   public-KV cache exception named in the same sentence (§1.3, §3.1). See §4 for the
+   consequence of each answer.
 
 ---
 
@@ -325,8 +327,15 @@ Two honest answers, with what each costs.
 ### 3.1 Answer A — no choice: one jurisdiction for everyone
 
 Pick one (almost certainly `us` for a first hosted edition), create every DO, bucket,
-KV namespace and the directory in it, and state "all hosted data is stored in the
-United States" in the privacy policy.
+KV namespace and the directory in it, and state the durable-storage claim precisely:
+"all hosted durable data — Durable Object state, R2 blobs and the directory — is
+stored in the United States", followed by the explicit exception: **public KV
+caches are global and may be served from a location outside the namespace's
+jurisdiction** (§1.3; Cloudflare documents KV's data location as not
+guaranteeing request-time locality). The KV exception is stated, not hidden,
+and the claim is scoped to durable storage rather than to "all hosted data",
+because a global-cache read would otherwise falsify an unconditional
+US-only statement.
 
 - **Buys:** no signup UX, no routing logic, no per-user migration path, one set of
   bindings, one jurisdiction to reason about. Every user's pin is real and uniform.
@@ -372,8 +381,11 @@ jurisdiction.
   the routing exist, turning the choice on is a UI change plus a per-jurisdiction
   ops checklist — not a data migration.
 - Do **not** launch with the promise "your data stays in your country". Launch with
-  "hosted data is stored in the United States" (Answer A wording) even while the
-  field exists internally.
+  the Answer A wording — durable data (DO state, R2 blobs, directory) stored in the
+  United States, with the global public-KV cache exception disclosed alongside it —
+  even while the field exists internally. The exception travels with the wording
+  everywhere it is repeated (docs, security questionnaires, the privacy policy),
+  never as a footnote only a lawyer sees.
 
 This is the answer to the issue's second acceptance criterion: the offer does not
 *need* a region choice to exist, but the *system* needs the jurisdiction dimension
@@ -416,11 +428,29 @@ mismatched ID throws instead of working.
 
 ### 4.4 The migration path is a product feature, not an ops script
 
-Since nothing moves, a jurisdiction change is: export the user's graph + journal →
-create the DO in the target jurisdiction → import → verify hashes/signatures →
-switch the directory record → delete the old object and its blobs. That is a
-freeze-window operation on a live account. Consequences:
+Since nothing moves, a jurisdiction change is: copy and verify the user's R2
+blobs into the destination jurisdiction's bucket → export the user's graph +
+journal → create the DO in the target jurisdiction → import → verify
+hashes/signatures → switch the directory record → delete the old object and
+its now-copied source blobs. That is a freeze-window operation on a live
+account. Consequences:
 
+- **Blobs are copied first, and verified, or the import references bytes that
+  are not there.** The graph and journal hold content-addressed *references*
+  to R2 objects (§3.3 of #2044), and the bucket is per-jurisdiction and
+  immutable, so importing the DO into another jurisdiction restores the
+  references without their content. Copy every object reachable from the
+  exported graph before anything is deleted: enumerate the referenced hashes
+  from the export, copy each into the destination bucket, re-hash the copies
+  and compare (same content address ⇒ byte-identical), and only then switch
+  the directory record. A missing or mismatched object aborts the migration
+  with the account still on the origin jurisdiction — the copy step is
+  additive, so aborting is always safe; the delete step is not, so it runs
+  last and only after the destination has served the account successfully
+  (recommend one full read-back of the migrated account before deleting).
+  Note the interaction with dedup: because blob dedup is jurisdiction-local
+  (§2.3), the destination bucket must be sized for the full copy, not for the
+  incremental bytes.
 - the directory record needs a `jurisdiction_pending` state and a migration flag,
 - the bridge protocol (#2044 §7) must tolerate a user's object id changing,
 - signed objects are transport- and location-independent, so signatures survive the
