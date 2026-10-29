@@ -133,5 +133,39 @@
     ],
     "sentCount": 1,
     "lastUsedAt": 1793114518928
+  },
+  "ses_e5e792f173effeFGlcx1C2ovXx": {
+    "sessionId": "deaafad8-0185-4e32-9c14-43e5ea0664c2",
+    "updatedAt": 1793263448252
+  },
+  "ses_e5e791cb485ffesnCjNzU5Ozpp": {
+    "sessionId": "12a3d955-89ae-46c1-8aa0-c8bb9c19740b",
+    "model": "deepseek/deepseek-v4.1-flash",
+    "updatedAt": 1793264405932
+  },
+  "turn0:c4d0c27af0721a55": {
+    "sessionId": "53b99094-90f6-49fb-b19d-2b5caf1efd8b",
+    "model": "deepseek/deepseek-v4-flash",
+    "updatedAt": 1793264504052
+  },
+  "turn0:834050eb91d9daf3": {
+    "sessionId": "f9c27853-0c60-4eda-b018-3b8bb573f12e",
+    "model": "deepseek/deepseek-v4-flash",
+    "updatedAt": 1793264627229
+  },
+  "turn0:842c9960d64552d4": {
+    "sessionId": "f0485ccb-f9f6-4d03-8a7a-8c55e5670e39",
+    "model": "deepseek/deepseek-v4-flash",
+    "updatedAt": 1793264651648
+  },
+  "turn0:12c58f34a6876074": {
+    "sessionId": "2a49b727-96c3-46b9-be0c-6333598aea90",
+    "model": "deepseek/deepseek-v4-flash",
+    "updatedAt": 1793264821369
+  },
+  "turn0:08e167be58397356": {
+    "sessionId": "4e899a46-a647-4f5f-8649-9f7d7e8e4843",
+    "model": "deepseek/deepseek-v4-flash",
+    "updatedAt": 1793264856468
   }
 }
