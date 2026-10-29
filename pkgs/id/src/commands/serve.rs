@@ -584,6 +584,11 @@ impl ServeWorlds {
             namespace = %records.namespace(),
             "world: records document ready"
         );
+        info!(
+            world = name,
+            ephemeral = self.ephemeral,
+            "serve startup: records ready, building world service (#190 breadcrumb)"
+        );
         let service = if self.ephemeral {
             make(WorldHandle::spawn(WorldCore::new(name, limits)?)).with_records_store(records)
         } else {
@@ -600,6 +605,10 @@ impl ServeWorlds {
             }
             service.with_records_store(records)
         };
+        info!(
+            world = name,
+            "serve startup: world service built (#190 breadcrumb)"
+        );
 
         let service = if self.native {
             service.with_native_enabled()
@@ -615,6 +624,10 @@ impl ServeWorlds {
         {
             self.install_default_module(&service, path).await?;
         }
+        info!(
+            world = name,
+            "serve startup: world open complete (#190 breadcrumb)"
+        );
         Ok(service)
     }
 
@@ -896,7 +909,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 signed_boot_window: std::time::Duration::from_secs(world_boot_window_secs),
             },
         );
+        info!("serve startup: opening default world via hub (#190 breadcrumb)");
         let default_service = hub.open_default().await?;
+        info!("serve startup: default world open, building router (#190 breadcrumb)");
         if !world_caps.is_empty() {
             for cap in world_caps.iter().filter(|cap| *cap != "*") {
                 if !server_caps.contains(cap) {
@@ -974,6 +989,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(all(feature = "world", feature = "ssh"))]
     let router_builder = router_builder.accept(crate::world_ssh::SSH_TUNNEL_ALPN, ssh_tunnel);
     let router = router_builder.spawn();
+    info!("serve startup: router spawned (#190 breadcrumb)");
 
     // Offer a sync session to every discovered peer, on an interval: a save on
     // either node is discoverable on the other after the next session (#792).
@@ -1099,9 +1115,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let mut web_port: Option<u16> = None;
     #[cfg(feature = "web")]
     let web_listener = if web {
+        info!("serve startup: binding web listener (#190 breadcrumb)");
         let addr = SocketAddr::new(bind, port);
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let actual_port = listener.local_addr()?.port();
+        info!(
+            port = actual_port,
+            "serve startup: web listener bound (#190 breadcrumb)"
+        );
         web_port = Some(actual_port);
         Some(listener)
     } else {
@@ -1136,7 +1157,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Write the lock file before printing status so it exists when callers
     // detect the server via stdout output (integration tests depend on this).
+    info!("serve startup: writing serve lock (#190 breadcrumb)");
     create_serve_lock(&serve_node_id, &local_addrs, web_port).await?;
+    info!("serve startup: serve lock written, printing node status (#190 breadcrumb)");
 
     status!("node: {serve_node_id}");
     if ephemeral {
