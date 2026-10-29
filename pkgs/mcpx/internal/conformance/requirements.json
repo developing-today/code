@@ -13685,11 +13685,8 @@
       "server": "n/a:addresses the other side"
     },
     "notes": {
-      "client": "yes — GAP: not checked; the handler forwards. In 2026 there is no error slot in `inputResponses` (see Conflicts)",
+      "client": "yes — checked in mcpclient answer(): a request carrying tools or toolChoice is refused -32602 naming sampling.tools before the handler runs, in both eras (in 2026 the refusal surfaces as the call's error, there being no error slot in `inputResponses`)",
       "server": "n/a"
-    },
-    "claims": {
-      "client": "gap"
     }
   },
   {
