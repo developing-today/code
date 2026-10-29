@@ -722,6 +722,7 @@ async function handler(req: Request): Promise<Response> {
     body.feed = { generatedAt: view.feed.generatedAt, fileMtime: view.feed.fileMtime };
     body.pages = view.pages.map((p) => ({ route: p.route, lastRenderedAt: p.lastRenderedAt, ok: p.ok }));
     body.jobs = view.jobs;
+    body.comments = view.comments;
     body.degraded = view.degraded;
     return json(body);
   }
