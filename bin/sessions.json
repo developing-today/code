@@ -263,7 +263,6 @@
   },
   "ses_e5e77c0e1c1ffekREawhRfgJTq": {
     "sessionId": "8d375a47-d790-403a-829f-52ed945f5726",
-    "model": "deepseek/deepseek-v4.1-flash",
-    "updatedAt": 1793287200487
+    "updatedAt": 1793287446838
   }
 }
