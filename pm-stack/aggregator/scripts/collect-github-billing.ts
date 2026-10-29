@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     `collect-github-billing: ${user} ${year}-${String(month).padStart(2, "0")}: ` +
       `${items.length} items — actions ${totals.actionsMinutes} min, ` +
       `codespaces ${totals.codespacesHours} h, storage ` +
-      `${totals.actionsStorageGbHours + totals.codespacesStorageGbHours} GB-hours, ` +
+      `${Math.round((totals.actionsStorageGbHours + totals.codespacesStorageGbHours) * 1000) / 1000} GB-hours, ` +
       `gross $${totals.grossUsd}, net $${totals.netUsd} ` +
       `(source: GET /users/${user}/settings/billing/usage)`,
   );
