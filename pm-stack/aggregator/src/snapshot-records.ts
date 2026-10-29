@@ -17,14 +17,7 @@
 // (service, metric, ts, value), so an unchanged read re-derives the
 // identical record and appends nothing.
 import { POOL_SPECS, sectionOf } from "./quota-extract.ts";
-import type {
-  DnsSection,
-  PaygLine,
-  QuotaPool,
-  SaasService,
-  SnapshotRecord,
-  UsageUnit,
-} from "./model.ts";
+import type { DnsSection, PaygLine, QuotaPool, SaasService, SnapshotRecord, UsageUnit } from "./model.ts";
 
 const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
 

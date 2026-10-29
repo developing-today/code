@@ -149,7 +149,9 @@ describe("payg lines + charges (§1.2, §2.4)", () => {
   });
 
   test("subscriptions strip is renewal-only rows from the records", () => {
-    const subs = extractSubscriptions(`${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`);
+    const subs = extractSubscriptions(
+      `${VIEW}\n### Other / flat (b)\n- **Amazon RxPass:** Subscription $5/mo; flat pharmacy.\n### Wispr Flow\n- **Plan:** Flow Pro annual $151.91/yr charged; renews 2027-10-09.`,
+    );
     expect(subs).toEqual([
       { name: "Amazon RxPass", plan: "$5/mo flat pharmacy", renewsAt: null },
       { name: "Wispr Flow", plan: "Pro $151.91/yr", renewsAt: "2027-10-09" },
@@ -183,7 +185,15 @@ describe("bubble rules (§1.3)", () => {
       services: [],
       payg: [
         { id: "a", label: "A", accruedUsd: null, unbilledUsd: 5, note: "", measuredAt: null, sourceClass: "estimate" },
-        { id: "b", label: "B", accruedUsd: null, unbilledUsd: 5.01, note: "", measuredAt: null, sourceClass: "estimate" },
+        {
+          id: "b",
+          label: "B",
+          accruedUsd: null,
+          unbilledUsd: 5.01,
+          note: "",
+          measuredAt: null,
+          sourceClass: "estimate",
+        },
       ],
     });
     expect(flags.filter((f) => f.kind === "payg-unbilled").map((f) => f.label)).toEqual(["B"]);
@@ -222,7 +232,15 @@ describe("snapshot store (§4)", () => {
     try {
       const store = new SnapshotStore(dir);
       await store.append([
-        { ts: "2026-10-25T12:00:00Z", serviceId: "cloudflare", metricId: "est", value: { low: 29.6, high: 45.1 }, unit: "usd-est", source: "estimate", observedBy: "test" },
+        {
+          ts: "2026-10-25T12:00:00Z",
+          serviceId: "cloudflare",
+          metricId: "est",
+          value: { low: 29.6, high: 45.1 },
+          unit: "usd-est",
+          source: "estimate",
+          observedBy: "test",
+        },
       ]);
       const all = await store.readAll();
       expect(all[0].value).toEqual({ low: 29.6, high: 45.1 });
@@ -259,9 +277,7 @@ describe("pace + freshness (§4, §1.1)", () => {
   });
   test("no projection from a single point or a flat series", () => {
     expect(projectPace([rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
-    expect(
-      projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 30)], "weekly"),
-    ).toBeNull();
+    expect(projectPace([rec("2026-10-22T00:00:00Z", 30), rec("2026-10-24T00:00:00Z", 30)], "weekly")).toBeNull();
   });
   test("freshness: older than cadence is stale; same-day is not", () => {
     const now = new Date("2026-10-26T12:00:00Z");

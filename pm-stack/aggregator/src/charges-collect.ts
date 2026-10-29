@@ -36,9 +36,7 @@ export function parseChargeCandidatesExport(text: string): ChargeCandidate[] | n
   } catch {
     return null;
   }
-  const list = Array.isArray(parsed)
-    ? parsed
-    : (parsed as { candidates?: unknown })?.candidates;
+  const list = Array.isArray(parsed) ? parsed : (parsed as { candidates?: unknown })?.candidates;
   if (!Array.isArray(list)) return null;
   const out: ChargeCandidate[] = [];
   for (const entry of list) {
