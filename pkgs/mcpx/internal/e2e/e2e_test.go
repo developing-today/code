@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dezren39/mcpx/internal/elicit"
 	"github.com/dezren39/mcpx/internal/testsupport"
 
 	_ "modernc.org/sqlite"
@@ -2444,7 +2445,7 @@ func seedElicitation(t *testing.T, e *env, id, server, mode, schema string) {
 	t.Helper()
 	// Through the same pure-Go driver the store uses, so the suite needs no
 	// sqlite3-capable interpreter on PATH (the nix check sandbox has none).
-	db, err := sql.Open("sqlite", filepath.Join(e.dir, "state", "logs", "elicit.db"))
+	db, err := sql.Open("sqlite", elicit.StorePath(filepath.Join(e.dir, "state")))
 	if err != nil {
 		t.Fatalf("seeding: %v", err)
 	}

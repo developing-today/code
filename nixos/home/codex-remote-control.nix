@@ -31,17 +31,36 @@
 #
 # Before this module the daemon was started ad-hoc only: it ran
 # 2026-10-23..26 and died with the session, and nothing restarted it.
+#
+# Watchdog (#1845): the oneshot unit above still cannot notice when
+# the daemon dies mid-session (crash, OOM, failed auto-update) — it
+# reads active forever. A user timer therefore runs a companion
+# check service every few minutes: it probes the daemon through the
+# CLI liveness surface (`codex app-server daemon version`), logs
+# the verdict to the journal, and runs `remote-control start` when
+# the daemon is down. The check lives in
+# codex-remote-control-watchdog.sh.
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 let
   cfg = config.services.codex-remote-control;
+  watchdogPkg = pkgs.writeShellScriptBin "codex-remote-control-watchdog" (
+    builtins.readFile ./codex-remote-control-watchdog.sh
+  );
 in
 {
   options.services.codex-remote-control = {
     enable = lib.mkEnableOption "the Codex app-server daemon with remote control enabled";
+
+    watchdogInterval = lib.mkOption {
+      type = lib.types.str;
+      default = "5m";
+      description = "How often the watchdog timer probes daemon liveness (a systemd time span, used as the timer OnUnitActiveSec).";
+    };
 
     codexPath = lib.mkOption {
       type = lib.types.str;
@@ -64,6 +83,27 @@ in
         ExecStop = "${cfg.codexPath} remote-control stop";
       };
       Install.WantedBy = [ "default.target" ];
+    };
+
+    systemd.user.services.codex-remote-control-watchdog = {
+      Unit = {
+        Description = "Codex app-server daemon liveness check - restart it if it died (code#1845)";
+        After = [ "network-online.target" ];
+        Wants = [ "network-online.target" ];
+      };
+      Service = {
+        Type = "oneshot";
+        ExecStart = "${watchdogPkg}/bin/codex-remote-control-watchdog ${cfg.codexPath}";
+      };
+    };
+
+    systemd.user.timers.codex-remote-control-watchdog = {
+      Unit.Description = "Probe the Codex app-server daemon liveness periodically (code#1845)";
+      Timer = {
+        OnBootSec = "2m";
+        OnUnitActiveSec = cfg.watchdogInterval;
+      };
+      Install.WantedBy = [ "timers.target" ];
     };
   };
 }

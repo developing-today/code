@@ -19,6 +19,16 @@ const httpsAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 1000, maxS
 const DESIGN_SYSTEM_PROMPT = `You are an elite Code & Systems Design Architect.
 Your core expertise is in software architecture, clean code design, UI/UX design engineering, design tokens, component abstractions, domain-driven design, and maintainable systems patterns. Provide elegant, production-grade architectures and idiomatic design implementations.`;
 
+// Model list sourcing (live-model rule, 2026-10-28 — DOCUMENTED
+// EXCEPTION): this proxy's ids are VIRTUAL design personas, not upstream
+// model ids — each entry is a curated routing recipe (primary/fallback
+// backend + backend model) invented here, so no upstream catalog can be
+// pulled for the list itself. The AMR upstream's /v1/models is API-key
+// gated and no key is configured for the local-dispatch path. What CAN
+// stay live does: the backend model each recipe points at is validated
+// against that backend proxy's own live /v1/models (see
+// refreshBackendCatalogs below), and an unknown requested id now gets a
+// clean 400 instead of the old silent remap onto gemini-3.8-flash.
 const MODELS = [
   { id: 'claude-haiku-5.5', name: 'Claude Haiku 5.5 (Design Code)', primary: { port: ANTIGRAVITY_LS_PORT, model: 'claude-sonnet-5-5' }, fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' } },
   { id: 'gpt-6-luna', name: 'GPT-6 Luna (Design Code)', primary: { port: CODEX_PROXY_PORT, model: 'gpt-6-luna' }, fallback: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' } },
@@ -40,7 +50,9 @@ const resolveModelConfig = (requestedModel) => {
     return { modelId: found.id, config: found };
   }
 
-  // Fallbacks by keyword
+  // Fallbacks by keyword: a gpt/codex-shaped id is passed to the Codex
+  // backend under its own name — and the Codex proxy now validates it
+  // against its live catalog and answers a clean 400 for unknown ids.
   if (clean.includes('gpt') || clean.includes('codex') || clean.includes('luna') || clean.includes('sol')) {
     return {
       modelId: clean,
@@ -51,13 +63,52 @@ const resolveModelConfig = (requestedModel) => {
     };
   }
 
-  return {
-    modelId: clean,
-    config: {
-      primary: { port: ANTIGRAVITY_LS_PORT, model: 'gemini-3.8-flash' },
-      fallback: { port: CODEX_PROXY_PORT, model: 'gpt-5.6-luna' }
+  // Unknown id: refuse (the caller answers 400) rather than silently
+  // serving a different model than the one requested.
+  return null;
+};
+
+// --- Live backend-catalog validation ---------------------------------------
+// Background-only (never on the request path): pull each fleet backend's
+// live /v1/models on a 60s TTL and record which recipe targets still
+// exist upstream. Restricted to the canonical/alt fleet backend ports so
+// non-fleet backend overrides are never probed. Dispatch uses the
+// last-known-good result: a target proven absent upstream is skipped, and
+// if every target is proven absent the request gets a clean 400.
+const FLEET_BACKEND_PORTS = new Set([18744, 19744, 18745, 19745]);
+const BACKEND_CATALOG_TTL_MS = 60 * 1000;
+let backendCatalogCache = { at: 0, byPort: new Map() };
+let backendCatalogRefresh = null;
+
+const refreshBackendCatalogs = () => {
+  if (backendCatalogRefresh) return backendCatalogRefresh;
+  if (Date.now() - backendCatalogCache.at < BACKEND_CATALOG_TTL_MS && backendCatalogCache.at > 0) {
+    return Promise.resolve(backendCatalogCache);
+  }
+  backendCatalogRefresh = (async () => {
+    const ports = new Set();
+    for (const m of MODELS) { ports.add(m.primary.port); if (m.fallback) ports.add(m.fallback.port); }
+    const byPort = new Map(backendCatalogCache.byPort);
+    for (const port of ports) {
+      if (!FLEET_BACKEND_PORTS.has(port)) continue;
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(2500) });
+        if (!res.ok) continue;
+        const data = await res.json();
+        if (Array.isArray(data?.data)) byPort.set(port, new Set(data.data.map(d => d.id)));
+      } catch { /* keep last-known-good for this port */ }
     }
-  };
+    backendCatalogCache = { at: Date.now(), byPort };
+    backendCatalogRefresh = null;
+    return backendCatalogCache;
+  })();
+  return backendCatalogRefresh;
+};
+
+const backendTargetKnown = (target) => {
+  const catalog = backendCatalogCache.byPort.get(target.port);
+  if (!catalog) return null; // never pulled / not a fleet port: unvalidated
+  return catalog.has(target.model);
 };
 
 const hasUpstreamKey = (authHeader) => {
@@ -88,12 +139,23 @@ const server = http.createServer((req, res) => {
 
   // Health
   if (req.method === 'GET' && (pathname === '/health' || pathname === '/')) {
+    refreshBackendCatalogs(); // background live validation of recipe targets
+    const targetState = {};
+    for (const m of MODELS) {
+      targetState[m.id] = {
+        primary: backendTargetKnown(m.primary),
+        fallback: m.fallback ? backendTargetKnown(m.fallback) : null
+      };
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       status: 'ok',
       service: 'design-code-proxy',
       port: PORT,
-      availableModels: MODELS.map(m => m.id)
+      availableModels: MODELS.map(m => m.id),
+      modelListSource: 'virtual routing recipes (documented exception); backend targets validated live',
+      backendTargetsCheckedAt: backendCatalogCache.at ? new Date(backendCatalogCache.at).toISOString() : null,
+      backendTargets: targetState
     }, null, 2));
     return;
   }
@@ -183,7 +245,15 @@ const server = http.createServer((req, res) => {
 
 const dispatchWithFallback = (body, clientRes) => {
   const reqModel = body.model;
-  const { modelId, config } = resolveModelConfig(reqModel);
+  const resolved = resolveModelConfig(reqModel);
+  if (!resolved) {
+    clientRes.writeHead(400, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify({
+      error: { message: `Unknown model "${reqModel}": not a design-code model (see GET /v1/models)` }
+    }));
+    return;
+  }
+  const { modelId, config } = resolved;
 
   // Prepare messages with design prompt
   const messages = Array.isArray(body.messages) ? [...body.messages] : [];
@@ -327,12 +397,27 @@ const dispatchWithFallback = (body, clientRes) => {
     localReq.end();
   };
 
-  // Try primary target, then fallback if needed
-  tryTarget(config.primary, err => {
+  // Try primary target, then fallback if needed — skipping any target
+  // the live backend catalogs have proven absent (last-known-good view;
+  // unvalidated targets are always tried). If every target is proven
+  // absent upstream, refuse with 400 rather than silently remapping.
+  const allTargets = [config.primary, config.fallback]
+    .filter(Boolean)
+    .filter((t, i, arr) => i === 0 || t.port !== arr[0].port || t.model !== arr[0].model);
+  const liveTargets = allTargets.filter(t => backendTargetKnown(t) !== false);
+  if (liveTargets.length === 0) {
+    clientRes.writeHead(400, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify({
+      error: { message: `Model "${reqModel}" routes only to backend models absent from the live backend catalogs` }
+    }));
+    return;
+  }
+  const [firstTarget, secondTarget] = liveTargets;
+  tryTarget(firstTarget, err => {
     if (clientRes.headersSent) return;
-    if (config.fallback && (config.fallback.port !== config.primary.port || config.fallback.model !== config.primary.model)) {
-      console.log(`[design-code-proxy] Falling back for '${reqModel}' to 127.0.0.1:${config.fallback.port} (${config.fallback.model})`);
-      tryTarget(config.fallback, fallbackErr => {
+    if (secondTarget) {
+      console.log(`[design-code-proxy] Falling back for '${reqModel}' to 127.0.0.1:${secondTarget.port} (${secondTarget.model})`);
+      tryTarget(secondTarget, fallbackErr => {
         if (!clientRes.headersSent) {
           clientRes.writeHead(502, { 'Content-Type': 'application/json' });
           clientRes.end(JSON.stringify({

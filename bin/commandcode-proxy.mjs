@@ -47,7 +47,7 @@
 // needed or read; clients may send the placeholder "commandcode-local"
 // (accepted and ignored, like the other fleet proxies' *-local keys).
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -70,11 +70,16 @@ const PROXY_DIR = path.dirname(fileURLToPath(import.meta.url));
 const WORKROOT = process.env.COMMANDCODE_PROXY_WORKDIR || path.join(PROXY_DIR, 'work');
 fs.mkdirSync(WORKROOT, { recursive: true });
 
-// Model ids exactly as `commandcode --list-models` prints them (v1.88.0,
-// re-synced live 2026-10-25: 85 models). typesafe/jev is deliberately
-// omitted: it is a headless-only decision model taking a JSON
-// state/questions payload, not a chat model.
-const MODELS = [
+// Static floor for the served model list (live-model rule, 2026-10-28):
+// the ids below are only the last-resort fallback. The served list is
+// pulled LIVE from `commandcode --list-models` (see refreshLiveModels
+// below) with a TTL cache and last-known-good fallback, so a model the
+// CLI gains or drops shows up here without a code change. This floor is
+// the 2026-10-25 snapshot (85 models, CLI v1.88.0). typesafe/jev is
+// deliberately omitted everywhere (including the live parse): it is a
+// headless-only decision model taking a JSON state/questions payload,
+// not a chat model.
+const STATIC_MODELS = [
   'deepseek/deepseek-v4-pro',
   'deepseek/deepseek-v4-flash',
   'deepseek/deepseek-v4-flash-vision-exp',
@@ -212,6 +217,61 @@ const findCommandCodeBinary = () => {
 
 const CC_BIN = findCommandCodeBinary();
 
+// --- Live model list (2026-10-28 standing rule: pull live, never ship a
+// static list as the source of truth) -------------------------------------
+// `commandcode --list-models` is authoritative but slow (~28s cold), so
+// the pull is asynchronous: requests serve the last-known-good list (or
+// the static floor before the first successful pull) and a stale entry
+// triggers a background refresh (stale-while-revalidate). TTL 5 min.
+const MODEL_LIST_TTL_MS = 5 * 60 * 1000;
+let liveModelCache = { at: 0, models: null };
+let liveModelRefresh = null;
+
+const parseListModelsOutput = (text) => {
+  const ids = [];
+  for (const line of String(text).split('\n')) {
+    const token = line.trim().split(/\s+/)[0] || '';
+    // Model ids are vendor/name, claude-* or gpt-*; section headers and
+    // the "Available models" banner never match this shape.
+    if (!token.includes('/') && !token.startsWith('claude-') && !token.startsWith('gpt-')) continue;
+    if (token === 'typesafe/jev') continue; // headless-only, see floor note
+    if (!ids.includes(token)) ids.push(token);
+  }
+  return ids;
+};
+
+const refreshLiveModels = () => {
+  if (liveModelRefresh) return liveModelRefresh;
+  liveModelRefresh = new Promise((resolve) => {
+    execFile(CC_BIN, ['--list-models'], {
+      timeout: 120000, maxBuffer: 8 * 1024 * 1024, input: '', env: childEnv()
+    }, (err, stdout) => {
+      liveModelRefresh = null;
+      if (!err) {
+        const ids = parseListModelsOutput(stdout);
+        // Sanity floor: a garbled/truncated pull must not shrink the
+        // served list to near-empty; keep the last-known-good instead.
+        if (ids.length >= 20) {
+          liveModelCache = { at: Date.now(), models: ids };
+        } else {
+          console.warn(`[commandcode-proxy] --list-models returned only ${ids.length} ids; keeping last-known-good`);
+        }
+      } else {
+        console.warn(`[commandcode-proxy] --list-models refresh failed (${err.message}); serving last-known-good`);
+      }
+      resolve(liveModelCache.models);
+    });
+  });
+  return liveModelRefresh;
+};
+
+const getServedModels = () => {
+  if (!liveModelCache.models || Date.now() - liveModelCache.at > MODEL_LIST_TTL_MS) {
+    refreshLiveModels(); // fire-and-forget; serve cache/floor meanwhile
+  }
+  return liveModelCache.models || STATIC_MODELS;
+};
+
 const resolveModel = (requestedModel) => {
   let raw = (requestedModel || '').trim();
   if (!raw) return DEFAULT_MODEL;
@@ -219,9 +279,10 @@ const resolveModel = (requestedModel) => {
   // provider name, not part of the model id — but model ids themselves
   // contain slashes (deepseek/...), so only strip that exact prefix.
   if (raw.startsWith('commandcode/')) raw = raw.slice('commandcode/'.length);
-  if (MODELS.includes(raw)) return raw;
+  const served = getServedModels();
+  if (served.includes(raw)) return raw;
   // CLI also accepts the short name after the last '/'.
-  const byShort = MODELS.find(m => m.slice(m.lastIndexOf('/') + 1) === raw);
+  const byShort = served.find(m => m.slice(m.lastIndexOf('/') + 1) === raw);
   if (byShort) return byShort;
   // Unknown id: pass through — the CLI may know a newer model than this list.
   return raw;
@@ -779,7 +840,7 @@ const server = http.createServer((req, res) => {
   // Models catalog
   if (req.method === 'GET' && (pathname === '/v1/models' || pathname === '/models')) {
     const now = Math.floor(Date.now() / 1000);
-    const data = MODELS.map(id => ({
+    const data = getServedModels().map(id => ({
       id,
       object: 'model',
       created: now,
@@ -1222,6 +1283,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
+  refreshLiveModels(); // warm the live model list in the background
   publishEndpoint();
   console.log(`[commandcode-proxy] OpenAI-compatible bridge listening on http://${HOST}:${PORT}`);
   console.log(`[commandcode-proxy] Resolved commandcode binary: ${CC_BIN}`);

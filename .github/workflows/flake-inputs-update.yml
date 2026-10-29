@@ -23,6 +23,12 @@
 # never disables later runs: every scheduled run retries with the newest
 # revs, and while a failure issue is open validation runs even when the
 # lockfile did not move, so a manual fix is picked up too.
+#
+# Escalation chain (Drew, 2026-10-28): the first recorded failure also
+# dispatches a Jules session to fix the tracking issue (see the
+# "Escalate the failure" step below). If the failure reaches a third
+# attempt with no fix landed, that step comments the issue for the
+# Muse repo tasks to triage and fix it as a normal work item.
 name: flake-inputs-update
 
 on:
@@ -268,6 +274,39 @@ jobs:
             echo "Opened a new failure issue (attempt ${attempts})."
           fi
           exit 1
+
+      - name: Escalate the failure (Jules first, then Muse tasks)
+        if: always() && steps.outcome.outputs.result == 'failure'
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: |
+          set -u
+          number=$(gh issue list --state open --search "\"$FAILURE_ISSUE_TITLE\" in:title" --limit 100 --json number,title | jq -r --arg title "$FAILURE_ISSUE_TITLE" '.[] | select(.title == $title) | .number' | head -n 1)
+          if [ -z "${number}" ]; then
+            echo "No open failure issue found; nothing to escalate."
+            exit 0
+          fi
+          attempts=$(gh issue view "${number}" --json body --jq .body | grep -E '^Attempts: ' | head -n 1 | grep -oE '[0-9]+' || true)
+          attempts=${attempts:-1}
+          echo "Failure issue #${number} (attempts: ${attempts})."
+          if [ "${attempts}" -eq 1 ]; then
+            if [ -z "${JULES_API_KEY:-}" ]; then
+              gh issue comment "${number}" --body "Automated escalation: first recorded failure, but no JULES_API_KEY secret is configured for this repository, so no Jules session was dispatched. Muse repo tasks: please triage and fix."
+              exit 0
+            fi
+            prompt=$(printf 'Fix GitHub issue #%s in %s.\n\n%s\n\nThe automated dependency-update workflow in this repository is failing. The issue body carries the failure history and error excerpts; the workflow file under .github/workflows/ is where to reproduce it. Diagnose the failure, fix the root cause, and deliver the fix as a pull request whose description contains "Fixes #%s", so this tracking issue closes when the fix lands and a later successful update run confirms it. Run the relevant checks before opening the PR. Merge only if you are reasonably certain the PR is correct; otherwise leave it open and state your confidence and what a human should check. If the root cause belongs to a different repository (for example the upstream project this update pulls in), say exactly that on the issue instead of opening a PR here.' "${number}" "${{ github.repository }}" "$FAILURE_ISSUE_TITLE" "${number}")
+            payload=$(jq -n --arg title "Fix #${number}: automated update failing" --arg prompt "$prompt" --arg source "sources/github/${{ github.repository }}" '{title: $title, prompt: $prompt, sourceContext: {source: $source, githubRepoContext: {startingBranch: "main"}}, automationMode: "AUTO_CREATE_PR"}')
+            response=$(curl -sS -m 60 -X POST "https://jules.googleapis.com/v1alpha/sessions" -H "X-Goog-Api-Key: ${JULES_API_KEY}" -H "Content-Type: application/json" -d "$payload" || true)
+            session_id=$(printf '%s' "$response" | jq -r '.name // empty' | sed 's|^sessions/||')
+            if [ -n "${session_id}" ]; then
+              gh issue comment "${number}" --body "Automated escalation: dispatched Jules to fix this failure — https://jules.google.com/session/${session_id}. If Jules does not land a passing fix, Muse repo tasks take over triage."
+            else
+              gh issue comment "${number}" --body "Automated escalation: tried to dispatch Jules for this first failure, but session creation returned no session. Muse repo tasks: please triage and fix."
+            fi
+          elif [ "${attempts}" -eq 3 ]; then
+            gh issue comment "${number}" --body "Automated escalation: this update has failed ${attempts} times and no Jules fix has landed. Muse repo tasks: please triage and fix this as a normal work item."
+          fi
+
 
       - name: Publish and merge the update
         if: steps.outcome.outputs.result == 'success' && steps.plan.outputs.changed == 'true'

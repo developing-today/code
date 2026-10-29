@@ -20,6 +20,7 @@ func init() {
 		C("caching-ttl-absent-zero", "pool.TestPoolCacheTTLAbsentStale@2026-07-28", "mcpclient.TestListPromptsWithHintsAbsent@2026-07-28"),
 		C("caching-ttl-negative-zero", "pool.TestPoolCacheTTLNegativeStale@2026-07-28"),
 		C("caching-stale-refetch", "pool.TestPoolCacheConcurrentExpiredCollapse@2026-07-28", "pool.TestPoolCacheTTLZeroStale@2026-07-28"),
+		C("caching-private-no-cross-auth", "daemon.TestSaveCacheSkipsPrivatePools@2026-07-28", "daemon.TestLoadCacheNeverSeedsPrivateEntry@2026-07-28", "pool.TestPoolCacheStaleServedOnRefetchError@2026-07-28"),
 		S("caching-server-must-hint", "mcpserver.TestModernEnvelope/2026-07-28/caching/tools-list-has-ttlMs-and-cacheScope", "mcpserver.TestModernEnvelope/2026-07-28/caching/resources-read-has-ttlMs-and-cacheScope", "mcpserver.TestModernEnvelope/2026-07-28/caching/server-discover-has-ttlMs-and-cacheScope"),
 		S("cache-ttl-scope-required",
 			"mcpserver.TestModernEnvelope/2026-07-28/caching/server-discover-has-ttlMs-and-cacheScope",
@@ -118,7 +119,6 @@ func init() {
 		Gap{ID: "caching-may-refetch-early-serve-stale", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
 		Gap{ID: "caching-page-refetch", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
 		Gap{ID: "caching-key-method-params", Side: Client, Issue: "#200", Why: "the client ignores ttlMs and cacheScope; the pool keeps upstream lists until list_changed or restart"},
-		Gap{ID: "caching-private-no-cross-auth", Side: Client, Issue: "#200", Why: "cacheScope is ignored, so a private upstream list is served to every downstream caller"},
 		Gap{ID: "caching-notification-invalidates", Side: Client, Issue: "#257", Why: "unverified since subscriptions/listen landed upstream (#239): nothing tests that a modern list_changed empties the pool list cache"},
 	)
 }
