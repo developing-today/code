@@ -61,6 +61,14 @@
   // route is deliberate — compaction and summaries have to read a lot, so
   // the slot is a real tier, not the cheapest model on any plan.
   "small_model": "opencode-route/speed",
+  // Messaging embeddings OFF (2026-10-29, Drew): the messaging.embedding
+  // tier defaults to a local Qwen3-Embedding llama-server that autostarts
+  // with every OpenCode process (standing server + OpenChamber managed
+  // instance). Tier off disables it; semantic message search degrades to
+  // the fuzzy FTS fallback. Re-enable by removing this key.
+  "messaging": {
+    "embedding": "off"
+  },
   "provider": {
     "claude-code": {
       "npm": "@ai-sdk/openai-compatible",
