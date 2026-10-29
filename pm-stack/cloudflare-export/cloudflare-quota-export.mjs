@@ -87,6 +87,7 @@ export const R2_CLASS_A = new Set([
   "CreateBucket", "PutBucket", "PutObject", "CopyObject",
   "CreateMultipartUpload", "CompleteMultipartUpload", "UploadPart",
   "UploadPartCopy", "PutBucketEncryption", "PutBucketCors",
+  "LifecycleStorageTierTransition",
   "PutBucketLifecycleConfiguration", "PutBucketLock",
 ]);
 export const R2_CLASS_B = new Set([
@@ -304,8 +305,16 @@ export async function run({ token, accountId, now = new Date() } = {}) {
   const probePaths = [`/accounts/${acct}/billing/profile`, `/accounts/${acct}/subscriptions`];
   const probes = [];
   for (const p of probePaths) {
-    const r = await apiJson(p, token);
-    probes.push({ endpoint: p.replace(acct, "{account}"), status: r.status });
+    // Billing is informational and nonblocking (#1048): a transport
+    // failure on an optional probe records billing as unknown
+    // (status 0) and usage collection continues — it must not abort
+    // run() and replace all usage metrics with a failure document.
+    try {
+      const r = await apiJson(p, token);
+      probes.push({ endpoint: p.replace(acct, "{account}"), status: r.status });
+    } catch {
+      probes.push({ endpoint: p.replace(acct, "{account}"), status: 0 });
+    }
   }
   const billing = classifyBilling(probes);
 

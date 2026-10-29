@@ -90,6 +90,22 @@ test("classifyR2: unknown actions are reported, never guessed into a class", () 
   assert.deepEqual(r.unclassified, ["SomeFutureOp"]);
 });
 
+test("classifyR2: LifecycleStorageTierTransition counts as Class A", () => {
+  const r = classifyR2([
+    { dimensions: { actionType: "LifecycleStorageTierTransition" }, sum: { requests: 11 } },
+  ]);
+  assert.equal(r.classA, 11);
+  assert.deepEqual(r.unclassified, []);
+});
+
+test("classifyBilling: a transport-failed probe (status 0) is unknown, never invoice-only", () => {
+  const r = classifyBilling([
+    { endpoint: "a", status: 0 },
+    { endpoint: "b", status: 403 },
+  ]);
+  assert.equal(r.status, "unknown");
+});
+
 test("foldKv: delete folds into the writes side with write/list", () => {
   const kv = foldKv([
     { dimensions: { actionType: "read" }, sum: { requests: 3 } },

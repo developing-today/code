@@ -10,7 +10,21 @@
 # 600-perm files the fleet's other bws loaders use
 # (~/.config/bws/access-token on the laptop, ~/.config/bitwarden/
 # access-token on the sandbox). No value is ever printed.
+#
+# Credential-loading failures do NOT exit silently: they route
+# through the exporter with no Cloudflare token, so the exporter
+# writes its no-token failure document (status + attemptedAt, no
+# metrics) atomically over latest.json — a failed tick is never
+# mistaken for the previous successful reading.
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+fail_through_exporter() {
+  echo "cloudflare-quota-export: $1" >&2
+  shift
+  exec env -u CLOUDFLARE_API_TOKEN bun "$SCRIPT_DIR/cloudflare-quota-export.mjs" "$@"
+}
 
 for f in "$HOME/.config/bws/access-token" "$HOME/.config/bitwarden/access-token"; do
   if [[ -f $f ]]; then
@@ -19,21 +33,17 @@ for f in "$HOME/.config/bws/access-token" "$HOME/.config/bitwarden/access-token"
   fi
 done
 if [[ -z ${BWS_ACCESS_TOKEN:-} ]]; then
-  echo "cloudflare-quota-export: no bws access token file found" >&2
-  exit 2
+  fail_through_exporter "no bws access token file found" "$@"
 fi
 
-SECRET_ID="$(bws secret list 2>/dev/null | jq -r '.[] | select(.key=="cloudflare.api-token-day-to-day") | .id' | head -n 1)"
+SECRET_ID="$(bws secret list 2>/dev/null | jq -r '.[] | select(.key=="cloudflare.api-token-day-to-day") | .id' | head -n 1)" || SECRET_ID=""
 if [[ -z $SECRET_ID ]]; then
-  echo "cloudflare-quota-export: Bitwarden secret cloudflare.api-token-day-to-day not found" >&2
-  exit 2
+  fail_through_exporter "Bitwarden secret cloudflare.api-token-day-to-day not found" "$@"
 fi
-CLOUDFLARE_API_TOKEN="$(bws secret get "$SECRET_ID" 2>/dev/null | jq -r .value)"
+CLOUDFLARE_API_TOKEN="$(bws secret get "$SECRET_ID" 2>/dev/null | jq -r .value)" || CLOUDFLARE_API_TOKEN=""
 export CLOUDFLARE_API_TOKEN
 if [[ -z $CLOUDFLARE_API_TOKEN ]]; then
-  echo "cloudflare-quota-export: could not read the day-to-day token value" >&2
-  exit 2
+  fail_through_exporter "could not read the day-to-day token value" "$@"
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec bun "$SCRIPT_DIR/cloudflare-quota-export.mjs" "$@"
