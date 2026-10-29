@@ -13,6 +13,7 @@
 package eventstore
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -75,10 +76,30 @@ type Store struct {
 	schemas map[string]*schemaval.Schema
 }
 
+// openMu serialises Open; see the comment there.
+var openMu sync.Mutex
+
 // Open opens (creating if needed) the event store at path. The path
 // ":memory:" gives a private in-memory store, as in tests.
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	dsn := path
+	if path != ":memory:" {
+		// Same DSN discipline as logstore.Open: WAL, because a reader
+		// must not block a writer, and busy_timeout first (pragmas
+		// apply in order, and the WAL switch itself needs a lock) so
+		// a concurrent writer from another Store instance over the
+		// same file waits briefly instead of failing SQLITE_BUSY —
+		// the cross-instance case RegisterKind and InternIDs are
+		// written to survive (Codex review on PR #2449).
+		dsn = path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	}
+	// Schema creation upgrades a read lock to a write lock, which
+	// SQLite refuses with SQLITE_BUSY without consulting busy_timeout
+	// when another connection does the same; serialising opens in
+	// this process removes that in-process race (as in logstore.Open).
+	openMu.Lock()
+	defer openMu.Unlock()
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -127,11 +148,20 @@ func (s *Store) RegisterKind(name, unit, schema string) (int64, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var id int64
-	var haveUnit, haveSchema sql.NullString
-	err := s.db.QueryRow(`SELECT id, unit, schema FROM kind WHERE name = ?`, name).Scan(&id, &haveUnit, &haveSchema)
-	if err == nil {
-		if haveUnit.String != unit || haveSchema.String != schema {
+	lookup := func() (int64, string, string, bool, error) {
+		var id int64
+		var haveUnit, haveSchema sql.NullString
+		err := s.db.QueryRow(`SELECT id, unit, schema FROM kind WHERE name = ?`, name).Scan(&id, &haveUnit, &haveSchema)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, "", "", false, nil
+		}
+		if err != nil {
+			return 0, "", "", false, err
+		}
+		return id, haveUnit.String, haveSchema.String, true, nil
+	}
+	finish := func(id int64, haveUnit, haveSchema string) (int64, error) {
+		if haveUnit != unit || haveSchema != schema {
 			return 0, fmt.Errorf("%w: %q", ErrKindConflict, name)
 		}
 		if compiled != nil {
@@ -139,21 +169,28 @@ func (s *Store) RegisterKind(name, unit, schema string) (int64, error) {
 		}
 		return id, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if id, haveUnit, haveSchema, found, err := lookup(); err != nil {
+		return 0, err
+	} else if found {
+		return finish(id, haveUnit, haveSchema)
+	}
+	// Conflict-tolerant insert: another Store instance sharing this
+	// database may register the same kind concurrently — s.mu only
+	// serialises THIS instance. Losing that race is not an error: the
+	// persisted definition is re-read and compared below, so identical
+	// definitions succeed and differing ones get ErrKindConflict
+	// either way (Codex review on PR #2449).
+	if _, err := s.db.Exec(`INSERT INTO kind(name, unit, schema) VALUES (?, ?, ?) ON CONFLICT(name) DO NOTHING`, name, unit, schema); err != nil {
 		return 0, err
 	}
-	res, err := s.db.Exec(`INSERT INTO kind(name, unit, schema) VALUES (?, ?, ?)`, name, unit, schema)
+	id, haveUnit, haveSchema, found, err := lookup()
 	if err != nil {
 		return 0, err
 	}
-	id, err = res.LastInsertId()
-	if err != nil {
-		return 0, err
+	if !found {
+		return 0, fmt.Errorf("eventstore: kind %q missing after insert", name)
 	}
-	if compiled != nil {
-		s.schemas[name] = compiled
-	}
-	return id, nil
+	return finish(id, haveUnit, haveSchema)
 }
 
 // Kinds lists the declared kinds, by name.
@@ -203,24 +240,36 @@ func (s *Store) InternIDs(pairs [][]string) (int64, error) {
 		}
 		return members[i][1] < members[j][1]
 	})
-	var canon strings.Builder
-	for _, m := range members {
-		canon.WriteString(m[0])
-		canon.WriteByte(0)
-		canon.WriteString(m[1])
-		canon.WriteByte(0)
+	// The fingerprint hashes a structured (JSON) encoding of the
+	// canonical member list. A separator-joined encoding would be
+	// ambiguous: member strings may themselves contain the separator,
+	// so distinct sets could collide onto one fingerprint and
+	// silently share an idset (Codex review on PR #2449).
+	canon, err := json.Marshal(members)
+	if err != nil {
+		return 0, err
 	}
-	sum := sha256.Sum256([]byte(canon.String()))
+	sum := sha256.Sum256(canon)
 	fingerprint := hex.EncodeToString(sum[:])
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	res, err := s.db.Exec(`INSERT INTO idset(fingerprint) VALUES (?) ON CONFLICT(fingerprint) DO NOTHING`, fingerprint)
+	// The idset row and its members commit atomically: if a member
+	// insert fails midway, nothing persists, so a retry re-runs the
+	// member inserts instead of finding the fingerprint, skipping
+	// them, and returning a permanently incomplete set (Codex review
+	// on PR #2449).
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`INSERT INTO idset(fingerprint) VALUES (?) ON CONFLICT(fingerprint) DO NOTHING`, fingerprint)
 	if err != nil {
 		return 0, err
 	}
 	var id int64
-	if err := s.db.QueryRow(`SELECT id FROM idset WHERE fingerprint = ?`, fingerprint).Scan(&id); err != nil {
+	if err := tx.QueryRow(`SELECT id FROM idset WHERE fingerprint = ?`, fingerprint).Scan(&id); err != nil {
 		return 0, err
 	}
 	inserted, err := res.RowsAffected()
@@ -229,10 +278,13 @@ func (s *Store) InternIDs(pairs [][]string) (int64, error) {
 	}
 	if inserted == 1 {
 		for _, m := range members {
-			if _, err := s.db.Exec(`INSERT INTO idset_member(idset_id, key, value) VALUES (?, ?, ?)`, id, m[0], m[1]); err != nil {
+			if _, err := tx.Exec(`INSERT INTO idset_member(idset_id, key, value) VALUES (?, ?, ?)`, id, m[0], m[1]); err != nil {
 				return 0, err
 			}
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
 	}
 	return id, nil
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -229,5 +230,125 @@ func TestCallStatsAgreeWithLogstore(t *testing.T) {
 			g.P95 != w.P95 || g.P99 != w.P99 || g.Max != w.Max || g.TotalMs != w.TotalMs {
 			t.Errorf("row %d disagrees:\n eventstore %+v\n logstore   %+v", i, g, w)
 		}
+	}
+}
+
+// Regression tests for the three Codex findings on PR #2449.
+
+func TestInterningFingerprintIsUnambiguous(t *testing.T) {
+	st := openStore(t)
+	// Under a separator-joined fingerprint these two distinct sets
+	// encode to identical bytes and would collide onto one idset.
+	a, err := st.InternIDs([][]string{{"session", "a\x00b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := st.InternIDs([][]string{{"session\x00a", "b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatalf("distinct identifier sets interned to the same idset %d", a)
+	}
+	var key, value string
+	if err := st.DB().QueryRow(`SELECT key, value FROM idset_member WHERE idset_id = ?`, b).Scan(&key, &value); err != nil {
+		t.Fatal(err)
+	}
+	if key != "session\x00a" || value != "b" {
+		t.Errorf("idset %d holds member (%q, %q), want (%q, %q)", b, key, value, "session\x00a", "b")
+	}
+}
+
+func TestInterningIsAtomicOnMemberFailure(t *testing.T) {
+	st := openStore(t)
+	if _, err := st.DB().Exec(`CREATE TRIGGER fail_boom BEFORE INSERT ON idset_member WHEN NEW.value = 'boom' BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.InternIDs([][]string{{"session", "ok"}, {"session", "boom"}}); err == nil {
+		t.Fatal("InternIDs succeeded despite a failing member insert")
+	}
+	var sets, members int
+	if err := st.DB().QueryRow(`SELECT count(*) FROM idset`).Scan(&sets); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB().QueryRow(`SELECT count(*) FROM idset_member`).Scan(&members); err != nil {
+		t.Fatal(err)
+	}
+	if sets != 0 || members != 0 {
+		t.Fatalf("failed InternIDs left %d idsets and %d members, want 0 and 0", sets, members)
+	}
+	// The retry after the failure must produce the complete set.
+	if _, err := st.DB().Exec(`DROP TRIGGER fail_boom`); err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.InternIDs([][]string{{"session", "ok"}, {"session", "boom"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.DB().QueryRow(`SELECT count(*) FROM idset_member WHERE idset_id = ?`, id).Scan(&members); err != nil {
+		t.Fatal(err)
+	}
+	if members != 2 {
+		t.Errorf("retried idset holds %d members, want 2", members)
+	}
+}
+
+func TestRegisterKindConcurrentAcrossStores(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.db")
+	st1, err := eventstore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st1.Close()
+	st2, err := eventstore.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	stores := []*eventstore.Store{st1, st2}
+
+	// Identical definitions registered concurrently from two Store
+	// instances over one database: all succeed with the same id.
+	const n = 8
+	ids := make([]int64, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ids[i], errs[i] = stores[i%2].RegisterKind("mcp.call", "ms", callSchema)
+		}(i)
+	}
+	wg.Wait()
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("concurrent identical RegisterKind %d: %v", i, errs[i])
+		}
+		if ids[i] != ids[0] {
+			t.Fatalf("concurrent identical RegisterKind returned ids %d and %d", ids[0], ids[i])
+		}
+	}
+
+	// Differing definitions raced: exactly one wins, the other gets
+	// ErrKindConflict — never a raw UNIQUE constraint error.
+	errs = make([]error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); _, errs[0] = st1.RegisterKind("mcp.raced", "ms", callSchema) }()
+	go func() { defer wg.Done(); _, errs[1] = st2.RegisterKind("mcp.raced", "count", callSchema) }()
+	wg.Wait()
+	var ok, conflict int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, eventstore.ErrKindConflict):
+			conflict++
+		default:
+			t.Fatalf("raced RegisterKind returned unexpected error: %v", err)
+		}
+	}
+	if ok != 1 || conflict != 1 {
+		t.Fatalf("raced RegisterKind: %d ok, %d conflict, want 1 and 1 (errs %v)", ok, conflict, errs)
 	}
 }
