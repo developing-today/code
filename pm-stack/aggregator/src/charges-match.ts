@@ -142,6 +142,16 @@ const SAAS_MARKERS = [
   "LINODE",
   "STRIPE",
   "PADDLE",
+  // The fleet's own AI tooling, seen in the October 2026 reads:
+  // charges to these are exactly the unmatched SaaS/AI charges the
+  // hub exists to surface.
+  "META",
+  "CLINE",
+  "OPENCODE",
+  "OPENDESIGN",
+  "COMMANDCODE",
+  "WINDSURF",
+  "CODEIUM",
 ];
 
 /** Heuristic: does this normalized merchant look like a SaaS/AI charge? */
