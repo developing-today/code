@@ -1,0 +1,6 @@
+# `mcpx run <file.ts>` writes the generated client and its declarations beside
+# the script, and a transient entry module while it runs. They are build
+# products of running an example, not examples.
+mcpx-client.ts
+mcpx-globals.d.ts
+.*.mcpx-entry.ts

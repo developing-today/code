@@ -75,10 +75,10 @@ More: [the assessment](../ASSESSMENT.md).
 
 Yes. `examples/` holds short scripts that CI runs on every change, against a
 deterministic fixture server, paired with the output they print today — so an
-example cannot quietly rot. A few of them double as installable recipes
-(`mcpx recipes`), and the story's opening walk is one of the same scripts. The
-gallery page pairs each script with its command and its expected output; copy
-one, change the server name, run it. If one is wrong, that is a bug worth
+example cannot quietly rot, and one of them is a real recipe (`mcpx recipes`).
+The gallery page pairs each script with its command and its expected output;
+copy one, change the server name, run it. They are deliberately small, and none
+of them needs Chrome or the network. If one is wrong, that is a bug worth
 reporting, because the only reason these are trustworthy is that they fail the
 build when they stop being true.
 

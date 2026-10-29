@@ -70,6 +70,10 @@ var skipDirs = map[string]bool{
 var foreignPrefixes = []string{
 	"docs/extensions/",
 	"docs/docs/",
+	// The official conformance suite is cloned, not vendored, and its
+	// servers live under its own `examples/servers/`. `docs/spec/
+	// official-suite.md` cites them by that layout.
+	"examples/servers/",
 }
 
 // TestEveryDocumentationLinkResolves fails on a relative link or a backticked
@@ -102,6 +106,16 @@ func TestEveryDocumentationLinkResolves(t *testing.T) {
 				abs = filepath.Join(filepath.Dir(doc), ref.path)
 			} else {
 				abs = filepath.Join(repoRoot, ref.path)
+				// A backticked path in a document that lives below the root
+				// is often written for that document, not for the module --
+				// the plugin skills say `examples/README.md` and mean the
+				// directory beside the SKILL.md. Both readings are honest;
+				// try the root first, then the document.
+				if _, err := os.Stat(abs); err != nil {
+					if alt := filepath.Join(filepath.Dir(doc), ref.path); alt != abs {
+						abs = alt
+					}
+				}
 			}
 			if _, err := os.Stat(abs); err != nil {
 				rel, _ := filepath.Rel(repoRoot, doc)
