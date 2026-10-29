@@ -398,10 +398,8 @@ mod tests {
     /// admin reconciling a manifest, and an unknown hash is refused.
     #[tokio::test]
     async fn stored_module_bytes_fall_back_to_the_module_directory() {
-        let dir = std::env::temp_dir().join(format!(
-            "id-stored-module-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("id-stored-module-test-{}", std::process::id()));
         let modules = crate::world_store::ModuleDir::new(dir.clone());
         let bytes: &[u8] = b"native-module-bytes";
         let hash = modules.save(bytes).unwrap();
@@ -409,12 +407,7 @@ mod tests {
         let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
         let service = WorldService::new(world, Some("admin".to_owned())).with_module_dir(modules);
         assert_eq!(service.stored_module_bytes(&hash).await.unwrap(), bytes);
-        assert!(
-            service
-                .stored_module_bytes(&"0".repeat(64))
-                .await
-                .is_err()
-        );
+        assert!(service.stored_module_bytes(&"0".repeat(64)).await.is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 

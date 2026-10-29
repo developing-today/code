@@ -496,8 +496,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                         .join(", ")
                 );
                 if !dry_run {
-                    let applied =
-                        apply_steps(&client, &admin_token, &capability, &steps).await?;
+                    let applied = apply_steps(&client, &admin_token, &capability, &steps).await?;
                     if applied == steps.len() {
                         println!("applied {} step(s)", applied);
                     } else {
@@ -884,14 +883,9 @@ async fn current_world_state(
         .await?
         .info_details(capability)
         .await?;
-    let caps: crate::world_caps::CapsReport = serde_json::from_value(
-        client
-            .fresh_session()
-            .await?
-            .caps(capability)
-            .await?,
-    )
-    .context("host returned a malformed capability report")?;
+    let caps: crate::world_caps::CapsReport =
+        serde_json::from_value(client.fresh_session().await?.caps(capability).await?)
+            .context("host returned a malformed capability report")?;
     let profile: crate::world_limits::WorldExecutionProfile = serde_json::from_value(
         client
             .fresh_session()
@@ -1029,29 +1023,57 @@ async fn apply_steps(
                         .into_iter()
                         .collect::<Vec<_>>()
                 });
-                client.fresh_session().await?.set_caps_ceiling(admin_token, &names).await?;
+                client
+                    .fresh_session()
+                    .await?
+                    .set_caps_ceiling(admin_token, &names)
+                    .await?;
             }
             ApplyStep::SetProfile { profile } => {
-                client.fresh_session().await?.set_execution_profile(admin_token, *profile).await?;
+                client
+                    .fresh_session()
+                    .await?
+                    .set_execution_profile(admin_token, *profile)
+                    .await?;
             }
             ApplyStep::InstallModule { hash, source, seed } => {
                 if let Some(source) = source {
                     let sources = read_compile_sources(source)?;
-                    client.fresh_session().await?.compile(admin_token, sources, *seed, false).await?;
+                    client
+                        .fresh_session()
+                        .await?
+                        .compile(admin_token, sources, *seed, false)
+                        .await?;
                 } else if let Some(hash) = hash {
                     // The module is already on the host: fetch its bytes by
                     // hash and install them under the manifest's seed.
-                    let wasm = client.fresh_session().await?.download_module_admin(admin_token, hash).await?;
-                    client.fresh_session().await?.install_wasm(admin_token, &wasm, *seed).await?;
+                    let wasm = client
+                        .fresh_session()
+                        .await?
+                        .download_module_admin(admin_token, hash)
+                        .await?;
+                    client
+                        .fresh_session()
+                        .await?
+                        .install_wasm(admin_token, &wasm, *seed)
+                        .await?;
                 } else {
                     anyhow::bail!("install_module step names neither a hash nor a source");
                 }
             }
             ApplyStep::ScheduleAt { id, at_ms } => {
-                client.fresh_session().await?.set_schedule(admin_token, id, *at_ms).await?;
+                client
+                    .fresh_session()
+                    .await?
+                    .set_schedule(admin_token, id, *at_ms)
+                    .await?;
             }
             ApplyStep::CancelSchedule { id } => {
-                client.fresh_session().await?.cancel_schedule(admin_token, id).await?;
+                client
+                    .fresh_session()
+                    .await?
+                    .cancel_schedule(admin_token, id)
+                    .await?;
             }
         }
     }
