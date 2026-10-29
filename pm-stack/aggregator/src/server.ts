@@ -15,8 +15,8 @@ import { loadFeed } from "./feed.ts";
 import { buildHealth, recordRender, type HealthView } from "./health.ts";
 import { PAGES } from "./pages.ts";
 import { allRefs, buildAttention, deriveToday, projectPace, type RoadmapGrain } from "./derive.ts";
-import { reconcileRoadmap, roadmapDriftReport } from "./roadmap-reconcile.ts";
-import type { DashComment, RefKey } from "./model.ts";
+import { reconcileRoadmap, roadmapDriftReport, unavailableRoadmapReconciliation, type RoadmapReconciliation } from "./roadmap-reconcile.ts";
+import type { DashComment, ProjectPoolItem, RefKey } from "./model.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import {
   PROJECT_CONFIGS,
@@ -230,11 +230,33 @@ async function boardContext() {
 async function roadmapContext() {
   const rows = await source.roadmap();
   const refs = allRefs(rows);
-  const [items, pool] = await Promise.all([source.items(refs), source.projects().catch(() => [])]);
+  const [items, poolResult] = await Promise.all([
+    source.items(refs),
+    source.projects().then(
+      (pool) => ({ pool, failed: false }),
+      () => ({ pool: [] as ProjectPoolItem[], failed: true }),
+    ),
+  ]);
   // #1144: reconcile the Grist rows against the Project's Kind=Epic
   // pool items on every roadmap read, so the page flag and the JSON
   // drift report always describe the same pass as the rows themselves.
-  const reconciliation = reconcileRoadmap(rows, pool);
+  // Codex P2 on PR 2428: an unread source is NOT an empty source — in
+  // live mode, a Grist fixtures fallback or a fleet feed with no
+  // projects section means reconciliation is unavailable, and no
+  // drift may be asserted from it.
+  let reconciliation: RoadmapReconciliation;
+  if (cfg.source === "live") {
+    const reasons: string[] = [];
+    const roadmapProv = source.provenance().roadmap;
+    if (!roadmapProv.startsWith("live")) reasons.push(`Grist roadmap read unavailable (${roadmapProv})`);
+    if (poolResult.failed) reasons.push("Project pool read failed");
+    const feed = await loadFeed(cfg.feedFile).catch(() => null);
+    if (!feed) reasons.push("fleet feed unreadable — Project pool availability unknown");
+    else if (feed.projects === undefined) reasons.push("fleet feed carries no projects section — Project pool availability unknown");
+    reconciliation = reasons.length ? unavailableRoadmapReconciliation(reasons.join("; ")) : reconcileRoadmap(rows, poolResult.pool);
+  } else {
+    reconciliation = reconcileRoadmap(rows, poolResult.pool);
+  }
   return { rows, items, reconciliation };
 }
 

@@ -18,6 +18,11 @@ export interface RoadmapMatch {
 }
 
 export interface RoadmapReconciliation {
+  /** "unavailable" when a source read failed and no drift may be
+   *  asserted (Codex P2 on PR 2428): an unread feed or a Grist
+   *  fixtures fallback must never masquerade as an empty epic pool. */
+  availability: "available" | "unavailable";
+  unavailableReason?: string;
   matched: RoadmapMatch[];
   /** Grist rows no Project epic claims. */
   unmatchedRows: RoadmapRow[];
@@ -77,12 +82,31 @@ export function reconcileRoadmap(rows: RoadmapRow[], pool: ProjectPoolItem[]): R
   }
 
   const unmatchedEpics = epics.filter((e) => !used.has(e.ref));
-  return { matched, unmatchedRows, unmatchedEpics, drift: unmatchedRows.length + unmatchedEpics.length };
+  return { availability: "available", matched, unmatchedRows, unmatchedEpics, drift: unmatchedRows.length + unmatchedEpics.length };
+}
+
+/** The reconciliation when either side was not successfully read:
+ *  no matches, no unmatched lists, no drift — just the reason. */
+export function unavailableRoadmapReconciliation(reason: string): RoadmapReconciliation {
+  return { availability: "unavailable", unavailableReason: reason, matched: [], unmatchedRows: [], unmatchedEpics: [], drift: 0 };
 }
 
 /** The published shape for /api/roadmap.json: counts plus both lists. */
 export function roadmapDriftReport(rec: RoadmapReconciliation) {
+  if (rec.availability === "unavailable") {
+    return {
+      availability: rec.availability,
+      unavailableReason: rec.unavailableReason ?? "a roadmap source could not be read",
+      matched: 0,
+      matchedByRef: 0,
+      matchedByTitle: 0,
+      unmatchedRows: [] as { subject: string; title: string }[],
+      unmatchedEpics: [] as { ref: string; title: string }[],
+      drift: null,
+    };
+  }
   return {
+    availability: rec.availability,
     matched: rec.matched.length,
     matchedByRef: rec.matched.filter((m) => m.via === "ref").length,
     matchedByTitle: rec.matched.filter((m) => m.via === "title").length,

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ProjectPoolItem, RoadmapRow } from "../src/model.ts";
 import { renderRoadmap } from "../src/render.ts";
-import { normalizeTitle, reconcileRoadmap, roadmapDriftReport } from "../src/roadmap-reconcile.ts";
+import { normalizeTitle, reconcileRoadmap, roadmapDriftReport, unavailableRoadmapReconciliation } from "../src/roadmap-reconcile.ts";
 
 // #1144: Grist roadmap rows ↔ Project Kind=Epic reconciliation.
 
@@ -94,5 +94,27 @@ describe("renderRoadmap drift indicator (#1144)", () => {
     const clean = reconcileRoadmap([], []);
     const html2 = renderRoadmap([], new Map(), PROV, "quarter", undefined, undefined, clean);
     expect(html2).not.toContain("Roadmap drift");
+  });
+
+  test("unavailable reconciliation shows a notice, never a drift flag (Codex P2 on PR 2428)", () => {
+    const rec = unavailableRoadmapReconciliation("Grist roadmap read unavailable (fixtures)");
+    const html = renderRoadmap([row(1, "Only in Grist")], new Map(), PROV, "quarter", undefined, undefined, rec);
+    expect(html).toContain("Roadmap reconciliation unavailable");
+    expect(html).not.toContain("Roadmap drift:");
+  });
+});
+
+describe("unavailable reconciliation report (Codex P2 on PR 2428)", () => {
+  test("report asserts no drift and names the reason when a source read failed", () => {
+    const rec = unavailableRoadmapReconciliation("fleet feed unreadable");
+    expect(rec.availability).toBe("unavailable");
+    const report = roadmapDriftReport(rec);
+    expect(report.availability).toBe("unavailable");
+    expect(report.drift).toBeNull();
+    expect(report.unmatchedRows).toEqual([]);
+    expect(report.unmatchedEpics).toEqual([]);
+    const available = roadmapDriftReport(reconcileRoadmap([], []));
+    expect(available.availability).toBe("available");
+    expect(available.drift).toBe(0);
   });
 });
