@@ -104,6 +104,15 @@ pub(crate) enum ClientFrame {
         capability: String,
         module_hash: String,
     },
+    /// Admin: download a stored module by hash, whether or not it is the
+    /// active module. The participant download above serves only the active
+    /// module; an admin reconciling a world to a manifest (#807) needs a
+    /// module the host already holds - installed earlier and still in its
+    /// blob store - by its hash, to install it under the manifest's seed.
+    DownloadModuleAdmin {
+        admin_token: String,
+        module_hash: String,
+    },
     Invite {
         admin_token: String,
         display_name: String,

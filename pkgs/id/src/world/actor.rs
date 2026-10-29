@@ -1308,15 +1308,24 @@ impl WorldActor {
                     if self.core.schedules.get(&id) == Some(&at_ms) {
                         return Ok(self.core.schedules.clone());
                     }
-                    if self.core.schedules.contains_key(&id) {
+                    // Validate the replacement before anything is persisted:
+                    // a refusal (say, past the horizon) must leave the
+                    // existing schedule standing, in the journal as in
+                    // memory (#807).
+                    let replacing = self.core.schedules.contains_key(&id);
+                    self.core.check_schedule_replacing(
+                        &id,
+                        at_ms,
+                        self.core.clock().now_ms(),
+                        replacing,
+                    )?;
+                    if replacing {
                         // Journal the cancel before the replacement set:
                         // replay refuses two pending sets for one id.
                         self.persist(JournalEntry::ScheduleCancelled { id: id.clone() })?;
                         self.core.schedules.remove(&id);
                         self.overdue_at_open.remove(&id);
                     }
-                    self.core
-                        .check_schedule(&id, at_ms, self.core.clock().now_ms())?;
                     self.persist(JournalEntry::ScheduleSet {
                         id: id.clone(),
                         at_ms,
