@@ -180,3 +180,71 @@ describe("fetchPartial supersession (per target)", () => {
     expect(console.error).toHaveBeenCalled();
   });
 });
+
+describe("fetchPartial x navigateTo (page generation, #1578)", () => {
+  // The partial target lives INSIDE #main, as in the real pages: a
+  // navigation swap replaces it with the new page's own element.
+  function seedPage(listHtml: string): void {
+    document.getElementById("main")!.innerHTML = `<div id="file-list-content">${listHtml}</div>`;
+  }
+  function listContent(): string {
+    return document.querySelector("#main #file-list-content")!.innerHTML;
+  }
+
+  it("partial-then-navigate: a stale partial resolving after the swap writes nothing", async () => {
+    seedPage("old page list");
+    const stale = nav.fetchPartial("/api/files?search=ab", "#file-list-content");
+    const navigation = nav.navigateTo("/files");
+
+    pending.get("/files")!.resolve(`<div id="file-list-content">new page list</div>`);
+    await navigation;
+    expect(listContent()).toBe("new page list");
+
+    pending.get("/api/files?search=ab")!.resolve("<li>stale results</li>");
+    await stale;
+    expect(listContent()).toBe("new page list");
+    expect(onPartialSwapped).not.toHaveBeenCalled();
+  });
+
+  it("navigate-then-partial: a partial issued after the swap writes normally", async () => {
+    seedPage("old page list");
+    const navigation = nav.navigateTo("/files");
+    pending.get("/files")!.resolve(`<div id="file-list-content">new page list</div>`);
+    await navigation;
+
+    const fresh = nav.fetchPartial("/api/files?search=abc", "#file-list-content");
+    pending.get("/api/files?search=abc")!.resolve("<li>fresh results</li>");
+    await fresh;
+    expect(listContent()).toBe("<li>fresh results</li>");
+    expect(onPartialSwapped).toHaveBeenCalledTimes(1);
+  });
+
+  it("a partial issued during an in-flight navigation is dropped when it resolves after the swap", async () => {
+    seedPage("old page list");
+    const navigation = nav.navigateTo("/files");
+    const during = nav.fetchPartial("/api/files?search=ab", "#file-list-content");
+
+    pending.get("/files")!.resolve(`<div id="file-list-content">new page list</div>`);
+    await navigation;
+
+    pending.get("/api/files?search=ab")!.resolve("<li>issued mid-navigation</li>");
+    await during;
+    expect(listContent()).toBe("new page list");
+    expect(onPartialSwapped).not.toHaveBeenCalled();
+  });
+
+  it("reverse-order control: a partial resolving before the swap writes the old page, which the swap then replaces", async () => {
+    seedPage("old page list");
+    const partial = nav.fetchPartial("/api/files?search=ab", "#file-list-content");
+    const navigation = nav.navigateTo("/files");
+
+    pending.get("/api/files?search=ab")!.resolve("<li>old page refresh</li>");
+    await partial;
+    expect(listContent()).toBe("<li>old page refresh</li>");
+    expect(onPartialSwapped).toHaveBeenCalledTimes(1);
+
+    pending.get("/files")!.resolve(`<div id="file-list-content">new page list</div>`);
+    await navigation;
+    expect(listContent()).toBe("new page list");
+  });
+});
