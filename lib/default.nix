@@ -679,11 +679,29 @@ let
               --fail-on-change \
               "$@"
           '';
+          # Write-mode twin of format-check, for the auto-format
+          # workflow (.github/workflows/auto-format.yml): same
+          # treefmt invocation without --fail-on-change.
+          format = pkgs.writeShellScriptBin "format" ''
+            export PATH="${pkgs.lib.makeBinPath fmtBins}:$PATH"
+            if [ "$#" -eq 0 ]; then
+              echo "usage: nix run .#format -- <changed-file>..." >&2
+              exit 2
+            fi
+            exec treefmt \
+              --config-file "$PWD/treefmt.toml" \
+              --tree-root "$PWD" \
+              "$@"
+          '';
         in
         {
           apps.format-check = {
             type = "app";
             program = "${formatCheck}/bin/format-check";
+          };
+          apps.format = {
+            type = "app";
+            program = "${format}/bin/format";
           };
 
           formatter = pkgs.writeShellScriptBin "formatter" ''

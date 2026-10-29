@@ -43,7 +43,7 @@ concurrency:
 
 jobs:
   build:
-    name: go build
+    name: "basic: go build"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
