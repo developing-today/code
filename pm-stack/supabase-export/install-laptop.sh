@@ -13,7 +13,25 @@ units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 mkdir -p "$target" "$units"
 install -m 0644 "$here/supabase-quota-export.mjs" "$target/supabase-quota-export.mjs"
-install -m 0644 "$here/supabase-quota-export.service" "$units/supabase-quota-export.service"
+# Render the unit's paths from the selected install directory — copying it
+# unchanged would leave the timer pointing at the default directory.
+bash_bin="$(command -v bash || true)"
+if [[ -z $bash_bin ]]; then
+  echo "install-laptop: bash not found on PATH" >&2
+  exit 1
+fi
+bun_bin="$(command -v bun || true)"
+if [[ -z $bun_bin && -x $HOME/.bun/bin/bun ]]; then bun_bin="$HOME/.bun/bin/bun"; fi
+if [[ -z $bun_bin ]]; then
+  echo "install-laptop: bun not found on PATH or at ~/.bun/bin/bun" >&2
+  exit 1
+fi
+sed -e "s|@EXPORT_DIR@|$target|g" -e "s|@BUN@|$bun_bin|g" -e "s|@BASH@|$bash_bin|g" "$here/supabase-quota-export.service" > "$units/supabase-quota-export.service"
+chmod 0644 "$units/supabase-quota-export.service"
+if grep -q '@EXPORT_DIR@\|@BUN@\|@BASH@' "$units/supabase-quota-export.service"; then
+  echo "install-laptop: service unit still contains an unrendered placeholder after rendering" >&2
+  exit 1
+fi
 install -m 0644 "$here/supabase-quota-export.timer" "$units/supabase-quota-export.timer"
 
 systemctl --user daemon-reload

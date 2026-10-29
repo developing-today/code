@@ -806,10 +806,17 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
               domainCount: feed.dns.entries.length,
             }
           : null;
+      // The Supabase export overlay applies to BOTH service sources:
+      // the collector's feed.saas cards are built with plain
+      // extractSaasServices, so without this the fresh export would be
+      // ignored exactly when the fleet collector is operating (#1050).
+      const supabaseExport = await readFile(cfg.supabaseExportFile, "utf8")
+        .then((text) => JSON.parse(text) as SupabaseExportDoc)
+        .catch(() => null);
       if (feed?.saas && feed.saas.length) {
         provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         const partial = {
-          services: feed.saas,
+          services: applySupabaseExport(feed.saas, supabaseExport),
           payg: feed.payg ?? [],
           charges: feed.charges ?? [],
           subscriptions: feed.subscriptions ?? [],
@@ -840,9 +847,6 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           readFile(cfg.quotaViewFile, "utf8"),
           readFile(cfg.quotaRegistryFile, "utf8").catch(() => ""),
         ]);
-        const supabaseExport = await readFile(cfg.supabaseExportFile, "utf8")
-          .then((text) => JSON.parse(text) as SupabaseExportDoc)
-          .catch(() => null);
         const partial = {
           services: applySupabaseExport(extractSaasServices(doc), supabaseExport),
           payg: extractPaygLines(doc, registryText),

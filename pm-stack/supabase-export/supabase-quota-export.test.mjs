@@ -26,7 +26,10 @@ function response(status, body) {
 function fakeFetch({ dbBytes = 1_153_939_123, bucketCount = 0, addonsStatus = 200 } = {}) {
   const calls = [];
   const impl = async (url, init) => {
-    calls.push({ url, method: init?.method ?? "GET" });
+    calls.push({ url, method: init?.method ?? "GET", authorization: init?.headers?.Authorization });
+    // The real Management API refuses unauthenticated calls; the fake does
+    // too, so a probe that forgets the bearer token cannot pass silently.
+    if (init?.headers?.Authorization !== "Bearer sbp_fake") return response(401, { message: "Unauthorized" });
     const path = url.replace("https://api.supabase.com/v1", "");
     if (path === `/projects/${REF}`) {
       return response(200, {
@@ -58,6 +61,13 @@ describe("supabase-quota-export", () => {
     expect(db.used / db.limit).toBeGreaterThanOrEqual(PAID_TRIGGER_RATIO);
     expect(db.flag).toBe("approaching-paid-trigger");
     expect(db.source).toContain("pg_database_size");
+  });
+
+  test("every Management API call, probes included, carries the bearer token", async () => {
+    const { impl, calls } = fakeFetch();
+    await run({ token: "sbp_fake", ref: REF, fetchImpl: impl });
+    expect(calls.length).toBeGreaterThan(5);
+    expect(calls.every((c) => c.authorization === "Bearer sbp_fake")).toBe(true);
   });
 
   test("records the egress scope gap without inventing a value", async () => {

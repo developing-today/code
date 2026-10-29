@@ -3,7 +3,12 @@
 // billed state on the Supabase card; a missing, failed or stale
 // document reproduces the recorded prose exactly.
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadConfig } from "../src/config.ts";
 import { applySupabaseExport, extractSaasServices, type SupabaseExportDoc } from "../src/saas-extract.ts";
+import { liveSource } from "../src/sources/live.ts";
 
 const VIEW = `
 ## Summary (b) — subscriptions, infrastructure, account tooling
@@ -101,5 +106,43 @@ describe("applySupabaseExport", () => {
   test("a document without a Supabase card in the view is a no-op", () => {
     const out = applySupabaseExport(extractSaasServices("nothing here"), freshDoc(), NOW);
     expect(out.find((s) => s.id === "supabase")!.metrics).toEqual([]);
+  });
+});
+
+describe("live source usage(): the overlay reaches fleet-feed services too", () => {
+  test("feed.saas cards get the fresh export overlay, not just the quota-view fallback", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pm-supa-feed-"));
+    const nowIso = new Date().toISOString();
+    const feedFile = join(dir, "fleet-feed.json");
+    const exportFile = join(dir, "latest.json");
+    await writeFile(exportFile, JSON.stringify(freshDoc({ measuredAt: nowIso })));
+    await writeFile(
+      feedFile,
+      JSON.stringify({
+        version: 1,
+        generatedAt: nowIso,
+        quota: { pools: [], burn: [], choices: { hasHeadroom: [], burnBeforeReset: [], doNotStart: [] } },
+        attention: [],
+        saas: extractSaasServices(VIEW),
+      }),
+    );
+    const cfg = loadConfig({
+      PM_AGG_SOURCE: "live",
+      PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_SUPABASE_EXPORT: exportFile,
+      PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
+      PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),
+      PM_AGG_SNAPSHOTS_DIR: join(dir, "snapshots"),
+      PM_AGG_OPENCHAMBER_STATE: join(dir, "no-state.json"),
+      PM_PROJECTOR_URL: "off",
+      KANEO_ADMIN_EMAIL: "",
+      KANEO_ADMIN_PASSWORD: "",
+      GRIST_API_KEY: "",
+    });
+    const usage = await liveSource(cfg).usage();
+    const db = metricOf(usage.services, "db-size");
+    expect(db.used).toBe(1.154);
+    expect(db.limit).toBe(0.5);
+    expect(supabaseCard(usage.services).billedUsd).toBe(0);
   });
 });

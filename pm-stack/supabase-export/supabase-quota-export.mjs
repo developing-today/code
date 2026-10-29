@@ -163,8 +163,13 @@ export function buildMetrics({ dbBytes, bucketCount, requestTotal }) {
 }
 
 /** Probe a path and return { status, json? , text? } without throwing on HTTP. */
-async function probe(fetchImpl, path) {
-  const res = await fetchImpl(`${API_BASE}${path}`);
+async function probe(fetchImpl, token, path) {
+  const res = await fetchImpl(`${API_BASE}${path}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+  });
   let body = null;
   try {
     body = await res.text();
@@ -247,7 +252,7 @@ export async function run({ token, ref = DEFAULT_PROJECT_REF, fetchImpl = fetch 
 
   // Egress: there is no bytes endpoint. Record the gap precisely and keep the
   // request count as context, then the available usage endpoints for the record.
-  const requests = await probe(fetchImpl, `/projects/${ref}/analytics/endpoints/usage.api-requests-count`);
+  const requests = await probe(fetchImpl, token, `/projects/${ref}/analytics/endpoints/usage.api-requests-count`);
   scope.push({
     endpoint: "usage.api-requests-count",
     path: `/projects/${ref}/analytics/endpoints/usage.api-requests-count`,
@@ -261,7 +266,7 @@ export async function run({ token, ref = DEFAULT_PROJECT_REF, fetchImpl = fetch 
     `/projects/${ref}/usage`,
     `/projects/${ref}/database/size`,
   ]) {
-    const r = await probe(fetchImpl, path);
+    const r = await probe(fetchImpl, token, path);
     scope.push({ endpoint: path.split("/").pop(), path, status: r.status, note: r.status === 404 ? "no such endpoint" : undefined });
   }
 
@@ -285,7 +290,7 @@ export async function run({ token, ref = DEFAULT_PROJECT_REF, fetchImpl = fetch 
   }
   const slug = projectBody?.organization_slug;
   if (slug) {
-    const org = await probe(fetchImpl, `/organizations/${slug}`);
+    const org = await probe(fetchImpl, token, `/organizations/${slug}`);
     scope.push({
       endpoint: "organizations/:slug",
       path: `/organizations/${slug}`,
