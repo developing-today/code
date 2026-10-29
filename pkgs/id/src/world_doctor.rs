@@ -199,7 +199,7 @@ pub fn check_toolchain(inputs: &DoctorInputs) -> Finding {
     };
     // A configured binary must exist. A bare name resolves through PATH.
     let exists = if roc_bin.contains('/') {
-        std::path::Path::new(roc_bin).is_file()
+        Path::new(roc_bin).is_file()
     } else {
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
             .map(|dir| dir.join(roc_bin))

@@ -17,7 +17,13 @@ import { createGotoLinePlugin, destroyGotoLineDialog } from "./goto-line";
 function createStateWithGotoLine(docContent?: string): EditorState {
   const plugin = createGotoLinePlugin();
   const doc = docContent
-    ? rawSchema.node("doc", null, [rawSchema.node("code_block", null, docContent ? [rawSchema.text(docContent)] : [])])
+    ? rawSchema.node("doc", null, [
+        rawSchema.node(
+          "code_block",
+          null,
+          docContent ? [rawSchema.text(docContent)] : [],
+        ),
+      ])
     : undefined;
   return EditorState.create({
     schema: rawSchema,
@@ -27,7 +33,10 @@ function createStateWithGotoLine(docContent?: string): EditorState {
 }
 
 /** Create an EditorView in a container div with the goto-line plugin. */
-function createViewWithGotoLine(docContent?: string): { view: EditorView; container: HTMLElement } {
+function createViewWithGotoLine(docContent?: string): {
+  view: EditorView;
+  container: HTMLElement;
+} {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const state = createStateWithGotoLine(docContent);
@@ -44,7 +53,11 @@ function triggerGotoLine(view: EditorView): boolean {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- handleKeyDown this context workaround
   const handler = (plugin.props as any).handleKeyDown;
   if (!handler) return false;
-  return handler.call(plugin, view, new KeyboardEvent("keydown", { key: "g", ctrlKey: true }));
+  return handler.call(
+    plugin,
+    view,
+    new KeyboardEvent("keydown", { key: "g", ctrlKey: true }),
+  );
 }
 
 // ── Tracked resources for cleanup ──────────────────────────────────
@@ -191,7 +204,9 @@ describe("go-to-line command", () => {
 
     triggerGotoLine(view);
 
-    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    const input = container.querySelector(
+      ".goto-line-input",
+    ) as HTMLInputElement;
     expect(input).not.toBeNull();
     // 3 lines in doc → placeholder should contain "3"
     expect(input.placeholder).toContain("3");
@@ -224,9 +239,13 @@ describe("dialog input interaction", () => {
     const dialog = container.querySelector(".goto-line-dialog") as HTMLElement;
     expect(dialog).not.toBeNull();
 
-    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    const input = container.querySelector(
+      ".goto-line-input",
+    ) as HTMLInputElement;
     // Simulate pressing Escape on the input
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
 
     expect(dialog.style.display).toBe("none");
   });
@@ -239,10 +258,14 @@ describe("dialog input interaction", () => {
     triggerGotoLine(view);
 
     const dialog = container.querySelector(".goto-line-dialog") as HTMLElement;
-    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    const input = container.querySelector(
+      ".goto-line-input",
+    ) as HTMLInputElement;
     input.value = "1";
 
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
     expect(dialog.style.display).toBe("none");
   });
 
@@ -253,13 +276,17 @@ describe("dialog input interaction", () => {
 
     triggerGotoLine(view);
 
-    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    const input = container.querySelector(
+      ".goto-line-input",
+    ) as HTMLInputElement;
     input.value = "2";
 
     // Before: cursor is at default position
     const _posBefore = view.state.selection.from;
 
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
 
     // After: cursor should have moved (to line 2 start)
     // In rawSchema: doc > code_block > text "first\nsecond\nthird"
@@ -277,25 +304,36 @@ describe("dialog input interaction", () => {
     ["2.9", "fractional"],
     ["999", "out of range"],
     ["", "empty"],
-  ])("Enter with %s (%s) does not move the cursor and keeps the dialog open", (value) => {
-    const { view, container } = createViewWithGotoLine("first\nsecond\nthird");
-    views.push(view);
-    containers.push(container);
+  ])(
+    "Enter with %s (%s) does not move the cursor and keeps the dialog open",
+    (value) => {
+      const { view, container } = createViewWithGotoLine(
+        "first\nsecond\nthird",
+      );
+      views.push(view);
+      containers.push(container);
 
-    triggerGotoLine(view);
+      triggerGotoLine(view);
 
-    const dialog = container.querySelector(".goto-line-dialog") as HTMLElement;
-    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
-    input.value = value;
-    const posBefore = view.state.selection.from;
+      const dialog = container.querySelector(
+        ".goto-line-dialog",
+      ) as HTMLElement;
+      const input = container.querySelector(
+        ".goto-line-input",
+      ) as HTMLInputElement;
+      input.value = value;
+      const posBefore = view.state.selection.from;
 
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
 
-    // #712: invalid input must not be silently reinterpreted (0 -> line 1,
-    // 2.9 -> line 2) or swallowed (999) — no move, dialog stays open.
-    expect(view.state.selection.from).toBe(posBefore);
-    expect(dialog.style.display).not.toBe("none");
-  });
+      // #712: invalid input must not be silently reinterpreted (0 -> line 1,
+      // 2.9 -> line 2) or swallowed (999) — no move, dialog stays open.
+      expect(view.state.selection.from).toBe(posBefore);
+      expect(dialog.style.display).not.toBe("none");
+    },
+  );
 
   it("Enter with line 1 moves cursor to the first line start", () => {
     const { view, container } = createViewWithGotoLine("first\nsecond");
@@ -304,10 +342,14 @@ describe("dialog input interaction", () => {
 
     triggerGotoLine(view);
 
-    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    const input = container.querySelector(
+      ".goto-line-input",
+    ) as HTMLInputElement;
     input.value = "1";
 
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
 
     // Line 1 starts at the code_block's content start: the block sits
     // at pos 0, so its text starts at doc pos 1 (#745 doc-walk mapping).
@@ -341,9 +383,13 @@ describe("go-to-line across textblocks (#745)", () => {
   }
 
   function gotoLine(container: HTMLElement, value: string): void {
-    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    const input = container.querySelector(
+      ".goto-line-input",
+    ) as HTMLInputElement;
     input.value = value;
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
   }
 
   it("rich doc of three paragraphs reports 3 lines and jumps to the second paragraph", () => {
@@ -355,7 +401,9 @@ describe("go-to-line across textblocks (#745)", () => {
     const { view, container } = createViewFromDoc(richSchema, doc);
 
     triggerGotoLine(view);
-    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    const input = container.querySelector(
+      ".goto-line-input",
+    ) as HTMLInputElement;
     // textContent is "alphabetagamma" (no separators) — the old count said 1.
     expect(input.placeholder).toContain("3");
     expect(input.max).toBe("3");
@@ -373,7 +421,9 @@ describe("go-to-line across textblocks (#745)", () => {
     const { view, container } = createViewFromDoc(rawSchema, doc);
 
     triggerGotoLine(view);
-    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    const input = container.querySelector(
+      ".goto-line-input",
+    ) as HTMLInputElement;
     expect(input.max).toBe("4");
 
     gotoLine(container, "3");
@@ -395,7 +445,9 @@ describe("go-to-line across textblocks (#745)", () => {
     const { view, container } = createViewFromDoc(richSchema, doc);
 
     triggerGotoLine(view);
-    const input = container.querySelector(".goto-line-input") as HTMLInputElement;
+    const input = container.querySelector(
+      ".goto-line-input",
+    ) as HTMLInputElement;
     expect(input.max).toBe("4");
 
     gotoLine(container, "3");
