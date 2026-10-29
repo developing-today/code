@@ -1035,6 +1035,82 @@ impl Engine {
             .or_else(|| self.access(group, key))
     }
 
+    /// Whether `key` is listed in `group` for an event at the causal position `after`. Strong
+    /// remove reads the current membership; weak remove reads the position, so a device grant
+    /// whose account is removed concurrently still resolves (design §6.3).
+    fn listed_for(&self, group: &Hash, key: &Key, after: &[Hash]) -> bool {
+        if self.strong_removal(*group) {
+            return self.listed(group, key);
+        }
+        self.membership
+            .access_at_position_shared(after, *group, *key)
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    /// Whether `key` is an Admin of `group` for an event at the causal position `after`. Strong
+    /// remove reads the current record; weak remove also honours the Admin status the key held
+    /// at the position, replayed from the settled events in the event's causal past in canonical
+    /// order — a removal concurrent with the event has already struck the key from the current
+    /// record's admins, and the membership layer cannot recover the status because it records
+    /// Admin as Manage (design §6.3).
+    fn admin_for(
+        &self,
+        by_id: &BTreeMap<Hash, &Event>,
+        group: &Hash,
+        key: &Key,
+        after: &[Hash],
+    ) -> bool {
+        let record = self.groups.get(group);
+        if self.strong_removal(*group) {
+            return record.is_some_and(|record| record.admins.contains(key));
+        }
+        if record.is_some_and(|record| record.admins.contains(key)) {
+            return true;
+        }
+        let past = causal_past(by_id, after);
+        let Ok(order) = canonical_order(by_id) else {
+            return false;
+        };
+        let mut admin: Option<bool> = None;
+        for event in order {
+            if !past.contains(&event.id) || !self.settled.contains(&event.id) {
+                continue;
+            }
+            match &event.body {
+                Body::Create(create) if event.id == *group => {
+                    admin = Some(if create.admins_on_create {
+                        event.author == *key
+                            || create
+                                .members
+                                .first()
+                                .is_some_and(|(member, _)| member == key)
+                    } else {
+                        event.author == *key
+                            || create
+                                .members
+                                .iter()
+                                .any(|(member, role)| member == key && *role == Role::Admin)
+                    });
+                }
+                Body::Member(MemberOp::Add { member, role })
+                | Body::Member(MemberOp::SetRole { member, role })
+                    if member == key && event.group == Some(*group) =>
+                {
+                    admin = Some(*role == Role::Admin);
+                }
+                Body::Member(MemberOp::Remove { member, .. })
+                    if member == key && event.group == Some(*group) =>
+                {
+                    admin = Some(false);
+                }
+                _ => {}
+            }
+        }
+        admin.unwrap_or(false)
+    }
+
     /// Resolves whether `actor` is an active authorized device for an account in `group` at `after`.
     /// Returns `Some((account, authorized_scope))` if so.
     pub(super) fn authorized_device_account(
@@ -1075,7 +1151,7 @@ impl Engine {
             if account_removed {
                 continue;
             }
-            if !self.listed(&group, &grant.account) {
+            if !self.listed_for(&group, &grant.account, after) {
                 continue;
             }
             if self.void_device(by_id, grant) {
@@ -1095,7 +1171,7 @@ impl Engine {
     ) -> Option<(Key, Role)> {
         let record = self.groups.get(&group)?;
         if self.is_active_for(&group, record, &event.author, &event.after) {
-            let role = if record.admins.contains(&event.author) {
+            let role = if self.admin_for(by_id, &group, &event.author, &event.after) {
                 Role::Admin
             } else {
                 self.access_for(&group, &event.author, &event.after)
@@ -1108,7 +1184,7 @@ impl Engine {
             if !self.is_active_for(&group, record, &account, &event.after) {
                 return None;
             }
-            let account_role = if record.admins.contains(&account) {
+            let account_role = if self.admin_for(by_id, &group, &account, &event.after) {
                 Role::Admin
             } else {
                 self.access_for(&group, &account, &event.after)
@@ -1168,7 +1244,7 @@ impl Engine {
         if !self.is_active_for(&group, record, &event.author, &event.after) {
             return Ok(Err(Refusal::NotActive));
         }
-        let is_admin = record.admins.contains(&event.author);
+        let is_admin = self.admin_for(by_id, &group, &event.author, &event.after);
         match op {
             DeviceOp::Add { device, scope } => {
                 if device == event.author {

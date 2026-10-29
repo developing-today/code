@@ -10,8 +10,8 @@ use proptest::prelude::*;
 
 use super::policy::{Delegation, Join, OnMemberRemoved, Policy, Removal, RoleRules, Template};
 use super::{
-    Body, Create, Delegate, DeviceOp, Event, Key, MemberOp, Outcome, Pair, Projection, Refusal, Role,
-    fold, friendship_id,
+    Body, Create, Delegate, DeviceOp, Event, Key, MemberOp, Outcome, Pair, Projection, Refusal,
+    Role, fold, friendship_id,
 };
 use crate::rejection::Reason;
 
@@ -831,7 +831,12 @@ fn device_add(
 fn late_grant_events(removal: Removal) -> Vec<Event> {
     let g = id("g");
     vec![
-        custom("g", 1, &[], with_removal(removal, Some(Delegation::KeepPrior))),
+        custom(
+            "g",
+            1,
+            &[],
+            with_removal(removal, Some(Delegation::KeepPrior)),
+        ),
         add("a0", 1, g, 2, Role::Write, &["g"]),
         add("a1", 1, g, 3, Role::Write, &["a0"]),
         delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
@@ -905,6 +910,56 @@ fn test_a_concurrent_device_grant_is_void_under_strong_remove() {
     assert!(
         strong.active_devices(&g, &key(2)).is_empty(),
         "strong remove voids a device grant concurrent with it"
+    );
+}
+
+/// A device-authored grant is judged through the device's account: Joe (2) authorizes device
+/// 50, the device grants Write to Dan (3), and Joe's removal is concurrent with both. Under
+/// weak remove the account's standing at the grant's position resolves the device, so the
+/// grant stands (design 6.3); the device-resolution gate must not read head membership.
+#[test]
+fn test_a_device_authored_grant_stands_under_weak_remove() {
+    let g = id("g");
+    let events = vec![
+        custom(
+            "g",
+            1,
+            &[],
+            with_removal(Removal::Weak, Some(Delegation::KeepPrior)),
+        ),
+        add("a0", 1, g, 2, Role::Write, &["g"]),
+        add("a1", 1, g, 3, Role::Write, &["a0"]),
+        delegate("d0", 1, g, 2, Role::Write, true, &["a1"]),
+        device_add("dv0", 2, g, 50, Role::Write, &["d0"]),
+        remove("r0", 1, g, 2, &["a0"]),
+        delegate("dv1", 50, g, 3, Role::Write, false, &["dv0", "d0"]),
+    ];
+    let weak = project(&events);
+    assert_eq!(outcome(&weak, "dv1"), Outcome::Applied);
+    assert!(
+        weak.grant_in_force(&id("dv1")),
+        "weak remove stands a device-authored grant concurrent with the account's removal"
+    );
+}
+
+/// An Admin authorizes an Admin-scoped device without having seen their own removal. Under
+/// weak remove the Admin status at the grant's position is what counts, so the device grant
+/// stands (design 6.3); the current record has already struck the author from its admins.
+#[test]
+fn test_an_admin_scoped_device_grant_stands_under_weak_remove() {
+    let g = id("g");
+    let events = vec![
+        custom("g", 1, &[], with_removal(Removal::Weak, None)),
+        add("a0", 1, g, 2, Role::Admin, &["g"]),
+        device_add("dv0", 2, g, 50, Role::Admin, &["a0"]),
+        remove("r0", 1, g, 2, &["a0"]),
+        add("a1", 1, g, 2, Role::Write, &["r0"]),
+    ];
+    let weak = project(&events);
+    assert_eq!(outcome(&weak, "dv0"), Outcome::Applied);
+    assert!(
+        weak.active_devices(&g, &key(2)).contains(&key(50)),
+        "weak remove stands an Admin-scoped device grant concurrent with the Admin's removal"
     );
 }
 
