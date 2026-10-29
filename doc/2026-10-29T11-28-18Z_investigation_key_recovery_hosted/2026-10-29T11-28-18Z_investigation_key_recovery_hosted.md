@@ -241,11 +241,16 @@ blob and the salt together if the user opts for file-only.
 - **Can**: membership in groups where the user is an admin or where an admin re-admits the
   new key; access to data still readable from another device; the account record, if a key
   survives (`AccountKeyAdded`).
-- **Cannot**: decrypt past group epochs whose secret bundle was delivered only to the lost
-  key. A welcome is delivered to a member key (`encryption/welcome.rs`), not to an identity
-  in the abstract — so losing the only key that received it loses those epochs, even if the
-  *person* is re-admitted later. This is a hard, cryptographic limit, not an implementation
-  gap.
+- **Cannot**: decrypt past group epochs **for which no surviving member or backup retains
+  the secrets**. A welcome is delivered to a member key (`encryption/welcome.rs`), not to an
+  identity in the abstract — but loss of the only key that received the original welcome is
+  not by itself the limit (narrowed per Codex review, PR #2278): a member that retains past
+  epoch secrets can re-deliver them to the user's replacement key —
+  `encryption/scheme.rs::add_with_history` transfers every retained secret with
+  `HistoryMode::Full`, and `answer_history` can reseal older secrets to a current member;
+  `test_joiner_gets_its_older_epochs_from_a_member` exercises exactly this recovery path.
+  The hard, cryptographic limit applies only to epochs whose secrets no surviving member
+  or backup retains.
 - **Cannot**: re-sign anything. Past objects stay valid under the old key; no delegation
   helps retroactively.
 
@@ -325,6 +330,14 @@ share_i = SSS.split(recovery_secret, n, k)[i]
 escrow_i = account_key_i_encrypt(share_i, aad = identity_pub || epoch || i)
 ```
 
+**Prerequisite: the wrapped identity blob must survive independently of the shares
+(Codex review, PR #2278).** This mechanism distributes shares of the unwrap key only —
+not the wrapped identity ciphertext. If the user's only copy of the blob is the
+file-only L1 backup permitted in §4.2 and that file is lost with the device,
+reconstructing the unwrap key restores nothing: there is no ciphertext left to unwrap.
+L2 setup therefore requires durable replication of the wrapped blob (server-stored
+ciphertext, or copies held alongside the guardian shares) as a hard prerequisite.
+
 Guardians are identified by their **account keys**, learned at an invite acceptance and
 confirmed out of band (a petname plus a 6-character fingerprint, `petname.rs:16`). The
 Seitan token key must not be reused as the guardian identity — it is single-use by design
@@ -344,12 +357,33 @@ accept was signed by a key the other side holds" — a channel, not a durable id
 
 ### 6.3 Threat: guardian collusion
 
-k guardians who collude can reconstruct the secret and impersonate the user. Mitigations,
-in order of value: (i) shares are bound to `identity_pub || epoch`, so a reconstruction after
-a rotation is useless; (ii) the veto window means the user's surviving devices can cancel a
-hostile reconstruction; (iii) guardians hold ciphertext they cannot read alone, so k-1
-guardians learn nothing; (iv) choose k relative to n so that collusion requires socially
-implausible coordination (3-of-5 rather than 2-of-3 for high-value identities).
+k guardians who collude can reconstruct the secret and impersonate the user. Two
+limitations of the obvious mitigations must be stated plainly (Codex review, PR #2278):
+
+- **The veto window does not gate direct signing.** Step 2 of §6.2 hands colluding
+  guardians the *existing* identity signing key immediately, before any delay begins.
+  They can sign ordinary requests as that identity without publishing a recovery
+  statement or registering a new device: `directory_auth.rs::verify_signed` verifies
+  signatures without distinguishing a recovered copy of the key. The §6.2 veto therefore
+  governs only the *registered* recovery path (a new device cert taking effect), not
+  impersonation with the reconstructed key. Closing this hole requires a recovery
+  authority that cannot exercise the existing identity's signing power before the veto
+  completes — e.g. threshold signing (§4.4 option 2), where shares authorise a *new*
+  key and the existing signing key is never reconstructed.
+- **Epoch binding is not revocation.** Shares bound to `identity_pub || epoch` do not
+  make a reconstruction useless after an epoch bump: former guardians who retain k old
+  shares *and* the corresponding wrapped identity backup can still reconstruct the old
+  unwrap key and decrypt that backup, and even a new unwrap key leaves the old backup
+  able to reveal the same identity signing secret. Epoch binding is a freshness scope
+  for shares, nothing more. A recovery (or rotation) that must defeat retained shares
+  has to specify **replacement of the identity key and its revocation across
+  verifiers**; until verifiers reject the old key, retained-share collusion works.
+
+Mitigations that do hold, in order of value: (i) the veto window lets the user's
+surviving devices cancel a hostile *registered* recovery; (ii) guardians hold
+ciphertext they cannot read alone, so k-1 guardians learn nothing; (iii) choose k
+relative to n so that collusion requires socially implausible coordination (3-of-5
+rather than 2-of-3 for high-value identities).
 
 Residual risk is social, not cryptographic: a guardian's device compromise plus k-1 other
 compromises is the attack, and no protocol removes it.
@@ -363,7 +397,7 @@ compromises is the attack, and no protocol removes it.
 | L0 device key only | Server never sees it; nothing to collude over | n/a | Cannot sign; can only reach server-side metadata | n/a | Loss = identity loss (by design) |
 | L1 wrapped backup, server-stored | Server holds ciphertext; must break Argon2id + AEAD | n/a | Blob is useless without passphrase | Blob is static; replay is not meaningful, theft is | Offline guessing; passphrase reuse |
 | L1 file/QR backup | No server exposure at all | n/a | No | Same as above | User loses the file too; QR shoulder-surfing |
-| L2 Shamir among guardians | Server relays escrow blobs only | **Yes — k colluding guardians = takeover**; bound by epoch + veto window | Cannot mint shares | Recovery statement must be single-use and persisted, not the in-memory 5-min cache (`directory_auth.rs:39`) | Guardian churn requires resharing; dead guardians reduce n |
+| L2 Shamir among guardians | Server relays escrow blobs only | **Yes — k colluding guardians = takeover**; bound by identity-key revocation + veto window (epoch binding alone is not a mitigation, §6.3) | Cannot mint shares | Recovery statement must be single-use and persisted, not the in-memory 5-min cache (`directory_auth.rs:39`) | Guardian churn requires resharing; dead guardians reduce n |
 | L3 SSO as account pointer | Operator can read metadata and could *try* to rebind | n/a | **Gets the door, not the key** — provided rebind requires a key signature | Challenge must bind nonce + new binding + expiry | Phishing the Google login; `sub` recycling is excluded by Google's spec but hash the `sub` anyway |
 | Delegation certificate | Server stores a signed statement; cannot forge it | n/a | Cannot produce a successor statement | Certificate has `not_after` and epoch | Old key must still exist to sign — useless after total loss |
 
@@ -386,7 +420,7 @@ Two rules fall out and belong in the implementation, not just the doc:
 | --- | --- | --- | --- | --- |
 | **L0** device key | Identity key (or device key + cert) in `.iroh-key`, `0600` | Nothing | Nothing — this is the thing to protect | Device lost/stolen |
 | **L1** wrapped backup | AEAD(Argon2id(passphrase), identity key) | Ciphertext blob only | Lost device, with passphrase | Passphrase forgotten *and* no L2 |
-| **L2** social shares | k-of-n shares of the unwrap key, encrypted to guardian account keys | Ciphertext escrow only | Lost device *and* lost backup when k guardians respond | Fewer than k guardians reachable; k collude |
+| **L2** social shares | k-of-n shares of the unwrap key, encrypted to guardian account keys | Ciphertext escrow only | Lost device and lost passphrase when k guardians respond — and a lost backup **only if the wrapped blob was durably replicated** (§6.1 prerequisite); shares alone cannot restore a lost blob | Fewer than k guardians reachable; k collude |
 | **L3** SSO | `google:<sub>` hash bound to the account by a key-signed claim | The `sub` hash and the binding record | Account *access* only — never a key | Google account lost (falls back to L0/L1/L2) |
 
 ### 8.2 The flows
@@ -410,7 +444,7 @@ flowchart TD
         LD[Key gone] --> P1{Passphrase<br/>+ L1 blob?}
         P1 -->|yes| P2[Argon2id unwrap<br/>identity restored]
         P1 -->|no| P3{k guardians<br/>respond?}
-        P3 -->|yes| P4[Reassemble secret<br/>unwrap identity]
+        P3 -->|yes| P4[Reassemble secret<br/>unwrap identity from<br/>replicated blob (§6.1)]
         P3 -->|no| P5[Identity lost<br/>correct outcome]
         P2 --> R[Recovery statement<br/>new device cert + epoch]
         P4 --> R
@@ -452,9 +486,10 @@ why it is written down here.
 1. **Key destroyed on all devices, no backup, fewer than k shares** — identity is gone.
    Correct: the whole point of the key being the identity is that nobody can conjure it.
    The product answer is a loud, repeated backup prompt, not a recovery path.
-2. **Past group epochs whose welcome went only to the lost key** — unrecoverable even after
-   successful identity recovery. Cryptographic, not fixable by policy; mitigation is
-   redundant device membership and `recent:N` welcome breadth choices.
+2. **Past group epochs whose secrets no surviving member or backup retains** — unrecoverable
+   even after successful identity recovery. (Epochs a surviving member retains are
+   recoverable by history re-delivery, §4.3.) Cryptographic, not fixable by policy;
+   mitigation is redundant device membership and `recent:N` welcome breadth choices.
 3. **k guardians collude while the user has no surviving device** — takeover succeeds. The
    veto window only helps if some device survives; with none, the notify step protects
    nobody. Social risk, not solvable in protocol.
