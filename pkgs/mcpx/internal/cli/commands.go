@@ -1204,7 +1204,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 			return err
 		}
 		if res.ExitCode != 0 {
-			os.Exit(res.ExitCode)
+			return &exitStatusError{code: res.ExitCode}
 		}
 		return nil
 	}
@@ -1244,7 +1244,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		a.reportArtifacts(res)
 	}
 	if res.ExitCode != 0 {
-		os.Exit(res.ExitCode)
+		return &exitStatusError{code: res.ExitCode}
 	}
 	return nil
 }
