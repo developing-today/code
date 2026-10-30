@@ -759,6 +759,34 @@
       "role": "not-compendium",
       "lines": 5,
       "note": "a five-line scratch list, not a chapter"
+    },
+    {
+      "path": "docs/overview.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 109,
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/install.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 68,
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/quick-start.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 57,
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/now-what.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 30,
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
     }
   ]
 }
