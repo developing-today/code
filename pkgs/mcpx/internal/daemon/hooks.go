@@ -218,10 +218,20 @@ func (r *Registry) sampleViaBroker(ctx context.Context, server, key string, para
 	}
 	r.publish(events.Event{Kind: events.SampleAnswered, Server: server, Data: mustJSON(ans)})
 
+	// An expired wait is not a refusal: nobody was there to refuse. The
+	// broker synthesizes the expiry answer itself (Action cancel, By
+	// "expiry"), so By is the only thing that tells it apart from a real
+	// cancel -- and the upstream must hear it as an internal failure
+	// (-32603) that names the expiry, never as a user rejection.
+	if ans.By == "expiry" {
+		return nil, mcpclient.InternalError("the sampling request expired before anyone answered it")
+	}
 	// Declining a sampling request is a refusal the server must hear as an
 	// error; there is no "decline" result shape for it in the specification.
+	// The 2025-11-25 sampling error table assigns it -1, so the upstream
+	// can tell a refusal apart from an internal failure.
 	if ans.Action != elicit.Accept {
-		return nil, errors.New("the sampling request was " + string(ans.Action))
+		return nil, mcpclient.UserRejectedError("the sampling request was " + string(ans.Action))
 	}
 	var result map[string]any
 	if err := json.Unmarshal(ans.Content, &result); err != nil {

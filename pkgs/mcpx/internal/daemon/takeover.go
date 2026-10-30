@@ -312,6 +312,14 @@ func (s *Server) handOver(c *net.UnixConn) error {
 		_ = restore(ho)
 		return err
 	}
+	// The tsnet node is in-process state: no descriptor passes it to
+	// the successor. Close it here — after the connections are drained
+	// — so the tailnet identity is free for the successor to claim in
+	// its commit, which recreates the listener from the same settings
+	// and state directory. A handover that does not commit restores it
+	// (restoreHTTP), so this is not the point of no return it looks
+	// like.
+	s.closeTSNetNode()
 	if err := send(c, kindEnd, nil, nil); err != nil {
 		_ = restore(ho)
 		return err
@@ -354,6 +362,17 @@ func (s *Server) passConns(ul, tl *connListener, grace time.Duration) ([]*handof
 	s.conns.setHandingOver(true)
 	ul.stop()
 	tl.stop()
+	// The tailnet listener stops accepting here too, before the sweep
+	// below and long before Registry.Detach: a tailnet connection
+	// accepted after the sweep would be gathered by nobody, then reach
+	// a pool Detach has already closed — or be cut by the node shutdown
+	// in closeTSNetNode instead of drained. Stopping the tracked
+	// wrapper closes only its inner listener; the node stays this
+	// process's until closeTSNetNode, and restoreHTTP listens on the
+	// same node again if the handover does not commit.
+	if cl, ok := s.tsnetLn.(*connListener); ok && cl != nil {
+		cl.stop()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
 	tick := time.NewTicker(defaults.TakeoverPoll)
@@ -400,7 +419,19 @@ func (s *Server) sendConns(c *net.UnixConn, passing []*handoffConn) error {
 	for _, hc := range passing {
 		f, err := hc.file()
 		if err != nil {
-			return err
+			// A connection with no descriptor — a tsnet gonet
+			// connection, which lives in userspace netstack rather
+			// than in a kernel socket — cannot be passed. Draining
+			// it (closing, so its client reconnects to the
+			// successor) is the honest substitute; failing the
+			// whole takeover because a tailnet client happened to
+			// hold an idle keep-alive is not.
+			s.logger.Printf("takeover: closing a connection that cannot be passed: %v", err)
+			// release, not Close: a frozen connection's Close is a
+			// no-op by design (the handover owns it), and this one
+			// is being given up, not handed on.
+			hc.release()
+			continue
 		}
 		err = exchange(c, kindConn, nil, f)
 		closeFile(f)
@@ -416,6 +447,32 @@ func (s *Server) sendConns(c *net.UnixConn, passing []*handoffConn) error {
 func (s *Server) releasePassed(passing []*handoffConn) {
 	for _, hc := range passing {
 		hc.release()
+	}
+}
+
+// closeTSNetNode shuts the daemon's tsnet node down during a handover,
+// releasing the tailnet identity for the successor. s.tsnetLn is
+// cleared, which is how restoreHTTP knows the route has to be
+// recreated if the handover does not commit.
+func (s *Server) closeTSNetNode() {
+	cl, ok := s.tsnetLn.(*connListener)
+	if !ok || cl == nil {
+		return
+	}
+	tl, ok := cl.inner.(*tsnetListener)
+	if !ok {
+		return
+	}
+	s.tsnetLn = nil
+	// Stop the tracked wrapper before closing the node. stop marks the
+	// listener stopped, so the serve loop's blocked Accept converts the
+	// tsnet listener-close error to http.ErrServerClosed instead of
+	// forwarding it to httpErr, where Serve would treat it as fatal and
+	// shut this predecessor down (socket and info file included) while
+	// the successor is still committing.
+	cl.stop()
+	if err := tl.CloseNode(); err != nil {
+		s.logger.Printf("takeover: closing the tsnet node: %v", err)
 	}
 }
 
@@ -456,6 +513,27 @@ func (s *Server) restoreHTTP(unixF, tcpF *os.File, passing []*handoffConn) error
 	}
 	s.unixLn = newConnListener(ul, &s.conns, unixQ)
 	s.tcpLn = newConnListener(tl, &s.conns, tcpQ)
+	if s.tsnetLn == nil {
+		// A handover that got as far as closing the tsnet node must
+		// give the identity route back when it does not commit. The
+		// failure is logged, not fatal: the local routes are already
+		// restored, and a daemon that serves nothing helps no one.
+		if err := s.listenTSNet(); err != nil {
+			s.logger.Printf("takeover: restoring the tsnet listener: %v", err)
+		}
+	} else if cl, ok := s.tsnetLn.(*connListener); ok && cl != nil && cl.isStopped() {
+		// passConns stopped the tailnet listener but the node was
+		// never closed (closeTSNetNode runs only on the commit
+		// path): listen on the same node again instead of joining
+		// a second one.
+		if tl, ok := cl.inner.(*tsnetListener); ok {
+			if ln, err := tl.node.Listen(); err != nil {
+				s.logger.Printf("takeover: restoring the tsnet listener: %v", err)
+			} else {
+				s.tsnetLn = newConnListener(ln, &s.conns, nil)
+			}
+		}
+	}
 	s.startHTTP()
 	return nil
 }
@@ -640,6 +718,18 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 		ul.Close()
 		tl.Close()
 		return fail(err)
+	}
+	// The predecessor closed its tsnet node before kindEnd (see
+	// handOver): recreate the identity listener from this daemon's own
+	// settings before committing, so a successor that cannot restore
+	// the tailnet route refuses the takeover and the predecessor keeps
+	// serving — a committed successor silently missing the route the
+	// daemon was configured for is the failure this prevents.
+	if err := s.listenTSNet(); err != nil {
+		ad.Abort()
+		ul.Close()
+		tl.Close()
+		return fail(fmt.Errorf("takeover: restoring the tsnet listener: %w", err))
 	}
 	if err := sendFrame(uc, takeoverFrame{Kind: kindCommit}, nil); err != nil {
 		ad.Abort()

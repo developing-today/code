@@ -26,7 +26,8 @@
   },
   "daemon": {
     "reapInterval": "30s",
-    "saveInterval": "5m"
+    "saveInterval": "5m",
+    "tsnetUpTimeout": "30s"
   },
   "secrets": {
     "requestRetention": "10m"
