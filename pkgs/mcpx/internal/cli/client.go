@@ -49,6 +49,21 @@ type Client struct {
 	lazySocket func() (string, error)
 	socketOnce sync.Once
 	socketPath string
+	// dialSocket is the socket the local transport actually dials,
+	// resolved once at construction through the info record
+	// (Paths.ClientSocket, #1886): the computed Paths.Socket is only a
+	// hint, and a daemon whose state path was too long for sun_path
+	// bound somewhere else and wrote the real path in its record.
+	dialSocket string
+	// resolveSocket marks a client built for its own daemon with no
+	// explicit endpoint: both its transport and Socket() re-resolve
+	// through ClientSocket at use time, so a replacement daemon
+	// EnsureDaemon spawns on a different socket is followed, not just
+	// dialled (Codex round 2 on PR #2561). Explicit unix:// endpoints
+	// leave it false — that target was chosen by the caller (e.g. a
+	// record-targeted client in stop --all) and must not be overridden
+	// by MCPX_SOCKET or a later record.
+	resolveSocket bool
 	// set is this process's resolved configuration.
 	set *settings.Set
 	// callSettings is the JSON header carrying whatever call-scoped settings
@@ -128,12 +143,22 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	idle := set.Duration("http.idleConnTimeout")
 
 	if c.endpoint == "" {
+		c.dialSocket = paths.ClientSocket()
+		c.resolveSocket = true
 		c.hc = &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					// Resolve at dial time, not once at construction
+					// (#1886, Codex on PR #2561): a client built while
+					// a stale info record names a dead daemon's socket
+					// must follow the replacement EnsureDaemon starts,
+					// which binds the computed path and republishes the
+					// record. ClientSocket's fast path costs one stat
+					// when the computed socket is already live.
+					sock := paths.ClientSocket()
 					var d net.Dialer
-					return d.DialContext(ctx, "unix", paths.Socket)
+					return d.DialContext(ctx, "unix", sock)
 				},
 				// No connection is kept between calls. A takeover closes
 				// the old daemon's idle connections; a client that reused
@@ -153,6 +178,7 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	// two daemons.
 	if sock, ok := strings.CutPrefix(c.endpoint, "unix://"); ok {
 		c.endpoint = ""
+		c.dialSocket = sock
 		c.hc = &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
@@ -263,6 +289,19 @@ func (c *Client) Socket() string {
 	}
 	if c.endpoint != "" {
 		return ""
+	}
+	if c.resolveSocket {
+		// Re-resolve, like the transport does at dial time: a stale
+		// record may have named a dead daemon whose replacement bound
+		// a different socket, and commands.go exports this value as
+		// MCPX_SOCKET for scripts — a cached construction-time path
+		// would send them to the dead socket (Codex round 2, #2561).
+		if s := c.paths.ClientSocket(); s != "" {
+			return s
+		}
+	}
+	if c.dialSocket != "" {
+		return c.dialSocket
 	}
 	return c.paths.Socket
 }
@@ -617,9 +656,21 @@ func (c *Client) Globals(ctx context.Context, ns []string, prof Profile) (string
 
 // Search ranks tools against a query.
 func (c *Client) Search(ctx context.Context, q string, limit int, semantic ...bool) ([]daemon.ToolInfo, error) {
+	return c.SearchOpts(ctx, q, limit, len(semantic) > 0 && semantic[0], "", false)
+}
+
+// SearchOpts is Search with the #1923 options: an exact tag filter and
+// per-term score explanations.
+func (c *Client) SearchOpts(ctx context.Context, q string, limit int, semantic bool, tag string, explain bool) ([]daemon.ToolInfo, error) {
 	semQ := ""
-	if len(semantic) > 0 && semantic[0] {
+	if semantic {
 		semQ = "&semantic=true"
+	}
+	if tag != "" {
+		semQ += "&tag=" + urlEscape(tag)
+	}
+	if explain {
+		semQ += "&explain=true"
 	}
 	b, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/v1/search?q=%s&limit=%d%s", urlEscape(q), limit, semQ), nil)
 	if err != nil {

@@ -81,6 +81,13 @@ func (c *Client) capabilities(modern bool) map[string]any {
 	}
 	if modern {
 		caps["roots"] = map[string]any{}
+		// The 2026 extensions map (register CAP-11): {} declares support
+		// with no settings. It names nothing yet -- an extension key is
+		// added only when mcpx implements that extension; declaring
+		// io.modelcontextprotocol/tasks before it is implemented would
+		// be the advertised-but-unimplemented failure. The map has no
+		// counterpart in legacy initialize, so it stays in this branch.
+		caps["extensions"] = map[string]any{}
 	}
 	if h != nil {
 		caps["sampling"] = map[string]any{}
@@ -357,6 +364,11 @@ func (c *Client) answer(ctx context.Context, method string, params json.RawMessa
 			}
 			if method == "elicitation/create" {
 				out = applyDefaults(out, params)
+				checked, rerr := c.checkElicitationAnswer(out, params)
+				if rerr != nil {
+					return nil, rerr
+				}
+				out = checked
 			}
 			return out, nil
 		}

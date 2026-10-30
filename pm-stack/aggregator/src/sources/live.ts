@@ -21,8 +21,8 @@ import {
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
-import { applySupabaseExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
-import type { SupabaseExportDoc } from "../saas-extract.ts";
+import { applyCloudflareExport, applySupabaseExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
 import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
@@ -861,8 +861,14 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         .catch(() => null);
       if (feed?.saas && feed.saas.length) {
         provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
+        // The Cloudflare live export overlays tracker prose on BOTH
+        // service sources — a healthy fleet feed must not keep stale
+        // prose values when a fresh export exists (Codex, PR #2228).
+        const cfExport = await readFile(cfg.cloudflareExportFile, "utf8")
+          .then((text) => JSON.parse(text) as CloudflareExportDoc)
+          .catch(() => null);
         const partial = {
-          services: applySupabaseExport(feed.saas, supabaseExport),
+          services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
           payg: feed.payg ?? [],
           charges: feed.charges ?? [],
           subscriptions: feed.subscriptions ?? [],
@@ -894,8 +900,11 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           readFile(cfg.quotaViewFile, "utf8"),
           readFile(cfg.quotaRegistryFile, "utf8").catch(() => ""),
         ]);
+        const cfExport = await readFile(cfg.cloudflareExportFile, "utf8")
+          .then((text) => JSON.parse(text) as CloudflareExportDoc)
+          .catch(() => null);
         const partial = {
-          services: applySupabaseExport(extractSaasServices(doc), supabaseExport),
+          services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
           payg: extractPaygLines(doc, registryText),
           charges: extractCharges(doc, registryText),
           subscriptions: extractSubscriptions(doc),

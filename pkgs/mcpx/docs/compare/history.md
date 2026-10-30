@@ -45,7 +45,7 @@ lootbox was a Deno daemon plus a CLI, run as a launchd singleton on `:9420`,
 serving generated TypeScript types for every configured MCP server and running
 model-written scripts against them. It lived in the dezren39/nix repository,
 where `.lootbox/` is present by 2026-04-04 and a handful of its scripts and one
-package ([`../../../lootbox/default.nix`](../../../lootbox/default.nix)) came
+package (`../../../lootbox/default.nix`) came
 along to this repository with the 2026-10 migration. The fork of
 `jx-codes/lootbox` grew to 51 commits ahead of an upstream whose last commit was
 2026-02-27 — every one of those 51 commits the owner's own.

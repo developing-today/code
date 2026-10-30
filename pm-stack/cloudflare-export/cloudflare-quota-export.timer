@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Cloudflare quota exporter every 15 minutes — code#1048 (gatherer tick, #1151)
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=20
+Persistent=true
+Unit=cloudflare-quota-export.service
+
+[Install]
+WantedBy=timers.target

@@ -17,8 +17,11 @@ import (
 
 // Tool is the codegen view of an MCP tool.
 type Tool struct {
-	Name         string
-	Description  string
+	Name        string
+	Description string
+	// Tags are the tool's search vocabulary (#1923): server tags
+	// inherited plus its own. The catalog bias matcher reads them.
+	Tags         []string
 	InputSchema  json.RawMessage
 	OutputSchema json.RawMessage
 }

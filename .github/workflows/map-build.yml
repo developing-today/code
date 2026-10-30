@@ -12,17 +12,6 @@ name: map build
 # go-modules-build.yml since that fix landed, so it is not added here.)
 
 on:
-  pull_request:
-    # PR tier (Phase 2, #1781): builds fire on PRs only for class-3
-    # changes (lockfiles, module roots, flake files, build definitions,
-    # workflow files, shared libs); on push to main they always run.
-    paths:
-      - "pkgs/map/go.mod"
-      - "pkgs/map/go.sum"
-      - "pkgs/map/package.nix"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/**"
   push:
     branches: [main]
 

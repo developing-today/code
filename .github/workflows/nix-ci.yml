@@ -4,7 +4,6 @@ name: nix ci
 on:
   push:
     branches: [main]
-  pull_request:
   # Merge queue pilot (see .github/ci-policy.md): the queue validates
   # the combined merge-group head, and this workflow's PR-tier job
   # (basic: proxy port fallbacks) is main's required status check —

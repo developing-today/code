@@ -649,6 +649,27 @@
       "note": "lessons learned while building mcpx: verification and diagnostics traps"
     },
     {
+      "path": "docs/testing.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 90,
+      "note": "the contributor test policy agents load (#1976): what to run, a test per bug, guards, flakes; states the sibling issues' decisions and links them"
+    },
+    {
+      "path": "docs/testing/inventory.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 123,
+      "note": "the per-package test inventory the policy page points at (#1960 deliverable 1); was merged without a manifest entry, which this PR repairs"
+    },
+    {
+      "path": "internal/AGENTS.md",
+      "chapter": null,
+      "role": "included",
+      "lines": 20,
+      "note": "the nested agent instruction file (#1976): opencode attaches it when a file under internal/ is read, so contributors get the test rules without loading them for users; points at docs/testing.md"
+    },
+    {
       "path": "internal/mcpspec/schema/README.md",
       "chapter": null,
       "role": "not-compendium",
@@ -787,6 +808,139 @@
       "role": "not-compendium",
       "lines": 30,
       "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/binary.md",
+      "chapter": "build-and-packaging",
+      "role": "chapter-source",
+      "lines": 114,
+      "note": "the binary: what it is, how it is built and shipped"
+    },
+    {
+      "path": "docs/cli.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 191,
+      "note": "the command-line surface: commands, flags, and output shapes"
+    },
+    {
+      "path": "docs/compare/chapter.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 147,
+      "note": "the comparison chapter's own framing: what is compared and why"
+    },
+    {
+      "path": "docs/compare/history.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 215,
+      "note": "how the comparison register reached its current state"
+    },
+    {
+      "path": "docs/examples.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 148,
+      "note": "worked examples of recipes and calls, companion to the design pages"
+    },
+    {
+      "path": "docs/faq.md",
+      "chapter": null,
+      "role": "included",
+      "lines": 85,
+      "note": "questions users actually ask; the book links to it rather than excerpting it"
+    },
+    {
+      "path": "docs/http-api.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 234,
+      "note": "the daemon's /v1 HTTP API: endpoints, requests, responses"
+    },
+    {
+      "path": "docs/interfaces.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 187,
+      "note": "the interfaces a program or client codes against"
+    },
+    {
+      "path": "docs/level-2-page-map.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 152,
+      "note": "the map of level-2 guide pages (#146-#148): which page covers what"
+    },
+    {
+      "path": "docs/mcp.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 217,
+      "note": "MCP as mcpx speaks it: the protocol surface in one page"
+    },
+    {
+      "path": "docs/opencode-plugin-v2.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 161,
+      "note": "the opencode v2 plugin: verified API facts and implementation map; successor to opencode-plugin.md"
+    },
+    {
+      "path": "docs/plugins.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 335,
+      "note": "plugins: what they are, how they are written and loaded"
+    },
+    {
+      "path": "docs/scripts.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 155,
+      "note": "scripts: the unit of work mcpx runs, their shape and lifecycle"
+    },
+    {
+      "path": "docs/decisions/0005-release-pipeline.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 150,
+      "note": "a decision record under the chapter index"
+    },
+    {
+      "path": "docs/home-example.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 40,
+      "note": "home-page example for the docs site: runnable example content, not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/home-example/README.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 57,
+      "note": "the home-page example component's own readme; part of the example bundle, not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/remote.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 132,
+      "note": "reaching a daemon on another machine: transports, addressing, trust"
+    },
+    {
+      "path": "docs/catalogue/README.md",
+      "chapter": "catalogue",
+      "role": "chapter-index",
+      "lines": 22,
+      "note": "the chapter index: what the catalogue holds and why; the section pages are seeded by the follow-up task"
+    },
+    {
+      "path": "docs/decisions/0006-ttl-touch-on-read.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 107,
+      "note": "a decision record under the chapter index"
     }
   ]
 }

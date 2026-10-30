@@ -303,6 +303,24 @@ func (s *Server) TSNetStatus(ctx context.Context) (status TSNetStatus, ok bool, 
 
 // Listen binds both listeners and publishes the daemon record.
 func (s *Server) Listen(tcpPort int) error {
+	// The bind call site for MCPX_SOCKET (#1886 step 6): a daemon started
+	// with the variable binds the named socket, and the record it
+	// publishes then names that socket.
+	s.paths.Socket = s.paths.BindSocket()
+	// The selected bind path's parent may not exist yet (#1886, Codex
+	// on PR #2561): NewServer ran EnsureDirs against the *computed*
+	// socket, so an MCPX_SOCKET pointing into a fresh directory would
+	// fail to bind. Create the bind path's parent here, at the bind
+	// call site, once the bind socket is actually known.
+	if dir := filepath.Dir(s.paths.Socket); dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	if preferred, relocated := s.paths.Relocated(); relocated {
+		s.logger.Printf("socket relocated to %s: state path is %d bytes, limit %d",
+			s.paths.Socket, len(preferred), maxSocketPath)
+	}
 	// A stale socket from a crashed daemon must not block a fresh one.
 	if err := s.clearStaleSocket(); err != nil {
 		return err
@@ -909,6 +927,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if cs != nil {
 			semantic = cs.Bool("search.semantic")
 		}
+	}
+	tag := r.URL.Query().Get("tag")
+	explain := r.URL.Query().Get("explain") == "true" || r.URL.Query().Get("explain") == "1"
+	if tag != "" || explain {
+		writeJSON(w, 200, s.reg.SearchSemanticOpts(r.URL.Query().Get("q"), limit, semantic, tag, explain))
+		return
 	}
 	writeJSON(w, 200, s.reg.SearchSemantic(r.URL.Query().Get("q"), limit, semantic))
 }

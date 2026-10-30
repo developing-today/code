@@ -198,9 +198,87 @@ func Open(path string) (*Broker, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrating elicitation tables: %w", err)
 	}
-	return &Broker{db: db, waiters: map[string][]chan Answer{},
+	b := &Broker{db: db, waiters: map[string][]chan Answer{},
 		poll: defaults.ElicitPollInterval,
-		ttl:  defaults.ElicitTTL, maxAge: defaults.ElicitMaxAge}, nil
+		ttl:  defaults.ElicitTTL, maxAge: defaults.ElicitMaxAge}
+	// Retention is enforced here, on open, in this package's
+	// expire-on-read spirit: there is no timer and no sweeper goroutine
+	// to go wrong, and every opener -- daemon and CLI alike -- funnels
+	// through Open or OpenAt (which calls Open). First settle overdue
+	// pending questions into their terminal state, then prune terminal
+	// rows past the retention bounds (#1677).
+	if err := b.expireOverdue(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := b.pruneTerminal(time.Now()); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return b, nil
+}
+
+// pruneTerminal deletes terminal rows -- answered or expired, in both
+// elicitations and elicitation_answers -- that exceed the retention
+// bounds in defaults: older than defaults.ElicitRetentionMaxAge, or
+// beyond the newest defaults.ElicitRetentionMaxTerminalRows terminal
+// rows. Whichever bound hits first wins. Pending rows are never
+// deleted: a pending question is live state with its own deadline,
+// settled by expireOverdue, not by retention.
+//
+// A row's terminal moment is its answer's answered_ms; a terminal row
+// with no answer row (written by something else holding the same file)
+// falls back to its expires_ms, the moment it stopped being pending.
+// Sampling rows live in the same tables and obey the same bound.
+func (b *Broker) pruneTerminal(now time.Time) error {
+	terminalAt := `COALESCE((SELECT a.answered_ms FROM elicitation_answers a WHERE a.id = e.id), e.expires_ms)`
+	ids := func(query string, args ...any) ([]string, error) {
+		rows, err := b.db.Query(query, args...)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			out = append(out, id)
+		}
+		return out, rows.Err()
+	}
+	var doomed []string
+	if maxAge := defaults.ElicitRetentionMaxAge; maxAge > 0 {
+		old, err := ids(`SELECT e.id FROM elicitations e WHERE e.state != 'pending' AND `+
+			terminalAt+` < ?`, now.Add(-maxAge).UnixMilli())
+		if err != nil {
+			return fmt.Errorf("pruning elicitations by age: %w", err)
+		}
+		doomed = append(doomed, old...)
+	}
+	if keep := defaults.ElicitRetentionMaxTerminalRows; keep >= 0 {
+		beyond, err := ids(`SELECT e.id FROM elicitations e WHERE e.state != 'pending' ORDER BY `+
+			terminalAt+` DESC, e.id DESC LIMIT -1 OFFSET ?`, keep)
+		if err != nil {
+			return fmt.Errorf("pruning elicitations by count: %w", err)
+		}
+		doomed = append(doomed, beyond...)
+	}
+	seen := map[string]bool{}
+	for _, id := range doomed {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if _, err := b.db.Exec(`DELETE FROM elicitation_answers WHERE id=?`, id); err != nil {
+			return fmt.Errorf("pruning elicitation answers: %w", err)
+		}
+		if _, err := b.db.Exec(`DELETE FROM elicitations WHERE id=? AND state != 'pending'`, id); err != nil {
+			return fmt.Errorf("pruning elicitations: %w", err)
+		}
+	}
+	return nil
 }
 
 // Configure sets the TTL convention's two durations, from the settings

@@ -58,7 +58,13 @@ in
     };
   };
 
-  # Start after the provider proxies + mcpx it depends on.
+  # Start after the provider proxies + mcpx it depends on. The proxies
+  # are owned by the proxy-supervisor (transient fps-* units on the
+  # canonical ports), so the gateway must not Want the manual per-proxy
+  # units: a gateway restart would re-pull them, and the manual
+  # commandcode-proxy unit crash-loops on its already-taken port (#883).
+  # The gateway reaches the proxies by port, not by unit; only mcpx and
+  # the opencode-route proxy are real unit dependencies.
   systemd.user.services.openclaw-gateway = {
     Unit = {
       After = [
@@ -71,9 +77,6 @@ in
       ];
       Wants = [
         "opencode-route-proxy.service"
-        "commandcode-proxy.service"
-        "design-code-proxy.service"
-        "agy-proxy.service"
         "mcpx.service"
       ];
     };
@@ -117,7 +120,13 @@ in
 
     # nix-openclaw tool plugins (CLI tools + skills, packaged in Nix).
     bundledPlugins = {
-      summarize.enable = true; # summarize URLs / PDFs / videos
+      # summarize is vendored as a custom plugin below (see
+      # plugins/summarize/flake.nix): the bundled plugin's pinned pnpm
+      # deps hash does not reproduce under the toolchain that
+      # nix-openclaw's hardcoded tools rev builds with, which broke the
+      # 2026-10-30 switch (hash mismatch in summarize-pnpm-deps).
+      # Do not re-enable until upstream re-pins.
+      summarize.enable = false; # summarize URLs / PDFs / videos (vendored below)
       gogcli.enable = true; # Google Workspace CLI (gog)
       goplaces.enable = true; # Google Places CLI
       # peekaboo / poltergeist are macOS-only in the nix-openclaw
@@ -128,6 +137,12 @@ in
       discrawl.enable = true; # Discord archive/search
       wacrawl.enable = true; # WhatsApp archive/search
     };
+
+    # Custom plugins supplied as plugin flakes
+    # (programs.openclaw.customPlugins).
+    customPlugins = [
+      { source = toString ./plugins/summarize; }
+    ];
 
     # OpenClaw runtime plugins (channels, harnesses, providers, search),
     # packaged immutably by nix-openclaw from the pinned upstream catalog.

@@ -413,6 +413,9 @@ type NamespaceInfo struct {
 	Tools           int      `json:"tools"`
 	Resources       int      `json:"resources"`
 	Description     string   `json:"description,omitempty"`
+	// Tags are the server's search vocabulary (#1923), surfaced so
+	// `mcpx ls` readers can see what a namespace answers to.
+	Tags            []string `json:"tags,omitempty"`
 	Live            int      `json:"live"`
 	Sharing         string   `json:"sharing"`
 	Scope           string   `json:"scope"`
@@ -442,6 +445,7 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 			Tools:           len(tools),
 			Resources:       len(res),
 			Description:     view.Description,
+			Tags:            view.Tags,
 			Live:            st.Live,
 			Sharing:         st.Sharing,
 			Scope:           st.Scope,
@@ -454,6 +458,14 @@ func (r *Registry) Namespaces(prof config.Profile) []NamespaceInfo {
 }
 
 // ToolInfo describes one tool for search results.
+// TermScore is one term's contribution to a search hit's Score: the field
+// it matched and the points that field's tier awards (#1923, --explain).
+type TermScore struct {
+	Term   string `json:"term"`
+	Field  string `json:"field"`
+	Points int    `json:"points"`
+}
+
 type ToolInfo struct {
 	Namespace string `json:"namespace"`
 	Server    string `json:"server"`
@@ -470,6 +482,15 @@ type ToolInfo struct {
 	// Execution is the upstream's tool.execution, verbatim.
 	Execution json.RawMessage `json:"execution,omitempty"`
 	Score     int             `json:"score,omitempty"`
+	// Tags are the tool's search vocabulary (#1923): the server's tags
+	// inherited, plus any per-tool tags from config. Searchable through
+	// rank's tag tier and the exact --tag filter.
+	Tags []string `json:"tags,omitempty"`
+	// Explain, when a search asked for it (--explain), is the per-term
+	// breakdown behind Score: which field each term matched, for how
+	// much. Absent unless requested, so default search output is
+	// byte-identical to before.
+	Explain []TermScore `json:"explain,omitempty"`
 	// What the upstream published beyond the above, carried so a
 	// pass-through listing is the upstream's own (#207).
 	Title        string          `json:"title,omitempty"`
@@ -477,6 +498,23 @@ type ToolInfo struct {
 	Annotations  json.RawMessage `json:"annotations,omitempty"`
 	Icons        json.RawMessage `json:"icons,omitempty"`
 	Meta         json.RawMessage `json:"_meta,omitempty"`
+}
+
+// toolTags is a tool's effective tag list: the server's tags, inherited by
+// every tool, plus the tool's own from config's toolTags (#1923).
+func toolTags(view *config.Resolved, tool string) []string {
+	if view == nil {
+		return nil
+	}
+	own := view.ToolTags[tool]
+	if len(view.Tags) == 0 {
+		return own
+	}
+	if len(own) == 0 {
+		return view.Tags
+	}
+	out := append([]string{}, view.Tags...)
+	return append(out, own...)
 }
 
 // Tools returns every cached tool, optionally restricted to namespaces.
@@ -506,6 +544,7 @@ func (r *Registry) Tools(namespaces []string) []ToolInfo {
 				Namespace:    view.Namespace,
 				Server:       name,
 				Tool:         t.Name,
+				Tags:         toolTags(view, t.Name),
 				Function:     view.Namespace + "." + fn,
 				Call:         "tools." + view.Namespace + "." + fn + "(args)",
 				Native:       view.Namespace + "_" + fn,
@@ -532,8 +571,32 @@ func (r *Registry) Search(query string, limit int) []ToolInfo {
 
 // SearchSemantic ranks tools against a query, optionally using local dense vector embeddings.
 func (r *Registry) SearchSemantic(query string, limit int, semantic bool) []ToolInfo {
+	return r.SearchSemanticOpts(query, limit, semantic, "", false)
+}
+
+// SearchSemanticOpts is SearchSemantic with the #1923 slice-1 options: tag
+// restricts to tools carrying that tag (exact, case-insensitive — the
+// --tag filter), and explain attaches each hit's per-term breakdown. The
+// breakdown describes the keyword ranker, so explain forces the keyword
+// path even when semantic was requested.
+func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, tag string, explain bool) []ToolInfo {
+	if explain {
+		semantic = false
+	}
 	terms := strings.Fields(strings.ToLower(query))
 	all := r.Tools(nil)
+	if tag != "" {
+		filtered := all[:0]
+		for _, t := range all {
+			for _, tg := range t.Tags {
+				if strings.EqualFold(tg, tag) {
+					filtered = append(filtered, t)
+					break
+				}
+			}
+		}
+		all = filtered
+	}
 	if len(all) == 0 {
 		return nil
 	}
@@ -545,9 +608,9 @@ func (r *Registry) SearchSemantic(query string, limit int, semantic bool) []Tool
 	}
 
 	if !semantic {
-		scored := rank(all, terms, true)
+		scored := rankOpts(all, terms, true, explain)
 		if len(scored) == 0 {
-			scored = rank(all, terms, false)
+			scored = rankOpts(all, terms, false, explain)
 		}
 		sort.SliceStable(scored, func(i, j int) bool {
 			if scored[i].Score != scored[j].Score {
@@ -622,40 +685,152 @@ func (r *Registry) SearchSemantic(query string, limit int, semantic bool) []Tool
 // rank scores tools against terms. When requireAll is set a tool must match
 // every term; otherwise one match is enough.
 func rank(all []ToolInfo, terms []string, requireAll bool) []ToolInfo {
+	return rankOpts(all, terms, requireAll, false)
+}
+
+// rankOpts is rank, optionally recording each hit's per-term breakdown.
+func rankOpts(all []ToolInfo, terms []string, requireAll bool, explain bool) []ToolInfo {
 	scored := make([]ToolInfo, 0, len(all))
 	for _, t := range all {
-		name := strings.ToLower(t.Tool)
-		fn := strings.ToLower(t.Function)
-		desc := strings.ToLower(t.Description)
-		ns := strings.ToLower(t.Namespace)
-
-		score, matchedAll := 0, true
-		for _, term := range terms {
-			switch {
-			case name == term:
-				score += 100
-			case strings.HasPrefix(name, term):
-				score += 60
-			case strings.Contains(name, term):
-				score += 40
-			case strings.Contains(fn, term):
-				score += 30
-			case strings.Contains(ns, term):
-				score += 20
-			case strings.Contains(desc, term):
-				score += 10
-			default:
-				matchedAll = false
-			}
-		}
+		score, matchedAll, breakdown := scoreTool(t, terms)
 		if (requireAll && !matchedAll) || score == 0 {
 			continue
 		}
 		t.Score = score
+		if explain {
+			t.Explain = breakdown
+		}
 		t.InputSchema = nil // keep search output small
 		scored = append(scored, t)
 	}
 	return scored
+}
+
+// scoreTool sums termScore over the query terms and reports whether every
+// term matched something. The tiers, highest first: exact name 100, name
+// prefix 60, tag 50, name substring 40, a split/stemmed name word 40,
+// function substring 30, namespace 20, description 10 (#1923).
+func scoreTool(t ToolInfo, terms []string) (int, bool, []TermScore) {
+	name := strings.ToLower(t.Tool)
+	fn := strings.ToLower(t.Function)
+	desc := strings.ToLower(t.Description)
+	ns := strings.ToLower(t.Namespace)
+	words := splitToolWords(t.Tool)
+
+	score, matchedAll := 0, true
+	var breakdown []TermScore
+	for _, term := range terms {
+		field, points := termScore(term, name, fn, desc, ns, words, t.Tags)
+		if points == 0 {
+			matchedAll = false
+		}
+		score += points
+		breakdown = append(breakdown, TermScore{Term: term, Field: field, Points: points})
+	}
+	return score, matchedAll, breakdown
+}
+
+func termScore(term, name, fn, desc, ns string, words []string, tags []string) (string, int) {
+	switch {
+	case name == term:
+		return "name", 100
+	case strings.HasPrefix(name, term):
+		return "name-prefix", 60
+	case tagMatch(tags, term):
+		return "tag", 50
+	case strings.Contains(name, term):
+		return "name", 40
+	case wordMatch(words, term):
+		return "name-word", 40
+	case strings.Contains(fn, term):
+		return "function", 30
+	case strings.Contains(ns, term):
+		return "namespace", 20
+	case strings.Contains(desc, term):
+		return "description", 10
+	}
+	return "", 0
+}
+
+// tagMatch: a term matches a tag when it equals the tag, equals the tag
+// stemmed, or equals one of the tag's own words stemmed — tags are phrases
+// as often as single words ("screen capture").
+func tagMatch(tags []string, term string) bool {
+	st := stemWord(term)
+	for _, tag := range tags {
+		tag = strings.ToLower(tag)
+		if tag == term || stemWord(tag) == st {
+			return true
+		}
+		for _, w := range splitToolWords(tag) {
+			if stemWord(w) == st {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// wordMatch: the stemmed term equals a stemmed name word, or prefixes one
+// — "screenshots" finds take_screenshot, "screen" finds it too.
+func wordMatch(words []string, term string) bool {
+	st := stemWord(term)
+	for _, w := range words {
+		if stemWord(w) == st || strings.HasPrefix(w, term) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitToolWords splits a tool name on '_' / '-' and camelCase boundaries:
+// take_screenshot and takeScreenshot both give [take screenshot].
+func splitToolWords(name string) []string {
+	var out []string
+	var cur []rune
+	flush := func() {
+		if len(cur) > 0 {
+			out = append(out, strings.ToLower(string(cur)))
+			cur = cur[:0]
+		}
+	}
+	var prev rune
+	for _, r := range name {
+		switch {
+		case r == '_' || r == '-' || r == ' ':
+			flush()
+		case r >= 'A' && r <= 'Z' && len(cur) > 0 && prev >= 'a' && prev <= 'z':
+			flush()
+			cur = append(cur, r)
+		default:
+			cur = append(cur, r)
+		}
+		prev = r
+	}
+	flush()
+	return out
+}
+
+// stemWord is a light hand-written English suffix stemmer (#1923): fold
+// -ing / -ed / -es / -s so plurals and verb forms meet their base word.
+// Deliberately crude — search vocabulary, not linguistics — and applied
+// to both sides of a comparison, so an over-stemmed pair still meets.
+func stemWord(w string) string {
+	switch {
+	case len(w) > 5 && strings.HasSuffix(w, "ing"):
+		return w[:len(w)-3]
+	case len(w) > 4 && strings.HasSuffix(w, "ed"):
+		return w[:len(w)-2]
+	case len(w) > 4 && (strings.HasSuffix(w, "sses") || strings.HasSuffix(w, "xes") ||
+		strings.HasSuffix(w, "zes") || strings.HasSuffix(w, "ches") || strings.HasSuffix(w, "shes")):
+		// -es is a real suffix only after a sibilant: classes -> class,
+		// boxes -> box. Elsewhere the plural marker is the -s alone
+		// (files -> file, not fil).
+		return w[:len(w)-2]
+	case len(w) > 3 && strings.HasSuffix(w, "s") && !strings.HasSuffix(w, "ss"):
+		return w[:len(w)-1]
+	}
+	return w
 }
 
 // selector is one entry from a types/catalog request: a namespace, or a
@@ -722,6 +897,7 @@ func (r *Registry) CodegenNamespaces(names []string, prof config.Profile) ([]cod
 			byNS[t.Namespace] = append(byNS[t.Namespace], codegen.Tool{
 				Name:        t.Tool,
 				Description: t.Description,
+				Tags:        t.Tags,
 				InputSchema: t.InputSchema,
 			})
 		}
@@ -785,6 +961,7 @@ func (r *Registry) CodegenNamespaces(names []string, prof config.Profile) ([]cod
 			cn.Tools = append(cn.Tools, codegen.Tool{
 				Name:         t.Name,
 				Description:  t.Description,
+				Tags:         toolTags(view, t.Name),
 				InputSchema:  t.InputSchema,
 				OutputSchema: t.OutputSchema,
 			})
