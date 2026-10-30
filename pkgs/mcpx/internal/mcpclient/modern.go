@@ -31,6 +31,10 @@ type Options struct {
 	// handshake: a handler added later cannot be declared, so a server
 	// would never learn it exists.
 	OnServerRequest ElicitHandler
+	// OnURLElicitationRequired opens the URL elicitations a -32042
+	// tools/call error names (2025-11-25 only). Nil propagates -32042
+	// untouched.
+	OnURLElicitationRequired URLElicitationHandler
 	// Roots are the directories servers may work within, served from the
 	// first request rather than from whenever they happen to be set.
 	Roots []Root

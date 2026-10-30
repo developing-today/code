@@ -114,6 +114,10 @@ type Client struct {
 	reqMu           sync.Mutex
 	sessionSampling *windowCounter
 	server          *ServerRequestLimiter
+
+	// onURLElicitationRequired opens the URL elicitations a -32042
+	// tools/call error names, when something (the daemon broker) can.
+	onURLElicitationRequired URLElicitationHandler
 	// notif holds notification handlers.
 	notif Notifications
 	// roots are the directories servers may work within.
@@ -353,16 +357,17 @@ func NewWithPreference(ctx context.Context, t Transport, clientName, clientVersi
 
 func newClient(ctx context.Context, t Transport, o Options) (*Client, error) {
 	c := &Client{
-		t:              t,
-		pending:        map[int64]chan *rpcResponse{},
-		closeCh:        make(chan struct{}),
-		clientName:     o.ClientName,
-		clientVersion:  o.ClientVersion,
-		onElicit:       o.OnServerRequest,
-		roots:          append([]Root(nil), o.Roots...),
-		modernVersions: o.ModernVersions,
-		probeTimeout:   o.ProbeTimeout,
-		loopDone:       make(chan struct{}),
+		t:                        t,
+		pending:                  map[int64]chan *rpcResponse{},
+		closeCh:                  make(chan struct{}),
+		clientName:               o.ClientName,
+		clientVersion:            o.ClientVersion,
+		onElicit:                 o.OnServerRequest,
+		onURLElicitationRequired: o.OnURLElicitationRequired,
+		roots:                    append([]Root(nil), o.Roots...),
+		modernVersions:           o.ModernVersions,
+		probeTimeout:             o.ProbeTimeout,
+		loopDone:                 make(chan struct{}),
 	}
 	if len(c.modernVersions) == 0 {
 		c.modernVersions = ModernVersions
@@ -607,6 +612,50 @@ func (c *Client) SetElicitHandler(h ElicitHandler) {
 	c.mu.Lock()
 	c.onElicit = h
 	c.mu.Unlock()
+}
+
+// URLElicitation is one entry of a -32042 (UrlElicitationRequired)
+// error's data.elicitations: a URL-mode elicitation the server needs
+// opened before the failed tool call can proceed (2025-11-25).
+type URLElicitation struct {
+	Mode          string `json:"mode"`
+	URL           string `json:"url"`
+	ElicitationID string `json:"elicitationId"`
+	Message       string `json:"message"`
+}
+
+// URLElicitationHandler opens the URL elicitations a -32042 names. It
+// reports true only when every entry was accepted; false or an error
+// fails the call with no retry. A nil handler (the default) means
+// -32042 propagates untouched, exactly as a client with nobody to open
+// URLs behaved before this existed.
+type URLElicitationHandler func(ctx context.Context, elicitations []URLElicitation) (bool, error)
+
+// SetURLElicitationHandler installs the -32042 handler after connect.
+func (c *Client) SetURLElicitationHandler(h URLElicitationHandler) {
+	c.mu.Lock()
+	c.onURLElicitationRequired = h
+	c.mu.Unlock()
+}
+
+// parseURLElicitations reads a -32042 error's data. ok is false for any
+// malformed shape: unparseable data, an empty list, a non-url entry, or
+// an entry with no elicitationId. In every such case the caller returns
+// the original error unmodified, because guessing at a server's
+// question is worse than failing its call.
+func parseURLElicitations(data json.RawMessage) ([]URLElicitation, bool) {
+	var d struct {
+		Elicitations []URLElicitation `json:"elicitations"`
+	}
+	if len(data) == 0 || json.Unmarshal(data, &d) != nil || len(d.Elicitations) == 0 {
+		return nil, false
+	}
+	for _, e := range d.Elicitations {
+		if e.Mode != "url" || e.ElicitationID == "" {
+			return nil, false
+		}
+	}
+	return d.Elicitations, true
 }
 
 // handleServerRequest answers a request the server sent to us.
@@ -1497,6 +1546,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 	defer done()
 	var raw json.RawMessage
 	allowReissue := false
+	retried32042 := false
 	for attempt := 0; ; attempt++ {
 		hctx, err := c.toolCallHeaders(ctx, name, args, attempt > 0)
 		if err != nil {
@@ -1511,6 +1561,31 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 		var re *rpcError
 		if attempt == 0 && errors.As(err, &re) && re.Code == codeHeaderMismatch && c.mirrorsHeaders() {
 			continue
+		}
+		// A -32042 on a 2025-11-25 connection names URL elicitations to
+		// open before the call can proceed (#2079). The retry is gated
+		// on its own flag, not the attempt index: the -32020 continue
+		// above already spends attempts, and the -32042 retry must
+		// happen exactly once regardless. Malformed data, or no handler
+		// installed, leaves the original error untouched; any other
+		// negotiated version is untouched too.
+		if !retried32042 && err != nil && c.Negotiated == "2025-11-25" &&
+			errors.As(err, &re) && re.Code == codeURLElicitationRequired {
+			els, wellFormed := parseURLElicitations(re.Data)
+			c.mu.Lock()
+			h := c.onURLElicitationRequired
+			c.mu.Unlock()
+			if wellFormed && h != nil {
+				accepted, herr := h(ctx, els)
+				if herr != nil {
+					return nil, herr
+				}
+				if !accepted {
+					return nil, fmt.Errorf("mcpx: the URL elicitations required by tool %s were declined or expired", name)
+				}
+				retried32042 = true
+				continue
+			}
 		}
 		if err != nil {
 			return nil, err
@@ -1540,9 +1615,13 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (json.RawMessage,
 }
 
 const (
-	codeResourceNotFound = -32002
-	codeInvalidParams    = -32602
-	codeInternalError    = -32603
+	// codeURLElicitationRequired is -32042 UrlElicitationRequired
+	// (2025-11-25): the tool call needs the URL-mode elicitations in
+	// the error's data opened before it can proceed.
+	codeURLElicitationRequired = -32042
+	codeResourceNotFound       = -32002
+	codeInvalidParams          = -32602
+	codeInternalError          = -32603
 	// codeUserRejected is the code the sampling error table assigns to a
 	// person refusing a sampling request (2025-11-25 client/sampling
 	// error handling: "User rejected sampling request: -1"). It is not a
