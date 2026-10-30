@@ -1,0 +1,8 @@
+[Unit]
+Description=Meta (dev.meta.ai) quota exporter — code#1301 Phase 1
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+ExecStart=@NODE@ %h/atlas/meta-quota-export/meta-quota-export.mjs --cdp-port 19222 --out-dir %h/atlas/meta-quota-export

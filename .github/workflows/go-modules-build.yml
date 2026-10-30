@@ -1,5 +1,7 @@
 name: go modules build
 
+# CI tier policy: see .github/ci-policy.md
+
 # Build verification for the small pkgs/{chat,database,graph,import,
 # launcher,tea} Go modules (#342).
 #
@@ -28,24 +30,33 @@ name: go modules build
 
 on:
   pull_request:
+    # PR tier (Phase 2, #1781): builds fire on PRs only for class-3
+    # changes (lockfiles, module roots, flake files, build definitions,
+    # workflow files, shared libs); on push to main they always run.
     paths:
-      - "pkgs/chat/**"
-      - "pkgs/database/**"
-      - "pkgs/graph/**"
-      - "pkgs/import/**"
-      - "pkgs/launcher/**"
-      - "pkgs/tea/**"
-      - ".github/workflows/go-modules-build.yml"
+      - "pkgs/chat/go.mod"
+      - "pkgs/chat/go.sum"
+      - "pkgs/database/go.mod"
+      - "pkgs/database/go.sum"
+      - "pkgs/graph/go.mod"
+      - "pkgs/graph/go.sum"
+      - "pkgs/import/go.mod"
+      - "pkgs/import/go.sum"
+      - "pkgs/launcher/go.mod"
+      - "pkgs/launcher/go.sum"
+      - "pkgs/tea/go.mod"
+      - "pkgs/tea/go.sum"
+      - "pkgs/chat/package.nix"
+      - "pkgs/database/package.nix"
+      - "pkgs/graph/package.nix"
+      - "pkgs/import/package.nix"
+      - "pkgs/launcher/package.nix"
+      - "pkgs/tea/package.nix"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/**"
   push:
     branches: [main]
-    paths:
-      - "pkgs/chat/**"
-      - "pkgs/database/**"
-      - "pkgs/graph/**"
-      - "pkgs/import/**"
-      - "pkgs/launcher/**"
-      - "pkgs/tea/**"
-      - ".github/workflows/go-modules-build.yml"
 
 permissions:
   contents: read
@@ -64,7 +75,7 @@ concurrency:
 
 jobs:
   build:
-    name: go build (${{ matrix.module }})
+    name: "basic: go build (${{ matrix.module }})"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:

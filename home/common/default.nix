@@ -21,6 +21,7 @@ let
   designCodeProxyPort = 18746;
   museProxyPort = 18747;
   commandcodeProxyPort = 18748;
+  opencodeRouteProxyPort = 18750;
   claudeCodeProxyPort = 18749;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
@@ -85,6 +86,75 @@ let
     mcpxStart
   ];
   openchamberStart = pkgs.writeShellScript "openchamber-serve" ''
+    # Single-instance guard (dezren39/nix#1117). The unit below is
+    # socket-activated with KillMode=process: a stop terminates only the
+    # tracked main process, so a server that is no longer the tracked
+    # main -- a self-handoff predecessor systemd has lost track of --
+    # survives in the cgroup still holding the listen socket systemd
+    # handed it. The next start passes the same socket to a new server
+    # and both accept() on it, so /api/version answers alternate between
+    # instances. Reap any leftover server before taking the socket over.
+    # Only the web server is matched (its managed OpenCode serves a
+    # different port and must stay up for adoption), and this script's
+    # own pid is excluded -- it execs into the new server below.
+    leftovers=""
+    for proc in /proc/[0-9]*; do
+      pid="''${proc#/proc/}"
+      [ "$pid" = "$$" ] && continue
+      # The pattern text itself rides in the argv of anything inspecting
+      # the fleet (a grep, a diagnostic shell), so a cmdline match alone
+      # is not proof: the process must actually be the node server.
+      exe="$(readlink "$proc/exe" 2>/dev/null)" || continue
+      case "$exe" in
+        */node | */openchamber) ;;
+        *) continue ;;
+      esac
+      cmd="$(cat "$proc/cmdline" 2>/dev/null | tr '\0' ' ')"
+      case "$cmd" in
+        *"/bin/openchamber serve"* | *"cli.js serve"*) ;;
+        *) continue ;;
+      esac
+      case "$cmd" in
+        # Argument boundary required: "--port 3000" must not match the
+        # 30001..30009 of an unrelated instance (cmdline words are
+        # space-separated here, trailing word included).
+        *"--port 3000 "*) leftovers="$leftovers $pid" ;;
+        *"--port=3000 "*) leftovers="$leftovers $pid" ;;
+      esac
+    done
+    if [ -n "$leftovers" ]; then
+      echo "openchamber-serve: reaping leftover server(s):$leftovers" >&2
+      for pid in $leftovers; do
+        kill -TERM "$pid" 2>/dev/null || true
+      done
+      # OpenChamber drains HTTP for up to 10 s on SIGTERM.
+      for _ in $(seq 1 100); do
+        alive=0
+        for pid in $leftovers; do
+          kill -0 "$pid" 2>/dev/null && alive=1
+        done
+        [ "$alive" = 0 ] && break
+        sleep 0.1
+      done
+      for pid in $leftovers; do
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "openchamber-serve: pid $pid ignored SIGTERM; killing" >&2
+          kill -KILL "$pid" 2>/dev/null || true
+        fi
+      done
+      # Verify synchronously, before taking the socket over: a leftover
+      # that could not be reaped fails this start loudly instead of
+      # silently sharing the listener with the new server. (An
+      # ExecStartPost assertion cannot do this: with Type=simple it
+      # races the guard's drain window.)
+      sleep 0.2
+      for pid in $leftovers; do
+        if kill -0 "$pid" 2>/dev/null; then
+          echo "openchamber-serve: leftover server pid $pid could not be reaped; refusing to start a second server on port 3000" >&2
+          exit 1
+        fi
+      done
+    fi
     pw="$HOME/.config/openchamber/ui-password"
     if [ -r "$pw" ]; then
       export OPENCHAMBER_UI_PASSWORD="$(< "$pw")"
@@ -793,6 +863,51 @@ in
           "~/.local/state/proxy-supervisor/muse-proxy.build-stamp"
         ];
       }
+      {
+        name = "opencode-route-proxy";
+        # swap, not the supervisor default "ab": OpenClaw's provider
+        # base URL is the literal canonical port (18750) and nothing
+        # consumes the endpoint record to follow an ab roll to 19750,
+        # so the door would strand. swap validates the new build on
+        # the alternate port, then restarts it on the canonical port.
+        strategy = "swap";
+        canonicalPort = opencodeRouteProxyPort;
+        portEnv = "OPENCODE_ROUTE_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/bash"
+          "~/code/bin/opencode-route-proxy-start.sh"
+        ];
+        hashFiles = [
+          "~/code/bin/opencode-route-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+          "~/.local/state/proxy-supervisor/opencode-route-proxy.build-stamp"
+        ];
+      }
+      # Enrolled 2026-10-27. The let block reserved claudeCodeProxyPort
+      # and the session variables already export CLAUDE_CODE_PROXY_PORT
+      # (opencode.jsonc dials it), but the proxy was never added to this
+      # list, so nothing supervised port 18749 and it sat dark until
+      # started by hand -- the same drift class as the hand-added pair
+      # transcribed above. Entry mirrors codex-proxy (the other node
+      # CLI bridge): host + PATH env, entrypoint + proxy-port.mjs as
+      # the artifact hash.
+      {
+        name = "claude-code-proxy";
+        canonicalPort = claudeCodeProxyPort;
+        portEnv = "CLAUDE_CODE_PROXY_PORT";
+        command = [
+          "/run/current-system/sw/bin/node"
+          "~/code/bin/claude-code-proxy.mjs"
+        ];
+        env = {
+          CLAUDE_CODE_PROXY_HOST = "127.0.0.1";
+          PATH = "/run/current-system/sw/bin:$HOME/.local/bin:/usr/bin:/bin";
+        };
+        hashFiles = [
+          "~/code/bin/claude-code-proxy.mjs"
+          "~/code/bin/proxy-port.mjs"
+        ];
+      }
     ];
   };
 
@@ -803,10 +918,14 @@ in
   # transient fps-commandcode-proxy unit) so laptop/sandbox env handling
   # and the MAX_TURNS pins live in exactly one place:
   # bin/commandcode-proxy-start.sh.
-  # NOT YET DEPLOYED: host builds for another change are in flight — run a
-  # NixOS/home-manager rebuild + switch to activate, then
-  #   systemctl --user status commandcode-proxy
-  # Until then the supervisor-owned transient unit serves the port.
+  #
+  # This unit originally landed (169d594e) WITH an Install.WantedBy and a
+  # "not yet deployed" note, breaking the fleet pattern below: the first
+  # home-manager activation that included it (2026-10-26, the T3 switch)
+  # started it against the supervisor's already-running transient unit,
+  # and it crash-looped on the taken port (44 restarts in an evening).
+  # The supervisor has served this port continuously since 2026-10-24;
+  # the unit is the manual fallback, like every other proxy here.
   systemd.user.services.commandcode-proxy = {
     Unit = {
       Description = "Command Code CLI Local Proxy Bridge for OpenCode";
@@ -824,7 +943,31 @@ in
         "COMMANDCODE_PROXY_AGENCY_MAX_TURNS=8"
       ];
     };
-    Install.WantedBy = [ "default.target" ];
+    # No Install.WantedBy: the proxy-supervisor (above) owns the proxy
+    # processes. These per-proxy units remain for manual one-off starts.
+  };
+
+  # OpenAI-compatible front for the OpenCode server (:13420): exposes the
+  # opencode-route pool models (workhorse et al.) in the chat-completions
+  # shape OpenClaw providers use (code#2229). Runs the repo start script,
+  # shared with the proxy-supervisor's transient unit. Manual fallback
+  # only, like every other proxy unit here.
+  systemd.user.services.opencode-route-proxy = {
+    Unit = {
+      Description = "OpenCode route proxy (OpenAI-compatible front for the OpenCode server)";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = "${../../bin}/opencode-route-proxy-start.sh";
+      Restart = "always";
+      RestartSec = 3;
+      Environment = [
+        "OPENCODE_ROUTE_PROXY_PORT=${toString opencodeRouteProxyPort}"
+      ];
+    };
+    # No Install.WantedBy: the proxy-supervisor (above) owns the proxy
+    # processes. These per-proxy units remain for manual one-off starts.
   };
 
   systemd.user.services.sync-models = {
@@ -972,6 +1115,14 @@ in
     Install.WantedBy = [ "sockets.target" ];
   };
 
+  # The provider proxies are owned by the proxy-supervisor (transient
+  # fps-* units on the canonical ports), so OpenChamber must not Want
+  # the manual per-proxy units: a restart would re-pull them, and the
+  # manual design-code-proxy unit fights the supervisor's instance for
+  # its already-taken port (#883). OpenChamber reaches the proxies by
+  # port, not by unit; only mcpx is a real unit dependency. The manual
+  # units stay declared in this file as one-off fallbacks, and the
+  # After ordering entries stay (ordering only, harmless).
   systemd.user.services.openchamber = {
     Unit = {
       Description = "OpenChamber server";
@@ -988,10 +1139,6 @@ in
       Wants = [
         "network-online.target"
         "mcpx.service"
-        "clef-proxy.service"
-        "codex-proxy.service"
-        "antigravity-ls-proxy.service"
-        "design-code-proxy.service"
       ];
       Requires = [ "openchamber.socket" ];
     };
@@ -999,7 +1146,9 @@ in
       ExecStart = "${openchamberStart}";
       ExecReload = "${pkgs.coreutils}/bin/kill -HUP $MAINPID";
       # Stopping OpenChamber leaves its managed OpenCode running; the next
-      # OpenChamber adopts it, so sessions survive a restart.
+      # OpenChamber adopts it, so sessions survive a restart. The same
+      # KillMode lets an untracked server survive a stop with the socket
+      # attached -- the start script reaps leftovers (dezren39/nix#1117).
       KillMode = "process";
       # A self-handoff successor names itself the main pid (MAINPID=) from a child process.
       # With NotifyAccess=none systemd ignores it, so the unit stops when the old process exits.
@@ -1012,6 +1161,10 @@ in
             mcpx
             pkgs.git
             pkgs.openssh
+            # The start script's single-instance guard scans /proc with
+            # coreutils (readlink, cat, tr, seq, sleep); without it the
+            # guard silently matches nothing.
+            pkgs.coreutils
           ]
         }"
       ];

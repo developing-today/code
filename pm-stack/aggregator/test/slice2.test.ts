@@ -38,7 +38,7 @@ const section = (over: Partial<OrchestrationSection>): OrchestrationSection => (
   version: 1,
   generatedAt: iso(NOW),
   runId: "orch-test",
-  provenance: "test run",
+  provenance: { sources: ["test run"] },
   tiers: { needsDrew: [], needsOrchestrator: [] },
   dependencies: [],
   goals: [],
@@ -380,7 +380,12 @@ describe("attention render (slice 2)", () => {
     const src = fixtureSource();
     const view = buildAttention(await src.attention(), SECTION);
     const html = renderAttention(view, await src.coverage(), src.provenance());
-    expect(html).toContain("Needs Drew");
+    expect(html).toContain("Needs User");
+    // Section present: counts render as numbers and the tier header
+    // carries the section's run id — no honesty banner (#1139).
+    expect(html).not.toContain("Needs User (unknown)");
+    expect(html).not.toContain("Tier source missing");
+    expect(html).toContain("orch-test");
     expect(html).toContain("Why you:");
     expect(html).toContain("Only Drew can pick which repo installs");
     expect(html).toContain("OpenCode · laptop");
@@ -390,5 +395,63 @@ describe("attention render (slice 2)", () => {
     expect(html).toContain("not wired");
     expect(html).toContain("expired out of this view");
     expect(html).not.toContain("one-shot probe"); // the expired fixture entry
+  });
+});
+
+describe("attention honesty (#1139)", () => {
+  test("absent section: banner renders, counts are unknown, never a confident zero", async () => {
+    const src = fixtureSource();
+    const view = buildAttention(await src.attention(), null);
+    expect(view.tierSource.present).toBe(false);
+    expect(view.tierSource.state).toBe("absent");
+    const html = renderAttention(view, await src.coverage(), src.provenance());
+    expect(html).toContain("Tier source missing");
+    expect(html).toContain("the orchestrator's published queues are NOT reflected");
+    expect(html).toContain("Needs User (unknown)");
+    expect(html).toContain("Needs Orchestrator (unknown)");
+    expect(html).not.toContain("Needs User (0)");
+    // The false-reassurance empty copy is suppressed in this state.
+    expect(html).not.toContain("Nothing in the user queue right now.");
+  });
+
+  test("invalid section: the banner names the failed check", async () => {
+    const src = fixtureSource();
+    const view = buildAttention(await src.attention(), null, Date.now(), {
+      state: "invalid",
+      failedChecks: ["provenance"],
+    });
+    expect(view.tierSource.present).toBe(false);
+    const html = renderAttention(view, await src.coverage(), src.provenance());
+    expect(html).toContain("Tier source invalid");
+    expect(html).toContain("provenance");
+    expect(html).toContain("Needs User (unknown)");
+  });
+
+  test("stale section: counts render, badged with a stale banner and the run stamp", async () => {
+    const src = fixtureSource();
+    const view = buildAttention(await src.attention(), SECTION, Date.now(), {
+      state: "stale",
+      runId: SECTION.runId,
+      generatedAt: SECTION.generatedAt,
+    });
+    expect(view.tierSource.present).toBe(true);
+    const html = renderAttention(view, await src.coverage(), src.provenance());
+    expect(html).toContain("Tier source stale");
+    expect(html).not.toContain("Needs User (unknown)");
+    expect(html).toContain("orch-test");
+  });
+
+  test("today's derived banner names an invalid section instead of 'not published'", async () => {
+    const src = fixtureSource();
+    const items = new Map(FIXTURE_ITEMS.map((i) => [i.ref, i]));
+    const today = deriveToday(FIXTURE_BOARD, FIXTURE_ROADMAP, items, null, new Date(), {
+      state: "invalid",
+      failedChecks: ["tiers.needsDrew"],
+    });
+    const attention = buildAttention(await src.attention(), null);
+    const html = renderToday(today, attention, await src.quota(), await src.coverage(), src.provenance());
+    expect(html).toContain("failed validation");
+    expect(html).toContain("tiers.needsDrew");
+    expect(html).not.toContain("has not published a goal-measurement section yet");
   });
 });

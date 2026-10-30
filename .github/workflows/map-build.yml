@@ -1,5 +1,7 @@
 name: map build
 
+# CI tier policy: see .github/ci-policy.md
+
 # Build verification for the small pkgs/map Go module (#338).
 #
 # Nothing built pkgs/map in CI at all, so it rotted silently: its
@@ -11,14 +13,18 @@ name: map build
 
 on:
   pull_request:
+    # PR tier (Phase 2, #1781): builds fire on PRs only for class-3
+    # changes (lockfiles, module roots, flake files, build definitions,
+    # workflow files, shared libs); on push to main they always run.
     paths:
-      - "pkgs/map/**"
-      - ".github/workflows/map-build.yml"
+      - "pkgs/map/go.mod"
+      - "pkgs/map/go.sum"
+      - "pkgs/map/package.nix"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/**"
   push:
     branches: [main]
-    paths:
-      - "pkgs/map/**"
-      - ".github/workflows/map-build.yml"
 
 permissions:
   contents: read
@@ -37,7 +43,7 @@ concurrency:
 
 jobs:
   build:
-    name: go build
+    name: "basic: go build"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

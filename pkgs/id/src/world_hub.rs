@@ -135,8 +135,39 @@ impl ResolveError {
 pub struct WorldInfo {
     /// World name.
     pub name: String,
-    /// Whether it is currently open in memory.
+    /// Whether it is currently open in memory. This says nothing about whether the
+    /// world is open to join: a stored world opens when it is next named. The
+    /// directory JSON ([`directory_json`]) names this field `loaded`, for what it
+    /// means; `open` remains the session-wire name for this struct.
     pub open: bool,
+}
+
+/// The JSON shape of a world directory listing: the shared serializer for the
+/// directory feed (#812). The CLI's `id world list --json` prints exactly this,
+/// and the web UI's directory surface is expected to consume the same shape.
+///
+/// The shape is `{ "default": <name>, "worlds": [{ "name": ..., "loaded": ...,
+/// "default": ... }] }`. The per-world field for [`WorldInfo::open`] is named
+/// `loaded`, because that is what the value means — the world is currently open
+/// in memory — and not open-to-join: a world with `loaded: false` is stored and
+/// opens when selected. No field here claims presence or joinability; presence
+/// counts are a separate, undesigned part of #812.
+#[must_use]
+pub fn directory_json(worlds: &[WorldInfo], default: &str) -> serde_json::Value {
+    let worlds: Vec<serde_json::Value> = worlds
+        .iter()
+        .map(|world| {
+            serde_json::json!({
+                "name": world.name,
+                "loaded": world.open,
+                "default": world.name == default,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "default": default,
+        "worlds": worlds,
+    })
 }
 
 struct Slot {
@@ -560,15 +591,20 @@ impl WorldHub {
     ///
     /// Fails if the world cannot be opened.
     pub async fn open_default(&self) -> Result<WorldService> {
+        tracing::info!("serve startup: open_default acquiring session permit (#190 breadcrumb)");
         let permit = Arc::clone(&self.inner.sessions)
             .acquire_owned()
             .await
             .map_err(|e| anyhow::anyhow!("session limiter closed: {e}"))?;
+        tracing::info!(
+            "serve startup: open_default session permit acquired, leasing world (#190 breadcrumb)"
+        );
         let name = self.inner.default_world.clone();
         let lease = self
             .lease_with(&name, true, permit)
             .await
             .map_err(|e| anyhow::anyhow!("open default world: {}", e.message()))?;
+        tracing::info!("serve startup: open_default lease acquired (#190 breadcrumb)");
         Ok(lease.service().clone())
     }
 
@@ -1183,5 +1219,39 @@ mod tests {
             hub.create("../x").await.err(),
             Some(ResolveError::InvalidName)
         );
+    }
+
+    #[test]
+    fn directory_json_shape_names_loaded_not_open() {
+        let worlds = vec![
+            WorldInfo {
+                name: "lobby".to_owned(),
+                open: true,
+            },
+            WorldInfo {
+                name: "attic".to_owned(),
+                open: false,
+            },
+        ];
+        let value = directory_json(&worlds, "lobby");
+        assert_eq!(value["default"], serde_json::json!("lobby"));
+        let list = value["worlds"].as_array().expect("worlds is a list");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0]["name"], serde_json::json!("lobby"));
+        assert_eq!(list[0]["loaded"], serde_json::json!(true));
+        assert_eq!(list[0]["default"], serde_json::json!(true));
+        assert_eq!(list[1]["name"], serde_json::json!("attic"));
+        assert_eq!(list[1]["loaded"], serde_json::json!(false));
+        assert_eq!(list[1]["default"], serde_json::json!(false));
+        // The honest shape: no entry may claim an "open" field.
+        for entry in list {
+            assert!(entry.get("open").is_none(), "entry must not carry `open`");
+            assert!(entry["name"].is_string());
+            assert!(entry["loaded"].is_boolean());
+            assert!(entry["default"].is_boolean());
+        }
+        // An empty directory is a default with no worlds.
+        let value = directory_json(&[], "lobby");
+        assert_eq!(value["worlds"], serde_json::json!([]));
     }
 }

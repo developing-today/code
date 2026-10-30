@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,7 +8,8 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::directory_auth::Signed;
 use crate::world::{
-    CapabilityBounds, FileScope, Isolation, WorldEvent, WorldHandle, WorldPolicy, WorldSnapshot,
+    CapabilityBounds, FileScope, Isolation, MetricsSnapshot, WorldEvent, WorldHandle, WorldMetrics,
+    WorldPolicy, WorldSnapshot,
 };
 use crate::world_compile::Compiler;
 use crate::world_hub::WorldInfo;
@@ -81,6 +83,11 @@ pub(crate) enum ClientFrame {
     Info {
         capability: String,
     },
+    /// Read the world's host metrics (F11.7): the same snapshot
+    /// `id world stats` prints under `metrics`.
+    Metrics {
+        capability: String,
+    },
     /// Page through the world's structured records.
     Records {
         capability: String,
@@ -95,6 +102,15 @@ pub(crate) enum ClientFrame {
     },
     DownloadModule {
         capability: String,
+        module_hash: String,
+    },
+    /// Admin: download a stored module by hash, whether or not it is the
+    /// active module. The participant download above serves only the active
+    /// module; an admin reconciling a world to a manifest (#807) needs a
+    /// module the host already holds - installed earlier and still in its
+    /// blob store - by its hash, to install it under the manifest's seed.
+    DownloadModuleAdmin {
+        admin_token: String,
         module_hash: String,
     },
     Invite {
@@ -165,6 +181,29 @@ pub(crate) enum ClientFrame {
     SetCapsCeiling {
         admin_token: String,
         ceiling: Vec<String>,
+    },
+    /// Admin: pend one schedule (replacing any pending schedule with the
+    /// same id), journaled before the reply. The manifest apply path's
+    /// `ScheduleAt` step (#807).
+    SetSchedule {
+        admin_token: String,
+        id: String,
+        at_ms: u64,
+    },
+    /// Admin: cancel a pending schedule by id (a no-op when absent),
+    /// journaled before the reply. The manifest apply path's
+    /// `CancelSchedule` step (#807).
+    CancelSchedule {
+        admin_token: String,
+        id: String,
+    },
+    /// Read the manifest-reconciliation state: the pending schedules, and
+    /// the active install seed when the admin token is valid. A guest
+    /// capability alone reads the schedules only — the seed never leaves
+    /// the admin layer (#240).
+    WorldState {
+        admin_token: Option<String>,
+        capability: Option<String>,
     },
     /// Admin: persist requested per-world runtime bounds. They do not change
     /// a running guest; they apply on its next install or process restart.
@@ -252,6 +291,10 @@ pub(crate) enum ServerFrame<'a> {
         active_module_provenance: Option<crate::world::ModuleProvenance>,
         current_sequence: u64,
     },
+    /// The world's host metrics snapshot (F11.7).
+    Metrics {
+        metrics: MetricsSnapshot,
+    },
     /// One page of structured records, with the sequence they were read at.
     Records {
         sequence: u64,
@@ -307,6 +350,18 @@ pub(crate) enum ServerFrame<'a> {
     CapsCeiling {
         report: crate::world_caps::CapsReport,
         message: &'static str,
+    },
+    /// The pending schedules after a schedule change (id to fire time in
+    /// unix milliseconds, as a JSON object).
+    Schedules {
+        schedules: BTreeMap<String, u64>,
+    },
+    /// The manifest-reconciliation state: pending schedules, plus the
+    /// active install seed for admin readers only (`None` for capability
+    /// readers, #240).
+    WorldState {
+        seed: Option<u64>,
+        schedules: BTreeMap<String, u64>,
     },
     /// A compiled module was installed.
     Compiled {
@@ -436,6 +491,9 @@ pub struct WorldService {
     pub(crate) mail: Option<Arc<dyn crate::directory_mail::MailSink>>,
     pub(crate) outbox: Option<Arc<Mutex<crate::envelope_outbox::Outbox>>>,
     pub(crate) profile_operation: Arc<Mutex<()>>,
+    /// The world's host metrics registry (F11.7), shared with the actor:
+    /// the session layer records the frame bytes it sends into it.
+    pub(crate) metrics: WorldMetrics,
 }
 
 impl std::fmt::Debug for WorldService {

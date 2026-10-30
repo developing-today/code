@@ -4,12 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { OrchestrationSection } from "../src/model.ts";
-import {
-  derivedProjectState,
-  parseProjectItems,
-  poolItemToGhItem,
-  projectDisagreement,
-} from "../src/projects.ts";
+import { derivedProjectState, parseProjectItems, poolItemToGhItem, projectDisagreement } from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
@@ -87,6 +82,7 @@ const PROV = {
   orchestration: "x",
   dns: "x",
   registry: "x",
+  aa: "x",
 };
 
 describe("collector projects parsing (GraphQL -> feed section)", () => {
@@ -118,7 +114,9 @@ describe("collector projects parsing (GraphQL -> feed section)", () => {
       tiers: { needsDrew: [], needsOrchestrator: [] },
       goals: [
         {
-          linedUp: [{ title: "x", ref: "dezren39/nix#508", status: "in-progress", horizon: "today", horizonWhy: "test" }],
+          linedUp: [
+            { title: "x", ref: "dezren39/nix#508", status: "in-progress", horizon: "today", horizonWhy: "test" },
+          ],
         },
       ],
       dependencies: [],
@@ -179,5 +177,20 @@ describe("renderProjects", () => {
     const filtered = renderProjects(pool, PROV, { area: "lab-cluster" });
     expect(filtered).toContain("EPIC: Basement cluster");
     expect(filtered).not.toContain("Stage 5");
+  });
+
+  test("shows the (unset) bucket for Area-unset items and filters to it (#1143)", () => {
+    const pool = parseProjectItems(GQL);
+    // The fixture's Stage 5 item carries no Area; the EPIC carries lab-cluster.
+    const html = renderProjects(pool, PROV, {});
+    expect(html).toContain("(unset) (1)");
+    expect(html).toContain(`/projects?area=${encodeURIComponent("(unset)")}`);
+    expect(html).toContain("carry no Area");
+    const unsetOnly = renderProjects(pool, PROV, { area: "(unset)" });
+    expect(unsetOnly).toContain("Stage 5");
+    expect(unsetOnly).not.toContain("EPIC: Basement cluster");
+    // No unset items -> no empty unset bucket or banner.
+    const noUnset = renderProjects([pool[0]], PROV, {});
+    expect(noUnset).not.toContain("(unset)");
   });
 });

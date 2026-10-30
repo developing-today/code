@@ -106,6 +106,41 @@ mod tests {
     }
 
     #[test]
+    fn restore_accepts_v1_and_v2_headers_and_refuses_newer_at_the_header() {
+        // The issue-#227 rollback contract: this binary reads versions
+        // 1..=MAX, and anything newer is refused at the header check —
+        // which is exactly where a version-1 binary refuses a version-2
+        // journal, before any entry is applied.
+        for version in [JOURNAL_VERSION, JOURNAL_VERSION_EXECUTION_PROFILE] {
+            let restored = WorldCore::restore(
+                "w",
+                WorldLimits::default(),
+                [JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version,
+                }],
+            )
+            .unwrap();
+            assert_eq!(restored.core.world_id, "w");
+        }
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: MAX_JOURNAL_VERSION + 1,
+            }],
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported world journal version"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn execution_profile_survives_checkpoint_compaction_and_restore() {
         let profile = crate::world_limits::WorldExecutionProfile {
             wasm_fuel: Some(1234),
@@ -116,6 +151,15 @@ mod tests {
         core.execution_profile = profile;
         core.active_module_hash = Some("h".to_owned());
         let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        // The checkpoint re-emits the profile entry, so the compacted
+        // journal's header must carry the version it requires (#227).
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: JOURNAL_VERSION_EXECUTION_PROFILE,
+                ..
+            }
+        ));
         let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
         assert_eq!(restored.core.execution_profile(), profile);
     }
@@ -2451,6 +2495,61 @@ mod tests {
         );
         assert_eq!(actor.view_failures, 1, "only the one trap is counted");
     }
+
+    #[derive(Default)]
+    struct OversizedLayout;
+
+    impl WorldProgram for OversizedLayout {
+        fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+            Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": 10, "height": 10, "cells": []}).to_string()))
+        }
+
+        fn layout(
+            &mut self,
+            _viewer: &Participant,
+            width: u16,
+            _height: u16,
+        ) -> Result<Option<String>> {
+            if width > 100 {
+                // Return an artificially huge response exceeding 8192 bytes
+                let pad = "x".repeat(9000);
+                Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": [], "pad": pad}).to_string()))
+            } else {
+                Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": width, "height": 10, "cells": []}).to_string()))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oversized_layout_degrades_to_a_view_fallback_and_recovers() {
+        let mut core = WorldCore::new("oversized", WorldLimits::default()).unwrap();
+        let (_, token) = join(&mut core, "ann");
+        let mut actor = WorldActor::for_test(core, Box::new(OversizedLayout::default()), None);
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ViewAt {
+                token: token.clone(),
+                width: 120,
+                height: 50,
+                reply,
+            })
+            .await;
+
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Ok(Some(text)) if text.contains("\"width\":10")),
+            "the oversized layout falls back to the cropped default view: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an oversized layout must not poison the world"
+        );
+        assert_eq!(
+            actor.view_failures, 1,
+            "the fallback triggers a view failure count"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3299,6 +3398,45 @@ mod schedule_tests {
         }
         assert!(full.check_schedule("last", now, now).is_ok());
         full.schedules.insert("last".to_owned(), now);
+        let error = full.check_schedule("one-more", now, now).unwrap_err();
+        assert!(error.to_string().contains("pending schedules"), "{error}");
+    }
+
+    #[test]
+    fn a_replacement_is_validated_as_a_replacement_not_as_an_addition() {
+        // #807: the admin set that replaces a pending schedule validates
+        // against the map as it will be after the replacement - the entry
+        // being replaced is neither a duplicate nor a use of the capacity -
+        // so validation can run before the cancellation is persisted, and a
+        // refusal (here, past the horizon) leaves the original standing.
+        let now = 1_000_000_000_000u64;
+        let horizon = crate::world_caps::MAX_SCHEDULE_HORIZON_MS;
+        let mut core = world(8);
+        core.schedules.insert("taken".to_owned(), now + 5);
+        assert!(
+            core.check_schedule_replacing("taken", now + 9, now, true)
+                .is_ok(),
+            "replacing a pending id is not a duplicate"
+        );
+        let error = core
+            .check_schedule_replacing("taken", now + horizon + 1, now, true)
+            .unwrap_err();
+        assert!(error.to_string().contains("days past"), "{error}");
+        assert_eq!(
+            core.schedules["taken"],
+            now + 5,
+            "the refused replacement overwrites nothing"
+        );
+
+        let mut full = world(8);
+        for index in 0..crate::world_caps::MAX_PENDING_SCHEDULES {
+            full.schedules.insert(format!("s{index}"), now);
+        }
+        assert!(
+            full.check_schedule_replacing("s0", now + 9, now, true)
+                .is_ok(),
+            "a replacement at capacity fits: it frees its own slot"
+        );
         let error = full.check_schedule("one-more", now, now).unwrap_err();
         assert!(error.to_string().contains("pending schedules"), "{error}");
     }

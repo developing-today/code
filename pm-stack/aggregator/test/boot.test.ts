@@ -45,11 +45,33 @@ describe("server boots from fixtures", () => {
     expect(body.source.board).toBe("fixtures");
   });
 
-  test("board page renders", async () => {
-    const res = await fetch(`http://127.0.0.1:${port}/`);
+  test("front door renders the overview, board lives at /board (#1134)", async () => {
+    const root = await fetch(`http://127.0.0.1:${port}/`);
+    expect(root.status).toBe(200);
+    const rootHtml = await root.text();
+    expect(rootHtml).toContain("Overview");
+    const full = await (await fetch(`http://127.0.0.1:${port}/?full=1`)).text();
+    expect(full).toContain("Needs you");
+    const board = await fetch(`http://127.0.0.1:${port}/board`);
+    expect(board.status).toBe(200);
+    expect(await board.text()).toContain("Cross-repo WIP board");
+    const api = await (await fetch(`http://127.0.0.1:${port}/api/overview.json`)).json();
+    // Fixtures carry no orchestration section, so the tier source is
+    // absent and the needs-you count is honestly null (unknown) --
+    // never a confident number over a partial queue (PR 2424 review).
+    expect(api.needsYou.count).toBeNull();
+    expect(api.needsYou.tierState).toBe("absent");
+    expect(Array.isArray(api.projects)).toBe(true);
+  });
+
+  test("sw.js serves the self-unregistering kill switch", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/sw.js`);
     expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("Cross-repo WIP board");
+    expect(res.headers.get("content-type")).toContain("javascript");
+    expect(res.headers.get("cache-control")).toBe("no-cache");
+    const body = await res.text();
+    expect(body).toContain("skipWaiting");
+    expect(body).toContain("registration.unregister()");
   });
 
   test("roadmap page renders", async () => {
@@ -63,13 +85,41 @@ describe("server boots from fixtures", () => {
     const attention = await (await fetch(`http://127.0.0.1:${port}/attention`)).text();
     expect(quota.includes("Usage &amp; billing")).toBe(true); // the hub retitle (design 2026-10-25 §1.1)
     expect(attention.includes("Needs you")).toBe(true);
-    expect(attention.includes("Needs Drew")).toBe(true);
-    expect(attention.includes("Session coverage")).toBe(true);
+    expect(attention.includes("Needs User")).toBe(true);
     expect(attention.includes("amd-6.raptor-pumpkinseed.ts.net")).toBe(true);
+    // #1444: /attention is a Datastar shell — the tier content streams
+    // in from the fragment endpoints. The honesty assertions (#1139)
+    // now run against the header fragment that carries them.
+    expect(attention.includes("/assets/datastar.js")).toBe(true);
+    expect(attention.includes("data-on-load=\"@get('/frag/attention/header')\"")).toBe(true);
+    const header = await (await fetch(`http://127.0.0.1:${port}/frag/attention/header`)).text();
+    // Fixtures carry no orchestration section, so the tier honesty
+    // banner renders and the tier counts are "unknown", never 0 (#1139).
+    expect(header.includes("Tier source missing")).toBe(true);
+    expect(header.includes("Needs User (unknown)")).toBe(true);
+    expect(header.includes("Session coverage")).toBe(true);
+    // The no-JS full render still carries the same content inline.
+    const full = await (await fetch(`http://127.0.0.1:${port}/attention?full=1`)).text();
+    expect(full.includes("Tier source missing")).toBe(true);
+    expect(full.includes("Needs User (unknown)")).toBe(true);
+  });
+
+  test("datastar asset + shell fragments serve (#1444)", async () => {
+    const asset = await fetch(`http://127.0.0.1:${port}/assets/datastar.js`);
+    expect(asset.status).toBe(200);
+    expect(asset.headers.get("content-type")).toContain("javascript");
+    expect(await asset.text()).toContain("Datastar");
+    const board = await (await fetch(`http://127.0.0.1:${port}/frag/board`)).text();
+    expect(board).toContain("datastar-patch-elements");
+    expect(board).toContain('id="board-main"');
+    const queues = await (await fetch(`http://127.0.0.1:${port}/frag/attention/queues`)).text();
+    expect(queues).toContain('id="attn-queues"');
+    expect(queues).toContain('id="drew"');
   });
 
   test("today page + slice-2 JSON endpoints (today, coverage, horizons)", async () => {
-    const today = await (await fetch(`http://127.0.0.1:${port}/today`)).text();
+    // #1444: /today is a shell; its body streams from /frag/today.
+    const today = await (await fetch(`http://127.0.0.1:${port}/frag/today`)).text();
     expect(today.includes("Top objectives")).toBe(true);
     expect(today.includes("Project momentum")).toBe(true);
     const todayJson = (await (await fetch(`http://127.0.0.1:${port}/api/today.json`)).json()) as {
@@ -100,6 +150,17 @@ describe("server boots from fixtures", () => {
     expect(quota.pools.length).toBeGreaterThan(0);
     const attention = (await (await fetch(`http://127.0.0.1:${port}/api/attention.json`)).json()) as unknown[];
     expect(attention.length).toBeGreaterThan(0);
+  });
+
+  test("unknown project page is a styled 404; a known project stays 200 (#1186)", async () => {
+    const missing = await fetch(`http://127.0.0.1:${port}/program/nope`);
+    expect(missing.status).toBe(404);
+    const missingHtml = await missing.text();
+    expect(missingHtml).toContain("Not found");
+    expect(missingHtml).toContain("no project with id");
+    const known = await fetch(`http://127.0.0.1:${port}/program/id`);
+    expect(known.status).toBe(200);
+    expect(await known.text()).toContain("id platform");
   });
 
   test("item drill-down resolves a board card", async () => {

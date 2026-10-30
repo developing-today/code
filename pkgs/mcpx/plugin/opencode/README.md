@@ -77,7 +77,7 @@ is the way to configure a drop-in installation.
 | `mcpx-tui.tsx` | optional TUI plugin: a real picker for the daemon. Different realm, different API, installed separately. |
 | `skills/mcpx-basics` | getting started (install, first config, first `ls`/`call`/`exec`), writing an `mcpx exec` script, and filtering in the script rather than in context. `examples/` holds seven runnable scripts. |
 | `skills/mcpx-observability` | investigating a failure or a slowdown through the log rather than by re-running it. |
-| `skills/mcpx-browser` | driving a stateful server, and what exclusive leasing is for. `examples/screenshot-and-errors.ts` is a full chrome-devtools run. |
+| `skills/mcpx-browser` | driving a stateful server, and what exclusive leasing is for. `skills/mcpx-browser/examples/screenshot-and-errors.ts` is a full chrome-devtools run. |
 | `skills/mcpx-daemon` | the guided flow for choosing between daemons. |
 
 ## Configuration
@@ -90,7 +90,8 @@ Read in this order: **plugin option, then environment variable, then default.**
 | `socket` | `MCPX_SOCKET` | — | a socket named outright. Stops the ladder. |
 | `bin` | `MCPX_PLUGIN_BIN` | `mcpx` | the binary for rung 4. `""` forbids spawning anything. |
 | `binArgs` | `MCPX_PLUGIN_BIN_ARGS` | — | arguments before mcpx's own. Whitespace-separated, or a JSON array when one contains a space. |
-| `backend` | `MCPX_PLUGIN_BACKEND` | `auto` | `auto` prefers the socket and spawns only as a fallback; `v1` never spawns; `cli` never uses the socket. |
+| `backend` | `MCPX_PLUGIN_BACKEND` | `auto` | `auto` prefers the socket and spawns only as a fallback; `v1` refuses the spawn fallback for tool execution (discovery may still spawn when no daemon is discoverable — `bin: ""` forbids spawning entirely); `cli` never uses the socket. |
+| `discoveryRetry` | `MCPX_PLUGIN_DISCOVERY_RETRY` | `60s` | how long the plugin waits before looking for mcpx again after a failed lookup. |
 | `remember` | `MCPX_PLUGIN_REMEMBER` | `session` | default scope for a daemon choice. |
 | `env` | `MCPX_PLUGIN_ENV` | `full` | how much to inject into shell environments: `minimal`, `standard`, `full`. |
 | `instructions` | `MCPX_PLUGIN_INSTRUCTIONS` | off | add mcpx usage to the system prompt. |

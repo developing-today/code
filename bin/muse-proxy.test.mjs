@@ -83,7 +83,7 @@ if (args[0] === 'serve') {
         notify('item/started', { sessionId: sid, item: { itemId: 'a1', kind: 'agentMessage' } });
         notify('item/delta', { sessionId: sid, itemId: 'a1', delta: 'RE:' + text });
         notify('item/completed', { sessionId: sid, item: { itemId: 'a1', kind: 'agentMessage', messagePhase: 'finalAnswer', text: 'RE:' + text } });
-        notify('session/tokenUsage', { sessionId: sid, turnId, usage: { inputTokens: 42, outputTokens: 7 } });
+        notify('session/tokenUsage', { sessionId: sid, turnId, usage: { inputTokens: 42, outputTokens: 7, cacheReadTokens: 40 } });
         notify('turn/completed', { sessionId: sid, turnId, terminal: 'completed' });
       } else {
         reply({});
@@ -332,6 +332,7 @@ test('warm serve path: second turn sends only the new user message (#480)', asyn
   }));
   assert.equal(turn1.choices[0].message.content, 'RE:alpha one');
   assert.equal(turn1.usage.prompt_tokens, 42, 'usage must come from the MSP tokenUsage notification');
+  assert.equal(turn1.usage.prompt_tokens_details.cached_tokens, 40, 'MSP cacheReadTokens must surface as prompt_tokens_details.cached_tokens (opencode #394)');
 
   const turn2 = JSON.parse(await chat(port, {
     model: 'muse-spark-1.3',

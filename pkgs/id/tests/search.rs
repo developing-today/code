@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use id::chain::{ChainExt, Event, sign};
 use id::documents::{DOCUMENT_KIND, DocumentRef};
 use id::event_store::{EventStore, Ingest};
-use id::search::{Hit, ValueMatch, search, search_store};
+use id::search::{Hit, Term, ValueMatch, search, search_store, search_store_terms, search_terms};
 use id::tag_claims::{CLEAR_KIND, Claim, SET_KIND, TagOp};
 use id::waiting::WaitingLimits;
 use p2panda_core::{Hash, SeqNum, SigningKey};
@@ -453,4 +453,143 @@ proptest! {
             expected(&live, name, query)
         );
     }
+}
+
+#[test]
+fn test_search_by_author_returns_only_that_authors_claims() {
+    let subject = Hash::digest(b"identity");
+    let mut a = Writer::new(1);
+    let seattle = a.set(subject, "city", Some("Seattle"), vec![]);
+    let mut b = Writer::new(2);
+    let portland = b.set(subject, "city", Some("Portland"), vec![]);
+
+    let (_dir, mut store) = open();
+    deliver(&mut store, &seattle);
+    deliver(&mut store, &portland);
+
+    let a_key = *a.key.verifying_key().as_bytes();
+    let b_key = *b.key.verifying_key().as_bytes();
+    let hits = search_store_terms(&store, &[Term::Author(a_key)]).unwrap();
+    assert_eq!(shape(&hits), vec![(subject, vec![seattle.id])]);
+    let hits = search_store_terms(&store, &[Term::Author(b_key)]).unwrap();
+    assert_eq!(shape(&hits), vec![(subject, vec![portland.id])]);
+    // The pure search over the same live claims gives the same answer.
+    let live = store.tag_claims().unwrap();
+    assert_eq!(
+        shape(&search_terms(&live, &[Term::Author(a_key)], |_| None)),
+        vec![(subject, vec![seattle.id])]
+    );
+    // An author with no claims matches nothing.
+    assert!(
+        search_store_terms(&store, &[Term::Author([9; 32])])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn test_search_terms_and_combines_terms_on_a_subject() {
+    let one = Hash::digest(b"one");
+    let two = Hash::digest(b"two");
+    let mut a = Writer::new(1);
+    let city_one = a.set(one, "city", Some("Seattle"), vec![]);
+    let mut b = Writer::new(2);
+    let name_one = b.set(one, "name", None, vec![]);
+    let city_two = b.set(two, "city", Some("Seattle"), vec![]);
+
+    let (_dir, mut store) = open();
+    for event in [&city_one, &name_one, &city_two] {
+        deliver(&mut store, event);
+    }
+
+    // Name AND author: only `one` has a Seattle claim by `a`; the hit carries
+    // the claim that matched a term, not `b`'s unrelated name claim.
+    let a_key = *a.key.verifying_key().as_bytes();
+    let hits = search_store_terms(
+        &store,
+        &[
+            Term::Name {
+                name: "city",
+                value: ValueMatch::Exact("Seattle"),
+            },
+            Term::Author(a_key),
+        ],
+    )
+    .unwrap();
+    assert_eq!(shape(&hits), vec![(one, vec![city_one.id])]);
+
+    // Two name terms may be satisfied by different claims on the subject.
+    let hits = search_store_terms(
+        &store,
+        &[
+            Term::Name {
+                name: "city",
+                value: ValueMatch::Any,
+            },
+            Term::Name {
+                name: "name",
+                value: ValueMatch::Any,
+            },
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        shape(&hits),
+        vec![(one, sorted_ids(vec![city_one.id, name_one.id]))]
+    );
+
+    // A subject missing one term is not a hit, and an empty term set matches
+    // every subject with all of its claims.
+    let hits = search_store_terms(&store, &[]).unwrap();
+    let mut want = vec![
+        (one, sorted_ids(vec![city_one.id, name_one.id])),
+        (two, vec![city_two.id]),
+    ];
+    want.sort_by_key(|(subject, _)| *subject.as_bytes());
+    assert_eq!(shape(&hits), want);
+}
+
+#[test]
+fn test_search_by_subject_kind_matches_only_events_of_that_kind() {
+    let mut author = Writer::new(1);
+    let document = author.document(b"minutes");
+    let identity = Hash::digest(b"identity");
+    let on_document = author.set(document.id, "city", Some("Seattle"), vec![document.id]);
+    let on_identity = author.set(identity, "city", Some("Seattle"), vec![on_document.id]);
+
+    let (_dir, mut store) = open();
+    for event in [&document, &on_document, &on_identity] {
+        deliver(&mut store, event);
+    }
+
+    // Kind alone: the document subject matches, with all of its live claims;
+    // the identity subject is not an event in the store, so it has no kind.
+    let hits = search_store_terms(&store, &[Term::SubjectKind(DOCUMENT_KIND)]).unwrap();
+    assert_eq!(shape(&hits), vec![(document.id, vec![on_document.id])]);
+
+    // Kind AND name: both terms must hold on the same subject.
+    let hits = search_store_terms(
+        &store,
+        &[
+            Term::SubjectKind(DOCUMENT_KIND),
+            Term::Name {
+                name: "city",
+                value: ValueMatch::Exact("Seattle"),
+            },
+        ],
+    )
+    .unwrap();
+    assert_eq!(shape(&hits), vec![(document.id, vec![on_document.id])]);
+    let hits = search_store_terms(
+        &store,
+        &[
+            Term::SubjectKind(DOCUMENT_KIND),
+            Term::Name {
+                name: "missing",
+                value: ValueMatch::Any,
+            },
+        ],
+    )
+    .unwrap();
+    assert!(hits.is_empty());
 }

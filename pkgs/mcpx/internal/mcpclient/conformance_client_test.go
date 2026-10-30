@@ -740,3 +740,109 @@ func TestVersionRetry(t *testing.T) {
 		}
 	})
 }
+
+// https://modelcontextprotocol.io/specification/2025-11-25/client/sampling
+func TestSamplingDeclarations(t *testing.T) {
+	type recording struct {
+		calls  int
+		params map[string]any
+	}
+	handler := func(rec *recording) mcpclient.ElicitHandler {
+		return func(_ context.Context, _ string, raw json.RawMessage) (any, error) {
+			rec.calls++
+			_ = json.Unmarshal(raw, &rec.params)
+			return map[string]any{"role": "assistant", "model": "test-model", "stopReason": "endTurn",
+				"content": map[string]any{"type": "text", "text": "ok"}}, nil
+		}
+	}
+	legacyAt := func(rev string, h mcpclient.ElicitHandler) *wire {
+		w := newWire(t, rev, func(m string, p map[string]any) (any, map[string]any) {
+			if m == "initialize" {
+				return initResult(rev, nil), nil
+			}
+			return nil, nil
+		})
+		dialWire(t, w, mcpclient.ForceLegacy, mcpclient.Options{OnServerRequest: h})
+		return w
+	}
+	sample := func(w *wire, id string, extra map[string]any) map[string]any {
+		p := map[string]any{
+			"messages":  []any{map[string]any{"role": "user", "content": map[string]any{"type": "text", "text": "hi"}}},
+			"maxTokens": 100,
+		}
+		for k, v := range extra {
+			p[k] = v
+		}
+		w.push(map[string]any{"jsonrpc": "2.0", "id": id, "method": "sampling/createMessage", "params": p})
+		var r map[string]any
+		waitFor(t, "a reply to "+id, func() bool { r = reply(w, id); return r != nil })
+		return r
+	}
+	tool := map[string]any{"name": "lookup", "description": "looks up", "inputSchema": map[string]any{"type": "object"}}
+
+	t.Run("2025-11-25/sampling/tools-without-capability-is-32602", func(t *testing.T) {
+		for _, rev := range []string{"2025-06-18", "2025-11-25"} {
+			rec := &recording{}
+			w := legacyAt(rev, handler(rec))
+			r := sample(w, "t1", map[string]any{"tools": []any{tool}})
+			if e, _ := r["error"].(map[string]any); e == nil || e["code"] != float64(-32602) {
+				t.Fatalf("%s: tools without sampling.tools declared: %v", rev, r)
+			}
+			r = sample(w, "t2", map[string]any{"toolChoice": map[string]any{"type": "auto"}})
+			if e, _ := r["error"].(map[string]any); e == nil || e["code"] != float64(-32602) {
+				t.Fatalf("%s: toolChoice without sampling.tools declared: %v", rev, r)
+			}
+			if rec.calls != 0 {
+				t.Fatalf("%s: handler invoked %d times for refused requests", rev, rec.calls)
+			}
+		}
+	})
+	t.Run("2025-11-25/sampling/includecontext-without-capability-is-dropped", func(t *testing.T) {
+		rec := &recording{}
+		w := legacyAt("2025-11-25", handler(rec))
+		r := sample(w, "c1", map[string]any{"includeContext": "allServers"})
+		if r["error"] != nil {
+			t.Fatalf("includeContext request refused instead of dropped: %v", r)
+		}
+		if rec.calls != 1 {
+			t.Fatalf("handler invoked %d times, want 1", rec.calls)
+		}
+		if _, ok := rec.params["includeContext"]; ok {
+			t.Errorf("handler saw includeContext the client never declared: %v", rec.params)
+		}
+		if _, ok := rec.params["messages"]; !ok {
+			t.Errorf("handler lost the rest of the request: %v", rec.params)
+		}
+	})
+	t.Run("2025-11-25/sampling/includecontext-none-untouched", func(t *testing.T) {
+		rec := &recording{}
+		w := legacyAt("2025-11-25", handler(rec))
+		r := sample(w, "n1", map[string]any{"includeContext": "none"})
+		if r["error"] != nil {
+			t.Fatalf("includeContext none refused: %v", r)
+		}
+		if rec.calls != 1 {
+			t.Fatalf("handler invoked %d times, want 1", rec.calls)
+		}
+		if rec.params["includeContext"] != "none" {
+			t.Errorf("includeContext none altered before the handler: %v", rec.params)
+		}
+	})
+	t.Run("2025-11-25/sampling/plain-request-untouched", func(t *testing.T) {
+		rec := &recording{}
+		w := legacyAt("2025-11-25", handler(rec))
+		r := sample(w, "p1", map[string]any{"modelPreferences": map[string]any{"hints": []any{map[string]any{"name": "test-model"}}}})
+		if r["error"] != nil {
+			t.Fatalf("plain request refused: %v", r)
+		}
+		if rec.calls != 1 {
+			t.Fatalf("handler invoked %d times, want 1", rec.calls)
+		}
+		if _, ok := rec.params["modelPreferences"]; !ok {
+			t.Errorf("plain request altered before the handler: %v", rec.params)
+		}
+		if _, ok := rec.params["maxTokens"]; !ok {
+			t.Errorf("plain request altered before the handler: %v", rec.params)
+		}
+	})
+}

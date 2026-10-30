@@ -4,11 +4,14 @@
 // record live on the sandbox). The aggregator renders the feed as-is;
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
+import type { UnmatchedCharge } from "./charges-match.ts";
 import type {
+  AaFeedSection,
   ChargeRow,
   DnsSection,
   GoalMeasurement,
   JulesSummary,
+  OrchestrationProvenance,
   OrchestrationSection,
   PaygLine,
   ProjectPoolItem,
@@ -41,6 +44,12 @@ export interface FleetFeed {
   payg?: PaygLine[];
   /** Hub charges evidence (§2.4), from the same dated records. */
   charges?: ChargeRow[];
+  /** Charges auto-matching (#1057): unmatched SaaS/AI-looking charges
+   * surfacing for the FIRST time this run — the collector filters out
+   * anything its persisted surfaced-state already showed, so a charge
+   * appears here exactly once and the live source turns each entry
+   * into a hub attention flag. Absent when nothing new surfaced. */
+  chargesAttention?: UnmatchedCharge[];
   /** Hub subscriptions strip rows (Q5: renewal-only). */
   subscriptions?: { name: string; plan: string; renewsAt: string | null }[];
   /** Usage snapshot records (hub §4 writers): derived by the collector
@@ -54,6 +63,12 @@ export interface FleetFeed {
    * state, read by the collector via GraphQL. Absent when the
    * collector had no Projects token or the read failed. */
   projects?: ProjectPoolItem[];
+  /** AA cost explorer section: the ainventory (AA workbook) data read
+   * by the collector from Supabase, plus pool/catalog coverage computed
+   * against the repo's opencode config. Present-but-absent
+   * ({status:"absent", reason}) when Supabase was unreachable — the
+   * section degrades, the feed never fails over it. */
+  aa?: AaFeedSection;
 }
 
 /**
@@ -82,23 +97,111 @@ function isGoalMeasurement(v: unknown): boolean {
   );
 }
 
-export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
+/**
+ * The section's provenance (#1110). The contract is the publisher's
+ * object form — `{ sources: string[], runId?: string }` — which every
+ * orchestration run actually emits. The legacy plain-string form is
+ * also accepted here and normalized at the boundary (see
+ * normalizeOrchestrationSection), the same string-or-richer tolerance
+ * derive.ts gives `progressedSinceLastRun`. Anything else — a number,
+ * an object without a sources array, non-string sources — fails.
+ */
+function isProvenance(v: unknown): boolean {
+  if (typeof v === "string") return v.length > 0;
   if (typeof v !== "object" || v === null) return false;
-  const s = v as Partial<OrchestrationSection>;
+  const p = v as { sources?: unknown; runId?: unknown };
   return (
-    s.version === 1 &&
-    typeof s.generatedAt === "string" &&
-    typeof s.runId === "string" &&
-    typeof s.provenance === "string" &&
-    typeof s.tiers === "object" &&
-    s.tiers !== null &&
-    Array.isArray(s.tiers.needsDrew) &&
-    Array.isArray(s.tiers.needsOrchestrator) &&
-    Array.isArray(s.dependencies) &&
-    Array.isArray(s.goals) &&
-    s.goals.every(isGoalMeasurement) &&
-    Array.isArray(s.actions)
+    Array.isArray(p.sources) &&
+    p.sources.every((x) => typeof x === "string") &&
+    (p.runId === undefined || typeof p.runId === "string")
   );
+}
+
+/**
+ * The first structural check an orchestration section fails, as a short
+ * field name — or null when the section is valid (#1140: a present-but-
+ * invalid section must be diagnosable, not silently "absent"). This is
+ * the single source of truth behind isOrchestrationSection, so the
+ * diagnosis can never drift from the gate itself.
+ */
+export function orchestrationSectionProblem(v: unknown): string | null {
+  if (typeof v !== "object" || v === null) return "not an object";
+  const s = v as Partial<OrchestrationSection>;
+  if (s.version !== 1) return "version";
+  if (typeof s.generatedAt !== "string" || !Number.isFinite(Date.parse(s.generatedAt))) return "generatedAt";
+  if (typeof s.runId !== "string") return "runId";
+  if (!isProvenance(s.provenance)) return "provenance";
+  if (typeof s.tiers !== "object" || s.tiers === null) return "tiers";
+  if (!Array.isArray(s.tiers.needsDrew)) return "tiers.needsDrew";
+  if (!Array.isArray(s.tiers.needsOrchestrator)) return "tiers.needsOrchestrator";
+  if (!Array.isArray(s.dependencies)) return "dependencies";
+  if (!Array.isArray(s.goals)) return "goals";
+  if (!s.goals.every(isGoalMeasurement)) return "goals (per-goal shape)";
+  if (!Array.isArray(s.actions)) return "actions";
+  return null;
+}
+
+export function isOrchestrationSection(v: unknown): v is OrchestrationSection {
+  return orchestrationSectionProblem(v) === null;
+}
+
+/**
+ * A section older than this at the hourly cadence is stale (#1139,
+ * #1148's threshold): still served, but every surface that renders its
+ * numbers must say the data is old instead of presenting it as current.
+ */
+export const ORCHESTRATION_STALE_MS = 90 * 60_000;
+
+/** Future-skew tolerance for generatedAt stamps (#1564; the aggregator-wide 60s convention ruled for #1541). */
+export const GENERATED_AT_FUTURE_SKEW_MS = 60_000;
+
+/**
+ * The diagnosis behind the honesty surfaces (#1139/#1140): a section
+ * the aggregator holds is in exactly one of these states. "invalid"
+ * names the failing checks (from orchestrationSectionProblem — the
+ * gate itself, so the diagnosis can never drift from the validation)
+ * and is never collapsed into "absent": a publisher whose section is
+ * being rejected has a bug to fix, not a run that never happened.
+ */
+export interface SectionDiagnosis {
+  state: "live" | "absent" | "invalid" | "stale";
+  generatedAt?: string;
+  runId?: string;
+  ageMs?: number;
+  /** Names of the failing structural checks; never values. */
+  failedChecks?: string[];
+}
+
+export function diagnoseOrchestrationSection(v: unknown, now = Date.now()): SectionDiagnosis {
+  if (v === null || v === undefined) return { state: "absent" };
+  const problem = orchestrationSectionProblem(v);
+  if (problem !== null) return { state: "invalid", failedChecks: [problem] };
+  const s = v as OrchestrationSection;
+  const parsedAt = Date.parse(s.generatedAt);
+  if (parsedAt - now > GENERATED_AT_FUTURE_SKEW_MS) {
+    return { state: "invalid", failedChecks: ["generatedAt"], generatedAt: s.generatedAt, runId: s.runId };
+  }
+  const ageMs = Math.max(0, now - parsedAt);
+  return {
+    state: ageMs > ORCHESTRATION_STALE_MS ? "stale" : "live",
+    generatedAt: s.generatedAt,
+    runId: s.runId,
+    ageMs,
+  };
+}
+
+/**
+ * A valid section with its provenance in the canonical object form:
+ * a legacy plain-string provenance becomes `{ sources: [it] }`.
+ * Returns null for anything isOrchestrationSection rejects. The
+ * collector embeds this normalized form in the feed and the live
+ * source serves it, so downstream consumers see exactly one shape.
+ */
+export function normalizeOrchestrationSection(v: unknown): OrchestrationSection | null {
+  if (!isOrchestrationSection(v)) return null;
+  const s = v as OrchestrationSection & { provenance: OrchestrationProvenance | string };
+  if (typeof s.provenance !== "string") return s;
+  return { ...s, provenance: { sources: [s.provenance] } };
 }
 
 export function isFleetFeed(v: unknown): v is FleetFeed {
@@ -107,6 +210,7 @@ export function isFleetFeed(v: unknown): v is FleetFeed {
   return (
     f.version === 1 &&
     typeof f.generatedAt === "string" &&
+    Number.isFinite(Date.parse(f.generatedAt)) &&
     typeof f.quota === "object" &&
     f.quota !== null &&
     Array.isArray((f.quota as QuotaView).pools) &&
@@ -123,11 +227,17 @@ export async function loadFeed(path: string): Promise<FleetFeed | null> {
   }
 }
 
+/** "3m old", "2h old", "fresh" — for an age in milliseconds. */
+export function ageMsText(ageMs: number): string {
+  if (!Number.isFinite(ageMs)) return "unknown";
+  const ms = Math.max(0, ageMs);
+  if (ms < 90_000) return "fresh";
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m old`;
+  if (ms < 86_400_000) return `${(ms / 3_600_000).toFixed(1)}h old`;
+  return `${Math.round(ms / 86_400_000)}d old`;
+}
+
 /** "3m old", "2h old", "fresh" — for provenance strings. */
 export function feedAgeText(generatedAt: string, now = Date.now()): string {
-  const ageMs = Math.max(0, now - Date.parse(generatedAt));
-  if (ageMs < 90_000) return "fresh";
-  if (ageMs < 3_600_000) return `${Math.round(ageMs / 60_000)}m old`;
-  if (ageMs < 86_400_000) return `${(ageMs / 3_600_000).toFixed(1)}h old`;
-  return `${Math.round(ageMs / 86_400_000)}d old`;
+  return ageMsText(now - Date.parse(generatedAt));
 }

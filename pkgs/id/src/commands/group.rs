@@ -52,8 +52,20 @@ fn name_of<T: ValueEnum>(value: &T) -> String {
 }
 
 /// A field's value as text: strings without quotes, anything else as JSON.
+///
+/// Plain-text safety (#1611): a string containing whitespace or control characters is
+/// rendered as a JSON string literal — double-quoted, with the whitespace and control
+/// bytes escaped (`\n`, `\t`, `\u00XX`, and so on). A plain row is therefore always
+/// exactly one physical line, and a stored name or value can never forge extra fields
+/// or rows: any `key=value`-looking text inside such a value sits inside the quotes, so
+/// a row's real trailing fields (such as `author=` and `event=`) are the only unquoted
+/// occurrences. Strings without whitespace or control characters render byte-identically
+/// to before, and `--json` output (which goes through [`object`]) is unchanged.
 fn text(value: &Value) -> String {
     match value {
+        Value::String(string) if string.chars().any(|c| c.is_whitespace() || c.is_control()) => {
+            Value::String(string.clone()).to_string()
+        }
         Value::String(string) => string.clone(),
         other => other.to_string(),
     }
@@ -398,4 +410,97 @@ pub async fn cmd_revoke(path: Option<PathBuf>, args: RevokeArgs) -> Result<()> {
     let action = log.revoke(author().await?, group, grant)?;
     let fields = vec![("grant", json!(grant.to_hex()))];
     print_action(args.json, "revoke", fields, &action)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// A claim-shaped row: the stored name/value sit before the real author/event.
+    fn row(name: &str, value: &str) -> String {
+        tokens(&[
+            ("subject", json!("deadbeef")),
+            ("name", json!(name)),
+            ("value", json!(value)),
+            ("author", json!("cafe")),
+            ("event", json!("beef")),
+        ])
+    }
+
+    #[test]
+    fn test_space_free_values_render_byte_identically() {
+        assert_eq!(
+            row("tag", "plain-value_1"),
+            "subject=deadbeef name=tag value=plain-value_1 author=cafe event=beef"
+        );
+        assert_eq!(text(&json!(42)), "42");
+        assert_eq!(text(&json!(true)), "true");
+    }
+
+    #[test]
+    fn test_space_in_value_is_quoted() {
+        assert_eq!(
+            row("tag", "a b"),
+            "subject=deadbeef name=tag value=\"a b\" author=cafe event=beef"
+        );
+    }
+
+    #[test]
+    fn test_newline_in_value_stays_one_line() {
+        let rendered = row("tag", "a\nb");
+        assert!(
+            !rendered.contains('\n'),
+            "row must be one physical line: {rendered}"
+        );
+        assert!(rendered.contains("value=\"a\\nb\""));
+    }
+
+    #[test]
+    fn test_newline_in_name_stays_one_line() {
+        let rendered = row("a\nb", "v");
+        assert!(
+            !rendered.contains('\n'),
+            "row must be one physical line: {rendered}"
+        );
+        assert!(rendered.contains("name=\"a\\nb\""));
+    }
+
+    #[test]
+    fn test_tab_in_value_is_escaped() {
+        let rendered = row("tag", "a\tb");
+        assert!(
+            !rendered.contains('\t'),
+            "row must be one physical line: {rendered}"
+        );
+        assert!(rendered.contains("value=\"a\\tb\""));
+    }
+
+    #[test]
+    fn test_forged_row_payload_cannot_shadow_real_fields() {
+        let rendered = row(
+            "tag",
+            "x\nsubject=deadbeef name=forged author=deadbeef event=deadbeef",
+        );
+        assert!(
+            !rendered.contains('\n'),
+            "row must be one physical line: {rendered}"
+        );
+        // The real fields are the row's tail; the forged copies sit inside the quoted value.
+        assert!(rendered.ends_with(" author=cafe event=beef"));
+        assert_eq!(rendered.matches("author=cafe").count(), 1);
+        assert!(
+            rendered.contains(
+                "value=\"x\\nsubject=deadbeef name=forged author=deadbeef event=deadbeef\""
+            )
+        );
+    }
+
+    #[test]
+    fn test_json_output_is_unchanged() {
+        assert_eq!(
+            object(&[("value", json!("a\nb"))]).to_string(),
+            "{\"value\":\"a\\nb\"}"
+        );
+    }
 }

@@ -103,6 +103,60 @@ func TestClientFeaturesServer(t *testing.T) {
 			}
 		})
 	}
+	srvSide("sampling-server-no-tools-without-capability", func(t *testing.T, rev string) {
+		// A tools-carrying sampling question is offered only to a client
+		// that declared sampling.tools; a bare sampling declaration is
+		// refused whole, never stripped and degraded (#1755).
+		toolsQ := mcpserver.Question{ID: "s", Method: "sampling/createMessage", Server: "up",
+			Params: json.RawMessage(`{"messages":[{"role":"user","content":{"type":"text","text":"weather?"}}],"maxTokens":50,"tools":[{"name":"get","inputSchema":{"type":"object"}}]}`)}
+		plainQ := mcpserver.Question{ID: "p", Method: "sampling/createMessage", Server: "up",
+			Params: json.RawMessage(`{"messages":[{"role":"user","content":{"type":"text","text":"hi"}}],"maxTokens":5}`)}
+		if isModern(rev) {
+			srv, _ := newServer(t)
+			srv.Ask = newAsker("done", plainQ, toolsQ)
+			ss := stdioServer(t, srv)
+			r := resultOf(t, ss.request(t, rev, "tools/call", paramsWith(rev, `{"sampling":{}}`, callThatAsks())))
+			ir := asMap(r["inputRequests"])
+			if ir["s"] != nil {
+				t.Errorf("tools-carrying question offered to a client without sampling.tools: %v", ir)
+			}
+			if ir["p"] == nil {
+				t.Errorf("plain question missing beside the refused one: %v", ir)
+			}
+		} else {
+			if m := relayed(t, rev, map[string]any{"sampling": map[string]any{}}, toolsQ); m != nil {
+				t.Errorf("tools-carrying question relayed to a client without sampling.tools: %v", m)
+			}
+		}
+	})
+	srvSide("sampling-server-includecontext-only-with-context-capability", func(t *testing.T, rev string) {
+		// includeContext reaches only a client that declared
+		// sampling.context; for anyone else it is dropped and the rest
+		// of the question passes unchanged (#1755).
+		q := mcpserver.Question{ID: "s", Method: "sampling/createMessage", Server: "up",
+			Params: json.RawMessage(`{"messages":[{"role":"user","content":{"type":"text","text":"hi"}}],"maxTokens":5,"includeContext":"allServers"}`)}
+		sent := func(capsJSON string, caps map[string]any) map[string]any {
+			if isModern(rev) {
+				srv, _ := newServer(t)
+				srv.Ask = newAsker("done", q)
+				ss := stdioServer(t, srv)
+				r := resultOf(t, ss.request(t, rev, "tools/call", paramsWith(rev, capsJSON, callThatAsks())))
+				return asMap(asMap(asMap(r["inputRequests"])["s"])["params"])
+			}
+			return asMap(relayed(t, rev, caps, q)["params"])
+		}
+		bare := sent(`{"sampling":{}}`, map[string]any{"sampling": map[string]any{}})
+		if bare["includeContext"] != nil {
+			t.Errorf("includeContext relayed to a client without sampling.context: %v", bare)
+		}
+		if bare["maxTokens"] == nil {
+			t.Errorf("the rest of the question must pass unchanged: %v", bare)
+		}
+		full := sent(`{"sampling":{"context":{}}}`, map[string]any{"sampling": map[string]any{"context": map[string]any{}}})
+		if full["includeContext"] != "allServers" {
+			t.Errorf("includeContext must pass verbatim to a client that declared sampling.context: %v", full)
+		}
+	})
 	srvSide("sampling-deprecated-new-impls-should-not-adopt", func(t *testing.T, rev string) {
 		// mcpx originates no sampling of its own: a modern call with
 		// nothing upstream asking is answered without any request.
@@ -487,6 +541,44 @@ func TestClientFeaturesClient(t *testing.T) {
 		}
 		if time.Since(start) > 3*time.Second {
 			t.Errorf("took %s", time.Since(start))
+		}
+	})
+
+	// The -1 half of this requirement (Phase 1 of #1834, issue #1835): a
+	// sampling refusal reaches the upstream as code -1 naming the action,
+	// not flattened to -32603. The -32602 content half (tool result
+	// missing / mixed with other content) stays an open gap for Phase 2
+	// (#1836) -- see the reworded gap in coverage_clientfeatures.go.
+	cli("sampling-client-errors-user-rejected-and-tool-shape", func(t *testing.T, rev string) {
+		o := clientOpts()
+		o.OnServerRequest = func(context.Context, string, json.RawMessage) (any, error) {
+			return nil, mcpclient.UserRejectedError("the sampling request was decline")
+		}
+		if isModern(rev) {
+			p := newPeer(t, rev)
+			n := 0
+			p.on("tools/call", func(pm map[string]any) (any, *rpcError) {
+				if n++; n == 1 {
+					var sp any
+					_ = json.Unmarshal([]byte(sampleParams), &sp)
+					return map[string]any{"resultType": "input_required", "requestState": "s",
+						"inputRequests": map[string]any{"q": map[string]any{"method": "sampling/createMessage", "params": sp}}}, nil
+				}
+				return map[string]any{"resultType": "complete", "content": []any{}}, nil
+			})
+			c := dialClient(t, p, o)
+			_, err := c.CallTool(ctxT(t), "echo", map[string]any{})
+			if err == nil || !strings.Contains(err.Error(), "mcp error -1") {
+				t.Errorf("a sampling refusal was not relayed as -1: %v", err)
+			}
+			return
+		}
+		p := newPeer(t, rev)
+		dialClient(t, p, o)
+		r := p.ask(t, "sampling/createMessage", json.RawMessage(sampleParams))
+		e := asMap(r["error"])
+		if e == nil || e["code"] != float64(-1) {
+			t.Errorf("a sampling refusal was not relayed as -1: %v", r)
 		}
 	})
 
