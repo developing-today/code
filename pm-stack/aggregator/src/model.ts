@@ -1264,7 +1264,7 @@ export interface SnapshotRecord {
   serviceId: string;
   metricId: string;
   value: number | { low: number; high: number };
-  unit: "pct" | "usd" | "count" | "gb" | "tokens" | "usd-est";
+  unit: "pct" | "usd" | "count" | "gb" | "tokens" | "usd-est" | "minutes" | "hours" | "gb-hours";
   limit?: number | null;
   resetsAt?: string | null;
   source: UsageSourceClass;
