@@ -70,6 +70,9 @@ func stubNix(t *testing.T) (storeOut string) {
 	}
 	stub := "#!/bin/sh\n" +
 		"echo x >> \"" + filepath.Join(dir, "calls") + "\"\n" +
+		"mkdir -p \"" + bin + "\"\n" +
+		"printf '#!/bin/sh\nexit 0\n' > \"" + tool + "\"\n" +
+		"chmod +x \"" + tool + "\"\n" +
 		"for a in \"$@\"; do\n" +
 		"  case \"$a\" in *bad*) echo 'error: flake bad does not exist' >&2; exit 1;; esac\n" +
 		"  case \"$a\" in *slow*) sleep 30;; esac\n" +
@@ -106,6 +109,35 @@ func TestResolveNixSpecBuildsOnceAndSpawnsTheStorePath(t *testing.T) {
 	}
 	if n := len(strings.Fields(string(calls))); n != 1 {
 		t.Errorf("nix ran %d times for two resolutions of one spec, want 1 (in-process memo)", n)
+	}
+}
+
+// A memoised path whose store output has since been deleted (GC, or a
+// previous test invocation's temp dir under -count=N) must not be handed
+// back: the resolver evicts it and builds again.
+func TestResolveNixSpecMemoEvictsDeletedOutput(t *testing.T) {
+	out := stubNix(t)
+	ctx := context.Background()
+	r, err := progspec.Resolve(ctx, "nix:nixpkgs#faketool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(out); err != nil {
+		t.Fatal(err)
+	}
+	r2, err := progspec.Resolve(ctx, "nix:nixpkgs#faketool")
+	if err != nil {
+		t.Fatalf("second Resolve after output deletion: %v", err)
+	}
+	if r2.Path != r.Path {
+		t.Errorf("second Resolve Path = %q, want %q (stub recreates the same output)", r2.Path, r.Path)
+	}
+	calls, err := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(out)), "calls"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(strings.Fields(string(calls))); n != 2 {
+		t.Errorf("nix ran %d times, want 2 (memo evicted, rebuilt)", n)
 	}
 }
 

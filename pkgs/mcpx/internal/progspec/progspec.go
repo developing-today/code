@@ -134,8 +134,20 @@ func ResolveInDir(ctx context.Context, raw, dir string) (Resolved, error) {
 	}
 	memoMu.Lock()
 	if r, ok := memo[key]; ok {
-		memoMu.Unlock()
-		return r, nil
+		if !isExecutable(r.Path) {
+			// The memo outlived its store path: outputs get garbage-
+			// collected, and a test stub's output dies with its temp
+			// dir. A memoised path that no longer exists is not a
+			// resolution -- evict it and resolve again rather than
+			// hand the caller a dead executable.
+			delete(memo, key)
+		} else {
+			memoMu.Unlock()
+			if err := ctx.Err(); err != nil {
+				return Resolved{}, fmt.Errorf("progspec: resolving %q: %w", spec.Raw, err)
+			}
+			return r, nil
+		}
 	}
 	memoMu.Unlock()
 

@@ -138,6 +138,13 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 					missing = append(missing, s.Name+": "+err.Error())
 					continue
 				}
+				// A valid nix spec is only runnable where nix itself
+				// is: launch resolves through the nix binary, so its
+				// absence is a missing prerequisite, not an ok.
+				if _, err := exec.LookPath("nix"); err != nil {
+					missing = append(missing, fmt.Sprintf("%s: %s requires the nix binary, which is not on PATH", s.Name, s.Command))
+					continue
+				}
 				nixSpecs++
 				continue
 			}
