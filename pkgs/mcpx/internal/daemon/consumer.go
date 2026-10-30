@@ -557,6 +557,17 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	env := map[string]string{
+		"MCPX_SESSION":    session,
+		"MCPX_SESSION_ID": session,
+		"MCPX_ENDPOINT":   s.endpoint,
+	}
+	if tok := BearerToken(s.set); tok != "" {
+		// #1975: recipes run against this daemon; with bearer auth on
+		// they need the resolved token, not only an exported env var.
+		env["MCPX_TRANSPORT_BEARER_TOKEN"] = tok
+	}
+
 	res, rerr := runner.Run(rctx, runner.Options{
 		Source:        source,
 		Prelude:       prelude(nss),
@@ -565,11 +576,7 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 		Timeout:       timeout,
 		Stdout:        &out,
 		Stderr:        &errOut,
-		Env: map[string]string{
-			"MCPX_SESSION":    session,
-			"MCPX_SESSION_ID": session,
-			"MCPX_ENDPOINT":   s.endpoint,
-		},
+		Env:           env,
 	})
 	result := &ExecResult{Stdout: out.String(), Stderr: errOut.String()}
 	if rerr != nil {

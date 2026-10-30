@@ -194,8 +194,14 @@ func (s *Server) ExecService() *execsvc.Service {
 		// The script the daemon runs is on the daemon's machine by
 		// definition, so a path it hands to artifact() is a path the store
 		// can link rather than read.
-		Local:  true,
-		Limits: lim,
+		Local: true,
+		// #1975: scripts this daemon hosts must be able to authenticate
+		// back to it. Hand the service the token this server enforces,
+		// resolved from the same set the bearer middleware reads, so a
+		// file- or flag-configured token reaches daemon-hosted scripts
+		// and not only ones the daemon's environment exported.
+		BearerToken: BearerToken(s.set),
+		Limits:      lim,
 		// Kept between runs so the runtime's module cache stays warm, and
 		// one directory per catalogue so two configurations cannot
 		// overwrite each other's generated client.
