@@ -130,10 +130,11 @@ actor, workflow_ref}`) is recorded in the task payload.
 
 ## GitHub Actions (reusable)
 
-Three composite actions in this repo wrap dispatch so call sites do
+Four composite actions in this repo wrap dispatch so call sites do
 not hand-roll the OIDC + curl plumbing. Two are low-level primitives
 that wrap the dispatch endpoints directly; the third is the
-task-level entry point built on top of them:
+task-level entry point built on top of them, and the fourth is a
+thin in-CI wrapper over that entry point:
 
 - `.github/actions/pm-dispatch-start` ("the starter") — POSTs to
   `/v1/sessions`; outputs `task_id`, `session_id`, `issue_number`
@@ -147,6 +148,13 @@ task-level entry point built on top of them:
   prompt library bundled with the action. It contains no OIDC or HTTP
   plumbing of its own. Outputs `task_id`, `session_id`,
   `issue_number` and `issue_url`, whichever apply to the path taken.
+- `.github/actions/pm-dispatch-ci-fix` ("the ci-fix wrapper") — a
+  thin wrapper over the task action with `task: ci-fix` (one step,
+  no logic of its own). Its ci-fix context inputs default from the
+  caller's own run context, so a `ci-fix` job inside a repo's main
+  CI workflow needs no `with:` block. Outputs `task_id`,
+  `session_id`, `issue_number` and `issue_url`, mapped from the
+  task action step.
 
 Usage, pinned to `@main` so fleet call sites pick up central updates:
 
@@ -328,6 +336,34 @@ job environment (as above) with issues read permission in the
 target repo; the dedupe search fails loudly without it. The step
 summary records the task, the path taken, and the dispatched task /
 session / issue ids.
+
+#### pm-dispatch-ci-fix — the in-CI wrapper
+
+For a repo's own CI, `.github/actions/pm-dispatch-ci-fix` wraps the
+call above in a single step with `task: ci-fix`. All of its context
+inputs (`repo`, `workflow`, `run-id`, `run-url`, `branch`, `sha`,
+`pr`) default from the calling run's own context, and all dedupe /
+routing behavior stays in the task action's ci-fix mode — the
+wrapper adds none. The intended shape is a `ci-fix` job inside the
+repo's main CI workflow, gated on the main jobs failing and kept
+from failing the workflow itself:
+
+```yaml
+jobs:
+  ci-fix:
+    needs: [<the main CI jobs>]
+    if: failure()
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      issues: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: developing-today/code/.github/actions/pm-dispatch-ci-fix@main
+```
 
 #### Design note
 
