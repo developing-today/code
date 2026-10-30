@@ -524,6 +524,21 @@ const startMetaStub = async (mode) => {
           res.end(JSON.stringify({ error: { message: 'Subscription quota exhausted', type: 'rate_limit_error' } }));
           return;
         }
+        if (mode === 'passthrough-tools') {
+          let reqBody = {};
+          try { reqBody = JSON.parse(body || '{}'); } catch { /* keep empty */ }
+          const callItem = { type: 'function_call', call_id: 'call_pt1', name: 'terminal', arguments: '{"command":"echo hi"}' };
+          if (reqBody.stream) {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            res.end(
+              `data: ${JSON.stringify({ type: 'response.output_item.added', item: { ...callItem, status: 'in_progress' } })}\n\n` +
+              `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_pt', status: 'completed', output: [callItem] } })}\n\n`);
+          } else {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ id: 'resp_pt', object: 'response', status: 'completed', output: [callItem] }));
+          }
+          return;
+        }
         if (mode === 'echo') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ received: JSON.parse(body || '{}'), authorization: req.headers.authorization }));
@@ -832,4 +847,46 @@ test('direct mode: contributor ids reach upstream verbatim, effort suffix parses
   assert.equal(sent[1].model, 'muse-spark-1.3-contributor');
   assert.deepEqual(sent[1].reasoning, { effort: 'high' });
   assert.equal(sent[2].model, 'muse-spark-1.3', 'plain base model stays plain upstream');
+});
+
+test('direct mode: /v1/responses passthrough aliases shell tools out and restores call names back (#2764)', async (t) => {
+  const meta = await startMetaStub('passthrough-tools');
+  t.after(() => meta.close());
+  const { port, stop, home } = await startProxy({ MUSE_PROXY_META_API_BASE: meta.url });
+  t.after(stop);
+  writeStubAuth(home);
+
+  const clientBody = {
+    model: 'muse-spark-1.3-contributor',
+    input: [
+      { role: 'user', content: 'run echo hi' },
+      { type: 'function_call', call_id: 'call_prev', name: 'bash', arguments: '{"command":"ls"}' }
+    ],
+    tools: [{ type: 'function', name: 'bash', description: 'Run a bash command', parameters: { type: 'object', properties: { command: { type: 'string' } } } }],
+    tool_choice: { type: 'function', name: 'bash' },
+    stream: false
+  };
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer client-side' },
+    body: JSON.stringify(clientBody)
+  });
+  assert.equal(res.status, 200);
+  const upstream = JSON.parse(meta.requests.filter(r => r.url === '/v1/responses')[0].body);
+  assert.equal(upstream.tools[0].name, 'terminal', 'tool definitions are aliased upstream');
+  assert.equal(upstream.input[1].name, 'terminal', 'history function_call items are aliased upstream');
+  assert.equal(upstream.tool_choice.name, 'terminal', 'tool_choice is aliased upstream');
+  assert.equal(upstream.authorization, undefined, 'no credential material in the body');
+  const out = JSON.parse(await res.text());
+  assert.equal(out.output[0].name, 'bash', 'the model call name is restored for the client');
+
+  const sres = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer client-side' },
+    body: JSON.stringify({ ...clientBody, stream: true })
+  });
+  assert.equal(sres.status, 200);
+  const streamText = await sres.text();
+  assert.match(streamText, /"name":"bash"/, 'SSE events carry the restored client name');
+  assert.ok(!streamText.includes('"name":"terminal"'), 'the alias never leaks to the client');
 });

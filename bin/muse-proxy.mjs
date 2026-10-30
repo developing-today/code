@@ -1067,6 +1067,48 @@ const directToolAlias = (name, taken) => {
 };
 const clientToolName = (name) => DIRECT_TOOL_NAMES[name] || name;
 
+// The /v1/responses passthrough applies the same aliasing as the chat
+// translation (#2764 follow-up): its native client — OpenCode's
+// muse-direct provider (@ai-sdk/openai) — sends the same tool set and
+// hit the same attestation denial the chat path did, so "verbatim"
+// forwarding 403s every tool-using session. Outbound: tool definitions,
+// history function_call items, and a function tool_choice are aliased.
+// Inbound: function_call names in the response (buffered JSON or SSE
+// events) are translated back to the client's names.
+const aliasResponsesRequest = (parsed) => {
+  if (!parsed || typeof parsed !== 'object') return false;
+  let changed = false;
+  const alias = (holder) => {
+    const next = directToolAlias(holder.name, taken);
+    if (next !== holder.name) { holder.name = next; changed = true; }
+  };
+  const tools = Array.isArray(parsed.tools) ? parsed.tools : [];
+  const taken = new Set(tools.map(t => t && t.name).filter(Boolean));
+  for (const t of tools) {
+    if (t && t.type === 'function' && t.name) alias(t);
+  }
+  if (Array.isArray(parsed.input)) {
+    for (const item of parsed.input) {
+      if (item && item.type === 'function_call' && item.name) alias(item);
+    }
+  }
+  const tc = parsed.tool_choice;
+  if (tc && typeof tc === 'object' && tc.type === 'function' && tc.name) alias(tc);
+  return changed;
+};
+
+const restoreFnCallNames = (container) => {
+  if (!container || typeof container !== 'object') return;
+  if (container.type === 'function_call' && container.name) {
+    container.name = clientToolName(container.name);
+  }
+  if (Array.isArray(container.output)) {
+    for (const item of container.output) restoreFnCallNames(item);
+  }
+  if (container.item) restoreFnCallNames(container.item);
+  if (container.response) restoreFnCallNames(container.response);
+};
+
 const buildResponsesRequest = (body, baseModel, effort) => {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const instructions = messages
@@ -1426,10 +1468,13 @@ const server = http.createServer((req, res) => {
 
 
   // Responses passthrough (direct mode, #2753): the client's body is
-  // forwarded verbatim to the upstream Responses API with only the
-  // Authorization header swapped for the minted plan key. Any upstream
-  // HTTP response is piped through as-is. Without direct credentials the
-  // route is not offered (404, as before direct mode existed).
+  // forwarded to the upstream Responses API with the Authorization
+  // header swapped for the minted plan key and the shell-tool names
+  // aliased (see aliasResponsesRequest — the attestation gate applies
+  // to this route's clients too); function_call names in the response
+  // are translated back. Any upstream HTTP response is otherwise
+  // returned as-is. Without direct credentials the route is not
+  // offered (404, as before direct mode existed).
   if (req.method === 'POST' && (pathname === '/v1/responses' || pathname === '/responses')) {
     let bodyText = '';
     req.on('data', chunk => {
@@ -1453,9 +1498,14 @@ const server = http.createServer((req, res) => {
         });
         return;
       }
+      let parsedBody = null;
+      try { parsedBody = JSON.parse(bodyText); } catch { /* not JSON: forward raw */ }
+      // Bodies with nothing to alias keep travelling byte-for-byte.
+      const outboundText = (parsedBody && aliasResponsesRequest(parsedBody))
+        ? JSON.stringify(parsedBody) : bodyText;
       let outcome;
       try {
-        outcome = await directResponsesFetch(keyResult, bodyText, req.headers.accept || 'application/json');
+        outcome = await directResponsesFetch(keyResult, outboundText, req.headers.accept || 'application/json');
       } catch (err) {
         writeJsonBody(res, 502, { error: { message: `Direct Meta route request failed: ${err.message}` } });
         return;
@@ -1465,19 +1515,54 @@ const server = http.createServer((req, res) => {
         return;
       }
       const response = outcome.response;
-      res.writeHead(response.status, {
-        'Content-Type': response.headers.get('content-type') || 'application/json'
-      });
-      if (response.body && typeof response.body.getReader === 'function') {
+      const contentType = response.headers.get('content-type') || 'application/json';
+      res.writeHead(response.status, { 'Content-Type': contentType });
+      if (contentType.includes('text/event-stream') && response.body && typeof response.body.getReader === 'function') {
+        // SSE: restore tool names per event. Events are `data:` blocks
+        // separated by blank lines; non-JSON payloads pass untouched.
+        const restoreEventBlock = (block) => block.split('\n').map(line => {
+          if (!line.startsWith('data:')) return line;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') return line;
+          try {
+            const evt = JSON.parse(payload);
+            restoreFnCallNames(evt);
+            return `data: ${JSON.stringify(evt)}`;
+          } catch { return line; }
+        }).join('\n');
         try {
           const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = '';
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
-            res.write(Buffer.from(value));
+            buf += decoder.decode(value, { stream: true });
+            let idx;
+            while ((idx = buf.indexOf('\n\n')) >= 0) {
+              res.write(restoreEventBlock(buf.slice(0, idx)) + '\n\n');
+              buf = buf.slice(idx + 2);
+            }
           }
+          if (buf) res.write(restoreEventBlock(buf));
         } catch { /* upstream stream cut: end with what was sent */ }
         res.end();
+      } else if (response.body && typeof response.body.getReader === 'function') {
+        try {
+          const reader = response.body.getReader();
+          const chunks = [];
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(Buffer.from(value));
+          }
+          const text = Buffer.concat(chunks).toString('utf8');
+          try {
+            const parsed = JSON.parse(text);
+            restoreFnCallNames(parsed);
+            res.end(JSON.stringify(parsed));
+          } catch { res.end(text); }
+        } catch { res.end(); }
       } else {
         res.end(await response.text().catch(() => ''));
       }
