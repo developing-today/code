@@ -39,8 +39,13 @@ jobs:
         run: docker build -f Containerfile -t mcpx-tier2-image .
       - name: The shipped mcpx is not a dynamic executable
         run: |
-          docker run --rm --entrypoint sh mcpx-tier2-image \
-            -c 'ldd /usr/local/bin/mcpx' | grep -q 'not a dynamic executable'
+          # ldd exits 1 and writes to stderr for a static binary -- that
+          # is the success case here, so capture both and assert on the
+          # text instead of piping (pipefail would fail the step).
+          out=$(docker run --rm --entrypoint sh mcpx-tier2-image \
+            -c 'ldd /usr/local/bin/mcpx 2>&1' || true)
+          echo "$out"
+          grep -q 'not a dynamic executable' <<<"$out"
           docker run --rm mcpx-tier2-image --version
 
   legs:
