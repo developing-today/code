@@ -301,17 +301,125 @@ func parseShebang(line string) (shebangEnv, bool) {
 	}
 }
 
-// resplit parses an env -S payload the way env(1) would: honouring
-// single and double quotes and backslash escapes, so quoted text
-// stays one argument. A payload that does not parse records the
-// error for decideDispatch and yields no tokens.
+// resplit parses an env -S payload the way env(1) would. A payload
+// that does not parse records the error for decideDispatch and
+// yields no tokens.
 func (sp *shebangEnv) resplit(payload string) []string {
-	fields, err := SplitCommandLine(payload)
+	fields, err := SplitEnvString(payload)
 	if err != nil {
 		sp.splitErr = err
 		return nil
 	}
 	return fields
+}
+
+// SplitEnvString splits an env(1) -S/--split-string payload with
+// env's own semantics, which are NOT the shell's: env defines a
+// backslash escape table (\\, \", \', \t, \n, \r, \f, \v and
+// \_ for a space) that applies inside quotes as well as outside --
+// the coreutils manual's own example, -S awk -v FS=\"\\t\" -f,
+// depends on \\t becoming a tab, where a shell tokenizer leaves a
+// literal "t" (Codex review, PR #2611). Quotes still group, as the
+// earlier rounds of this parser established, and ${VAR} expands
+// from the environment the payload itself is building (assignments
+// already split, then the inherited one), as env expands it.
+func SplitEnvString(s string) ([]string, error) {
+	var out []string
+	var word strings.Builder
+	quoted := byte(0)
+	started := false
+	assigned := map[string]string{}
+	seenCommand := false
+	flush := func() {
+		if !started {
+			return
+		}
+		f := word.String()
+		out = append(out, f)
+		word.Reset()
+		started = false
+		if !seenCommand {
+			if k, v, ok := strings.Cut(f, "="); ok && k != "" && !strings.ContainsAny(k, " \t") {
+				assigned[k] = v
+			} else {
+				seenCommand = true
+			}
+		}
+	}
+	expand := func(i int) (string, int, error) {
+		// s[i] == '$' and s[i+1] == '{'.
+		j := strings.IndexByte(s[i:], '}')
+		if j < 0 {
+			return "", 0, fmt.Errorf("unterminated ${ in env -S payload %q", s)
+		}
+		name := s[i+2 : i+j]
+		if v, ok := assigned[name]; ok {
+			return v, i + j + 1, nil
+		}
+		return os.Getenv(name), i + j + 1, nil
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\':
+			if i+1 >= len(s) {
+				return nil, fmt.Errorf("trailing backslash in env -S payload %q", s)
+			}
+			i++
+			switch s[i] {
+			case 't':
+				word.WriteByte('\t')
+			case 'n':
+				word.WriteByte('\n')
+			case 'r':
+				word.WriteByte('\r')
+			case 'f':
+				word.WriteByte('\f')
+			case 'v':
+				word.WriteByte('\v')
+			case '_':
+				word.WriteByte(' ')
+			default:
+				word.WriteByte(s[i])
+			}
+			started = true
+		case quoted != 0:
+			if c == quoted {
+				quoted = 0
+			} else if c == '$' && quoted == '"' && i+1 < len(s) && s[i+1] == '{' {
+				v, ni, err := expand(i)
+				if err != nil {
+					return nil, err
+				}
+				word.WriteString(v)
+				i = ni - 1
+			} else {
+				word.WriteByte(c)
+			}
+			started = true
+		case c == '\'' || c == '"':
+			quoted = c
+			started = true
+		case c == '$' && i+1 < len(s) && s[i+1] == '{':
+			v, ni, err := expand(i)
+			if err != nil {
+				return nil, err
+			}
+			word.WriteString(v)
+			i = ni - 1
+			started = true
+		case c == ' ' || c == '\t':
+			flush()
+		default:
+			word.WriteByte(c)
+			started = true
+		}
+	}
+	if quoted != 0 {
+		return nil, fmt.Errorf("unterminated %q in env -S payload %q", string(quoted), s)
+	}
+	flush()
+	return out, nil
 }
 
 // filterEnv drops the named variables from env, leaving everything else
@@ -431,6 +539,12 @@ type jsChoice struct {
 	unset   []string
 	clear   bool
 	chdir   string
+	// path is the PATH env(1) would resolve the runtime against
+	// (shebangPath of the parsed wrapper), carried so the harness
+	// resolves the runtime against the shebang's environment and
+	// effective directory instead of mcpx's inherited PATH (Codex
+	// review, PR #2611).
+	path string
 }
 
 // decideDispatch applies ranks 1 and 2 of the dispatch order. A nil
@@ -467,7 +581,7 @@ func decideDispatch(opts Options) (*dispatch, jsChoice, error) {
 			return nil, jsChoice{}, errors.New("runner: the script's shebang line (#!) names no interpreter")
 		}
 		if len(sp.tokens) == 1 && isJSRuntimeName(opts.Setup, sp.tokens[0]) {
-			return nil, jsChoice{runtime: sp.tokens[0], set: sp.set, unset: sp.unset, clear: sp.clear, chdir: sp.chdir}, nil
+			return nil, jsChoice{runtime: sp.tokens[0], set: sp.set, unset: sp.unset, clear: sp.clear, chdir: sp.chdir, path: shebangPath(&sp)}, nil
 		}
 		d, err := dispatchFromTokens("shebang", sp.tokens, &sp)
 		if err != nil {

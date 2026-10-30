@@ -315,6 +315,38 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
+	// The execution directory is resolved here, once, because three
+	// consumers must agree on it: import preflight (a --config=./deno.json
+	// argument means the directory the run executes in, not the caller's),
+	// a JavaScript shebang's runtime lookup (relative PATH entries mean
+	// the directory the run moves to), and the subprocess itself. It was
+	// previously computed only for the subprocess, after preflight had
+	// already run against opts.Dir (Codex review, PR #2611).
+	execDir, derr := ResolveCwd(opts.CwdPolicy, opts.Dir, scriptPath, opts.ConfigDir, workDir)
+	if derr != nil {
+		return nil, derr
+	}
+	execDir = applyChdir(execDir, jsEnv.chdir)
+
+	// A JavaScript shebang's runtime is resolved against the PATH the
+	// shebang itself establishes and the run's effective directory,
+	// the way env(1) resolves it: Resolve above used mcpx's inherited
+	// PATH, so #!/usr/bin/env -S PATH=/opt/project/node/bin node picked
+	// the wrong Node -- or none, when Node lived only there. Declared
+	// runtimes keep their configured binary; a path in the shebang is
+	// already verbatim.
+	if jsEnv.runtime != "" && !strings.Contains(jsEnv.runtime, "/") {
+		_, declared := opts.Setup.Runtimes[jsEnv.runtime]
+		_, declaredBase := opts.Setup.Runtimes[filepath.Base(jsEnv.runtime)]
+		if !declared && !declaredBase {
+			abs, lerr := lookPathInDir(jsEnv.runtime, jsEnv.path, execDir)
+			if lerr != nil {
+				return nil, fmt.Errorf("runner: shebang runtime %q not found on the shebang's PATH %q: %w", jsEnv.runtime, jsEnv.path, lerr)
+			}
+			rt.Bin = abs
+		}
+	}
+
 	// Checked after the launcher is written, because the launcher is what
 	// actually gets run and therefore what has to be valid. Doing it here
 	// also means a broken import is found before a single server starts.
@@ -371,7 +403,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rep = preflight.CheckImportsResolved(ctx, denoBin, scriptPath,
 				preflight.ImportsMode(mode),
 				preflight.DynamicImportMode(opts.ImportsOnDynamic), timeout,
-				rt.ConfigArgs, opts.Dir)
+				rt.ConfigArgs, execDir)
 		}
 		if err := rep.Err(); err != nil {
 			return nil, err
@@ -399,11 +431,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// command line; the client import still resolves against the script
 	// file, because ESM resolves relative specifiers against the
 	// importing module.
-	dir, derr := ResolveCwd(opts.CwdPolicy, opts.Dir, scriptPath, opts.ConfigDir, workDir)
-	if derr != nil {
-		return nil, derr
-	}
-	cmd.Dir = applyChdir(dir, jsEnv.chdir)
+	cmd.Dir = execDir
 	// The kind, not the configured name: a script branching on its runtime
 	// cares whether it is under Deno, not what somebody called the binary.
 	// A JavaScript shebang's env(1) changes apply here too, and names the

@@ -622,3 +622,40 @@ func TestRunShebangExplicitEmptyPathUsesEffectiveDir(t *testing.T) {
 		t.Errorf("res=%+v stdout=%q; want the interpreter from the effective directory", res, stdout.String())
 	}
 }
+
+// TestSplitEnvStringUsesEnvSemantics is the Codex finding on
+// PR #2611 (dispatch.go): the -S payload was split with the
+// configured-interpreter (shell) tokenizer, whose escape rules
+// turned the coreutils manual's own example FS=\"\\t\" into a
+// literal FS="t" and left ${VAR} unexpanded.
+func TestSplitEnvStringUsesEnvSemantics(t *testing.T) {
+	cases := []struct {
+		payload string
+		want    []string
+	}{
+		{`awk -v FS=\"\t\" -f`, []string{"awk", "-v", `FS="` + "\t" + `"`, "-f"}},
+		{`sh -c "printf hello"`, []string{"sh", "-c", "printf hello"}},
+		{`MODE=prod echo ${MODE}`, []string{"MODE=prod", "echo", "prod"}},
+		{`echo a\_b`, []string{"echo", "a b"}},
+		{"echo 'single quoted'", []string{"echo", "single quoted"}},
+	}
+	for _, c := range cases {
+		got, err := SplitEnvString(c.payload)
+		if err != nil {
+			t.Errorf("SplitEnvString(%q): %v", c.payload, err)
+			continue
+		}
+		if len(got) != len(c.want) {
+			t.Errorf("SplitEnvString(%q) = %q, want %q", c.payload, got, c.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Errorf("SplitEnvString(%q)[%d] = %q, want %q (all: %q)", c.payload, i, got[i], c.want[i], got)
+			}
+		}
+	}
+	if _, err := SplitEnvString(`echo ${UNTERMINATED`); err == nil {
+		t.Error("SplitEnvString(unterminated ${): want an error")
+	}
+}
