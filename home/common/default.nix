@@ -15,14 +15,13 @@ let
   # automatically. The bin/*.mjs proxies keep the same numbers as fallback
   # defaults when the env var is absent.
   clefProxyPort = 18742;
-  agyProxyPort = 18743;
   codexProxyPort = 18744;
-  antigravityLsProxyPort = 18745;
   designCodeProxyPort = 18746;
   museProxyPort = 18747;
   commandcodeProxyPort = 18748;
   opencodeRouteProxyPort = 18750;
   claudeCodeProxyPort = 18749;
+  antigravityDirectProxyPort = 18751;
   # Upstream prebuilt release binaries for tools where nixpkgs trails upstream.
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
@@ -597,28 +596,38 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
-  # Antigravity CLI (agy) Local Proxy Bridge. Slow per-turn (CLI spawn),
-  # but a live provider route: openclaw-gateway Wants it and the
-  # supervisor served it on the canonical port, so as an automatic
-  # service it keeps the same entry point and port (#2104).
-  systemd.user.services.agy-proxy = {
+  # Antigravity Direct (agy CLI wire clone) Local Proxy Bridge. Speaks
+  # the agy CLI's own wire protocol directly -- the keyring OAuth
+  # credential (service "gemini", username "antigravity"), the CLI's
+  # embedded OAuth client for refresh, and its exact v1internal envelope
+  # to daily-cloudcode-pa.googleapis.com -- with no spawned CLI and no
+  # spawned language_server (bin/antigravity-direct.mjs; the CLI's wire
+  # behavior was captured live, see the header in that file). Since
+  # 2026-10-30 (Drew) this is the fleet's single Antigravity door: it
+  # replaces agy-proxy (CLI spawn, :18743, formerly in this spot) and
+  # antigravity-ls-proxy (language-server spawn, :18745, formerly below
+  # codex-proxy), whose unit definitions are removed in the same change
+  # so a switch stops them and they stay off. Must run inside the user
+  # session: Secret Service keyring access is how it authenticates,
+  # exactly like the CLI itself.
+  systemd.user.services.antigravity-direct = {
     Unit = {
-      Description = "Antigravity CLI (agy) Local Proxy Bridge for OpenCode";
+      Description = "Antigravity Direct (CLI wire clone) Local Proxy Bridge for OpenCode";
       After = [ "network-online.target" ];
       Wants = [ "network-online.target" ];
     };
     Service = {
       ExecStart = toString (
-        pkgs.writeShellScript "agy-proxy-start" ''
-          export PATH="$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/agy-proxy.mjs"
+        pkgs.writeShellScript "antigravity-direct-start" ''
+          export PATH="$HOME/.gemini/bin:$HOME/.local/bin:/run/current-system/sw/bin:$PATH"
+          exec /run/current-system/sw/bin/node "$HOME/code/bin/antigravity-direct.mjs"
         ''
       );
       Restart = "always";
       RestartSec = 3;
       Environment = [
-        "AGY_PROXY_PORT=${toString agyProxyPort}"
-        "AGY_PROXY_HOST=127.0.0.1"
+        "ANTIGRAVITY_DIRECT_PORT=${toString antigravityDirectProxyPort}"
+        "ANTIGRAVITY_DIRECT_HOST=127.0.0.1"
       ];
     };
     Install.WantedBy = [ "default.target" ];
@@ -647,41 +656,27 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
-  systemd.user.services.antigravity-ls-proxy = {
-    Unit = {
-      Description = "Antigravity Language Server Direct gRPC Proxy Bridge for OpenCode";
-      After = [ "network-online.target" ];
-      Wants = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = toString (
-        pkgs.writeShellScript "antigravity-ls-proxy-start" ''
-          export PATH="/run/current-system/sw/bin:$HOME/.gemini/bin:$HOME/.local/bin:$PATH"
-          exec /run/current-system/sw/bin/node "$HOME/code/bin/antigravity-ls-proxy.mjs"
-        ''
-      );
-      Restart = "always";
-      RestartSec = 3;
-      Environment = [
-        "ANTIGRAVITY_LS_PROXY_PORT=${toString antigravityLsProxyPort}"
-        "ANTIGRAVITY_LS_PROXY_HOST=127.0.0.1"
-        "ANTIGRAVITY_LS_BIN=${antigravity-hub}/share/antigravity/resources/bin/language_server"
-      ];
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Antigravity LS proxy retired (2026-10-30, Drew): its unit definition
+  # stood here. The language-server door and the agy CLI-spawn door are
+  # both replaced by antigravity-direct (above codex-proxy), which speaks
+  # the CLI's wire protocol with no spawned processes. The definitions
+  # are removed, not commented out, so the switch stops the services and
+  # they stay off; bin/antigravity-ls-proxy.mjs and bin/agy-proxy.mjs
+  # remain in the repo as history, uninvoked, and the matching opencode
+  # providers sit in disabled_providers. To undo: restore the two unit
+  # blocks and the agyProxyPort/antigravityLsProxyPort lets from git
+  # history, drop the session-variable removals below, and re-point the
+  # plan seats in opencode.jsonc back from antigravity-direct.
 
   systemd.user.services.design-code-proxy = {
     Unit = {
       Description = "Code Design / Design Code Local Proxy Bridge for OpenCode";
       After = [
         "network-online.target"
-        "antigravity-ls-proxy.service"
         "codex-proxy.service"
       ];
       Wants = [
         "network-online.target"
-        "antigravity-ls-proxy.service"
         "codex-proxy.service"
       ];
     };
@@ -1013,9 +1008,8 @@ in
         "network-online.target"
         "mcpx.service"
         "clef-proxy.service"
-        "agy-proxy.service"
         "codex-proxy.service"
-        "antigravity-ls-proxy.service"
+        "antigravity-direct.service"
         "design-code-proxy.service"
         "openchamber.socket"
       ];
@@ -1559,9 +1553,8 @@ in
       # Single source for the local proxy ports (see the let block):
       # opencode.jsonc reads them via {env:...} substitution.
       CLEF_PROXY_PORT = toString clefProxyPort;
-      AGY_PROXY_PORT = toString agyProxyPort;
       CODEX_PROXY_PORT = toString codexProxyPort;
-      ANTIGRAVITY_LS_PROXY_PORT = toString antigravityLsProxyPort;
+      ANTIGRAVITY_DIRECT_PORT = toString antigravityDirectProxyPort;
       DESIGN_CODE_PROXY_PORT = toString designCodeProxyPort;
       # The three below were missing: their {env:...} templates in
       # opencode.jsonc resolved to an empty port in the OpenChamber serve
