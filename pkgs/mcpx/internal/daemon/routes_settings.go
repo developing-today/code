@@ -890,13 +890,27 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 	// one of those under this name is this adapter itself (a replace),
 	// anything else -- a configured server, an API -- is a collision.
 	if cfg := s.currentConfig(); cfg != nil {
-		if srv, clash := cfg.MCPServers[req.Spec.Name]; clash && srv != nil {
-			if _, isAdapter := srv.Env["MCPX_ADAPTER_DECLARATION_SHA256"]; !isAdapter {
-				writeErr(w, http.StatusConflict, fmt.Errorf(
-					"%q is already the name of a configured server; pick another adapter name",
-					req.Spec.Name))
-				return
+		// The comparison is on RESOLVED namespaces, not map keys: a
+		// configured foo-bar and a requested foo_bar are different keys
+		// and the same namespace after config.SanitizeNamespace, and
+		// the reload rejects the pair just the same (Codex review,
+		// PR #2565). The adapter-generated exemption applies only to
+		// this adapter's own exact name, which a replace legitimately
+		// redefines.
+		want := config.SanitizeNamespace(req.Spec.Name)
+		for name, srv := range cfg.MCPServers {
+			if srv == nil || config.SanitizeNamespace(name) != want {
+				continue
 			}
+			if name == req.Spec.Name {
+				if _, isAdapter := srv.Env["MCPX_ADAPTER_DECLARATION_SHA256"]; isAdapter {
+					continue
+				}
+			}
+			writeErr(w, http.StatusConflict, fmt.Errorf(
+				"%q resolves to namespace %q, already used by configured server %q; pick another adapter name",
+				req.Spec.Name, want, name))
+			return
 		}
 	}
 	if err := config.AddAdapterEntry(path, entry, req.Replace); err != nil {

@@ -139,3 +139,26 @@ func TestAdapterAddRefusesServerNamespaceCollision(t *testing.T) {
 		t.Fatalf("the colliding declaration was persisted: %s", got)
 	}
 }
+
+// The collision rule is on resolved namespaces: foo_bar the adapter
+// and foo-bar the configured server are different map keys but one
+// namespace after SanitizeNamespace, and the reload rejects the pair
+// (Codex review, PR #2565).
+func TestAdapterAddRefusesResolvedNamespaceCollision(t *testing.T) {
+	s, _ := setupPersist(t, []byte(`{"mcpServers":{"foo-bar":{"command":"/bin/true"}}}`), false)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "adapters.json")
+	if err := os.WriteFile(file, []byte(`{"adapters":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.set.SetRuntime("paths.adapters", file); err != nil {
+		t.Fatal(err)
+	}
+	rec := postAdapter(t, s, `{"name":"foo_bar","command":"/bin/false","tools":[{"name":"run"}]}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if got := readFile(t, file); strings.Contains(got, "foo_bar") {
+		t.Fatalf("the colliding declaration was persisted: %s", got)
+	}
+}
