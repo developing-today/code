@@ -21,6 +21,7 @@ import {
   windowPercent,
 } from "./derive.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
+import { applyBoardDonePolicy } from "./board-policy.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
 import {
   DELEGATION_DEFAULT_OBJECT_REF,
@@ -1380,6 +1381,11 @@ export function renderBoardBody(
     identities?: AuthorIdentity[];
   },
 ): string {
+  // #1146: finished work is not WIP — aged-out done items and the
+  // retired ROADMAP Done-table class never reach the board, whatever
+  // source assembled it (the Kaneo source filters too; see
+  // board-policy.ts). Surviving done renders collapsed, below.
+  board = applyBoardDonePolicy(board);
   const cols = new Map<string, BoardItem[]>();
   for (const item of board) {
     const key = item.status === "done" ? "done" : item.status;
@@ -1427,6 +1433,11 @@ export function renderBoardBody(
         .join("");
       // The in-flight lane is dated by the orchestration section that
       // produced it (stamped on every synthetic entry as updatedAt).
+      if (k === "done") {
+        // Collapsed by default (#1146): a count + the last 7 days
+        // behind an expander, never a full column of finished cards.
+        return `<details class="donestrip"><summary><strong>Done recently (${colItems.length})</strong> — done in the last 7 days, collapsed by default; older done is aged off the board (GitHub is the record)</summary>${cards}</details>`;
+      }
       const heading =
         k === "in-flight"
           ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length})`
