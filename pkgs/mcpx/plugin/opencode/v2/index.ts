@@ -1,20 +1,25 @@
 /**
  * mcpx for opencode v2 — the { id, setup } module (design doc §1).
  *
- * First slice: setup wires the pieces that need no tool surface yet —
- * the remembered-daemon read (ctx.storage), the idempotent system-prompt
- * paragraph (session context hook), the once-per-session full-environment
- * send, and execute.after timing records. Tool registration
- * (tool.transform, tools.ts in the design map) is the next slice; the v1
- * tree keeps serving tools until it lands.
+ * Setup wires the whole core: the remembered-daemon read (ctx.storage),
+ * the idempotent system-prompt paragraph (session context hook), the
+ * once-per-session full-environment send, execute.after timing records,
+ * and tool registration (tools.ts: tool.transform under the mcpx
+ * namespace, so the model sees the v1 names — mcpx_exec and friends).
+ * The v1 tree stays beside this one, untouched, until v2 is what runs.
  */
 import { appendContextOnce, type ContextHookInput } from "./context.ts";
 import { resolveOptions, type Options } from "./options.ts";
 import { readRememberedDaemon, type StorageLike } from "./remember.ts";
 import { createSessionEnv } from "./session-env.ts";
 import { createTimingLog, type ExecuteAfterInput } from "./timing.ts";
+import {
+  createToolRuntime,
+  registerTools,
+  type ToolDomainLike,
+} from "./tools.ts";
 
-/** The slice of the v2 setup Context this slice uses (promise/plugin.ts). */
+/** The slice of the v2 setup Context this core uses (promise/plugin.ts). */
 export type McpxV2Context = {
   storage: StorageLike;
   options?: Options;
@@ -23,12 +28,12 @@ export type McpxV2Context = {
   session: {
     hook(name: "context", fn: (input: ContextHookInput) => void): void;
   };
-  tool: {
+  tool: ToolDomainLike & {
     hook(name: "execute.after", fn: (input: ExecuteAfterInput) => void): void;
   };
 };
 
-export function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): void {
+export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Promise<void> {
   const options = resolveOptions(rawOptions, process.env);
   const directory = ctx.directory ?? process.cwd();
   const sessionEnv = createSessionEnv({
@@ -64,11 +69,24 @@ export function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): void {
       timing.hook(input);
     });
   }
+
+  // Tools last, and never allowed to fail setup: a plugin that throws
+  // during load loses the session bridge and the environment send too,
+  // which are worth more than the tool surface. Registration does its
+  // own boot discovery for the daemon-tools default (tools.ts).
+  const runtime = createToolRuntime({
+    directory,
+    env: process.env,
+    options,
+    storage: ctx.storage,
+  });
+  await registerTools(ctx.tool, runtime, {
+    toolsEnabled: options.tools ?? false,
+    daemonTools: options.daemonTools,
+  }).catch(() => []);
 }
 
 export default {
   id: "mcpx",
-  setup: (ctx: McpxV2Context) => {
-    setupMcpxV2(ctx, ctx.options);
-  },
+  setup: (ctx: McpxV2Context) => setupMcpxV2(ctx, ctx.options),
 };

@@ -3,14 +3,18 @@
  * mcpx-session.ts, resolved the v1 way.
  *
  * Settings guard: TestThePluginReadsNoUndeclaredSetting scans plugin/**,
- * so the v2 tree reads only the MCPX_PLUGIN_* names declared in
- * internal/settings/plugin.go — the same names v1 reads. The reads are
+ * so the v2 tree reads only names the registry or the script-env contract
+ * declares — the MCPX_PLUGIN_* names in internal/settings/plugin.go, plus
+ * MCPX_DAEMON_ENDPOINT / MCPX_ENDPOINT / MCPX_SOCKET from scriptenv.go,
+ * the same names v1 reads. The reads are
  * property accesses (env.MCPX_PLUGIN_BIN and friends), never quoted
  * literals: TestTheScriptEnvironmentIsWhatTheCodeSets treats a quoted
  * MCPX_* name as a variable the plugin SETS into a child's environment,
  * and these are reads, not sets. (An earlier draft listed the names in
  * a quoted array and failed that test on all twelve.)
  */
+import { goDurationMs, splitArgs } from "../mcpx/daemon.ts";
+
 export type Options = {
   /** A daemon named outright. `unix:///path` or `http://host:port`. */
   endpoint?: string;
@@ -53,19 +57,40 @@ const truthy = (v: unknown): boolean | undefined => {
 /**
  * Resolve raw options the v1 way — plugin option first, then the
  * environment variable, then the caller's default — for the settings
- * the v2 core needs at setup time. Unset fields stay undefined, except
- * toolTiming, whose v1 default is false (opt-in): a resolved false is
- * a decision, and index.ts registers no timing hook for it.
+ * the v2 core needs. Unset fields stay undefined, except toolTiming,
+ * whose v1 default is false (opt-in): a resolved false is a decision,
+ * and index.ts registers no timing hook for it.
+ *
+ * `discoveryRetryMs` is not a v1 Options field; it is the resolved
+ * plugin.discoveryRetry setting (a duration the registry declares and
+ * v1 applied to its discovery ladder), carried beside the options
+ * because tools.ts's ladder is its only consumer in this tree.
+ *
+ * Still unresolved here, deliberately: instructions / env / headless.
+ * The v2 core has no consumer for them yet — instructions rode v1's
+ * system transform (the context hook's paragraph is unconditional in
+ * this tree), env sized v1's shell.env payload (the v2 environment
+ * route sends the full env by design, §3), and headless gated v1's
+ * toasts (the v2 context slice has no TUI channel). Resolving a
+ * setting nothing reads would be the declared-but-unread bug in a
+ * new costume.
  */
+export type ResolvedOptions = Options & { discoveryRetryMs?: number };
+
 export function resolveOptions(
   raw: Options | undefined,
   env: Record<string, string | undefined>,
-): Options {
+): ResolvedOptions {
   const o = raw ?? {};
   return {
-    endpoint: o.endpoint,
-    socket: o.socket,
+    endpoint: str(o.endpoint) ?? str(env.MCPX_DAEMON_ENDPOINT) ?? str(env.MCPX_ENDPOINT),
+    socket: str(o.socket) ?? str(env.MCPX_SOCKET),
     bin: str(o.bin) ?? str(env.MCPX_PLUGIN_BIN),
+    binArgs: Array.isArray(o.binArgs)
+      ? o.binArgs
+      : typeof o.binArgs === "string"
+        ? splitArgs(o.binArgs)
+        : splitArgs(env.MCPX_PLUGIN_BIN_ARGS),
     backend: (str(o.backend) ??
       str(env.MCPX_PLUGIN_BACKEND) ??
       "auto") as Options["backend"],
@@ -73,6 +98,10 @@ export function resolveOptions(
       str(env.MCPX_PLUGIN_REMEMBER) ??
       "session") as Options["remember"],
     env: (str(o.env) ?? str(env.MCPX_PLUGIN_ENV)) as Options["env"],
+    tools: o.tools ?? truthy(env.MCPX_PLUGIN_TOOLS) ?? false,
+    daemonTools: o.daemonTools ?? truthy(env.MCPX_PLUGIN_DAEMON_TOOLS),
+    annotate: o.annotate ?? truthy(env.MCPX_PLUGIN_ANNOTATE) ?? true,
     toolTiming: o.toolTiming ?? truthy(env.MCPX_PLUGIN_TOOL_TIMING) ?? false,
+    discoveryRetryMs: goDurationMs(env.MCPX_PLUGIN_DISCOVERY_RETRY),
   };
 }
