@@ -120,10 +120,16 @@ type Defaults struct {
 	Transport struct {
 		SSEKeepAlive    string   `json:"sseKeepAlive"`
 		StdioDrain      string   `json:"stdioDrain"`
+		SSHWaitDelay    string   `json:"sshWaitDelay"`
 		LoopbackHosts   []string `json:"loopbackHosts"`
 		AllowedOrigins  []string `json:"allowedOrigins"`
 		SessionMetaKeys []string `json:"sessionMetaKeys"`
 	} `json:"transport"`
+
+	// Hooks governs the daemon's hook runner fallbacks.
+	Hooks struct {
+		Timeout string `json:"timeout"`
+	} `json:"hooks"`
 
 	// CLI governs how the command line renders what it did not write a
 	// formatter for: the commands generated from the /v1 operation table.
@@ -607,6 +613,12 @@ var (
 	// requests already in flight after its input closes, before it cancels
 	// them and exits.
 	TransportStdioDrain = mustDur(builtin.Transport.StdioDrain, "transport.stdioDrain")
+	// TransportSSHWaitDelay bounds how long Cmd.Wait may spend draining an
+	// ssh transport's stderr after ssh itself has exited or been killed.
+	TransportSSHWaitDelay = mustDur(builtin.Transport.SSHWaitDelay, "transport.sshWaitDelay")
+	// HooksTimeout is the fallback hook timeout Parse applies when a caller
+	// passes none; the daemon normally passes the hooks.timeout setting.
+	HooksTimeout = mustDur(builtin.Hooks.Timeout, "hooks.timeout")
 	// TransportLoopbackHosts are the Origin hosts a browser page on this
 	// machine presents; any port, http or https.
 	TransportLoopbackHosts = builtin.Transport.LoopbackHosts

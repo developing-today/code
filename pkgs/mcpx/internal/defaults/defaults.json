@@ -16,7 +16,12 @@
     "maxLines": 200000,
     "maxAge": "24h",
     "keep": 8,
-    "include": ["host", "user", "process", "version"],
+    "include": [
+      "host",
+      "user",
+      "process",
+      "version"
+    ],
     "trace": false
   },
   "daemon": {
@@ -164,9 +169,14 @@
   "transport": {
     "sseKeepAlive": "15s",
     "stdioDrain": "30s",
-    "loopbackHosts": ["localhost", "127.0.0.1", "::1"],
+    "loopbackHosts": [
+      "localhost",
+      "127.0.0.1",
+      "::1"
+    ],
     "allowedOrigins": [],
-    "sessionMetaKeys": ["dev.mcpx/session", "ai.opencode/sessionID"]
+    "sessionMetaKeys": ["dev.mcpx/session", "ai.opencode/sessionID"],
+    "sshWaitDelay": "3s"
   },
   "consumer": {
     "disambiguate": "never",
@@ -231,7 +241,10 @@
   },
   "autostart": {
     "bin": "",
-    "args": ["daemon", "--detached"],
+    "args": [
+      "daemon",
+      "--detached"
+    ],
     "idleExit": "4h",
     "connectTimeout": "20s",
     "pollInterval": "50ms",
@@ -319,5 +332,8 @@
   "embeddings": {
     "remoteTimeout": "10s",
     "searchTimeout": "2s"
+  },
+  "hooks": {
+    "timeout": "2s"
   }
 }
