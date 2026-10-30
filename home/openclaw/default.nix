@@ -27,6 +27,7 @@ let
   # the same numbers, repeated here because OpenClaw's config is rendered
   # as data, not shell env. Keep in sync with home/common.
   commandcodeProxyPort = 18748;
+  opencodeRouteProxyPort = 18750;
   designCodeProxyPort = 18746;
   agyProxyPort = 18743;
   codexProxyPort = 18744;
@@ -61,6 +62,7 @@ in
   systemd.user.services.openclaw-gateway = {
     Unit = {
       After = [
+        "opencode-route-proxy.service"
         "commandcode-proxy.service"
         "design-code-proxy.service"
         "agy-proxy.service"
@@ -68,6 +70,7 @@ in
         "mcpx.service"
       ];
       Wants = [
+        "opencode-route-proxy.service"
         "commandcode-proxy.service"
         "design-code-proxy.service"
         "agy-proxy.service"
@@ -205,7 +208,7 @@ in
           # Laptop operations
 
           - Everything is a systemd **user** service (linger on): `systemctl --user status|restart <name>`, logs via `journalctl --user -u <name>`.
-          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, design-code 18746, muse 18747, commandcode 18748, claude-code 18749. This gateway: 18789 (tailnet).
+          - Provider proxies on loopback: clef 18742, agy 18743, codex 18744, antigravity-ls 18745, design-code 18746, muse 18747, commandcode 18748, claude-code 18749, opencode-route 18750. This gateway: 18789 (tailnet).
           - OpenChamber's managed OpenCode port is dynamic — read `~/.config/openchamber/managed-opencode/state.json`, never hardcode it.
           - Secrets are referenced by name only (Bitwarden Secrets Manager; sops files under /run/secrets/agent-auth/). Never print or commit a secret value.
 
@@ -259,6 +262,16 @@ in
             (model "gpt-6-luna" "GPT-6 Luna (ChatGPT plan — final reserve)")
             (model "gpt-5.6-sol" "GPT-5.6 Sol (ChatGPT plan — final reserve)")
           ];
+          # The OpenCode server fronted by the route proxy (code#2229):
+          # each model id is an opencode-route pool, carried by the
+          # OpenCode build agent server-side.
+          opencode-route = localProvider opencodeRouteProxyPort [
+            (model "workhorse" "Workhorse (OpenCode route pool)")
+            (model "speed" "Speed (OpenCode route pool)")
+            (model "specialist" "Specialist (OpenCode route pool)")
+            (model "summit" "Summit (OpenCode route pool)")
+            (model "scout" "Scout (OpenCode route pool)")
+          ];
         };
       };
 
@@ -278,6 +291,27 @@ in
         entries = {
           main = {
             name = "OpenClaw (laptop node)";
+          };
+          # ACP-runtime agent (#2229 mechanism 1): this agent's turns run
+          # in the OpenCode harness over acpx, so OpenClaw can dispatch
+          # work to OpenCode as a standing capability, not only from
+          # chat-channel sessions. OpenCode's own default model is the
+          # workhorse route (opencode-route/workhorse); a run can set the
+          # route explicitly. Mode "oneshot" = one fresh ACP session per
+          # task. Heartbeat cadence off: dispatch is explicit, this agent
+          # must never wake itself into OpenCode hourly.
+          opencode-acp = {
+            name = "OpenCode (ACP harness)";
+            heartbeat.every = "0m";
+            runtime = {
+              type = "acp";
+              acp = {
+                agent = "opencode";
+                backend = "acpx";
+                mode = "oneshot";
+                cwd = homeDir;
+              };
+            };
           };
         };
       };

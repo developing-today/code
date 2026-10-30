@@ -868,7 +868,7 @@ description:  status, restart, refresh, stop, daemons, and the trace switch.
 
 | Command | Effect |
 | --- | --- |
-| `mcpx status [-v]` | daemon, pools, live instances, pids, call counts, sessions |
+| `mcpx status [-v]` | daemon, pools, live instances, pids, call counts, sessions — never starts a daemon; reports "not running" instead (#1866) |
 | `mcpx restart [<ns>]` | stop instances; the next call starts fresh ones |
 | `mcpx refresh` | re-read every server's schemas |
 | `mcpx daemons` | every daemon for this user |

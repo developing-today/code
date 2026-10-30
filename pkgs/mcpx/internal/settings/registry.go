@@ -390,6 +390,21 @@ func pathSettings() []Setting {
 				"and it changes when the service does. " + spliceLong,
 		},
 		{
+			Path: "paths.plugins", Kind: KindPathList, Default: "", Repeatable: true,
+			Scope: ScopeClient,
+			Name:  "Plugin search path",
+			Short: "directories of plugins: an mcpx-plugin.json manifest, or executables loaded as zero-manifest plugins",
+			Long: "A plugin is an MCP server (#1870, Approach C). A directory " +
+				"holding mcpx-plugin.json is a plugin -- the manifest names it, " +
+				"gives its spawn recipe or remote url, and may state the mcpx API " +
+				"it requires and the hooks it subscribes to. Any other executable " +
+				"in a named directory, and any mcpx-plugin-<name> executable on " +
+				"PATH, is a plugin with default manifest values. Discovered " +
+				"plugins are added as servers of their own, so they are pooled " +
+				"and appear in mcpx ls, the catalog and the generated client " +
+				"like any configured server. " + spliceLong,
+		},
+		{
 			Path: "paths.state", Kind: KindString, Default: "",
 			Scope:      ScopeClient,
 			EnvAliases: []string{"MCPX_STATE_DIR"},
@@ -439,6 +454,20 @@ func daemonSettings() []Setting {
 				"socket on this machine.",
 			Commands: []string{"run", "exec", "call", "ls", "types", "catalog",
 				"search", "status", "client", "serve", "tui", "prompts", "resources"},
+		},
+		{
+			Path: "daemon.tsnet.hostname", Kind: KindString, Default: "",
+			Scope:    ScopeDaemon,
+			Commands: []string{"daemon", "status"},
+			Name:     "Tailnet hostname",
+			Short:    "also serve the daemon on a tailnet, under this name",
+			Long: "Empty serves only the local socket and TCP port. A name " +
+				"joins a tailnet as that identity (tsnet) and serves the same " +
+				"API there, so the daemon is reachable by name from another " +
+				"network with no port forwarded. The node joins with the auth " +
+				"key in the TS_AUTHKEY environment variable; with no key the " +
+				"daemon refuses to start rather than silently serving only " +
+				"the local routes. Clients reach it with a tsnet:// endpoint.",
 		},
 		{
 			Path: "daemon.address", Kind: KindString, Default: "127.0.0.1",

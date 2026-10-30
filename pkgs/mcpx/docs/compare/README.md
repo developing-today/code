@@ -29,6 +29,8 @@ this directory finds them wrong it says so
 
 | document | answers |
 | --- | --- |
+| [history.md](history.md) | How mcpx came to exist: the patch given verbatim, lootbox, the rewrite, the opencode discovery, the correction, the timeline, and where it stands. |
+| [chapter.md](chapter.md) | The compendium's comparison chapter: mcpx next to lootbox, opencode code mode, Cloudflare Code Mode, Anthropic programmatic tool calling, `mcpac`, `mcpc` and `code-mode-mcp` as one table, plus where each is better. |
 | [stateless.md](stateless.md) | Can mcpx speak the stateless 2026-07-28 protocol and every older revision at once? What "stateless" requires, where mcpx keeps state, and what stands in the way. |
 | [input-required.md](input-required.md) | What `input_required` is, in plain words, with the sequence, and what mcpx does with it in each direction. |
 | [content-passthrough.md](content-passthrough.md) | Did mcpx need audio, `resource_link`, `structuredContent`? What it does with each content type on each path. |

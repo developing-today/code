@@ -211,7 +211,7 @@ impl AppState {
 
     /// Create a new application state over a `local_events` store the caller already
     /// opened and shares — `id serve` shares one instance between this state and the
-    /// `/id-sync/1` sync handler, so revisions saved here are the revisions sync
+    /// `/id-range-sync/1` sync handler, so revisions saved here are the revisions sync
     /// carries, with no second opener on the store's directory (#792).
     pub async fn with_local_events(
         store: Store,

@@ -118,7 +118,7 @@ carry instead is a description that says so and MCP annotations
 | `tool_invoke` | `POST /v1/tools/{tool}` | `mcpx tool invoke` *generated* | `mcpx_tool_invoke` | `ops.toolInvoke()` |  |
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
 
-## CLI commands (65)
+## CLI commands (66)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -158,6 +158,7 @@ that reaches none says why: those are decisions, not gaps.
 | `man` | – | Text about the binary, produced by the binary. |
 | `metrics` | `metrics_tokens`, `metrics_tools` | Generated from the operation table. |
 | `openapi` | `openapi` |  |
+| `plugin` | – | Plugin discovery is local: the CLI and daemon read paths.plugins and PATH on this machine, and the daemon serves each plugin as a server of its own. |
 | `preflight` | `preflight` | Generated from the operation table. |
 | `prompt` | `intent` |  |
 | `prompts` | `prompt_get`, `prompts` |  |

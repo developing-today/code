@@ -47,8 +47,9 @@ type Defaults struct {
 		Trace    bool     `json:"trace"`
 	} `json:"logging"`
 	Daemon struct {
-		ReapInterval string `json:"reapInterval"`
-		SaveInterval string `json:"saveInterval"`
+		ReapInterval   string `json:"reapInterval"`
+		SaveInterval   string `json:"saveInterval"`
+		TSNetUpTimeout string `json:"tsnetUpTimeout"`
 	} `json:"daemon"`
 	Secrets struct {
 		RequestRetention string `json:"requestRetention"`
@@ -475,8 +476,11 @@ var (
 	LogIncludes = builtin.Logging.Include
 	LogTrace    = builtin.Logging.Trace
 
-	ReapInterval           = mustDur(builtin.Daemon.ReapInterval, "daemon.reapInterval")
-	SaveInterval           = mustDur(builtin.Daemon.SaveInterval, "daemon.saveInterval")
+	ReapInterval = mustDur(builtin.Daemon.ReapInterval, "daemon.reapInterval")
+	SaveInterval = mustDur(builtin.Daemon.SaveInterval, "daemon.saveInterval")
+	// TSNetUpTimeout bounds how long a tsnet node may take to authenticate
+	// and reach Running before its listener is believed.
+	TSNetUpTimeout         = mustDur(builtin.Daemon.TSNetUpTimeout, "daemon.tsnetUpTimeout")
 	SecretRequestRetention = mustDur(builtin.Secrets.RequestRetention, "secrets.requestRetention")
 
 	ShutdownGrace        = mustDur(builtin.Plumbing.ShutdownGrace, "plumbing.shutdownGrace")

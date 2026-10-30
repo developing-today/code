@@ -121,6 +121,25 @@ pub(crate) enum WorldCommand {
     ExecutionProfileInfo {
         reply: oneshot::Sender<crate::world_limits::WorldExecutionProfile>,
     },
+    /// Admin: read the manifest-reconciliation state — the active install
+    /// seed and the pending schedules. The seed stays inside the actor and
+    /// the admin layer; it is never part of a participant projection (#240).
+    ManifestState {
+        reply: oneshot::Sender<(u64, BTreeMap<String, u64>)>,
+    },
+    /// Admin: pend one schedule, replacing any pending schedule with the
+    /// same id. Replies with the full pending map after the change.
+    AdminScheduleAt {
+        id: String,
+        at_ms: u64,
+        reply: oneshot::Sender<Result<BTreeMap<String, u64>>>,
+    },
+    /// Admin: cancel a pending schedule by id (a no-op when absent).
+    /// Replies with the full pending map after the change.
+    AdminCancelSchedule {
+        id: String,
+        reply: oneshot::Sender<Result<BTreeMap<String, u64>>>,
+    },
     /// Admin: read the capability report.
     CapsInfo {
         reply: oneshot::Sender<Result<CapsReport>>,
@@ -1280,6 +1299,53 @@ impl WorldActor {
             }
             WorldCommand::ExecutionProfileInfo { reply } => {
                 let _ = reply.send(self.core.execution_profile);
+            }
+            WorldCommand::ManifestState { reply } => {
+                let _ = reply.send((self.core.active_seed, self.core.schedules.clone()));
+            }
+            WorldCommand::AdminScheduleAt { id, at_ms, reply } => {
+                let result = (|| -> Result<BTreeMap<String, u64>> {
+                    if self.core.schedules.get(&id) == Some(&at_ms) {
+                        return Ok(self.core.schedules.clone());
+                    }
+                    // Validate the replacement before anything is persisted:
+                    // a refusal (say, past the horizon) must leave the
+                    // existing schedule standing, in the journal as in
+                    // memory (#807).
+                    let replacing = self.core.schedules.contains_key(&id);
+                    self.core.check_schedule_replacing(
+                        &id,
+                        at_ms,
+                        self.core.clock().now_ms(),
+                        replacing,
+                    )?;
+                    if replacing {
+                        // Journal the cancel before the replacement set:
+                        // replay refuses two pending sets for one id.
+                        self.persist(JournalEntry::ScheduleCancelled { id: id.clone() })?;
+                        self.core.schedules.remove(&id);
+                        self.overdue_at_open.remove(&id);
+                    }
+                    self.persist(JournalEntry::ScheduleSet {
+                        id: id.clone(),
+                        at_ms,
+                    })?;
+                    self.core.schedules.insert(id, at_ms);
+                    Ok(self.core.schedules.clone())
+                })();
+                let _ = reply.send(result);
+            }
+            WorldCommand::AdminCancelSchedule { id, reply } => {
+                let result = (|| -> Result<BTreeMap<String, u64>> {
+                    crate::world_caps::validate_schedule_id(&id)?;
+                    if self.core.schedules.contains_key(&id) {
+                        self.persist(JournalEntry::ScheduleCancelled { id: id.clone() })?;
+                        self.core.schedules.remove(&id);
+                        self.overdue_at_open.remove(&id);
+                    }
+                    Ok(self.core.schedules.clone())
+                })();
+                let _ = reply.send(result);
             }
             WorldCommand::SetIsolation {
                 authority,

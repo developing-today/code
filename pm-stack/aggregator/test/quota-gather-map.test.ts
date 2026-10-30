@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   entryFromFileExport,
+  entryFromTurso,
   entryFromResult,
   normalizeResetAt,
   recordsFromEntries,
@@ -208,5 +209,78 @@ describe("serviceIdFor", () => {
     expect(serviceIdFor("codex")).toBe("openai:codex");
     expect(serviceIdFor("deepseek")).toBe("deepseek:api");
     expect(serviceIdFor("openai.alternate")).toBe("openai.alternate");
+  });
+});
+
+describe("entryFromTurso (#1049)", () => {
+  // Fixture values are the triage-verified live read of 2026-10-29
+  // (task 2311): org dezren39, Starter plan, period 2026-10-01..11-01.
+  const usageDoc = {
+    organization: {
+      slug: "dezren39",
+      usage: {
+        rows_read: 1_905_385,
+        rows_written: 30_026,
+        storage_bytes: 1_053_323_264,
+        bytes_synced: 30_408_704,
+        databases: 3,
+        locations: 1,
+        groups: 1,
+      },
+    },
+  };
+  const subDoc = {
+    subscription: { plan: "starter", name: "starter", current_billing_period_start: "2026-10-01T04:00:00+00:00", current_billing_period_end: "2026-11-01T04:00:00+00:00" },
+  };
+  const at = "2026-10-29T02:30:00.000Z";
+  test("maps org usage onto the turso entry vs Starter limits, period end as cycle end", () => {
+    const entry = entryFromTurso(usageDoc, subDoc, { measuredAt: at });
+    expect(entry.providerId).toBe("turso");
+    expect(entry.serviceId).toBe("turso");
+    expect(entry.state).toBe("ok");
+    expect(entry.planLabel).toBe("starter");
+    const byName = new Map(entry.windows.map((w) => [w.name, w]));
+    expect(byName.get("databases")?.value).toBe(3);
+    expect(byName.get("databases")?.pctOfLimit).toBe(3);
+    expect(byName.get("storage")?.value).toBe(1.053323);
+    expect(byName.get("storage")?.pctOfLimit).toBe(21.066);
+    expect(byName.get("rows-read")?.value).toBe(1_905_385);
+    expect(byName.get("rows-read")?.pctOfLimit).toBe(0.381);
+    expect(byName.get("rows-written")?.pctOfLimit).toBe(0.3);
+    expect(byName.get("sync")?.value).toBe(0.030409);
+    expect(byName.get("sync")?.pctOfLimit).toBe(1.014);
+    for (const w of entry.windows) {
+      expect(w.resetsAt).toBe("2026-11-01T04:00:00.000Z");
+      expect(w.windowSeconds).toBe(2_678_400);
+      expect(w.source).toBe("turso-api");
+    }
+    // ...and the windows flow into §4 snapshot records (source api):
+    // databases/storage/sync in their NATIVE units (the series
+    // recordsFromSaasServices already writes), rows in pct (the
+    // store has no "rows" unit and no native rows series exists).
+    const { records } = recordsFromEntries([entry], new Map(), "quota-gatherer");
+    const byMetric = new Map(records.map((r) => [r.metricId, r]));
+    expect([...byMetric.keys()].sort()).toEqual(["databases", "rows-read", "rows-written", "storage", "sync"]);
+    expect(byMetric.get("databases")).toMatchObject({ value: 3, unit: "count", limit: 100, source: "api" });
+    expect(byMetric.get("storage")).toMatchObject({ value: 1.053323, unit: "gb", limit: 5, source: "api" });
+    expect(byMetric.get("sync")).toMatchObject({ value: 0.030409, unit: "gb", limit: 3, source: "api" });
+    expect(byMetric.get("rows-read")).toMatchObject({ value: 0.381, unit: "pct", limit: 100, source: "api" });
+    expect(byMetric.get("rows-written")).toMatchObject({ value: 0.3, unit: "pct", limit: 100, source: "api" });
+  });
+  test("missing metrics are omitted, never zeroed; a partial read is still ok", () => {
+    const entry = entryFromTurso({ organization: { usage: { databases: 3 } } }, null, { measuredAt: at });
+    expect(entry.state).toBe("ok");
+    expect(entry.windows.map((w) => w.name)).toEqual(["databases"]);
+    expect(entry.windows[0].resetsAt).toBeNull();
+  });
+  test("failed or empty reads are error entries with no windows and no records", () => {
+    const failed = entryFromTurso(null, null, { measuredAt: at, error: "turso /usage HTTP 401" });
+    expect(failed.state).toBe("error");
+    expect(failed.error).toContain("401");
+    expect(failed.windows).toEqual([]);
+    expect(recordsFromEntries([failed], new Map(), "quota-gatherer").records).toEqual([]);
+    const empty = entryFromTurso({ organization: { usage: {} } }, subDoc, { measuredAt: at });
+    expect(empty.state).toBe("error");
+    expect(empty.windows).toEqual([]);
   });
 });

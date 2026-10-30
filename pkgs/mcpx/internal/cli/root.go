@@ -208,25 +208,24 @@ func (a *App) adoptSettings() {
 	a.warnPathsConfigFile(set)
 }
 
-// warnPathsConfigFile warns when a paths.config entry names a file.
+// warnPathsConfigFile warns when a paths.config entry names nothing
+// that exists.
 //
-// The entries are directories that are searched for configuration files,
-// so pointing one at a file -- a natural reading of --paths-config -- is
-// silently ignored and the default configuration loads instead (#278).
-// Naming the file directly is what MCPX_CONFIG and --config are for, so
-// say so rather than leaving the user to debug a configuration that was
-// never read.
+// Entries govern the config chain (issue #1842): a directory is
+// searched with the usual spellings, and a file means exactly that
+// file. An entry naming neither is the one case that silently does
+// nothing, so say so rather than leaving the user to debug a
+// configuration that was never read.
 func (a *App) warnPathsConfigFile(set *settings.Set) {
 	if a.warnedPathsConfig {
 		return
 	}
 	for _, entry := range set.List("paths.config") {
-		if st, err := os.Stat(entry); err == nil && !st.IsDir() {
+		if _, err := os.Stat(entry); err != nil {
 			fmt.Fprintf(os.Stderr,
-				"mcpx: warning: paths.config entry %q is a file; entries are "+
-					"directories searched for config files, so it is ignored. "+
-					"To use that file directly, pass --config %s or set MCPX_CONFIG.\n",
-				entry, entry)
+				"mcpx: warning: paths.config entry %q does not exist; "+
+					"it contributes nothing to the config chain.\n",
+				entry)
 			a.warnedPathsConfig = true
 			return
 		}
@@ -336,7 +335,7 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 		Logger:   logger,
 		IdleExit: a.Settings().Duration("daemon.idleExit"),
 		Settings: a.Settings(),
-		Augment:  a.augmentAdapters,
+		Augment:  a.augmentConfig,
 	})
 	if err != nil {
 		return err
@@ -486,6 +485,7 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 	showDefaults := fs.Bool("defaults", false, "print the built-in default layer that underlies every config")
 	showSchema := fs.Bool("schema", false, "print every setting, with its flag and variable")
 	withPlumbing := fs.Bool("plumbing", false, "include internal settings in --schema")
+	schemaFormat := fs.String("format", "", "output format for --schema: text, json or markdown (default text, or json with --json)")
 	if err := parseFlags(a, fs, args); err != nil {
 		return err
 	}
@@ -500,13 +500,22 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 		if serr != nil {
 			return serr
 		}
-		if a.JSON {
-			fmt.Println(sch.JSON(*withPlumbing))
-			return nil
+		format := *schemaFormat
+		if format == "" && a.JSON {
+			format = "json"
 		}
-		fmt.Print(sch.Describe(*withPlumbing))
-		if !*withPlumbing {
-			fmt.Println("\n(--plumbing also lists internal settings)")
+		switch format {
+		case "", "text":
+			fmt.Print(sch.Describe(*withPlumbing))
+			if !*withPlumbing {
+				fmt.Println("\n(--plumbing also lists internal settings)")
+			}
+		case "json":
+			fmt.Println(sch.JSON(*withPlumbing))
+		case "markdown":
+			fmt.Print(sch.Markdown(settings.MarkdownOptions{Plumbing: *withPlumbing}))
+		default:
+			return fmt.Errorf("unknown --format %q for --schema: want text, json or markdown", format)
 		}
 		return nil
 	}
@@ -580,10 +589,18 @@ func (a *App) configSources(cfg *config.Config) error {
 		From    string `json:"from"`
 	}
 	out := struct {
-		Sources []string    `json:"sources"`
-		Servers []row       `json:"servers"`
-		Presets []presetRow `json:"presets,omitempty"`
+		Sources   []string    `json:"sources"`
+		Discovery []string    `json:"discovery,omitempty"`
+		Load      []string    `json:"load,omitempty"`
+		Divergent []string    `json:"divergent,omitempty"`
+		Servers   []row       `json:"servers"`
+		Presets   []presetRow `json:"presets,omitempty"`
 	}{Sources: cfg.Sources}
+	if cfg.Chain != nil {
+		out.Discovery = cfg.Chain.Discovery
+		out.Load = cfg.Chain.Load
+		out.Divergent = cfg.Chain.Divergent
+	}
 	// A value a preset supplied is a source too, and the one least likely to
 	// be remembered: it came from a name on the command line, not a file.
 	for _, v := range a.Settings().All() {
@@ -610,6 +627,20 @@ func (a *App) configSources(cfg *config.Config) error {
 			fmt.Println("  " + p)
 		}
 		return nil
+	}
+	if cfg.Chain != nil && !cfg.Chain.Bypass {
+		fmt.Println("Discovery pass (searched for paths.config), nearest first:")
+		for _, p := range out.Discovery {
+			fmt.Println("   " + p)
+		}
+		fmt.Println("Load pass (files the chain resolved to), nearest first:")
+		for _, p := range out.Load {
+			fmt.Println("   " + p)
+		}
+		for _, d := range out.Divergent {
+			fmt.Println("  ! " + d)
+		}
+		fmt.Println()
 	}
 	fmt.Println("Files, nearest first:")
 	for i, p := range out.Sources {

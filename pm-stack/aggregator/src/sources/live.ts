@@ -21,11 +21,13 @@ import {
 import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
 import { buildAttentionFlags } from "../derive.ts";
 import { summarizeDns } from "../dns.ts";
-import { extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import { applySupabaseExport, extractCharges, extractPaygLines, extractSaasServices, extractSubscriptions } from "../saas-extract.ts";
+import type { SupabaseExportDoc } from "../saas-extract.ts";
 import { isProjectPoolItem, poolItemToGhItem } from "../projects.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
-import { overlayQuotaCurrent, parseQuotaCurrent } from "../quota-current.ts";
+import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
 import { SnapshotStore } from "../snapshots.ts";
+import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
 import { mapServerSessions, type MappedSessions } from "./opencode.ts";
 import {
@@ -44,6 +46,7 @@ import {
   type QuotaView,
   type RefKey,
   type RoadmapRow,
+  type SaasService,
   type SessionFeedEntry,
   type SessionRecord,
   type SourceCoverage,
@@ -107,7 +110,7 @@ const KANEO_PROJECT_REPOS: Record<string, string> = {
 async function kaneoProjects(
   cfg: Config,
   cookie: string,
-): Promise<{ id: string; slug: string; name: string; repo: string }[]> {
+): Promise<{ id: string; slug: string; name: string; repo: string; workspaceId: string }[]> {
   const ws = await getJson(`${cfg.kaneo.baseUrl}/api/workspace`, { Cookie: cookie });
   if (!ws.ok) throw new Error("kaneo workspace read failed");
   const workspaces = ws.json as { id: string }[];
@@ -120,6 +123,7 @@ async function kaneoProjects(
     slug: p.slug,
     name: p.name,
     repo: KANEO_PROJECT_REPOS[p.slug] ?? `developing-today/${p.slug}`,
+    workspaceId,
   }));
 }
 
@@ -171,7 +175,7 @@ async function kaneoBoard(cfg: Config, cookie: string): Promise<BoardItem[]> {
           status: col.id,
           priority: t.priority,
           updatedAt: t.updatedAt ?? t.createdAt,
-          kaneoUrl: cfg.kaneo.baseUrl,
+          kaneoUrl: kaneoTaskUrl(p.workspaceId, p.id, t.id),
           links,
         });
       }
@@ -211,6 +215,7 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
       source,
       notes,
       links,
+      gristUrl: gristDocUrl(cfg.grist.docId),
     };
   });
 }
@@ -524,6 +529,22 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
  */
 const FEED_STALE_MS = 15 * 60_000;
 
+/**
+ * The gatherer's Turso entry (#1049) overlaid onto usage() services,
+ * fail-soft like quota(): a missing or malformed quota-current file
+ * leaves the base services untouched.
+ */
+async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasService[]> {
+  try {
+    const raw = await readFile(cfg.quotaCurrentFile, "utf8");
+    const file = parseQuotaCurrent(JSON.parse(raw));
+    if (file) return overlayTursoUsage(services, file);
+  } catch {
+    /* no gatherer file (or unreadable): base services stand */
+  }
+  return services;
+}
+
 export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<boolean> }): Source {
   const fix = fixtureSource();
   const provenance: Provenance = {
@@ -823,10 +844,17 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
               domainCount: feed.dns.entries.length,
             }
           : null;
+      // The Supabase export overlay applies to BOTH service sources:
+      // the collector's feed.saas cards are built with plain
+      // extractSaasServices, so without this the fresh export would be
+      // ignored exactly when the fleet collector is operating (#1050).
+      const supabaseExport = await readFile(cfg.supabaseExportFile, "utf8")
+        .then((text) => JSON.parse(text) as SupabaseExportDoc)
+        .catch(() => null);
       if (feed?.saas && feed.saas.length) {
         provenance.usage = `live (fleet feed · ${feedAgeText(feed.generatedAt)} · collected ${feed.generatedAt})`;
         const partial = {
-          services: feed.saas,
+          services: applySupabaseExport(feed.saas, supabaseExport),
           payg: feed.payg ?? [],
           charges: feed.charges ?? [],
           subscriptions: feed.subscriptions ?? [],
@@ -835,6 +863,7 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         // first-time unmatched SaaS/AI charges (the collector's
         // surfaced-state guarantees exactly-once), so each becomes
         // an attention flag here and never repeats on later feeds.
+        partial.services = await tursoOverlay(cfg, partial.services);
         const chargeFlags: AttentionFlag[] = (feed.chargesAttention ?? []).map((u) => ({
           kind: "unmatched-charge",
           label: `${u.merchant} — unrecognized SaaS/AI charge`,
@@ -858,11 +887,12 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
           readFile(cfg.quotaRegistryFile, "utf8").catch(() => ""),
         ]);
         const partial = {
-          services: extractSaasServices(doc),
+          services: applySupabaseExport(extractSaasServices(doc), supabaseExport),
           payg: extractPaygLines(doc, registryText),
           charges: extractCharges(doc, registryText),
           subscriptions: extractSubscriptions(doc),
         };
+        partial.services = await tursoOverlay(cfg, partial.services);
         provenance.usage = "live (quota-view.md + provider registry, direct read — feed carries no hub sections yet)";
         return {
           ...partial,
@@ -1099,9 +1129,17 @@ export function liveSource(cfg: Config, opts?: { standingAuto?: () => Promise<bo
         } else if (feedBacked && feedAgeMs !== undefined) {
           out.ageMs = feedAgeMs;
         }
-        if (key === "registry" && lastRegistryMergedCount !== null) {
-          out.count = lastRegistryMergedCount;
-          out.countLabel = "session records";
+        if (key === "registry") {
+          // The registry facet's age is the age of the feed its records
+          // merge from, so it derives from the loaded feed alone —
+          // gating it on lastRegistryMergedCount made the age (and the
+          // #1148 watchdog's registry item, which reads it) depend on
+          // some earlier request having called registry() (Codex P2,
+          // PR #2431). The COUNT still requires a real merge.
+          if (lastRegistryMergedCount !== null) {
+            out.count = lastRegistryMergedCount;
+            out.countLabel = "session records";
+          }
           if (feedAgeMs !== undefined) {
             out.ageMs = feedAgeMs;
             if (out.state === "live" && feedAgeMs > FEED_STALE_MS) out.state = "stale";
