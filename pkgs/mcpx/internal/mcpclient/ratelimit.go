@@ -69,11 +69,15 @@ func DefaultRequestLimits() RequestLimits {
 	}
 }
 
-// requestLimits resolves an Options value: the zero RequestLimits
-// means "no opinion" and yields the defaults, while an explicitly
-// supplied struct is taken as given -- so a 0 from the settings really
-// does disable that scope.
+// requestLimits resolves an Options value. An explicitly supplied
+// struct (RequestLimitsSet) is taken as given -- so a 0 from the
+// settings really does disable that scope. Otherwise the zero
+// RequestLimits means "no opinion" and yields the defaults, while a
+// non-zero struct is taken as the caller's intent.
 func (o Options) requestLimits() RequestLimits {
+	if o.RequestLimitsSet {
+		return o.RequestLimits
+	}
 	if o.RequestLimits == (RequestLimits{}) {
 		return DefaultRequestLimits()
 	}
@@ -123,11 +127,28 @@ func (w *windowCounter) record(now time.Time) {
 
 // allow records one admission attempt at now and reports whether it
 // was within the limit.
-func (w *windowCounter) allow(now time.Time) bool {
-	if !w.wouldAllow(now) {
+func (w *windowCounter) allow(now time.Time) bool { return w.tryAllow(now) }
+
+// tryAllow is allow as ONE transaction under the counter's lock: peek
+// and record cannot be interleaved by another goroutine. Callers that
+// bound a SHARED scope (the per-server counters, used by every session
+// to a server at once) must admit through tryAllow -- wouldAllow +
+// record as separate calls lets two sessions both pass the peek before
+// either records, and the shared budget is exceeded.
+func (w *windowCounter) tryAllow(now time.Time) bool {
+	if w == nil || w.limit <= 0 {
+		return true
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.start.IsZero() || now.Sub(w.start) >= w.window {
+		w.start = now
+		w.count = 0
+	}
+	if w.count >= w.limit {
 		return false
 	}
-	w.record(now)
+	w.count++
 	return true
 }
 
@@ -171,25 +192,29 @@ func (c *Client) checkServerRequest(method string) *rpcError {
 	defer c.reqMu.Unlock()
 	switch method {
 	case "sampling/createMessage":
+		// The session counter is this client's alone (touched only
+		// here, under reqMu), so peeking it is safe. The server
+		// counter is shared with every other session to this
+		// server, so it is admitted atomically: tryAllow records
+		// only when it admits, and a refusal here has consumed
+		// neither scope (the session counter was only peeked).
 		if !c.sessionSampling.wouldAllow(now) {
 			return c.rateRefusalLocked(fmt.Sprintf(
 				"rate limit: sampling from %s exceeds proto.samplingSessionPerMinute (%d/minute) for this session",
 				c.serverDisplayName(), c.reqLimits.SamplingPerSession))
 		}
-		if !c.server.sampling.wouldAllow(now) {
+		if !c.server.sampling.tryAllow(now) {
 			return c.rateRefusalLocked(fmt.Sprintf(
 				"rate limit: sampling from %s exceeds proto.samplingPerMinute (%d/minute)",
 				c.serverDisplayName(), c.reqLimits.SamplingPerServer))
 		}
 		c.sessionSampling.record(now)
-		c.server.sampling.record(now)
 	case "elicitation/create":
-		if !c.server.elicitation.wouldAllow(now) {
+		if !c.server.elicitation.tryAllow(now) {
 			return c.rateRefusalLocked(fmt.Sprintf(
 				"rate limit: elicitation from %s exceeds proto.elicitationPerMinute (%d/minute)",
 				c.serverDisplayName(), c.reqLimits.ElicitationPerServer))
 		}
-		c.server.elicitation.record(now)
 	}
 	return nil
 }

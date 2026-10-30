@@ -526,6 +526,7 @@ func (p *Pool) installServerHooks(opts *mcpclient.Options, ref *instanceRef) {
 	opts.ProbeTimeout = h.ProbeTimeout
 	opts.ServerName = p.cfg.Name
 	opts.RequestLimits = h.RequestLimits
+	opts.RequestLimitsSet = h.RequestLimitsSet
 	opts.ServerLimiter = p.serverLimiter()
 }
 
@@ -538,7 +539,7 @@ func (p *Pool) serverLimiter() *mcpclient.ServerRequestLimiter {
 	defer p.reqLimMu.Unlock()
 	if p.reqLimiter == nil {
 		lim := mcpclient.DefaultRequestLimits()
-		if p.Hooks != nil && p.Hooks.RequestLimits != (mcpclient.RequestLimits{}) {
+		if p.Hooks != nil && (p.Hooks.RequestLimitsSet || p.Hooks.RequestLimits != (mcpclient.RequestLimits{})) {
 			lim = p.Hooks.RequestLimits
 		}
 		p.reqLimiter = mcpclient.NewServerRequestLimiter(lim)
@@ -1138,8 +1139,12 @@ type Hooks struct {
 	// means every start probes.
 	Eras EraStore
 	// RequestLimits bounds each server's sampling and elicitation
-	// requests (#2192). The zero value means mcpclient's defaults.
+	// requests (#2192). The zero value means mcpclient's defaults,
+	// unless RequestLimitsSet marks it explicitly supplied.
 	RequestLimits mcpclient.RequestLimits
+	// RequestLimitsSet marks RequestLimits as explicitly supplied,
+	// including all-zero (enforcement disabled).
+	RequestLimitsSet bool
 }
 
 func (h *Hooks) notifications(server string) mcpclient.Notifications {

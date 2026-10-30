@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -21,7 +23,7 @@ func rateLimitClient(server string, lim RequestLimits, shared *ServerRequestLimi
 			return map[string]any{"action": "cancel"}, nil
 		},
 	}
-	c.setupRequestLimits(Options{ServerName: server, RequestLimits: lim, ServerLimiter: shared})
+	c.setupRequestLimits(Options{ServerName: server, RequestLimits: lim, RequestLimitsSet: true, ServerLimiter: shared})
 	return c
 }
 
@@ -160,8 +162,11 @@ func TestServerRequestRateLimits(t *testing.T) {
 
 	t.Run("zero limits disable enforcement", func(t *testing.T) {
 		calls := 0
+		// Explicit zeros via RequestLimitsSet (the settings path):
+		// an operator setting every proto.*PerMinute to 0 disables
+		// enforcement; the defaults must not come back.
 		c := rateLimitClient("rl-disabled", RequestLimits{
-			SamplingPerServer: -1, SamplingPerSession: -1, ElicitationPerServer: -1,
+			SamplingPerServer: 0, SamplingPerSession: 0, ElicitationPerServer: 0,
 		}, nil, &calls)
 		for i := 0; i < 5; i++ {
 			if _, rerr := c.answer(ctx, "sampling/createMessage", samplingParams); rerr != nil {
@@ -172,4 +177,57 @@ func TestServerRequestRateLimits(t *testing.T) {
 			t.Fatalf("handler invoked %d times, want 5", calls)
 		}
 	})
+}
+
+// Two sessions to the same server share one per-server budget, and
+// admission against it is atomic: with a shared limit of 1, concurrent
+// requests from both sessions admit exactly one in total. (Codex
+// finding on #2706: wouldAllow + record as separate calls let two
+// sessions both pass the peek before either recorded.)
+func TestServerRequestRateLimitsSharedAdmissionIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	lim := RequestLimits{SamplingPerServer: 1, SamplingPerSession: 100, ElicitationPerServer: 100}
+	shared := NewServerRequestLimiter(lim)
+
+	var calls atomic.Int32
+	mk := func() *Client {
+		c := &Client{
+			pending: map[int64]chan *rpcResponse{},
+			onElicit: func(context.Context, string, json.RawMessage) (any, error) {
+				calls.Add(1)
+				return map[string]any{"action": "cancel"}, nil
+			},
+		}
+		c.setupRequestLimits(Options{ServerName: "rl-shared", RequestLimits: lim, RequestLimitsSet: true, ServerLimiter: shared})
+		return c
+	}
+	clients := []*Client{mk(), mk()}
+
+	const perClient = 4
+	var wg sync.WaitGroup
+	admitted := make(chan bool, 2*perClient)
+	for _, c := range clients {
+		for i := 0; i < perClient; i++ {
+			wg.Add(1)
+			go func(c *Client) {
+				defer wg.Done()
+				_, rerr := c.answer(ctx, "sampling/createMessage", samplingParams)
+				admitted <- rerr == nil
+			}(c)
+		}
+	}
+	wg.Wait()
+	close(admitted)
+	ok := 0
+	for a := range admitted {
+		if a {
+			ok++
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("admitted %d concurrent requests against a shared limit of 1, want exactly 1", ok)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("handler invoked %d times, want exactly 1", n)
+	}
 }

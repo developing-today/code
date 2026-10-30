@@ -49,8 +49,15 @@ type Options struct {
 	// (ratelimit.go). Empty means the session is bounded per session only.
 	ServerName string
 	// RequestLimits bounds this server's sampling and elicitation
-	// requests. The zero value means DefaultRequestLimits.
+	// requests. The zero value means DefaultRequestLimits, unless
+	// RequestLimitsSet marks the struct as explicitly supplied.
 	RequestLimits RequestLimits
+	// RequestLimitsSet marks RequestLimits as explicitly supplied --
+	// including an all-zero struct, which disables enforcement.
+	// Without it, an all-zero RequestLimits is read as "no opinion"
+	// and the defaults apply: an operator setting every
+	// proto.*PerMinute to 0 must not silently get the defaults back.
+	RequestLimitsSet bool
 	// ServerLimiter is this server's shared rate-limit budget, owned by
 	// whoever runs several sessions to the same server (the pool) and
 	// handed to each of them. Nil means the client builds its own,

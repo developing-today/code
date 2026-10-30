@@ -903,6 +903,9 @@ func (r *Registry) upstreamHooks(h *pool.Hooks) {
 			SamplingPerSession:   r.set.Int("proto.samplingSessionPerMinute"),
 			ElicitationPerServer: r.set.Int("proto.elicitationPerMinute"),
 		}
+		// Read from settings, so the values are the operator's --
+		// an all-zero set is a deliberate "disabled", not an omission.
+		h.RequestLimitsSet = true
 	}
 	if cache && r.paths.State != "" {
 		h.Eras = pool.OpenEraFile(filepath.Join(r.paths.State, defaults.UpstreamEraFile))
