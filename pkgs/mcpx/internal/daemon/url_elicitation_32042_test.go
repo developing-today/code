@@ -52,14 +52,14 @@ func TestBrokerKeyingServerQualified(t *testing.T) {
 		}
 		t.Fatalf("broker row %q never appeared", id)
 	}
-	waitRow("srvA:e1")
-	waitRow("srvB:e1")
+	waitRow(brokerRowID("srvA", "e1"))
+	waitRow(brokerRowID("srvB", "e1"))
 	if _, ok, err := broker.Get("e1"); err != nil || ok {
 		t.Fatalf("a bare e1 row exists (ok=%v err=%v): the collision is back", ok, err)
 	}
 
 	// Answering srvA's row settles only srvA's waiter.
-	if err := broker.Respond(elicit.Answer{ID: "srvA:e1", Action: elicit.Accept, By: "test"}); err != nil {
+	if err := broker.Respond(elicit.Answer{ID: brokerRowID("srvA", "e1"), Action: elicit.Accept, By: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -79,7 +79,7 @@ func TestBrokerKeyingServerQualified(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 
-	if err := broker.Respond(elicit.Answer{ID: "srvB:e1", Action: elicit.Decline, By: "test"}); err != nil {
+	if err := broker.Respond(elicit.Answer{ID: brokerRowID("srvB", "e1"), Action: elicit.Decline, By: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -89,6 +89,75 @@ func TestBrokerKeyingServerQualified(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("srvB waiter never returned")
+	}
+}
+
+// Codex finding on PR #2760: the pair encoding must stay unambiguous
+// when the parts themselves contain ":". Server "a" with ID "b:c" and
+// server "a:b" with ID "c" collided under plain concatenation.
+func TestBrokerKeyingColonAmbiguity(t *testing.T) {
+	if brokerRowID("a", "b:c") == brokerRowID("a:b", "c") {
+		t.Fatalf("row IDs collide: %q", brokerRowID("a", "b:c"))
+	}
+	broker, err := elicit.Open(filepath.Join(t.TempDir(), "elicit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	r := &Registry{asks: newAskTable()}
+	r.InstallHooks(events.New(0), broker, nil)
+
+	type outcome struct {
+		out any
+		err error
+	}
+	results := map[string]chan outcome{}
+	for _, tc := range []struct{ srv, id string }{{"a", "b:c"}, {"a:b", "c"}} {
+		params := json.RawMessage(`{"mode":"url","message":"sign in","url":"https://example.invalid/auth","elicitationId":"` + tc.id + `"}`)
+		ch := make(chan outcome, 1)
+		results[tc.srv] = ch
+		go func(srv string, ch chan<- outcome) {
+			out, err := r.elicitViaBroker(context.Background(), srv, "key", params)
+			ch <- outcome{out, err}
+		}(tc.srv, ch)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for _, tc := range []struct{ srv, id string }{{"a", "b:c"}, {"a:b", "c"}} {
+		row := brokerRowID(tc.srv, tc.id)
+		for {
+			if _, ok, err := broker.Get(row); err == nil && ok {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("broker row %q never appeared", row)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	// Settling a's row must not settle a:b's waiter.
+	if err := broker.Respond(elicit.Answer{ID: brokerRowID("a", "b:c"), Action: elicit.Accept, By: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case o := <-results["a"]:
+		if o.err != nil {
+			t.Fatal(o.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a waiter never returned")
+	}
+	select {
+	case o := <-results["a:b"]:
+		t.Fatalf("a:b waiter returned early with %v: an answer crossed the colon boundary", o)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := broker.Respond(elicit.Answer{ID: brokerRowID("a:b", "c"), Action: elicit.Decline, By: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-results["a:b"]:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a:b waiter never returned")
 	}
 }
 
@@ -132,8 +201,8 @@ func TestURLElicitationsViaBroker(t *testing.T) {
 		}
 		t.Fatalf("broker row %q never appeared", id)
 	}
-	answer("srv:e1", elicit.Accept)
-	answer("srv:e2", elicit.Decline)
+	answer(brokerRowID("srv", "e1"), elicit.Accept)
+	answer(brokerRowID("srv", "e2"), elicit.Decline)
 
 	select {
 	case o := <-done:
@@ -155,7 +224,7 @@ func TestURLElicitationsViaBroker(t *testing.T) {
 		ok, err := r.urlElicitationsViaBroker(context.Background(), "srv", "key", els2)
 		done2 <- outcome{ok, err}
 	}()
-	answer("srv:e3", elicit.Decline)
+	answer(brokerRowID("srv", "e3"), elicit.Decline)
 	select {
 	case o := <-done2:
 		if o.ok || o.err == nil {
@@ -164,7 +233,7 @@ func TestURLElicitationsViaBroker(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the handler never returned after the first decline")
 	}
-	if _, ok, err := broker.Get("srv:e4"); err != nil || ok {
-		t.Fatalf("srv:e4 exists (ok=%v err=%v): a later entry was opened after a first-entry decline", ok, err)
+	if _, ok, err := broker.Get(brokerRowID("srv", "e4")); err != nil || ok {
+		t.Fatalf("srv e4 exists (ok=%v err=%v): a later entry was opened after a first-entry decline", ok, err)
 	}
 }

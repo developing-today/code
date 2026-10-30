@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/dezren39/mcpx/internal/defaults"
@@ -60,7 +61,7 @@ func (r *Registry) InstallHooks(bus *events.Bus, broker *elicit.Broker, roots []
 			// on it should hear so now rather than at its deadline.
 			if r.broker != nil {
 				_ = r.broker.Respond(elicit.Answer{
-					ID: server + ":" + id, Action: elicit.Accept, By: "server:" + server,
+					ID: brokerRowID(server, id), Action: elicit.Accept, By: "server:" + server,
 				})
 			}
 			r.publish(events.Event{
@@ -162,6 +163,20 @@ func (r *Registry) answerServer(ctx context.Context, server, key, method string,
 	return nil, fmt.Errorf("mcpx does not implement %s", method)
 }
 
+// brokerRowID is the broker row key for a server-supplied elicitation
+// ID: the (server, elicitationId) pair, length-prefixed so the encoding
+// is unambiguous. Plain concatenation would collide whenever a server
+// name or an elicitation ID contains ":" -- server "a" with ID "b:c"
+// and server "a:b" with ID "c" would share one row, and a completion
+// from one could settle the other's question. An empty elicitationId
+// (a minted ID, already unique) stays bare.
+func brokerRowID(server, elicitationID string) string {
+	if elicitationID == "" {
+		return elicitationID
+	}
+	return strconv.Itoa(len(server)) + ":" + server + ":" + elicitationID
+}
+
 func (r *Registry) elicitViaBroker(ctx context.Context, server, key string, params json.RawMessage) (any, error) {
 	var p struct {
 		Mode            string          `json:"mode"`
@@ -180,15 +195,12 @@ func (r *Registry) elicitViaBroker(ctx context.Context, server, key string, para
 	// Broker rows are keyed by ID alone, and elicitationId is the
 	// upstream's own choice: two servers can pick the same one and the
 	// second OpenRequest would fail on the primary key (ELI-09). A
-	// server-supplied ID is therefore stored server-qualified;
-	// OnElicitationComplete composes the same qualified ID before it
+	// server-supplied ID is therefore stored under brokerRowID;
+	// OnElicitationComplete composes the same row ID before it
 	// responds. Minted IDs (empty elicitationId) are already unique and
 	// stay bare. Rows opened under a bare ID before this fix are not
 	// migrated; they expire by TTL.
-	brokerID := p.ElicitationID
-	if brokerID != "" {
-		brokerID = server + ":" + brokerID
-	}
+	brokerID := brokerRowID(server, p.ElicitationID)
 	req, err := r.broker.OpenRequest(elicit.Request{
 		ID:        brokerID,
 		Server:    server,

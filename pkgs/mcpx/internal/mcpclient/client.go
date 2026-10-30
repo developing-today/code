@@ -1569,7 +1569,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawM
 		// happen exactly once regardless. Malformed data, or no handler
 		// installed, leaves the original error untouched; any other
 		// negotiated version is untouched too.
-		if !retried32042 && err != nil && c.Negotiated == "2025-11-25" &&
+		if !retried32042 && err != nil && c.negotiatedVersion() == "2025-11-25" &&
 			errors.As(err, &re) && re.Code == codeURLElicitationRequired {
 			els, wellFormed := parseURLElicitations(re.Data)
 			c.mu.Lock()
