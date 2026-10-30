@@ -10,7 +10,6 @@ set -uo pipefail
 MCPX=${MCPX:?set MCPX to the mcpx binary}
 ROUNDS=${ROUNDS:-5}
 CONC=${CONC:-3}
-here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -83,8 +82,8 @@ maxsum=$("$MCPX" --json status | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
 print(sum(s["max"] for s in d["servers"]))')
-[ "$live" -le "$maxsum" ]
-check $? "live instances ($live) within configured maxima ($maxsum)"
+if [ "$live" -le "$maxsum" ]; then within=0; else within=1; fi
+check "$within" "live instances ($live) within configured maxima ($maxsum)"
 
 note "== orphan check =="
 "$MCPX" restart chrome-devtools >/dev/null

@@ -408,11 +408,11 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 
 // NamespaceInfo is one row of `mcpx ls`.
 type NamespaceInfo struct {
-	Namespace       string   `json:"namespace"`
-	Server          string   `json:"server"`
-	Tools           int      `json:"tools"`
-	Resources       int      `json:"resources"`
-	Description     string   `json:"description,omitempty"`
+	Namespace   string `json:"namespace"`
+	Server      string `json:"server"`
+	Tools       int    `json:"tools"`
+	Resources   int    `json:"resources"`
+	Description string `json:"description,omitempty"`
 	// Tags are the server's search vocabulary (#1923), surfaced so
 	// `mcpx ls` readers can see what a namespace answers to.
 	Tags            []string `json:"tags,omitempty"`

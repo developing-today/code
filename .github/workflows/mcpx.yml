@@ -149,6 +149,59 @@ jobs:
         working-directory: pkgs/mcpx
         run: bun test plugin/opencode/mcpx/
 
+  lint:
+    name: "basic: lint"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      # Approach C (#1996): the linters are the dev shell's, so their
+      # versions are pinned by flake.lock and this workflow passes no
+      # per-action version input of its own.
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      # shellcheck reads the repository's .shellcheckrc, which enables every
+      # optional check; --severity=warning keeps this leg to findings that
+      # are wrong rather than merely unidiomatic (the style class is
+      # treefmt's shfmt job). actionlint checks these workflow files.
+      - name: go vet, golangci-lint, gofmt, shellcheck, actionlint
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            cd pkgs/mcpx
+            go vet ./...
+            golangci-lint run
+            unformatted=$(gofmt -l .)
+            if [ -n "$unformatted" ]; then
+              echo "gofmt would rewrite:"
+              echo "$unformatted"
+              exit 1
+            fi
+            cd ../..
+            shellcheck -x -P SCRIPTDIR --severity=warning pkgs/mcpx/scripts/*.sh
+            actionlint
+          '
+
+  plugin:
+    name: "basic: plugin tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # Every test file the plugin has, not the single daemon.test.ts #1996
+      # was written against. Ops tests skip unless OPS_LIVE_SOCKET is set:
+      # they need a running daemon, and this leg deliberately does not
+      # provide one (the Go test job is where the daemon itself is tested).
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: bun test
+        working-directory: pkgs/mcpx
+        run: bun test plugin/opencode/mcpx/
+
   vendorhash-repair:
     name: vendorHash repair (bot dependency bumps only)
     # Only on bot branches. A human changing dependencies should see the
