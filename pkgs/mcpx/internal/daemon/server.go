@@ -310,6 +310,24 @@ func (s *Server) TSNetStatus(ctx context.Context) (status TSNetStatus, ok bool, 
 
 // Listen binds both listeners and publishes the daemon record.
 func (s *Server) Listen(tcpPort int) error {
+	// The bind call site for MCPX_SOCKET (#1886 step 6): a daemon started
+	// with the variable binds the named socket, and the record it
+	// publishes then names that socket.
+	s.paths.Socket = s.paths.BindSocket()
+	// The selected bind path's parent may not exist yet (#1886, Codex
+	// on PR #2561): NewServer ran EnsureDirs against the *computed*
+	// socket, so an MCPX_SOCKET pointing into a fresh directory would
+	// fail to bind. Create the bind path's parent here, at the bind
+	// call site, once the bind socket is actually known.
+	if dir := filepath.Dir(s.paths.Socket); dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	if preferred, relocated := s.paths.Relocated(); relocated {
+		s.logger.Printf("socket relocated to %s: state path is %d bytes, limit %d",
+			s.paths.Socket, len(preferred), maxSocketPath)
+	}
 	// A stale socket from a crashed daemon must not block a fresh one.
 	if err := s.clearStaleSocket(); err != nil {
 		return err
@@ -917,6 +935,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			semantic = cs.Bool("search.semantic")
 		}
 	}
+	tag := r.URL.Query().Get("tag")
+	explain := r.URL.Query().Get("explain") == "true" || r.URL.Query().Get("explain") == "1"
+	if tag != "" || explain {
+		writeJSON(w, 200, s.reg.SearchSemanticOpts(r.URL.Query().Get("q"), limit, semantic, tag, explain))
+		return
+	}
 	writeJSON(w, 200, s.reg.SearchSemantic(r.URL.Query().Get("q"), limit, semantic))
 }
 
@@ -1023,6 +1047,14 @@ func callContext(r *http.Request, body config.CallContext, session string) confi
 		if n, err := strconv.Atoi(r.Header.Get("X-Mcpx-Pid")); err == nil {
 			cc.PID = n
 		}
+	}
+	// A caller reporting this daemon's own PID is reporting a process
+	// every caller of the daemon shares -- /v1/exec runs, whose script
+	// env carries the daemon's os.Getpid(). That PID keys shared
+	// instances; it must never read as caller-private when an ephemeral
+	// run ends (#1942 follow-up).
+	if cc.PID > 0 && cc.PID == os.Getpid() {
+		cc.PIDShared = true
 	}
 	if !cc.Ephemeral {
 		cc.Ephemeral = r.Header.Get("X-Mcpx-Ephemeral") == "1"
@@ -1459,22 +1491,49 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ping := time.NewTicker(s.set.Duration("http.ssePing"))
 	defer ping.Stop()
 
+	// lastSeq is the sequence of the last event this client actually
+	// received. A live drop leaves a hole after it, and the gap notice names
+	// that hole rather than the client discovering it by finding a sequence
+	// number missing -- which is exactly the silent loss the bus promises
+	// not to have.
+	lastSeq := since
+	// toldDrops is the subscription's drop count at the last notice, so one
+	// stall produces one gap event and not a notice per delivered event.
+	var toldDrops uint64
+	tellGap := func() {
+		dropped := sub.Dropped.Load()
+		if dropped == 0 || dropped == toldDrops {
+			return
+		}
+		toldDrops = dropped
+		fmt.Fprintf(w, "event: gap\ndata: {\"since\":%d,\"latest\":%d,\"dropped\":%d}\n\n",
+			lastSeq, s.Events.Latest(), dropped)
+		flusher.Flush()
+	}
+
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case <-ping.C:
+			// Checked here too: a subscriber that stopped reading long
+			// enough to lose events has nothing new to read afterwards, so
+			// waiting for the next event to report the loss could wait
+			// forever.
+			tellGap()
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
 		case e, open := <-sub.C:
 			if !open {
 				return
 			}
+			tellGap()
 			b, err := json.Marshal(e)
 			if err != nil {
 				continue
 			}
 			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.Seq, e.Kind, b)
+			lastSeq = e.Seq
 			flusher.Flush()
 		}
 	}

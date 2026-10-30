@@ -273,6 +273,26 @@ func TestOnlyKeysTheCallerMintedAreCallerOwned(t *testing.T) {
 	}
 }
 
+// An ephemeral /v1/exec run reports the daemon's own PID, which every
+// overlapping run shares: that pid: key must stay out of caller ownership
+// even though the caller's own session and call keys remain its own
+// (#1942 follow-up).
+func TestSharedDaemonPIDIsNotCallerOwned(t *testing.T) {
+	shared := config.CallContext{SessionID: "exec-1", PID: 4242, CallID: "c",
+		Ephemeral: true, PIDShared: true}
+	if shared.CallerOwned("pid:4242") {
+		t.Error("the shared daemon pid: key must not be released at one run's end")
+	}
+	if !shared.CallerOwned("session:exec-1") || !shared.CallerOwned("call:c") {
+		t.Error("the run's own session and call keys stay caller-owned")
+	}
+	own := shared
+	own.PIDShared = false
+	if !own.CallerOwned("pid:4242") {
+		t.Error("a caller's own pid: key is caller-owned when ephemeral")
+	}
+}
+
 func TestCwdScopeCaseDifferingDirectoriesStaySeparate(t *testing.T) {
 	// On a case-sensitive volume these are two directories and must never
 	// share a key (#1912: identity keying makes the unsafe direction

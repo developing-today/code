@@ -15,6 +15,7 @@ import (
 
 	"strings"
 
+	mcpx "github.com/dezren39/mcpx"
 	"github.com/dezren39/mcpx/internal/config"
 	"github.com/dezren39/mcpx/internal/daemon"
 	"github.com/dezren39/mcpx/internal/defaults"
@@ -327,7 +328,11 @@ func (a *App) CmdDaemon(ctx context.Context, args []string) error {
 	handler := logging.NewSlogHandler(writer).WithSourceLevel(
 		logging.SourceLevel(firstSet(logSource.Value(), set.String("logging.source"), cfg.Logging.Source)))
 	logger := slog.NewLogLogger(handler, slog.LevelInfo)
-	a.daemonSocket = paths.Socket
+	// The back-channel socket plugins receive must be the socket this
+	// daemon actually binds (#1886, Codex on PR #2561): with
+	// MCPX_SOCKET set, Listen binds BindSocket(), not the computed
+	// paths.Socket, so record the bind socket here.
+	a.daemonSocket = paths.BindSocket()
 	srv, err := daemon.NewServer(daemon.Options{
 		Sink:     sink,
 		Config:   cfg,
@@ -553,6 +558,11 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 		IdleTimeout string `json:"idleTimeout"`
 		CallTimeout string `json:"callTimeout"`
 		Protocol    string `json:"protocol,omitempty"`
+		// Auth is mcpauth.Auth.Describe(): the redacted summary
+		// ("bearer ${VAR}", "none", …) — the reference, never the
+		// resolved value, since this output gets pasted into issues
+		// (#1926).
+		Auth string `json:"auth"`
 	}
 	out := struct {
 		Path    string   `json:"path"`
@@ -565,6 +575,7 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 			Sharing: string(s.Sharing), Scope: string(s.Scope), Max: s.Max,
 			IdleTimeout: s.IdleTimeout.String(), CallTimeout: s.CallTimeout.String(),
 			Protocol: s.Protocol,
+			Auth:     s.Auth.Describe(),
 		}
 		if s.Stdio() {
 			r.Transport, r.Command = "stdio", s.Command
@@ -704,6 +715,14 @@ func joinLines(ss []string) string {
 func (a *App) CmdHelp(_ context.Context, args []string) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fmt.Print(Usage())
+		return nil
+	}
+	if args[0] == "agents" {
+		// A help topic, not a command: the agent documentation embedded
+		// in the binary, printed verbatim -- no heading, no wrapping --
+		// so the output is byte-identical to AGENTS.md and an agent can
+		// consume it exactly as it would the file.
+		fmt.Print(mcpx.AgentDocs)
 		return nil
 	}
 	return a.helpFor(args[0])
@@ -863,6 +882,8 @@ func Usage() string {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("HELP TOPICS\n")
+	b.WriteString("  mcpx help agents               print the agent documentation (AGENTS.md) embedded in this binary\n\n")
 	b.WriteString("  mcpx help <command>            usage, flags and settings for one command\n\n")
 	b.WriteString(usageFooter)
 	return b.String()

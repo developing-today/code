@@ -154,9 +154,12 @@ inherited from `mcpx --json run` rather than invented, so the two agree.
 
 ```
 start{runId}
+hook{phase:"before",...}       (one per before hook, in declaration order)
 log | emit | stdout | call{server,tool,argsHash,durationMs,ok,error?,destructiveHint?}   (interleaved, as they happen)
 artifact{id,name,mime,size,sha256,uri}
+hook{phase:"onSuccess"|"onError",...}
 result | error
+hook{phase:"suffix",...}       (one per suffix hook, either path)
 end{exitCode,durationMs}
 ---- only for delivery:"stream" ----
 artifact.chunk{id,seq,data}
@@ -170,6 +173,12 @@ succeeded, and the tool's `destructiveHint` when its annotations declare
 one. Call frames appear on runs the daemon itself executes, whose call
 path can reach the run's stream; a run whose calls arrive at a daemon
 that is not executing it has no stream there to join.
+
+Hook frames sit where the hook ran, so the answer a consumer reads is the
+final one: an `onSuccess`/`onError` hook frame precedes the `result`/`error`
+frame it may have replaced (its frame carries the original when it changed
+the value), and a `suffix` hook frame follows the outcome, before `end`. A
+replaced error produces no `error` frame at all.
 
 Artifact **metadata** comes before `end`; artifact **bodies** come strictly
 after it. That is the whole point of the design, and it is step 5 of the
