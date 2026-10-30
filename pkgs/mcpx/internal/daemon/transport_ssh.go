@@ -35,6 +35,10 @@ import (
 // remote mcpx somewhere else is named with ?bin=.
 const SSHDefaultBin = "mcpx"
 
+// sshWaitDelay bounds Cmd.Wait's stderr draining after ssh exits or is
+// killed; see DialContext.
+const sshWaitDelay = 3 * time.Second
+
 // SSHProxyCommand is the subcommand run on the remote host: it connects
 // its stdin/stdout to that host's daemon socket. It is a public command
 // (mcpx stdio-proxy) rather than a hidden one: it appears in the ssh
@@ -102,6 +106,44 @@ func (e SSHEndpoint) RemoteCommand() []string {
 		argv = append(argv, "--sock", e.Sock)
 	}
 	return argv
+}
+
+// shellQuote renders one argument safe to embed in the remote command
+// line. ssh sends the remote command to the far side's shell as a single
+// string (its arguments joined with spaces), so a ?bin= or ?sock= value
+// containing spaces or metacharacters would otherwise be split — or
+// worse, interpreted — remotely. Arguments made only of shell-inert
+// characters pass through unquoted, keeping the ordinary command line
+// exactly what a reader expects to see.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	if strings.IndexFunc(s, func(r rune) bool {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			return false
+		}
+		switch r {
+		case '_', '-', '.', '/', ':', '@', '%', '+', '=', ',':
+			return false
+		}
+		return true
+	}) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// remoteCommandLine is RemoteCommand as the one string ssh actually
+// delivers to the remote shell, each argument shell-quoted.
+func (e SSHEndpoint) remoteCommandLine() string {
+	argv := e.RemoteCommand()
+	quoted := make([]string, len(argv))
+	for i, a := range argv {
+		quoted[i] = shellQuote(a)
+	}
+	return strings.Join(quoted, " ")
 }
 
 // ParseSSHEndpoint parses ssh://[user@]host[:port][?bin=...&sock=...].
@@ -194,9 +236,18 @@ func (d *SSHDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, err
 	}
 	args = append(args, "--", d.Endpoint.Target())
 	remote := d.Endpoint.RemoteCommand()
-	args = append(args, remote...)
+	// One argument, shell-quoted: ssh joins the command arguments with
+	// spaces and the remote shell parses the result, so quoting here is
+	// what preserves each value's argument boundary on the far side.
+	args = append(args, d.Endpoint.remoteCommandLine())
 
 	cmd := exec.Command(d.sshBin(), args...)
+	// Bound how long Wait may spend on the stderr copy after ssh dies:
+	// a ProxyCommand child of ssh can inherit the stderr pipe and hold
+	// it open long after ssh itself is gone, and an unbounded Wait
+	// would make Close (called synchronously by net/http on cancel)
+	// block for that child's whole lifetime.
+	cmd.WaitDelay = sshWaitDelay
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("ssh %s: %w", d.Endpoint.Target(), err)
@@ -294,9 +345,11 @@ func (c *sshConn) wait() {
 	c.waitOnce.Do(func() {
 		c.waitErr = c.cmd.Wait()
 		if c.closed && c.waitErr != nil {
-			// A kill we asked for is not a failure to report.
+			// A kill we asked for is not a failure to report — and
+			// neither is the wait-delay expiry that kill can cause
+			// when a proxy child still holds the stderr pipe.
 			var ee *exec.ExitError
-			if errors.As(c.waitErr, &ee) {
+			if errors.As(c.waitErr, &ee) || errors.Is(c.waitErr, exec.ErrWaitDelay) {
 				c.waitErr = nil
 			}
 		}

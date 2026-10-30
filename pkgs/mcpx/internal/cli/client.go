@@ -433,12 +433,15 @@ func (c *Client) EnsureDaemon(ctx context.Context) error {
 			// usually on the far side -- no daemon on that socket, or no
 			// mcpx on that PATH -- and "unreachable" alone sends the
 			// reader looking at the wrong machine.
-			_, derr := c.do(ctx, http.MethodGet, "/v1/health", nil)
-			if derr == nil {
-				derr = ErrNoDaemon
+			// A successful health request here — after a Ping that
+			// timed out on a slow handshake — means the daemon IS
+			// reachable; accept it instead of reporting ErrNoDaemon.
+			if _, derr := c.do(ctx, http.MethodGet, "/v1/health", nil); derr == nil {
+				return nil
+			} else {
+				return fmt.Errorf("no mcpx daemon at %s (remote command: %s): %v; it is not started from here",
+					c.sshURL, strings.Join(c.ssh.RemoteCommand(), " "), derr)
 			}
-			return fmt.Errorf("no mcpx daemon at %s (remote command: %s): %v; it is not started from here",
-				c.sshURL, strings.Join(c.ssh.RemoteCommand(), " "), derr)
 		}
 		return fmt.Errorf("no mcpx daemon at %s; it is not started from here", c.endpoint)
 	}

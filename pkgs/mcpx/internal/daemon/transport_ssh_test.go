@@ -76,3 +76,21 @@ func TestSSHEndpointRemoteCommand(t *testing.T) {
 		}
 	}
 }
+
+// The command line ssh delivers is one string the remote shell parses:
+// a ?bin= or ?sock= value with spaces must arrive as ONE argument.
+func TestSSHRemoteCommandLineQuotesValuesWithSpaces(t *testing.T) {
+	ep := SSHEndpoint{Host: "h", Bin: "/opt/My Tools/mcpx", Sock: "/run/my dir/d.sock"}
+	got := ep.remoteCommandLine()
+	want := "'/opt/My Tools/mcpx' stdio-proxy --sock '/run/my dir/d.sock'"
+	if got != want {
+		t.Errorf("remoteCommandLine() = %q; want %q", got, want)
+	}
+	plain := (SSHEndpoint{Host: "h", Bin: "/opt/mcpx", Sock: "/run/d.sock"}).remoteCommandLine()
+	if plain != "/opt/mcpx stdio-proxy --sock /run/d.sock" {
+		t.Errorf("inert values should pass through unquoted, got %q", plain)
+	}
+	if q := shellQuote("it's"); q != `'it'\''s'` {
+		t.Errorf("shellQuote(it's) = %q", q)
+	}
+}
