@@ -1092,6 +1092,9 @@ export interface UsageMetric {
   unit: UsageUnit;
   /** 0–100+, present when used and limit are both known (or unit is pct). */
   percent?: number;
+  /** `used` is a lower bound (e.g. capped API result), so derived
+   * percentages must read "at least N%". */
+  lowerBound?: boolean;
   /** In the §2 highlight set (front page); false = detail view only. */
   highlight: boolean;
   note?: string;
