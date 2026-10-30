@@ -134,6 +134,11 @@ buildGo127Module {
         # environment makes that untrue in the sandbox (#2686). It runs in
         # CI on main instead.
         "internal/settings"
+        # internal/cli drives the real CLI, daemon and adapter
+        # subprocesses and hangs waiting on them in the build sandbox: on
+        # 2026-10-30 it burned its whole 30m timeout with no failing test
+        # (#2686). It runs in CI on main instead.
+        "internal/cli"
       ];
     in
     ''
