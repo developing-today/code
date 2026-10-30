@@ -2274,7 +2274,14 @@ func (sh scriptShape) phases() runner.Phases {
 }
 
 func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape, error) {
-	sh := scriptShape{captureConsole: !f.noConsole, env: map[string]string{}}
+	// script.captureConsole is the durable form of --no-capture-console:
+	// either one turning capture off turns it off. The daemon's exec
+	// service already read the resolved setting (routes_exec.go); the
+	// local shape read only the flag, so the variable and the config
+	// key were inert for a local run - the #1971 effect guard's probe
+	// is what caught the gap.
+	sh := scriptShape{captureConsole: !f.noConsole && a.Settings().Bool("script.captureConsole"),
+		env: map[string]string{}}
 	// hooks.autonomy, lowered to autonomy.max, governs phases that came from a
 	// configuration file or the environment: they are code this command did not
 	// send. Phases given as flags are the caller's own and are never gated.
