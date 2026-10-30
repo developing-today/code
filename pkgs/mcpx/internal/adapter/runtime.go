@@ -90,6 +90,22 @@ func RuntimeInterpreter(name string) (bin string, prefix []string, err error) {
 // are what actually run.
 func (s Spec) command() (bin string, prefix []string, script string, err error) {
 	if s.Runtime == "" {
+		if s.Dir != "" && !filepath.IsAbs(s.Command) &&
+			(strings.ContainsRune(s.Command, '/') || strings.ContainsRune(s.Command, filepath.Separator)) {
+			// A relative path names a file, and the file it names is the
+			// one under the directory the call runs in: before commands
+			// were resolved here, Call handed the path to exec with
+			// cmd.Dir set, which resolved it there. LookPath alone
+			// resolves it against this process's own directory and
+			// misses an executable that exists only under Dir.
+			candidate := filepath.Join(s.Dir, s.Command)
+			if _, serr := os.Stat(candidate); serr == nil {
+				if abs, aerr := filepath.Abs(candidate); aerr == nil {
+					candidate = abs
+				}
+				return candidate, nil, "", nil
+			}
+		}
 		p, lerr := exec.LookPath(s.Command)
 		if lerr != nil {
 			return "", nil, "", fmt.Errorf("%s is not on PATH", s.Command)

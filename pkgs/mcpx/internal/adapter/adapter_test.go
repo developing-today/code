@@ -341,3 +341,30 @@ func TestAScriptOnPathFallsBackWhenAbsentFromDir(t *testing.T) {
 		t.Errorf("got %q", res.Stdout)
 	}
 }
+
+func TestARelativeExecutableResolvesAgainstDirWithoutARuntime(t *testing.T) {
+	// Regression (Codex on #2504): a declaration with command "./tool",
+	// an explicit dir and no runtime used to resolve the executable
+	// against the caller's working directory, so a tool that exists only
+	// under dir failed before it ever ran. Before commands were resolved
+	// in command(), exec resolved the path against cmd.Dir.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tool")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho dirlocal\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := adapter.Spec{
+		Name: "d", Command: "./tool", Dir: dir,
+		Tools: []adapter.ToolSpec{{Name: "go"}},
+	}
+	if err := spec.Probe(); err != nil {
+		t.Fatalf("an executable under Dir should probe: %v", err)
+	}
+	res, err := spec.Call(context.Background(), "go", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, "dirlocal") {
+		t.Errorf("got %q", res.Stdout)
+	}
+}

@@ -1024,8 +1024,17 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 			// error. The distinction matters: a protocol error means the
 			// client did something wrong, and a client that retries the
 			// wrong thing on a tool failure never converges.
+			//
+			// Text the tool returned alongside the error stays in the
+			// result: for a recipe that is its stdout/stderr, which is
+			// the diagnostics the caller needs. Dropping it left only
+			// "recipe exited with code N" to debug from.
+			errText := err.Error()
+			if text != "" && text != errText {
+				errText = text + "\n\n" + errText
+			}
 			return reply(map[string]any{
-				"content": []any{map[string]any{"type": "text", "text": err.Error()}},
+				"content": []any{map[string]any{"type": "text", "text": errText}},
 				"isError": true,
 			})
 		}

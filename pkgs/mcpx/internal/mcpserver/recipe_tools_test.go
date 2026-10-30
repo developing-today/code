@@ -151,3 +151,25 @@ func names(tools []mcpserver.Tool) []string {
 	}
 	return out
 }
+
+func TestAFailedRecipeCallKeepsItsOutputInTheErrorResult(t *testing.T) {
+	// Regression (Codex on #2504): a recipe that printed diagnostics and
+	// exited nonzero had that output dropped by the tools/call handler,
+	// which sent only the error text, so the caller saw "recipe exited
+	// with code 1" and none of what the recipe actually said.
+	srv := recipeSurface(t,
+		[]recipes.Recipe{parseRecipe("close-stale", recipeSource)},
+		func(context.Context, string, map[string]any) (string, error) {
+			return "boom: the repo is gone\n\n(exit 1)", errors.New("recipe exited with code 1")
+		})
+	text, isErr := call(t, srv, "recipe_close-stale", map[string]any{})
+	if !isErr {
+		t.Fatalf("a failed recipe call should be an isError result, got %q", text)
+	}
+	if !strings.Contains(text, "boom: the repo is gone") {
+		t.Errorf("the recipe output should survive into the result: %q", text)
+	}
+	if !strings.Contains(text, "recipe exited with code 1") {
+		t.Errorf("the error should still be named: %q", text)
+	}
+}
