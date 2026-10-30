@@ -154,7 +154,7 @@ inherited from `mcpx --json run` rather than invented, so the two agree.
 
 ```
 start{runId}
-log | emit | stdout            (interleaved, as they happen)
+log | emit | stdout | call{server,tool,argsHash,durationMs,ok,error?,destructiveHint?}   (interleaved, as they happen)
 artifact{id,name,mime,size,sha256,uri}
 result | error
 end{exitCode,durationMs}
@@ -162,6 +162,14 @@ end{exitCode,durationMs}
 artifact.chunk{id,seq,data}
 artifact.end{id}
 ```
+
+A `call` frame records one tool call the script made while it ran: the
+server and tool, a hash of the arguments (never the arguments -- a stream
+is a thing other people read), how long the call took, whether it
+succeeded, and the tool's `destructiveHint` when its annotations declare
+one. Call frames appear on runs the daemon itself executes, whose call
+path can reach the run's stream; a run whose calls arrive at a daemon
+that is not executing it has no stream there to join.
 
 Artifact **metadata** comes before `end`; artifact **bodies** come strictly
 after it. That is the whole point of the design, and it is step 5 of the

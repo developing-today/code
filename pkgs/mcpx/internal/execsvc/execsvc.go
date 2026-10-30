@@ -17,7 +17,9 @@ package execsvc
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -183,6 +185,9 @@ type Frame struct {
 
 	Artifact *Artifact `json:"artifact,omitempty"`
 
+	// Call carries one tool call the script made, under FrameCall.
+	Call *CallInfo `json:"call,omitempty"`
+
 	// ID, Seq and Data carry a body chunk under delivery "stream".
 	ID   string `json:"id,omitempty"`
 	Seq  int    `json:"seq,omitempty"`
@@ -199,6 +204,7 @@ const (
 	FrameStart        = "start"
 	FrameLog          = "log"
 	FrameEmit         = "emit"
+	FrameCall         = "call"
 	FrameStdout       = "stdout"
 	FrameArtifact     = "artifact"
 	FrameResult       = "result"
@@ -207,6 +213,83 @@ const (
 	FrameArtifactData = "artifact.chunk"
 	FrameArtifactEnd  = "artifact.end"
 )
+
+// CallInfo is one tool call a script made during a run, as a FrameCall
+// frame carries it. The arguments travel as a hash, never in clear: an
+// exec stream is a thing other people read, and a call's arguments are
+// the script's business. DestructiveHint is nil when the tool's
+// annotations declare nothing the daemon could read.
+type CallInfo struct {
+	Server          string `json:"server"`
+	Tool            string `json:"tool"`
+	ArgsHash        string `json:"argsHash"`
+	DurationMs      int64  `json:"durationMs"`
+	OK              bool   `json:"ok"`
+	Error           string `json:"error,omitempty"`
+	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+}
+
+// ArgsHash is the stable fingerprint of a call's arguments: sha256 of
+// their canonical JSON, hex-encoded. Two calls with the same arguments
+// hash alike, which is what a reader comparing calls wants.
+func ArgsHash(args any) string {
+	b, err := json.Marshal(args)
+	if err != nil {
+		b = []byte(fmt.Sprintf("%#v", args))
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// CallRegistry is the run-scoped sink registry between the daemon's
+// call path and the exec streams the daemon is running: a run registers
+// its stream's sink under its run id, and a tool call made with that
+// run id in its context (the x-mcpx-run header a generated client sends)
+// is reported to the sink as a call frame. Calls for runs nobody here
+// is executing are dropped, by design: there is no stream to join.
+type CallRegistry struct {
+	mu    sync.Mutex
+	sinks map[string]func(Frame)
+}
+
+// NewCallRegistry builds an empty registry.
+func NewCallRegistry() *CallRegistry {
+	return &CallRegistry{sinks: map[string]func(Frame){}}
+}
+
+// Register installs sink for runID and returns the function that
+// removes it. Registering the same run twice replaces the first sink.
+func (r *CallRegistry) Register(runID string, sink func(Frame)) (unregister func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sinks[runID] = sink
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		delete(r.sinks, runID)
+	}
+}
+
+// ReportCall builds a call frame and delivers it to the sink registered
+// for runID. It reports whether a sink was there to receive it.
+func (r *CallRegistry) ReportCall(runID, server, tool string, args any, dur time.Duration, callErr error, destructive *bool) bool {
+	r.mu.Lock()
+	sink, ok := r.sinks[runID]
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	info := &CallInfo{
+		Server: server, Tool: tool, ArgsHash: ArgsHash(args),
+		DurationMs: dur.Milliseconds(), OK: callErr == nil,
+		DestructiveHint: destructive,
+	}
+	if callErr != nil {
+		info.Error = callErr.Error()
+	}
+	sink(Frame{Type: FrameCall, RunID: runID, Call: info})
+	return true
+}
 
 // Artifact is one artifact as a caller receives it: always the metadata,
 // plus whatever the declared delivery adds.
@@ -315,6 +398,12 @@ type Service struct {
 	// Logs, when set, receives every record the script produced, for the
 	// durable log.
 	Logs func(logging.Record)
+	// Calls, when set, is the registry this service's runs register
+	// their streams in, so the daemon's call path can report the calls
+	// a script makes as call frames on its own stream. The daemon
+	// shares one registry between the services it builds and its call
+	// handlers.
+	Calls *CallRegistry
 }
 
 // Request is one execution.
@@ -469,6 +558,14 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 			sinkErr = err
 			cancel()
 		}
+	}
+
+	// The run's stream is registered for the calls the script is about
+	// to make: the daemon's call path finds it by run id and reports
+	// each call as a call frame, interleaved with the run's own output
+	// exactly where it happened.
+	if s.Calls != nil {
+		defer s.Calls.Register(runID, emitFrame)()
 	}
 
 	var stdout strings.Builder
