@@ -117,6 +117,18 @@ export class QueueClient {
     await this.rpc("cancel_repo_task", { p_task_id: id, p_worker: worker, p_reason: reason });
   }
 
+  /** Record the execution-lane assignment for a claimed task
+   * (assign_repo_task_lane, the lane-ledger RPC the queue workers call
+   * after claiming). It reads the lane from the task's progress, which
+   * the claim PATCH has just set — so it must run after that PATCH. */
+  async assignLane(id: number, worker = "dispatch-opencode"): Promise<void> {
+    await this.rpc("assign_repo_task_lane", {
+      p_task_id: id,
+      p_worker: worker,
+      p_exclusion_reason: null,
+    });
+  }
+
   private workerEnsured: Promise<void> | null = null;
 
   /** agent.tasks.worker_id is an FK into agent.workers, so the dispatch

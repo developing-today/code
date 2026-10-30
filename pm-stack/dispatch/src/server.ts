@@ -141,6 +141,22 @@ async function launchSession(
     },
   });
 
+  // Lane ledger: the same assignment the queue workers record after a
+  // claim, so a later completion can record the executed lane. The
+  // launch itself is already real at this point, so a ledger failure is
+  // noted on the task rather than failing the dispatch.
+  try {
+    await requireQueue().assignLane(task.id);
+  } catch (e) {
+    try {
+      await requireQueue().patchTask(task.id, {
+        last_error: `lane assignment failed (launch unaffected): ${e instanceof Error ? e.message : String(e)}`,
+      });
+    } catch {
+      /* nothing more to do — the claim stands */
+    }
+  }
+
   if (issue) {
     await github.comment(
       req.repo,
