@@ -522,6 +522,16 @@ func (p *Pool) installServerHooks(opts *mcpclient.Options, ref *instanceRef) {
 			return h.Elicit(ctx, p.cfg.Name, ref.key(), method, params)
 		}
 	}
+	if h.URLElicitation != nil {
+		opts.OnURLElicitationRequired = func(ctx context.Context, elicitations []mcpclient.URLElicitation) (bool, error) {
+			// Same budget pause as OnServerRequest: while a person or
+			// agent answers, the interrupted call is not using its budget.
+			if in := ref.ptr.Load(); in != nil {
+				defer in.questions.asking()()
+			}
+			return h.URLElicitation(ctx, p.cfg.Name, ref.key(), elicitations)
+		}
+	}
 	opts.Roots = h.Roots
 	opts.ProbeTimeout = h.ProbeTimeout
 	opts.ServerName = p.cfg.Name
@@ -1131,7 +1141,12 @@ type Hooks struct {
 	// connection serves one key, so whoever is calling on that key is who
 	// the server is asking.
 	Elicit func(ctx context.Context, server, key, method string, params json.RawMessage) (any, error)
-	Roots  []mcpclient.Root
+	// URLElicitation opens the URL elicitations an upstream's -32042
+	// tools/call error names, parallel to Elicit: server and key say
+	// which connection's call was interrupted. True only when every
+	// entry was accepted; anything else fails the call with no retry.
+	URLElicitation func(ctx context.Context, server, key string, elicitations []mcpclient.URLElicitation) (bool, error)
+	Roots          []mcpclient.Root
 	// LogLevel is requested from every server that supports logging.
 	LogLevel string
 	// Protocol is the era preference for a server whose config names none.
