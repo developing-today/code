@@ -332,6 +332,11 @@ func (s *Server) Listen(tcpPort int) error {
 	// Loopback unless told otherwise. Binding wider is a deliberate act:
 	// the API is unauthenticated, so the network it is on is the access
 	// control, and that has to be somebody's decision rather than a default.
+	// The authorisation vocabulary (#1968, internal/api principal.go) now
+	// names who is calling on each surface and what each operation would
+	// require, and records the decision per request -- permissively: every
+	// principal resolves to the owner and every check answers yes, so this
+	// remains true until a policy issue says otherwise.
 	host := s.Address
 	if host == "" {
 		host = s.set.String("daemon.address")
@@ -431,9 +436,10 @@ func (s *Server) startHTTP() {
 	mux := http.NewServeMux()
 	s.routes(mux)
 	srv := &http.Server{
-		Handler:           s.refuseBrowserPages(s.trackActivity(mux)),
+		Handler:           s.refuseBrowserPages(s.trackActivity(s.authorize(mux))),
 		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout"),
 		ConnState:         s.observeConn,
+		ConnContext:       connPrincipal,
 	}
 	s.httpSrv = srv
 	listeners := []net.Listener{s.unixLn, s.tcpLn}
@@ -486,7 +492,8 @@ func (s *Server) ServeInline(ctx context.Context, socket string) error {
 	}
 	s.unixLn = ln
 	s.httpSrv = &http.Server{Handler: s.Handler(),
-		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout")}
+		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout"),
+		ConnContext:       connPrincipal}
 	go func() {
 		<-ctx.Done()
 		s.stopServing()
@@ -503,7 +510,7 @@ func (s *Server) ServeInline(ctx context.Context, socket string) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.routes(mux)
-	return s.refuseBrowserPages(mux)
+	return s.refuseBrowserPages(s.authorize(mux))
 }
 
 // InProcessHandler returns Handler with the daemon's lifetime tied to
@@ -532,7 +539,8 @@ func (s *Server) ServeSocket(ctx context.Context, socket string) error {
 		return err
 	}
 	srv := &http.Server{Handler: s.Handler(),
-		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout")}
+		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout"),
+		ConnContext:       connPrincipal}
 	go func() {
 		<-ctx.Done()
 		_ = srv.Close()

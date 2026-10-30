@@ -12,14 +12,16 @@ func secretsOps() []Op {
 	return []Op{
 		{
 			Name: "secrets_list", Method: "GET", Path: "/v1/secrets",
-			Command: "secrets list",
-			Summary: "Which secrets servers need, and which of them have a value",
+			Permission: PermissionRead,
+			Command:    "secrets list",
+			Summary:    "Which secrets servers need, and which of them have a value",
 			Description: "Names only, never values. Lists every name a configured server " +
 				"requires and every name given a value at runtime, with whether it is " +
 				"set and whether the value came from the environment or from runtime.",
 		},
 		{
 			Name: "secrets_set", Method: "PUT", Path: "/v1/secrets/{name}",
+			Permission: PermissionAdmin,
 			Command:    "secrets set",
 			Idempotent: true,
 			NoTool: "a value sent as a tool argument would sit in the model's context " +
@@ -42,6 +44,7 @@ func secretsOps() []Op {
 		},
 		{
 			Name: "secrets_unset", Method: "DELETE", Path: "/v1/secrets/{name}",
+			Permission: PermissionAdmin,
 			Command:    "secrets unset",
 			Idempotent: true,
 			Summary:    "Forget a runtime value for a secret",
@@ -57,16 +60,18 @@ func secretsOps() []Op {
 		},
 		{
 			Name: "secret_requests_list", Method: "GET", Path: "/v1/secret-requests",
-			Command: "secrets requests",
-			Summary: "Requests waiting for a person to give secrets",
+			Permission: PermissionRead,
+			Command:    "secrets requests",
+			Summary:    "Requests waiting for a person to give secrets",
 			Description: "Pending requests first, oldest first, then the resolved and declined " +
 				"ones from the last ten minutes. A request names a server and the secrets " +
 				"it needs, never their values.",
 		},
 		{
 			Name: "secret_request_get", Method: "GET", Path: "/v1/secret-requests/{id}",
-			Command: "secrets request",
-			Summary: "One secret request, and whether it is still waiting",
+			Permission: PermissionRead,
+			Command:    "secrets request",
+			Summary:    "One secret request, and whether it is still waiting",
 			Description: "Poll this while a script waits: a request becomes resolved once every " +
 				"secret it names has a value, and declined when somebody says no.",
 			Params: []Param{
@@ -75,6 +80,7 @@ func secretsOps() []Op {
 		},
 		{
 			Name: "secret_request_decline", Method: "DELETE", Path: "/v1/secret-requests/{id}",
+			Permission: PermissionAdmin,
 			Command:    "secrets decline",
 			Idempotent: true,
 			Summary:    "Decline a secret request",
@@ -88,6 +94,7 @@ func secretsOps() []Op {
 		},
 		{
 			Name: "preflight", Method: "POST", Path: "/v1/preflight",
+			Permission: PermissionRun,
 			Idempotent: true,
 			Summary:    "Check a script's servers are ready before running it",
 			Description: "Reads a script without running anything and reports which servers it " +
