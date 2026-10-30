@@ -109,6 +109,14 @@ export type ToolRuntimeDeps = {
   discoverFn?: typeof discover;
   runBinFn?: typeof runBin;
   clientFor?: (target: Target) => DaemonClientLike;
+  /**
+   * The active daemon target changed (discovery settled on one, or a
+   * daemon_select applied a new choice). index.ts uses it to keep the
+   * session environment's MCPX_DAEMON_ENDPOINT pointing at the daemon
+   * the tools are actually using — v1 injected it from its shell.env
+   * hook for exactly this reason.
+   */
+  onTarget?: (target: Target) => void;
 };
 
 export type ToolRuntime = {
@@ -141,6 +149,12 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
       ? options.binArgs
       : splitArgs(options.binArgs),
     remembered: remembered ?? chosen,
+    // The v2 ladder is storage-backed (remember.ts). Without this the
+    // shared discover() falls back to the v1 remember FILE whenever no
+    // target is supplied — and daemon_forget, which removes only the
+    // storage record, would instantly rediscover the daemon it just
+    // forgot from the legacy file.
+    useRememberFile: false,
     env: deps.env,
   });
 
@@ -149,6 +163,9 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
   let chosen: Target | undefined;
   let found: Promise<Discovery> | undefined;
   let missedAt = 0;
+  // The last target reported through onTarget, so a stable daemon is
+  // reported once, not on every look.
+  let knownTargetKey: string | undefined;
 
   // The remembered choice, re-read on v1's cadence: another surface in
   // the same host may change it, and never re-reading would make that
@@ -187,6 +204,9 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
     if (!d.target) {
       found = undefined;
       missedAt = Date.now();
+    } else if (knownTargetKey !== targetKey(d.target)) {
+      knownTargetKey = targetKey(d.target);
+      deps.onTarget?.(d.target);
     }
     return d;
   };
@@ -271,6 +291,10 @@ export function createToolRuntime(deps: ToolRuntimeDeps): ToolRuntime {
     scope: "session" | "until-gone" | "indefinite" | "permanent",
   ): Promise<string> => {
     chosen = target;
+    if (knownTargetKey !== targetKey(target)) {
+      knownTargetKey = targetKey(target);
+      deps.onTarget?.(target);
+    }
     found = Promise.resolve(await discoverFn({ ...ladderOptions(), remembered: target }));
     if (scope === "session") return "Remembered for this session only.";
     if (scope === "permanent") {

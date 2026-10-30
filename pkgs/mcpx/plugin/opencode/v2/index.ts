@@ -8,6 +8,7 @@
  * namespace, so the model sees the v1 names — mcpx_exec and friends).
  * The v1 tree stays beside this one, untouched, until v2 is what runs.
  */
+import { targetKey, type Target } from "../mcpx/daemon.ts";
 import { appendContextOnce, type ContextHookInput } from "./context.ts";
 import { resolveOptions, type Options } from "./options.ts";
 import { readRememberedDaemon, type StorageLike } from "./remember.ts";
@@ -40,6 +41,32 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
     serverUrl: ctx.serverUrl,
     baseEnv: process.env,
   });
+  // The daemon endpoint rides in the session environment, as v1's
+  // shell.env hook injected it: a shell `mcpx` command must talk to the
+  // same daemon the plugin tools use, not walk its own ladder to a
+  // possibly different one. MCPX_DAEMON_ENDPOINT, not MCPX_SOCKET —
+  // the endpoint is only read when connecting, while the socket also
+  // decides where a newly started daemon binds (v1's reasoning,
+  // mcpx-session.ts). Sessions are tracked so a daemon_select later in
+  // the session can refresh the ones already sent.
+  const envSessions = new Set<string>();
+  let activeEndpoint: string | undefined;
+  const sessionVars = (sessionID: string): Record<string, string> => {
+    const vars: Record<string, string> = {
+      MCPX_SESSION_ID: sessionID,
+      MCPX_DIRECTORY: directory,
+    };
+    if (activeEndpoint !== undefined) vars.MCPX_DAEMON_ENDPOINT = activeEndpoint;
+    return vars;
+  };
+  const noteTarget = (target: Target): void => {
+    const endpoint = targetKey(target);
+    if (endpoint === activeEndpoint) return;
+    activeEndpoint = endpoint;
+    for (const sessionID of envSessions) {
+      void sessionEnv.update(sessionID, sessionVars(sessionID)).catch(() => false);
+    }
+  };
   const timing = createTimingLog();
   // toolTiming comes from the resolved options (host option, then the
   // environment, then the v1 default false) — never a bare ?? true: a
@@ -60,12 +87,8 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
     if (options.instructions) appendContextOnce(input);
     // First sighting of a session is when its environment is sent — once,
     // with the full environment (session-env.ts explains why full).
-    void sessionEnv
-      .ensure(input.sessionID, {
-        MCPX_SESSION_ID: input.sessionID,
-        MCPX_DIRECTORY: directory,
-      })
-      .catch(() => false);
+    envSessions.add(input.sessionID);
+    void sessionEnv.ensure(input.sessionID, sessionVars(input.sessionID)).catch(() => false);
   });
 
   if (toolTiming) {
@@ -83,6 +106,7 @@ export async function setupMcpxV2(ctx: McpxV2Context, rawOptions?: Options): Pro
     env: process.env,
     options,
     storage: ctx.storage,
+    onTarget: noteTarget,
   });
   await registerTools(ctx.tool, runtime, {
     toolsEnabled: options.tools ?? false,

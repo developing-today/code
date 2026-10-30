@@ -44,6 +44,15 @@ export type Options = {
 const str = (v: unknown): string | undefined =>
   v === undefined || v === null || v === "" ? undefined : String(v);
 
+/**
+ * The bin resolution only: nullish, the v1 way. An explicit "" is a
+ * decision — forbid spawning — not an absence: str() would collapse it
+ * to undefined and runBin would fall back to MCPX_PLUGIN_BIN or the
+ * default binary, spawning exactly what the user forbade.
+ */
+const binStr = (v: unknown): string | undefined =>
+  v === undefined || v === null ? undefined : String(v);
+
 /** The v1 truthy parse: an unrecognised value is undefined, not false. */
 const truthy = (v: unknown): boolean | undefined => {
   if (v === undefined || v === null || v === "") return undefined;
@@ -86,7 +95,7 @@ export function resolveOptions(
   return {
     endpoint: str(o.endpoint) ?? str(env.MCPX_DAEMON_ENDPOINT) ?? str(env.MCPX_ENDPOINT),
     socket: str(o.socket) ?? str(env.MCPX_SOCKET),
-    bin: str(o.bin) ?? str(env.MCPX_PLUGIN_BIN),
+    bin: binStr(o.bin) ?? str(env.MCPX_PLUGIN_BIN),
     binArgs: Array.isArray(o.binArgs)
       ? o.binArgs
       : typeof o.binArgs === "string"

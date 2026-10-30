@@ -79,6 +79,36 @@ describe("session environment", () => {
     expect("UNSET" in sent.variables).toBe(false);
   });
 
+  test("update re-sends the FULL environment for a known session only", async () => {
+    const calls: { url: string; body: string }[] = [];
+    const fetchFn: FetchLike = async (url, init) => {
+      calls.push({ url, body: init.body ?? "" });
+      return { ok: true, status: 204 };
+    };
+    const adapter = createSessionEnv({
+      serverUrl: "http://host:1234",
+      baseEnv: { PATH: "/bin" },
+      fetchFn,
+    });
+    // A session never ensured has nothing to update.
+    expect(await adapter.update("s2", { MCPX_DAEMON_ENDPOINT: "unix:///a.sock" })).toBe(false);
+    expect(calls.length).toBe(0);
+    await adapter.ensure("s1", { MCPX_SESSION_ID: "s1" });
+    expect(
+      await adapter.update("s1", {
+        MCPX_SESSION_ID: "s1",
+        MCPX_DAEMON_ENDPOINT: "unix:///a.sock",
+      }),
+    ).toBe(true);
+    expect(calls.length).toBe(2);
+    const sent = JSON.parse(calls[1]?.body ?? "{}") as {
+      variables: Record<string, string>;
+    };
+    // The route replaces the session env: the update is a full send.
+    expect(sent.variables.PATH).toBe("/bin");
+    expect(sent.variables.MCPX_DAEMON_ENDPOINT).toBe("unix:///a.sock");
+  });
+
   test("no serverUrl degrades quietly and does not retry-storm", async () => {
     const adapter = createSessionEnv({ serverUrl: undefined, baseEnv: {} });
     expect(await adapter.ensure("s1", {})).toBe(false);

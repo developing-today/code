@@ -10,7 +10,8 @@
  *   bun test plugin/opencode/v2/tools.test.ts
  */
 import { describe, expect, test } from "bun:test";
-import type { Candidate, Discovery, Target } from "../mcpx/daemon.ts";
+import { rank, targetKey, type Candidate, type Discovery, type DiscoverOptions, type Target } from "../mcpx/daemon.ts";
+import { resolveOptions } from "./options.ts";
 import { setupMcpxV2, type McpxV2Context } from "./index.ts";
 import type { StorageLike } from "./remember.ts";
 import {
@@ -179,6 +180,55 @@ describe("setup: instructions gate (plugin.instructions)", () => {
     const { ctx, fireContext } = stubCtx();
     await setupMcpxV2(ctx, { tools: false, daemonTools: false, instructions: true });
     expect(fireContext("s1").system.length).toBe(1);
+  });
+});
+
+describe("options resolution (v1 parity)", () => {
+  test("an explicit empty bin is preserved — it forbids spawning", () => {
+    expect(resolveOptions({ bin: "" }, {}).bin).toBe("");
+    expect(
+      resolveOptions({ bin: "" }, { MCPX_PLUGIN_BIN: "/usr/bin/mcpx" }).bin,
+    ).toBe("");
+  });
+
+  test("bin falls back to the environment, then to unset", () => {
+    expect(resolveOptions({}, { MCPX_PLUGIN_BIN: "/opt/mcpx" }).bin).toBe("/opt/mcpx");
+    expect(resolveOptions({}, {}).bin).toBeUndefined();
+  });
+});
+
+describe("discovery ladder wiring", () => {
+  test("the ladder never reads the v1 remember file", async () => {
+    const seen: DiscoverOptions[] = [];
+    const rt = runtime({
+      discoverFn: async (opts: DiscoverOptions) => {
+        seen.push(opts);
+        return discoveryWith([candidate(socketTarget)]);
+      },
+    });
+    await rt.look();
+    expect(seen.length).toBeGreaterThan(0);
+    for (const opts of seen) expect(opts.useRememberFile).toBe(false);
+  });
+
+  test("onTarget fires once for the settled daemon, again on select", async () => {
+    const targets: Target[] = [];
+    const other: Target = { kind: "url", base: "http://127.0.0.1:9" };
+    const rt = runtime({
+      onTarget: (t: Target) => void targets.push(t),
+      discoverFn: async () =>
+        discoveryWith([candidate(socketTarget), candidate(other)]),
+    });
+    await rt.look();
+    await rt.look();
+    expect(targets).toEqual([socketTarget]);
+    const select = rt.daemonTools().find((t) => t.name === "daemon_select")!;
+    // daemon_select takes the index into the RANKED list, as status prints it.
+    const idx = rank([candidate(socketTarget), candidate(other)], "/work").findIndex(
+      (c) => targetKey(c.target) === targetKey(other),
+    );
+    await select.execute({ candidate: idx } as never, { sessionID: "s1" });
+    expect(targets).toEqual([socketTarget, other]);
   });
 });
 
