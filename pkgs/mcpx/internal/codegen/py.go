@@ -70,31 +70,32 @@ func PythonModule(nss []Namespace, endpoint, session string) string {
 
 	// TypedDicts for every tool's arguments and result, before the classes
 	// that name them: a reader meets the shape once, then the call.
+	classNames := pyClassNames(sorted)
 	var types strings.Builder
-	for _, ns := range sorted {
+	for i, ns := range sorted {
 		tools := sortedTools(ns)
 		for _, t := range tools {
-			writePyTypedDicts(&types, ns, t)
+			writePyTypedDicts(&types, classNames[i], t)
 		}
 	}
 	if types.Len() > 0 {
 		b.WriteString(types.String())
 	}
 
-	for _, ns := range sorted {
-		fmt.Fprintf(&b, "class %s:\n", pyClassName(ns.Name))
+	for i, ns := range sorted {
+		fmt.Fprintf(&b, "class %s:\n", classNames[i])
 		b.WriteString(pyNamespaceDoc(ns))
 		tools := sortedTools(ns)
 		if len(tools) == 0 {
 			b.WriteString("    \"\"\"No tools.\"\"\"\n\n")
 			continue
 		}
-		clash := funcCollisions(tools)
+		clash := pyCollisions(tools)
 		seen := map[string]bool{}
 		first := true
 		for _, t := range tools {
 			fn := pyMethodName(t.Name)
-			if names, ok := clash[ToolFuncName(t.Name)]; ok {
+			if names, ok := clash[fn]; ok {
 				// One method that raises, naming every tool behind it, rather
 				// than duplicate definitions where the last silently won.
 				if seen[fn] {
@@ -115,22 +116,36 @@ func PythonModule(nss []Namespace, endpoint, session string) string {
 				b.WriteString("\n")
 			}
 			first = false
-			b.WriteString(pyToolMethod(ns, t))
+			b.WriteString(pyToolMethod(ns, classNames[i], t))
 		}
 		b.WriteString("\n")
 	}
 
 	b.WriteString("class _Tools:\n")
 	b.WriteString("    \"\"\"The namespaces, reachable as tools.<namespace>.<tool>().\"\"\"\n\n")
-	for _, ns := range sorted {
-		fmt.Fprintf(&b, "    %s: %s\n", pyClassName(ns.Name), pyClassName(ns.Name))
+	for _, cn := range classNames {
+		fmt.Fprintf(&b, "    %s: %s\n", cn, cn)
 	}
 	b.WriteString("\n    def __init__(self) -> None:\n")
-	for _, ns := range sorted {
-		fmt.Fprintf(&b, "        self.%s = %s()\n", pyClassName(ns.Name), pyClassName(ns.Name))
+	if len(classNames) == 0 {
+		b.WriteString("        self._namespaces: List[Any] = []\n")
+	} else {
+		var holders []string
+		for _, cn := range classNames {
+			fmt.Fprintf(&b, "        self.%s = %s()\n", cn, cn)
+			holders = append(holders, "self."+cn)
+		}
+		fmt.Fprintf(&b, "        self._namespaces = [%s]\n", strings.Join(holders, ", "))
 	}
 	b.WriteString("\n    def __getattr__(self, name: str) -> Any:\n")
-	b.WriteString("        # tools.some_tool(args) calls a tool by bare name, like the TS client.\n")
+	b.WriteString("        # tools.some_tool(args) first resolves a generated namespace\n")
+	b.WriteString("        # method of that name (like the TS client's proxy), so the\n")
+	b.WriteString("        # call keeps its server and original tool name; only unknown\n")
+	b.WriteString("        # names fall back to a generic call by bare name.\n")
+	b.WriteString("        for _ns in self.__dict__.get(\"_namespaces\", []):\n")
+	b.WriteString("            _method = getattr(_ns, name, None)\n")
+	b.WriteString("            if callable(_method):\n")
+	b.WriteString("                return _method\n")
 	b.WriteString("        def _by_name(args: Optional[Dict[str, Any]] = None) -> Any:\n")
 	b.WriteString("            return call(name, args or {})\n")
 	b.WriteString("        return _by_name\n\n")
@@ -150,6 +165,10 @@ SOCKET = os.environ.get("MCPX_SOCKET") or ""
 
 # The daemon's last response envelope, for a caller that wants it.
 LAST_RESULT: Any = None
+
+# Sentinel for "argument not supplied": distinct from None, which a caller
+# may pass explicitly for a nullable argument and which must be sent as null.
+_MISSING: Any = object()
 
 
 class ToolError(RuntimeError):
@@ -297,9 +316,9 @@ def batch(calls: List[Dict[str, Any]]) -> List[Any]:
     return out
 
 
-def read_resource(uri: str) -> Any:
-    """Read one MCP resource by URI."""
-    status, body = _post("/v1/read", json.dumps({"uri": uri, "session": SESSION}).encode("utf-8"))
+def read_resource(server: str, uri: str) -> Any:
+    """Read one MCP resource by URI from a named server."""
+    status, body = _post("/v1/resource", json.dumps({"server": server, "uri": uri, "session": SESSION}).encode("utf-8"))
     if not (200 <= status < 300) or (isinstance(body, dict) and body.get("error")):
         raise ToolError(body.get("error", "http %d" % status) if isinstance(body, dict) else "http %d" % status)
     return body.get("result", body)
@@ -340,13 +359,15 @@ func pyNamespaceDoc(ns Namespace) string {
 	if instr != "" {
 		lines = append(lines, "", "Instructions:", instr)
 	}
-	var b strings.Builder
-	b.WriteString("    \"\"\"" + strings.Join(lines, "\n    ") + "\n    \"\"\"\n")
-	return b.String()
+	// The documentation is emitted as one quoted string literal (pyQuote
+	// escapes backslashes, quotes and newlines), never as a raw
+	// triple-quoted block: documentation containing """ would otherwise
+	// terminate the docstring early and make the module a SyntaxError.
+	return "    " + pyQuote(strings.Join(lines, "\n")+"\n") + "\n"
 }
 
 // pyToolMethod renders one typed method.
-func pyToolMethod(ns Namespace, t Tool) string {
+func pyToolMethod(ns Namespace, nsClass string, t Tool) string {
 	var b strings.Builder
 	if d := strings.TrimSpace(t.Description); d != "" {
 		for _, l := range strings.Split(d, "\n") {
@@ -374,35 +395,48 @@ func pyToolMethod(ns Namespace, t Tool) string {
 		if typ != "Any" {
 			typ = "Optional[" + typ + "]"
 		}
-		opt = append(opt, pyParam(p)+": "+typ+" = None")
+		opt = append(opt, pyParam(p)+": "+typ+" = _MISSING")
 	}
-	resType := pyResultType(ns, t)
+	resType := pyResultType(nsClass, t)
 	fn := pyMethodName(t.Name)
-	fmt.Fprintf(&b, "    def %s(self", fn)
+	parts := []string{"self"}
 	if len(sig)+len(opt) > 0 {
-		b.WriteString(", *")
-		if len(sig) > 0 {
-			b.WriteString(", " + strings.Join(sig, ", "))
-		}
-		if len(opt) > 0 {
-			if len(sig) > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(strings.Join(opt, ", "))
+		// Every argument is keyword-only: a bare "*" separator, then the
+		// parameters. The separator is its own element — appending the
+		// first optional parameter directly after "*" made it a
+		// var-positional parameter with a default, which Python rejects.
+		parts = append(parts, "*")
+		parts = append(parts, sig...)
+		parts = append(parts, opt...)
+	}
+	fmt.Fprintf(&b, "    def %s(%s) -> %s:\n", fn, strings.Join(parts, ", "), resType)
+	// The request dictionary's local name must not shadow a tool argument:
+	// a tool with an argument called "payload" would otherwise overwrite
+	// that argument with the dictionary and then store the dictionary in
+	// itself. Prefix underscores until the name is free.
+	local := "payload"
+	used := map[string]bool{}
+	for _, p := range params {
+		used[pyParam(p)] = true
+	}
+	for used[local] {
+		local = "_" + local
+	}
+	fmt.Fprintf(&b, "        %s: Dict[str, Any] = {}\n", local)
+	for _, p := range params {
+		if req[p] {
+			// Required arguments are sent exactly as supplied — including
+			// an explicit None for a nullable argument.
+			fmt.Fprintf(&b, "        %s[%s] = %s\n", local, pyQuote(p), pyParam(p))
+		} else {
+			// Optional arguments are omitted only when not supplied at
+			// all (the _MISSING sentinel); an explicit None is sent.
+			fmt.Fprintf(&b, "        if %s is not _MISSING:\n            %s[%s] = %s\n",
+				pyParam(p), local, pyQuote(p), pyParam(p))
 		}
 	}
-	fmt.Fprintf(&b, ") -> %s:\n", resType)
-	if len(params) == 0 {
-		b.WriteString("        payload: Dict[str, Any] = {}\n")
-	} else {
-		b.WriteString("        payload: Dict[str, Any] = {}\n")
-		for _, p := range params {
-			fmt.Fprintf(&b, "        if %s is not None:\n            payload[%s] = %s\n",
-				pyParam(p), pyQuote(p), pyParam(p))
-		}
-	}
-	fmt.Fprintf(&b, "        return _unwrap(%s, %s, _call_raw(%s, %s, payload))\n",
-		pyQuote(ns.Server), pyQuote(t.Name), pyQuote(ns.Server), pyQuote(t.Name))
+	fmt.Fprintf(&b, "        return _unwrap(%s, %s, _call_raw(%s, %s, %s))\n",
+		pyQuote(ns.Server), pyQuote(t.Name), pyQuote(ns.Server), pyQuote(t.Name), local)
 	return b.String()
 }
 
@@ -411,10 +445,10 @@ func pyToolMethod(ns Namespace, t Tool) string {
 // Nested objects stay Dict[str, Any] in this slice: a TypedDict per nesting
 // level is a naming problem (two parents, one shape) that belongs with the
 // output-schema phase, not with proving the dimension carries a second target.
-func writePyTypedDicts(b *strings.Builder, ns Namespace, t Tool) {
+func writePyTypedDicts(b *strings.Builder, nsClass string, t Tool) {
 	params, required := schemaFields(t.InputSchema)
 	if len(params) > 0 {
-		base := pyClassName(ns.Name) + pyClassName(t.Name) + "Args"
+		base := nsClass + pyClassName(t.Name) + "Args"
 		req := map[string]bool{}
 		for _, r := range required {
 			req[r] = true
@@ -448,7 +482,7 @@ func writePyTypedDicts(b *strings.Builder, ns Namespace, t Tool) {
 		var s schema
 		if json.Unmarshal(rawResult, &s) == nil {
 			if fields, ok := pyObjectFields(&s); ok && len(fields) > 0 {
-				name := pyClassName(ns.Name) + pyClassName(t.Name) + "Result"
+				name := nsClass + pyClassName(t.Name) + "Result"
 				fmt.Fprintf(b, "class %s(TypedDict, total=False):\n", name)
 				b.WriteString(strings.Join(fields, "\n") + "\n\n\n")
 			}
@@ -475,7 +509,7 @@ func pyObjectFields(s *schema) ([]string, bool) {
 
 // pyResultType names the generated result TypedDict when there is one, and
 // falls back to Any for a schema the emitter does not model.
-func pyResultType(ns Namespace, t Tool) string {
+func pyResultType(nsClass string, t Tool) string {
 	if len(t.OutputSchema) == 0 {
 		return "Any"
 	}
@@ -484,7 +518,7 @@ func pyResultType(ns Namespace, t Tool) string {
 		return "Any"
 	}
 	if fields, ok := pyObjectFields(&s); ok && len(fields) > 0 {
-		return pyClassName(ns.Name) + pyClassName(t.Name) + "Result"
+		return nsClass + pyClassName(t.Name) + "Result"
 	}
 	return "Any"
 }
@@ -538,7 +572,14 @@ func pyTypeForSchema(s *schema, indent string) string {
 		for _, sub := range s.AllOf {
 			parts = append(parts, pyTypeForSchema(sub, indent))
 		}
-		return strings.Join(dedupe(parts), " & ")
+		parts = dedupe(parts)
+		if len(parts) == 1 {
+			return parts[0]
+		}
+		// Python has no intersection type: emitting the TypeScript-style
+		// "int & float" makes the annotation itself raise TypeError at
+		// import. Any is the honest fallback for a multi-type allOf.
+		return "Any"
 	}
 	types := typeList(s.Type)
 	if len(types) == 0 {
@@ -601,6 +642,45 @@ func pyLiteral(v any) string {
 		}
 		return string(b)
 	}
+}
+
+// pyCollisions groups a namespace's tools by the method name each becomes
+// in Python, returning only the names more than one tool maps to. Grouping
+// by the TypeScript identifier (funcCollisions) misses Python-only
+// collisions: "is" becomes "is_" (a reserved word) and so collides with a
+// tool literally named "is_".
+func pyCollisions(tools []Tool) map[string][]string {
+	by := map[string][]string{}
+	for _, t := range tools {
+		fn := pyMethodName(t.Name)
+		by[fn] = append(by[fn], t.Name)
+	}
+	for fn, names := range by {
+		if len(names) < 2 {
+			delete(by, fn)
+		}
+	}
+	return by
+}
+
+// pyClassNames allocates a unique class name per namespace, in order.
+// Distinct namespaces can normalise to the same class name ("foo_bar" and
+// "fooBar" both become FooBar); without allocation the later class and its
+// _Tools attribute silently replaced the earlier one. Later duplicates get
+// a numeric suffix (FooBar2, ...).
+func pyClassNames(nss []Namespace) []string {
+	used := map[string]bool{}
+	out := make([]string, 0, len(nss))
+	for _, ns := range nss {
+		base := pyClassName(ns.Name)
+		name := base
+		for i := 2; used[name]; i++ {
+			name = fmt.Sprintf("%s%d", base, i)
+		}
+		used[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 // pyQuote renders a Python string literal.
@@ -716,6 +796,7 @@ func propSchema(raw json.RawMessage, name string) json.RawMessage {
 func PythonDeclarations(nss []Namespace) string {
 	sorted := append([]Namespace(nil), nss...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	classNames := pyClassNames(sorted)
 
 	var b strings.Builder
 	b.WriteString("# Generated by mcpx. Call these from a Python script with mcpx_client imported.\n")
@@ -723,8 +804,8 @@ func PythonDeclarations(nss []Namespace) string {
 	b.WriteString("# " + CanonicalSentence + "\n\n")
 	b.WriteString("from mcpx_client import tools, call, ToolError\n\n")
 
-	for _, ns := range sorted {
-		fmt.Fprintf(&b, "class %s:\n", pyClassName(ns.Name))
+	for i, ns := range sorted {
+		fmt.Fprintf(&b, "class %s:\n", classNames[i])
 		if d := strings.TrimSpace(ns.Description); d != "" {
 			b.WriteString("    # " + sanitizeComment(d) + "\n")
 		}
@@ -733,11 +814,11 @@ func PythonDeclarations(nss []Namespace) string {
 			b.WriteString("    pass\n\n")
 			continue
 		}
-		clash := funcCollisions(tools)
+		clash := pyCollisions(tools)
 		done := map[string]bool{}
 		for _, t := range tools {
 			fn := pyMethodName(t.Name)
-			if names, ok := clash[ToolFuncName(t.Name)]; ok {
+			if names, ok := clash[fn]; ok {
 				if done[fn] {
 					continue
 				}
@@ -755,7 +836,7 @@ func PythonDeclarations(nss []Namespace) string {
 				}
 				fmt.Fprintf(&b, "%s%s: %s = ...", sep, pyParam(p), pyTypeFor(propSchema(t.InputSchema, p), "        "))
 			}
-			fmt.Fprintf(&b, ") -> %s: ...\n", pyResultType(ns, t))
+			fmt.Fprintf(&b, ") -> %s: ...\n", pyResultType(classNames[i], t))
 		}
 		b.WriteString("\n")
 	}
@@ -788,8 +869,8 @@ func PythonGlobals(nss []Namespace) string {
 	b.WriteString("def here_dir() -> str: ...\n")
 	b.WriteString("def paths(path: str) -> Dict[str, str]: ...\n")
 	b.WriteString("\n")
-	for _, ns := range sorted {
-		fmt.Fprintf(&b, "%s: Any\n", pyClassName(ns.Name))
+	for _, cn := range pyClassNames(sorted) {
+		fmt.Fprintf(&b, "%s: Any\n", cn)
 	}
 	return b.String()
 }
