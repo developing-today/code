@@ -451,7 +451,11 @@ func daemonSettings() []Setting {
 				"one on a VPN -- and mcpx will not try to start that one, because " +
 				"answering from a local daemon when a remote one is unreachable " +
 				"would be worse than failing. unix:///path targets a different " +
-				"socket on this machine.",
+				"socket on this machine; ssh://[user@]host[:port] reaches a daemon " +
+				"through your own ssh (no port or credential on the far side), with " +
+				"?bin= for a remote mcpx not on PATH and ?sock= for a specific remote " +
+				"daemon; tsnet://name reaches one by tailnet identity. See " +
+				"docs/remote.md.",
 			Commands: []string{"run", "exec", "call", "ls", "types", "catalog",
 				"search", "status", "client", "serve", "tui", "prompts", "resources"},
 		},

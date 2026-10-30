@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dezren39/mcpx/internal/defaults"
 )
 
 // SSH transport (#1880): the daemon's HTTP API tunnelled over the
@@ -205,7 +207,7 @@ func (d *SSHDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, err
 		_ = inW.Close()
 		return nil, fmt.Errorf("ssh %s: %w", d.Endpoint.Target(), err)
 	}
-	stderr := &cappedBuffer{max: 8 << 10}
+	stderr := &cappedBuffer{max: defaults.ExecStderrLimit}
 	if d.Stderr != nil {
 		stderr.tee = d.Stderr
 	}
