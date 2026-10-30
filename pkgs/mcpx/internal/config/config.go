@@ -148,6 +148,10 @@ type Extras struct {
 	// ExcludeTools removes tools from the exposed set, and wins over Tools.
 	// A removed tool is neither listed nor callable.
 	ExcludeTools []string `json:"excludeTools,omitempty"`
+	// WritePolicy overrides the daemon policy.write setting for this
+	// server alone: ask, allow or deny (#1979). Empty means inherit the
+	// daemon mode.
+	WritePolicy string `json:"writePolicy,omitempty"`
 	// RequiresSecrets names environment variables that must be non-empty for this server to be active.
 	RequiresSecrets []string `json:"requiresSecrets,omitempty"`
 	// RequiresServers names other upstream server namespaces that must be enabled.
@@ -459,6 +463,11 @@ type Resolved struct {
 	RequiresServers []string
 	Preconditions   map[string]Precondition
 
+	// WritePolicy is this server's resolved writePolicy override, from
+	// its own mcpx block or the pool block; empty means inherit the
+	// daemon policy.write setting (#1979).
+	WritePolicy string
+
 	// Runtime, when set, returns the value the daemon holds in memory for a
 	// secret: see internal/secrets. It is consulted before this server's own
 	// environment and the daemon's, and nothing here keeps what it returns.
@@ -741,6 +750,7 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		LogLevel:        pickLoggingLevel(ex.Logging, d.Logging),
 		Tools:           allow,
 		ExcludeTools:    deny,
+		WritePolicy:     pick(ex.WritePolicy, d.WritePolicy),
 		Profiles:        append(append([]string{}, d.Profiles...), ex.Profiles...),
 		Tags:            append(append([]string{}, d.Tags...), ex.Tags...),
 		ToolTags:        mergeToolTags(d.ToolTags, ex.ToolTags),
@@ -955,6 +965,7 @@ func mergeExtras(near, far Extras) Extras {
 	near.CallTimeout = pick(near.CallTimeout, far.CallTimeout)
 	near.StartTimeout = pick(near.StartTimeout, far.StartTimeout)
 	near.Namespace = pick(near.Namespace, far.Namespace)
+	near.WritePolicy = pick(near.WritePolicy, far.WritePolicy)
 	near.Description = pick(near.Description, far.Description)
 	near.Prelude = pick(near.Prelude, far.Prelude)
 	if len(near.Tools) == 0 {

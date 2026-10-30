@@ -527,6 +527,27 @@ let
                   inputs.clan-core.packages.${system}.clan-cli
                 ];
               };
+
+              # Minimal shell for the mcpx CI lint leg (#1996). The
+              # default shell above is the whole monorepo environment
+              # (Rust, Android SDK, clan, Haskell, ...); realising it on
+              # a cold GitHub runner took longer than the lint job's
+              # whole 20-minute timeout and the job was cancelled
+              # before any linter ran (PR #2718, run 41122626395).
+              # This shell carries only the lint tools, from the same
+              # pinned nixpkgs-unstable, so the leg's tool versions are
+              # still flake-pinned (Approach C) but its closure is just
+              # the tools themselves.
+              mcpx-lint = pkgs.mkShell {
+                packages = with pkgs; [
+                  # go_1_27 is the repo's Go toolchain (nix-common.nix
+                  # fmtBins); plain `go` may lag the go.mod directive.
+                  go_1_27
+                  golangci-lint
+                  shellcheck
+                  actionlint
+                ];
+              };
             }
           );
     };

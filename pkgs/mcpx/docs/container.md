@@ -5,7 +5,7 @@ measured along the way.
 
 ```
 created:      2026-09-30T04:00:00-05:00
-last-updated: 2026-09-30T07:30:00-05:00
+last-updated: 2026-10-30T06:40:00-05:00
 status:       implemented
 ```
 
@@ -147,27 +147,33 @@ the directory, the daemon logs why once, and `doctor` turns the line into a
 warning that says to install git. Adding it back is one package in the
 `apt-get install` line.
 
-## 4. Static linking: a goal, not a state
+## 4. Static linking: the policy
 
-The image links against glibc today. `CGO_ENABLED` is unset in an ordinary Go
-build, which means *enabled* on a native build, and two packages change
-behaviour when it is:
+`CGO_ENABLED` is unset in an ordinary Go build, which means *enabled* on a
+native build, and two packages change behaviour when it is:
 
 - `internal/logging/trace.go:9` imports `os/user`, which under cgo calls
   `getpwuid_r` through libc rather than parsing `/etc/passwd`;
 - `net` is reachable from most of the tree, and under cgo its resolver is
   `getaddrinfo`, which honours `nsswitch.conf`.
 
-So the binary is dynamically linked and will only run on a base image with a
-compatible glibc. That is why the runtime stage is `debian:bookworm-slim`
-rather than something smaller: it is the same glibc the builder used.
+**Policy (#1987): the artifacts that ship as a bare mcpx binary ship
+static.** The trade-off is the two bullets above — pure-Go `os/user` does
+not consult NSS and the pure-Go resolver ignores `nsswitch.conf` — and it
+is accepted for these artifacts because neither behaviour is load-bearing
+for a daemon/CLI whose state lives in its own directories, while a binary
+that only runs beside one exact glibc (or one Nix store path) fails
+everywhere else silently.
 
-The Containerfile takes `ARG CGO_ENABLED` and uses it in the build step, so
-the switch is already wired. It defaults to `1` because that is what the rest
-of the build assumes, not because `0` fails.
+| artifact | static? | note |
+| --- | --- | --- |
+| Nix package | yes | `package.nix` sets `env.CGO_ENABLED = "0"`; the installed `bin/mcpx` is a `makeBinaryWrapper` launcher by design — the binary it launches is the static one |
+| this image's `mcpx` | yes | the Containerfile defaults `ARG CGO_ENABLED=0` and the build *fails* if the binary does not record the setting it was built with (`go version -m`) |
+| this image as a whole | no | bun is a dynamically linked distribution binary; the runtime stage is `debian:bookworm-slim` for bun's glibc, no longer for mcpx's |
+| release tarball | not decided here | the release pipeline is #1881's; this policy is the input it should consume |
 
-**`CGO_ENABLED=0` builds, and the result is static and works.** Measured,
-not assumed:
+Measured, not assumed (the CGO_ENABLED=0 build, before it became the
+default):
 
 ```
 $ docker build -f Containerfile --build-arg CGO_ENABLED=0 -t mcpx:cgo0 .
@@ -180,28 +186,32 @@ $ docker run --rm -v "$PWD:/work:ro" mcpx:cgo0 \
 you said: cgo0
 ```
 
-Same size to the byte-ish -- 14 811 298 against 14 811 401 -- so the pure-Go
-`os/user` and resolver cost nothing here.
+Same size to the byte-ish -- 14 811 298 against 14 811 401 -- so the
+pure-Go `os/user` and resolver cost nothing here.
 
-That is the surprise worth recording: **mcpx itself is not what stands in the
-way of a static image.** The argument defaults to `1` because this file
-records a goal rather than making the decision, but the decision is one
-argument away and nothing observable breaks.
+### Tier-2 container legs
 
-What a genuinely static *image* would still need:
+Tier 2 (#1987) means: runs nightly and on pushes to main that touch
+`pkgs/mcpx`, never gates a PR. The legs are
+`scripts/tier2-containers.sh`, run by the `mcpx tier-2 containers`
+workflow; each leg asserts the surface its image can actually support,
+including mcpx's own clean refusal where a surface is absent:
 
-1. A decision about `os/user` and `net`, for users rather than for this
-   image. The pure-Go implementations are not equivalent: `os/user` parses
-   `/etc/passwd` and does not consult NSS, and the resolver stops honouring
-   `nsswitch.conf`. Inside a container neither matters. Outside one,
-   somebody's directory service does.
-2. Something to do about bun. `scratch` or distroless only pays off once
-   *everything* in the image is static, and bun is not -- it is dynamically
-   linked against glibc. A static mcpx beside a dynamic bun on
-   `debian:bookworm-slim` saves nothing at all. Going further means dropping
-   `exec` from the image, or a musl build of everything.
-None of that is blocked by this file. git used to be a third item here; it
-is no longer in the image (§3).
+| leg | image | asserts |
+| --- | --- | --- |
+| `alpine-nonexec` | `alpine:3.21` | `--version`; `exec` refuses with "no usable JavaScript runtime" |
+| `alpine-bunmusl-exec` | alpine + bun's musl build | `exec` runs a script |
+| `scratch-nonexec` | `FROM scratch` + CA certs | `--version`; the same clean `exec` refusal |
+| `distroless-static-nonexec` | `gcr.io/distroless/static-debian12` | `--version`; the same clean `exec` refusal |
+| `distroless-cc-deno-exec` | `gcr.io/distroless/cc-debian12` + deno | `exec` runs a script |
+
+Deferred, with the reason recorded on #1987: an **alpine + nodejs exec**
+leg. Verified 2026-10-30, mcpx's node path dies with
+`ERR_NO_TYPESCRIPT` under Alpine's nodejs build, so the leg would
+enshrine a failure instead of catching one; it joins the matrix when the
+node invocation works on a musl node. Tier 3 (fedora, flatpak,
+silverblue/kinoite hosts, the Windows port) is unchanged: separate
+issues when a user appears.
 
 ## 5. Where the size goes
 
@@ -231,11 +241,15 @@ Debian's essential set, in the base layer -- but nothing in mcpx uses it.
 
 ## 6. What was deliberately left out
 
-- **No CI job.** Building an image on every push is a cost, and the workflow
-  restructure is its own piece of work.
-- **No container tests.** The e2e suite spawns daemons and binds unix sockets;
-  running it inside an image is a different harness, not a flag.
-- **No scratch or distroless variant**, for the reason in §4.2.
+- **No per-PR container gate.** The tier-2 legs (§4) run nightly and on
+  pushes to main; building images on every PR is a cost the tier system
+  deliberately does not pay.
+- **No full e2e suite inside an image.** The e2e suite spawns daemons and
+  binds unix sockets; the tier-2 legs assert surfaces, which is a
+  different, smaller harness.
+- **No shipped scratch or distroless variant.** They exist as tier-2 test
+  legs; a shipped minimal image still drops `exec` (no static JS runtime
+  exists to put in it), which is a product decision nobody has taken.
 - **Not wired into `package.nix`.** The Nix build and the container build are
   two ways to produce the same binary; making one depend on the other buys
   nothing yet.

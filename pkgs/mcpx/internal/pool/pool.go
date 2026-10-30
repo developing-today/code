@@ -153,6 +153,14 @@ type Pool struct {
 	// background. See WaitDrained.
 	draining sync.WaitGroup
 
+	// reqLimiter is this pool's one per-server rate-limit budget for
+	// sampling and elicitation (#2192), built lazily from the hooks'
+	// limits and handed to every client this pool creates. reqLimMu
+	// guards it alone: installServerHooks is called with p.mu held on
+	// the handoff path, so this must not take p.mu.
+	reqLimMu   sync.Mutex
+	reqLimiter *mcpclient.ServerRequestLimiter
+
 	mu        sync.Mutex
 	cond      *sync.Cond
 	instances []*Instance
@@ -514,8 +522,39 @@ func (p *Pool) installServerHooks(opts *mcpclient.Options, ref *instanceRef) {
 			return h.Elicit(ctx, p.cfg.Name, ref.key(), method, params)
 		}
 	}
+	if h.URLElicitation != nil {
+		opts.OnURLElicitationRequired = func(ctx context.Context, elicitations []mcpclient.URLElicitation) (bool, error) {
+			// Same budget pause as OnServerRequest: while a person or
+			// agent answers, the interrupted call is not using its budget.
+			if in := ref.ptr.Load(); in != nil {
+				defer in.questions.asking()()
+			}
+			return h.URLElicitation(ctx, p.cfg.Name, ref.key(), elicitations)
+		}
+	}
 	opts.Roots = h.Roots
 	opts.ProbeTimeout = h.ProbeTimeout
+	opts.ServerName = p.cfg.Name
+	opts.RequestLimits = h.RequestLimits
+	opts.RequestLimitsSet = h.RequestLimitsSet
+	opts.ServerLimiter = p.serverLimiter()
+}
+
+// serverLimiter returns the pool's shared rate-limit budget, building
+// it from the hooks' limits on first use. One pool serves one
+// configured server, so the budget is keyed by that configuration by
+// construction -- never by a name the server claims for itself.
+func (p *Pool) serverLimiter() *mcpclient.ServerRequestLimiter {
+	p.reqLimMu.Lock()
+	defer p.reqLimMu.Unlock()
+	if p.reqLimiter == nil {
+		lim := mcpclient.DefaultRequestLimits()
+		if p.Hooks != nil && (p.Hooks.RequestLimitsSet || p.Hooks.RequestLimits != (mcpclient.RequestLimits{})) {
+			lim = p.Hooks.RequestLimits
+		}
+		p.reqLimiter = mcpclient.NewServerRequestLimiter(lim)
+	}
+	return p.reqLimiter
 }
 
 // subscribeServerEvents routes what a session volunteers to the pool's hooks.
@@ -533,7 +572,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 	defer cancel()
 	launched := time.Now()
 
-	tr, err := p.dial()
+	tr, err := p.dial(sctx)
 	if err != nil {
 		return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 	}
@@ -573,7 +612,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		// transport; going straight there saves the two refused POSTs.
 		if cl, tr, err = p.connectSSE(sctx, tr, opts); err == nil {
 			source = mcpclient.SourceCache
-		} else if tr, err = p.dial(); err != nil {
+		} else if tr, err = p.dial(sctx); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 	}
@@ -604,7 +643,7 @@ func (p *Pool) startLane(ctx context.Context, legacy bool) (*Instance, error) {
 		// that hears initialize first -- and the cache is what keeps this
 		// from happening on every start.
 		_ = tr.Close()
-		if tr, err = p.dial(); err != nil {
+		if tr, err = p.dial(sctx); err != nil {
 			return nil, fmt.Errorf("server %q: %w", p.cfg.Name, err)
 		}
 		opts.Preference, opts.Cached = mcpclient.ForceLegacy, ""
@@ -695,8 +734,10 @@ func (p *Pool) connectSSE(ctx context.Context, tr mcpclient.Transport, opts mcpc
 	return cl, sse, nil
 }
 
-// dial creates the transport for one instance.
-func (p *Pool) dial() (mcpclient.Transport, error) {
+// dial creates the transport for one instance. ctx is the caller's
+// startup context: it bounds any nix: program-spec resolution at spawn,
+// so a slow build cannot outlive the startup budget that owns it.
+func (p *Pool) dial(ctx context.Context) (mcpclient.Transport, error) {
 	auth, err := p.resolveAuth()
 	if err != nil {
 		return nil, err
@@ -709,6 +750,7 @@ func (p *Pool) dial() (mcpclient.Transport, error) {
 			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
 			Cwd:        p.cfg.Cwd,
 			InheritEnv: true,
+			Context:    ctx,
 		})
 	}
 	if p.cfg.Stdio() {
@@ -718,6 +760,7 @@ func (p *Pool) dial() (mcpclient.Transport, error) {
 			Env:        overlay(overlay(p.cfg.Env, p.runtimeEnv()), auth.Env),
 			Cwd:        p.cfg.Cwd,
 			InheritEnv: true,
+			Context:    ctx,
 		})
 	}
 	ho, err := p.httpOptions()
@@ -1006,6 +1049,19 @@ func (p *Pool) Instructions() string {
 	return p.instructions
 }
 
+// SchemaExpired reports whether the cached catalogue has passed the
+// freshness deadline a modern upstream set for it (#1602). A cache
+// with no deadline (legacy upstream, or none fetched yet) never
+// expires. Callers that must not decide from stale data — the write
+// policy gate (#1979) classifying a call by its annotations — check
+// this and refresh first; RefreshSchemas returns a refresh error
+// rather than serving the stale catalogue, so they can fail closed.
+func (p *Pool) SchemaExpired() bool {
+	p.schemaMu.RLock()
+	defer p.schemaMu.RUnlock()
+	return !p.schemaAt.IsZero() && !p.schemaDeadline.IsZero() && !time.Now().Before(p.schemaDeadline)
+}
+
 // CachedSchemas returns whatever is cached without triggering a fetch.
 func (p *Pool) CachedSchemas() ([]mcpclient.Tool, []mcpclient.Resource, time.Time) {
 	p.schemaMu.RLock()
@@ -1098,7 +1154,12 @@ type Hooks struct {
 	// connection serves one key, so whoever is calling on that key is who
 	// the server is asking.
 	Elicit func(ctx context.Context, server, key, method string, params json.RawMessage) (any, error)
-	Roots  []mcpclient.Root
+	// URLElicitation opens the URL elicitations an upstream's -32042
+	// tools/call error names, parallel to Elicit: server and key say
+	// which connection's call was interrupted. True only when every
+	// entry was accepted; anything else fails the call with no retry.
+	URLElicitation func(ctx context.Context, server, key string, elicitations []mcpclient.URLElicitation) (bool, error)
+	Roots          []mcpclient.Root
 	// LogLevel is requested from every server that supports logging.
 	LogLevel string
 	// Protocol is the era preference for a server whose config names none.
@@ -1109,6 +1170,13 @@ type Hooks struct {
 	// Eras remembers each server configuration's era across starts. Nil
 	// means every start probes.
 	Eras EraStore
+	// RequestLimits bounds each server's sampling and elicitation
+	// requests (#2192). The zero value means mcpclient's defaults,
+	// unless RequestLimitsSet marks it explicitly supplied.
+	RequestLimits mcpclient.RequestLimits
+	// RequestLimitsSet marks RequestLimits as explicitly supplied,
+	// including all-zero (enforcement disabled).
+	RequestLimitsSet bool
 }
 
 func (h *Hooks) notifications(server string) mcpclient.Notifications {
