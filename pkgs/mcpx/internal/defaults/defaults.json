@@ -27,7 +27,8 @@
   "daemon": {
     "reapInterval": "30s",
     "saveInterval": "5m",
-    "tsnetUpTimeout": "30s"
+    "tsnetUpTimeout": "30s",
+    "sshWaitDelay": "3s"
   },
   "secrets": {
     "requestRetention": "10m"
