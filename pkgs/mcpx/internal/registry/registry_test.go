@@ -197,6 +197,31 @@ func TestToInstallNixPackageBecomesAProgramSpec(t *testing.T) {
 	}
 }
 
+func TestToInstallBrokenNixPackageIsSkipped(t *testing.T) {
+	// An empty identifier makes the spec nix:nixpkgs#, which progspec
+	// rejects: the offer must be skipped (not installed as a command
+	// that fails at launch), so a later usable offer is selected.
+	s := registry.Server{Name: "a/b", Packages: []registry.Package{
+		{RegistryType: "nix", Identifier: ""},
+		{RegistryType: "npm", Identifier: "somepkg"},
+	}}
+	in, err := s.ToInstall(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Command == "nix:nixpkgs#" || in.Command == "" {
+		t.Fatalf("Command = %q, want the npm offer selected", in.Command)
+	}
+	// And with no usable offer at all, ToInstall errors rather than
+	// returning the broken spec.
+	broken := registry.Server{Name: "a/b", Packages: []registry.Package{
+		{RegistryType: "nix", Identifier: ""},
+	}}
+	if _, err := broken.ToInstall(true); err == nil {
+		t.Fatal("a lone broken nix offer must not install")
+	}
+}
+
 func TestToInstallNixPackageKeepsPackageMetadata(t *testing.T) {
 	// A nix package's declared arguments, environment defaults and
 	// required variables belong to the install exactly as they do for a

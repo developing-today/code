@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/dezren39/mcpx/internal/progspec"
 )
 
 // DefaultURL is the official registry.
@@ -376,6 +377,13 @@ func (s Server) ToInstall(preferLocal bool) (*Install, error) {
 			spec := "nix:" + p.Identifier
 			if !strings.ContainsAny(p.Identifier, "#/:") {
 				spec = "nix:nixpkgs#" + p.Identifier
+			}
+			if _, err := progspec.Parse(spec); err != nil {
+				// Not a usable program spec (an empty identifier
+				// makes nix:nixpkgs#): skip this offer rather than
+				// install a command that is rejected at launch, so
+				// a later usable offer can still be selected.
+				continue
 			}
 			in := &Install{
 				Namespace: ns,

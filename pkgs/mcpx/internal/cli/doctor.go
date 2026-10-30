@@ -131,7 +131,13 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 			if progspec.IsNix(s.Command) {
 				// Resolved by nix at launch (progspec, #1921); a PATH
 				// lookup would report it missing even on a machine
-				// where it runs fine, and doctor does not build.
+				// where it runs fine, and doctor does not build. A
+				// malformed spec is still a config error here: it is
+				// rejected at launch, so report it like one.
+				if _, err := progspec.Parse(s.Command); err != nil {
+					missing = append(missing, s.Name+": "+err.Error())
+					continue
+				}
 				nixSpecs++
 				continue
 			}

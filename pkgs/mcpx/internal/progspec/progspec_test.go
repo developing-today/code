@@ -31,6 +31,8 @@ func TestParse(t *testing.T) {
 		{"nix:", false, "", "", true},
 		{"nix:#tool", false, "", "", true},
 		{"nix:nixpkgs#", false, "", "", true},
+		{"nix:   ", false, "", "", true},
+		{"nix:nixpkgs#  ", false, "", "", true},
 	} {
 		s, err := progspec.Parse(tc.raw)
 		if tc.wantErr {

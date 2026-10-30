@@ -55,6 +55,38 @@ func TestNewStdioNixResolutionHonoursTheStartupContext(t *testing.T) {
 	}
 }
 
+func TestSupervisedReattachDoesNotResolveNixSpec(t *testing.T) {
+	// A daemon reattaching to a live supervised nix server must not
+	// resolve the spec again: the child is already running, and a nix
+	// that has since left PATH (or a flake that no longer resolves)
+	// must not fail the reattach (Codex finding on #2585).
+	stubNixForSpawn(t)
+	opts := mcpclient.SupervisedOptions{
+		Name: "nixreattach", StateDir: t.TempDir(),
+		Command: "nix:nixpkgs#echotool", InheritEnv: true,
+	}
+	tr, err := mcpclient.NewSupervised(opts)
+	if err != nil {
+		t.Fatalf("first attach: %v", err)
+	}
+	pid := tr.PID()
+	defer killChild(t, tr)
+	if err := tr.Close(); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	// nix vanishes: with resolution on the attach path, the reattach
+	// would now fail before ever reaching the live supervisor.
+	t.Setenv("PATH", t.TempDir())
+	tr2, err := mcpclient.NewSupervised(opts)
+	if err != nil {
+		t.Fatalf("reattach without nix on PATH: %v", err)
+	}
+	defer tr2.Close()
+	if tr2.PID() != pid {
+		t.Fatalf("child pid changed across reattach: %d -> %d", pid, tr2.PID())
+	}
+}
+
 func TestSupervisedResolvesNixSpecForItsChild(t *testing.T) {
 	stubNixForSpawn(t)
 	tr, err := mcpclient.NewSupervised(mcpclient.SupervisedOptions{

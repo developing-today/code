@@ -64,10 +64,10 @@ func Parse(raw string) (Spec, error) {
 	}
 	rest := raw[len("nix:"):]
 	ref, attr, hasAttr := strings.Cut(rest, "#")
-	if ref == "" {
+	if strings.TrimSpace(ref) == "" {
 		return Spec{}, fmt.Errorf("progspec: %q names no flake ref", raw)
 	}
-	if hasAttr && attr == "" {
+	if hasAttr && strings.TrimSpace(attr) == "" {
 		return Spec{}, fmt.Errorf("progspec: %q names an empty attribute after #", raw)
 	}
 	return Spec{Raw: raw, Nix: true, Ref: ref, Attr: attr}, nil
