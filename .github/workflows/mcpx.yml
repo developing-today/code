@@ -26,6 +26,14 @@ on:
     paths:
       - "pkgs/mcpx/**"
       - ".opencode/plugin/**"
+  # Pull requests run the same test job, so the full-suite check
+  # TESTING.md rule 3 tells agents to read before merging actually
+  # exists (#1966). The vendorhash-repair job below and the concurrency
+  # comment have assumed this trigger all along.
+  pull_request:
+    paths:
+      - "pkgs/mcpx/**"
+      - ".opencode/plugin/**"
 
 # Push-to-main runs each get their own group (keyed by run_id), so a
 # later merge can never cancel — or displace a pending — verification

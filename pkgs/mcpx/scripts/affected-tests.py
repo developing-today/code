@@ -94,7 +94,8 @@ def run(cmd, cwd, check=True):
 
 def registry_area(path):
     """Map a pkgs/mcpx-relative path to a registry area, or None."""
-    if path == "internal/settings/wire.go" or path.startswith("internal/defaults/"):
+    if (path.startswith("internal/settings/") and path.endswith(".go")
+            and not path.endswith("_test.go")) or path.startswith("internal/defaults/"):
         return "settings"
     if re.match(r"internal/api/ops[^/]*\.go$", path) and not path.endswith("_test.go"):
         return "api"
@@ -206,9 +207,15 @@ def e2e_tests_mentioning(mcpx, names):
                     depth -= 1
                 i += 1
             body = text[m.start():i]
-            if any(nm in body for nm in names):
-                selected.append(m.group(1))
-    return selected
+            matched = [nm for nm in names if nm in body]
+            if matched:
+                # Specificity score: a test that mentions a long, specific
+                # name (a dotted setting path, an op name) is a stronger
+                # hit than one that merely mentions a short generic value
+                # ("json", "text") that changed on the same diff line.
+                selected.append((m.group(1), sum(len(nm) for nm in matched)))
+    selected.sort(key=lambda t: (-t[1], t[0]))
+    return [name for name, _ in selected]
 
 
 def main():
@@ -235,9 +242,14 @@ def main():
     # only paths that still exist take part in those steps.
     existing = [p for p in rel if os.path.exists(os.path.join(mcpx, p))]
     go_files = [p for p in existing if p.endswith(".go")]
+    # Deleted paths stay in package and diff analysis: deleting a file is
+    # a change to its package, and its removed exports can affect
+    # importers. Only formatting and file reads are restricted to paths
+    # that still exist.
+    all_go_files = [p for p in rel if p.endswith(".go")]
     # The module-root package (agentdocs.go and friends) has dirname "";
     # normalize it to "." rather than dropping the package entirely.
-    pkgs = sorted({os.path.dirname(p) or "." for p in go_files})
+    pkgs = sorted({os.path.dirname(p) or "." for p in all_go_files})
     unit_pkgs = [p for p in pkgs if p != "internal/e2e"]
 
     def pkg_arg(p):
@@ -255,7 +267,7 @@ def main():
         commands.append(("T1", f"(cd pkgs/mcpx && go test -count=1 {pkg_arg(p)})"))
 
     # Diff text for T1b / registry analysis (registry + non-test sources).
-    src = [p for p in go_files if not p.endswith("_test.go")]
+    src = [p for p in all_go_files if not p.endswith("_test.go")]
     diff_text = ""
     if src:
         diff_text = run(["git", "diff", args.base, "--"] +
@@ -296,10 +308,11 @@ def main():
     areas.discard(None)
     names = diff_names(diff_text) if areas else set()
 
-    # T2 — targeted e2e.
-    e2e_selected = set()
-    if names:
-        e2e_selected |= set(e2e_tests_mentioning(mcpx, names))
+    # T2 — targeted e2e. Ranked hits first (most specific name match
+    # first), so the 15-test budget truncates the generic matches, not
+    # the tests that name the changed setting/op outright.
+    ranked = e2e_tests_mentioning(mcpx, names) if names else []
+    e2e_selected = set(ranked)
     for a in areas:
         e2e_selected |= set(E2E_GUARDS.get(a, []))
     # The harness is internal/testsupport AND the e2e-local helpers —
@@ -307,9 +320,10 @@ def main():
     # change even though the file lives in internal/e2e.
     harness = any(p.startswith("internal/testsupport/") for p in rel)
     edited_e2e = {p for p in go_files if p.startswith("internal/e2e/")}
-    if edited_e2e:
+    edited_e2e_all = {p for p in all_go_files if p.startswith("internal/e2e/")}
+    if edited_e2e_all:
         e2e_diff = run(["git", "diff", args.base, "--"] +
-                       [f"pkgs/mcpx/{p}" for p in edited_e2e], root, check=False)
+                       [f"pkgs/mcpx/{p}" for p in edited_e2e_all], root, check=False)
         if "newEnv" in e2e_diff:
             harness = True
     sample = []
@@ -326,7 +340,8 @@ def main():
             text = open(os.path.join(mcpx, p), encoding="utf-8", errors="replace").read()
             all_names |= set(re.findall(r"^func (Test\w+)\(", text, re.M))
         e2e_selected |= all_names
-    ordered = sample + [t for t in sorted(e2e_selected) if t not in sample]
+    ordered = sample + [t for t in ranked if t not in sample]
+    ordered += [t for t in sorted(e2e_selected) if t not in sample and t not in ranked]
     truncated = len(ordered) > T2_BUDGET
     e2e_selected = ordered[:T2_BUDGET]
     if e2e_selected:

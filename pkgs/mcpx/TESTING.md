@@ -6,9 +6,9 @@ it mechanically is `scripts/affected-tests.py`, exposed from the repo
 root as `just mcpx-test-affected [base] [--run]`.
 
 Run the smallest set that covers your change. The full suite is CI's
-job: it runs on every push (`.github/workflows/mcpx.yml`,
-`go test ./... -count=1`) and an agent must read the PR's check result
-before declaring done or merging.
+job: it runs on every push and every pull request
+(`.github/workflows/mcpx.yml`, `go test ./... -count=1`) and an agent
+must read the PR's check result before declaring done or merging.
 
 ## The tiers
 
@@ -20,7 +20,7 @@ before declaring done or merging.
 | T2 targeted e2e | when behaviour visible through the binary changed | `go test -count=1 ./internal/e2e -run '^(TestA\|TestB)$'` | budget below |
 | T3 guards | when a registry was touched (flag, `/v1` op, setting, default) | the guard tests for that registry (the selector's guard map) | seconds |
 | T4 build | only when `package.nix`, `go.mod`/`go.sum` or the vendor hash changed | `nix build .#mcpx` | ~70 s |
-| Full suite | **never locally for a routine change**; CI on push. The integrator merging a PR is the exception (rule 7) | — | ~110 s of serial e2e plus compilation, and growing |
+| Full suite | **never locally for a routine change**; CI on push and on PRs. The integrator merging a PR is the exception (rule 7) | — | ~110 s of serial e2e plus compilation, and growing |
 
 **T2 budget (decided #1966):** both numbers, serving different readers —
 a **count cap of 15 tests**, which is what an agent can see before
