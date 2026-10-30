@@ -16,13 +16,13 @@ import (
 // A decoder error is never returned to the caller, because it can quote a
 // fragment of what it was given.
 func (s *Server) routesSecrets(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/secrets", s.handleSecretsList)
-	mux.HandleFunc("PUT /v1/secrets/{name}", s.handleSecretSet)
-	mux.HandleFunc("DELETE /v1/secrets/{name}", s.handleSecretUnset)
-	mux.HandleFunc("GET /v1/secret-requests", s.handleSecretRequestsList)
-	mux.HandleFunc("GET /v1/secret-requests/{id}", s.handleSecretRequestGet)
-	mux.HandleFunc("DELETE /v1/secret-requests/{id}", s.handleSecretRequestDecline)
-	mux.HandleFunc("POST /v1/preflight", s.handlePreflight)
+	s.route(mux, "GET /v1/secrets", s.handleSecretsList)
+	s.route(mux, "PUT /v1/secrets/{name}", s.handleSecretSet)
+	s.route(mux, "DELETE /v1/secrets/{name}", s.handleSecretUnset)
+	s.route(mux, "GET /v1/secret-requests", s.handleSecretRequestsList)
+	s.route(mux, "GET /v1/secret-requests/{id}", s.handleSecretRequestGet)
+	s.route(mux, "DELETE /v1/secret-requests/{id}", s.handleSecretRequestDecline)
+	s.route(mux, "POST /v1/preflight", s.handlePreflight)
 }
 
 // noStore keeps an answer out of every cache between the daemon and the

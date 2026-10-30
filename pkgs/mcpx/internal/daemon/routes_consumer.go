@@ -25,13 +25,13 @@ import (
 // itself. Declared in internal/api/ops_consumer.go; a parity test fails if
 // the two disagree.
 func (s *Server) routesConsumer(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/diagnose", s.handleDiagnose)
-	mux.HandleFunc("GET /v1/catalog/history", s.handleCatalogHistory)
-	mux.HandleFunc("GET /v1/recipes", s.handleRecipesList)
-	mux.HandleFunc("GET /v1/recipes/{name}", s.handleRecipeGet)
-	mux.HandleFunc("POST /v1/recipes/{name}", s.handleRecipeSave)
-	mux.HandleFunc("POST /v1/recipes/{name}/run", s.handleRecipeRun)
-	mux.HandleFunc("POST /v1/intent", s.handleIntent)
+	s.route(mux, "POST /v1/diagnose", s.handleDiagnose)
+	s.route(mux, "GET /v1/catalog/history", s.handleCatalogHistory)
+	s.route(mux, "GET /v1/recipes", s.handleRecipesList)
+	s.route(mux, "GET /v1/recipes/{name}", s.handleRecipeGet)
+	s.route(mux, "POST /v1/recipes/{name}", s.handleRecipeSave)
+	s.route(mux, "POST /v1/recipes/{name}/run", s.handleRecipeRun)
+	s.route(mux, "POST /v1/intent", s.handleIntent)
 }
 
 // ---- diagnostics ----

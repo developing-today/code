@@ -37,5 +37,5 @@ function cleanup() {
 trap cleanup EXIT
 
 echo "initializing tofu..."
-tofu -chdir="$dir" init -upgrade -backend-config="path=$dir/terraform.tfstate" "$@"
+tofu -chdir="$dir" init -backend-config="path=$dir/terraform.tfstate" "$@"
 echo "tofu initialized."

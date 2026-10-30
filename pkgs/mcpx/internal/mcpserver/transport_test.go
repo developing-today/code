@@ -1181,3 +1181,43 @@ func TestModernParamHeaders(t *testing.T) {
 		accept(t, send(hello, map[string]string{"mcp-param-region": "Hello"}))
 	})
 }
+
+// CloseSessions is surface replacement's teardown (#1942): a legacy
+// client's open GET stream ends and the session id is forgotten, so a
+// rebuilt surface does not leave orphaned streams on the old server.
+func TestCloseSessionsEndsStreamsAndForgetsSessions(t *testing.T) {
+	s := mcpserver.New(newBackend(), "mcpx", "test")
+	ts := httptest.NewServer(s)
+	defer ts.Close()
+	id := legacySession(t, s, "2025-11-25")
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Mcp-Session-Id", id)
+	streamDone := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			streamDone <- err
+			return
+		}
+		defer resp.Body.Close()
+		_, err = io.Copy(io.Discard, resp.Body)
+		streamDone <- err
+	}()
+	// Let the stream establish before retiring the surface.
+	time.Sleep(300 * time.Millisecond)
+
+	s.CloseSessions()
+
+	select {
+	case <-streamDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("GET stream still open 5s after CloseSessions")
+	}
+	if w := post(s, frame(3, "ping", nil), map[string]string{"Mcp-Session-Id": id}); w.Code != http.StatusNotFound {
+		t.Fatalf("status %d after CloseSessions, want 404:\n%s", w.Code, w.Body)
+	}
+}
