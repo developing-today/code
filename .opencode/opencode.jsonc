@@ -5292,6 +5292,54 @@
          }
        }
      },
+
+// muse-direct (2026-10-30, #2753): the Responses-native door into the
+// SAME single Meta pool (the Muse API High Usage plan) — not a
+// separate pool, and not the assistant Muse's subscription. It fronts
+// muse-proxy's DIRECT mode: the proxy exchanges the Muse CLI's OAuth
+// account token at /muse-code/key for the plan's minted key and speaks
+// the Responses API, the route that answers that key with bare
+// Authorization (the chat-completions route is the one returning
+// client_attestation_denied to non-CLI clients). This provider uses
+// @ai-sdk/openai so OpenCode speaks Responses to the proxy's
+// /v1/responses passthrough, which swaps in the minted key; the "muse"
+// provider above (chat route into the same proxy) is untouched. The
+// apiKey below is the local placeholder the proxy ignores — the real
+// key never leaves the proxy and no auth.json entry is needed. A call
+// costs ~10 input tokens through this door vs ~26k through the CLI
+// harness.
+     "muse-direct": {
+       "npm": "@ai-sdk/openai",
+       "name": "Meta Muse Direct (proxy)",
+       "options": {
+         "baseURL": "http://127.0.0.1:{env:MUSE_PROXY_PORT:-18747}/v1",
+         "apiKey": "muse-local"
+       },
+       "models": {
+         "muse-spark-1.3": {
+           "name": "Muse Spark 1.3 (muse-direct)",
+           "variants": {
+             "minimal": { "options": { "reasoning_effort": "minimal" } },
+             "low": { "options": { "reasoning_effort": "low" } },
+             "medium": { "options": { "reasoning_effort": "medium" } },
+             "high": { "options": { "reasoning_effort": "high" } },
+             "xhigh": { "options": { "reasoning_effort": "xhigh" } },
+             "max": { "options": { "reasoning_effort": "max" } }
+           }
+         },
+         "muse-wonder-1.0": {
+           "name": "Muse Wonder 1.0 (muse-direct)",
+           "variants": {
+             "minimal": { "options": { "reasoning_effort": "minimal" } },
+             "low": { "options": { "reasoning_effort": "low" } },
+             "medium": { "options": { "reasoning_effort": "medium" } },
+             "high": { "options": { "reasoning_effort": "high" } },
+             "xhigh": { "options": { "reasoning_effort": "xhigh" } },
+             "max": { "options": { "reasoning_effort": "max" } }
+           }
+         }
+       }
+     },
     // deduped 2026-10-27 (#1308): a byte-identical duplicate of this block sat
     // earlier in the file; under the loader's last-wins JSONC parsing it was
     // shadowed by this copy, so removing it changes nothing at runtime.
