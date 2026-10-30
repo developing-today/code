@@ -19,7 +19,11 @@
   (cap checks evaluated over causal ancestry, §2), definitive-only release
   of graph-native cap reservations (§5 step 6), and anchored execution
   states so a service-rejected intent consumes no spending authorization
-  (§2). Placement: this doc lives in the
+  (§2). Round 3 added two more: the mint-source account is excluded from
+  both balance roots and reconciled by an exact offset equation (§3), and
+  recovery distinguishes complete from partial leg sets — a one-sided
+  graph-native swap yields the signed claim, never a success receipt
+  (§5 step 6). Placement: this doc lives in the
   repo-root `doc/` store and is reachable at `pkgs/id/doc/` because
   `pkgs/id/doc` is a tracked symlink to `../../doc` — the #2251 placement
   requirement is met through that symlink, per repo convention.
@@ -317,8 +321,14 @@ is mapped back to the canonical holder identity the graph uses:
   account → pubkey assignment is recorded when the account is created and is
   part of the anchored deployment's configuration — reconciliation reads it,
   it does not invent it);
-- the designated issuer account (#2040's mint source) maps to the issuer's
-  pubkey;
+- the designated issuer **mint-source** account (#2040: issuance is a
+  transfer out of it) maps to a reserved `mint-source` identity that is
+  **excluded from both roots** and reconciled separately (next paragraph) —
+  mapping it to the issuer's pubkey would mismatch by construction, because
+  the ledger debits the mint source on issuance while the graph fold credits
+  the recipient without debiting the issuer. (The issuer's *ordinary holder*
+  account, if it holds units as a holder, maps to the issuer's pubkey as
+  usual — mint source and holder accounts are distinct accounts.)
 - any other ledger-only account (spread/fee collection, service float) must
   be named in the deployment configuration with its own stable identity, and
   is folded under that identity on **both** sides (its graph-side balance is
@@ -328,6 +338,17 @@ is mapped back to the canonical holder identity the graph uses:
 `(holder_pubkey, ledger_balance)` pairs after this mapping. An account with
 no mapping is a reconciliation failure, never silently dropped — a dropped
 account is exactly where value would hide.
+
+**The mint offset (reconciled beside the roots, not inside them).** The
+mint-source account's ledger balance is checked by an exact equation
+instead of the root: `mint_source_balance == −(executed_issued −
+executed_burned)` at `ledger_pos`, where the executed figures are §3's
+(executed intents only, per checks 1–2). TigerBeetle mint-source accounts
+run negative by design (#2040); the equation is the whole reconciliation
+for that account, and any deviation is the same class of finding as a root
+mismatch. Symmetrically, the graph side never debits the issuer for an
+issuance — both sides therefore represent the mint offset identically:
+outside the holder roots, as a signed scalar checked exactly.
 
 **What a snapshot proves.** For graph-native currencies, anyone with the full
 object set recomputes issued/burned/root and compares — a lying snapshot is
@@ -485,9 +506,18 @@ step aborts before any leg is submitted.
    - **Recovery:** before executing against an offer again, an executor
      scans its reservations that have no receipt — anchored, by querying the
      ledger for transfers stamped with the reserved `conversion` IDs;
-     graph-native, by folding for the agreement's legs. Legs found ⇒ the
-     conversion executed: emit the (late) receipt and convert the
-     reservation into it. No legs found ⇒ release the reservation as
+     graph-native, by folding for the agreement's legs. A **complete** leg
+     set found (anchored legs are atomic, so this is the only anchored
+     case; graph-native: both legs, plus the spread leg iff
+     `spread_amount > 0`) ⇒ the conversion executed: emit the (late)
+     receipt and convert the reservation into it. A **partial** graph-native
+     leg set (one leg landed, the other never did — the one-sided execution
+     step 5 explicitly permits) ⇒ the conversion did **not** complete:
+     recovery emits no receipt, the reservation's accounting is retained,
+     and on window expiry the agreement + completed leg stand as the signed
+     claim against the defaulter (§5 step 5; §4's `CounterpartyLegMissing`)
+     — a receipt asserting both amounts were exchanged would be false.
+     No legs found ⇒ release the reservation as
      unexecuted **only on a definitive condition**: anchored, the ledger
      query is definitive because the service is the only executor — legs
      cannot appear later without it, so an empty query closes the
