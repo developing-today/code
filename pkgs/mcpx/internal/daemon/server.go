@@ -910,6 +910,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			semantic = cs.Bool("search.semantic")
 		}
 	}
+	tag := r.URL.Query().Get("tag")
+	explain := r.URL.Query().Get("explain") == "true" || r.URL.Query().Get("explain") == "1"
+	if tag != "" || explain {
+		writeJSON(w, 200, s.reg.SearchSemanticOpts(r.URL.Query().Get("q"), limit, semantic, tag, explain))
+		return
+	}
 	writeJSON(w, 200, s.reg.SearchSemantic(r.URL.Query().Get("q"), limit, semantic))
 }
 
