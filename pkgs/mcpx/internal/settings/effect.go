@@ -148,6 +148,7 @@ var EffectExemptions = map[string]string{
 	"elicit.disambiguate":                "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
 	"elicit.disambiguateDefault":         "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
 	"elicit.confirmDestructive":          "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
+	"policy.write":                       "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; daemon unit tests cover the gate, not an e2e with/without probe",
 	"elicit.askTimeout":                  "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
 	"elicit.ttl":                         "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
 	"elicit.maxAge":                      "elicitation flow: its effect needs an interactive client answering (or not answering) inside that window; ask fixtures cover the flow, not this bound",
@@ -248,7 +249,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 181
+const EffectExemptionPin = 182 // raised by one for policy.write (#1979), in the elicitation-flow exemption style of elicit.confirmDestructive
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,
