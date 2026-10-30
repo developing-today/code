@@ -63,6 +63,26 @@ const check = (name, ok, detail = "") => {
   );
 }
 
+// --- 1b. strip-types is syntax-aware: literals and comments are data -----
+{
+  check(
+    "strip: `as` inside a string literal is preserved",
+    stripTypes(`console.log("copy as script");`) ===
+      `console.log("copy as script");`,
+  );
+  check(
+    "strip: template text and comments preserved, real casts still stripped",
+    stripTypes(
+      "const s = `hi ${name as string}`; // keep as is\nconsole.log(s as string);",
+    ) === "const s = `hi ${name}`; // keep as is\nconsole.log(s);",
+  );
+  check(
+    "strip: annotation-shaped text inside a string is preserved",
+    stripTypes(`const label: string = "value: string = x";`) ===
+      `const label = "value: string = x";`,
+  );
+}
+
 // --- 2+3. fake daemon + real generated client -----------------------------
 const clientPath = existsSync(join(here, "client.browser.js"))
   ? join(here, "client.browser.js")

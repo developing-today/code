@@ -30,13 +30,19 @@ printf '{"mcpServers":{"demo":{"command":"%s"}}}' "$work/fakemcp" > "$work/.mcpx
 
 export HOME="$work/home"
 export XDG_CONFIG_HOME="$work/xdg"
+# DaemonSearchDirs() also searches $XDG_STATE_HOME/mcpx — isolate it too,
+# or the stop below could see (and stop) the caller's own daemons.
+export XDG_STATE_HOME="$work/xdg-state"
 export MCPX_STATE_DIR="$work/state"
 export MCPX_CACHE_DIR="$work/cache"
 export MCPX_CONFIG="$work/.mcpx.json"
 export MCPX_AUTOSTART_IDLE_EXIT=60s
 
 "$work/mcpx" client --ns demo -o "$here/client.ts"
-"$work/mcpx" stop --all >/dev/null 2>&1 || true
+# Stop ONLY this config's fixture daemon — never `stop --all`, which shuts
+# down every live daemon found in the search dirs, including the caller's
+# unrelated sessions.
+"$work/mcpx" stop >/dev/null 2>&1 || true
 
 node "$here/strip-client.mjs" "$here/client.ts" "$here/client.browser.js"
 echo "regenerated client.ts and client.browser.js from the demo fixture"

@@ -76,7 +76,129 @@ function removeTypeAliases(src) {
   return out + src.slice(last);
 }
 
-export function stripTypes(source) {
+// --- Syntax-aware segmentation -------------------------------------------
+// The regex passes below must never rewrite text inside string literals,
+// template-literal text, or comments: a reader's edit such as
+// console.log("copy as script") is data, not an `as` cast. segmentize()
+// splits the source into code and protected segments; the passes run on
+// code segments only and the result is reassembled in order. Template
+// ${...} interpolations are code and are segmented recursively.
+
+function skipQuoted(src, i, quote) {
+  // i is at the opening quote; return the index just past the closer.
+  i++;
+  while (i < src.length) {
+    if (src[i] === "\\") i += 2;
+    else if (src[i] === quote) return i + 1;
+    else i++;
+  }
+  return src.length;
+}
+
+function scanExprEnd(src, i) {
+  // i is just past a template '${'; return the index of its matching '}',
+  // skipping nested strings, templates, and comments.
+  let depth = 1;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === '"' || c === "'") i = skipQuoted(src, i, c);
+    else if (c === "`") i = skipTemplate(src, i);
+    else if (c === "/" && src[i + 1] === "/") {
+      const j = src.indexOf("\n", i);
+      i = j < 0 ? src.length : j;
+    } else if (c === "/" && src[i + 1] === "*") {
+      const j = src.indexOf("*/", i + 2);
+      i = j < 0 ? src.length : j + 2;
+    } else if (c === "{") {
+      depth++;
+      i++;
+    } else if (c === "}") {
+      depth--;
+      if (depth === 0) return i;
+      i++;
+    } else i++;
+  }
+  return src.length;
+}
+
+function skipTemplate(src, i) {
+  // i is at the opening backtick; return the index just past the closer.
+  i++;
+  while (i < src.length) {
+    if (src[i] === "\\") i += 2;
+    else if (src[i] === "`") return i + 1;
+    else if (src[i] === "$" && src[i + 1] === "{") i = scanExprEnd(src, i + 2) + 1;
+    else i++;
+  }
+  return src.length;
+}
+
+function segmentize(src) {
+  const segs = [];
+  let code = "";
+  const flushCode = () => {
+    if (code) {
+      segs.push({ code: true, text: code });
+      code = "";
+    }
+  };
+  const prot = (text) => {
+    flushCode();
+    if (text) segs.push({ code: false, text });
+  };
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (c === "/" && n === "/") {
+      let j = src.indexOf("\n", i);
+      if (j < 0) j = src.length;
+      prot(src.slice(i, j));
+      i = j;
+    } else if (c === "/" && n === "*") {
+      let j = src.indexOf("*/", i + 2);
+      j = j < 0 ? src.length : j + 2;
+      prot(src.slice(i, j));
+      i = j;
+    } else if (c === '"' || c === "'") {
+      const j = skipQuoted(src, i, c);
+      prot(src.slice(i, j));
+      i = j;
+    } else if (c === "`") {
+      // Literal chunks are protected; ${...} expressions are code.
+      let j = i + 1;
+      let chunkStart = i;
+      while (j < src.length) {
+        if (src[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (src[j] === "`") {
+          j++;
+          break;
+        }
+        if (src[j] === "$" && src[j + 1] === "{") {
+          prot(src.slice(chunkStart, j + 2)); // chunk incl. the '${'
+          const end = scanExprEnd(src, j + 2);
+          for (const s of segmentize(src.slice(j + 2, end))) segs.push(s);
+          chunkStart = end; // the closing '}' starts the next chunk
+          j = end + 1;
+          continue;
+        }
+        j++;
+      }
+      prot(src.slice(chunkStart, j));
+      i = j;
+    } else {
+      code += c;
+      i++;
+    }
+  }
+  flushCode();
+  return segs;
+}
+
+function stripCode(source) {
   if (/^\s*(?:export\s+)?(?:enum|namespace)\s/m.test(source) || /constructor\s*\([^)]*\b(?:private|public|protected|readonly)\b/.test(source)) {
     throw new Error(
       "strip-types: enums, namespaces and parameter properties are not " +
@@ -107,4 +229,10 @@ export function stripTypes(source) {
     ")",
   );
   return src;
+}
+
+export function stripTypes(source) {
+  return segmentize(source)
+    .map((s) => (s.code ? stripCode(s.text) : s.text))
+    .join("");
 }

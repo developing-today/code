@@ -45,7 +45,12 @@ console.log("demo.echo:", String(echoed));</code></pre>
     import { runExample } from "./run-example.js";
     import { execCommand, asScript } from "./copy-command.js";
 
-    const root = document.currentScript.closest(".mcpx-home-example");
+    // document.currentScript is null inside a type="module" script, so
+    // locate the (single, not-yet-initialised) component by selector.
+    const root = document.querySelector(
+      ".mcpx-home-example:not([data-mcpx-ready])",
+    );
+    root.dataset.mcpxReady = "";
     const source = root.querySelector(".mcpx-home-example-static code").textContent;
     const editorWrap = root.querySelector(".mcpx-home-example-editor");
     const textarea = editorWrap.querySelector("textarea");
@@ -68,16 +73,26 @@ console.log("demo.echo:", String(echoed));</code></pre>
       }
     };
 
+    const runButton = actions.querySelector('[data-action="run"]');
     actions.addEventListener("click", async (event) => {
       const action = event.target?.dataset?.action;
       if (action === "copy-exec") await copy(execCommand(textarea.value));
       else if (action === "copy-script") await copy(asScript(textarea.value));
       else if (action === "run") {
-        output.hidden = false;
-        output.textContent = "";
-        await runExample(textarea.value, tools, (line) => {
-          output.textContent += line + "\n";
-        });
+        // Serialize runs: runExample swaps shared page globals (fetch,
+        // tools, console.log) for the duration, so a second run must not
+        // start until the first has restored them.
+        if (runButton.disabled) return;
+        runButton.disabled = true;
+        try {
+          output.hidden = false;
+          output.textContent = "";
+          await runExample(textarea.value, tools, (line) => {
+            output.textContent += line + "\n";
+          });
+        } finally {
+          runButton.disabled = false;
+        }
       }
     });
   </script>

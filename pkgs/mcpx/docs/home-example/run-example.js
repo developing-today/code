@@ -29,7 +29,20 @@ function format(value) {
   }
 }
 
-export async function runExample(source, clientTools, onLine) {
+// Runs are serialized on a module-level chain: a run replaces shared page
+// globals (fetch, tools, console.log) and restores them at the end, so two
+// overlapping runs would restore each other's swaps mid-flight. Callers
+// also disable the Run button, but the invariant lives here so no caller
+// can break it.
+let runTail = Promise.resolve();
+
+export function runExample(source, clientTools, onLine) {
+  const run = runTail.then(() => runExampleOnce(source, clientTools, onLine));
+  runTail = run.catch(() => {});
+  return run;
+}
+
+async function runExampleOnce(source, clientTools, onLine) {
   const restoreFetch = installFakeDaemon();
   const hadTools = "tools" in globalThis;
   const prevTools = globalThis.tools;
