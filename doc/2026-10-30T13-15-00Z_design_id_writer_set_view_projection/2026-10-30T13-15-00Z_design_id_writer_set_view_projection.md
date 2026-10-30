@@ -480,7 +480,7 @@ Three things this pins down that the prose left open:
 `(set_id, set_seq)` and `frontier` pin *who may count and over what claims*; `(view_id, config_seq)`
 pin *which view computed it*, because two views can share a writer-set version and a frontier and
 still disagree: `subject_scope`, `kind_scope` and `exceptions` are part of the view, and §4.4 lets
-one view count a stranger's claim the other does not. `resolution` names the fork-proof state
+one view count a stranger's claim the other does not. `resolution` names the resolution-input snapshot
 `applied` was evaluated against (§4.6): `APPLIED` is rebuilt against every known fork proof on each
 `refresh` ([`event_store/ingest.rs:890-937`](../../pkgs/id/src/event_store/ingest.rs)), so a proof
 arriving later would otherwise silently change a saved total with no change to any named input.
@@ -494,8 +494,11 @@ twice over: first the view's own scope and exception list was missing, which cha
 *does* change without any writer-set event; then the resolution state was missing, which changes
 with no act of the owner at all. `config_seq` is the owner's chain position of the latest
 view-configuration event, so it is immutable and comparable the same way `set_seq` is;
-`resolution` is identified by the set of fork proofs it contains, which is likewise immutable and
-hashable (§4.6).
+`resolution` is identified by a hash of the **complete resolution input snapshot** it names —
+the set of fork proofs it contains **and** the IDs of the membership-action events resolution
+consumed — which is likewise immutable and hashable (§4.6). Identifying it by the fork proofs
+alone was round 10's finding 30: resolution takes the stored events as a separate input from
+the proofs, so its membership half can move while a proof-only identifier stands still.
 
 The frontier is the view's own `after` at evaluation
 ([`chain.rs:97-118`](../../pkgs/id/src/chain.rs)), and it is **not decorative**: §4.1's
@@ -517,7 +520,7 @@ people who trust different sets.
 
 **Decision:** a **view** is `{ view_id, config_seq, owner, set: (set_id, set_seq), frontier, resolution, subject_scope, kind_scope, exceptions }`.
 Projection is a pure function of that whole tuple, or it is **undefined** — there is no third case.
-It is stated once, in full, because nine review rounds showed that patching clauses one at a time
+It is stated once, in full, because ten review rounds showed that patching clauses one at a time
 keeps opening a hole somewhere else.
 
 ```
@@ -525,7 +528,8 @@ keeps opening a hole somewhere else.
 //   C  = view config       (view_id, config_seq, scopes, exceptions)
 //   S  = set version       (set_id, set_seq)  — the selected writer-set version
 //   F  = claim frontier    — no claim after it is eligible
-//   R  = resolution state  — the fork-proof set that fixes applied()
+//   R  = resolution state  — the pinned resolution-input snapshot that fixes applied()
+//        (fork proofs + the membership-action events resolution consumes, §3.4)
 
 past(F, c)      ⇔  c ∈ causal_past(F)
 
@@ -605,7 +609,21 @@ Each clause exists because a review round proved its absence broke something:
    ([`event_store/ingest.rs:890-937`](../../pkgs/id/src/event_store/ingest.rs)), so a conflicting
    header arriving *later* flips `applied` for an already-saved view. Evaluating against `R`
    ("the resolution state as of the saved frontier") makes a historical total reproducible;
-   querying live validity is a separate, explicitly-named operation (§4.6). Exceptions do not
+   querying live validity is a separate, explicitly-named operation (§4.6).
+   `R` pins **all** of resolution's inputs, not only its fork proofs. `resolve` takes the stored
+   events and the proofs as separate arguments
+   ([`event_store/resolve.rs:71-75`](../../pkgs/id/src/event_store/resolve.rs)) and builds
+   membership from the stored membership-action events in its first pass
+   (`resolve.rs:110-138`); the claim frontier `F` does not constrain that input — resolution
+   runs over every stored node. So a membership removal arriving after a view is saved, with
+   no fork anywhere, can void a grant a counted claim stood on (§4.6's `Voided` path;
+   `pkgs/id/tests/voiding_scenarios.rs:280-292`) and flip `applied` while a proof-only `R`
+   stands unchanged — identical *(C, S, F, R)*, different total (round 10, finding 30). Two
+   requirements close it: (i) pinned evaluation resolves membership **historically** — only
+   membership-action events in the causal past of `F` may feed `applied(R, ·)` — and (ii) `R`'s
+   identifier hashes the complete input snapshot actually consumed (§3.4), so a late-arriving
+   event that *is* in `F`'s causal past changes `R`'s name rather than silently changing the
+   total under the same name. Exceptions do not
    escape this gate either — they lift scope and the writer-set requirement, never validity.
 2. **`past(F, c)` — the claim set is closed.** Pinning the set version fixes *membership*; only
    this fixes *which claims* are eligible. Without it, re-evaluating a saved view after new claims
@@ -904,7 +922,8 @@ from the same named inputs — the exact reproducibility failure §3.4 and §D4 
 
 Adding `R` to the key keeps the useful property and states its real precondition: within one
 resolution state an expansion is immutable and cacheable forever; across resolution states it must
-be recomputed. The number of live `R` values is small (it changes only when a fork proof arrives),
+be recomputed. The number of live `R` values is small (it changes only when a fork proof or a
+previously-unseen membership-action event in the frontier's causal past arrives),
 so the cost is a bounded multiple of the replay cost, paid only when the store's resolution state
 actually moves.
 
@@ -961,6 +980,16 @@ The two answer spaces stay deliberately distinct. `WhyNotCounted` (§4.3) explai
 entered a total; `validity_now` reports on a claim that *may already be* in a total. Merging them
 would put a "counted, but no longer valid" case into an enum whose members all mean "not counted",
 which is exactly the counted/uncounted blurring §4.3 exists to prevent.
+
+The arrival that produces a `Voided` answer is also why `R` is a snapshot and not a proof-only
+identifier (round 10, finding 30). The removal that voids D's grant is an ordinary stored
+event, not a fork proof, and `resolve` consumes stored events separately from proofs
+([`event_store/resolve.rs:71-75`](../../pkgs/id/src/event_store/resolve.rs)). Under the pinned
+evaluation it changes nothing: historical membership resolution against `F` (§4.1 clause 1)
+excludes a removal outside `F`'s causal past, and a removal inside that past is part of the
+snapshot `R` names. Under `validity_now` the same arrival is exactly what flips the answer to
+`Voided` — the pinned/live split working as designed, now over both of resolution's inputs
+instead of one.
 
 ## 5. Discovery query, and how it stays readable under flood
 
@@ -1214,6 +1243,12 @@ Each is independently reviewable and small enough to land alone.
    - a **later-arriving fork proof** leaves a saved `project(view, R)` total unchanged and flips
      `validity_now` for the affected events — the pinned/live split of §4.6, so neither the stale
      total nor the silent rewrite happens;
+   - a **later-arriving membership removal** (finding 30) leaves a saved `project(view, R)` total
+     unchanged and flips `validity_now` to `Voided` for the claims that stood on the voided
+     grant — the `voiding_scenarios.rs` shape with the removal delivered *after* the view was
+     saved. The negative control is the same fixture evaluated with a proof-only `R`: the total
+     moves under an unchanged provenance tuple and the test fails — so the snapshot identifier
+     and the historical-membership rule are exercised, not assumed;
    - a named exception for a **stranger's** claim is retrieved by ID and counted, even though the
      stranger is absent from the writer set and from the author-range scan;
    - a **rescind** version erases the claims it saw and leaves later ones alone (§3.3), and — the
@@ -1404,11 +1439,23 @@ substrate's own outcome list: §3.3 said "from `from_version`" in prose for eigh
 the predicate enforced it against the wrong operand, and §4.6 enumerated `applied`'s failures
 from the fork rule alone because that was the rule the section was written about.
 
+**Round 10** (Codex, on the round-9 fix commit `5defdefd`) found one more P2 — in the
+identifier round 4 added. Accepted.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 30 | `resolution` was identified by its fork-proof set alone, but `resolve` takes the stored events separately from the proofs ([`event_store/resolve.rs:71-75`](../../pkgs/id/src/event_store/resolve.rs)) and builds membership from those events (`resolve.rs:110-138`); the claim-frontier gate does not constrain that input. A membership removal arriving after a view is saved — the `Voided` path of §4.6, no fork anywhere (`pkgs/id/tests/voiding_scenarios.rs:280-292`) — could therefore change applicability and the total under an unchanged *(C, S, F, R)*. | **Fixed.** §3.4 now identifies `resolution` by a hash of the complete resolution input snapshot (fork proofs ∪ consumed membership-action event IDs), and §4.1 clause 1 requires pinned evaluation to resolve membership **historically** — only membership-action events in the causal past of `F` feed `applied(R, ·)`. §4.5's cache note and §4.6's `Voided` discussion were updated to the widened `R`. Slice 4 gained the late-removal reproducibility test with its negative control. |
+
+Round 10 is the same lesson as round 9 from the other side: an identifier has to name *all*
+of what it identifies. `R` was added to provenance because one un-named input (fork proofs)
+could move a total; naming only that input left the second input resolution consumes — the
+membership events themselves — free to move under the same name.
+
 Three citation errors found in self-review were also corrected (`chain.rs` decoder limits are at
 `:41-42`; the `TagIndex` rebuild note is `:11-12,16`; `TagIndex.by_author` is `:46`). All internal
 links were checked programmatically after every round and resolve.
 
-**A note on what nine rounds actually shows.** Every round found a real defect, and rounds 2–8 each
+**A note on what ten rounds actually shows.** Every round found a real defect, and rounds 2–8 each
 found at least one that an earlier round had *introduced*: an interval predicate patched into a
 snapshot, an exception placed outside a gate, a scope applied twice, a `max` over a non-linear
 sequence, a rescind mistaken for an admission state, a cache keyed on a frontier without the
@@ -1437,7 +1484,8 @@ completeness:
    the author.
 4. **The resolution-state plumbing** (§4.5, §4.6, §D4). `R` has to reach more places than any other
    input — the predicate, group replay, its cache key and the provenance — and rounds 5 and 6 each
-   found a place it had not reached. Any remaining input evaluated without `R` is a reproducibility
+   found a place it had not reached; round 10 found its identifier naming only the fork-proof
+   half of its inputs. Any remaining input evaluated without `R` is a reproducibility
    bug of the same shape as findings 16 and 23.
 5. **The retention root set** (§D7, §6). Counting is a property of *this view*, so "hot iff counted"
    can never protect the inputs a view is defined over; round 8 found that and the fix is stated as
