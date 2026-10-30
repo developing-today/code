@@ -759,6 +759,12 @@
       "role": "not-compendium",
       "lines": 5,
       "note": "a five-line scratch list, not a chapter"
+    },
+    {
+      "path": "docs/catalogue/README.md",
+      "chapter": "catalogue",
+      "role": "chapter-index",
+      "note": "entry point for the catalogue chapter"
     }
   ]
 }
