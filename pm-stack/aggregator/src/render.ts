@@ -4753,7 +4753,7 @@ ${degraded}${modeNote}
 <h2>Item resolution coverage</h2>
 <div class="card">${coverageLine}</div>
 <h2>Dashboard comments</h2>
-<div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 \u2014 a pending count that never drains means the triage/poster loop is not running)</div>
+<div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 — a pending count that never drains means the triage/poster loop is not running)</div>
 <h2>Source facets</h2>
 ${facets}
 <h2>Pages</h2>
@@ -4805,14 +4805,30 @@ export function renderProjects(
   } = {},
 ): string {
   const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
-  const area = opts.area && areas.includes(opts.area) ? opts.area : null;
-  const shown = area ? pool.filter((p) => p.area === area) : pool;
+  // #1143: Area-unset items get an explicit "(unset)" bucket, mirroring
+  // the /program index banner — without it they are silently mixed into
+  // "all" with no count and no way to view them as the gap they are.
+  const UNSET_AREA = "(unset)";
+  const unsetCount = pool.filter((p) => !p.area).length;
+  const area =
+    opts.area === UNSET_AREA && unsetCount > 0
+      ? UNSET_AREA
+      : opts.area && areas.includes(opts.area)
+        ? opts.area
+        : null;
+  const shown =
+    area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
   const chips = [
     `<a href="/projects"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
     ...areas.map(
       (a) =>
         `<a href="/projects?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
     ),
+    ...(unsetCount > 0
+      ? [
+          `<a href="/projects?area=${encodeURIComponent(UNSET_AREA)}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
+        ]
+      : []),
   ].join("");
   if (!pool.length) {
     return layout(
@@ -4850,6 +4866,7 @@ export function renderProjects(
   const body = `<h1>Projects — GitHub Project pool</h1>
 <p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
+${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="/projects?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 <p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
   return layout(
