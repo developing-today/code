@@ -5,6 +5,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Merge queue pilot (see .github/ci-policy.md): the queue validates
+  # the combined merge-group head, and this workflow's PR-tier job
+  # (basic: proxy port fallbacks) is main's required status check —
+  # it must run on merge groups too, or the queue can never see its
+  # required context and stalls.
+  merge_group:
   schedule:
     # Nightly backstop: the full flake check runs on main + nightly, not PRs.
     - cron: "17 8 * * *"
