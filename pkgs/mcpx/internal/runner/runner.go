@@ -89,6 +89,10 @@ type Options struct {
 	GlobalsSource string
 	// CaptureConsole mirrors console output into the record stream.
 	CaptureConsole bool
+	// Deps is the script's resolved dependency set (#1913), materialised
+	// into the workdir before the run. Nil means no set was resolved and
+	// the run behaves exactly as it did before the chain existed.
+	Deps *Deps
 	// Phases are lines injected at named points in the generated launcher.
 	// Every point a user might want is named, because a launcher that is
 	// half-configurable invites forking it.
@@ -243,6 +247,31 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			_ = writeIfChanged(filepath.Join(filepath.Dir(scriptPath), GlobalsFileName), opts.GlobalsSource)
 		}
 		clientPath = sideCar
+	}
+
+	// The dependency set is materialised before the launcher and the
+	// type check, because both resolve the script's imports (#1913).
+	if opts.Deps != nil {
+		flags, derr := materialiseDeps(workDir, rt.Kind, opts.Deps)
+		if derr != nil {
+			return nil, derr
+		}
+		if len(flags) > 0 {
+			inner := rt.Args
+			rt.Args = func(script string) []string {
+				a := inner(script)
+				out := append([]string{}, a[:len(a)-1]...)
+				out = append(out, flags...)
+				return append(out, a[len(a)-1])
+			}
+		}
+		if opts.Deps.frozenNPM(rt.Kind) {
+			ci := exec.CommandContext(ctx, "npm", "ci", "--prefix", workDir, "--no-audit", "--no-fund")
+			if out, cerr := ci.CombinedOutput(); cerr != nil {
+				return nil, fmt.Errorf("deps: npm ci (frozen lockfile): %w: %s",
+					cerr, strings.TrimSpace(string(out)))
+			}
+		}
 	}
 
 	// A module with a default export is a program with an entry point; one

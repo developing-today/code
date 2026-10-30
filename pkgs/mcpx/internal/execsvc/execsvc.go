@@ -458,6 +458,21 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 // records for the result.
 func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Options, sink Sink) (*Result, error) {
 	if sink == nil {
+		// The wire dependency set becomes the runner's in RunWith, the one
+		// boundary every caller (CLI, /v1, MCP) crosses, so no path can
+		// accept deps and then drop them (#1913).
+		if opts.Deps != nil && ropts.Deps == nil {
+			ropts.Deps = &runner.Deps{
+				Packages:     opts.Deps.Packages,
+				Manifest:     opts.Deps.Manifest,
+				ManifestName: opts.Deps.ManifestName,
+				Lockfile:     opts.Deps.Lockfile,
+				LockfileName: opts.Deps.LockfileName,
+				Source:       opts.Deps.Source,
+				AutoInstall:  opts.Deps.AutoInstall,
+			}
+		}
+
 		sink = func(Frame) error { return nil }
 	}
 	if ropts.Env == nil {
