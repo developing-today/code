@@ -6578,7 +6578,11 @@
         // { name, invert: true } for the inverse). DeepSeek deductions
         // double in the peak windows — Mon-Fri 01:00-04:00 +
         // 06:00-10:00 UTC — on Go, and ClinePass's DeepSeek reference
-        // rates split the same way, so during peak this chain leads
+        // rates split the same way (verified against DeepSeek's own
+        // pricing page 2026-10-29; the one clause not encoded is the
+        // Chinese-public-holiday exclusion — see the
+        // model_route_windows comment below and opencode#821), so
+        // during peak this chain leads
         // with MiMo and keeps Flash as the fallback, and off-peak it
         // leads with Flash. The shipped Window schema holds ONE
         // daily range per named window, so the two peak ranges are
@@ -6858,6 +6862,26 @@
       // schema holds one daily range per named window, so the two
       // ranges are two windows; the background route composes them
       // (see its comment for the position-by-position reading).
+      // VERIFIED 2026-10-29 against DeepSeek's own pricing page
+      // (https://api-docs.deepseek.com/quick_start/pricing/): "Off-peak
+      // rates are half of the peak rates. Peak hours are 01:00 - 04:00
+      // and 06:00 - 10:00 UTC, Monday through Friday, excluding Chinese
+      // public holidays. All other hours are off-peak, including
+      // weekends and Chinese public holidays in full." So the times
+      // and the weekend treatment below are exactly right (weekends
+      // are off-peak in full — Chinese make-up workdays on a weekend
+      // do NOT become peak), but one clause is NOT encoded: a Chinese
+      // public holiday that falls Mon-Fri is off-peak for the whole
+      // day, and these windows still treat it as peak. The Window
+      // schema has no calendar dates, date ranges, or holiday lists
+      // and a gate cannot exclude one window from another, so the
+      // holiday exclusion cannot be expressed today — tracked in
+      // developing-today/opencode#821 (date-aware windows). Until
+      // that lands these two windows are the closest correct
+      // approximation: on weekday Chinese public holidays the
+      // background route leads with MiMo and treats Flash as
+      // peak-priced when it is actually off-peak — lost value on
+      // those days, never overspend.
       "deepseek-peak-early": {
         "daysOfWeek": ["mon", "tue", "wed", "thu", "fri"],
         "start": "01:00",
