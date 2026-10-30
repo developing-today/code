@@ -76,6 +76,8 @@ const UNIT_MAP: Partial<Record<UsageUnit, SnapshotRecord["unit"]>> = {
   usd: "usd",
   cny: "cny",
   pct: "pct",
+  minutes: "minutes",
+  hours: "hours",
 };
 
 /** Family-2 services: every measured metric becomes one record at the
