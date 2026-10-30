@@ -349,7 +349,7 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 		if res.Error != "" {
 			fmt.Fprintln(os.Stderr, "mcpx:", res.Error)
 		}
-		os.Exit(res.ExitCode)
+		return &exitStatusError{code: res.ExitCode}
 	}
 	return nil
 }

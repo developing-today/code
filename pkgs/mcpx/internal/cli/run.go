@@ -130,6 +130,14 @@ func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 	// it is told once where to read settings from.
 	SetPlumbingSource(app)
 
+	// The --paths-config seed is a package global in config (it has to
+	// be captured before any settings exist), so an in-process caller
+	// would otherwise inherit the previous invocation's seed. Scope it
+	// to this invocation: clear on entry, and clear again on the way
+	// out so nothing leaks into the next call.
+	config.SetPathsConfigSeed(nil)
+	defer config.SetPathsConfigSeed(nil)
+
 	// An in-process daemon lives exactly as long as this command. Stopped on
 	// every exit path, including an error, or its servers would outlive the
 	// invocation that owns them. (In main() this only guarded the dispatch
@@ -256,7 +264,13 @@ func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 		}
 		var ec ExitCoder
 		if errors.As(err, &ec) {
-			fmt.Fprintln(stdio.err(), "mcpx:", err)
+			// A script's exit status is not a failure of mcpx itself:
+			// the run already reported itself, so there is nothing to
+			// prefix with "mcpx:" -- only the status carries over.
+			var se *exitStatusError
+			if !errors.As(err, &se) {
+				fmt.Fprintln(stdio.err(), "mcpx:", err)
+			}
 			return ec.ExitCode()
 		}
 		if errors.Is(err, ErrNoDaemon) {
@@ -268,3 +282,13 @@ func Run(ctx context.Context, args []string, env Env, stdio Stdio) int {
 	}
 	return 0
 }
+
+// exitStatusError carries a script run's exit status back to Run as an
+// error, so a handler never has to os.Exit to report it: in-process, an
+// os.Exit would terminate the embedding application or test runner (and
+// skip Run's deferred CloseInline); as a returned ExitCoder, Run turns
+// it into the same process exit code at the one place that owns it.
+type exitStatusError struct{ code int }
+
+func (e *exitStatusError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
+func (e *exitStatusError) ExitCode() int { return e.code }
