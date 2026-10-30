@@ -52,6 +52,7 @@ inputs:
   default-branch:
     description: "Default branch of the target repo, passed through to pm-dispatch-task. No default beyond that of pm-dispatch-task (there it defaults to the caller repository default branch; ci-fix failures on this branch dispatch at high priority via pm-dispatch-start, failures on any other branch are queued via pm-dispatch-queue)."
     required: false
+    default: ${{ github.event.repository.default_branch }}
 outputs:
   task_id:
     description: "pm-dispatch queue task id from the pm-dispatch-task step."
