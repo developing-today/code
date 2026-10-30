@@ -599,9 +599,25 @@ func pyTypeForSchema(s *schema, indent string) string {
 		return "Any"
 	}
 	if s.Const != nil {
+		if typ, ok := pyCompoundType(s.Const); ok {
+			return typ
+		}
 		return pyLiteral(s.Const)
 	}
 	if len(s.Enum) > 0 {
+		compound := ""
+		for _, e := range s.Enum {
+			if typ, ok := pyCompoundType(e); ok {
+				if compound == "" {
+					compound = typ
+				} else if compound != typ {
+					compound = "Any"
+				}
+			}
+		}
+		if compound != "" {
+			return compound
+		}
 		parts := make([]string, 0, len(s.Enum))
 		for _, e := range s.Enum {
 			parts = append(parts, pyLiteral(e))
@@ -678,6 +694,22 @@ func pyTypeForSchema(s *schema, indent string) string {
 		return "Dict[str, Any]"
 	}
 	return "Any"
+}
+
+// pyCompoundType approximates a compound JSON value (object or
+// array) as a Python type. Compound enum/const values cannot be
+// embedded in a Literal[...] annotation: their JSON serialization
+// is not Python ({"x":true} raises NameError at import, and a null
+// inside one is an undefined name), so the annotation falls back
+// to the value's container type.
+func pyCompoundType(v any) (string, bool) {
+	switch v.(type) {
+	case map[string]any:
+		return "Dict[str, Any]", true
+	case []any:
+		return "List[Any]", true
+	}
+	return "", false
 }
 
 func pyLiteral(v any) string {
@@ -844,7 +876,18 @@ func pyParam(name string) string {
 }
 
 // pyMethodName is the method spelling of a tool name.
-func pyMethodName(name string) string { return pyParam(name) }
+func pyMethodName(name string) string {
+	safe := pyParam(name)
+	// A tool named like a Python special method (__init__, __call__,
+	// ...) would be bound as the namespace class's own special
+	// method: a def __init__ makes importing the module run the tool
+	// as the class constructor, with no explicit call. Rename the
+	// binding (the request keeps the tool's original name).
+	if len(safe) > 4 && strings.HasPrefix(safe, "__") && strings.HasSuffix(safe, "__") {
+		return safe + "_"
+	}
+	return safe
+}
 
 var pyReserved = func() map[string]bool {
 	words := strings.Fields(`False None True and as assert async await break class continue def del
@@ -912,17 +955,44 @@ func PythonDeclarations(nss []Namespace) string {
 					sanitizeComment(collisionText(names)), pyQuote(ns.Server))
 				continue
 			}
-			params, _ := schemaFields(t.InputSchema)
-			fmt.Fprintf(&b, "    def %s(self", fn)
-			taken := map[string]bool{}
-			for i, p := range params {
-				sep := ", "
-				if i == 0 {
-					sep = ", "
-				}
-				fmt.Fprintf(&b, "%s%s: %s = ...", sep, pyArgName(p, taken), pyTypeFor(propSchema(t.InputSchema, p), "        "))
+			params, required := schemaFields(t.InputSchema)
+			req := map[string]bool{}
+			for _, r := range required {
+				req[r] = true
 			}
-			fmt.Fprintf(&b, ") -> %s: ...\n", pyResultType(classNames[i], t))
+			taken := map[string]bool{}
+			argNames := map[string]string{}
+			for _, p := range params {
+				argNames[p] = pyArgName(p, taken)
+			}
+			// The declaration advertises the module's real calling
+			// convention (pkgs/mcpx/AGENTS.md: generated signatures
+			// are authoritative): keyword-only arguments after a
+			// bare "*", required arguments without a default,
+			// optional ones as Optional[...] = ... Anything else
+			// lets a script call positionally or omit a required
+			// argument, and both fail in the module before reaching
+			// the daemon.
+			parts := []string{"self"}
+			if len(params) > 0 {
+				parts = append(parts, "*")
+			}
+			for _, p := range params {
+				if req[p] {
+					parts = append(parts, argNames[p]+": "+pyTypeFor(propSchema(t.InputSchema, p), "        "))
+				}
+			}
+			for _, p := range params {
+				if req[p] {
+					continue
+				}
+				typ := pyTypeFor(propSchema(t.InputSchema, p), "        ")
+				if typ != "Any" {
+					typ = "Optional[" + typ + "]"
+				}
+				parts = append(parts, argNames[p]+": "+typ+" = ...")
+			}
+			fmt.Fprintf(&b, "    def %s(%s) -> %s: ...\n", fn, strings.Join(parts, ", "), pyResultType(classNames[i], t))
 		}
 		b.WriteString("\n")
 	}

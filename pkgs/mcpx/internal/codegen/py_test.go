@@ -69,7 +69,7 @@ func TestPythonGlobalsAndDeclarations(t *testing.T) {
 		}
 	}
 	decl := l.EmitDeclarations([]codegen.Namespace{sampleNamespace()})
-	for _, want := range []string{"from mcpx_client import tools, call, ToolError", "class Demo:", "def fancy_name(self, x: str = ...) -> Any: ..."} {
+	for _, want := range []string{"from mcpx_client import tools, call, ToolError", "class Demo:", "def fancy_name(self, *, x: str) -> Any: ..."} {
 		if !strings.Contains(decl, want) {
 			t.Errorf("python declarations missing %q:\n%s", want, decl)
 		}
@@ -340,5 +340,67 @@ func TestPythonCodexRound2(t *testing.T) {
 	}
 	if strings.Contains(out, "class ToolError:\n") && !strings.Contains(out, "class ToolError(RuntimeError)") {
 		t.Errorf("namespace class replaced runtime ToolError:\n%s", out)
+	}
+}
+
+func TestPythonCodexRound3(t *testing.T) {
+	l := pythonLang(t)
+	ns := codegen.Namespace{
+		Name:   "demo",
+		Server: "demo-server",
+		Tools: []codegen.Tool{
+			{
+				Name:        "__init__",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]}`),
+			},
+			{
+				Name: "shapes",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{
+					"obj_enum":{"enum":[{"x":true}]},
+					"arr_enum":{"enum":[[1,2]]},
+					"mixed_enum":{"enum":[{"x":true},[1]]},
+					"obj_const":{"const":{"a":1}},
+					"scalar_enum":{"enum":["a","b"]}
+				}}`),
+			},
+			{
+				Name:        "greet",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"count":{"type":"integer"}},"required":["name"]}`),
+			},
+		},
+	}
+	out := l.EmitModule([]codegen.Namespace{ns}, "http://127.0.0.1:1234", "sess-3")
+	for _, want := range []string{
+		// A tool named __init__ is renamed as a binding; the request
+		// keeps the original tool name.
+		"def __init___(self, *, x: str)",
+		`_call_raw("demo-server", "__init__"`,
+		// Compound enum/const values fall back to container types.
+		"obj_enum: Dict[str, Any]",
+		"arr_enum: List[Any]",
+		"mixed_enum: Any",
+		"obj_const: Dict[str, Any]",
+		// Scalar enums still use Literal.
+		`scalar_enum: Literal["a", "b"]`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("python module missing %q:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{
+		"def __init__(self, *, x: str)",
+		`Literal[{"x":true}]`,
+		"Literal[[1, 2]]",
+		"Literal[[1,2]]",
+	} {
+		if strings.Contains(out, bad) {
+			t.Errorf("python module contains %q:\n%s", bad, out)
+		}
+	}
+	decl := l.EmitDeclarations([]codegen.Namespace{ns})
+	// Declarations advertise the module's keyword-only convention:
+	// required arguments carry no default, optional ones do.
+	if want := "def greet(self, *, name: str, count: Optional[int] = ...) -> Any: ..."; !strings.Contains(decl, want) {
+		t.Errorf("python declarations missing %q:\n%s", want, decl)
 	}
 }
