@@ -140,9 +140,22 @@ func TestSupervisedPumpDetachReattach(t *testing.T) {
 	if err := tr1.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	tr2, err := mcpclient.NewSupervised(opts)
-	if err != nil {
-		t.Fatalf("attach 2: %v", err)
+	// Close returns once the local connection is closed; the supervisor
+	// clears its attach slot when it notices the disconnect, which is
+	// asynchronous. Poll the reattach until the slot frees instead of
+	// assuming the release is instant (the #2609 flake: under load the
+	// immediate reattach was refused "already attached").
+	var tr2 *mcpclient.SupervisedTransport
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		tr2, err = mcpclient.NewSupervised(opts)
+		if err == nil {
+			break
+		}
+		if !strings.Contains(err.Error(), "already attached") || time.Now().After(deadline) {
+			t.Fatalf("attach 2: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	defer tr2.Close()
 	if tr2.PID() != pid {

@@ -1,23 +1,6 @@
 name: research-workflow
 
 on:
-  pull_request:
-    paths:
-      - "AGENTS.md"
-      - "CLAUDE.md"
-      - ".agents/**"
-      - "planning/**"
-      - "doc/README.md"
-      - "doc/DOCUMENTATION_PROTOCOL.md"
-      - "doc/**/main.md"
-      - "doc/**/transcript.txt"
-      - "doc/**/concepts/**"
-      - "doc/**/notes/**"
-      - "doc/**/receipts/**"
-      - "doc/**/decisions/**"
-      - "scripts/*research*workflow*.py"
-      - "scripts/tests/test_*workflow*.py"
-      - ".github/workflows/research-workflow.yml"
   push:
     branches: [main]
     paths:

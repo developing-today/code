@@ -22,11 +22,6 @@ name: cf-container-hello
 # step.
 
 on:
-  pull_request:
-    paths:
-      - "pkgs/cf-container-hello/**"
-      - "pkgs/lab-ops-hub/container/app.py"
-      - ".github/workflows/cf-container-hello.yml"
   push:
     branches: [main]
     paths:

@@ -29,32 +29,6 @@ name: go modules build
 # pgx/cockroach indirects) with nothing noticing.
 
 on:
-  pull_request:
-    # PR tier (Phase 2, #1781): builds fire on PRs only for class-3
-    # changes (lockfiles, module roots, flake files, build definitions,
-    # workflow files, shared libs); on push to main they always run.
-    paths:
-      - "pkgs/chat/go.mod"
-      - "pkgs/chat/go.sum"
-      - "pkgs/database/go.mod"
-      - "pkgs/database/go.sum"
-      - "pkgs/graph/go.mod"
-      - "pkgs/graph/go.sum"
-      - "pkgs/import/go.mod"
-      - "pkgs/import/go.sum"
-      - "pkgs/launcher/go.mod"
-      - "pkgs/launcher/go.sum"
-      - "pkgs/tea/go.mod"
-      - "pkgs/tea/go.sum"
-      - "pkgs/chat/package.nix"
-      - "pkgs/database/package.nix"
-      - "pkgs/graph/package.nix"
-      - "pkgs/import/package.nix"
-      - "pkgs/launcher/package.nix"
-      - "pkgs/tea/package.nix"
-      - "flake.nix"
-      - "flake.lock"
-      - ".github/workflows/**"
   push:
     branches: [main]
 

@@ -1,0 +1,60 @@
+# EXAMPLE — not installed in any live repo. Copy into a fleet repo's
+# .github/workflows/ and adjust the dispatch URL to the laptop's tailnet
+# address (or the dispatch.security.cab hostname once the pm-stack
+# Cloudflare tunnel carries it).
+#
+# Two auth styles are shown:
+#  A) GitHub Actions OIDC (preferred): the workflow mints a short-lived
+#     token with audience "pm-dispatch"; pm-dispatch verifies it against
+#     GitHub's JWKS and requires the token's repository claim to equal
+#     the repo in the request body — a workflow can only dispatch for
+#     its own repo.
+#  B) Static bearer secret: the DISPATCH_TOKEN repo secret holds the
+#     DISPATCH_API_TOKEN from the laptop's ~/secrets/dispatch.env.
+
+name: dispatch-example
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Work for the OpenCode session"
+        required: true
+        type: string
+
+jobs:
+  dispatch-oidc:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required to mint the OIDC token
+      contents: read
+    steps:
+      - name: Launch a tracked OpenCode session (OIDC)
+        env:
+          DISPATCH_URL: http://100.99.113.103:4879
+          PROMPT: ${{ inputs.prompt }}
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=pm-dispatch" | jq -r .value)
+          curl -s -X POST "$DISPATCH_URL/v1/sessions" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg repo "$GITHUB_REPOSITORY" --arg prompt "$PROMPT" \
+                  '{repo: $repo, prompt: $prompt, priority: "high"}')"
+
+  dispatch-secret:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enqueue work only (bearer secret)
+        env:
+          DISPATCH_URL: http://100.99.113.103:4879
+          DISPATCH_TOKEN: ${{ secrets.DISPATCH_TOKEN }}
+          PROMPT: ${{ inputs.prompt }}
+        run: |
+          set -euo pipefail
+          curl -s -X POST "$DISPATCH_URL/v1/tasks" \
+            -H "Authorization: Bearer $DISPATCH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg repo "$GITHUB_REPOSITORY" --arg prompt "$PROMPT" \
+                  '{repo: $repo, title: "queued from Actions", prompt: $prompt, kind: "triage", issue: true}')"

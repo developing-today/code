@@ -93,7 +93,7 @@ What matters most for mcpx, in one paragraph each:
 | mcpx hook (v1) | mcpx use | v2 equivalent | works as-is? |
 | --- | --- | --- | --- |
 | `shell.env` — `plugin/opencode/mcpx-session.ts:664` | inject `MCPX_SESSION_ID` etc. | `shell.hook("create.before")` — `v2:packages/plugin/src/promise/shell.ts:12` | **No session id.** Only `tool.hook("execute.before")` sees `sessionID` (`v2:packages/plugin/src/promise/tool.ts:40`); the session-environment route is TUI-owned and replaces env. Best v2 answer is server-side: read `_meta["ai.opencode/sessionID"]`. |
-| `experimental.chat.system.transform` — `plugin/opencode/mcpx-session.ts:737` | optional instructions | `session.hook("context")` push `{type:"text", text}` onto `event.system` — `v2:packages/plugin/src/promise/session.ts:28` | Broken in v1 today (writes `parts`, PLUGIN-16). |
+| `experimental.chat.system.transform` — `plugin/opencode/mcpx-session.ts:737` | optional instructions | `session.hook("context")` push `{type:"text", text}` onto `event.system` — `v2:packages/plugin/src/promise/session.ts:28` | Was broken in v1 (wrote `parts`, PLG-16); fixed by #1938 — the v1 hook pushes onto `output.system`. |
 | `tool` map — `plugin/opencode/mcpx-session.ts:762` | `mcpx_daemon_*`, `mcpx_discover/exec/observe` | `ctx.tool.transform` with `options.codemode: false` — `v2:packages/core/src/tool.ts:228` | Rewrite; `ctx.ask` unavailable. |
 | `tool.execute.after` — `plugin/opencode/mcpx-session.ts:773` | timing into mcpx log | `tool.hook("execute.after")` with `status` — `v2:packages/plugin/src/promise/tool.ts:46` | Rewrite; gains failures. |
 
