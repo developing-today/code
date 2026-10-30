@@ -37,13 +37,18 @@ type Language struct {
 	declarations func(nss []Namespace) string
 }
 
+// typescriptClientFile is a constant because GlobalDeclarations spells it
+// in its output: naming the var there would make the var's initialisation
+// (which references the function) a cycle.
+const typescriptClientFile = "mcpx-client.ts"
+
 // TypeScript is the original target, expressed through the Language
 // dimension with no behaviour change: its emitters are the package-level
 // Module, GlobalDeclarations and Declarations functions, so every existing
 // caller's output is byte-identical.
 var TypeScript = Language{
 	Name:         "typescript",
-	ClientFile:   "mcpx-client.ts",
+	ClientFile:   typescriptClientFile,
 	GlobalsFile:  "mcpx-globals.d.ts",
 	ScriptExt:    ".ts",
 	module:       Module,
