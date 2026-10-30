@@ -163,6 +163,9 @@ var rawReadAllowed = map[string]string{
 		"cli/scripts.go scriptPath).",
 	"MCPX_CONFIG": "paths.configFile names the file the settings are read " +
 		"from, so config.SearchPathFrom cannot ask them.",
+	"MCPX_PATHS_CONFIG": "paths.config seeds the discovery pass that " +
+		"decides which files the settings are read from, so " +
+		"config.ResolveChainFrom cannot ask them either (issue #1842).",
 }
 
 // TestNoUndeclaredEnvRead is the guard facing inward, and the reason #172
