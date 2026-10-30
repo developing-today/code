@@ -6392,21 +6392,23 @@
       // keep listing the GLM models (catalog rule); no route seats them.
       "gemini-flash-plan": {
         "name": "Gemini Flash - plan providers",
-        // 2026-10-30 (route audit): second door added. This pool was a
-        // single leaf on antigravity-ls; when the ls proxy was down
-        // (2026-10-24/25) every Gemini Flash call failed with
-        // ConnectionRefused (38 failures in route_attempt) and the
-        // pool had nothing to fail over to. antigravity-agy serves
-        // the same gemini-3.8-flash model (live catalog verified
-        // 2026-10-30) through its own proxy on :18743, so the pool
-        // now survives either proxy being down.
+        // 2026-10-30 (route audit): this pool is single-door on
+        // antigravity-ls, and that fragility is real — when the ls
+        // proxy was down (2026-10-24/25) every Gemini Flash call
+        // failed with ConnectionRefused (38 failures in
+        // route_attempt) with nothing to fail over to. The obvious
+        // second door, antigravity-agy, is deliberately NOT seated
+        // here: bin/agy-proxy.mjs is text-only (it builds its prompt
+        // from body.messages, ignores body.tools, and never returns
+        // structured tool calls — Codex P1 on the audit PR, verified
+        // against the proxy source), so an agy leaf would silently
+        // end tool-using turns with a text "success" and block
+        // failover. Seat agy here only once the proxy bridges tool
+        // calls; until then ls is the only tool-capable Gemini Flash
+        // door and this pool rides on its proxy being up.
         "targets": [
           {
             "model": "antigravity-ls/gemini-3.8-flash",
-            "variants": { "xhigh": "high", "max": "high" }
-          },
-          {
-            "model": "antigravity-agy/gemini-3.8-flash",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
@@ -6420,19 +6422,16 @@
         // model in #1324; the block extension lands in this PR). The
         // leaf is dormant while claude-code is disabled and rejoins
         // automatically on re-enable.
-        // 2026-10-30 (route audit): antigravity-agy leaf added as a
-        // second live door — with claude-code dormant this pool was
-        // single-door on antigravity-ls, the same fragility that
-        // killed Gemini Flash on 2026-10-24/25 when the ls proxy was
-        // down. agy's live catalog serves claude-sonnet-5-5.
+        // 2026-10-30 (route audit): with claude-code dormant this
+        // pool is single-live-door on antigravity-ls. antigravity-agy
+        // is deliberately NOT seated as the second door: its proxy
+        // is text-only (no tool-call bridging — see the note in
+        // gemini-flash-plan). The pool's resilience is the ls proxy
+        // plus claude-code's return.
         "targets": [
           "claude-code/claude-sonnet-5-5",
           {
             "model": "antigravity-ls/claude-sonnet-5-5",
-            "variants": { "xhigh": "high", "max": "high" }
-          },
-          {
-            "model": "antigravity-agy/claude-sonnet-5-5",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
@@ -6446,17 +6445,14 @@
         // provider block now lists claude-opus-5-5 (proxy catalog in
         // #1324; block extension in this PR). Dormant while
         // claude-code is disabled; rejoins on re-enable.
-        // 2026-10-30 (route audit): antigravity-agy leaf appended as
-        // a second live door (ordered selection keeps ls preferred);
-        // agy's live catalog serves claude-opus-5-5. See sonnet-plan.
+        // 2026-10-30 (route audit): single-live-door on
+        // antigravity-ls, same as sonnet-plan — antigravity-agy is
+        // not seated (text-only proxy, no tool-call bridging; see
+        // the note in gemini-flash-plan).
         "targets": [
           "claude-code/claude-opus-5-5",
           {
             "model": "antigravity-ls/claude-opus-5-5",
-            "variants": { "xhigh": "high", "max": "high" }
-          },
-          {
-            "model": "antigravity-agy/claude-opus-5-5",
             "variants": { "xhigh": "high", "max": "high" }
           }
         ],
