@@ -913,6 +913,13 @@
       "role": "chapter-index",
       "lines": 22,
       "note": "the chapter index: what the catalogue holds and why; the section pages are seeded by the follow-up task"
+    },
+    {
+      "path": "docs/decisions/0006-ttl-touch-on-read.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 107,
+      "note": "a decision record under the chapter index"
     }
   ]
 }
