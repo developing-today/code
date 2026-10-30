@@ -112,10 +112,12 @@ function openGotoLine(view: EditorView): void {
           // the user can correct it; the cursor does not move.
           const raw = (dialogInput?.value ?? "").trim();
           const line = Number(raw);
-          const lineCount = activeView ? getLineCount(activeView) : 0;
+          // ⚡ Bolt optimization: compute line starts once instead of traversing doc twice
+          const lineStarts = activeView ? getLineStarts(activeView) : [];
+          const lineCount = Math.max(1, lineStarts.length);
           const pos =
             activeView && raw !== "" && Number.isInteger(line) && line >= 1 && line <= lineCount
-              ? getLineStartPos(activeView, line)
+              ? (lineStarts[line - 1] ?? null)
               : null;
           if (pos === null || !activeView) {
             dialogInput?.select();
