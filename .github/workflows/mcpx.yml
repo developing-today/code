@@ -258,7 +258,12 @@ jobs:
             fi
             cd ../..
             shellcheck -x -P SCRIPTDIR --severity=warning pkgs/mcpx/scripts/*.sh
-            actionlint
+            # actionlint is scoped to the mcpx workflows: #1996 assigns it
+            # the mcpx workflow set, not the whole repo (repo-wide findings
+            # are tracked separately). -S warning matches the shellcheck
+            # severity above, so info/style notes inside run: blocks do
+            # not fail this leg.
+            actionlint -shellcheck "shellcheck -S warning" .github/workflows/mcpx*.yml
           '
 
       # golangci-lint runs, but is NOT blocking yet — explicitly, per
