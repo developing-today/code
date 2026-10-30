@@ -5,6 +5,8 @@
 # using .github/scripts/id-bench-compare.sh. The report lands in the job
 # summary and as a run artifact.
 #
+# Main tier only (Phase 2, #1781): benchmarks no longer run on PRs.
+#
 # NON-BLOCKING BY DESIGN: this workflow is separate from the required
 # "nix flake check" gate in id-check.yml, the bench step is
 # continue-on-error, and the compare script always exits 0. A regression
@@ -15,14 +17,11 @@
 
 name: id bench
 
+# CI tier policy: see .github/ci-policy.md
+
 on:
   push:
     branches: [main]
-    paths:
-      - "pkgs/id/**"
-      - ".github/workflows/id-bench.yml"
-      - ".github/scripts/id-bench-compare.sh"
-  pull_request:
     paths:
       - "pkgs/id/**"
       - ".github/workflows/id-bench.yml"
@@ -41,7 +40,7 @@ concurrency:
 
 jobs:
   bench:
-    name: benchmark regression report
+    name: "full (main tier): benchmark regression report"
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -55,6 +54,13 @@ jobs:
       # Same store cache as the PR gate, so the bench build starts warm
       # (#288).
       - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
 
       # Full-size workloads, exactly as the baselines were taken
       # (BASELINES.md): --quick numbers are smoke sizes and are never

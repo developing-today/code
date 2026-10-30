@@ -52,6 +52,16 @@ const (
 
 	ServerLog Kind = "server.log"
 	Progress  Kind = "progress"
+
+	// CatalogChanged is published by the daemon's consumer registry when
+	// the catalogue moves. It had no constant and was published as a bare
+	// string, which kept it out of every enumerated list of kinds.
+	CatalogChanged Kind = "catalog.changed"
+
+	// HookFailed is published by the declared-hook runner when a hook
+	// exits non-zero or is cut by its timeout. It is not itself hookable:
+	// a hook subscribed to it could retrigger itself forever.
+	HookFailed Kind = "hook.failed"
 )
 
 // Event is one thing that happened.

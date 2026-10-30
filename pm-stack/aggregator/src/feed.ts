@@ -4,6 +4,7 @@
 // record live on the sandbox). The aggregator renders the feed as-is;
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
+import type { UnmatchedCharge } from "./charges-match.ts";
 import type {
   AaFeedSection,
   ChargeRow,
@@ -43,6 +44,12 @@ export interface FleetFeed {
   payg?: PaygLine[];
   /** Hub charges evidence (§2.4), from the same dated records. */
   charges?: ChargeRow[];
+  /** Charges auto-matching (#1057): unmatched SaaS/AI-looking charges
+   * surfacing for the FIRST time this run — the collector filters out
+   * anything its persisted surfaced-state already showed, so a charge
+   * appears here exactly once and the live source turns each entry
+   * into a hub attention flag. Absent when nothing new surfaced. */
+  chargesAttention?: UnmatchedCharge[];
   /** Hub subscriptions strip rows (Q5: renewal-only). */
   subscriptions?: { name: string; plan: string; renewsAt: string | null }[];
   /** Usage snapshot records (hub §4 writers): derived by the collector

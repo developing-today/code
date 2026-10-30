@@ -591,15 +591,20 @@ impl WorldHub {
     ///
     /// Fails if the world cannot be opened.
     pub async fn open_default(&self) -> Result<WorldService> {
+        tracing::info!("serve startup: open_default acquiring session permit (#190 breadcrumb)");
         let permit = Arc::clone(&self.inner.sessions)
             .acquire_owned()
             .await
             .map_err(|e| anyhow::anyhow!("session limiter closed: {e}"))?;
+        tracing::info!(
+            "serve startup: open_default session permit acquired, leasing world (#190 breadcrumb)"
+        );
         let name = self.inner.default_world.clone();
         let lease = self
             .lease_with(&name, true, permit)
             .await
             .map_err(|e| anyhow::anyhow!("open default world: {}", e.message()))?;
+        tracing::info!("serve startup: open_default lease acquired (#190 breadcrumb)");
         Ok(lease.service().clone())
     }
 

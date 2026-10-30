@@ -5,8 +5,45 @@ use std::sync::Arc;
 
 use anyhow::{Result, ensure};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
+use tracing::Instrument;
 
 use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
+
+impl WorldCommand {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::Issue { .. } => "Issue",
+            Self::Attenuate { .. } => "Attenuate",
+            Self::DelegateToFriend { .. } => "DelegateToFriend",
+            Self::Directory { .. } => "Directory",
+            Self::ApplyDirectory { .. } => "ApplyDirectory",
+            Self::Revoke { .. } => "Revoke",
+            Self::ParticipantId { .. } => "ParticipantId",
+            Self::Chat { .. } => "Chat",
+            Self::Input { .. } => "Input",
+            Self::Snapshot { .. } => "Snapshot",
+            Self::EventsAfter { .. } => "EventsAfter",
+            Self::ProjectEvent { .. } => "ProjectEvent",
+            Self::View { .. } => "View",
+            Self::ViewAt { .. } => "ViewAt",
+            Self::InstallProgram { .. } => "InstallProgram",
+            Self::Presence { .. } => "Presence",
+            Self::UpdateCaps { .. } => "UpdateCaps",
+            Self::SetCapsCeiling { .. } => "SetCapsCeiling",
+            Self::SetExecutionProfile { .. } => "SetExecutionProfile",
+            Self::ExecutionProfileInfo { .. } => "ExecutionProfileInfo",
+            Self::CapsInfo { .. } => "CapsInfo",
+            Self::SetIsolation { .. } => "SetIsolation",
+            Self::IsolationInfo { .. } => "IsolationInfo",
+            Self::SetCrossWorldWrite { .. } => "SetCrossWorldWrite",
+            Self::ForceCrossWorldWrite { .. } => "ForceCrossWorldWrite",
+            Self::SetFileScope { .. } => "SetFileScope",
+            Self::PolicyInfo { .. } => "PolicyInfo",
+            Self::Metrics { .. } => "Metrics",
+            Self::Shutdown { .. } => "Shutdown",
+        }
+    }
+}
 
 pub(crate) enum WorldCommand {
     Issue {
@@ -120,6 +157,25 @@ pub(crate) enum WorldCommand {
     /// Read this world's requested runtime profile.
     ExecutionProfileInfo {
         reply: oneshot::Sender<crate::world_limits::WorldExecutionProfile>,
+    },
+    /// Admin: read the manifest-reconciliation state — the active install
+    /// seed and the pending schedules. The seed stays inside the actor and
+    /// the admin layer; it is never part of a participant projection (#240).
+    ManifestState {
+        reply: oneshot::Sender<(u64, BTreeMap<String, u64>)>,
+    },
+    /// Admin: pend one schedule, replacing any pending schedule with the
+    /// same id. Replies with the full pending map after the change.
+    AdminScheduleAt {
+        id: String,
+        at_ms: u64,
+        reply: oneshot::Sender<Result<BTreeMap<String, u64>>>,
+    },
+    /// Admin: cancel a pending schedule by id (a no-op when absent).
+    /// Replies with the full pending map after the change.
+    AdminCancelSchedule {
+        id: String,
+        reply: oneshot::Sender<Result<BTreeMap<String, u64>>>,
     },
     /// Admin: read the capability report.
     CapsInfo {
@@ -253,7 +309,12 @@ impl WorldActor {
             }
             self.metrics.record_queue_depth(receiver.len() as u64);
             let started = std::time::Instant::now();
-            self.handle(command).await;
+            let name = command.name();
+            async {
+                self.handle(command).await;
+            }
+            .instrument(tracing::info_span!("command", name))
+            .await;
             self.metrics.record_command(started.elapsed());
             self.after_change().await;
             self.acting = None;
@@ -1145,10 +1206,26 @@ impl WorldActor {
                                 if let Some(text) = &view {
                                     if text.len() > self.core.limits.presentation_bytes {
                                         self.view_failures = self.view_failures.saturating_add(1);
-                                        Err(anyhow::anyhow!(
-                                            "world presentation exceeds {} bytes",
-                                            self.core.limits.presentation_bytes
-                                        ))
+                                        // A trapping layout degrades to an error screen and does not poison the world.
+                                        // Fall back to the default view, and crop to the requested dimensions.
+                                        match self.program.view(&viewer) {
+                                            Ok(fallback_view) => {
+                                                if let Some(fallback_text) = fallback_view {
+                                                    if let Ok(Some(crate::world_presentation::WorldSurface::Screen(surface))) = crate::world_presentation::parse_surface(&fallback_text) {
+                                                        let cropped = surface.fit(usize::from(width), usize::from(height));
+                                                        Ok(Some(serde_json::to_string(&cropped).unwrap_or(fallback_text)))
+                                                    } else {
+                                                        Ok(Some(fallback_text))
+                                                    }
+                                                } else {
+                                                    Ok(None)
+                                                }
+                                            }
+                                            Err(error) => {
+                                                Err(error
+                                                    .context("world program view fallback failed"))
+                                            }
+                                        }
                                     } else {
                                         Ok(view)
                                     }
@@ -1280,6 +1357,53 @@ impl WorldActor {
             }
             WorldCommand::ExecutionProfileInfo { reply } => {
                 let _ = reply.send(self.core.execution_profile);
+            }
+            WorldCommand::ManifestState { reply } => {
+                let _ = reply.send((self.core.active_seed, self.core.schedules.clone()));
+            }
+            WorldCommand::AdminScheduleAt { id, at_ms, reply } => {
+                let result = (|| -> Result<BTreeMap<String, u64>> {
+                    if self.core.schedules.get(&id) == Some(&at_ms) {
+                        return Ok(self.core.schedules.clone());
+                    }
+                    // Validate the replacement before anything is persisted:
+                    // a refusal (say, past the horizon) must leave the
+                    // existing schedule standing, in the journal as in
+                    // memory (#807).
+                    let replacing = self.core.schedules.contains_key(&id);
+                    self.core.check_schedule_replacing(
+                        &id,
+                        at_ms,
+                        self.core.clock().now_ms(),
+                        replacing,
+                    )?;
+                    if replacing {
+                        // Journal the cancel before the replacement set:
+                        // replay refuses two pending sets for one id.
+                        self.persist(JournalEntry::ScheduleCancelled { id: id.clone() })?;
+                        self.core.schedules.remove(&id);
+                        self.overdue_at_open.remove(&id);
+                    }
+                    self.persist(JournalEntry::ScheduleSet {
+                        id: id.clone(),
+                        at_ms,
+                    })?;
+                    self.core.schedules.insert(id, at_ms);
+                    Ok(self.core.schedules.clone())
+                })();
+                let _ = reply.send(result);
+            }
+            WorldCommand::AdminCancelSchedule { id, reply } => {
+                let result = (|| -> Result<BTreeMap<String, u64>> {
+                    crate::world_caps::validate_schedule_id(&id)?;
+                    if self.core.schedules.contains_key(&id) {
+                        self.persist(JournalEntry::ScheduleCancelled { id: id.clone() })?;
+                        self.core.schedules.remove(&id);
+                        self.overdue_at_open.remove(&id);
+                    }
+                    Ok(self.core.schedules.clone())
+                })();
+                let _ = reply.send(result);
             }
             WorldCommand::SetIsolation {
                 authority,

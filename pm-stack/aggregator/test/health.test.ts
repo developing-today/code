@@ -2,7 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
 import { loadConfig } from "../src/config.ts";
 import type { FleetFeed, SectionDiagnosis } from "../src/feed.ts";
-import { buildHealth, createProbeCache, recordRender, type HealthInputs, type ProbeFetch } from "../src/health.ts";
+import { buildHealth, createProbeCache, recordRender, resolveBuildVersion, type HealthInputs, type ProbeFetch } from "../src/health.ts";
+import { pendingCommentCounts } from "../src/comments.ts";
+import type { DashComment } from "../src/model.ts";
+import { renderHealth } from "../src/render.ts";
 
 // #1147/#1137: health assembly — service probes (injectable fetcher,
 // 60 s cache), feed section ages, job runs, the render registry, and
@@ -294,5 +297,100 @@ describe("health page + extended /api/health (fixtures boot)", () => {
     const html = await res.text();
     expect(html).toContain('href="/health"');
     expect(html).toContain("/api/health");
+  });
+});
+
+// --- #1145: dashboard comment pending counts on the health view ----------
+
+function dashComment(over: Partial<DashComment>): DashComment {
+  return {
+    id: "dc-test",
+    objectRef: "gh:developing-today/code#1145",
+    kind: "note",
+    author: { kind: "drew", id: "drew", label: "Drew" },
+    body: "test",
+    createdAt: "2026-10-29T00:00:00Z",
+    ...over,
+  } as DashComment;
+}
+
+describe("pending comment counts (#1145)", () => {
+  test("pendingCommentCounts counts only unworked message/github comments", () => {
+    const counts = pendingCommentCounts([
+      dashComment({ kind: "message", triageState: "new" }),
+      dashComment({ kind: "message", triageState: "new" }),
+      dashComment({ kind: "message", triageState: "triaged" }),
+      dashComment({
+        kind: "github",
+        githubState: "pending",
+        githubRef: "developing-today/code#1145" as DashComment["githubRef"],
+      }),
+      dashComment({
+        kind: "github",
+        githubState: "posted",
+        githubRef: "developing-today/code#1145" as DashComment["githubRef"],
+      }),
+      dashComment({
+        kind: "github",
+        githubState: "failed",
+        githubRef: "developing-today/code#1145" as DashComment["githubRef"],
+      }),
+      dashComment({ kind: "note" }),
+    ]);
+    expect(counts).toEqual({ pendingMessages: 2, pendingGithub: 1, total: 7 });
+  });
+
+  test("buildHealth carries the counts into the view and defaults to zero", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const withCounts = await buildHealth(inputs({ comments: { pendingMessages: 3, pendingGithub: 2, total: 9 } }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+    });
+    expect(withCounts.comments).toEqual({ pendingMessages: 3, pendingGithub: 2, total: 9 });
+    const without = await buildHealth(inputs(), { fetcher, cache: createProbeCache(), now: NOW });
+    expect(without.comments).toEqual({ pendingMessages: 0, pendingGithub: 0, total: 0 });
+  });
+
+  test("renderHealth renders the pending counts", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const view = await buildHealth(inputs({ comments: { pendingMessages: 3, pendingGithub: 2, total: 9 } }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+    });
+    const html = renderHealth(view, {
+      board: "fixtures",
+      roadmap: "fixtures",
+      items: "fixtures",
+      comments: "fixtures",
+      quota: "fixtures",
+      usage: "fixtures",
+      attention: "fixtures",
+      orchestration: "fixtures",
+      dns: "fixtures",
+      registry: "fixtures",
+      aa: "fixtures",
+    } as Parameters<typeof renderHealth>[1]);
+    expect(html).toContain("3 messages awaiting triage");
+    expect(html).toContain("2 GitHub comments awaiting posting");
+    expect(html).toContain("9 comments in the store");
+  });
+});
+
+describe("buildHealth version marker (#1150)", () => {
+  test("exposes the deployed build version and defaults to unknown", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const deployed = await buildHealth(inputs({ version: "abc1234deadbeef" }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+    });
+    expect(deployed.version).toBe("abc1234deadbeef");
+    const unmarked = await buildHealth(inputs(), { fetcher, cache: createProbeCache(), now: NOW });
+    expect(unmarked.version).toBe(resolveBuildVersion());
+    expect(resolveBuildVersion({})).toBe("unknown");
+    expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "  v1  " })).toBe("v1");
+    expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "   " })).toBe("unknown");
   });
 });

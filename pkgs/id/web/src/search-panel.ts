@@ -14,15 +14,16 @@ import { keymap } from "prosemirror-keymap";
 import {
   findNext,
   findPrev,
-  getSearchState,
   getMatchHighlights,
+  getSearchState,
   replaceAll,
   replaceNext,
   SearchQuery,
   search,
   setSearchState,
 } from "prosemirror-search";
-import type { Command, Plugin } from "prosemirror-state";
+import type { Command, EditorState } from "prosemirror-state";
+import { Plugin } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 
 /** Options for creating the search panel plugins. */
@@ -69,15 +70,32 @@ function updateMatchCount(view: EditorView): void {
     return;
   }
   const total = countMatches(view);
-  panelState.matchCountEl.textContent = total === 0 ? "No results" : `${total} match${total === 1 ? "" : "es"}`;
+  panelState.matchCountEl.textContent =
+    total === 0 ? "No results" : `${total} match${total === 1 ? "" : "es"}`;
+}
+
+/**
+ * True when the search query or the searched range differs between states.
+ * Selection-only transactions recreate the search state object, so identity
+ * alone is not a reliable signal.
+ */
+function searchStateChanged(prevState: EditorState, state: EditorState): boolean {
+  const prev = getSearchState(prevState);
+  const next = getSearchState(state);
+  if (!prev || !next) return prev !== next;
+  if (!prev.query.eq(next.query)) return true;
+  if (!prev.range || !next.range) return prev.range !== next.range;
+  return prev.range.from !== next.range.from || prev.range.to !== next.range.to;
 }
 
 /** Push current input values into prosemirror-search state. */
 function syncQuery(view: EditorView): void {
   const searchText = panelState.searchInput?.value ?? "";
   const replaceText = panelState.replaceInput?.value ?? "";
-  const caseCheckbox = panelState.panelEl?.querySelector<HTMLInputElement>("#search-case");
-  const regexCheckbox = panelState.panelEl?.querySelector<HTMLInputElement>("#search-regex");
+  const caseCheckbox =
+    panelState.panelEl?.querySelector<HTMLInputElement>("#search-case");
+  const regexCheckbox =
+    panelState.panelEl?.querySelector<HTMLInputElement>("#search-regex");
 
   const query = new SearchQuery({
     search: searchText,
@@ -96,6 +114,7 @@ function createPanel(container: HTMLElement): HTMLElement {
   const panel = document.createElement("div");
   panel.className = "search-panel";
   panel.setAttribute("role", "search");
+  panel.setAttribute("aria-label", "Find and replace");
 
   panel.innerHTML = `
     <div class="search-panel-row">
@@ -113,8 +132,8 @@ function createPanel(container: HTMLElement): HTMLElement {
     </div>
     <div class="search-panel-row search-replace-row" id="search-replace-row" style="display:none">
       <input type="text" id="replace-input" class="search-field" placeholder="Replace…" aria-label="Replace with" autocomplete="off" spellcheck="false" />
-      <button class="search-btn" id="replace-one" title="Replace">Replace</button>
-      <button class="search-btn" id="replace-all" title="Replace all">All</button>
+      <button class="search-btn" id="replace-one" title="Replace" aria-label="Replace match">Replace</button>
+      <button class="search-btn" id="replace-all" title="Replace all" aria-label="Replace all matches">All</button>
     </div>
   `;
 
@@ -189,8 +208,12 @@ function setupPanelEvents(): void {
   });
 
   // Case/regex toggles
-  panelEl.querySelector("#search-case")?.addEventListener("change", () => syncQuery(view));
-  panelEl.querySelector("#search-regex")?.addEventListener("change", () => syncQuery(view));
+  panelEl
+    .querySelector("#search-case")
+    ?.addEventListener("change", () => syncQuery(view));
+  panelEl
+    .querySelector("#search-regex")
+    ?.addEventListener("change", () => syncQuery(view));
 }
 
 /** Open find panel, optionally showing replace. */
@@ -203,16 +226,24 @@ function openPanel(view: EditorView, showReplace: boolean): void {
   // is detached with the old container and its handlers still point at the
   // destroyed view — and no production code calls destroySearchPanel() on
   // teardown. Rebind instead of "opening" a detached node (#718).
-  if (panelState.panelEl && (panelState.view !== view || panelState.panelEl.parentElement !== container)) {
+  if (
+    panelState.panelEl &&
+    (panelState.view !== view || panelState.panelEl.parentElement !== container)
+  ) {
     destroySearchPanel();
   }
 
   if (!panelState.panelEl) {
     panelState.panelEl = createPanel(container);
     panelState.searchInput = panelState.panelEl.querySelector("#search-input");
-    panelState.replaceInput = panelState.panelEl.querySelector("#replace-input");
-    panelState.matchCountEl = panelState.panelEl.querySelector("#search-match-count");
-    panelState.replaceRow = panelState.panelEl.querySelector("#search-replace-row");
+    panelState.replaceInput =
+      panelState.panelEl.querySelector("#replace-input");
+    panelState.matchCountEl = panelState.panelEl.querySelector(
+      "#search-match-count",
+    );
+    panelState.replaceRow = panelState.panelEl.querySelector(
+      "#search-replace-row",
+    );
     panelState.view = view;
     setupPanelEvents();
   }
@@ -263,10 +294,42 @@ const openFindReplace: Command = (_state, _dispatch, view) => {
 };
 
 /**
+ * Plugin that keeps the panel's match count in sync with the document.
+ *
+ * The count is derived from prosemirror-search's decorations, which the
+ * search plugin rebuilds on document and selection changes. Without this
+ * hook the label was only refreshed by query/replace actions and went stale
+ * while the panel stayed open (#1402).
+ */
+function createMatchCountPlugin(): Plugin {
+  return new Plugin({
+    view() {
+      return {
+        update(updatedView, prevState) {
+          // The panel is a singleton bound to one view; ignore other editors
+          // and editors whose panel is closed.
+          if (!panelState.panelEl || panelState.panelEl.style.display === "none") return;
+          if (panelState.view !== updatedView) return;
+
+          // Selection-only transactions rebuild the decorations (to restyle
+          // the active match) but cannot change the count, so only recount
+          // when the document or the search itself changed.
+          if (prevState.doc.eq(updatedView.state.doc) && !searchStateChanged(prevState, updatedView.state)) {
+            return;
+          }
+          updateMatchCount(updatedView);
+        },
+      };
+    },
+  });
+}
+
+/**
  * Create the search/replace plugins.
  *
- * Returns the prosemirror-search plugin plus a keymap plugin for
- * opening/closing the search panel.
+ * Returns the prosemirror-search plugin, a keymap plugin for
+ * opening/closing the search panel, and a plugin that refreshes the
+ * panel's match count when the document or query changes.
  */
 export function createSearchPlugins(): Plugin[] {
   return [
@@ -277,6 +340,7 @@ export function createSearchPlugins(): Plugin[] {
       F3: findNext,
       "Shift-F3": findPrev,
     }),
+    createMatchCountPlugin(),
   ];
 }
 
