@@ -740,9 +740,9 @@ pub fn render_settings(node_id: &str) -> String {
     html.push_str("        <h3 class=\"mt-8\">Theme</h3>\n");
     html.push_str("        <p class=\"text-muted mb-4\">Choose your preferred visual theme.</p>\n");
     html.push_str("        <div class=\"flex gap-4\">\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"sneak\">Sneak</button>\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"arch\">Arch</button>\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"mech\">Mech</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"sneak\" aria-label=\"Sneak theme\">Sneak</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"arch\" aria-label=\"Arch theme\">Arch</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"mech\" aria-label=\"Mech theme\">Mech</button>\n");
     html.push_str("        </div>\n");
     html.push_str("        \n");
     html.push_str("        <h3 class=\"mt-8\">Keyboard Shortcuts</h3>\n");
@@ -786,15 +786,15 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
     <h2 class="font-bold">Join or invite</h2>
     <label class="form-control max-w-xl">
       <span class="label-text">Display name</span>
-      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest">
+      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest" aria-label="Display name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">World <span class="opacity-60">(blank for the server's default)</span></span>
-      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*">
+      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*" aria-label="World name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">Guest capability</span>
-      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability">
+      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability" aria-label="Guest capability">
     </label>
     <div class="flex flex-wrap gap-2">
       <button data-world-join class="btn btn-primary" type="button">Join world</button>
