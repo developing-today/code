@@ -16,7 +16,9 @@ package settings
 //     (environment variable or config key, never a Go field), drives an
 //     ordinary caller, and asserts an observable with/without
 //     difference. The e2e package keeps a mirror map and a test fails
-//     if the two disagree, so a probe named here must really exist.
+//     if the two disagree, and its effectProbeFuncs map anchors each
+//     name to the real function as a Go reference, so a probe named
+//     here must really exist: deleting or renaming it breaks the build.
 //   - EffectExemptions: a written reason no probe can observe the
 //     effect yet. The map is ratcheted by EffectExemptionPin: it can
 //     only shrink. Adding an exemption fails the ratchet; removing one

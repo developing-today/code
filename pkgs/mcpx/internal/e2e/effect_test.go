@@ -16,10 +16,12 @@ import (
 // its value can change observable behaviour. This file keeps the mirror
 // of that declaration and the probes that did not already exist. The
 // sync test below fails if the two maps disagree in either direction,
-// so a declared probe must really exist here or in unread_test.go /
-// registry_test.go, and a probe written here must be declared - a
-// setting may not silently lose its guard, and a guard may not silently
-// stop guarding.
+// and effectProbeFuncs anchors each declared name to the real function
+// as a Go reference, so a declared probe must really exist here or in
+// unread_test.go / registry_test.go -- deleting or renaming one breaks
+// the build -- and a probe written here must be declared: a setting may
+// not silently lose its guard, and a guard may not silently stop
+// guarding.
 //
 // Every probe sets its setting the way a user would - an MCPX_ variable
 // or a config key, never a Go field - drives an ordinary caller, and
@@ -46,6 +48,30 @@ var implementedEffectProbes = map[string]string{
 	"registry.url":               "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 }
 
+// effectProbeFuncs anchors every declared probe name to the actual
+// test function, as a Go reference. The maps above are strings, and a
+// string cannot notice when the function it names is deleted or
+// renamed; this map can, because deleting or renaming a probe then
+// breaks compilation of this package. The sync test requires every
+// implemented probe name to appear here, so a declared probe must
+// really exist -- not just be spelled the same in two maps.
+var effectProbeFuncs = map[string]func(*testing.T){
+	"TestLoggingFileOffWritesNoDurableLog":           TestLoggingFileOffWritesNoDurableLog,
+	"TestOutputJSONIsReachableFromTheEnvironment":    TestOutputJSONIsReachableFromTheEnvironment,
+	"TestPathsConfigFileChangesWhichConfigLoads":     TestPathsConfigFileChangesWhichConfigLoads,
+	"TestPoolDefaultsAreReachableFromTheEnvironment": TestPoolDefaultsAreReachableFromTheEnvironment,
+	"TestRegistryLimitReachesTheCLI":                 TestRegistryLimitReachesTheCLI,
+	"TestRegistryPageSizeChangesWhatTheCLIAsksFor":   TestRegistryPageSizeChangesWhatTheCLIAsksFor,
+	"TestScriptCaptureConsoleOffDropsConsoleOutput":  TestScriptCaptureConsoleOffDropsConsoleOutput,
+	"TestScriptEnvIsReachableFromTheEnvironment":     TestScriptEnvIsReachableFromTheEnvironment,
+	"TestScriptPrefixIsReachableFromTheEnvironment":  TestScriptPrefixIsReachableFromTheEnvironment,
+	"TestScriptTypecheckOnRefusesATypeError":         TestScriptTypecheckOnRefusesATypeError,
+	"TestSearchLimitCapsTheResults":                  TestSearchLimitCapsTheResults,
+	"TestStateDirectoryIsReachableAsASetting":        TestStateDirectoryIsReachableAsASetting,
+	"TestStrictUnknownKeysRefusesATypo":              TestStrictUnknownKeysRefusesATypo,
+	"TestTheRegistryPageCapSaysItStoppedEarly":       TestTheRegistryPageCapSaysItStoppedEarly,
+}
+
 func TestEffectProbeDeclarationsMatchTheProbesThatExist(t *testing.T) {
 	declared := settings.EffectProbes
 	var diff []string
@@ -59,6 +85,16 @@ func TestEffectProbeDeclarationsMatchTheProbesThatExist(t *testing.T) {
 	for path := range implementedEffectProbes {
 		if _, ok := declared[path]; !ok {
 			diff = append(diff, path+" has an e2e probe but is not declared in settings.EffectProbes")
+		}
+	}
+	seen := map[string]bool{}
+	for _, name := range implementedEffectProbes {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if _, ok := effectProbeFuncs[name]; !ok {
+			diff = append(diff, name+" is declared as a probe but is not anchored in effectProbeFuncs; anchor it so deleting the test breaks the build")
 		}
 	}
 	sort.Strings(diff)
