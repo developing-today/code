@@ -216,6 +216,19 @@ impl WorldClient {
         })
     }
 
+    /// Open another session on this client's connection, addressed to the
+    /// same world as this client. Admin frames are served one operation per
+    /// stream (the session ends with the reply), so a caller performing
+    /// several operations in sequence - `id world apply` is one - opens a
+    /// fresh session per operation instead of reusing a finished stream.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the host refuses another stream on this connection.
+    pub async fn fresh_session(&self) -> Result<Self> {
+        self.open_session(self.world.as_deref()).await
+    }
+
     /// Address this client's frames to `world` instead of the host's default.
     #[must_use]
     pub fn with_world(mut self, world: Option<&str>) -> Self {
@@ -364,6 +377,120 @@ impl WorldClient {
             );
         }
         Ok(reply)
+    }
+
+    /// Persist the world's requested resource profile. The response includes
+    /// an explicit notice that it applies only on the next install or restart.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token or profile is refused.
+    /// Pend one schedule on the host (admin), replacing any pending
+    /// schedule with the same id; the host journals it before replying.
+    /// Returns the full pending schedule map after the change.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token is refused or the
+    /// schedule is invalid.
+    pub async fn set_schedule(
+        &mut self,
+        admin_token: &str,
+        id: &str,
+        at_ms: u64,
+    ) -> Result<std::collections::BTreeMap<String, u64>> {
+        self.send_json(&serde_json::json!({
+            "type": "set_schedule",
+            "admin_token": admin_token,
+            "id": id,
+            "at_ms": at_ms,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        match reply["type"].as_str() {
+            Some("schedules") => serde_json::from_value(reply["schedules"].clone())
+                .context("host sent a malformed schedule map"),
+            _ => bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused to set a schedule")
+            ),
+        }
+    }
+
+    /// Cancel a pending schedule on the host (admin). Returns the full
+    /// pending schedule map after the change.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if the admin token is refused or the
+    /// schedule id is malformed.
+    pub async fn cancel_schedule(
+        &mut self,
+        admin_token: &str,
+        id: &str,
+    ) -> Result<std::collections::BTreeMap<String, u64>> {
+        self.send_json(&serde_json::json!({
+            "type": "cancel_schedule",
+            "admin_token": admin_token,
+            "id": id,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        match reply["type"].as_str() {
+            Some("schedules") => serde_json::from_value(reply["schedules"].clone())
+                .context("host sent a malformed schedule map"),
+            _ => bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused to cancel a schedule")
+            ),
+        }
+    }
+
+    /// Read the manifest-reconciliation state: the pending schedules, and
+    /// the active install seed when `admin_token` is the host's admin token
+    /// (a capability-only read gets `None` for the seed, #240).
+    ///
+    /// # Errors
+    ///
+    /// Fails with the host's message if neither credential is accepted.
+    pub async fn manifest_state(
+        &mut self,
+        admin_token: Option<&str>,
+        capability: Option<&str>,
+    ) -> Result<(Option<u64>, std::collections::BTreeMap<String, u64>)> {
+        self.send_json(&serde_json::json!({
+            "type": "world_state",
+            "admin_token": admin_token,
+            "capability": capability,
+        }))
+        .await?;
+        let reply = self
+            .recv_json()
+            .await?
+            .context("host closed without replying")?;
+        match reply["type"].as_str() {
+            Some("world_state") => Ok((
+                reply["seed"].as_u64(),
+                serde_json::from_value(reply["schedules"].clone())
+                    .context("host sent a malformed schedule map")?,
+            )),
+            _ => bail!(
+                "{}",
+                reply["message"]
+                    .as_str()
+                    .unwrap_or("host refused to report the world state")
+            ),
+        }
     }
 
     /// Persist the world's requested resource profile. The response includes
@@ -954,12 +1081,48 @@ impl WorldClient {
         capability: &str,
         expected_hash: &str,
     ) -> Result<Vec<u8>> {
-        self.send_json(&serde_json::json!({
-            "type": "download_module",
-            "capability": capability,
-            "module_hash": expected_hash,
-        }))
-        .await?;
+        self.download_module_with(
+            serde_json::json!({
+                "type": "download_module",
+                "capability": capability,
+                "module_hash": expected_hash,
+            }),
+            expected_hash,
+        )
+        .await
+    }
+
+    /// Download a stored module by hash as an admin, whether or not it is
+    /// the active module (#807). The host serves only modules it holds in
+    /// its blob store; a hash it never installed is refused.
+    ///
+    /// # Errors
+    ///
+    /// Fails on a bad admin token, a hash the host does not hold, a hash
+    /// mismatch, oversize or a truncated transfer.
+    pub async fn download_module_admin(
+        &mut self,
+        admin_token: &str,
+        expected_hash: &str,
+    ) -> Result<Vec<u8>> {
+        self.download_module_with(
+            serde_json::json!({
+                "type": "download_module_admin",
+                "admin_token": admin_token,
+                "module_hash": expected_hash,
+            }),
+            expected_hash,
+        )
+        .await
+    }
+
+    /// Send one module-download frame and read the transfer it starts.
+    async fn download_module_with(
+        &mut self,
+        frame: serde_json::Value,
+        expected_hash: &str,
+    ) -> Result<Vec<u8>> {
+        self.send_json(&frame).await?;
         let begin = self
             .recv_json()
             .await?
@@ -1337,6 +1500,79 @@ mod tests {
         ep.close().await;
     }
 
+    /// #807: `id world apply`'s hash path - download a stored module as
+    /// admin, then install the bytes - sequenced on ONE connection. Admin
+    /// frames are served one operation per stream, so each operation runs
+    /// on a fresh session; on a reused stream the install would write to a
+    /// session the host already finished.
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn apply_hash_path_sequences_fresh_sessions_on_one_connection() {
+        let wasm = include_bytes!("../examples/roc-counter/counter.wasm");
+        let wasm2 = include_bytes!("../examples/roc-chat/roc-chat.wasm");
+        let ep = endpoint().await;
+        let world = WorldHandle::spawn(WorldCore::new("lobby", WorldLimits::default()).unwrap());
+        let blobs: iroh_blobs::api::Store = iroh_blobs::store::mem::MemStore::new().into();
+        let service =
+            WorldService::new(world, Some("admin".to_owned())).with_blob_store(blobs.clone());
+        let router = Router::builder(ep.clone())
+            .accept(WORLD_ALPN, WorldProtocol::new(service))
+            .spawn();
+        let addr = EndpointAddr::from_parts(
+            ep.id(),
+            ep.bound_sockets().iter().map(|a| {
+                let ip = if a.ip().is_unspecified() {
+                    std::net::Ipv4Addr::LOCALHOST.into()
+                } else {
+                    a.ip()
+                };
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(ip, a.port()))
+            }),
+        );
+        let client_ep = endpoint().await;
+        let client = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+
+        let hash = client
+            .fresh_session()
+            .await
+            .unwrap()
+            .install_wasm("admin", wasm, 7)
+            .await
+            .unwrap();
+        let hash2 = client
+            .fresh_session()
+            .await
+            .unwrap()
+            .install_wasm("admin", wasm2, 7)
+            .await
+            .unwrap();
+        assert_ne!(hash, hash2);
+
+        let stored = client
+            .fresh_session()
+            .await
+            .unwrap()
+            .download_module_admin("admin", &hash)
+            .await
+            .unwrap();
+        assert_eq!(stored, wasm.as_slice());
+        let reinstalled = client
+            .fresh_session()
+            .await
+            .unwrap()
+            .install_wasm("admin", &stored, 7)
+            .await
+            .unwrap();
+        assert_eq!(reinstalled, hash);
+
+        client.close();
+        client_ep.close().await;
+        ep.close().await;
+        router.shutdown().await.unwrap();
+    }
+
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn peers_install_then_download_the_active_module_by_hash() {
@@ -1412,6 +1648,59 @@ mod tests {
                 .is_err()
         );
         wrong.close();
+
+        // #807: a second install makes the first module non-active. The
+        // participant download then refuses it, but an admin can still fetch
+        // the stored bytes by hash - the path `id world apply` uses to
+        // install the module a manifest names.
+        let wasm2 = include_bytes!("../examples/roc-chat/roc-chat.wasm");
+        let mut admin2 = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        let hash2 = admin2.install_wasm("admin", wasm2, 7).await.unwrap();
+        admin2.close();
+        assert_ne!(hash2, hash);
+
+        let mut fetch2 = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        assert!(
+            fetch2.download_module(&capability, &hash).await.is_err(),
+            "the first module is no longer the active one"
+        );
+        fetch2.close();
+
+        let mut admin_fetch = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        let stored = admin_fetch
+            .download_module_admin("admin", &hash)
+            .await
+            .unwrap();
+        admin_fetch.close();
+        assert_eq!(stored, wasm.as_slice());
+
+        let mut bad_admin = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        assert!(
+            bad_admin
+                .download_module_admin("wrong", &hash)
+                .await
+                .is_err()
+        );
+        bad_admin.close();
+
+        let mut missing = WorldClient::connect(&client_ep, addr.clone())
+            .await
+            .unwrap();
+        assert!(
+            missing
+                .download_module_admin("admin", &"0".repeat(64))
+                .await
+                .is_err()
+        );
+        missing.close();
 
         // Without a capability, nothing is disclosed.
         let mut anon = WorldClient::connect(&client_ep, addr).await.unwrap();

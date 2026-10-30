@@ -16,9 +16,10 @@
 //   opened is labelled "not rendered since boot", not fake-green.
 // - In fixtures mode there are no live probes to make: every service
 //   reports "fixtures", which is also the degraded-state test fixture.
+import type { PendingCommentCounts } from "./comments.ts";
 import type { Config } from "./config.ts";
-import { ageMsText, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
-import type { ProvenanceDetail } from "./model.ts";
+import { ageMsText, GENERATED_AT_FUTURE_SKEW_MS, type FleetFeed, type SectionDiagnosis } from "./feed.ts";
+import type { GhItem, ProvenanceDetail, RefKey } from "./model.ts";
 import { PAGES } from "./pages.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
 
@@ -117,10 +118,40 @@ export interface PageHealth {
   ageMs: number | null;
 }
 
+/** Item resolution coverage (#1141): of the items one resolution pass
+ *  served, how many came from live data (project pool + projector) and
+ *  how many from fixtures. Untagged items (the source did not say) are
+ *  counted in neither bucket — health never invents a source. */
+export interface ItemsCoverage {
+  resolvedLive: number;
+  fixture: number;
+  total: number;
+  /** resolvedLive / total; null when nothing tagged was resolved. */
+  ratio: number | null;
+}
+
+export function summarizeItemCoverage(items: Map<RefKey, GhItem>): ItemsCoverage {
+  let resolvedLive = 0;
+  let fixture = 0;
+  for (const item of items.values()) {
+    if (item.resolution === "fixture") fixture++;
+    else if (item.resolution === "pool" || item.resolution === "projector") resolvedLive++;
+  }
+  const total = resolvedLive + fixture;
+  return { resolvedLive, fixture, total, ratio: total ? resolvedLive / total : null };
+}
+
 export interface HealthView {
   /** The aggregator process itself is up if it assembled this view. */
   status: "ok";
   mode: "live" | "fixtures";
+  /** Deployed build marker (#1150): the commit install.sh deployed,
+   *  carried into the process via PM_AGG_BUILD_VERSION in the service
+   *  env file, or "unknown" for a process nobody deployed that way.
+   *  install.sh polls /api/health after a restart and fails loudly
+   *  when this does not match the tree it just deployed — a deploy
+   *  that cannot prove it is live is a failed deploy. */
+  version: string;
   generatedAt: string;
   bootAt: string;
   degraded: boolean;
@@ -144,6 +175,11 @@ export interface HealthView {
   };
   pages: PageHealth[];
   facets: ProvenanceDetail | null;
+  /** #1141: resolved-live vs fixture counts from the priming pass. */
+  itemsCoverage: ItemsCoverage | null;
+  /** Dashboard comment loops (#1145): pending triage/posting counts,
+   *  so an unworked comment queue is visible on /health. */
+  comments: PendingCommentCounts;
 }
 
 // --- Render registry -------------------------------------------------------
@@ -208,11 +244,16 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
 
 export interface HealthInputs {
   mode: "live" | "fixtures";
+  /** Build marker override (tests); defaults to the deployed
+   *  PM_AGG_BUILD_VERSION env value, else "unknown". */
+  version?: string;
   cfg: Config;
   feed: FleetFeed | null;
   feedFileMtimeMs: number | null;
   diagnosis?: SectionDiagnosis;
   detail?: ProvenanceDetail;
+  itemsCoverage?: ItemsCoverage | null;
+  comments?: PendingCommentCounts;
 }
 
 export interface HealthDeps {
@@ -221,12 +262,18 @@ export interface HealthDeps {
   now?: number;
 }
 
+export function resolveBuildVersion(env: Record<string, string | undefined> = process.env): string {
+  const v = env.PM_AGG_BUILD_VERSION?.trim();
+  return v ? v : "unknown";
+}
+
 export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): Promise<HealthView> {
   const now = deps.now ?? Date.now();
   const fetcher = deps.fetcher ?? defaultProbeFetch;
   const cache = deps.cache ?? sharedProbeCache;
   const { cfg, feed } = inputs;
   const feedAgeMs = feed ? Math.max(0, now - Date.parse(feed.generatedAt)) : null;
+  const feedFutureMs = feed ? Date.parse(feed.generatedAt) - now : null;
   const diagnosis = inputs.diagnosis;
 
   const services: ServiceHealth[] = [];
@@ -245,9 +292,15 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
       outcome =
         feed === null
           ? { state: "down", ok: false, detail: "no readable fleet feed" }
-          : feedAgeMs !== null && feedAgeMs > FEED_STALE_MS
-            ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — past the 15m freshness threshold` }
-            : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
+          : feedFutureMs !== null && feedFutureMs > GENERATED_AT_FUTURE_SKEW_MS
+            ? {
+                state: "stale",
+                ok: false,
+                detail: `feed generatedAt ${feed.generatedAt} is >60s in the future — never fresh`,
+              }
+            : feedAgeMs !== null && feedAgeMs > FEED_STALE_MS
+              ? { state: "stale", ok: false, detail: `feed ${ageMsText(feedAgeMs)} — past the 15m freshness threshold` }
+              : { state: "up", ok: true, detail: `feed ${feedAgeMs !== null ? ageMsText(feedAgeMs) : ""}`.trim() };
     } else if (def.probe === "section") {
       if (!diagnosis) {
         outcome = { state: "unknown", ok: null, detail: "this source reports no section diagnosis" };
@@ -309,6 +362,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
   return {
     status: "ok",
     mode: inputs.mode,
+    version: inputs.version ?? resolveBuildVersion(),
     generatedAt: new Date(now).toISOString(),
     bootAt: new Date(BOOT_AT).toISOString(),
     degraded,
@@ -338,5 +392,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     },
     pages: pageHealth(now),
     facets: inputs.detail ?? null,
+    itemsCoverage: inputs.itemsCoverage ?? null,
+    comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },
   };
 }

@@ -17,7 +17,7 @@ A row here records intent. It does not settle a product question and it is not a
 ## Now, across the repo
 
 1. Settle how other flakes consume `mcpx` from this repo, its single source (#308), and move the backlog here (#309).
-2. Quiet the automation: stale PRs (#310, #311).
+2. Quiet the automation: stale PRs (#311).
 
 ## Next
 

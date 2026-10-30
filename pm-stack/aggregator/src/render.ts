@@ -21,6 +21,7 @@ import {
   windowPercent,
 } from "./derive.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
+import { applyBoardDonePolicy } from "./board-policy.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
 import {
   DELEGATION_DEFAULT_OBJECT_REF,
@@ -31,6 +32,7 @@ import {
   type NeedsOrder,
 } from "./tier-items.ts";
 import { githubCommentUrl } from "./comments.ts";
+import { serviceHomeLinks, type ItemServiceLink } from "./service-links.ts";
 import { aaCaiPoints, aaPoints, summarizeAa } from "./aa.ts";
 import { summarizeDns } from "./dns.ts";
 import { ageMsText, feedAgeText } from "./feed.ts";
@@ -56,6 +58,7 @@ import {
   type ProjectPoolItem,
   type Provenance,
   type ProvenanceDetail,
+  type QuotaState,
   type QuotaView,
   type RefKey,
   type RoadmapRow,
@@ -121,6 +124,7 @@ a { color: #58a6ff; }
 .badge.near { background: #d2992233; border-color: #d29922; color: #e3b341; }
 .badge.walled { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.src { background: #21262d; color: #e6edf3; }
+.badge.unverified { background: transparent; border-style: dashed; opacity: 0.75; }
 .badge.drew { background: #f8514933; border-color: #f85149; color: #f85149; }
 .badge.orch { background: #1f6feb33; border-color: #1f6feb; color: #58a6ff; }
 .badge.moving { background: #2ea04333; border-color: #2ea043; color: #3fb950; }
@@ -494,6 +498,14 @@ function layout(
 export const sessionObjectRef = (id: string): string => `session:${id}`;
 export const ghObjectRef = (ref: RefKey): string => `gh:${ref}`;
 export function tierItemObjectRef(item: TierItem): string {
+  // Watchdog items (#1148) all carry the implementation issue as their
+  // display ref, but each watchdog:<input> is an independent object:
+  // keying them all by the shared gh: ref would give every watchdog
+  // card the same DOM id, actions, dismissal state, and comment
+  // thread, so dismissing one input's card would suppress them all
+  // (Codex P1 on PR #2431). Watchdog cards key by their unique id;
+  // the gh: ref still renders as the card's issue link.
+  if (item.source === "watchdog") return `orch:${item.id}`;
   return item.ref ? ghObjectRef(item.ref) : `orch:${item.id}`;
 }
 
@@ -1324,10 +1336,16 @@ export function coverageHtml(coverage: SourceCoverage[]): string {
 }
 
 function itemBadge(item: GhItem): string {
+  // #1141: fixture-resolved state is invented fallback data — render it
+  // hollow (dashed, transparent) and named "unverified" so it can never
+  // be mistaken for a live badge on board/roadmap/item/program pages.
+  const unverified = item.resolution === "fixture";
   const cls = item.state === "merged" ? "merged" : item.state === "open" ? "open" : "closed";
   const kind = item.kind === "pr" ? (item.state === "merged" ? "PR merged" : "PR") : "issue";
   const draft = item.draft ? " · draft" : "";
-  return `<a class="badge ${cls}" href="${esc(item.url)}" title="${esc(item.title)}">${kind} ${esc(item.ref)}${draft}</a>`;
+  const marker = unverified ? " · unverified" : "";
+  const title = unverified ? `${item.title} (unverified — fixture state, not live GitHub data)` : item.title;
+  return `<a class="badge ${cls}${unverified ? " unverified" : ""}" href="${esc(item.url)}" title="${esc(title)}">${kind} ${esc(item.ref)}${draft}${marker}</a>`;
 }
 
 function stripHtml(items: Map<RefKey, GhItem>, links: BoardItem["links"]): string {
@@ -1363,6 +1381,11 @@ export function renderBoardBody(
     identities?: AuthorIdentity[];
   },
 ): string {
+  // #1146: finished work is not WIP — aged-out done items and the
+  // retired ROADMAP Done-table class never reach the board, whatever
+  // source assembled it (the Kaneo source filters too; see
+  // board-policy.ts). Surviving done renders collapsed, below.
+  board = applyBoardDonePolicy(board);
   const cols = new Map<string, BoardItem[]>();
   for (const item of board) {
     const key = item.status === "done" ? "done" : item.status;
@@ -1404,11 +1427,17 @@ export function renderBoardBody(
               statusCtl = `${actionBadgesHtml(act.actionsByObject?.get(objectRef))}${statusRequestHtml(objectRef, pooled.ref, pooled.status ?? null, { identities: act.identities })}`;
             }
           }
-          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${stripHtml(items, item.links)}${statusCtl}</div>`;
+          const kaneo = item.kaneoUrl ? ` <a class="badge" href="${esc(item.kaneoUrl)}">Kaneo ↗</a>` : "";
+          return `<div class="card"><a href="/item/${encodeURIComponent(item.id)}">${src}${esc(item.title)}</a>${cmt}<br>${repo}${kaneo}${stripHtml(items, item.links)}${statusCtl}</div>`;
         })
         .join("");
       // The in-flight lane is dated by the orchestration section that
       // produced it (stamped on every synthetic entry as updatedAt).
+      if (k === "done") {
+        // Collapsed by default (#1146): a count + the last 7 days
+        // behind an expander, never a full column of finished cards.
+        return `<details class="donestrip"><summary><strong>Done recently (${colItems.length})</strong> — done in the last 7 days, collapsed by default; older done is aged off the board (GitHub is the record)</summary>${cards}</details>`;
+      }
       const heading =
         k === "in-flight"
           ? `in flight — orchestrator · in flight · section ${fmtDate(colItems[0]?.updatedAt)} (${colItems.length})`
@@ -1436,7 +1465,7 @@ export function renderBoard(
     "Cross-repo WIP board",
     `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards. The other columns are the curated Kaneo board across the four repos, including its completion history — on their own they are a record of finished and in-review work, not a live WIP list. Each Kaneo card's execution strip is derived from its linked issues/PRs: implementing → review → merged.</p>${renderBoardBody(board, items, counts, act)}`,
     provenance,
-    "/",
+    "/board",
     act?.identities ? ACTION_SCRIPT : "",
     detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
   );
@@ -1447,9 +1476,9 @@ export function renderBoard(
 export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')"><div class="skel">Loading the board…</div></div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('/frag/board')" data-on-dashrefresh__window="@get('/frag/board')"><div class="skel">Loading the board…</div></div>`,
     provenance,
-    "/",
+    "/board",
     ACTION_SCRIPT,
     detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
   );
@@ -1473,7 +1502,8 @@ function roadmapCard(row: RoadmapRow, items: Map<RefKey, GhItem>, counts?: Map<s
     .map(itemBadge)
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}</div>`;
+  const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${refBadges}${grist}</div>`;
 }
 
 function timelineTable(
@@ -1553,6 +1583,8 @@ export interface ItemExtras {
   actions?: DashAction[];
   /** Set when one of the item's refs is in the Project pool (#1154). */
   statusRequest?: { objectRef: string; targetRef: RefKey; currentStatus: string | null };
+  /** Outbound links to the live services this item lives in (#1136). */
+  serviceLinks?: ItemServiceLink[];
 }
 
 export function renderItem(
@@ -1596,15 +1628,18 @@ export function renderItem(
     extras?.statusRequest && extras.formOpts
       ? `<h2>Request status change</h2>${actionBadgesHtml(extras.actions)}${statusRequestHtml(extras.statusRequest.objectRef, extras.statusRequest.targetRef, extras.statusRequest.currentStatus, { identities: extras.formOpts.identities })}`
       : "";
+  const svcLinks = extras?.serviceLinks?.length
+    ? `<p>Live services: ${extras.serviceLinks.map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`
+    : "";
   return layout(
     title,
-    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${stripHtml(items, links)}
+    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${svcLinks}${stripHtml(items, links)}
 <h2>Linked issues / PRs</h2><div class="tblwrap"><table><tr><th>Ref</th><th>Title</th><th>Labels</th><th>Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
 ${noteList ? `<h2>Planning notes</h2><ul>${noteList}</ul>` : ""}
 <h2>Activity stream</h2><div class="tblwrap"><table><tr><th>When</th><th>Kind</th><th>Author</th><th>Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
 ${sessionSection}${statusSection}${dashSection}`,
     provenance,
-    "/",
+    "/board",
     extras ? COMMENT_SCRIPT + (extras.statusRequest ? ACTION_SCRIPT : "") : "",
   );
 }
@@ -2229,10 +2264,16 @@ export function attentionSections(
       : undefined;
   const tierAct = (item: TierItem) => {
     const objectRef = tierItemObjectRef(item);
+    // #1148 watchdog cards describe the aggregator's CURRENT diagnosis,
+    // not the publisher's possibly-obsolete section, so the #1152 gate
+    // must not disable them: the orchestration-outage card is exactly
+    // the one that has to stay actionable while the tier source is
+    // absent/invalid/stale (Codex P2, PR #2431).
+    const disabledReason = item.source === "watchdog" ? undefined : sectionDisabledReason;
     return {
       actions: act?.actionsByObject?.get(objectRef),
       identities: act?.identities,
-      ...(sectionDisabledReason ? { disabledReason: sectionDisabledReason } : {}),
+      ...(disabledReason ? { disabledReason } : {}),
       comments: act?.commentsByObject?.get(objectRef),
       commentOpts: act?.commentOpts,
     };
@@ -2503,6 +2544,181 @@ export function renderTodayShell(provenance: Provenance, detail?: ProvenanceDeta
     "/today",
     "",
     detail ? freshnessChips(detail, ["orchestration", "quota", "attention"]) : "",
+  );
+}
+
+// --- Overview / front door (#1134) -------------------------------------------
+// "/" is the stack front door: one glance at what needs Drew, what is
+// moving, what is broken, and where the quotas sit. Every number here
+// is derived from the same source views the dedicated pages render
+// (attention, the Project pool, quota, health, the board) — the
+// overview owns no data of its own, so its counts cannot drift from
+// their source pages. deriveOverview is pure, so the HTML page and
+// /api/overview.json serve the identical summary.
+
+export interface OverviewData {
+  attention: AttentionView;
+  pool: ProjectPoolItem[];
+  quota: QuotaView;
+  health: HealthView;
+  board: BoardItem[];
+  /** Dashboard actions by object ref, so the needs-you summary applies
+   *  the same render-time suppression as /attention (Codex review on
+   *  PR 2424). Absent in tests and fixture renders: nothing suppressed. */
+  actionsByObject?: Map<string, DashAction[]>;
+}
+
+export interface OverviewSummary {
+  /** count is null when the tier source is not present: the queue is
+   *  unknown, never a confident zero (Codex review on PR 2424). */
+  needsYou: { count: number | null; tierState: string; top: { title: string; detail?: string }[] };
+  projects: { repo: string; total: number; inProgress: number; inReview: number; done: number }[];
+  quota: { provider: string; plan: string; state: QuotaState; worstPercent: number | null }[];
+  health: { degraded: boolean; up: number; down: number; total: number; feedAgeMs: number | null };
+  recentDone: { title: string; repo: string }[];
+  inProgress: { title: string; repo: string }[];
+}
+
+export function deriveOverview(data: OverviewData): OverviewSummary {
+  // The needs-you summary must agree with /attention on the same data:
+  // suppressed entries (snoozed / dismissed / marked done — pending
+  // counts, exactly as on the attention page) leave the count and the
+  // top list, and when the tier source is not present the count is
+  // unknown rather than an authoritative number over a partial queue.
+  const now = Date.now();
+  const suppressed = (objectRef: string): boolean =>
+    cardState(data.actionsByObject?.get(objectRef), now).suppressed !== null;
+  const drewVisible = data.attention.drew.filter((e) => !suppressed(sessionObjectRef(e.sessionId)));
+  const drewExtraVisible = data.attention.drewExtra.filter((item) => !suppressed(tierItemObjectRef(item)));
+  const tierPresent = data.attention.tierSource.present;
+  const top: { title: string; detail?: string }[] = tierPresent
+    ? [
+        ...drewExtraVisible.map((t) => ({ title: t.title, detail: t.reason })),
+        ...drewVisible.map((e) => ({ title: e.title ?? e.sessionId, detail: e.drewReason })),
+      ].slice(0, 5)
+    : [];
+  const byRepo = new Map<string, { repo: string; total: number; inProgress: number; inReview: number; done: number }>();
+  for (const item of data.pool) {
+    const row = byRepo.get(item.repo) ?? { repo: item.repo, total: 0, inProgress: 0, inReview: 0, done: 0 };
+    row.total += 1;
+    if (item.status === "In Progress") row.inProgress += 1;
+    else if (item.status === "In Review") row.inReview += 1;
+    else if (item.status === "Done") row.done += 1;
+    byRepo.set(item.repo, row);
+  }
+  const quota = data.quota.pools.map((pool) => {
+    // #1134 review (Codex P2): derive from used/limit with the shared
+    // helper — a window that carries `used` and `limit` but no explicit
+    // `percent` must not silently drop out of the tightest-window figure.
+    const percents = pool.windows.map((w) => windowPercent(w));
+    return {
+      provider: pool.provider,
+      plan: pool.plan,
+      state: pool.state,
+      worstPercent: percents.length ? Math.max(...percents) : null,
+    };
+  });
+  const services = data.health.services;
+  const byRecency = (a: BoardItem, b: BoardItem) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+  return {
+    needsYou: {
+      count: tierPresent ? drewVisible.length + drewExtraVisible.length : null,
+      tierState: data.attention.tierSource.state,
+      top,
+    },
+    projects: [...byRepo.values()].sort((a, b) => b.total - a.total || a.repo.localeCompare(b.repo)),
+    quota,
+    health: {
+      degraded: data.health.degraded,
+      up: services.filter((svc) => svc.ok === true).length,
+      down: services.filter((svc) => svc.ok === false).length,
+      total: services.length,
+      feedAgeMs: data.health.feed.ageMs,
+    },
+    recentDone: data.board
+      .filter((b) => b.status === "done")
+      .sort(byRecency)
+      .slice(0, 5)
+      .map((b) => ({ title: b.title, repo: b.repo })),
+    // In-flight board entries carry their real status in orchStatus
+    // (in-progress | queued | blocked): only the running ones belong
+    // under "In progress" — queued/blocked entries must not fill the
+    // list ahead of running work (Codex review on PR 2424).
+    inProgress: data.board
+      .filter(
+        (b) =>
+          b.status === "in-progress" ||
+          (b.status === "in-flight" && (b.orchStatus === undefined || b.orchStatus === "in-progress")),
+      )
+      .slice(0, 5)
+      .map((b) => ({ title: b.title, repo: b.repo })),
+  };
+}
+
+export function renderOverviewBody(summary: OverviewSummary): string {
+  // #1134 review (Codex P2): the stale note is about the tier source, not
+  // about the count, so an empty last published queue must still say it.
+  const staleNote = `<p class="muted">Tier source stale — this is its last published state and may have moved since.</p>`;
+  const needs =
+    summary.needsYou.count === null
+      ? `<div class="banner">Needs-you count <strong>unknown</strong> — the tier source is ${esc(summary.needsYou.tierState)}, so the orchestrator's published queues are not reflected here. <a href="/attention">Needs you</a></div>`
+      : summary.needsYou.count
+        ? `<div class="banner drew"><strong>${summary.needsYou.count} item${summary.needsYou.count === 1 ? "" : "s"} need you</strong> — <a href="/attention">review them</a></div>${summary.needsYou.tierState === "stale" ? staleNote : ""}`
+        : `<p class="muted">Nothing needs you right now.</p>${summary.needsYou.tierState === "stale" ? staleNote : ""}`;
+  const topItems = summary.needsYou.top.length
+    ? `<ul>${summary.needsYou.top.map((t) => `<li><strong>${esc(t.title)}</strong>${t.detail ? ` — ${esc(t.detail)}` : ""}</li>`).join("")}</ul>`
+    : "";
+  const projectCards = summary.projects.length
+    ? summary.projects
+        .map(
+          (proj) =>
+            `<div class="card"><strong>${esc(proj.repo)}</strong> <span class="muted">${proj.total} tracked</span><br>${proj.inProgress} in progress · ${proj.inReview} in review · ${proj.done} done — <a href="/projects">projects</a></div>`,
+        )
+        .join("")
+    : `<p class="muted">No Project pool items collected yet.</p>`;
+  const quotaStrip = summary.quota.length
+    ? summary.quota
+        .map((pool) => {
+          const pct = pool.worstPercent !== null ? ` · ${Math.round(pool.worstPercent)}% of tightest window` : "";
+          return `<div class="card"><strong>${esc(pool.provider)}</strong> <span class="muted">${esc(pool.plan)}</span> <span class="badge ${esc(pool.state)}">${esc(pool.state)}</span>${pct}</div>`;
+        })
+        .join("")
+    : `<p class="muted">No quota pools measured yet.</p>`;
+  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  const itemList = (items: { title: string; repo: string }[], empty: string) =>
+    items.length
+      ? `<ul>${items.map((i) => `<li>${esc(i.title)}${i.repo ? ` <span class="muted">${esc(i.repo)}</span>` : ""}</li>`).join("")}</ul>`
+      : `<p class="muted">${empty}</p>`;
+  return `<p class="muted">One glance at the whole stack: what needs you, what is moving, what is broken, and where the quotas sit. Every number is the same one its source page shows. Machine-first: <a href="/api/overview.json">/api/overview.json</a>.</p>
+<h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
+<h2>Projects</h2>${projectCards}
+<h2>Quota</h2>${quotaStrip}
+<h2>Health</h2>${healthStrip}
+<h2>In progress</h2>${itemList(summary.inProgress, "Nothing in progress on the board.")}
+<h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}`;
+}
+
+/** The overview page (#1134): full server render. */
+export function renderOverview(data: OverviewData, provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout(
+    "Overview",
+    `<h1>Overview</h1>${renderOverviewBody(deriveOverview(data))}`,
+    provenance,
+    "/",
+    "",
+    detail ? freshnessChips(detail, ["board", "quota", "attention"]) : "",
+  );
+}
+
+/** The Datastar shell for / (#1134, on the #1444 pattern). */
+export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceDetail): string {
+  return layout(
+    "Overview",
+    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on-dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
+    provenance,
+    "/",
+    "",
+    detail ? freshnessChips(detail, ["board", "quota", "attention"]) : "",
   );
 }
 
@@ -4463,6 +4679,11 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
       return `<tr><td><a href="${esc(p.route)}">${esc(p.title)}</a></td><td><code>${esc(p.route)}</code></td><td>${last}</td></tr>`;
     })
     .join("");
+  const cov = view.itemsCoverage;
+  const coverageLine =
+    cov && cov.total > 0
+      ? `<strong>${cov.resolvedLive} of ${cov.total}</strong> board items resolved from live data (project pool / projector) · <strong>${cov.fixture}</strong> resolved from fixtures (rendered hollow + "unverified") · coverage ratio <strong>${cov.ratio !== null ? cov.ratio.toFixed(2) : "—"}</strong> — measured on the health prime's board resolution pass, the same pass that sets the items facet provenance (#1141).`
+      : `not measured yet — coverage is computed on the health prime's board resolution pass (#1267); a pass that resolved no tagged items reports nothing rather than inventing a ratio.`;
   const facets = view.facets
     ? freshnessChips(view.facets, [
         "board",
@@ -4496,6 +4717,10 @@ ${degraded}${modeNote}
 <h2>Jobs</h2>
 <div class="card"><strong>Orchestration pass</strong><br>${orchLine}</div>
 <div class="card"><strong>Fleet-feed collector</strong><br>${collLine}</div>
+<h2>Item resolution coverage</h2>
+<div class="card">${coverageLine}</div>
+<h2>Dashboard comments</h2>
+<div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 \u2014 a pending count that never drains means the triage/poster loop is not running)</div>
 <h2>Source facets</h2>
 ${facets}
 <h2>Pages</h2>
@@ -4559,7 +4784,7 @@ export function renderProjects(
   if (!pool.length) {
     return layout(
       "Projects",
-      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>`,
+      `<h1>Projects — GitHub Project pool</h1><div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div><p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>`,
       provenance,
       "/projects",
     );
@@ -4592,6 +4817,7 @@ export function renderProjects(
   const body = `<h1>Projects — GitHub Project pool</h1>
 <p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
+<p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
   return layout(
     "Projects",
@@ -4734,6 +4960,8 @@ export function renderProgramProject(
   }
   if (config.statusReport) {
     linkBits.push(`Status report: <a href="${esc(config.statusReport.url)}">${esc(config.statusReport.label)}</a>`);
+  } else {
+    linkBits.push(`<span class="muted">No status report yet for this project.</span>`);
   }
   for (const l of config.dashboardLinks ?? []) {
     linkBits.push(
@@ -4790,6 +5018,26 @@ export function renderProgramProject(
     roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap.</p>${rows}`;
   }
 
+  const repoCardsHtml = detail.repoCards.length
+    ? `<h2>Per-repo cards</h2>
+<p class="muted">One card per working repo. Open-issue counts are a dated GitHub-search snapshot (date on each card), never a live claim; the pool items and roadmap rows are split live from the same sections above, by repo.</p>${detail.repoCards
+        .map(({ card, poolItems, roadmapRows, tracked }) => {
+          const refs = tracked
+            .map(
+              ({ ref, item }) =>
+                `<a class="badge src" href="${esc(refUrl(ref))}">${esc(ref)}</a>${item ? ` <span class="badge ${item.state === "open" ? "open" : "closed"}">${esc(item.state)}</span>` : ""}`,
+            )
+            .join(" ");
+          return `<div class="card"><strong><a href="https://github.com/${esc(card.repo)}">${esc(card.repo)}</a></strong><br>${esc(card.role)}<br><span class="muted">Open issues (GitHub search, ${esc(card.openIssuesAsOf)}): <strong>${card.openIssues}</strong> · fleet pool items in this repo: ${poolItems.length} · roadmap rows: ${roadmapRows.length}</span>${refs ? `<br>${refs}` : ""}</div>`;
+        })
+        .join("")}`
+    : "";
+
+  const sweepHealthHtml = config.sweepHealth?.length
+    ? `<h2>Sweep health — published fleet state</h2>
+<p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
+    : "";
+
   const ed = config.editorial;
   const editorialHtml = ed
     ? `${ed.done.length ? `<h2>What's built</h2>${programEntries(ed.done, items)}` : ""}${ed.next.length ? `<h2>What's next</h2>${programEntries(ed.next, items)}` : ""}${ed.longTerm.length ? `<h2>Long-term roadmap</h2>${programEntries(ed.longTerm, items)}` : ""}${ed.gaps.length ? `<h2>Known gaps</h2>${programEntries(ed.gaps, items)}` : ""}`
@@ -4807,6 +5055,8 @@ ${trackedTable(detail.tracked)}
 ${poolHtml}
 <h2>Roadmap — live</h2>
 ${roadmapHtml}
+${repoCardsHtml}
+${sweepHealthHtml}
 ${editorialHtml}`;
   return layout(
     config.title,

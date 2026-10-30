@@ -112,15 +112,44 @@ export class CommentsStore {
   }
 
   private async doLoad(): Promise<void> {
+    // #1452: a missing file is the only silent empty start ("no store
+    // yet"). An unparseable or wrongly-shaped file is NOT an empty
+    // store: it is the append-only audit history, so quarantine the
+    // original bytes to <file>.corrupt-<timestamp>, start empty, and
+    // log loudly — the next persist then writes a fresh valid file and
+    // never touches the quarantined copy.
+    let raw: string;
     try {
-      const parsed: unknown = JSON.parse(await readFile(this.file, "utf8"));
-      if (typeof parsed === "object" && parsed !== null && Array.isArray((parsed as CommentsFile).comments)) {
-        this.comments = (parsed as CommentsFile).comments.filter(
-          (c) => typeof c === "object" && c !== null && typeof (c as DashComment).id === "string",
-        );
-      }
+      raw = await readFile(this.file, "utf8");
     } catch {
       this.comments = []; // no store yet — the first write creates it
+      return;
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as CommentsFile).comments)) {
+        throw new Error("store file does not have the expected { comments: [...] } shape");
+      }
+      this.comments = (parsed as CommentsFile).comments.filter(
+        (c) => typeof c === "object" && c !== null && typeof (c as DashComment).id === "string",
+      );
+    } catch (err) {
+      this.comments = [];
+      const quarantined = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      try {
+        await rename(this.file, quarantined);
+        console.error(
+          `[comments] WARNING: comments store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}); ` +
+            `quarantined the original bytes to ${quarantined} and started empty. ` +
+            `The quarantined file holds the prior audit history — do not delete it.`,
+        );
+      } catch (renameErr) {
+        console.error(
+          `[comments] WARNING: comments store ${this.file} is unparseable (${err instanceof Error ? err.message : String(err)}) ` +
+            `and could not be quarantined (${renameErr instanceof Error ? renameErr.message : String(renameErr)}); starting empty — ` +
+            `the next persist will overwrite it, so copy it aside now to preserve the audit history.`,
+        );
+      }
     }
   }
 
@@ -185,6 +214,11 @@ export class CommentsStore {
     return comment;
   }
 
+  /** Pending triage/posting counts (#1145), for the health view. */
+  async pendingCounts(): Promise<PendingCommentCounts> {
+    return pendingCommentCounts(await this.all());
+  }
+
   async markTriaged(ids: string[]): Promise<number> {
     await this.load();
     const wanted = new Set(ids);
@@ -212,6 +246,27 @@ export class CommentsStore {
     await this.persist();
     return c;
   }
+}
+
+/** Pending-work counts for the dashboard comment loops (#1145): a
+ *  message comment is pending until the orchestrator triages it
+ *  (triageState "new"); a github comment is pending until a fleet
+ *  poster lands it (githubState "pending"). The health view publishes
+ *  these so an unworked queue is visible instead of silent. */
+export interface PendingCommentCounts {
+  pendingMessages: number;
+  pendingGithub: number;
+  total: number;
+}
+
+export function pendingCommentCounts(comments: DashComment[]): PendingCommentCounts {
+  let pendingMessages = 0;
+  let pendingGithub = 0;
+  for (const c of comments) {
+    if (c.kind === "message" && c.triageState === "new") pendingMessages++;
+    if (c.kind === "github" && c.githubState === "pending") pendingGithub++;
+  }
+  return { pendingMessages, pendingGithub, total: comments.length };
 }
 
 /** The URL a posted GitHub comment lives at, for rendering. */

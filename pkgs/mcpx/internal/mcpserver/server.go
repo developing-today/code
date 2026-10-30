@@ -221,6 +221,11 @@ type Server struct {
 	// uses the built-in default.
 	MaxCompletions func() int
 
+	// SessionMetaKeys is the _meta keys a request may name its session
+	// with, in precedence order, read on every request because the setting
+	// behind it is hot. Nil or empty means DefaultSessionMetaKeys.
+	SessionMetaKeys func() []string
+
 	// Timing is the ask loop's policy. A zero field means the built-in
 	// default; the whole struct zero is what a test that does not care
 	// should be able to leave alone.
@@ -329,6 +334,7 @@ func (s *Server) WithExtras(extras []Extra) *Server {
 		backend: s.backend, name: s.name, version: s.version,
 		PageSize: s.PageSize, MaxCompletions: s.MaxCompletions, Cache: s.Cache,
 		Timing: s.Timing, OnCancel: s.OnCancel, Origins: s.Origins, Passthrough: s.Passthrough,
+		SessionMetaKeys: s.SessionMetaKeys,
 		// Notify comes along. Dropping it silently turned off every push
 		// capability the moment a single extra tool existed, and a client
 		// cannot detect a server that declared nothing.
@@ -1009,13 +1015,32 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		if up := (*UpstreamError)(nil); errors.As(err, &up) {
 			return up.relay(req.ID)
 		}
+		// A client-side validation failure (the caller's arguments
+		// failed the tool's inputSchema, code -32602) is the caller's
+		// bug, not a tool failure: relay it as the protocol error it
+		// is instead of an isError result. The check is an interface
+		// assertion so this package does not import the client's
+		// error type.
+		var coded interface{ RPCCode() int }
+		if errors.As(err, &coded) && coded.RPCCode() == codeInvalidParams {
+			return fail(codeInvalidParams, err.Error())
+		}
 		if err != nil {
 			// A tool that fails is a result with isError, not a protocol
 			// error. The distinction matters: a protocol error means the
 			// client did something wrong, and a client that retries the
 			// wrong thing on a tool failure never converges.
+			//
+			// Text the tool returned alongside the error stays in the
+			// result: for a recipe that is its stdout/stderr, which is
+			// the diagnostics the caller needs. Dropping it left only
+			// "recipe exited with code N" to debug from.
+			errText := err.Error()
+			if text != "" && text != errText {
+				errText = text + "\n\n" + errText
+			}
 			return reply(map[string]any{
-				"content": []any{map[string]any{"type": "text", "text": err.Error()}},
+				"content": []any{map[string]any{"type": "text", "text": errText}},
 				"isError": true,
 			})
 		}

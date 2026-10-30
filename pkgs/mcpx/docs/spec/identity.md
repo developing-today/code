@@ -32,6 +32,7 @@ from that (`mcpCaller` in `internal/cli/serve.go`):
 | stdio (`mcpx serve`) | the process | `$MCPX_SESSION_ID`, else `mcp-<pid>` | the process's |
 | a legacy Streamable HTTP session | its `Mcp-Session-Id` | `mcp-<session id>` | unknown |
 | any request carrying `_meta["dev.mcpx/session"]` | that name | the name, verbatim | unknown |
+| any request carrying `_meta["ai.opencode/sessionID"]` (and no `dev.mcpx/session`) | that id | the id, verbatim | unknown |
 | a 2026-07-28 request without it, or a legacy POST outside a session | none | none: a fresh call id | unknown |
 
 The rows are in precedence order except that an explicit
@@ -64,6 +65,20 @@ the same session a CLI user names with `--session` or `$MCPX_SESSION_ID`.
 That is deliberate. Anyone who can reach the daemon can already run any tool
 as its user (see the warning the daemon prints for a non-loopback address), so
 a session name is a label and grants no authority.
+
+### `ai.opencode/sessionID` and `transport.sessionMetaKeys`
+
+opencode v2 puts `_meta["ai.opencode/sessionID"]` on every `tools/call`,
+including calls made from inside its code mode, so a client that never
+injects `MCPX_SESSION_ID` can still get one stateful scope per opencode
+session. mcpx reads a precedence list of `_meta` keys, `transport.sessionMetaKeys`
+(default `dev.mcpx/session,ai.opencode/sessionID`): the first key present on a
+request wins, and an empty value counts as absent. `dev.mcpx/session` is first
+so a name chosen for mcpx beats the id a host attaches automatically; a client
+that sends only the opencode key is keyed by it verbatim, exactly as it would
+be by `dev.mcpx/session`. The setting is hot: a change applies to the next
+request, not the next daemon start. Send a key outside the list and it is
+ignored, which is the documented fallback rather than an error.
 
 ## What it touches
 

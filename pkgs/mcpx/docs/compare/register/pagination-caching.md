@@ -2,7 +2,7 @@
 
 ```
 created:      2026-09-30T08:00:00-05:00
-last-updated: 2026-09-30T08:00:00-05:00
+last-updated: 2026-10-29T02:40:00-05:00
 increment:    1
 status:       standard
 tags:         area:compare
@@ -10,28 +10,31 @@ description:  cursor rules per revision, 2026 cacheable results (ttlMs, cacheSco
 ```
 
 Every list method pages with an opaque cursor in every revision; 2026 adds caching hints (`ttlMs`, `cacheScope`) that
-six results MUST carry, and tightens what a cursor and a list may be. What matters most at `05c78b2` is that none of
-mcpx's 2026 results carry the cache fields, and its client stops paging on an empty `nextCursor`, which 2026 says is a
-valid cursor. Deterministic `tools/list` order is TOOL-23 in the tools register.
+six results MUST carry, and tightens what a cursor and a list may be. PG-08..PG-13 were trued up on 2026-10-29
+(#1604, Phase 3 of design #1601): mcpx's server now stamps both cache fields on complete cacheable results for
+modern peers, and its client reads, aggregates and honours them -- the pool catalogue cache expires at the
+earliest declared `ttlMs` for modern upstreams, and `cacheScope: "private"` catalogues never reach the disk
+cache. What matters most in the rest of this register at `05c78b2` is that its client stops paging on an empty
+`nextCursor`, which 2026 says is a valid cursor. Deterministic `tools/list` order is TOOL-23 in the tools register.
 
-Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
+Status column: **mcpx @ 05c78b2**, except PG-08..PG-13, which read **mcpx @ c58507a** (post-#1601, trued up by #1604). Legend and citation conventions: [../README.md](../README.md).
 
-| ID | Difference | Labels | Where it exists | mcpx @ 05c78b2 | Value | Effort | Risk |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| PG-01 | opaque cursors; "don't persist across sessions" dropped in 2026 | `2024-11-05 has` `2026-07-28 has` | `24-11..25-11 ✓ (session-bound) · 26-07 ✓ (no sessions)` | ✓ — stateless encoded offsets | + low | S | low |
-| PG-02 | `""` is a valid cursor and MUST NOT end the list | `2026-07-28 has` `mcpx missing` | `26-07 ✓ only · opencode v1 ✓ (only undefined ends)` | ✗ — client stops paging on `""` (#200) | + med | S | med |
-| PG-03 | invalid cursor SHOULD be `-32602` | `2024-11-05 has` `mcpx missing` | `all five ✓ (SHOULD)` | ✗ — undecodable cursor silently restarts at zero (#202) | + low | S | low |
-| PG-04 | servers SHOULD provide stable cursors | `2024-11-05 has` | `all five ✓ (SHOULD); 26-07 no cross-page guarantee` | partial — offsets shift if the list changes | + low | S | low |
-| PG-05 | page size is the server's choice | `2024-11-05 has` | `all five ✓` | ✓ — `mcp.pageSize`, default 100 | + low | S | low |
-| PG-06 | client page-following caps | `opencode v1 has` `opencode v2 has` | `opencode v1 1000 pages · v2 64 pages · spec silent` | partial — 100 pages, silent truncation, no loop check | + low | S | low |
-| PG-07 | mcpx client swallows list errors and skips template pages | `2024-11-05 has` `mcpx missing` | `mcpx client` | ✗ — `prompts/list` and templates errors hidden (#203) | + low | S | med |
-| PG-08 | six results MUST carry cache hints; changelog names five | `2026-07-28 has` `specs conflict` `mcpx missing` | `26-07 ✓ only` | ✗ — none of the six carry them (wire W5, W6, W18, W19) (#199) | + med | S | med |
-| PG-09 | `ttlMs`: integer ms ≥ 0; absent means 0 | `2026-07-28 has` `mcpx missing` | `26-07 ✓ only` | ✗ — never emitted (#199) | + med | S | med |
-| PG-10 | `cacheScope`: `"public"` or `"private"` | `2026-07-28 has` `mcpx missing` | `26-07 ✓ only` | ✗ — never emitted (#199) | + med | S | high |
-| PG-11 | per-page caching: own TTL clock, same scope on every page | `2026-07-28 has` | `26-07 ✓ only` | n/a — until PG-08 | + low | S | low |
-| PG-12 | MRTR retries and `input_required` results never cached | `2026-07-28 has` | `26-07 ✓ only` | n/a — mcpx caches no MRTR result | + low | S | low |
-| PG-13 | mcpx's upstream schema cache ignores `ttlMs` | `2026-07-28 has` `mcpx missing` | `26-07 (client MAY cache per ttlMs)` | ✗ — cached until list_changed or refresh, persisted to disk (#200) | + med | S | med |
-| PG-14 | lists MUST NOT vary per connection; MAY vary by authorization | `2026-07-28 has` | `26-07 ✓ only (tools, prompts, resources)` | ✓ — lists are per daemon | + med | S | med |
+| ID    | Difference                                                      | Labels                              | Where it exists                                          | mcpx @ 05c78b2                                                                                                                                                                                                                                       | Value | Effort | Risk |
+| ----- | --------------------------------------------------------------- | ----------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------ | ---- |
+| PG-01 | opaque cursors; "don't persist across sessions" dropped in 2026 | `2024-11-05 has` `2026-07-28 has`   | `24-11..25-11 ✓ (session-bound) · 26-07 ✓ (no sessions)` | ✓ — stateless encoded offsets                                                                                                                                                                                                                        | + low | S      | low  |
+| PG-02 | `""` is a valid cursor and MUST NOT end the list                | `2026-07-28 has` `mcpx missing`     | `26-07 ✓ only · opencode v1 ✓ (only undefined ends)`     | ✗ — client stops paging on `""` (#200)                                                                                                                                                                                                               | + med | S      | med  |
+| PG-03 | invalid cursor SHOULD be `-32602`                               | `2024-11-05 has` `mcpx missing`     | `all five ✓ (SHOULD)`                                    | ✗ — undecodable cursor silently restarts at zero (#202)                                                                                                                                                                                              | + low | S      | low  |
+| PG-04 | servers SHOULD provide stable cursors                           | `2024-11-05 has`                    | `all five ✓ (SHOULD); 26-07 no cross-page guarantee`     | partial — offsets shift if the list changes                                                                                                                                                                                                          | + low | S      | low  |
+| PG-05 | page size is the server's choice                                | `2024-11-05 has`                    | `all five ✓`                                             | ✓ — `mcp.pageSize`, default 100                                                                                                                                                                                                                      | + low | S      | low  |
+| PG-06 | client page-following caps                                      | `opencode v1 has` `opencode v2 has` | `opencode v1 1000 pages · v2 64 pages · spec silent`     | partial — 100 pages, silent truncation, no loop check                                                                                                                                                                                                | + low | S      | low  |
+| PG-07 | mcpx client swallows list errors and skips template pages       | `2024-11-05 has` `mcpx missing`     | `mcpx client`                                            | ✗ — `prompts/list` and templates errors hidden (#203)                                                                                                                                                                                                | + low | S      | med  |
+| PG-08 | six results MUST carry cache hints; changelog names five        | `2026-07-28 has` `specs conflict`   | `26-07 ✓ only`                                           | ✓ — server stamps both fields on complete cacheable results for modern peers (#199); client reads and aggregates them on list results (#1601 Phase 1, PR #1608)                                                                                      | + med | S      | med  |
+| PG-09 | `ttlMs`: integer ms ≥ 0; absent means 0                         | `2026-07-28 has`                    | `26-07 ✓ only`                                           | ✓ — emitted by the server (Cache.List / Cache.Read); honoured by the client: a modern pool cache expires at fetch + min declared `ttlMs`, absent/0/negative is immediately stale (#1602)                                                             | + med | S      | med  |
+| PG-10 | `cacheScope`: `"public"` or `"private"`                         | `2026-07-28 has`                    | `26-07 ✓ only`                                           | ✓ — emitted by the server; honoured by the client at the disk boundary: private catalogues never persist, public entries carry deadline + scope (#1603, PR #1705)                                                                                    | + med | S      | high |
+| PG-11 | per-page caching: own TTL clock, same scope on every page       | `2026-07-28 has`                    | `26-07 ✓ only`                                           | ✓ by construction — pages are aggregated into one catalogue cache with the minimum TTL across pages and private if any page is private; an expired catalogue is re-fetched whole, never per page (#1601)                                             | + low | S      | low  |
+| PG-12 | MRTR retries and `input_required` results never cached          | `2026-07-28 has`                    | `26-07 ✓ only`                                           | ✓ — mcpx caches no MRTR result in either direction; the server stamps hints only on `resultType: "complete"` results, so `input_required` carries none                                                                                               | + low | S      | low  |
+| PG-13 | mcpx's upstream schema cache ignores `ttlMs`                    | `2026-07-28 has`                    | `26-07 (client MAY cache per ttlMs)`                     | ✓ (modern era) — the pool cache expires at the declared deadline and a failed refetch of an expired entry serves stale for that call only; legacy upstreams keep cache-until-list_changed by design (#1601); disk persistence is scope-aware (#1603) | + med | S      | med  |
+| PG-14 | lists MUST NOT vary per connection; MAY vary by authorization   | `2026-07-28 has`                    | `26-07 ✓ only (tools, prompts, resources)`               | ✓ — lists are per daemon                                                                                                                                                                                                                             | + med | S      | med  |
 
 ## PG-01 opaque cursors and persistence
 
@@ -157,11 +160,14 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   plus the parameters that affect it (`uri`, `cursor`).
 - **Where.** 2026 only. The changelog lists five methods and omits `server/discover`; the caching page and the schema
   (`DiscoverResult extends CacheableResult`) include it.
-- **mcpx @ 05c78b2.** None of the six carry either field (`internal/mcpserver/server.go:529-538`,
-  `internal/mcpserver/server.go:546-556`, `internal/mcpserver/server.go:574-593`,
-  `internal/mcpserver/server.go:683-740`); wire W5, W6, W18 and W19 show the results without them.
+- **mcpx @ c58507a.** Both halves landed. As a server, mcpx stamps `ttlMs` and `cacheScope` on every complete
+  cacheable result for modern peers (envelope in `internal/mcpserver/server.go`, scope table and `Cache` values
+  from the `protoMessages` list/read max-age settings; legacy peers have both fields stripped,
+  `internal/mcpserver/revisions.go`). As a client, the list result types carry `ttlMs`/`cacheScope`
+  (`internal/mcpclient/client.go`) and the `List*WithHints` variants aggregate them across pages into
+  `CacheHints` (minimum declared TTL; private if any page is private) -- #1601 Phase 1, PR #1608.
 - **Value to mcpx.** + schema-required; hosts could cache mcpx's small, fixed tool surface.
-- **Effort.** S — stamp both fields for modern peers alongside `resultType`.
+- **Effort.** S — stamp both fields for modern peers alongside `resultType`. (Done.)
 - **Risk.** Strict 2026 clients reject the results as schema-invalid.
 - **Detail.** `resources/read` is cacheable while `prompts/get` is not — an asymmetry the schema makes explicit.
 - **Sources.** `2026-07-28/server/utilities/caching.mdx:13` "Servers MUST include caching hints on results with";
@@ -179,7 +185,12 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   TTL is not a polling interval; clients that poll MUST add jitter and backoff. A `list_changed` notification invalidates
   a fresh cached list.
 - **Where.** 2026 only.
-- **mcpx @ 05c78b2.** Never emitted.
+- **mcpx @ c58507a.** Emitted by the server (`Cache.List` covers discover and the list methods, `Cache.Read`
+  covers `resources/read`; a negative configured value is clamped to 0). Honoured by the client for modern
+  upstreams: `Pool.refreshSchemas` sets the catalogue deadline to fetch time + the minimum effective TTL
+  across the lists actually fetched, where a list that declared no `ttlMs` -- or 0, or a negative -- makes the
+  catalogue stale immediately; `Pool.Schemas` re-lists once the deadline passes. Legacy upstreams keep a zero
+  deadline: their cache never expires on a clock (#1601 Phase 1, PR #1608).
 - **Value to mcpx.** + mcpx's own tool list is fixed for the daemon's life, so a long TTL is honest for `tools/list`;
   `ttlMs: 0` is always legal where freshness is unknown.
 - **Effort.** S.
@@ -196,7 +207,11 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   only within the same authorization context; caches MUST NOT be shared across contexts. Servers MUST NOT rely on
   `cacheScope` for access control.
 - **Where.** 2026 only.
-- **mcpx @ 05c78b2.** Never emitted.
+- **mcpx @ c58507a.** Emitted by the server per method (scope table in `internal/mcpserver/server.go`).
+  Honoured by the client at the disk boundary (#1601 Phase 2, PR #1705): `Registry.SaveCache` never persists a
+  private catalogue, public entries are written with their absolute deadline and scope, and `loadCache` never
+  seeds a private entry -- a public entry whose deadline already passed seeds expired, so the first read
+  re-lists. In memory, one private page marks the whole aggregated list private.
 - **Value to mcpx.** + `"private"` is the honest answer for a per-user daemon's resources; `"public"` fits mcpx's own
   tool list, which is identical for every caller. As a gateway in front of several hosts mcpx must honour `"private"` from
   upstreams by keying any cache on the upstream credential.
@@ -215,8 +230,12 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   pages of one list MUST share one `cacheScope`, an expired page is re-fetched by its cursor, and a cursor that becomes
   invalid means discarding every cached page and starting over.
 - **Where.** 2026 only.
-- **mcpx @ 05c78b2.** n/a until mcpx emits hints (PG-08). mcpx's silent restart on a bad cursor (PG-03) would deny a
-  caching client the error that tells it to discard pages.
+- **mcpx @ c58507a.** Satisfied by construction, in the conservative direction: mcpx's client aggregates a
+  list's pages into a single catalogue cache, so there are no per-page clocks to keep -- the aggregate takes
+  the minimum TTL declared on any page and is private if any page is private, and an expired catalogue is
+  re-fetched whole (all pages) rather than page by page. This is why the conformance gap
+  `caching-page-refetch` was retired as not applicable by construction (#1604). mcpx's silent restart on a bad
+  cursor (PG-03) remains a server-side concern for its own caching clients.
 - **Value to mcpx.** + low.
 - **Effort.** S.
 - **Risk.** Low.
@@ -231,7 +250,8 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** `input_required` results carry no cache hints, and results of retried requests — those carrying
   `inputResponses` or `requestState` — MUST NOT be cached, because they depend on inputs outside the cache key.
 - **Where.** 2026 only.
-- **mcpx @ 05c78b2.** n/a — mcpx caches no MRTR result in either direction.
+- **mcpx @ c58507a.** ✓ — mcpx caches no MRTR result in either direction, and the server stamps cache hints
+  only when the result's `resultType` is `"complete"`, so an `input_required` result carries none.
 - **Value to mcpx.** + a guardrail for any future cache.
 - **Effort.** S.
 - **Risk.** None today.
@@ -243,10 +263,17 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 
 - **What.** A 2026 client MAY treat an upstream list as fresh for `ttlMs` and SHOULD re-fetch once stale.
 - **Where.** 2026.
-- **mcpx @ 05c78b2.** Upstream tools, resources and prompts are cached per pool until a `list_changed` arrives or someone
-  refreshes, and the cache is persisted to disk across restarts (`internal/pool/pool.go:121-128`,
-  `internal/pool/pool.go:446-455`, `internal/pool/pool.go:527-531`). The client's result types have no TTL field
-  (`internal/mcpclient/client.go:131-134`).
+- **mcpx @ c58507a.** Fixed for the modern era by #1601 (Phases 1-2, PRs #1608 and #1705): the client's list
+  result types carry the hint fields, the pool cache expires at the earliest declared deadline, and the disk
+  cache is scope-aware (PG-10). Legacy upstreams are unchanged by design -- the TTL rules exist only in
+  2026-07-28, and legacy's invalidation channel is its notifications. A `list_changed` notification empties
+  the cache in both eras (`internal/daemon/hooks.go` OnListChanged -> `Pool.Invalidate`), now covered by
+  `daemon.TestListChangedInvalidatesPoolCache` (#1604), which retired the conformance gap
+  `caching-notification-invalidates`. Two sibling gaps were retired with reasons in the same pass:
+  `caching-may-refetch-early-serve-stale` -- declined by decision on #1601 (refresh is synchronous on read;
+  stale is served only when a refetch of an expired entry fails, #1603), and `caching-key-method-params` --
+  not applicable by construction (the pool cache is one catalogue per configured server, fetched by fixed
+  list methods; it is never keyed by method+params and `resources/read` results are not cached by the pool).
 - **Value to mcpx.** + fresher catalogues from modern upstreams, which today send mcpx no `list_changed` at all because it
   never opens a listen stream (notifications register).
 - **Effort.** S.

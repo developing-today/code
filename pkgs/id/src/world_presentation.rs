@@ -109,6 +109,112 @@ impl ScreenSurface {
     }
 }
 
+/// A cell-run delta between two consecutive screens (F12.11, first slice).
+///
+/// A patch carries only the cells that changed, grouped into maximal runs of
+/// consecutive row-major indices. It is transport-neutral: the same patch can
+/// ride any shell transport, and a client that applies it to the previous
+/// screen holds exactly the next full frame. Binary encoding, compression,
+/// and resume tokens are later F12.11 slices; this type is the delta they
+/// will encode.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenPatch {
+    /// Screen format version; matches the screens it patches.
+    pub version: u8,
+    /// Number of terminal columns; matches the screens it patches.
+    pub width: u16,
+    /// Number of terminal rows; matches the screens it patches.
+    pub height: u16,
+    /// The changed cell runs, in row-major order, non-overlapping.
+    pub runs: Vec<CellRun>,
+}
+
+/// One maximal run of consecutive row-major cells that changed.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CellRun {
+    /// Row-major index of the run's first cell.
+    pub start: u32,
+    /// The replacement cells, in row-major order.
+    pub cells: Vec<ScreenCell>,
+}
+
+impl ScreenPatch {
+    /// The patch that turns `prev` into `next`: the maximal runs of cells
+    /// that differ. Returns `None` when the screens do not share a version
+    /// and dimensions — the caller sends a full frame instead.
+    #[must_use]
+    pub fn diff(prev: &ScreenSurface, next: &ScreenSurface) -> Option<Self> {
+        if prev.version != next.version || prev.width != next.width || prev.height != next.height {
+            return None;
+        }
+        let mut runs = Vec::new();
+        let mut current: Option<(usize, Vec<ScreenCell>)> = None;
+        for (index, (before, after)) in prev.cells.iter().zip(&next.cells).enumerate() {
+            if before == after {
+                if let Some((start, cells)) = current.take() {
+                    runs.push(CellRun {
+                        start: u32::try_from(start).unwrap_or(u32::MAX),
+                        cells,
+                    });
+                }
+                continue;
+            }
+            match &mut current {
+                Some((_, cells)) => cells.push(after.clone()),
+                None => current = Some((index, vec![after.clone()])),
+            }
+        }
+        if let Some((start, cells)) = current.take() {
+            runs.push(CellRun {
+                start: u32::try_from(start).unwrap_or(u32::MAX),
+                cells,
+            });
+        }
+        Some(Self {
+            version: next.version,
+            width: next.width,
+            height: next.height,
+            runs,
+        })
+    }
+
+    /// The screen this patch produces from `prev`. Returns `None` when the
+    /// patch does not belong to `prev` (version or dimensions differ) or a
+    /// run is out of order, overlaps an earlier run, or runs past the last
+    /// cell — the caller falls back to a full frame.
+    #[must_use]
+    pub fn apply(&self, prev: &ScreenSurface) -> Option<ScreenSurface> {
+        if self.version != prev.version || self.width != prev.width || self.height != prev.height {
+            return None;
+        }
+        let mut cells = prev.cells.clone();
+        let mut covered_until = 0usize;
+        for run in &self.runs {
+            let start = usize::try_from(run.start).ok()?;
+            let end = start.checked_add(run.cells.len())?;
+            if start < covered_until || end > cells.len() {
+                return None;
+            }
+            cells[start..end].clone_from_slice(&run.cells);
+            covered_until = end;
+        }
+        Some(ScreenSurface {
+            version: prev.version,
+            width: prev.width,
+            height: prev.height,
+            cells,
+        })
+    }
+
+    /// Whether the patch changes nothing (the two screens are identical).
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.runs.is_empty()
+    }
+}
+
 /// One normalized cell. `columns == 0` marks the continuation of a two-column glyph.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -412,6 +518,77 @@ mod tests {
 
     fn screen(value: Value) -> Result<Option<WorldSurface>> {
         parse_surface(&value.to_string())
+    }
+
+    fn cell(symbol: &str) -> ScreenCell {
+        ScreenCell {
+            symbol: symbol.to_owned(),
+            fg: 0,
+            bg: 0,
+            bold: false,
+            columns: 1,
+        }
+    }
+
+    fn grid(width: usize, height: usize, fill: &str) -> ScreenSurface {
+        ScreenSurface::from_cells(width, height, vec![cell(fill); width * height]).unwrap()
+    }
+
+    #[test]
+    fn patch_parity_patched_client_equals_full_frame_client() {
+        let prev = grid(4, 2, " ");
+        let mut cells = prev.cells.clone();
+        cells[0] = cell("a");
+        cells[3] = ScreenCell { fg: 9, ..cell(" ") };
+        cells[5] = cell("x");
+        cells[6] = cell("y");
+        let next = ScreenSurface::from_cells(4, 2, cells).unwrap();
+
+        let patch = ScreenPatch::diff(&prev, &next).unwrap();
+        assert_eq!(patch.runs.len(), 3, "single cell, style-only, and a pair");
+        assert_eq!(patch.apply(&prev), Some(next));
+
+        let identical = ScreenPatch::diff(&prev, &prev).unwrap();
+        assert!(identical.is_empty());
+        assert_eq!(identical.apply(&prev), Some(prev));
+    }
+
+    #[test]
+    fn patch_for_a_small_change_is_under_a_tenth_of_the_full_frame() {
+        let prev = grid(80, 24, " ");
+        let mut cells = prev.cells.clone();
+        cells[1000] = cell("x");
+        let next = ScreenSurface::from_cells(80, 24, cells).unwrap();
+
+        let patch = ScreenPatch::diff(&prev, &next).unwrap();
+        let patch_bytes = serde_json::to_string(&patch).unwrap().len();
+        let full_bytes = serde_json::to_string(&next).unwrap().len();
+        assert!(
+            patch_bytes * 10 < full_bytes,
+            "patch {patch_bytes} bytes vs full frame {full_bytes} bytes"
+        );
+        assert_eq!(patch.apply(&prev), Some(next));
+    }
+
+    #[test]
+    fn patch_refuses_mismatched_screens_and_bad_runs() {
+        let small = grid(4, 2, " ");
+        let other = grid(2, 2, " ");
+        assert_eq!(ScreenPatch::diff(&small, &other), None);
+
+        let patch = ScreenPatch::diff(&small, &small).unwrap();
+        assert_eq!(patch.apply(&other), None);
+
+        let bad = ScreenPatch {
+            version: 1,
+            width: 4,
+            height: 2,
+            runs: vec![CellRun {
+                start: 7,
+                cells: vec![cell("x"), cell("y")],
+            }],
+        };
+        assert_eq!(bad.apply(&small), None, "run past the last cell");
     }
 
     #[test]

@@ -3347,6 +3347,45 @@ mod schedule_tests {
         assert!(error.to_string().contains("pending schedules"), "{error}");
     }
 
+    #[test]
+    fn a_replacement_is_validated_as_a_replacement_not_as_an_addition() {
+        // #807: the admin set that replaces a pending schedule validates
+        // against the map as it will be after the replacement - the entry
+        // being replaced is neither a duplicate nor a use of the capacity -
+        // so validation can run before the cancellation is persisted, and a
+        // refusal (here, past the horizon) leaves the original standing.
+        let now = 1_000_000_000_000u64;
+        let horizon = crate::world_caps::MAX_SCHEDULE_HORIZON_MS;
+        let mut core = world(8);
+        core.schedules.insert("taken".to_owned(), now + 5);
+        assert!(
+            core.check_schedule_replacing("taken", now + 9, now, true)
+                .is_ok(),
+            "replacing a pending id is not a duplicate"
+        );
+        let error = core
+            .check_schedule_replacing("taken", now + horizon + 1, now, true)
+            .unwrap_err();
+        assert!(error.to_string().contains("days past"), "{error}");
+        assert_eq!(
+            core.schedules["taken"],
+            now + 5,
+            "the refused replacement overwrites nothing"
+        );
+
+        let mut full = world(8);
+        for index in 0..crate::world_caps::MAX_PENDING_SCHEDULES {
+            full.schedules.insert(format!("s{index}"), now);
+        }
+        assert!(
+            full.check_schedule_replacing("s0", now + 9, now, true)
+                .is_ok(),
+            "a replacement at capacity fits: it frees its own slot"
+        );
+        let error = full.check_schedule("one-more", now, now).unwrap_err();
+        assert!(error.to_string().contains("pending schedules"), "{error}");
+    }
+
     #[tokio::test]
     async fn an_ungranted_schedule_is_refused_and_counted() {
         let (mut actor, _clock, token, journal) = scheduling_actor("sched-refused", &[], false);

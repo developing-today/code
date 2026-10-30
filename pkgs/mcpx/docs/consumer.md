@@ -155,6 +155,17 @@ Declaration is a header comment because a comment survives every runtime,
 cannot affect execution, and is visible in the file somebody edits. References
 are `@name`, the spelling the launcher already uses for its own holes.
 
+**A recipe is also an MCP tool.** The `@param` header is already a typed
+schema, so tools/list carries one tool per recipe, named `recipe_<name>`,
+with that schema and the summary as its description. Calling it runs the
+recipe through `/v1/recipes/{name}/run` -- the same render, diagnostics and
+runner `mcpx recipes run` uses. Exposure is on by default; `// @tool false`
+in the header opts one out. The number exposed is capped
+(`DefaultToolBudget`, 25) so fifty saved scripts do not become fifty schemas
+in every host, and `mcpx catalog` ends with the count, the cap and any recipe
+kept out -- a name another producer already claimed is reported there rather
+than silently dropped.
+
 **Values are substituted as JSON, never as text.** A recipe runs with the
 user's credentials; raw substitution would make every placeholder an injection
 site. A string arrives quoted, an object arrives as an object, and a recipe

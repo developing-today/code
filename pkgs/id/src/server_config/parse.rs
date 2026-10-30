@@ -5,14 +5,16 @@
 //! key. A key is claimed once across users and groups, so it names one object.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use p2panda_core::Hash;
 use serde::Deserialize;
 use thiserror::Error;
 
-use super::{CreateRule, GroupSpec, Object, ServerConfig, UserSpec};
+use super::{CreateRule, GroupSpec, Object, PolicySpec, ServerConfig, UserSpec};
 use crate::directory::{hex_to_array, normalize_key};
 use crate::groups::{Key, Role};
+use crate::pull_policy::PullPolicy;
 
 /// Why a config was refused.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
@@ -85,6 +87,17 @@ pub enum ConfigError {
         /// The creator's key.
         creator: String,
     },
+    /// A pull policy name is neither of the two policies.
+    #[error("`{policy}` in {place} is not a pull policy; use open or members")]
+    UnknownPullPolicy {
+        /// The name given.
+        policy: String,
+        /// Where it is.
+        place: String,
+    },
+    /// The freshness window is zero seconds, so no accept could ever fall inside it.
+    #[error("the freshness window in [policy] is 0 seconds; omit it or give at least 1")]
+    ZeroWindow,
     /// A group lists one member twice.
     #[error("group `{group}` lists member `{member}` more than once")]
     DuplicateMember {
@@ -99,6 +112,7 @@ pub enum ConfigError {
 #[serde(deny_unknown_fields)]
 struct Raw {
     create: Option<RawCreate>,
+    policy: Option<RawPolicy>,
     #[serde(default)]
     users: Vec<RawUser>,
     #[serde(default)]
@@ -113,6 +127,13 @@ struct RawCreate {
     #[serde(default)]
     groups: Vec<String>,
     min_role: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPolicy {
+    freshness_window_seconds: Option<u64>,
+    pull_policy: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -217,13 +238,47 @@ pub(super) fn parse(text: &str) -> Result<ServerConfig, ConfigError> {
         None => CreateRule::Anyone,
         Some(rule) => create_rule(rule, &names)?,
     };
+    let policy = match &raw.policy {
+        None => PolicySpec::default(),
+        Some(raw_policy) => policy_spec(raw_policy)?,
+    };
     Ok(ServerConfig {
         users,
         groups,
         create,
+        policy,
         names,
         aliases,
     })
+}
+
+/// The serving policy from its `[policy]` table. An absent table, and a table that sets
+/// neither knob, both give the code defaults.
+fn policy_spec(raw: &RawPolicy) -> Result<PolicySpec, ConfigError> {
+    let freshness_window = match raw.freshness_window_seconds {
+        None => None,
+        Some(0) => return Err(ConfigError::ZeroWindow),
+        Some(seconds) => Some(Duration::from_secs(seconds)),
+    };
+    let pull_policy = match &raw.pull_policy {
+        None => PullPolicy::Open,
+        Some(name) => parse_pull_policy(name, "[policy].pull_policy")?,
+    };
+    Ok(PolicySpec {
+        freshness_window,
+        pull_policy,
+    })
+}
+
+fn parse_pull_policy(name: &str, place: &str) -> Result<PullPolicy, ConfigError> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "open" => Ok(PullPolicy::Open),
+        "members" => Ok(PullPolicy::Members),
+        _ => Err(ConfigError::UnknownPullPolicy {
+            policy: name.to_owned(),
+            place: place.to_owned(),
+        }),
+    }
 }
 
 /// The create rule from its `[create]` table, with every name resolved.
@@ -364,7 +419,8 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use crate::groups::{Key, Role};
-    use crate::server_config::{ConfigError, CreateRule, Object, ServerConfig};
+    use crate::pull_policy::PullPolicy;
+    use crate::server_config::{ConfigError, CreateRule, Object, PolicySpec, ServerConfig};
     use crate::world::hex_encode;
 
     /// The public key of the account that the test calls `n`.
@@ -410,6 +466,48 @@ mod tests {
         assert_eq!(group.members, vec![(key(2), Role::Write)]);
         assert_eq!(config.user_id("team"), None, "a group key is not a user");
         assert_eq!(config.group_id("ann"), None, "a user key is not a group");
+    }
+
+    #[test]
+    fn test_no_policy_table_keeps_the_code_defaults() {
+        let config = config("").unwrap();
+        assert_eq!(config.pull_policy(), PullPolicy::Open);
+        assert_eq!(config.freshness().window(), crate::seitan::DEFAULT_WINDOW);
+        assert_eq!(config.policy(), PolicySpec::default());
+    }
+
+    #[test]
+    fn test_a_policy_table_sets_both_knobs() {
+        let config =
+            config("\n[policy]\nfreshness_window_seconds = 60\npull_policy = \"members\"\n")
+                .unwrap();
+        assert_eq!(config.pull_policy(), PullPolicy::Members);
+        assert_eq!(
+            config.freshness().server,
+            Some(std::time::Duration::from_secs(60))
+        );
+        assert_eq!(
+            config.freshness().window(),
+            std::time::Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn test_an_unknown_pull_policy_fails_startup() {
+        let refused = config("\n[policy]\npull_policy = \"friends\"\n").unwrap_err();
+        assert!(matches!(refused, ConfigError::UnknownPullPolicy { .. }));
+    }
+
+    #[test]
+    fn test_an_unknown_policy_key_fails_startup() {
+        let refused = config("\n[policy]\npull_policy = \"open\"\nwindow = 60\n").unwrap_err();
+        assert!(matches!(refused, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn test_a_zero_freshness_window_fails_startup() {
+        let refused = config("\n[policy]\nfreshness_window_seconds = 0\n").unwrap_err();
+        assert_eq!(refused, ConfigError::ZeroWindow);
     }
 
     #[test]

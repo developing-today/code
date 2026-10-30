@@ -64,6 +64,7 @@ use iroh_blobs::{ALPN as BLOBS_ALPN, BlobsProtocol};
 use iroh_docs::protocol::Docs;
 use iroh_gossip::net::Gossip;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
+use p2panda_core::Hash;
 #[cfg(all(feature = "world", feature = "sandbox"))]
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,9 @@ use crate::discovery::{
     ANNOUNCE_INTERVAL, PeerAnnouncement, PeerDiscovery, STALE_CHECK_INTERVAL, STALE_THRESHOLD,
     resolve_config,
 };
+use crate::groups::log::{FILE_NAME as GROUPS_FILE_NAME, GroupLog};
+use crate::groups::warnings::{Evaluator, Observation, Warning};
+use crate::groups::{Key as GroupKey, Projection};
 use crate::protocol::{MetaProtocol, MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::tags::TagStore;
@@ -580,6 +584,11 @@ impl ServeWorlds {
             namespace = %records.namespace(),
             "world: records document ready"
         );
+        info!(
+            world = name,
+            ephemeral = self.ephemeral,
+            "serve startup: records ready, building world service (#190 breadcrumb)"
+        );
         let service = if self.ephemeral {
             make(WorldHandle::spawn(WorldCore::new(name, limits)?)).with_records_store(records)
         } else {
@@ -596,6 +605,10 @@ impl ServeWorlds {
             }
             service.with_records_store(records)
         };
+        info!(
+            world = name,
+            "serve startup: world service built (#190 breadcrumb)"
+        );
 
         let service = if self.native {
             service.with_native_enabled()
@@ -611,6 +624,10 @@ impl ServeWorlds {
         {
             self.install_default_module(&service, path).await?;
         }
+        info!(
+            world = name,
+            "serve startup: world open complete (#190 breadcrumb)"
+        );
         Ok(service)
     }
 
@@ -827,6 +844,28 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         Some(crate::access::blobs_events(access.clone())),
     );
 
+    // The node's own event store, shared between the web layer and /id-range-sync/1
+    // range sync (#792). Serve opens it once, on the same directory the web
+    // state would open (the `events` sibling of the identity database), and
+    // hands the one instance to both: the store admits a single opener, and a
+    // second store over the same directory would diverge from the one the web
+    // layer publishes ProseMirror save revisions into. Only opened when the
+    // web UI is on — that is the store whose revisions replicate, and opening
+    // it unconditionally would change the local CLI's access to the directory
+    // while serve runs.
+    #[cfg(feature = "web")]
+    let event_events: Option<Arc<tokio::sync::Mutex<crate::local_events::LocalEvents>>> = if web {
+        let identity_db_path = std::path::Path::new(KEY_FILE).with_file_name(".identity.redb");
+        let events_dir = identity_db_path.with_file_name(crate::local_events::DIR_NAME);
+        let events = crate::local_events::LocalEvents::open(
+            &events_dir,
+            p2panda_core::SigningKey::from_bytes(&key.to_bytes()),
+        )?;
+        Some(Arc::new(tokio::sync::Mutex::new(events)))
+    } else {
+        None
+    };
+
     // Every world lives in one hub, shared by the Iroh protocol and the web
     // bridge. The default world opens now so a bad journal fails startup.
     #[cfg(feature = "world")]
@@ -870,7 +909,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 signed_boot_window: std::time::Duration::from_secs(world_boot_window_secs),
             },
         );
+        info!("serve startup: opening default world via hub (#190 breadcrumb)");
         let default_service = hub.open_default().await?;
+        info!("serve startup: default world open, building router (#190 breadcrumb)");
         if !world_caps.is_empty() {
             for cap in world_caps.iter().filter(|cap| *cap != "*") {
                 if !server_caps.contains(cap) {
@@ -916,6 +957,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         .accept(BLOBS_ALPN, blobs)
         .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
         .accept(iroh_docs::net::ALPN, docs.clone());
+    #[cfg(feature = "web")]
+    let router_builder = match &event_events {
+        Some(events) => router_builder.accept(
+            crate::event_store::sync::ALPN,
+            crate::event_sync::EventSyncProtocol::new(Arc::clone(events)),
+        ),
+        None => router_builder,
+    };
     #[cfg(feature = "world")]
     let router_builder = match &world_hub {
         Some(hub) => router_builder
@@ -940,6 +989,44 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(all(feature = "world", feature = "ssh"))]
     let router_builder = router_builder.accept(crate::world_ssh::SSH_TUNNEL_ALPN, ssh_tunnel);
     let router = router_builder.spawn();
+    info!("serve startup: router spawned (#190 breadcrumb)");
+
+    // Offer a sync session to every discovered peer, on an interval: a save on
+    // either node is discoverable on the other after the next session (#792).
+    // Peers that do not serve /id-range-sync/1 fail the dial, which is logged at debug
+    // and otherwise ignored — accepting sessions above is what serves the rest.
+    #[cfg(feature = "web")]
+    let _event_sync_handle = event_events.clone().map(|events| {
+        status!("event sync: /id-range-sync/1 enabled (the web event store)");
+        let endpoint = router.endpoint().clone();
+        let discovery = peer_discovery.clone();
+        let gate = crate::event_sync::open_gate();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(crate::event_sync::SYNC_INTERVAL).await;
+                for peer in discovery.peers() {
+                    let peer_id = peer.announcement.node_id;
+                    if peer_id == endpoint.id() {
+                        continue;
+                    }
+                    match crate::event_sync::sync_with_peer(&endpoint, peer_id, &events, &gate)
+                        .await
+                    {
+                        Ok(outcome) if outcome.sent + outcome.received > 0 => {
+                            info!(
+                                "event sync: {peer_id}: sent {} received {}",
+                                outcome.sent, outcome.received
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            debug!("event sync: session with {peer_id} failed: {error:#}");
+                        }
+                    }
+                }
+            }
+        })
+    });
 
     if !no_gossip {
         // Resolve effective config from defaults + CLI flags
@@ -1028,9 +1115,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let mut web_port: Option<u16> = None;
     #[cfg(feature = "web")]
     let web_listener = if web {
+        info!("serve startup: binding web listener (#190 breadcrumb)");
         let addr = SocketAddr::new(bind, port);
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let actual_port = listener.local_addr()?.port();
+        info!(
+            port = actual_port,
+            "serve startup: web listener bound (#190 breadcrumb)"
+        );
         web_port = Some(actual_port);
         Some(listener)
     } else {
@@ -1065,7 +1157,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
 
     // Write the lock file before printing status so it exists when callers
     // detect the server via stdout output (integration tests depend on this).
+    info!("serve startup: writing serve lock (#190 breadcrumb)");
     create_serve_lock(&serve_node_id, &local_addrs, web_port).await?;
+    info!("serve startup: serve lock written, printing node status (#190 breadcrumb)");
 
     status!("node: {serve_node_id}");
     if ephemeral {
@@ -1108,18 +1202,37 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "web")]
     let _web_handle = if let Some(listener) = web_listener {
         let identity_db_path = std::path::Path::new(KEY_FILE).with_file_name(".identity.redb");
-        let web_router = crate::web::web_router(
-            store_handle.clone(),
-            Some(peer_discovery.clone()),
-            node_id.to_string(),
-            Arc::clone(&tag_store),
-            key.to_bytes(),
-            identity_db_path,
-            crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
-            world_hub.clone(),
-            web_cookie_secure,
-        )
-        .await?;
+        let web_router = match &event_events {
+            Some(events) => {
+                crate::web::web_router_with_local_events(
+                    store_handle.clone(),
+                    Some(peer_discovery.clone()),
+                    node_id.to_string(),
+                    Arc::clone(&tag_store),
+                    key.to_bytes(),
+                    identity_db_path,
+                    crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
+                    world_hub.clone(),
+                    web_cookie_secure,
+                    Arc::clone(events),
+                )
+                .await?
+            }
+            None => {
+                crate::web::web_router(
+                    store_handle.clone(),
+                    Some(peer_discovery.clone()),
+                    node_id.to_string(),
+                    Arc::clone(&tag_store),
+                    key.to_bytes(),
+                    identity_db_path,
+                    crate::web::WebSecurity::for_bind(bind, web_token.clone(), &[]),
+                    world_hub.clone(),
+                    web_cookie_secure,
+                )
+                .await?
+            }
+        };
         let actual_port = web_port.unwrap_or(port);
         let shown_host = if bind.is_unspecified() || bind.is_loopback() {
             "localhost".to_owned()
@@ -1174,9 +1287,32 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         })
     });
 
+    // Group warnings (P4.9, #799): one persistent Evaluator for the life of
+    // the process. The first pass runs here so active warnings surface in
+    // the CLI status output at startup; the spawned task then re-evaluates
+    // as membership changes and writes fired warnings to the server log.
+    let mut group_watcher = GroupWarningWatcher::new();
+    let groups_log = PathBuf::from(GROUPS_FILE_NAME);
+    for (_, warning) in evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now()) {
+        status!("group warning: {}", warning.message());
+    }
+    let group_warning_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(GROUP_WARNING_INTERVAL);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            evaluate_group_warnings(&mut group_watcher, &groups_log, unix_now());
+        }
+    });
+
     tokio::signal::ctrl_c().await?;
     remove_serve_lock().await?;
     router.shutdown().await?;
+    #[cfg(feature = "web")]
+    if let Some(sync_task) = _event_sync_handle {
+        sync_task.abort();
+        let _ = sync_task.await;
+    }
     #[cfg(feature = "web")]
     if let Some(web_task) = _web_handle {
         web_task.abort();
@@ -1196,8 +1332,131 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     if let Some(hub) = &world_hub {
         hub.shutdown_all().await;
     }
+    group_warning_handle.abort();
+    let _ = group_warning_handle.await;
     store.shutdown().await?;
     Ok(())
+}
+
+/// How often serve re-evaluates the group warnings against the group log.
+const GROUP_WARNING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The serve-side group warning watcher (P4.9, #799).
+///
+/// Serve holds exactly one of these for the life of the process, so the
+/// [`Evaluator`]'s high-water marks survive across evaluations: a group that
+/// crosses a size threshold warns once, not on every pass. The groups in the
+/// node's own group log are the ones its operator made through the CLI, so
+/// every group is observed as client-made. Member counts come from the fold.
+///
+/// Group events carry no timestamps, so churn cannot be reconstructed from
+/// the log for time before serve started. Instead the watcher derives re-adds
+/// from what it observes between evaluations: a device that is authorized,
+/// later unauthorized, and then authorized again is a re-add, stamped with
+/// the time of the evaluation that first sees it back.
+struct GroupWarningWatcher {
+    evaluator: Evaluator,
+    /// The devices authorized per group at the previous evaluation.
+    devices: std::collections::BTreeMap<Hash, std::collections::BTreeSet<GroupKey>>,
+    /// Every device ever seen authorized per group.
+    seen_devices: std::collections::BTreeMap<Hash, std::collections::BTreeSet<GroupKey>>,
+    /// The re-add times per group, as observed by this watcher.
+    readds: std::collections::BTreeMap<Hash, Vec<u64>>,
+}
+
+impl GroupWarningWatcher {
+    fn new() -> Self {
+        Self {
+            evaluator: Evaluator::default(),
+            devices: std::collections::BTreeMap::new(),
+            seen_devices: std::collections::BTreeMap::new(),
+            readds: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Evaluates every active group in `projection` at `now` (Unix seconds).
+    /// Returns the warnings this evaluation adds, and writes each of them to
+    /// the server log through the warnings module.
+    fn evaluate(&mut self, projection: &Projection, now: u64) -> Vec<(Hash, Warning)> {
+        let mut fired = Vec::new();
+        for (group, view) in projection.groups() {
+            if !view.is_active() {
+                continue;
+            }
+            let current = projection.group_active_devices(group);
+            let mut new_readds = 0_usize;
+            {
+                let seen = self.seen_devices.entry(*group).or_default();
+                let previous = self.devices.entry(*group).or_default();
+                for device in &current {
+                    if !previous.contains(device) && seen.contains(device) {
+                        new_readds += 1;
+                    }
+                }
+                seen.extend(current.iter().copied());
+                *previous = current;
+            }
+            if new_readds > 0 {
+                let times = self.readds.entry(*group).or_default();
+                for _ in 0..new_readds {
+                    times.push(now);
+                }
+                times.retain(|at| {
+                    now.saturating_sub(*at) < crate::groups::warnings::CHURN_WINDOW_SECS
+                });
+            }
+            let readds = self.readds.get(group).cloned().unwrap_or_default();
+            let observation = Observation {
+                group: *group,
+                client_made: true,
+                members: view.members.len(),
+                readds: &readds,
+            };
+            let warnings = self.evaluator.observe(&observation, now);
+            if !warnings.is_empty() {
+                crate::groups::warnings::log(group, &warnings);
+                fired.extend(warnings.into_iter().map(|warning| (*group, warning)));
+            }
+        }
+        fired
+    }
+}
+
+/// One warning evaluation pass over the group log at `path`.
+///
+/// A missing log means no groups, not an error. A log that cannot be read or
+/// folded is noted in the server log and skipped: warnings never block serve.
+fn evaluate_group_warnings(
+    watcher: &mut GroupWarningWatcher,
+    path: &std::path::Path,
+    now: u64,
+) -> Vec<(Hash, Warning)> {
+    if !path.exists() {
+        return Vec::new();
+    }
+    let log = match GroupLog::open(path) {
+        Ok(log) => log,
+        Err(error) => {
+            debug!("group warnings: cannot open {}: {error}", path.display());
+            return Vec::new();
+        }
+    };
+    let projection = match log.projection() {
+        Ok(projection) => projection,
+        Err(error) => {
+            debug!("group warnings: cannot fold {}: {error}", path.display());
+            return Vec::new();
+        }
+    };
+    watcher.evaluate(&projection, now)
+}
+
+/// The current time as Unix seconds, for the warning evaluator's clock.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
 }
 
 /// Background loop for gossip-based peer discovery.
@@ -1365,6 +1624,120 @@ async fn run_gossip_loop(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// A scratch directory unique to this test process.
+    fn serve_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("id-serve-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Builds a group log on disk holding one group of `members` accounts
+    /// (the author included), returning the group's ID. This is the file the
+    /// serve warning path reads.
+    fn group_log_with_members(dir: &std::path::Path, members: usize) -> Hash {
+        use crate::groups::Role;
+        use crate::groups::actions::NewGroup;
+
+        let path = dir.join(GROUPS_FILE_NAME);
+        let mut log = GroupLog::open(&path).unwrap();
+        let author: GroupKey = [1; 32];
+        let created = log
+            .create(
+                author,
+                NewGroup::Normal {
+                    max: None,
+                    admins_on_create: false,
+                },
+            )
+            .unwrap();
+        for i in 1..members {
+            let member: GroupKey = [u8::try_from(i + 1).unwrap(); 32];
+            log.add(author, created.group, member, Role::Read).unwrap();
+        }
+        created.group
+    }
+
+    #[test]
+    fn serve_group_warnings_fire_once_at_each_size_threshold() {
+        let dir = serve_test_dir("size");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let group = group_log_with_members(&dir, 96);
+        let mut watcher = GroupWarningWatcher::new();
+
+        // The integration surface: serve's own evaluation over the on-disk
+        // group log warns when the group crosses 96 members (P4.9's e2e
+        // column: "the server warns at a threshold").
+        let fired = evaluate_group_warnings(&mut watcher, &path, 1_000);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].0, group);
+        assert!(matches!(
+            fired[0].1,
+            Warning::Size {
+                threshold: 96,
+                members: 96
+            }
+        ));
+
+        // The persistent Evaluator's high-water mark: the same state warns
+        // no second time.
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_001).is_empty());
+
+        // Growing past the next threshold warns once more, for that tier.
+        {
+            let mut log = GroupLog::open(&path).unwrap();
+            let author: GroupKey = [1; 32];
+            for i in 96..128 {
+                let member: GroupKey = [u8::try_from(i + 1).unwrap(); 32];
+                log.add(author, group, member, crate::groups::Role::Read)
+                    .unwrap();
+            }
+        }
+        let fired = evaluate_group_warnings(&mut watcher, &path, 1_002);
+        assert_eq!(fired.len(), 1);
+        assert!(matches!(
+            fired[0].1,
+            Warning::Size {
+                threshold: 128,
+                members: 128
+            }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serve_group_warnings_fire_on_device_readd_churn() {
+        use crate::groups::Role;
+
+        let dir = serve_test_dir("churn");
+        let path = dir.join(GROUPS_FILE_NAME);
+        let group = group_log_with_members(&dir, 2);
+        let author: GroupKey = [1; 32];
+        let device: GroupKey = [200; 32];
+        let mut log = GroupLog::open(&path).unwrap();
+        let mut watcher = GroupWarningWatcher::new();
+
+        // The first authorization is not a re-add, and warns about nothing.
+        log.device_add(author, group, device, Role::Read).unwrap();
+        assert!(evaluate_group_warnings(&mut watcher, &path, 1_000).is_empty());
+
+        // Four revoke + re-authorize cycles inside the window: the fourth
+        // re-add crosses the churn threshold and warns exactly once.
+        for cycle in 0..4_u64 {
+            log.device_revoke(author, group, device).unwrap();
+            assert!(evaluate_group_warnings(&mut watcher, &path, 1_001 + cycle * 2).is_empty());
+            log.device_add(author, group, device, Role::Read).unwrap();
+            let fired = evaluate_group_warnings(&mut watcher, &path, 1_002 + cycle * 2);
+            if cycle < 3 {
+                assert!(fired.is_empty(), "cycle {cycle} fired early: {fired:?}");
+            } else {
+                assert_eq!(fired.len(), 1);
+                assert!(matches!(fired[0].1, Warning::Churn { readds: 4 }));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[cfg(feature = "world")]
     #[test]
