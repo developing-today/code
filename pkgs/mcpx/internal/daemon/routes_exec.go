@@ -173,6 +173,8 @@ func (s *Server) ExecService() *execsvc.Service {
 	lim.Timeout = set.Duration("exec.timeout")
 	lim.Runtime = set.String("script.runtime")
 	lim.Permissions = set.String("script.permissions")
+	lim.Interpreter = set.String("script.interpreter")
+	lim.CwdPolicy = set.String("script.cwd")
 	// A malformed definition is reported by the run that needs it, rather
 	// than failing every other route that builds a service.
 	lim.Setup, lim.SetupErr = runner.ParseSetup(set.String("script.runtimes"),

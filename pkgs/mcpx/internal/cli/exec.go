@@ -175,6 +175,8 @@ func (a *App) localStore() (*artifacts.Store, error) {
 func (a *App) localService(store *artifacts.Store, socket string) *execsvc.Service {
 	set := a.Settings()
 	lim := execsvc.DefaultLimits()
+	lim.Interpreter = set.String("script.interpreter")
+	lim.CwdPolicy = set.String("script.cwd")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
@@ -536,6 +538,9 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	opts := execsvc.Options{
 		Runtime:     rf.runtime,
 		Permissions: rf.permissions,
+		// From the resolved set, so --interpreter/--shell, the env and
+		// config files reach local and remote exec the same way.
+		Interpreter: a.Settings().String("script.interpreter"),
 		Session:     session,
 		// The caller's context, not the daemon's. A remote daemon has a
 		// different working directory and a different environment, and a

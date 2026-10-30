@@ -85,6 +85,17 @@ type Options struct {
 	Export string
 	// Permissions is the sandbox setting; empty means wide open.
 	Permissions string
+	// Interpreter is the script.interpreter setting: a command line that
+	// runs the script instead of a JavaScript runtime, when the script
+	// does not name its own interpreter with a shebang. See dispatch.go
+	// for the full order.
+	Interpreter string
+	// CwdPolicy is the script.cwd setting: caller, script, config or
+	// workdir. Empty means caller.
+	CwdPolicy string
+	// ConfigDir is the directory holding the configuration in force,
+	// for CwdPolicy "config". Empty makes that policy an explicit error.
+	ConfigDir string
 	// GlobalsSource is the ambient declaration file written beside the client.
 	GlobalsSource string
 	// CaptureConsole mirrors console output into the record stream.
@@ -148,6 +159,10 @@ type Result struct {
 	Script   string
 	Client   string
 	TimedOut bool
+	// Notice is set on a dispatched (non-JavaScript) run: the one
+	// statement of what the run does not have (a generated client,
+	// enforced permission profiles). See dispatch.go.
+	Notice string
 	// Stdout is captured only when Options.Stdout is nil.
 	Stdout string
 }
@@ -158,6 +173,15 @@ const clientFileName = "mcpx-client.ts"
 func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" && opts.File == "" {
 		return nil, errors.New("runner: need Source or File")
+	}
+	// Dispatch ranks 1-2 (#2167): a shebang or a configured interpreter
+	// runs the script under that interpreter, before any JavaScript
+	// runtime is considered. Rank 3 (language/extension) is reserved
+	// for #1917; rank 4 is everything below, unchanged.
+	if d, derr := decideDispatch(opts); derr != nil {
+		return nil, derr
+	} else if d != nil {
+		return runDispatched(ctx, opts, d)
 	}
 	rt, err := Resolve(opts.Runtime, opts.Permissions, opts.Setup)
 	if err != nil {
@@ -291,11 +315,17 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	args := append(rt.Args(scriptPath), opts.Args...)
 
 	cmd := exec.Command(rt.Bin, args...)
-	// Inherit the caller's working directory rather than the script's. A
-	// relative path in a script should mean what it means on the command line;
-	// the client import still resolves against the script file, because ESM
-	// resolves relative specifiers against the importing module.
-	cmd.Dir = opts.Dir
+	// The script.cwd policy decides the working directory. The default,
+	// caller, inherits the caller's directory rather than the script's:
+	// a relative path in a script should mean what it means on the
+	// command line; the client import still resolves against the script
+	// file, because ESM resolves relative specifiers against the
+	// importing module.
+	dir, derr := ResolveCwd(opts.CwdPolicy, opts.Dir, scriptPath, opts.ConfigDir, workDir)
+	if derr != nil {
+		return nil, derr
+	}
+	cmd.Dir = dir
 	// The kind, not the configured name: a script branching on its runtime
 	// cares whether it is under Deno, not what somebody called the binary.
 	cmd.Env = append(os.Environ(), "MCPX_RUNTIME="+rt.Kind)

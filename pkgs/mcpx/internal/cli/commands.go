@@ -935,6 +935,15 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if a.Settings().Given("script.permissions") {
 		setPerms = a.Settings().String("script.permissions")
 	}
+	// script.interpreter and script.cwd come from the resolved set like
+	// every other script.* value: flag aliases (--interpreter/--shell),
+	// env and config files all fold into the same two strings.
+	interpreterPref := set.String("script.interpreter")
+	cwdPolicy := set.String("script.cwd")
+	configDir := ""
+	if cp := configPathOf(cfg); cp != "" {
+		configDir = filepath.Dir(cp)
+	}
 	opts := runner.Options{
 		// Set when something other than a terminal is collecting the output:
 		// the MCP server, which has to return it rather than print it.
@@ -943,6 +952,9 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		GlobalsSource:  globalsSrc,
 		CaptureConsole: shape.captureConsole,
 		Runtime:        runtimePref,
+		Interpreter:    interpreterPref,
+		CwdPolicy:      cwdPolicy,
+		ConfigDir:      configDir,
 		Setup:          rtSetup,
 		Timeout:        *timeout,
 		Prelude:        prelude,

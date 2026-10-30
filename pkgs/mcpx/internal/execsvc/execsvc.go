@@ -100,7 +100,11 @@ type TaskOptions struct {
 // caller declaring what it can receive is the thing that makes the script
 // identical everywhere.
 type Options struct {
-	Runtime      string            `json:"runtime,omitempty"`
+	Runtime string `json:"runtime,omitempty"`
+	// Interpreter is the script.interpreter command line for this run;
+	// empty takes the service's configured one. A shebang in the source
+	// or file beats it, as it beats every configuration surface.
+	Interpreter  string            `json:"interpreter,omitempty"`
 	Timeout      string            `json:"timeout,omitempty"`
 	Permissions  string            `json:"permissions,omitempty"`
 	Placeholders map[string]any    `json:"placeholders,omitempty"`
@@ -261,6 +265,10 @@ type Limits struct {
 	Timeout     time.Duration
 	Runtime     string
 	Permissions string
+	// Interpreter is the configured script.interpreter command line.
+	Interpreter string
+	// CwdPolicy is the configured script.cwd policy.
+	CwdPolicy string
 	// Setup holds declared runtimes, the auto order and user profiles.
 	Setup runner.Setup
 	// SetupErr is why Setup could not be read; every run reports it.
@@ -304,6 +312,9 @@ type Service struct {
 	Local bool
 	// Limits are the resolved settings.
 	Limits Limits
+	// ConfigDir is the directory holding the configuration in force,
+	// for the script.cwd "config" policy on runs through this service.
+	ConfigDir string
 	// WorkDir holds the generated client between runs, so the runtime's
 	// module cache stays warm. Empty means a temporary directory per run.
 	WorkDir string
@@ -373,6 +384,9 @@ func (s *Service) Run(ctx context.Context, req Request, sink Sink) (*Result, err
 		WorkDir:        s.WorkDir,
 		WorkRoot:       s.WorkRoot,
 		Runtime:        firstNonEmpty(opts.Runtime, s.Limits.Runtime),
+		Interpreter:    firstNonEmpty(opts.Interpreter, s.Limits.Interpreter),
+		CwdPolicy:      s.Limits.CwdPolicy,
+		ConfigDir:      s.ConfigDir,
 		Setup:          s.Limits.Setup,
 		Timeout:        timeout,
 		Permissions:    firstNonEmpty(opts.Permissions, s.Limits.Permissions),

@@ -583,7 +583,9 @@ and a switch to turn the report off would have kept it quiet.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `script.before` | source | *(empty)* | client | no | `--script-before` | `MCPX_SCRIPT_BEFORE` | runs first, ahead of the globals being installed |
 | `script.captureConsole` | bool | `true` | client | no | `--script-capture-console` | `MCPX_SCRIPT_CAPTURE_CONSOLE` | route console calls into the log |
+| `script.cwd` | enum | `caller` | client | no | `--script-cwd` | `MCPX_SCRIPT_CWD` | where a script runs: caller, script, config or workdir |
 | `script.env` | list | *(empty)* | client | no | `--script-env`, `--env` | `MCPX_SCRIPT_ENV` | KEY=VALUE pairs added to the script's environment |
+| `script.interpreter` | string | *(empty)* | client | no | `--script-interpreter`, `--interpreter`, `--shell` | `MCPX_SCRIPT_INTERPRETER` | command line that runs scripts instead of a JavaScript runtime |
 | `script.launcher` | source | *(empty)* | client | no | `--script-launcher` | `MCPX_SCRIPT_LAUNCHER` | replace the generated launcher entirely |
 | `script.onError` | source | *(empty)* | client | no | `--script-on-error` | `MCPX_SCRIPT_ON_ERROR` | runs when the script throws; the error still propagates |
 | `script.onSuccess` | source | *(empty)* | client | no | `--script-on-success` | `MCPX_SCRIPT_ON_SUCCESS` | runs when the script returns without throwing |
