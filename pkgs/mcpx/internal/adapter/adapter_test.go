@@ -3,6 +3,8 @@ package adapter_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -239,5 +241,74 @@ func TestZeroTimeoutIsUnset(t *testing.T) {
 	}
 	if !strings.Contains(res.Stdout, "said: hello") {
 		t.Errorf("got %q", res.Stdout)
+	}
+}
+
+func TestAnUnsupportedRuntimeIsRefusedWithTheList(t *testing.T) {
+	spec := echoSpec()
+	spec.Runtime = "ruby"
+	err := spec.Validate()
+	if err == nil {
+		t.Fatal("ruby is not one of bash|js|ts|py")
+	}
+	if !strings.Contains(err.Error(), `runtime "ruby" is not supported; want bash|js|ts|py`) {
+		t.Errorf("the message should name the supported set: %v", err)
+	}
+}
+
+func TestSupportedRuntimesValidateWithoutAnInterpreterInstalled(t *testing.T) {
+	// Validate is a structural question: a declaration is well formed even
+	// on a machine where the interpreter is missing, and Probe is what
+	// says whether it can run.
+	for _, rt := range []string{"bash", "js", "ts", "py"} {
+		spec := echoSpec()
+		spec.Runtime = rt
+		spec.Command = "/nonexistent/script"
+		if err := spec.Validate(); err != nil {
+			t.Errorf("%s should validate: %v", rt, err)
+		}
+	}
+}
+
+func TestAScriptWithARuntimeProbesAndRuns(t *testing.T) {
+	// The two things a declaration with a runtime buys: `adapter check`
+	// passes for a path that is not on PATH, and Call spawns it through
+	// the interpreter.
+	if _, _, err := adapter.RuntimeInterpreter("bash"); err != nil {
+		t.Skip("no bash on this machine: ", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho native\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec := adapter.Spec{
+		Name: "s", Command: path, Runtime: "bash",
+		Tools: []adapter.ToolSpec{{Name: "go"}},
+	}
+	if err := spec.Probe(); err != nil {
+		t.Fatalf("a script file with a runtime should probe: %v", err)
+	}
+	res, err := spec.Call(context.Background(), "go", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, "native") {
+		t.Errorf("got %q", res.Stdout)
+	}
+	if !strings.Contains(res.Command, "bash") || !strings.Contains(res.Command, path) {
+		t.Errorf("the resolved command should be reported: %q", res.Command)
+	}
+}
+
+func TestARuntimeWithNoScriptIsRefusedClearly(t *testing.T) {
+	spec := adapter.Spec{Name: "s", Command: "/nonexistent/x.sh", Runtime: "bash",
+		Tools: []adapter.ToolSpec{{Name: "go"}}}
+	err := spec.Probe()
+	if err == nil {
+		t.Fatal("a missing script should not probe")
+	}
+	if !strings.Contains(err.Error(), "not a file") {
+		t.Errorf("the message should say what is wrong: %v", err)
 	}
 }

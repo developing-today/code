@@ -541,6 +541,19 @@ func (a *App) MCPServer(ctx context.Context) (*mcpserver.Server, error) {
 	// endpoint reachable from curl and from the plugin but not from MCP is
 	// reachable from fewer places than it needs to be.
 	extras = append(extras, a.v1OpTools()...)
+	// Recipes carry a typed schema in their header already; exposing each
+	// one as a tool is the shortest path from "saved script" to "an agent
+	// can see and call it". A name another producer already claimed is
+	// skipped and reported by `mcpx catalog`, never shadowed.
+	if c, err := a.ensure(ctx); err == nil {
+		taken := map[string]bool{}
+		for _, e := range extras {
+			taken[e.Tool.Name] = true
+		}
+		if recipeExtras, _, rerr := a.recipeToolExtras(ctx, c, taken); rerr == nil {
+			extras = append(extras, recipeExtras...)
+		}
+	}
 	if len(extras) > 0 {
 		srv = srv.WithExtras(extras)
 	}
