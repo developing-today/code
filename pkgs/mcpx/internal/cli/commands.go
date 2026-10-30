@@ -654,6 +654,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	// enum with three values is not two booleans.
 	remote := fs.Bool("remote", false, "run the script on the daemon rather than here")
 	local := fs.Bool("local", false, "run the script in this process (the default when the daemon is local)")
+	remoteFile := fs.Bool("remote-file", false,
+		"with --remote, send the script's name and let the daemon resolve it on its own script search path (#2168), instead of sending the file's text")
 	// parseFlags binds everything the registry declares for this command that
 	// the hand-written flags above have not already claimed, then folds what
 	// was given into the resolved settings.
@@ -774,6 +776,12 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if werr != nil {
 		return werr
 	}
+	if *remoteFile && inline {
+		return errors.New("--remote-file names a script for the daemon to resolve; inline source has no name to resolve")
+	}
+	if *remoteFile && !elsewhere {
+		return errors.New("--remote-file asks the daemon to resolve the script name, so it only applies to a remote run; drop it, or add --remote")
+	}
 	// One identifier for this execution, used by the artifact index to group
 	// what the script produced and by a stream consumer to name the run.
 	runID := execsvc.NewRunID()
@@ -822,7 +830,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	if elsewhere {
 		return a.execOnDaemon(ctx, c, fs, inline, ns, sessionKey, eo,
 			execRemoteFlags{timeout: *timeout, runtime: *rt, permissions: *perms,
-				export: *export, session: sessionKey, shape: shape})
+				export: *export, session: sessionKey, shape: shape,
+				remoteFile: *remoteFile})
 	}
 	// This process is about to start the script, so it checks first. The
 	// daemon would refuse a script it was asked to run; this one is not asked.

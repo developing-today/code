@@ -73,6 +73,22 @@ survive the trip: the daemon writes the text to its own disk, and a sibling
 module is not beside it. `--export` does survive, because the launcher imports
 the written file and calls the named export there.
 
+That is the default, not the only form. `--remote-file` sends the script's
+*name* instead — the `file:` form of the request — and the daemon resolves it
+on its own script search path. Resolution is one rule for every surface
+(#2168): the shared `internal/scriptresolve` package searches the same
+directories the CLI searches (`.config/mcpx/scripts` then `.mcpx/scripts`,
+from the working directory up, then the user directory, with the
+`paths.scripts` setting spliced at its `null`), tries the same extensions
+(`.ts`, `.mts`, `.js`, `.mjs`), and a miss is an error naming every directory
+searched. So `POST /v1/exec {"file": "report"}` finds `report.ts` on the
+daemon's search path, and a caller with no mcpx binary can name a script the
+same way a person at a terminal does. `paths.scripts` is one setting shared
+by both sides — the daemon resolves it from its own configuration file and
+environment; there is no daemon-specific variant. On a daemon-resolved run
+`--export` works as it does locally, because the daemon's launcher imports
+the real file it resolved.
+
 Every flag that shapes the program travels with it: `--env`, `--typecheck`,
 `--launcher`/`--no-launcher`, `--allow-repeat`, `--no-capture-console`,
 `--export`, and the five phases (`--before`, `--prefix`, `--suffix`,

@@ -497,6 +497,9 @@ type execRemoteFlags struct {
 	export      string
 	session     string
 	shape       scriptShape
+	// remoteFile asks the daemon to resolve the script name itself
+	// (#2168): the wire request carries file, not source.
+	remoteFile bool
 }
 
 // execOnDaemon sends the script to the daemon and renders what comes back.
@@ -513,7 +516,17 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	source := sh.inlineSource(fs.Args())
 	var args []string
 	phases := &execsvc.Phases{Before: sh.before, OnSuccess: sh.onSuccess, OnError: sh.onError}
-	if !inline {
+	if !inline && rf.remoteFile {
+		// --remote-file (#2168): the name travels, not the text, and the
+		// daemon resolves it on its own search path through the shared
+		// scriptresolve rule. This is the form for a script that lives
+		// on the daemon's side — including one this machine does not
+		// have at all. --export works here too: the daemon resolved the
+		// file itself, so its launcher imports the real file and calls
+		// the named export there.
+		args = fs.Args()[1:]
+		phases.Prefix, phases.Suffix = sh.prefix, sh.suffix
+	} else if !inline {
 		// The file's text travels and the daemon writes it to its own disk,
 		// where the launcher imports it -- so --export works as it does
 		// locally. Relative imports are what cannot survive the trip.
@@ -580,6 +593,11 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	// printed nothing. The structured answer is rendered as text locally.
 	if opts.Output != execsvc.OutputStream {
 		opts.Output = execsvc.OutputStructured
+	}
+	if rf.remoteFile && !inline {
+		// The file: form of the wire request — the daemon resolves the
+		// name through scriptresolve and runs the file it finds (#2168).
+		return a.execRemote(ctx, c, map[string]any{"file": fs.Arg(0), "options": opts}, eo)
 	}
 	return a.execRemote(ctx, c, map[string]any{"source": source, "options": opts}, eo)
 }
