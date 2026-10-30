@@ -553,6 +553,11 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 		IdleTimeout string `json:"idleTimeout"`
 		CallTimeout string `json:"callTimeout"`
 		Protocol    string `json:"protocol,omitempty"`
+		// Auth is mcpauth.Auth.Describe(): the redacted summary
+		// ("bearer ${VAR}", "none", …) — the reference, never the
+		// resolved value, since this output gets pasted into issues
+		// (#1926).
+		Auth string `json:"auth"`
 	}
 	out := struct {
 		Path    string   `json:"path"`
@@ -565,6 +570,7 @@ func (a *App) CmdConfig(ctx context.Context, args []string) error {
 			Sharing: string(s.Sharing), Scope: string(s.Scope), Max: s.Max,
 			IdleTimeout: s.IdleTimeout.String(), CallTimeout: s.CallTimeout.String(),
 			Protocol: s.Protocol,
+			Auth:     s.Auth.Describe(),
 		}
 		if s.Stdio() {
 			r.Transport, r.Command = "stdio", s.Command
