@@ -307,6 +307,10 @@ describe("attention action controls (#1152/#1156)", () => {
     const src = fixtureSource();
     const view = buildAttention(await src.attention(), SECTION, NOW);
     const pending = mkAction({});
+    // Render-time suppression compares the snooze's `until` against the
+    // wall clock (renderAttention has no injected clock), so the fixture's
+    // snooze must still be live when the test runs — NOW is a fixed past
+    // instant and a snooze measured from it would have expired by now.
     const snooze = mkAction({
       id: "da-test-2",
       verb: "snooze",
@@ -314,7 +318,7 @@ describe("attention action controls (#1152/#1156)", () => {
       state: "applied",
       appliedAt: iso(NOW - 3_600_000),
       appliedByRun: "orch-test",
-      payload: { until: iso(NOW + 86_400_000) },
+      payload: { until: iso(Date.now() + 86_400_000) },
     });
     const acked = mkAction({
       id: "da-test-3",
