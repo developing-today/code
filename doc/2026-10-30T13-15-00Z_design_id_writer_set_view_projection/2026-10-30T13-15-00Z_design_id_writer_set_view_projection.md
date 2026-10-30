@@ -708,11 +708,11 @@ predicate's reach.** §4.1 can count a claim through current admission (a subset
 historical admission, retrospective admission and a named exception:
 
 1. **Author ranges of every author *historically* admitted up to the selected version** — the union
-   of `expand(v)` over `v ∈ versions(S)` (so bounded by `S.set_seq` **and** by `v.set_id = S.set_id`,
-   §4.1), not the current expansion alone. A removed author's earlier claims stay counted (§3.2,
-   clause 4's `admitted_at`), so their ranges must still be scanned or the predicate can never
-   preserve them. This is the correction for round-4 finding 13, and it is strictly larger than the
-   set in force today.
+   of `expand(v)` over `v ∈ adm_versions(S)` (so bounded by `S.set_seq`, by `v.kind = idset.writer`
+   and by `v.set_id = S.set_id`, §4.1), not the current expansion alone. A removed author's earlier
+   claims stay counted (§3.2, clause 4's `admitted_at`), so their ranges must still be scanned or the
+   predicate can never preserve them. This is the correction for round-4 finding 13, and it is
+   strictly larger than the set in force today.
 2. **Past claims of a retro-admitting version** (`include_history: true`, §3.1). Those claims are by
    definition older than the version that admits them and may be authored by someone no version
    *prospectively* admitted, so they are reachable only through source 1's historical ranges — plus,
