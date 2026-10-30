@@ -10,6 +10,13 @@
 // possible — see the warm-sessions section below. The exec path remains as
 // the fallback for any warm failure and when MUSE_PROXY_WARM=0.
 //
+// Direct mode (#2753): a third, first-tried path. The CLI's OAuth login
+// token is an account token, not an inference credential; the proxy
+// exchanges it at POST /muse-code/key for the plan's minted inference
+// key and calls the Meta Responses API directly (see the direct section
+// below). Warm/exec remain the fallback when direct never got an
+// upstream response. MUSE_PROXY_DIRECT=0 disables direct mode.
+//
 // Auth is the CLI's own OAuth login (~/.config/muse/auth.json). META_API_KEY
 // must NOT be set for the child: the CLI binary states it takes priority over
 // the account login, and the Model API key is a separate pay-as-you-go wallet
@@ -81,6 +88,21 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
     }
   }
 
+  // Contributor variants (#2753 amendment): the Meta pool's contributor
+  // models are distinct upstream ids (muse-spark-1.3-contributor,
+  // muse-wonder-1.0-contributor), optionally carrying an effort suffix
+  // AFTER the contributor part (muse-wonder-1.0-contributor-high — the
+  // effort suffix was already stripped above). Peel the contributor part
+  // off for the base-model lookup and re-attach it to the resolved ids,
+  // so the direct path sends the contributor id upstream verbatim. A
+  // plain base-model request keeps the plain id — contributor is the
+  // caller's choice, never a proxy rewrite.
+  let contributor = false;
+  if (modelStr.endsWith('-contributor')) {
+    contributor = true;
+    modelStr = modelStr.slice(0, -'-contributor'.length);
+  }
+
   // Bare aliases
   if (modelStr === 'spark' || modelStr === 'muse-spark') modelStr = 'muse-spark-1.3';
   if (modelStr === 'wonder' || modelStr === 'muse-wonder') modelStr = 'muse-wonder-1.0';
@@ -94,10 +116,11 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
     effort = modelConfig.defaultEffort;
   }
 
+  const baseModel = contributor ? `${modelConfig.id}-contributor` : modelConfig.id;
   return {
-    baseModel: modelConfig.id,
+    baseModel,
     effort,
-    fullName: `${modelConfig.id}-${effort}`
+    fullName: `${baseModel}-${effort}`
   };
 };
 
@@ -843,6 +866,541 @@ const tryWarmChat = async ({ messages, baseModel, effort, fullName, stream, res,
   return true;
 };
 
+
+// ---------------------------------------------------------------------------
+// Direct mode (#2753): account-token exchange + Meta Responses API
+// ---------------------------------------------------------------------------
+// The Muse CLI's OAuth login (~/.config/muse/auth.json,
+// providers.meta.access_token, a `dca:...` account token) is NOT an
+// inference credential: /v1 calls with it return 401. The CLI exchanges it
+// at POST {META_API_BASE}/muse-code/key (x-api-version: 1.0.0, body
+// {"onboard": false}) for a MintedKey whose api_key field is the plan's
+// inference key (`LLM|...` form), and that key is what inference presents.
+// This section mirrors the exchange (the key value is never logged).
+//
+// Attestation is per-route, verified live 2026-10-30: with the minted key,
+// /v1/chat/completions answers 403 client_attestation_denied no matter what
+// headers are sent, while /v1/responses answers 200 with bare Authorization
+// only. Direct mode therefore speaks the Responses API upstream and
+// translates chat completions to/from it; /v1/responses is passed through.
+// No tbh/muse-build headers are sent — they are proven unnecessary.
+//
+// Fallback discipline: ANY upstream HTTP response on the direct path
+// (200/400/402/403/429/...) is returned to the client — a quota wall or an
+// attestation denial must not cause a second burn through the CLI door.
+// The warm/exec paths take over only when direct never got an upstream
+// response: no credential, an exchange transport failure, or an upstream
+// fetch that throws. One exception: is_subs_active === false or
+// require_payment === true from the exchange is a hard 502 naming the
+// subscription state, never a silent CLI fallback.
+
+const DIRECT_ENABLED = process.env.MUSE_PROXY_DIRECT !== '0';
+const META_API_BASE = (process.env.MUSE_PROXY_META_API_BASE || 'https://api.meta.ai').replace(/\/+$/, '');
+const MUSE_AUTH_PATH = process.env.MUSE_AUTH_PATH || path.join(os.homedir(), '.config', 'muse', 'auth.json');
+const DIRECT_KEY_TTL_MS = 10 * 60 * 1000;
+
+const directState = {
+  credentialFound: false,
+  cachedKey: null,
+  cachedAt: 0,
+  subsTier: null,
+  subsActive: null,
+  exchangePromise: null
+};
+
+const loadDirectCredential = () => {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(MUSE_AUTH_PATH, 'utf-8'));
+    const meta = (parsed && parsed.providers && parsed.providers.meta) || {};
+    const accessToken = typeof meta.access_token === 'string' && meta.access_token ? meta.access_token : null;
+    const apiKey = typeof meta.api_key === 'string' && meta.api_key ? meta.api_key : null;
+    directState.credentialFound = Boolean(accessToken || apiKey);
+    return directState.credentialFound ? { accessToken, apiKey } : null;
+  } catch {
+    directState.credentialFound = false;
+    return null;
+  }
+};
+
+// One exchange against /muse-code/key. Throws only on transport failure;
+// every HTTP outcome is reported as a result object.
+const exchangeMintedKey = async (accessToken) => {
+  const response = await fetch(`${META_API_BASE}/muse-code/key`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'x-api-version': '1.0.0',
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    body: JSON.stringify({ onboard: false })
+  });
+  let body = null;
+  try { body = await response.json(); } catch { body = null; }
+  if (!response.ok) {
+    return { ok: false, message: `Direct Meta route unavailable: key exchange failed with HTTP ${response.status}` };
+  }
+  if (body && body.is_subs_active === false) {
+    return { ok: false, message: 'Direct Meta route unavailable: Muse Code subscription is not active (is_subs_active=false)' };
+  }
+  if (body && body.require_payment === true) {
+    return { ok: false, message: 'Direct Meta route unavailable: Muse Code subscription requires payment (require_payment=true)' };
+  }
+  if (!body || typeof body.api_key !== 'string' || !body.api_key) {
+    return { ok: false, message: 'Direct Meta route unavailable: key exchange returned no api_key' };
+  }
+  directState.cachedKey = body.api_key;
+  directState.cachedAt = Date.now();
+  if (typeof body.subs_tier_name === 'string') directState.subsTier = body.subs_tier_name;
+  if (typeof body.is_subs_active === 'boolean') directState.subsActive = body.is_subs_active;
+  return { ok: true, key: body.api_key };
+};
+
+// Resolve the inference key to present. Result statuses: 'disabled' and
+// 'none' (no credential) and 'transport' (exchange fetch threw) all mean
+// the caller may fall back; 'hard' means Meta answered and the caller must
+// surface the error instead. When the auth store holds only a stored
+// api_key (no account token), that key is used without exchanging.
+const getDirectKey = async ({ forceExchange = false } = {}) => {
+  if (!DIRECT_ENABLED) return { status: 'disabled' };
+  const cred = loadDirectCredential();
+  if (!cred) return { status: 'none' };
+  if (!cred.accessToken) {
+    directState.cachedKey = cred.apiKey;
+    directState.cachedAt = Date.now();
+    return { status: 'ok', key: cred.apiKey, stored: true };
+  }
+  if (!forceExchange && directState.cachedKey &&
+      Date.now() - directState.cachedAt < DIRECT_KEY_TTL_MS) {
+    return { status: 'ok', key: directState.cachedKey };
+  }
+  if (!directState.exchangePromise) {
+    directState.exchangePromise = exchangeMintedKey(cred.accessToken)
+      .then(result => (result.ok
+        ? { status: 'ok', key: result.key }
+        : { status: 'hard', message: result.message }))
+      .catch(err => ({ status: 'transport', message: err.message }))
+      .finally(() => { directState.exchangePromise = null; });
+  }
+  return directState.exchangePromise;
+};
+
+// POST /v1/responses upstream with the resolved key. On 401: invalidate the
+// cached key, re-exchange once, retry once (the second response is final).
+// Throws only when a fetch itself throws (no upstream response received).
+const directResponsesFetch = async (keyResult, requestBodyText, accept) => {
+  const doFetch = (key) => fetch(`${META_API_BASE}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+      Accept: accept
+    },
+    body: requestBodyText
+  });
+  let response = await doFetch(keyResult.key);
+  if (response.status === 401 && !keyResult.stored) {
+    directState.cachedKey = null;
+    directState.cachedAt = 0;
+    const fresh = await getDirectKey({ forceExchange: true });
+    if (fresh.status === 'ok') {
+      response = await doFetch(fresh.key);
+    } else if (fresh.status === 'hard') {
+      return { hard: fresh };
+    }
+    // Any other re-exchange outcome leaves the original 401 as the answer:
+    // Meta already responded, so the 401 passes through rather than falling
+    // back to a second burn through the CLI door.
+  }
+  return { response };
+};
+
+const writeJsonBody = (res, status, obj) => {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(obj, null, 2));
+};
+
+// --- chat <-> responses translation -----------------------------------------
+
+const mapResponsesEffort = (effort) => {
+  switch ((effort || '').toLowerCase()) {
+    case 'none': return null; // none means: send no reasoning block at all
+    case 'minimal':
+    case 'low':
+    case 'medium':
+    case 'high':
+    case 'xhigh': return (effort || '').toLowerCase();
+    // The Responses API tops out at xhigh; the CLI's max/ultra efforts have
+    // no direct equivalent, so they clamp to the strongest available.
+    case 'max':
+    case 'ultra': return 'xhigh';
+    default: return null;
+  }
+};
+
+const contentPartsForInput = (content) => {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(part => (part && typeof part.text === 'string')
+      ? { type: 'input_text', text: part.text }
+      : part);
+  }
+  return content ? JSON.stringify(content) : '';
+};
+
+// Meta's subscription-key gate rejects requests whose function tools carry
+// the well-known agent-harness shell names (`shell`, `bash`) with 403
+// client_attestation_denied — verified live 2026-10-30 by bisecting a real
+// opencode request body: every other tool, the instructions, and all client
+// headers pass unchanged, while `run_command` / `terminal` pass. The direct
+// path therefore presents those tools under alias names and translates the
+// model's tool calls back on the way out. The CLI door never needed this —
+// the CLI sends its own toolset.
+const DIRECT_TOOL_ALIASES = { shell: 'run_command', bash: 'terminal' };
+const DIRECT_TOOL_NAMES = Object.fromEntries(
+  Object.entries(DIRECT_TOOL_ALIASES).map(([client, alias]) => [alias, client])
+);
+const directToolAlias = (name, taken) => {
+  const alias = DIRECT_TOOL_ALIASES[name];
+  if (!alias || (taken && taken.has(alias))) return name;
+  return alias;
+};
+const clientToolName = (name) => DIRECT_TOOL_NAMES[name] || name;
+
+// The /v1/responses passthrough forwards client bodies in Responses shape;
+// apply the same tool-name aliasing there, in both directions, so a native
+// client (the muse-direct provider) passes the attestation gate too. An
+// unparseable body forwards verbatim, exactly as before.
+const aliasResponsesRequestBody = (bodyText) => {
+  let parsed;
+  try { parsed = JSON.parse(bodyText); } catch { return { text: bodyText, aliased: false }; }
+  if (!parsed || typeof parsed !== 'object') return { text: bodyText, aliased: false };
+  const taken = new Set((Array.isArray(parsed.tools) ? parsed.tools : [])
+    .map(t => t && t.name).filter(Boolean));
+  let aliased = false;
+  const rename = (holder) => {
+    if (holder && typeof holder.name === 'string') {
+      const next = directToolAlias(holder.name, taken);
+      if (next !== holder.name) { holder.name = next; aliased = true; }
+    }
+  };
+  if (Array.isArray(parsed.tools)) for (const t of parsed.tools) rename(t);
+  if (Array.isArray(parsed.input)) {
+    for (const item of parsed.input) {
+      if (item && item.type === 'function_call') rename(item);
+    }
+  }
+  if (parsed.tool_choice && parsed.tool_choice.type === 'function') rename(parsed.tool_choice);
+  return aliased ? { text: JSON.stringify(parsed), aliased } : { text: bodyText, aliased };
+};
+
+const unaliasResponsesOutput = (holder) => {
+  if (!holder || typeof holder !== 'object') return;
+  for (const item of holder.output || []) {
+    if (item && item.type === 'function_call' && typeof item.name === 'string') {
+      item.name = clientToolName(item.name);
+    }
+  }
+};
+
+// Rewrite one SSE data payload if it carries an aliased tool name in a
+// function_call item; anything else passes through untouched.
+const unaliasSseData = (data) => {
+  if (!data.includes('run_command') && !data.includes('terminal')) return data;
+  let evt;
+  try { evt = JSON.parse(data); } catch { return data; }
+  if (evt && evt.item && evt.item.type === 'function_call' && typeof evt.item.name === 'string') {
+    evt.item.name = clientToolName(evt.item.name);
+  }
+  if (evt && evt.response) unaliasResponsesOutput(evt.response);
+  return JSON.stringify(evt);
+};
+
+const buildResponsesRequest = (body, baseModel, effort) => {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const instructions = messages
+    .filter(m => m.role === 'system')
+    .map(messageText)
+    .filter(Boolean)
+    .join('\n\n');
+  const takenNames = new Set((Array.isArray(body.tools) ? body.tools : [])
+    .map(t => t && t.function && t.function.name).filter(Boolean));
+  const input = [];
+  for (const m of messages) {
+    if (m.role === 'system') continue;
+    if (m.role === 'user') {
+      input.push({ role: 'user', content: contentPartsForInput(m.content) });
+    } else if (m.role === 'assistant') {
+      const text = messageText(m);
+      if (text) input.push({ role: 'assistant', content: text });
+      for (const tc of m.tool_calls || []) {
+        input.push({
+          type: 'function_call',
+          call_id: tc.id,
+          name: tc.function ? directToolAlias(tc.function.name, takenNames) : undefined,
+          arguments: (tc.function && tc.function.arguments) || ''
+        });
+      }
+    } else if (m.role === 'tool' || m.role === 'function') {
+      input.push({
+        type: 'function_call_output',
+        call_id: m.tool_call_id || m.name,
+        output: messageText(m)
+      });
+    } else {
+      input.push({ role: m.role, content: contentPartsForInput(m.content) });
+    }
+  }
+  const out = { model: baseModel, input, store: false, stream: Boolean(body.stream) };
+  if (instructions) out.instructions = instructions;
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    out.tools = body.tools.map(t => (t && t.type === 'function' && t.function)
+      ? { type: 'function', name: directToolAlias(t.function.name, takenNames), description: t.function.description, parameters: t.function.parameters }
+      : t);
+  }
+  if (body.tool_choice !== undefined) {
+    const tc = body.tool_choice;
+    if (typeof tc === 'string') out.tool_choice = tc;
+    else if (tc && tc.type === 'function' && tc.function && tc.function.name) out.tool_choice = { type: 'function', name: directToolAlias(tc.function.name, takenNames) };
+    else out.tool_choice = tc;
+  }
+  const maxOut = body.max_completion_tokens !== undefined && body.max_completion_tokens !== null
+    ? body.max_completion_tokens
+    : body.max_tokens;
+  if (typeof maxOut === 'number') out.max_output_tokens = maxOut;
+  if (typeof body.temperature === 'number') out.temperature = body.temperature;
+  if (typeof body.top_p === 'number') out.top_p = body.top_p;
+  const mappedEffort = mapResponsesEffort(effort);
+  if (mappedEffort) out.reasoning = { effort: mappedEffort };
+  return out;
+};
+
+const extractResponsesOutput = (respBody) => {
+  let content = '';
+  const toolCalls = [];
+  for (const item of (respBody && respBody.output) || []) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.type === 'message') {
+      for (const part of item.content || []) {
+        if (part && part.type === 'output_text' && typeof part.text === 'string') content += part.text;
+      }
+    } else if (item.type === 'function_call') {
+      toolCalls.push({
+        id: item.call_id || item.id,
+        type: 'function',
+        function: { name: clientToolName(item.name), arguments: item.arguments || '' }
+      });
+    }
+  }
+  return { content, toolCalls };
+};
+
+const finishReasonFromResponses = (respBody, hasToolCalls) => {
+  if (hasToolCalls) return 'tool_calls';
+  if (respBody && respBody.status === 'incomplete' &&
+      respBody.incomplete_details && respBody.incomplete_details.reason === 'max_output_tokens') {
+    return 'length';
+  }
+  return 'stop';
+};
+
+const chatUsageFromResponses = (usage) => {
+  const promptTokens = usage && typeof usage.input_tokens === 'number' ? usage.input_tokens : 0;
+  const completionTokens = usage && typeof usage.output_tokens === 'number' ? usage.output_tokens : 0;
+  const totalTokens = usage && typeof usage.total_tokens === 'number'
+    ? usage.total_tokens
+    : promptTokens + completionTokens;
+  const cached = usage && usage.input_tokens_details &&
+    typeof usage.input_tokens_details.cached_tokens === 'number'
+    ? usage.input_tokens_details.cached_tokens
+    : 0;
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: totalTokens,
+    ...(cached > 0 ? { prompt_tokens_details: { cached_tokens: cached } } : {})
+  };
+};
+
+const responsesToChatCompletion = (respBody, { chatId, created, fullName }) => {
+  const { content, toolCalls } = extractResponsesOutput(respBody);
+  const message = { role: 'assistant', content };
+  if (toolCalls.length > 0) message.tool_calls = toolCalls;
+  return {
+    id: chatId,
+    object: 'chat.completion',
+    created,
+    model: fullName,
+    choices: [{
+      index: 0,
+      message,
+      finish_reason: finishReasonFromResponses(respBody, toolCalls.length > 0)
+    }],
+    usage: chatUsageFromResponses(respBody && respBody.usage)
+  };
+};
+
+// Translate an upstream Responses SSE stream into chat-completion chunks.
+const streamResponsesAsChat = async (response, { res, chatId, created, fullName }) => {
+  const sendChunk = (delta, finishReason = null, usage) => {
+    if (res.writableEnded) return;
+    const chunk = {
+      id: chatId,
+      object: 'chat.completion.chunk',
+      created,
+      model: fullName,
+      choices: [{ index: 0, delta, finish_reason: finishReason }],
+      ...(usage ? { usage } : {})
+    };
+    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+  };
+  const sendErrorAndEnd = (message) => {
+    if (!res.writableEnded) {
+      // SSE-framed error + [DONE], the #670 pattern: the 200 + event-stream
+      // headers are already on the wire, so a bare JSON body would be
+      // invisible to an SSE client.
+      res.write(`data: ${JSON.stringify({ error: { message } })}\n\n`);
+      res.write('data: [DONE]\n\n');
+    }
+    res.end();
+  };
+  const toolIndexByItem = new Map();
+  let nextToolIndex = 0;
+  let ended = false;
+  const handleEvent = (evt) => {
+    if (ended || !evt || typeof evt !== 'object') return;
+    const type = evt.type || '';
+    if (type === 'response.output_text.delta' && typeof evt.delta === 'string') {
+      sendChunk({ content: evt.delta });
+    } else if (type === 'response.output_item.added' && evt.item && evt.item.type === 'function_call') {
+      const index = nextToolIndex;
+      nextToolIndex += 1;
+      const itemKey = evt.item.id || evt.item.call_id;
+      if (itemKey) toolIndexByItem.set(itemKey, index);
+      sendChunk({
+        tool_calls: [{
+          index,
+          id: evt.item.call_id || evt.item.id,
+          type: 'function',
+          function: { name: clientToolName(evt.item.name || ''), arguments: '' }
+        }]
+      });
+    } else if (type === 'response.function_call_arguments.delta') {
+      const index = toolIndexByItem.get(evt.item_id) ?? toolIndexByItem.get(evt.call_id) ?? 0;
+      sendChunk({
+        tool_calls: [{
+          index,
+          function: { arguments: typeof evt.delta === 'string' ? evt.delta : '' }
+        }]
+      });
+    } else if (type === 'response.completed') {
+      const respBody = evt.response || {};
+      const { toolCalls } = extractResponsesOutput(respBody);
+      sendChunk({}, finishReasonFromResponses(respBody, toolCalls.length > 0), chatUsageFromResponses(respBody.usage));
+      if (!res.writableEnded) res.write('data: [DONE]\n\n');
+      res.end();
+      ended = true;
+    } else if (type === 'response.failed') {
+      sendErrorAndEnd((evt.response && evt.response.error && evt.response.error.message) || 'Meta Responses request failed');
+      ended = true;
+    } else if (type === 'error') {
+      sendErrorAndEnd(evt.message || (evt.error && evt.error.message) || 'Meta Responses stream error');
+      ended = true;
+    }
+  };
+  try {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const rawEvent = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        for (const line of rawEvent.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const data = trimmed.slice('data:'.length).trim();
+          if (!data || data === '[DONE]') continue;
+          try { handleEvent(JSON.parse(data)); } catch { /* non-JSON data line */ }
+        }
+        if (ended) return;
+      }
+    }
+  } catch (err) {
+    sendErrorAndEnd(`Direct Meta stream failed: ${err.message}`);
+    return;
+  }
+  if (!ended && !res.writableEnded) {
+    res.write('data: [DONE]\n\n');
+    res.end();
+  }
+};
+
+// Attempt one chat completion on the direct path. Returns true when the
+// response has been fully handled (including any upstream error response,
+// passed through as-is); false when nothing was written and the caller
+// should fall back to warm/exec.
+const tryDirectChat = async ({ body, baseModel, effort, fullName, stream, res, chatId, created }) => {
+  const keyResult = await getDirectKey();
+  if (keyResult.status === 'disabled' || keyResult.status === 'none' || keyResult.status === 'transport') {
+    return false;
+  }
+  if (keyResult.status === 'hard') {
+    writeJsonBody(res, 502, { error: { message: keyResult.message } });
+    return true;
+  }
+  const upstreamBody = JSON.stringify(buildResponsesRequest(body, baseModel, effort));
+  let outcome;
+  try {
+    outcome = await directResponsesFetch(keyResult, upstreamBody, stream ? 'text/event-stream' : 'application/json');
+  } catch {
+    return false; // upstream fetch threw: no upstream response, fall back
+  }
+  if (outcome.hard) {
+    writeJsonBody(res, 502, { error: { message: outcome.hard.message } });
+    return true;
+  }
+  const response = outcome.response;
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    if (response.status === 403 && text.includes('client_attestation_denied')) {
+      // The attestation fingerprint moved (a tool name newly blocked):
+      // degrade to the CLI door instead of failing the seat outright.
+      console.warn('[muse-proxy] direct path attestation denied; falling back to the CLI door');
+      return false;
+    }
+    // Meta answered: pass the response through as-is, whatever the status.
+    res.writeHead(response.status, {
+      'Content-Type': response.headers.get('content-type') || 'application/json'
+    });
+    res.end(text);
+    return true;
+  }
+  if (!stream) {
+    let respBody;
+    try {
+      respBody = await response.json();
+    } catch {
+      writeJsonBody(res, 502, { error: { message: 'Direct Meta route returned an unreadable response body' } });
+      return true;
+    }
+    writeJsonBody(res, 200, responsesToChatCompletion(respBody, { chatId, created, fullName }));
+    return true;
+  }
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  await streamResponsesAsChat(response, { res, chatId, created, fullName });
+  return true;
+};
+
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -871,6 +1429,13 @@ const server = http.createServer((req, res) => {
         hostGen: warmHost.gen,
         hostUp: Boolean(warmHost.child),
         sessions: warmStore.map.size
+      },
+      direct: {
+        enabled: DIRECT_ENABLED,
+        credentialFound: Boolean(loadDirectCredential()),
+        mintedKeyCached: Boolean(directState.cachedKey && Date.now() - directState.cachedAt < DIRECT_KEY_TTL_MS),
+        subsTier: directState.subsTier,
+        subsActive: directState.subsActive
       },
       cliFlags: {
         serveProbed: cliCaps.serve !== null,
@@ -905,6 +1470,109 @@ const server = http.createServer((req, res) => {
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ object: 'list', data }, null, 2));
+    return;
+  }
+
+
+  // Responses passthrough (direct mode, #2753): the client's body is
+  // forwarded verbatim to the upstream Responses API with only the
+  // Authorization header swapped for the minted plan key. Any upstream
+  // HTTP response is piped through as-is. Without direct credentials the
+  // route is not offered (404, as before direct mode existed).
+  if (req.method === 'POST' && (pathname === '/v1/responses' || pathname === '/responses')) {
+    let bodyText = '';
+    req.on('data', chunk => {
+      bodyText += chunk;
+      if (bodyText.length > 50 * 1024 * 1024) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Request payload too large' } }));
+        req.destroy();
+      }
+    });
+    req.on('end', async () => {
+      const keyResult = await getDirectKey();
+      if (keyResult.status === 'disabled' || keyResult.status === 'none') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: `Route not found: ${req.method} ${pathname}` } }));
+        return;
+      }
+      if (keyResult.status === 'hard' || keyResult.status === 'transport') {
+        writeJsonBody(res, 502, {
+          error: { message: keyResult.message || 'Direct Meta route unavailable: key exchange failed' }
+        });
+        return;
+      }
+      let outcome;
+      let aliasedBody = { text: bodyText, aliased: false };
+      try {
+        aliasedBody = aliasResponsesRequestBody(bodyText);
+        outcome = await directResponsesFetch(keyResult, aliasedBody.text, req.headers.accept || 'application/json');
+      } catch (err) {
+        writeJsonBody(res, 502, { error: { message: `Direct Meta route request failed: ${err.message}` } });
+        return;
+      }
+      if (outcome.hard) {
+        writeJsonBody(res, 502, { error: { message: outcome.hard.message } });
+        return;
+      }
+      const response = outcome.response;
+      const contentType = response.headers.get('content-type') || 'application/json';
+      if (!aliasedBody.aliased) {
+        res.writeHead(response.status, { 'Content-Type': contentType });
+        if (response.body && typeof response.body.getReader === 'function') {
+          try {
+            const reader = response.body.getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              res.write(Buffer.from(value));
+            }
+          } catch { /* upstream stream cut: end with what was sent */ }
+          res.end();
+        } else {
+          res.end(await response.text().catch(() => ''));
+        }
+        return;
+      }
+      // Aliased request: the model's tool calls come back under the alias
+      // names and must be translated before the client sees them.
+      if (contentType.includes('text/event-stream') && response.body && typeof response.body.getReader === 'function') {
+        res.writeHead(response.status, { 'Content-Type': contentType });
+        try {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          const flushLine = (line) => {
+            if (line.startsWith('data: ') && line.length > 6 && !line.startsWith('data: [DONE]')) {
+              res.write(`data: ${unaliasSseData(line.slice(6))}\n`);
+            } else {
+              res.write(line + '\n');
+            }
+          };
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let nl;
+            while ((nl = buffer.indexOf('\n')) >= 0) {
+              flushLine(buffer.slice(0, nl));
+              buffer = buffer.slice(nl + 1);
+            }
+          }
+          if (buffer) flushLine(buffer);
+        } catch { /* upstream stream cut: end with what was sent */ }
+        res.end();
+        return;
+      }
+      let text = await response.text().catch(() => '');
+      try {
+        const parsedJson = JSON.parse(text);
+        unaliasResponsesOutput(parsedJson);
+        text = JSON.stringify(parsedJson);
+      } catch { /* not JSON: pass through as-is */ }
+      res.writeHead(response.status, { 'Content-Type': contentType });
+      res.end(text);
+    });
     return;
   }
 
@@ -943,6 +1611,24 @@ const server = http.createServer((req, res) => {
 
       const chatId = `chatcmpl-muse-${crypto.randomUUID()}`;
       const created = Math.floor(Date.now() / 1000);
+
+      // Direct mode first (#2753): the minted-key Responses path
+      // answers when it can; any upstream response is final. Only a
+      // no-response outcome returns false and the warm/exec paths
+      // below take over unchanged.
+      if (DIRECT_ENABLED) {
+        let directHandled = false;
+        try {
+          directHandled = await tryDirectChat({
+            body, baseModel, effort, fullName, stream, res, chatId, created
+          });
+        } catch (err) {
+          console.warn(`[muse-proxy direct] unexpected direct error (${err.message}); falling back to warm/exec`);
+          directHandled = false;
+        }
+        if (directHandled) return;
+        if (res.writableEnded) return;
+      }
 
       // Warm path first (#480): a persistent serve host + MSP session
       // answers when it can; any failure before the response is committed

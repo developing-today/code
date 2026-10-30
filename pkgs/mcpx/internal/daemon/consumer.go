@@ -17,6 +17,7 @@ import (
 	"github.com/dezren39/mcpx/internal/elicit"
 	"github.com/dezren39/mcpx/internal/events"
 	"github.com/dezren39/mcpx/internal/mcpclient"
+	"github.com/dezren39/mcpx/internal/model"
 	"github.com/dezren39/mcpx/internal/pool"
 	"github.com/dezren39/mcpx/internal/recipes"
 	"github.com/dezren39/mcpx/internal/runner"
@@ -47,6 +48,12 @@ type ConsumerPolicy struct {
 	PromptSampleTimeout time.Duration
 	PromptMaxTokens     int
 	RunTimeout          time.Duration
+	ModelProvider       string
+	ModelBaseURL        string
+	ModelAPIKeyEnv      string
+	ModelDefault        string
+	ModelBudget         int
+	ModelTimeout        time.Duration
 }
 
 // consumerState is everything the consumer routes need that the daemon did
@@ -129,6 +136,12 @@ func consumerPolicyFrom(set *settings.Set) ConsumerPolicy {
 	p.PromptSampleTimeout = set.Duration("prompt.sampleTimeout")
 	p.PromptMaxTokens = set.Int("prompt.maxTokens")
 	p.RunTimeout = set.Duration("prompt.runTimeout")
+	p.ModelProvider = set.String("model.provider")
+	p.ModelBaseURL = set.String("model.baseURL")
+	p.ModelAPIKeyEnv = set.String("model.apiKeyEnv")
+	p.ModelDefault = set.String("model.default")
+	p.ModelBudget = set.Int("model.budget")
+	p.ModelTimeout = set.Duration("model.timeout")
 	return p
 }
 
@@ -404,7 +417,7 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 			break
 		}
 	}
-	if found == nil || !destructiveHint(found.Annotations) {
+	if found == nil || annotationClearsCall(p, found) {
 		return nil
 	}
 	path := p.Namespace() + "." + tool
@@ -412,7 +425,7 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 		Server:  p.Name(),
 		Tool:    tool,
 		Session: cc.SessionID,
-		Message: fmt.Sprintf("%s.%s may be destructive: its server does not mark it read-only or non-destructive. Let this call proceed?",
+		Message: fmt.Sprintf("%s.%s may be destructive: no trusted annotation clears this call. Let this call proceed?",
 			p.Namespace(), tool),
 		Default: "false",
 		TTL:     r.consumer.AskTimeout,
@@ -434,6 +447,28 @@ func (r *Registry) confirmDestructive(ctx context.Context, p *pool.Pool, tool st
 		return ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action)}
 	}
 	return nil
+}
+
+// annotationClearsCall reports whether a tool's annotations may clear
+// its call without asking. Tool annotations are hints, not decisions
+// (#2191): the specification forbids basing a security decision on
+// annotations from an untrusted server, and mcpx establishes trust in
+// exactly one way today -- the server is one the user declared locally,
+// a stdio command from their own configuration, whose annotations are
+// part of the interface they chose to run. A remote upstream's
+// readOnlyHint or destructiveHint:false is worth nothing here: a lying
+// or compromised server could suppress every confirmation by claiming
+// its tools are harmless, so for a remote server the annotation can
+// never be the deciding input and the call is confirmed when in doubt.
+func annotationClearsCall(p *pool.Pool, found *mcpclient.Tool) bool {
+	if p == nil || found == nil {
+		return false
+	}
+	cfg := p.Config()
+	if cfg == nil || !cfg.Stdio() {
+		return false
+	}
+	return !destructiveHint(found.Annotations)
 }
 
 // destructiveHint reads the one annotation mcpx acts on, with the
@@ -670,7 +705,19 @@ func (s *Server) resolveProviderFor(provider, model string) scripting.Provider {
 		callerProviderConfig(s.providerConfig(), provider, model), nil)
 }
 
-func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Provider, model string) (string, string, error) {
+// model is the caller's EXPLICIT model only; the daemon's own defaults
+// are applied per-path below (model.default for the model layer,
+// repair.model for the legacy provider's label), never by the caller
+// pre-filling one path's default into the other (Codex review, PR #2592).
+// session is the intent session, propagated to sampling questions so an
+// answerer polling /v1/elicit?session=<session> can see them.
+// explicitProvider is the provider the caller named on THIS request
+// (empty for none): the caller-over-daemon contract Client.Intent
+// documents -- an explicit choice is the generation provider, and the
+// daemon's model layer applies only when no override was supplied.
+// Letting the layer take precedence sent a request's Claude model id
+// to the configured OpenAI endpoint (Codex review, PR #2592).
+func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Provider, model string, session string, explicitProvider string) (string, string, error) {
 	nss, err := s.reg.CodegenNamespaces(nil, config.Profile{All: true})
 	if err != nil {
 		return "", "", err
@@ -685,6 +732,31 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 		"returning the result. Answer with the program only, no prose and no " +
 		"code fences.\n\n" + slice
 
+	// The model layer (#1925) is the path when one is configured: the
+	// caller resolved model.* through the settings registry, and a
+	// provider error here is errNoModel like any other, so the intent
+	// route falls back to its deterministic answer -- the ranked recipes
+	// plus the note that no model answered -- which is the scope guard's
+	// required shape. With model.provider at its default (none) this
+	// whole branch is skipped and generation behaves as it always has.
+	mp, merr := s.modelLayerWanted(ctx, session, explicitProvider == "")
+	if merr != nil {
+		// Finding (Codex, PR #2592): a model layer that was configured
+		// but cannot resolve (model.provider=plugin, sampling with no
+		// path) must NOT fall through to the legacy repair provider --
+		// that would silently spend a different provider (an auto-
+		// discovered CLI, an env key) the user did not select, possibly
+		// against prompt.sample=never. Resolution failure is the
+		// deterministic no-model outcome, exactly like a provider error.
+		if s.logger != nil {
+			s.logger.Printf("model layer: %v; generation falls back to the deterministic answer", merr)
+		}
+		return "", "", errNoModel
+	}
+	if mp != nil {
+		return s.generateViaModel(ctx, mp, system, prompt, model)
+	}
+
 	if prov == nil {
 		return "", "", errNoModel
 	}
@@ -698,6 +770,11 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 		return "", "", errNoModel
 	}
 	used := "provider:" + prov.Name()
+	if model == "" {
+		// The legacy path's own default: the daemon's repair.model.
+		// (The model layer never sees this value; see generateViaModel.)
+		model = s.providerConfig().Model
+	}
 	if model != "" {
 		used += "/" + model
 	}
@@ -708,6 +785,256 @@ func (s *Server) generate(ctx context.Context, prompt string, prov scripting.Pro
 // and generation no longer falls back to an MCP sampling request
 // (sampling is deprecated in MCP 2026-07-28; #1961).
 var errNoModel = fmt.Errorf("no model provider answered")
+
+// modelLayer resolves the #1925 provider layer for this request from the
+// request's own policy. (nil, nil) means no layer applies -- model.provider
+// none or unset, or auto with nothing configured -- and the caller keeps
+// the behaviour it had before the layer existed. A non-nil error means a
+// provider WAS configured but cannot be built (plugin, sampling with no
+// path): the caller must surface that as no-model, never silently invoke
+// a different provider in its place (Codex review, PR #2592).
+// modelLayerWanted is modelLayer behind the caller's explicit-provider
+// choice: an intent request that named its own provider does not consult
+// the daemon's model layer at all.
+func (s *Server) modelLayerWanted(ctx context.Context, session string, wanted bool) (model.Provider, error) {
+	if !wanted {
+		return nil, nil
+	}
+	return s.modelLayer(ctx, session)
+}
+
+func (s *Server) modelLayer(ctx context.Context, session string) (model.Provider, error) {
+	pol := s.policyFor(ctx)
+	if pol.ModelProvider == "" || pol.ModelProvider == "none" {
+		return nil, nil
+	}
+	return model.Resolve(model.Config{
+		Provider:     pol.ModelProvider,
+		BaseURL:      pol.ModelBaseURL,
+		APIKeyEnv:    pol.ModelAPIKeyEnv,
+		DefaultModel: pol.ModelDefault,
+		Timeout:      pol.ModelTimeout,
+		Sampler:      s.brokerSampler(session),
+	})
+}
+
+// generateViaModel is generate's model-layer path: the same system prompt
+// and catalog slice, one Generate call, the layer's bounds applied --
+// model.budget caps the tokens asked for, model.default supplies the
+// model id when the caller named none.
+func (s *Server) generateViaModel(ctx context.Context, prov model.Provider, system, prompt, modelID string) (string, string, error) {
+	pol := s.policyFor(ctx)
+	if modelID == "" {
+		modelID = pol.ModelDefault
+	}
+	maxTokens := modelMaxTokens(pol.PromptMaxTokens, pol.ModelBudget)
+	resp, err := prov.Generate(ctx, model.Request{
+		Model:     modelID,
+		Messages:  []model.Message{{Role: "system", Content: system}, {Role: "user", Content: prompt}},
+		MaxTokens: maxTokens,
+	})
+	if err != nil || strings.TrimSpace(resp.Text) == "" {
+		return "", "", errNoModel
+	}
+	used := "provider:" + prov.Name()
+	answered := resp.Model
+	if answered == "" {
+		answered = model.ModelID(modelID)
+	}
+	if answered != "" {
+		used += "/" + answered
+	}
+	return stripFences(resp.Text), used, nil
+}
+
+// modelMaxTokens applies the model layer's token bounds to one call:
+// the per-call ask (prompt.maxTokens), capped by model.budget when one
+// is configured. A nonpositive per-call value is UNSET, never a value:
+// the OpenAI backend omits a nonpositive limit, which would leave the
+// endpoint's own limit in force and silently bypass a configured
+// budget ceiling (Codex review, PR #2592).
+func modelMaxTokens(perCall, budget int) int {
+	max := perCall
+	if max < 0 {
+		max = 0
+	}
+	if budget > 0 && (max == 0 || budget < max) {
+		max = budget
+	}
+	return max
+}
+
+// modelRepairProvider adapts the resolved model-layer backend to the
+// scripting.Provider shape Repair speaks, so a script the model layer
+// generated is repaired by the SAME backend -- under the layer's budget
+// -- and never by an independently resolved legacy provider the user
+// did not select for this generation: with prompt.sample=never and a
+// local model.baseURL, the old code sent the generated script and the
+// catalog to an auto-discovered provider on validation failure (Codex
+// review, PR #2592).
+type modelRepairProvider struct {
+	s       *Server
+	mp      model.Provider
+	modelID string
+}
+
+func (p modelRepairProvider) Name() string { return p.mp.Name() }
+
+func (p modelRepairProvider) Complete(ctx context.Context, req scripting.CompletionRequest) (string, error) {
+	pol := p.s.policyFor(ctx)
+	modelID := p.modelID
+	if modelID == "" {
+		modelID = pol.ModelDefault
+	}
+	resp, err := p.mp.Generate(ctx, model.Request{
+		Model: modelID,
+		Messages: []model.Message{
+			{Role: "system", Content: req.SystemPrompt},
+			{Role: "user", Content: req.UserPrompt},
+		},
+		MaxTokens: modelMaxTokens(req.MaxTokens, pol.ModelBudget),
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.Text, nil
+}
+
+// brokerSampler is the sampling backend's path into the elicitation
+// broker: a generation request becomes a sampling question for whatever
+// drives mcpx, in the CreateMessage shape answerers already know
+// (elicit.SampleAsk). Nobody answering within the deadline is an
+// unavailable provider, not a hang: the broker's expiry answer lands as
+// an error here and the caller falls back deterministically.
+func (s *Server) brokerSampler(session string) model.SampleFunc {
+	if s.reg == nil || s.reg.broker == nil {
+		return nil
+	}
+	broker := s.reg.broker
+	return func(ctx context.Context, req model.Request) (model.Response, error) {
+		params, err := samplingParams(req)
+		if err != nil {
+			return model.Response{}, err
+		}
+		ttl := s.policyFor(ctx).ModelTimeout
+		if ttl <= 0 {
+			ttl = defaults.PromptSampleTimeout
+		}
+		// Session is the intent session, so Broker.Pending's exact
+		// session filter can show this question to the answerer polling
+		// /v1/elicit?session=<session> for it (Codex, PR #2592).
+		question, err := broker.OpenRequest(elicit.SampleAsk(elicit.Ask{
+			Server:  "mcpx",
+			Session: session,
+			Message: "mcpx asks for a model completion (model.provider=sampling)",
+			TTL:     ttl,
+		}, params))
+		if err != nil {
+			return model.Response{}, err
+		}
+		// Publish the lifecycle before waiting, as the upstream
+		// sampling path does (hooks.go): a sample.opened hook is how
+		// an event-driven answerer learns there is a question to
+		// answer, so without this event model.provider=sampling
+		// requests time out unanswered even when a hook answerer is
+		// configured (Codex review, PR #2592).
+		s.reg.publish(events.Event{Kind: events.SampleOpened, Server: question.Server,
+			Data: mustJSON(elicitEventSummary(question))})
+		// model.timeout must bound the WAIT, not only the question's
+		// initial TTL: an answerer reading the question via
+		// /v1/elicit/{id} renews its expiry (Broker.Get touches), so a
+		// TTL alone can be extended toward elicit.maxAge by repeated
+		// reads. Await honours ctx, so the deadline goes on the ctx
+		// (Codex review, PR #2592).
+		awaitCtx, cancel := context.WithTimeout(ctx, ttl)
+		defer cancel()
+		ans, err := broker.Await(awaitCtx, question.ID)
+		if err != nil {
+			return model.Response{}, err
+		}
+		s.reg.publish(events.Event{Kind: events.SampleAnswered, Server: question.Server,
+			Data: mustJSON(elicitAnsweredSummary(question, ans))})
+		if ans.Action != elicit.Accept {
+			return model.Response{}, fmt.Errorf("model: sampling %s: %w", ans.Action, model.ErrUnavailable)
+		}
+		text, answered := parseSampleResult(ans.Content)
+		if strings.TrimSpace(text) == "" {
+			return model.Response{}, fmt.Errorf("model: sampling answered with no text: %w", model.ErrUnavailable)
+		}
+		return model.Response{Text: text, Model: answered, Provider: "sampling"}, nil
+	}
+}
+
+// samplingParams renders a model.Request as an MCP sampling
+// CreateMessageRequest, the shape the broker's answerers speak.
+func samplingParams(req model.Request) (json.RawMessage, error) {
+	var messages []map[string]any
+	var system string
+	for _, m := range req.Messages {
+		if m.Role == "system" {
+			system = m.Content
+			continue
+		}
+		role := m.Role
+		if role == "" {
+			role = "user"
+		}
+		messages = append(messages, map[string]any{
+			"role":    role,
+			"content": map[string]any{"type": "text", "text": m.Content},
+		})
+	}
+	doc := map[string]any{"messages": messages}
+	if system != "" {
+		doc["systemPrompt"] = system
+	}
+	if req.MaxTokens > 0 {
+		doc["maxTokens"] = req.MaxTokens
+	}
+	if len(req.Stop) > 0 {
+		doc["stopSequences"] = req.Stop
+	}
+	if id := model.ModelID(req.Model); id != "" {
+		doc["modelPreferences"] = map[string]any{
+			"hints": []map[string]any{{"name": id}},
+		}
+	}
+	return json.Marshal(doc)
+}
+
+// parseSampleResult extracts the text and the answering model from a
+// sampling CreateMessageResult. Content arrives as one block (the legacy
+// shape) or an array of blocks (2025-11-25); text blocks are concatenated.
+func parseSampleResult(raw json.RawMessage) (text, modelName string) {
+	var result struct {
+		Model   string          `json:"model"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &result) != nil {
+		return "", ""
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(result.Content, &blocks) == nil {
+		var parts []string
+		for _, b := range blocks {
+			if b.Type == "text" {
+				parts = append(parts, b.Text)
+			}
+		}
+		return strings.Join(parts, ""), result.Model
+	}
+	var one struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(result.Content, &one) == nil && one.Type == "text" {
+		return one.Text, result.Model
+	}
+	return "", result.Model
+}
 
 // stripFences removes a markdown code fence a model wrapped the answer in.
 //

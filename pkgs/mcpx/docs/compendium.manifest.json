@@ -649,6 +649,13 @@
       "note": "lessons learned while building mcpx: verification and diagnostics traps"
     },
     {
+      "path": "docs/SUMMARY.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 105,
+      "note": "mdBook navigation index for the .#mcpx-docs book (#1939 Approach C); the generator reads it, it is not a chapter"
+    },
+    {
       "path": "docs/testing.md",
       "chapter": "maintaining-these-docs",
       "role": "chapter-source",
@@ -661,6 +668,13 @@
       "role": "chapter-source",
       "lines": 123,
       "note": "the per-package test inventory the policy page points at (#1960 deliverable 1); was merged without a manifest entry, which this PR repairs"
+    },
+    {
+      "path": "docs/testing/feature-inventory.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 200,
+      "note": "the feature-to-integration-test inventory for #1978, enumerated from the registries on main; was merged without a manifest entry, which this PR repairs"
     },
     {
       "path": "internal/AGENTS.md",

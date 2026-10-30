@@ -184,6 +184,12 @@ mcpx-stop:
 mcpx-status:
     mcpx status
 
+# Print (or, with --run, execute) the mcpx tests a change affects — the
+# agent test tiers from code#1966 (policy: pkgs/mcpx/TESTING.md)
+[group('util')]
+mcpx-test-affected base="origin/main" *args:
+    python3 pkgs/mcpx/scripts/affected-tests.py --base {{base}} {{args}}
+
 # Recursively chown all files (including hidden) to current user:group (requires sudo)
 [group('util')]
 chown:

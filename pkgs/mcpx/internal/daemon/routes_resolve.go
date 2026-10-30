@@ -16,7 +16,7 @@ import (
 // caller that has nothing else: no mcpx binary, possibly not even a
 // filesystem view of the state directory, only a socket it already found.
 func (s *Server) routesResolve(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/resolve", s.handleResolve)
+	s.route(mux, "GET /v1/resolve", s.handleResolve)
 }
 
 // Resolution is the answer to "which daemon serves this directory".

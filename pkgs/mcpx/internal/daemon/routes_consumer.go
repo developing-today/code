@@ -25,13 +25,13 @@ import (
 // itself. Declared in internal/api/ops_consumer.go; a parity test fails if
 // the two disagree.
 func (s *Server) routesConsumer(mux *http.ServeMux) {
-	mux.HandleFunc("POST /v1/diagnose", s.handleDiagnose)
-	mux.HandleFunc("GET /v1/catalog/history", s.handleCatalogHistory)
-	mux.HandleFunc("GET /v1/recipes", s.handleRecipesList)
-	mux.HandleFunc("GET /v1/recipes/{name}", s.handleRecipeGet)
-	mux.HandleFunc("POST /v1/recipes/{name}", s.handleRecipeSave)
-	mux.HandleFunc("POST /v1/recipes/{name}/run", s.handleRecipeRun)
-	mux.HandleFunc("POST /v1/intent", s.handleIntent)
+	s.route(mux, "POST /v1/diagnose", s.handleDiagnose)
+	s.route(mux, "GET /v1/catalog/history", s.handleCatalogHistory)
+	s.route(mux, "GET /v1/recipes", s.handleRecipesList)
+	s.route(mux, "GET /v1/recipes/{name}", s.handleRecipeGet)
+	s.route(mux, "POST /v1/recipes/{name}", s.handleRecipeSave)
+	s.route(mux, "POST /v1/recipes/{name}/run", s.handleRecipeRun)
+	s.route(mux, "POST /v1/intent", s.handleIntent)
 }
 
 // ---- diagnostics ----
@@ -408,19 +408,30 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prov := s.resolveProviderFor(req.Provider, req.Model)
-	// The model actually used, for the Resolution: the caller's model
-	// when supplied, the daemon's configured one otherwise.
+	// The model handed to generation is the caller's EXPLICIT model
+	// only. Filling it from repair.model here (the old code) leaked the
+	// legacy repair default into the model layer, where it overrode
+	// model.default and could name a model the configured endpoint does
+	// not serve (Codex review, PR #2592). Each generation path applies
+	// its own default: generateViaModel uses model.default, the legacy
+	// path labels with repair.model.
 	model := req.Model
-	if model == "" {
-		model = s.providerConfig().Model
-	}
 	// prompt.sample is whether mcpx may ask a model at all. A CLI found on
 	// this machine is not permission to ask one, so only "ask" lifts the
 	// default; without it a host with opencode installed paid for a model
 	// call on every unmatched prompt. A caller naming a provider or model
 	// on this request has asked, for this request.
-	asked := pol.PromptSample == "ask" || req.Provider != "" || req.Model != ""
-	if !asked || prov == nil {
+	asked := pol.PromptSample == "ask" || req.Provider != "" || req.Model != "" ||
+		(pol.ModelProvider != "" && pol.ModelProvider != "none")
+	// The legacy guard must not gate the model layer: a request whose
+	// only provider is model.provider (#1925) has prov == nil here
+	// whenever no legacy repair provider, recognised env credential, or
+	// harness CLI exists, and returning now would mean the configured
+	// model-layer backend is never called (Codex P1, PR #2592). The
+	// layer's availability is judged by its own settings; if it was
+	// configured but cannot resolve, generate answers errNoModel.
+	layerSet := pol.ModelProvider != "" && pol.ModelProvider != "none"
+	if !asked || (prov == nil && !layerSet) {
 		out.Model = "none"
 		if !asked {
 			out.Message = "no recipe matched, and generating one is off " +
@@ -428,8 +439,8 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 				"The ranked recipes above are everything mcpx can offer deterministically."
 		} else {
 			out.Message = "no recipe matched, and no model provider is " +
-				"available: mcpx has no model of its own, and neither the " +
-				"daemon's repair.provider settings nor this request's " +
+				"available: neither the model.provider settings (#1925), " +
+				"the daemon's repair.provider settings, nor this request's " +
 				"provider/model named a usable one. " +
 				"The ranked recipes above are everything mcpx can offer deterministically."
 		}
@@ -437,13 +448,14 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	source, used, err := s.generate(r.Context(), req.Prompt, prov, model)
+	source, used, err := s.generate(r.Context(), req.Prompt, prov, model, req.Session, req.Provider)
 	if err != nil {
 		out.Model = "none"
 		out.Message = "no recipe matched, and no model answered. " +
-			"mcpx has no model of its own: generation needs a provider " +
-			"-- the daemon's repair.provider/repair.model settings, or " +
-			"this request's provider/model -- to answer. The ranked " +
+			"Generation needs a provider -- the model.* settings " +
+			"(#1925), the daemon's repair.provider/repair.model " +
+			"settings, or this request's provider/model -- to answer, " +
+			"and the one configured was unavailable. The ranked " +
 			"recipes above are everything mcpx can offer without one."
 		writeJSON(w, 200, out)
 		return
@@ -455,8 +467,22 @@ func (s *Server) handleIntent(w http.ResponseWriter, r *http.Request) {
 	cat := s.reg.DiagnoseCatalog()
 	val := scripting.Validate(source, &cat)
 	out.Diagnostics = nonNilDiagnostics(val.Diagnostics)
-	if val.HasFatal() && prov != nil {
-		if rep, rerr := scripting.Repair(r.Context(), source, nil, val.Diagnostics, &cat, prov); rerr == nil && rep != nil {
+	// Repair goes to the provider that GENERATED the script. When the
+	// model layer generated it (configured, and no explicit provider on
+	// this request), that is the layer's own backend, adapted -- never
+	// the independently resolved legacy prov, which may be a provider
+	// the user did not select at all (Codex review, PR #2592). A layer
+	// that no longer resolves means no repair, not a different provider.
+	repairProv := prov
+	if req.Provider == "" && layerSet {
+		if mp, merr := s.modelLayer(r.Context(), req.Session); merr != nil {
+			repairProv = nil
+		} else if mp != nil {
+			repairProv = modelRepairProvider{s: s, mp: mp, modelID: model}
+		}
+	}
+	if val.HasFatal() && repairProv != nil {
+		if rep, rerr := scripting.Repair(r.Context(), source, nil, val.Diagnostics, &cat, repairProv); rerr == nil && rep != nil {
 			out.Source = rep.RepairedSource
 			source = rep.RepairedSource
 			out.Diagnostics = nonNilDiagnostics(rep.Validation.Diagnostics)

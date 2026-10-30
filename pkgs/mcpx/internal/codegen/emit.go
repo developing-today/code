@@ -1356,6 +1356,7 @@ export async function batch(
       "x-mcpx-cwd": env("MCPX_CWD"),
       "x-mcpx-pid": env("MCPX_PID"),
       "x-mcpx-parent-session": env("MCPX_PARENT_SESSION_ID"),
+      "x-mcpx-run": env("MCPX_RUN"),
     },
     body: JSON.stringify({
       calls: calls.map((c) => ({

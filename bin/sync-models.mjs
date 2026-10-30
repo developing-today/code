@@ -444,7 +444,8 @@ async function run() {
   // file keeps its comments and formatting.
   const edits = [];
 
-  // 1. Sync antigravity-agy & antigravity-ls
+  // 1. Sync antigravity-direct (the CLI-wire door; antigravity-agy &
+  // antigravity-ls retired 2026-10-30 — see home/common/default.nix)
   if (agyModels.length > 0) {
     // Write local cache for proxies
     if (!DRY_RUN) {
@@ -491,7 +492,7 @@ async function run() {
       return { context: 1048576, output: 65536 };
     };
 
-    for (const targetProvider of ['antigravity-agy', 'antigravity-ls']) {
+    for (const targetProvider of ['antigravity-direct']) {
       if (!config.provider[targetProvider]) continue;
       const prov = config.provider[targetProvider];
       prov.models = prov.models || {};
@@ -521,7 +522,7 @@ async function run() {
         }
 
         const modelEntry = {
-          name: `${info.name} (${targetProvider === 'antigravity-ls' ? 'Direct LS' : 'agy'})`,
+          name: `${info.name} (${targetProvider === 'antigravity-ls' ? 'Direct LS' : targetProvider === 'antigravity-agy' ? 'agy' : 'direct'})`,
           limit: limits
         };
         if (Object.keys(variants).length > 0) {

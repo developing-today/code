@@ -62,9 +62,34 @@ A flake is a bug in the test or the code under it; a retry hides it.
 - When you find one: fix it. If you cannot yet, quarantine it with a skip that
   names the issue and an expiry date, and file the issue. A quarantine without
   an owner and a date is a silent retry with extra steps.
-- CI is Linux only; a macOS-only difference is a flake source CI cannot see
-  (#35). Say so in the PR when the change is platform-sensitive.
+- CI's PR gate is Linux only; the nightly stress job below also runs macOS,
+  so a macOS-only difference surfaces within a day (#35). Say so in the PR
+  when the change is platform-sensitive.
 (Decided in #1973.)
+
+### The flake policy in CI (#1973, approach C)
+
+Implemented in `.github/workflows/mcpx.yml`; detection happens by repetition
+off the critical path, never by retrying a failure away:
+
+- **Per PR** — the `stress-pr` job runs the packages the PR changed with
+  `-race`, a deterministic `-shuffle=<seed>` (derived from the workflow run
+  identity and printed in the job log, so a failing order reproduces with
+  the same seed; never `-shuffle=on` in CI), `-count=10` for unit packages
+  and `-count=3` for `internal/e2e`. It runs in parallel with the main test
+  job and is not a required check.
+- **Nightly** — the `stress-nightly` job runs the whole suite with
+  `-race -shuffle=<seed> -count=3` on `ubuntu-latest` **and** `macos-latest`.
+  On failure it opens or updates the single "mcpx nightly stress failure"
+  issue; it never blocks a PR.
+- **Fix first.** A flake the stress jobs surface is a bug: fix it. Only when
+  a fix genuinely cannot land yet, quarantine the test with
+  `testsupport.Quarantine(t, "<issue URL>", "YYYY-MM-DD")` from
+  `internal/testsupport` — it skips until the expiry date and **fails**
+  after it, and the guard test in that package fails the suite on any
+  quarantine call missing an issue link or past its expiry.
+- **No hiding retries anywhere:** no `--rerun-fails`, no re-run-until-green
+  merge path. A retry that turns a flake green destroys the evidence.
 
 ## Reproducing a CI failure
 

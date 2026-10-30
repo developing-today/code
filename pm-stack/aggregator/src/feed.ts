@@ -5,6 +5,7 @@
 // a stale feed keeps rendering with its age stated in provenance.
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
+import { isProjectPoolItem } from "./projects.ts";
 import type {
   AaFeedSection,
   ChargeRow,
@@ -202,6 +203,42 @@ export function normalizeOrchestrationSection(v: unknown): OrchestrationSection 
   const s = v as OrchestrationSection & { provenance: OrchestrationProvenance | string };
   if (typeof s.provenance !== "string") return s;
   return { ...s, provenance: { sources: [s.provenance] } };
+}
+
+/**
+ * The first structural problem in a feed's GitHub Project pool section
+ * (#2399, part 1 of #1122) — or null when the section is valid. The
+ * per-item rule is isProjectPoolItem, the same predicate the collector
+ * parses against and the live source filters with, so the feed check
+ * and the collector can never drift: edge fields (parentRef,
+ * blockedBy, blocks, epicRef) are absence-friendly but shape-strict
+ * when present. A present-but-invalid section must be diagnosable, not
+ * silently "absent" (#1140) — but a single malformed item still only
+ * drops that item (see poolFromFeed), never the pool.
+ */
+export function projectPoolSectionProblem(v: unknown): string | null {
+  if (v === undefined) return null;
+  if (!Array.isArray(v)) return "not an array";
+  for (let i = 0; i < v.length; i++) {
+    if (!isProjectPoolItem(v[i])) return `item ${i}`;
+  }
+  return null;
+}
+
+/** A valid projects section: absent (undefined) or an array whose
+ * every item passes the shared pool-item gate. */
+export function isProjectPoolSection(v: unknown): v is ProjectPoolItem[] | undefined {
+  return projectPoolSectionProblem(v) === null;
+}
+
+/** Fail-soft read of the pool from a parsed feed: absent or malformed
+ * sections yield no items, and malformed items drop individually — the
+ * single gate both live-source call sites share. */
+export function poolFromFeed(feed: Partial<FleetFeed> | null | undefined): ProjectPoolItem[] {
+  const raw = feed?.projects;
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(isProjectPoolItem);
 }
 
 export function isFleetFeed(v: unknown): v is FleetFeed {

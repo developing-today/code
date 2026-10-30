@@ -173,6 +173,13 @@ type Defaults struct {
 		PromptMaxTokens     int    `json:"promptMaxTokens"`
 		RunTimeout          string `json:"runTimeout"`
 	} `json:"consumer"`
+	// Model governs mcpx's own provider layer (#1925): the knobs a user
+	// can change live in the settings registry as model.*; this section
+	// carries only the layer's built-in deadline, so no package
+	// redeclares it.
+	Model struct {
+		Timeout string `json:"timeout"`
+	} `json:"model"`
 	// Exec governs running a script, whether the CLI does it or the daemon
 	// does it on a caller's behalf.
 	Exec struct {
@@ -663,6 +670,7 @@ var (
 	PromptSampleTimeout = mustDur(builtin.Consumer.PromptSampleTimeout, "consumer.promptSampleTimeout")
 	PromptMaxTokens     = builtin.Consumer.PromptMaxTokens
 	RunTimeout          = mustDur(builtin.Consumer.RunTimeout, "consumer.runTimeout")
+	ModelTimeout        = mustDur(builtin.Model.Timeout, "model.timeout")
 	ExecTimeout         = mustDur(builtin.Exec.Timeout, "exec.timeout")
 	ExecOutput          = builtin.Exec.Output
 	// ExecStderrLimit bounds how much of a failed script's stderr is kept to
