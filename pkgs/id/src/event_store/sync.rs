@@ -1,4 +1,16 @@
-//! Range sync over the event store, on `/id-sync/1`.
+//! Range sync over the event store, on `/id-range-sync/1`.
+//!
+//! The ALPN is this protocol's alone (#179). Range sessions used to share `/id-sync/1`
+//! with the `LogSync` handshake sessions in [`crate::log_sync`], whose first frame is a
+//! `Request` - two different session shapes on one ALPN, so a peer opening with one
+//! shape was misread by an acceptor expecting the other. The split is deliberate and
+//! documented here rather than silent: `/id-sync/1` is the handshake session's, and a
+//! range session also runs as a method of the handshake session (see
+//! [`sync_on_streams`]), over the store-access seam ([`RangeStore`]) that lets
+//! `log_sync`'s shared store lend one step at a time.
+//! Both the dialer and the acceptor take the ALPN from [`ALPN`], so the two sides move
+//! together; a peer running an older build does not serve `/id-range-sync/1`, its dial
+//! fails, and `serve` retries on its next interval.
 //!
 //! The sync set is every stored event and every fork proof header, one key each: the author,
 //! the sequence number, and the ID (see [`super::range`]). A session has four phases:
@@ -43,9 +55,12 @@ use super::{
 };
 use crate::chain::{self, Event};
 use crate::pull_policy::{PullGate, PullRefused};
+use crate::store_traits::SharedEventStore;
 
-/// The protocol ID. The wire version only; K and T are not in it.
-pub const ALPN: &[u8] = b"/id-sync/1";
+/// The protocol ID. The wire version only; K and T are not in it. Distinct from
+/// `log_sync`'s `/id-sync/1` since #179 (see the module docs): the two session shapes
+/// no longer share an ALPN.
+pub const ALPN: &[u8] = b"/id-range-sync/1";
 
 /// The most messages one side writes in reconciliation before it gives up.
 const MAX_FLIGHTS: u32 = 10_000;
@@ -53,13 +68,14 @@ const MAX_FLIGHTS: u32 = 10_000;
 /// Events the receiver decides in one write transaction.
 const BATCH_EVENTS: usize = 256;
 
-/// Bytes the receiver buffers in one write transaction.
-///
-/// The count bound alone does not bound memory: 256 events of a megabyte each decide a
-/// quarter gigabyte in one transaction. Whichever bound is reached first ends the batch, so a
-/// batch of small events keeps the throughput of [`BATCH_EVENTS`] while a batch of large ones
-/// stays bounded by bytes.
-const BATCH_BYTES: usize = 8 << 20;
+/// Encoded bytes the receiver decides in one write transaction. A batch fills on
+/// whichever bound it reaches first, this or [`BATCH_EVENTS`]: one frame may carry
+/// up to [`range::FRAME_CAP`] bytes, so a count-only bound could buffer 256 maximum
+/// frames into a single transaction. The frame budget is the unit the rest of the
+/// module already reasons in, so a batch holds at most about one frame budget of
+/// payload. A single event larger than this bound is decided alone: it is never
+/// split, and its size alone is never an error.
+const BATCH_BYTES: usize = range::DEFAULT_FRAME_BUDGET;
 
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
@@ -97,7 +113,7 @@ pub struct Outcome {
     pub sent: usize,
     /// Events this side received.
     pub received: usize,
-    /// Received events that were stored: applied, or voided.
+    /// Received events that were stored and applied.
     pub accepted: usize,
     /// Received events the store already held.
     pub duplicates: usize,
@@ -107,6 +123,9 @@ pub struct Outcome {
     pub refused: usize,
     /// Forks that received events revealed.
     pub forks: usize,
+    /// Received events that were stored but voided: they count as present, but do not
+    /// apply. Counted separately from the accepted count, mirroring the log sync tally.
+    pub voided: usize,
     /// The symmetric difference, as this side learned it.
     pub learned: HashSet<Id>,
 }
@@ -218,6 +237,7 @@ pub async fn sync_over(
             Cut::Never,
             gate,
             None,
+            BATCH_BYTES,
         ),
     )
     .await
@@ -225,6 +245,83 @@ pub async fn sync_over(
         Ok(result) => result,
         Err(_elapsed) => bail!("the range session did not finish within {deadline:?}"),
     }
+}
+
+/// The store access one range session needs, one step at a time.
+///
+/// A session touches its store in short steps — the sync set once at the start, one
+/// event's bytes per offer, one ingest batch per flush — and never needs the store
+/// across an await: [`run_session`] guards the store with a `Mutex` it locks per step.
+/// That is the seam that lets a session run over [`SharedEventStore`] (#179): its
+/// implementation takes the shared `RwLock` per step, read for the queries and write
+/// for one batch, instead of holding a write guard for the session's whole life, which
+/// would block every other user of the store behind a network wait.
+pub(crate) trait RangeStore {
+    /// The sync set, as [`EventStore::sync_entries`].
+    fn sync_entries(&self) -> Result<Vec<(Key, Id)>>;
+
+    /// The bytes of one event, as [`EventStore::sync_bytes`].
+    fn sync_bytes(&self, id: &Id) -> Result<Option<Vec<u8>>>;
+
+    /// Decides one batch in one write transaction, as [`EventStore::ingest_events`].
+    fn ingest_events(&mut self, events: Vec<Event>, now_ms: u64) -> Result<Vec<Ingest>>;
+}
+
+impl RangeStore for EventStore {
+    fn sync_entries(&self) -> Result<Vec<(Key, Id)>> {
+        Ok(EventStore::sync_entries(self)?)
+    }
+
+    fn sync_bytes(&self, id: &Id) -> Result<Option<Vec<u8>>> {
+        Ok(EventStore::sync_bytes(self, id)?)
+    }
+
+    fn ingest_events(&mut self, events: Vec<Event>, now_ms: u64) -> Result<Vec<Ingest>> {
+        Ok(EventStore::ingest_events(self, events, now_ms)?)
+    }
+}
+
+impl RangeStore for SharedEventStore {
+    fn sync_entries(&self) -> Result<Vec<(Key, Id)>> {
+        Ok(self.range_entries()?)
+    }
+
+    fn sync_bytes(&self, id: &Id) -> Result<Option<Vec<u8>>> {
+        Ok(self.range_bytes(id)?)
+    }
+
+    fn ingest_events(&mut self, events: Vec<Event>, now_ms: u64) -> Result<Vec<Ingest>> {
+        Ok(self.range_ingest_events(events, now_ms)?)
+    }
+}
+
+/// Runs one range session on an already-open stream pair, as a method agreed under
+/// `log_sync`'s `Request`/`Answer` handshake (#179). The caller owns the handshake, the
+/// pull-gate check and the deadline: the responder's gate already decided in
+/// `log_sync::answer`, exactly as for a `Log` session, and the caller's deadline bounds
+/// this call. The sync set is the store's whole set, as in [`sync_over`]: range sync
+/// has no topic subset.
+pub(crate) async fn sync_on_streams<S: RangeStore>(
+    store: &mut S,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    initiator: bool,
+    params: Params,
+    now_ms: u64,
+) -> Result<Outcome> {
+    run_session(
+        store,
+        send,
+        recv,
+        initiator,
+        params,
+        now_ms,
+        Cut::Never,
+        None,
+        None,
+        BATCH_BYTES,
+    )
+    .await
 }
 
 impl EventStore {
@@ -331,14 +428,16 @@ async fn wait_for_commit(signal: &CommitSignal, committed: usize) {
 /// Writes one message as frames, or closes the connection if the cut is due.
 async fn write_flight(
     send: &mut SendStream,
-    conn: &Connection,
+    conn: Option<&Connection>,
     out: &mut Outcome,
     msg: &[Entry],
     params: Params,
     cut: &Cut,
 ) -> Result<()> {
     if matches!(cut, Cut::AfterFlights(flights) if *flights == out.flights) {
-        conn.close(1u32.into(), b"cut");
+        if let Some(conn) = conn {
+            conn.close(1u32.into(), b"cut");
+        }
         bail!("cut before flight {}", out.flights + 1);
     }
     for frame in frames(msg, params.frame_budget())? {
@@ -405,9 +504,7 @@ async fn read_flight(recv: &mut RecvStream, budget: &mut ReadBudget) -> Result<V
 }
 
 /// Locks the store for one step. The lock is never held across an await.
-fn lock<'a, 'b>(
-    store: &'a Mutex<&'b mut EventStore>,
-) -> Result<MutexGuard<'a, &'b mut EventStore>> {
+fn lock<'a, 'b, S: RangeStore>(store: &'a Mutex<&'b mut S>) -> Result<MutexGuard<'a, &'b mut S>> {
     store
         .lock()
         .map_err(|_err| anyhow!("the event store lock is poisoned"))
@@ -416,8 +513,8 @@ fn lock<'a, 'b>(
 /// Decides one batch in one write transaction, and tallies each outcome. A fork is an outcome
 /// like any other: it is recorded, and the events after it in the batch are still decided. Only
 /// an error from the store ends the batch, and then nothing in it commits.
-fn apply_batch(
-    store: &mut EventStore,
+fn apply_batch<S: RangeStore>(
+    store: &mut S,
     events: Vec<Event>,
     now_ms: u64,
     tally: &mut Tally,
@@ -437,6 +534,7 @@ async fn run(
     cut: Cut,
     gate: &PullGate,
     commits: Option<CommitSignal>,
+    batch_bytes: usize,
 ) -> Result<Outcome> {
     let (mut send, mut recv) = if initiator {
         conn.open_bi().await?
@@ -448,6 +546,37 @@ async fn run(
         conn.close(CLOSE_PULL_REFUSED.into(), b"pull refused");
         return Err(PullRefused(gate.world().to_owned()).into());
     }
+    run_session(
+        store,
+        &mut send,
+        &mut recv,
+        initiator,
+        params,
+        now_ms,
+        cut,
+        Some(conn),
+        commits,
+        batch_bytes,
+    )
+    .await
+}
+
+/// One range session on an open stream pair. `conn` is the session's connection when
+/// the caller has one (the cut closes it); a session running under `log_sync`'s
+/// handshake passes `None` — its cuts are `Cut::Never`, so only the close is skipped,
+/// and dropping the stream ends that side anyway.
+async fn run_session<S: RangeStore>(
+    store: &mut S,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    initiator: bool,
+    params: Params,
+    now_ms: u64,
+    cut: Cut,
+    conn: Option<&Connection>,
+    commits: Option<CommitSignal>,
+    batch_bytes: usize,
+) -> Result<Outcome> {
     let mut out = Outcome::default();
     let party = Party::new(store.sync_entries()?)?;
     let mut budget = ReadBudget {
@@ -458,24 +587,16 @@ async fn run(
     // 1. Reconciliation. The same loop as S7's session, with each message as frames.
     let mut learned: Vec<Id> = Vec::new();
     if initiator {
-        write_flight(
-            &mut send,
-            conn,
-            &mut out,
-            &[party.full_range()],
-            params,
-            &cut,
-        )
-        .await?;
+        write_flight(send, conn, &mut out, &[party.full_range()], params, &cut).await?;
     }
     loop {
-        let incoming = read_flight(&mut recv, &mut budget).await?;
+        let incoming = read_flight(recv, &mut budget).await?;
         if all_skip(&incoming) {
             break;
         }
         let reply = party.respond(&incoming, params, &mut learned);
         let last = all_skip(&reply);
-        write_flight(&mut send, conn, &mut out, &reply, params, &cut).await?;
+        write_flight(send, conn, &mut out, &reply, params, &cut).await?;
         if last {
             break;
         }
@@ -523,30 +644,33 @@ async fn run(
 
     let sending = async {
         let count = u32::try_from(offers.len())?;
-        let mut bytes = write_frame(&mut send, &count.to_be_bytes()).await?;
+        let mut bytes = write_frame(&mut *send, &count.to_be_bytes()).await?;
         for (sent, id) in offers.iter().enumerate() {
             if let Some((records, wait)) = &cut_records {
                 if sent == *records {
                     if let Some((signal, committed)) = wait {
                         wait_for_commit(signal, *committed).await;
                     }
-                    conn.close(1u32.into(), b"cut");
+                    if let Some(conn) = conn {
+                        conn.close(1u32.into(), b"cut");
+                    }
                     bail!("cut before event {}", sent + 1);
                 }
             }
             let record = lock(&store)?
                 .sync_bytes(id)?
                 .context("an offered event is no longer stored")?;
-            bytes += write_frame(&mut send, &record).await?;
+            bytes += write_frame(&mut *send, &record).await?;
         }
         applied.notified().await;
-        bytes += write_frame(&mut send, APPLIED_FRAME).await?;
+        bytes += write_frame(&mut *send, APPLIED_FRAME).await?;
         send.finish()?;
         anyhow::Ok(bytes)
     };
 
     let receiving = async {
-        let received = receive_data(&mut recv, &store, &mut need, now_ms, &commits).await;
+        let received =
+            receive_data(recv, &store, &mut need, now_ms, &commits, batch_bytes).await;
         // Signal on every exit, error included: the sending half waits for this
         // signal before it can finish, and a failed receive must not hold the
         // session open until its deadline.
@@ -555,7 +679,7 @@ async fn run(
         // Applied: this side's completion frame is now released; wait for the
         // peer's — the session ends only once the peer has applied what this
         // side sent.
-        let completion = read_frame(&mut recv).await?;
+        let completion = read_frame(&mut *recv).await?;
         ensure!(
             completion == APPLIED_FRAME,
             "the peer ended its data phase without a completion frame"
@@ -573,18 +697,20 @@ async fn run(
     out.waiting = tally.waiting;
     out.refused = tally.refused;
     out.forks = tally.forks;
+    out.voided = tally.voided;
     Ok(out)
 }
 
 /// The receiving half of the data phase: reads the peer's count frame and that many
 /// event frames, deciding each batch as it fills, and returns how many events arrived
 /// and how they were decided. The caller owns the completion handshake (phase 4).
-async fn receive_data(
+async fn receive_data<S: RangeStore>(
     recv: &mut RecvStream,
-    store: &Mutex<&mut EventStore>,
+    store: &Mutex<&mut S>,
     need: &mut HashSet<Id>,
     now_ms: u64,
     commits: &Option<CommitSignal>,
+    batch_bytes: usize,
 ) -> Result<(usize, Tally)> {
     let count_frame = read_frame(recv).await?;
     let count: [u8; 4] = count_frame
@@ -602,16 +728,23 @@ async fn receive_data(
     let mut tally = Tally::default();
     for _ in 0..count {
         let record = read_frame(recv).await?;
+        let record_len = record.len();
         let event = chain::decode(&record)?;
         ensure!(
             need.remove(event.id.as_bytes()),
             "an event arrived that was not expected, or arrived twice"
         );
-        // Measured on the wire frame, not the decoded event: the frame is what was
-        // buffered, and it is what the peer actually spent.
-        pending_bytes += record.len();
+        // A batch is bounded by bytes as well as by count: flush before this
+        // event if it would carry the batch past the byte bound. An empty batch
+        // always takes the event, so one larger than the bound forms a batch of
+        // its own rather than being refused.
+        if !pending.is_empty() && pending_bytes + record_len > batch_bytes {
+            flush(store, &mut pending, now_ms, &mut tally, commits)?;
+            pending_bytes = 0;
+        }
         pending.push(event);
-        if batch_is_full(pending.len(), pending_bytes) {
+        pending_bytes += record_len;
+        if pending.len() == BATCH_EVENTS {
             flush(store, &mut pending, now_ms, &mut tally, commits)?;
             pending_bytes = 0;
         }
@@ -620,16 +753,8 @@ async fn receive_data(
     Ok((count, tally))
 }
 
-/// Whether the batch holding `events` events and `bytes` bytes must commit now.
-///
-/// Extracted so the two bounds can be tested without a session: the count bound keeps small
-/// events cheap, the byte bound keeps one large event from riding in behind 255 small ones.
-fn batch_is_full(events: usize, bytes: usize) -> bool {
-    events >= BATCH_EVENTS || bytes >= BATCH_BYTES
-}
-
-fn flush(
-    store: &Mutex<&mut EventStore>,
+fn flush<S: RangeStore>(
+    store: &Mutex<&mut S>,
     pending: &mut Vec<Event>,
     now_ms: u64,
     tally: &mut Tally,
@@ -641,7 +766,7 @@ fn flush(
     let events = std::mem::take(pending);
     let committed = events.len();
     let mut guard = lock(store)?;
-    apply_batch(&mut guard, events, now_ms, tally)?;
+    apply_batch(&mut **guard, events, now_ms, tally)?;
     // Only a batch that committed is reported: an error above ends the batch, and
     // nothing in it commits.
     if let Some(signal) = commits {
@@ -654,20 +779,6 @@ fn flush(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::time::Duration;
-
-    #[test]
-    fn batch_bounds_end_on_count_or_bytes() {
-        // Below both bounds: keep buffering.
-        assert!(!batch_is_full(0, 0));
-        assert!(!batch_is_full(BATCH_EVENTS - 1, BATCH_BYTES - 1));
-        // The count bound still ends a batch of small events.
-        assert!(batch_is_full(BATCH_EVENTS, 1));
-        // The byte bound ends a batch that the count bound would let through: one
-        // event of BATCH_BYTES with 255 small ones behind it.
-        assert!(batch_is_full(1, BATCH_BYTES));
-        // One oversized event flushes on its own rather than waiting for 256 peers.
-        assert!(batch_is_full(1, BATCH_BYTES * 2));
-    }
 
     use super::*;
     use crate::chain::ChainExt;
@@ -796,6 +907,24 @@ mod tests {
         gate: &PullGate,
         dialer: SecretKey,
     ) -> Result<(Result<Outcome>, Result<Outcome>)> {
+        loopback_gated_bounded(a, b, pa, pb, cut, gate, dialer, BATCH_BYTES).await
+    }
+
+    /// loopback_gated with the receiver byte bound named, so a test can set the
+    /// bound a batch fills at to the size of the small events a fixture can build.
+    /// Production sessions always run with BATCH_BYTES; the largest valid event a
+    /// fixture can sign is about 10 KiB (a tag.clear naming 256 claims), so the
+    /// production bound cannot be reached by signed fixtures at all.
+    async fn loopback_gated_bounded(
+        a: &mut EventStore,
+        b: &mut EventStore,
+        pa: Params,
+        pb: Params,
+        cut: Cut,
+        gate: &PullGate,
+        dialer: SecretKey,
+        batch_bytes: usize,
+    ) -> Result<(Result<Outcome>, Result<Outcome>)> {
         let open = testing::open_gate();
         let server = endpoint(vec![ALPN.to_vec()]).await?;
         let client = endpoint_as(dialer, vec![]).await?;
@@ -812,12 +941,23 @@ mod tests {
                 .await
                 .context("endpoint closed before a connection")?;
             let conn = incoming.await?;
-            let out = run(b, &conn, false, pb, NOW, Cut::Never, gate, acceptor_commits).await;
+            let out = run(
+                b,
+                &conn,
+                false,
+                pb,
+                NOW,
+                Cut::Never,
+                gate,
+                acceptor_commits,
+                batch_bytes,
+            )
+            .await;
             anyhow::Ok((out, conn))
         };
         let dialing = async {
             let conn = client.connect(target, ALPN).await?;
-            let out = run(a, &conn, true, pa, NOW, cut, &open, None).await;
+            let out = run(a, &conn, true, pa, NOW, cut, &open, None, batch_bytes).await;
             anyhow::Ok((out, conn))
         };
         let (dialed, accepted) = tokio::time::timeout(Duration::from_secs(300), async {
@@ -940,6 +1080,65 @@ mod tests {
         );
         // The original, the rival that proves the fork, and the 20 unrelated events.
         assert_eq!(store.sync_entries().unwrap().len(), 22);
+    }
+
+    /// A range session counts every disposition it decides, including the arrivals it does
+    /// not store (Codex finding on PR 2214: the tally had a voided count the outcome dropped).
+    ///
+    /// The shape matters. An event above its author's fork point that arrives *after* the
+    /// fork is refused as frozen (`ingest.rs`, "Known limit: a rival refused as frozen"), so
+    /// it is counted as refused, and the voided count stays zero: voided labels an event the
+    /// store keeps without applying, not an arrival it turns away.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_a_range_session_counts_frozen_arrivals_as_refused() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        let events = chain_of(1, 5, b"x");
+        fill(&mut a, &events);
+        fill(&mut b, &events[..3]);
+        // B holds a rival at sequence 1, so author 1 has forked in B and the
+        // events from sequence 1 on are voided there.
+        let rival = chain::sign(
+            &signer(1),
+            1,
+            Some(events[0].id),
+            Some(b"other"),
+            ChainExt {
+                kind: "message".to_owned(),
+                group: None,
+                after: Vec::new(),
+                tag: None,
+                document: None,
+                removes: None,
+            },
+        )
+        .unwrap();
+        let outcome = b.ingest_events(vec![rival], NOW).unwrap();
+        assert!(matches!(outcome[0], Ingest::Fork { .. }), "{outcome:?}");
+        let (da, db) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        let (da, db) = (da.unwrap(), db.unwrap());
+        assert_eq!(da.sent, 2, "events 4 and 5 are missing on B's side");
+        assert_eq!(
+            db.received, 2,
+            "both above the fork point are received and turned away: {db:?}"
+        );
+        assert_eq!(
+            db.refused, 2,
+            "events 4 and 5 arrive above the fork point, so they are frozen: {db:?}"
+        );
+        assert_eq!(db.accepted, 0, "a frozen arrival is not accepted: {db:?}");
+        assert_eq!(
+            db.voided, 0,
+            "voided counts stored-but-unapplied events, not refused arrivals: {db:?}"
+        );
     }
 
     /// Prefix lengths of two sides' chains, so each side holds some events the other lacks.
@@ -1096,6 +1295,80 @@ mod tests {
         );
         assert_eq!(second_b.duplicates + second_a.duplicates, 0, "no duplicate");
         assert_eq!(second_a.accepted, 0);
+    }
+
+    /// #180: the data phase decides batches bounded by bytes as well as by count.
+    /// A signed event's record is small: the body is committed by hash, not
+    /// carried, and the largest record a valid fixture can build is about
+    /// 10 KiB, far under the production byte bound -- so this test names a
+    /// bound of two records through the test plumbing. Batches then fill
+    /// after two events while the count bound (256) is nowhere near. A batch
+    /// flushes when the record that would overflow it arrives, so the cut
+    /// comes after five records: the fifth record's arrival flushes the
+    /// second batch, and the cut, waiting until the receiver has committed
+    /// four, leaves exactly those four in the receiving store -- two whole
+    /// byte-bound batches, where a count-only receiver would have committed
+    /// nothing at all (its one partial batch dies with the session, as in
+    /// the interruption test above).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_data_phase_batches_are_bounded_by_bytes_as_well_as_count() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        for n in 1..=6u64 {
+            fill(&mut a, &chain_of(n, 1, b"body"));
+        }
+        let record_len = chain_of(1, 1, b"body")[0].bytes.len();
+        let (first_a, first_b) = loopback_gated_bounded(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::AfterRecordsWhenCommitted {
+                records: 5,
+                signal: CommitSignal::default(),
+                committed: 4,
+            },
+            &testing::open_gate(),
+            testing::key(0xd9),
+            2 * record_len,
+        )
+        .await
+        .unwrap();
+        assert!(first_a.is_err(), "the cut ends the dialer's session");
+        assert!(first_b.is_err(), "the acceptor sees the connection close");
+        assert_eq!(
+            ids(&b).len(),
+            4,
+            "two byte-bound batches of two events each were committed"
+        );
+    }
+
+    /// #180: a single event larger than the byte bound is decided alone and
+    /// does not error: with a bound smaller than one record, every event
+    /// forms a solo batch, the session completes, and every event arrives.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_an_event_larger_than_the_byte_bound_is_decided_alone() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        populate(&mut a, &[(1, 2), (2, 2)]);
+        let total = ids(&a);
+        let record_len = chain_of(1, 1, b"body")[0].bytes.len();
+        let (out_a, out_b) = loopback_gated_bounded(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+            &testing::open_gate(),
+            testing::key(0xd9),
+            record_len - 1,
+        )
+        .await
+        .unwrap();
+        out_a.unwrap();
+        let out_b = out_b.unwrap();
+        assert_eq!(ids(&b), total, "every oversize event arrives");
+        assert_eq!(out_b.accepted, total.len());
     }
 
     /// P3.1c: a peer that never clears `more` must not make the reader buffer without bound. This

@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/dezren39/mcpx/internal/nearmiss"
 )
 
 // Kind classifies a diagnostic, so a caller can act on one without reading
@@ -415,44 +417,20 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // nearest is the closest tool name in the namespace, when one is close
-// enough to be worth suggesting.
+// enough to be worth suggesting. The definition of close — normalisation,
+// Damerau-Levenshtein, the length-relative threshold, tie-breaking — is
+// the shared one in internal/nearmiss (#1904); diagnostics used to keep a
+// plainer Levenshtein here that scored a transposition as two edits and
+// so disagreed with the launcher about the same typo.
 func nearest(name string, cat Catalog, ns string) string {
-	best, bestD := "", 1<<30
+	var funcs []string
 	for _, t := range cat.Tools {
-		if t.Namespace != ns {
-			continue
-		}
-		d := editDistance(strings.ToLower(name), strings.ToLower(t.Func))
-		if d < bestD {
-			best, bestD = t.Func, d
+		if t.Namespace == ns {
+			funcs = append(funcs, t.Func)
 		}
 	}
-	// A third of the name may differ. Beyond that the suggestion is noise
-	// and reads as the tool having guessed.
-	if bestD > 1+len(name)/3 {
-		return ""
-	}
+	best, _ := nearmiss.Nearest(name, funcs)
 	return best
-}
-
-func editDistance(a, b string) int {
-	prev := make([]int, len(b)+1)
-	cur := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		cur[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			cur[j] = min(min(cur[j-1]+1, prev[j]+1), prev[j-1]+cost)
-		}
-		prev, cur = cur, prev
-	}
-	return prev[len(b)]
 }
 
 // CallErrorInput is everything known about a call that failed upstream.

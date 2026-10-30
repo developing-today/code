@@ -2,7 +2,9 @@
 //!
 //! A session is one stream pair on [`SYNC_ALPN`]. The initiator sends a [`Request`] with the topic
 //! and the method it chose ([`choose`]), and the responder answers with an [`Answer`]. If both agree
-//! on `LogSync`, each side runs `p2panda-sync`'s `LogSync` on its [`SharedEventStore`] over the stream.
+//! on `LogSync`, each side runs `p2panda-sync`'s `LogSync` on its [`SharedEventStore`] over the stream;
+//! if both agree on range sync, each side runs a range session (`event_store::sync`) on the same
+//! stream pair, over the same store (#179).
 //!
 //! Three decisions shape the session:
 //!
@@ -51,8 +53,11 @@ use crate::store_traits::{ChainLog, SharedEventStore};
 use crate::sync_method::{Answer, Request, SyncMethod, SyncStats, SyncSupport, choose};
 use crate::time::unix_ms;
 
-/// The ALPN for sync sessions. This is P3.1's ID, so range sync joins as a method of the same
-/// session, and the first frame of every session is the [`Request`].
+/// The ALPN for sync sessions. Range sync joins as a method of the same session, and the
+/// first frame of every session is the [`Request`]: one session shape on this ALPN.
+/// `serve`'s own range sessions (P3.1) run on their own ALPN, `/id-range-sync/1`
+/// ([`crate::event_store::sync::ALPN`]) — a deliberate, documented split (#179), so no
+/// second, unlabelled session shape shares this one either.
 pub const SYNC_ALPN: &[u8] = b"/id-sync/1";
 
 /// How long one side may spend on a session. A peer that stops answering ends it at this deadline.
@@ -116,9 +121,9 @@ pub enum SyncError {
         /// The method the responder answered.
         answered: SyncMethod,
     },
-    /// Both sides agreed on a method that this build does not run.
-    #[error("{0:?} is agreed, but this build does not run it")]
-    NotWired(SyncMethod),
+    /// Range sync, the agreed [`SyncMethod::Range`], failed.
+    #[error("range sync: {0}")]
+    Range(String),
     /// The event store failed.
     #[error("the event store: {0}")]
     Store(String),
@@ -244,13 +249,12 @@ pub async fn sync_with(
         let conn = connect(endpoint, peer, SYNC_ALPN)
             .await
             .map_err(|error| SyncError::Connect(format!("{error:#}")))?;
-        let (send, recv) = conn
+        let (mut send, mut recv) = conn
             .open_bi()
             .await
             .map_err(|error| SyncError::Stream(error.to_string()))?;
-        let mut frames = Frames::new(send, recv);
-        frames.send_message(&Request { topic, method }).await?;
-        match frames.next_message::<Answer>().await? {
+        send_message(&mut send, &Request { topic, method }).await?;
+        match next_message::<Answer>(&mut recv).await? {
             Answer::Agree(answered) if answered == method => {}
             Answer::Agree(answered) => {
                 return Err(SyncError::Mismatch {
@@ -260,8 +264,7 @@ pub async fn sync_with(
             }
             Answer::Refuse => return Err(SyncError::Refused(method)),
         }
-        let outcome = run_agreed(store, topic, method, &mut frames).await?;
-        frames.finish().await;
+        let outcome = run_agreed(store, topic, method, send, recv, true).await?;
         conn.close(0_u32.into(), b"done");
         Ok(outcome)
     };
@@ -287,28 +290,25 @@ pub async fn answer(
     support: &dyn SyncSupport,
     gate: &PullGate,
     peer: EndpointId,
-    send: SendStream,
-    recv: RecvStream,
+    mut send: SendStream,
+    mut recv: RecvStream,
     deadline: Duration,
 ) -> Result<Outcome, SyncError> {
-    let mut frames = Frames::new(send, recv);
     let session = async {
-        let request: Request = frames.next_message().await?;
+        let request: Request = next_message(&mut recv).await?;
         // The pull policy decides before the method is agreed, so a refused peer gets no event.
         if !gate.admits(&peer) {
-            frames.send_message(&Answer::Refuse).await?;
-            frames.finish().await;
+            send_message(&mut send, &Answer::Refuse).await?;
+            finish_stream(&mut send, &mut recv).await;
             return Err(SyncError::PullRefused);
         }
         if !support.supports(request.method) {
-            frames.send_message(&Answer::Refuse).await?;
-            frames.finish().await;
+            send_message(&mut send, &Answer::Refuse).await?;
+            finish_stream(&mut send, &mut recv).await;
             return Err(SyncError::Refused(request.method));
         }
-        frames.send_message(&Answer::Agree(request.method)).await?;
-        let outcome = run_agreed(store, request.topic, request.method, &mut frames).await?;
-        frames.finish().await;
-        Ok(outcome)
+        send_message(&mut send, &Answer::Agree(request.method)).await?;
+        run_agreed(store, request.topic, request.method, send, recv, false).await
     };
     match timeout(deadline, session).await {
         Ok(result) => result,
@@ -316,17 +316,107 @@ pub async fn answer(
     }
 }
 
-/// Runs the method both sides agreed to.
+/// Runs the method both sides agreed to, on the stream pair the handshake just used.
+///
+/// The handshake runs on the raw streams, before any `Frames` reader task exists: it is
+/// one frame each way, strictly in turn, so no read is ever selected against a write and
+/// a cancelled read cannot lose a frame's bytes. `LogSync` does select between reading
+/// and writing, so the `Log` arm hands the streams to [`Frames`] (whose own task reads),
+/// while the `Range` arm keeps the raw streams: a range session sends and receives at
+/// once through its own halves, and reads each frame to its end before answering it.
 async fn run_agreed(
     store: &SharedEventStore,
     topic: Hash,
     method: SyncMethod,
-    frames: &mut Frames,
+    send: SendStream,
+    recv: RecvStream,
+    initiator: bool,
 ) -> Result<Outcome, SyncError> {
     match method {
-        SyncMethod::Log => run_log_sync(store, topic, frames).await,
-        SyncMethod::Range => Err(SyncError::NotWired(method)),
+        SyncMethod::Log => {
+            let mut frames = Frames::new(send, recv);
+            let outcome = run_log_sync(store, topic, &mut frames).await?;
+            frames.finish().await;
+            Ok(outcome)
+        }
+        SyncMethod::Range => {
+            let (mut send, mut recv) = (send, recv);
+            let ranged = run_range_sync(store, &mut send, &mut recv, initiator).await;
+            finish_stream(&mut send, &mut recv).await;
+            ranged
+        }
     }
+}
+
+/// Runs one range session under the handshake, on the stream pair the handshake used.
+///
+/// The store seam is the session's only design choice (#179): the range session takes
+/// the store one step at a time through `event_store::sync::RangeStore`, whose
+/// [`SharedEventStore`] implementation locks per step and never across an await, so a
+/// session never blocks the store's other users behind a network wait. The range sync
+/// set is the store's whole set: range sync has no topic subset, so `topic` names the
+/// session for the `Log` arm only. The deadline is the caller's, as for `Log`.
+async fn run_range_sync(
+    store: &SharedEventStore,
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    initiator: bool,
+) -> Result<Outcome, SyncError> {
+    let mut store = store.clone();
+    let ranged = crate::event_store::sync::sync_on_streams(
+        &mut store,
+        send,
+        recv,
+        initiator,
+        crate::event_store::range::Params::default(),
+        unix_ms(),
+    )
+    .await
+    .map_err(|error| SyncError::Range(format!("{error:#}")))?;
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Ok(Outcome {
+        method: SyncMethod::Range,
+        received: Tally {
+            accepted: count(ranged.accepted),
+            duplicates: count(ranged.duplicates),
+            held: count(ranged.waiting),
+            refused: count(ranged.refused),
+            forks: count(ranged.forks),
+            voided: count(ranged.voided),
+        },
+        metrics: LogSyncMetrics {
+            sent_operations: count(ranged.sent),
+            received_operations: count(ranged.received),
+            ..LogSyncMetrics::default()
+        },
+    })
+}
+
+/// Writes one handshake message as a frame on the raw stream.
+async fn send_message<T: Serialize>(send: &mut SendStream, message: &T) -> Result<(), SyncError> {
+    let bytes =
+        postcard::to_allocvec(message).map_err(|error| SyncError::Frame(error.to_string()))?;
+    write_frame(send, &bytes)
+        .await
+        .map_err(|error| SyncError::Stream(format!("{error:#}")))
+}
+
+/// Reads one handshake message from the raw stream. A first frame that does not decode
+/// as the expected message is a [`SyncError::Frame`]: the session is refused, never
+/// reinterpreted as another protocol.
+async fn next_message<T: DeserializeOwned>(recv: &mut RecvStream) -> Result<T, SyncError> {
+    let frame = read_frame(recv)
+        .await
+        .map_err(|error| SyncError::Stream(format!("{error:#}")))?
+        .ok_or_else(|| SyncError::Stream("the stream ended during the handshake".to_owned()))?;
+    postcard::from_bytes(&frame).map_err(|error| SyncError::Frame(error.to_string()))
+}
+
+/// Ends our side of a raw stream pair, then reads to the peer's end, so nothing sent is
+/// cut off by closing the connection. The raw-stream counterpart of [`Frames::finish`].
+async fn finish_stream(send: &mut SendStream, recv: &mut RecvStream) {
+    let _ = send.finish();
+    while let Ok(Some(_frame)) = read_frame(recv).await {}
 }
 
 /// Runs `p2panda-sync`'s `LogSync` for the logs of `topic`, on `frames`.
@@ -532,26 +622,6 @@ impl Frames {
         }
     }
 
-    /// Writes one handshake message as a frame.
-    async fn send_message<T: Serialize>(&mut self, message: &T) -> Result<(), SyncError> {
-        let bytes =
-            postcard::to_allocvec(message).map_err(|error| SyncError::Frame(error.to_string()))?;
-        write_frame(&mut self.send, &bytes)
-            .await
-            .map_err(|error| SyncError::Stream(format!("{error:#}")))
-    }
-
-    /// Reads one handshake message.
-    async fn next_message<T: DeserializeOwned>(&mut self) -> Result<T, SyncError> {
-        let frame = self
-            .inbound
-            .recv()
-            .await
-            .ok_or_else(|| SyncError::Stream("the stream ended during the handshake".to_owned()))?
-            .map_err(SyncError::Stream)?;
-        postcard::from_bytes(&frame).map_err(|error| SyncError::Frame(error.to_string()))
-    }
-
     /// Ends our side, then waits for the peer's end, so that nothing sent is cut off by closing the
     /// connection. This runs after `LogSync` has finished on both sides, so everything each side needs
     /// has already arrived. A read error here is the peer closing the connection, which is not a
@@ -585,7 +655,7 @@ mod tests {
     use crate::chain::{Event, sign};
     use crate::event_store::EventStore;
     use crate::pull_policy::{PullGate, PullPolicy, testing};
-    use crate::sync_method::{Estimate, LogSyncOnly};
+    use crate::sync_method::{Estimate, LogAndRange, LogSyncOnly};
     use crate::waiting::WaitingLimits;
     use iroh_base::SecretKey;
 
@@ -701,6 +771,7 @@ mod tests {
     #[derive(Debug)]
     struct Capture {
         store: SharedEventStore,
+        support: Arc<dyn SyncSupport>,
         gate: PullGate,
         results: mpsc::UnboundedSender<Result<Outcome, SyncError>>,
     }
@@ -710,7 +781,7 @@ mod tests {
             while let Ok((send, recv)) = conn.accept_bi().await {
                 let result = answer(
                     &self.store,
-                    &LogSyncOnly,
+                    self.support.as_ref(),
                     &self.gate,
                     conn.remote_id(),
                     send,
@@ -749,7 +820,31 @@ mod tests {
         let (results, rx) = mpsc::unbounded_channel();
         let handler = Capture {
             store: store.clone(),
+            support: Arc::new(LogSyncOnly),
             gate,
+            results,
+        };
+        let router = Router::builder(ep.clone())
+            .accept(SYNC_ALPN, handler)
+            .spawn();
+        (ep, router, rx)
+    }
+
+    /// Serves `store` on loopback, running the methods `support` allows, to every peer.
+    async fn responder_support(
+        store: &SharedEventStore,
+        support: Arc<dyn SyncSupport>,
+    ) -> (
+        Endpoint,
+        Router,
+        mpsc::UnboundedReceiver<Result<Outcome, SyncError>>,
+    ) {
+        let ep = endpoint().await;
+        let (results, rx) = mpsc::unbounded_channel();
+        let handler = Capture {
+            store: store.clone(),
+            support,
+            gate: testing::open_gate(),
             results,
         };
         let router = Router::builder(ep.clone())
@@ -1330,7 +1425,7 @@ mod tests {
 
         let (server, _router, mut results) = responder(&store_a).await;
         let client = endpoint().await;
-        // Synced before, with no difference: the rule picks range, which this build does not run.
+        // Synced before, with no difference: the rule picks range, which a LogSyncOnly responder does not run.
         let synced = Estimate {
             chains: 1,
             difference: 0,
@@ -1358,6 +1453,107 @@ mod tests {
             "the responder refused the same method, got {answered:?}"
         );
         assert_eq!(applied(&store_b, &[&alice], 2), before, "nothing moved");
+    }
+
+    /// #179: one peer/store pair syncs under the one handshake by Log first and by
+    /// Range second, and the two stores end equal after each.
+    #[tokio::test]
+    async fn test_one_pair_syncs_by_log_then_by_range_under_one_handshake() {
+        let topic = group(8);
+        let (alice, bob) = (key(11), key(12));
+        let alice_events = chain_of(&alice, 6, topic);
+        let bob_events = chain_of(&bob, 4, topic);
+        let (_da, store_a) = open();
+        let (_db, store_b) = open();
+        // A has alice 0 to 4. B has alice 0 to 2.
+        ingest_all(&store_a, &alice_events[..5]);
+        ingest_all(&store_b, &alice_events[..3]);
+
+        let (server, _router, mut results) =
+            responder_support(&store_a, Arc::new(LogAndRange)).await;
+        let client = endpoint().await;
+
+        // First sync: unbootstrapped, so the rule picks Log.
+        let logged = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &bootstrap(),
+            DEADLINE,
+        )
+        .await
+        .unwrap();
+        let logged_answered = results.recv().await.unwrap().unwrap();
+        assert_eq!(logged.method, SyncMethod::Log);
+        assert_eq!(logged_answered.method, SyncMethod::Log);
+        assert_eq!(logged.received.accepted, 2, "B lacked alice 3 and 4");
+        assert_eq!(
+            applied(&store_a, &[&alice], 5),
+            applied(&store_b, &[&alice], 5),
+            "the Log session converged the pair"
+        );
+
+        // A gains bob's chain and alice's next event. Second sync: bootstrapped with
+        // a small difference, so the rule picks Range — over the same handshake.
+        ingest_all(&store_a, &bob_events);
+        ingest_all(&store_a, &alice_events[5..]);
+        let synced = Estimate {
+            chains: 2,
+            difference: 0,
+            last_completed_sync_ms: Some(1),
+        };
+        assert_eq!(choose(&synced), SyncMethod::Range);
+        let ranged = sync_with(
+            &client,
+            loopback(&server),
+            &store_b,
+            topic,
+            &synced,
+            DEADLINE,
+        )
+        .await
+        .unwrap();
+        let ranged_answered = results.recv().await.unwrap().unwrap();
+        assert_eq!(ranged.method, SyncMethod::Range);
+        assert_eq!(
+            ranged_answered.method,
+            SyncMethod::Range,
+            "both sides ran Range"
+        );
+        assert_eq!(
+            ranged.received.accepted, 5,
+            "B lacked bob 0 to 3 and alice 5"
+        );
+        assert_eq!(ranged_answered.received.accepted, 0, "A lacked nothing");
+        let all = [&alice, &bob];
+        assert_eq!(
+            applied(&store_a, &all, 5),
+            applied(&store_b, &all, 5),
+            "the Range session converged the pair"
+        );
+        store_a.check_invariants().unwrap();
+        store_b.check_invariants().unwrap();
+    }
+
+    /// #179: a first frame that is not a `Request` is refused as a frame error, never
+    /// reinterpreted as another session shape.
+    #[tokio::test]
+    async fn test_a_first_frame_that_is_not_a_request_is_refused() {
+        let (_d, store) = open();
+        let (server, _router, mut results) = responder(&store).await;
+        let client = endpoint().await;
+        let conn = connect(&client, loopback(&server), SYNC_ALPN)
+            .await
+            .unwrap();
+        let (mut send, _recv) = conn.open_bi().await.unwrap();
+        write_frame(&mut send, &[0xff, 0xfe, 0xfd]).await.unwrap();
+        send.finish().unwrap();
+        let answered = results.recv().await.unwrap();
+        assert!(
+            matches!(answered, Err(SyncError::Frame(_))),
+            "a foreign first frame is a frame error, got {answered:?}"
+        );
     }
 
     /// P6.5: open pull is today's behaviour. A stranger pulls every event of the topic.
