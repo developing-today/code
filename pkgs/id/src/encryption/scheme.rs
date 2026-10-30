@@ -58,6 +58,19 @@ pub const DATASCHEME: &str = "datascheme";
 /// crate (P4.4). Its welcome costs 40 bytes per epoch, where the stock layout costs 146.5.
 pub const SCHEME_V1: u32 = 1;
 
+/// The most application messages a session holds unread (#186). A removed or stalled peer
+/// can keep sending messages this device cannot read, and each one is held until its group
+/// secret arrives, so the held set needs a bound of its own: past it, a new arrival is
+/// refused with [`SchemeError::HeldFull`]. Already-held messages are never evicted or
+/// expired in-session - they leave only when their secret arrives and they are read.
+pub const MAX_HELD_MESSAGES: usize = 1024;
+
+/// The most CBOR-encoded bytes the held messages may total (#186): the sum of each held
+/// envelope's encoded length, encoded with `encode_cbor` as `Envelope::new` encodes in
+/// [`super::ordering`]. Tracked on the session as messages are held and released, so the
+/// check never re-encodes the set.
+pub const MAX_HELD_BYTES: usize = 16 * 1024 * 1024;
+
 /// The scheme version a group's signed policy names, if this build speaks it.
 pub fn negotiate(policy: &Policy) -> Result<u32, SchemeError> {
     match &policy.scheme {
@@ -158,6 +171,22 @@ pub enum SchemeError {
         /// The most parents a message may name.
         cap: usize,
     },
+    /// The held set is at a cap, so a message this device cannot read yet is refused instead
+    /// of held (#186). The check runs before any crate call, so the session is not poisoned,
+    /// and no held message is dropped to make room: the refusal is of the new arrival only.
+    #[error(
+        "the session already holds {count} unreadable messages ({bytes} encoded bytes), and one more would pass the cap of {cap_count} messages or {cap_bytes} bytes, so it is refused"
+    )]
+    HeldFull {
+        /// The messages the session already holds.
+        count: usize,
+        /// Their total CBOR-encoded length.
+        bytes: usize,
+        /// The most messages a session holds.
+        cap_count: usize,
+        /// The most encoded bytes the held messages may total.
+        cap_bytes: usize,
+    },
     /// A message's header or direct copy names a version other than the group's signed policy.
     #[error("the message names scheme v{found}, but the group's signed policy names v{expected}")]
     SchemeMismatch {
@@ -184,7 +213,8 @@ impl SchemeError {
             | Self::UnsupportedScheme { .. }
             | Self::Crate(_)
             | Self::InvalidKey(_)
-            | Self::TooManyParents { .. } => None,
+            | Self::TooManyParents { .. }
+            | Self::HeldFull { .. } => None,
         }
     }
 }
@@ -197,8 +227,16 @@ pub struct Session {
     scheme: u32,
     state: Option<Group>,
     /// Application messages this device cannot read yet, in arrival order. They stay out of the
-    /// crate until their group secret arrives (P4.5).
-    held: Vec<Envelope>,
+    /// crate until their group secret arrives (P4.5). The set is bounded by
+    /// [`MAX_HELD_MESSAGES`] and [`MAX_HELD_BYTES`] (#186), enforced by refusing NEW arrivals
+    /// at the cap - a held message is never evicted or expired in-session, and leaves only
+    /// through `release`, when its secret arrives. Each entry carries the message's
+    /// CBOR-encoded length, recorded when it was held, so the byte total below is kept
+    /// without ever re-encoding the set.
+    held: Vec<(Envelope, usize)>,
+    /// The held messages' total CBOR-encoded length, kept as they are held and released so
+    /// the byte cap is checked without re-encoding the set per arrival.
+    held_bytes: usize,
 }
 
 impl Session {
@@ -224,6 +262,7 @@ impl Session {
             scheme,
             state: Some(state),
             held: Vec::new(),
+            held_bytes: 0,
         })
     }
 
@@ -394,9 +433,22 @@ impl Session {
         self.check_scheme(message)?;
         let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
         if !Self::can_read(y, message) {
-            if !self.held.iter().any(|held| held.id() == message.id()) {
-                self.held.push(message.clone());
+            if self.held.iter().any(|(held, _)| held.id() == message.id()) {
+                return Ok(vec![Received::Withheld(message.id())]);
             }
+            // The bound is checked here, before the push and before any crate call, so a
+            // refusal neither poisons the session nor drops a held message (#186).
+            let bytes = held_len(message)?;
+            if self.held.len() >= MAX_HELD_MESSAGES || self.held_bytes + bytes > MAX_HELD_BYTES {
+                return Err(SchemeError::HeldFull {
+                    count: self.held.len(),
+                    bytes: self.held_bytes,
+                    cap_count: MAX_HELD_MESSAGES,
+                    cap_bytes: MAX_HELD_BYTES,
+                });
+            }
+            self.held.push((message.clone(), bytes));
+            self.held_bytes += bytes;
             return Ok(vec![Received::Withheld(message.id())]);
         }
         let mut read = self.receive(message)?;
@@ -409,7 +461,7 @@ impl Session {
     pub fn request_history(&self) -> Option<HistoryRequest> {
         let y = self.state.as_ref()?;
         let mut wanted = BTreeSet::new();
-        for message in &self.held {
+        for (message, _) in &self.held {
             if let GroupMessageContent::Application {
                 group_secret_id, ..
             } = message.content()
@@ -527,15 +579,19 @@ impl Session {
     /// Gives the crate each held message whose secret the device now holds, in arrival order.
     fn release(&mut self) -> Result<Vec<Received>, SchemeError> {
         let held = std::mem::take(&mut self.held);
-        let (ready, waiting): (Vec<Envelope>, Vec<Envelope>) = match self.state.as_ref() {
-            Some(y) => held
-                .into_iter()
-                .partition(|message| Self::can_read(y, message)),
-            None => (Vec::new(), held),
-        };
+        let (ready, waiting): (Vec<(Envelope, usize)>, Vec<(Envelope, usize)>) =
+            match self.state.as_ref() {
+                Some(y) => held
+                    .into_iter()
+                    .partition(|(message, _)| Self::can_read(y, message)),
+                None => (Vec::new(), held),
+            };
+        // The byte total is re-summed from the encoded lengths recorded when the waiting
+        // messages were held - the waiting set itself is never re-encoded (#186).
+        self.held_bytes = waiting.iter().map(|(_, bytes)| bytes).sum();
         self.held = waiting;
         let mut read = Vec::new();
-        for message in &ready {
+        for (message, _) in &ready {
             read.extend(self.receive(message)?);
         }
         Ok(read)
@@ -724,6 +780,12 @@ fn member_of(key: Key) -> Result<VerifyingKey, SchemeError> {
 
 fn members_of(model: &BTreeSet<Key>) -> Result<Vec<VerifyingKey>, SchemeError> {
     model.iter().map(|key| member_of(*key)).collect()
+}
+
+/// The CBOR-encoded length of one envelope, the held set's byte measure (#186). Encoded
+/// with `encode_cbor`, as `Envelope::new` encodes in [`super::ordering`].
+fn held_len(message: &Envelope) -> Result<usize, SchemeError> {
+    Ok(encode_cbor(message).map_err(crate_error)?.len())
 }
 
 fn crate_error(err: impl std::fmt::Display) -> SchemeError {

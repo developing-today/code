@@ -2280,6 +2280,146 @@ fn test_open_a_joiner_misses_an_update_made_without_knowing_it() {
     );
 }
 
+// --- held bound (#186) -----------------------------------------------------------------------------
+
+/// A cast where member 3 has been removed, so everything member 1 sends afterwards is
+/// unreadable to 3 and held by its session: the stalled-peer case the bound exists for.
+fn removed_member_cast() -> Cast {
+    let mut cast = Cast::new(&[1, 2, 3]);
+    let create = cast.create(1, &[1, 2, 3]);
+    cast.deliver(&create, &[2, 3]);
+    let remove = cast.remove(1, 3);
+    cast.deliver(&remove, &[2, 3]);
+    cast
+}
+
+#[test]
+fn test_held_messages_are_refused_past_the_count_cap() {
+    let mut cast = removed_member_cast();
+    let mut first = None;
+    for i in 0..MAX_HELD_MESSAGES {
+        let label = format!("held {i}");
+        let message = cast.send(1, &label);
+        if first.is_none() {
+            first = Some(message.clone());
+        }
+        assert_eq!(
+            cast.session_mut(3).process(&message).expect("process"),
+            vec![Received::Withheld(message.id())],
+            "message {i} is held"
+        );
+    }
+    // A re-delivery at the cap is still just withheld: it is already held, so it is not a
+    // new arrival, and it must not double-count.
+    let first = first.expect("a first message");
+    assert_eq!(
+        cast.session_mut(3).process(&first).expect("process"),
+        vec![Received::Withheld(first.id())]
+    );
+    // The next distinct message is refused, naming the cap it hit, and is not held: a
+    // second delivery refuses again instead of reporting it withheld.
+    let extra = cast.send(1, "one too many");
+    let refused = cast.session_mut(3).process(&extra);
+    assert!(
+        matches!(
+            refused,
+            Err(SchemeError::HeldFull {
+                count: MAX_HELD_MESSAGES,
+                cap_count: MAX_HELD_MESSAGES,
+                cap_bytes: MAX_HELD_BYTES,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    assert!(
+        matches!(
+            cast.session_mut(3).process(&extra),
+            Err(SchemeError::HeldFull { .. })
+        ),
+        "the refused message was not held"
+    );
+}
+
+#[test]
+fn test_held_messages_are_refused_past_the_byte_cap() {
+    let mut cast = removed_member_cast();
+    let rng = Rng::default();
+    // One message over half the byte cap: two of them cannot both be held. The
+    // plaintext is 6 MiB, but the ciphertext is a plain `Vec<u8>` (no `serde_bytes`),
+    // so CBOR encodes it as an integer array at ~1.9 bytes per byte - roughly
+    // 12 MiB encoded: over half the 16 MiB cap, under the cap itself.
+    let big = vec![7_u8; 6 * 1024 * 1024];
+    let first = cast.session_mut(1).send(&big, &rng).expect("send");
+    assert_eq!(
+        cast.session_mut(3).process(&first).expect("process"),
+        vec![Received::Withheld(first.id())]
+    );
+    // A re-delivery does not double-count its bytes either.
+    assert_eq!(
+        cast.session_mut(3).process(&first).expect("process"),
+        vec![Received::Withheld(first.id())]
+    );
+    let second = cast.session_mut(1).send(&big, &rng).expect("send");
+    match cast.session_mut(3).process(&second) {
+        Err(SchemeError::HeldFull {
+            count,
+            bytes,
+            cap_count,
+            cap_bytes,
+        }) => {
+            assert_eq!(count, 1, "only the first message is held");
+            assert_eq!(cap_count, MAX_HELD_MESSAGES);
+            assert_eq!(cap_bytes, MAX_HELD_BYTES);
+            assert!(
+                bytes > MAX_HELD_BYTES / 2 && bytes <= MAX_HELD_BYTES,
+                "the tracked total is the first message's encoded length: {bytes}"
+            );
+        }
+        other => unreachable!("the second big message is refused: {other:?}"),
+    }
+}
+
+#[test]
+fn test_a_release_frees_the_held_budget_and_the_session_is_not_poisoned() {
+    let mut cast = removed_member_cast();
+    let rng = Rng::default();
+    let big = vec![9_u8; 6 * 1024 * 1024];
+    let held = cast.session_mut(1).send(&big, &rng).expect("send");
+    assert_eq!(
+        cast.session_mut(3).process(&held).expect("process"),
+        vec![Received::Withheld(held.id())]
+    );
+
+    // Re-adding 3 with the full bundle brings the secret, and processing the welcome
+    // releases the held message: it is read, and the refusal on the way did not poison
+    // the session.
+    let add = cast.add(1, 3);
+    let read = cast.deliver(&add, &[3]);
+    assert!(
+        read[0]
+            .iter()
+            .any(|got| matches!(got, Received::Plaintext(bytes) if bytes == &big)),
+        "the released message is read on the re-add welcome"
+    );
+    let after = cast.send(1, "after the re-add");
+    assert_eq!(
+        cast.deliver(&after, &[3]),
+        vec![vec![text("after the re-add")]],
+        "a fresh message reads normally after the release"
+    );
+
+    // Removed again, a new big message is held, not refused: the release dropped the
+    // tracked count and byte totals.
+    let remove = cast.remove(1, 3);
+    cast.deliver(&remove, &[2, 3]);
+    let again = cast.session_mut(1).send(&big, &rng).expect("send");
+    assert_eq!(
+        cast.session_mut(3).process(&again).expect("process"),
+        vec![Received::Withheld(again.id())]
+    );
+}
+
 // --- cost (P4.11) ---------------------------------------------------------------------------------
 
 /// The `index`th person of a benchmark group. [`person`] takes a one-byte seed, which runs out at
