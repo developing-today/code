@@ -256,7 +256,7 @@ describe("search panel integration", () => {
     expect(container.querySelector("#search-regex")).not.toBeNull();
   });
 
-  it("panel has role=search for accessibility", () => {
+  it("panel has role=search and aria-label for accessibility", () => {
     const { view, container } = createViewWithSearch();
     activeView = view;
     activeContainer = container;
@@ -265,6 +265,8 @@ describe("search panel integration", () => {
 
     const panel = container.querySelector(".search-panel");
     expect(panel?.getAttribute("role")).toBe("search");
+    expect(panel?.getAttribute("aria-label")).toBe("Find and replace");
+    expect(container.querySelector("#replace-all")?.getAttribute("aria-label")).toBe("Replace all");
   });
 
   it("opening panel twice does not create duplicate panels", () => {

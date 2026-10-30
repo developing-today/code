@@ -123,7 +123,7 @@ process, but the core rewrite should make rung 4 optional (off unless
 
 ## 6. Implementation map (first slice)
 
-Target tree, beside the v1 files, all under `pkgs/mcpx/plugin/opencode/v2/`:
+Target tree, beside the v1 files, all under `pkgs/mcpx/plugin/opencode/`:
 
 | file | contents | acceptance it satisfies |
 | --- | --- | --- |

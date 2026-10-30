@@ -148,9 +148,12 @@
   },
   "elicit": {
     "ttl": "120s",
+    "maxAge": "30m",
     "pollInterval": "250ms",
     "handlerTimeout": "5m",
-    "inputRounds": 8
+    "inputRounds": 8,
+    "retentionMaxAge": "720h",
+    "retentionMaxTerminalRows": 1000
   },
   "proto": {
     "native": true,

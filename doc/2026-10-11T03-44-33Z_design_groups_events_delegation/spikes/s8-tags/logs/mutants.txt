@@ -5,7 +5,7 @@ test concurrent_adds_survive_a_clear_that_did_not_see_them ... ok
 test convergence_under_partitions_and_any_delivery_order ... FAILED
 test join_is_commutative_associative_and_idempotent ... FAILED
 test result: FAILED. 2 passed; 3 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
-Test failed: assertion failed: `(left == right)` 
+Test failed: assertion failed: `(left == right)`
 minimal failing input: seen = 0, unseen = 1, seed = 0
 Test failed: replica 1 did not converge
 minimal failing input: (n, acts, seed) = (
@@ -17,9 +17,9 @@ test join_is_commutative_associative_and_idempotent ... FAILED
 test convergence_under_partitions_and_any_delivery_order ... FAILED
 test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
 assertion `left == right` failed: the clear waits for the add it names
-Test failed: assertion failed: `(left == right)` 
+Test failed: assertion failed: `(left == right)`
 minimal failing input: k = 1, seed = 261960309796579012
-Test failed: assertion failed: `(left == right)` 
+Test failed: assertion failed: `(left == right)`
 == m4_join_keeps_all
 test late_duplicate_of_a_removed_add_is_dropped ... ok
 test clear_naming_unseen_dots_does_not_remove_them ... ok
@@ -51,5 +51,5 @@ test join_is_commutative_associative_and_idempotent ... FAILED
 test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 Test failed: state-based join differs from the reference over the union of applied ops.
 minimal failing input: (n, acts, seed) = (
-Test failed: assertion failed: `(left == right)` 
+Test failed: assertion failed: `(left == right)`
 minimal failing input: (n, acts, seed, picks) = (
