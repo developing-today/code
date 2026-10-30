@@ -51,11 +51,31 @@ export function blockedSummary(items: readonly ProjectPoolItem[]): BlockedSummar
   // on the longest simple path starting at each ref. The visiting set
   // keeps a blocked-by cycle from looping (GitHub data should be
   // acyclic; a cycle degrades to a path, never a hang).
+  //
+  // Memo reuse is not limited to top-level calls: a node's chain is
+  // cached as soon as its subtree completes, and recursive calls reuse
+  // it whenever the node is not on the current path — shared blocker
+  // tails are computed once, not once per path (with the old
+  // top-level-only memo a 32-item fan-out DAG took ~7s; Codex review
+  // on PR #2831). The one unsafe case is a result whose computation
+  // ran into the cycle guard: that chain was truncated by the current
+  // path, so it is path-dependent and must not be cached. cycleHits
+  // counts guard hits; a frame caches only when the count is unchanged
+  // across its subtree, which also keeps every ancestor of a guard hit
+  // uncached. A cached chain can therefore never contain a node on the
+  // caller's path: such a node would close a cycle through the cached
+  // node, and computing it would have hit the guard.
   const memo = new Map<RefKey, RefKey[]>();
+  let cycleHits = 0;
   const chainFrom = (ref: RefKey, visiting: Set<RefKey>): RefKey[] => {
-    if (memo.has(ref) && visiting.size === 0) return memo.get(ref)!;
-    if (visiting.has(ref)) return [];
+    const cached = memo.get(ref);
+    if (cached && !visiting.has(ref)) return cached;
+    if (visiting.has(ref)) {
+      cycleHits += 1;
+      return [];
+    }
     visiting.add(ref);
+    const hitsBefore = cycleHits;
     const item = byRef.get(ref);
     let best: RefKey[] = [ref];
     for (const blocker of item?.blockedBy ?? []) {
@@ -64,7 +84,7 @@ export function blockedSummary(items: readonly ProjectPoolItem[]): BlockedSummar
       if (rest.length + 1 > best.length) best = [ref, ...rest];
     }
     visiting.delete(ref);
-    if (visiting.size === 0) memo.set(ref, best);
+    if (cycleHits === hitsBefore) memo.set(ref, best);
     return best;
   };
 

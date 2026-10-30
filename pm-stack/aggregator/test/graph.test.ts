@@ -75,6 +75,22 @@ describe("blockedSummary", () => {
     expect(new Set(s.longestChain).size).toBe(s.longestChain.length);
   });
 
+  test("shared blocker tails are memoized, not re-enumerated per path", () => {
+    // Codex repro on PR #2831: each item blocked by the next two makes
+    // naive DFS enumerate exponentially many paths (~7s at 32 items).
+    // With suffix memoization this is instant and the longest chain
+    // still walks every item.
+    const items = Array.from({ length: 32 }, (_, i) => {
+      const n = i + 1;
+      const blockedBy = [R(n + 1), R(n + 2)].filter((_, j) => n + j + 1 <= 32);
+      return item({ number: n, blockedBy });
+    });
+    const s = blockedSummary(items);
+    expect(s.longestChain.length).toBe(32);
+    expect(s.longestChain[0]).toBe(R(1));
+    expect(s.longestChain[31]).toBe(R(32));
+  });
+
   test("closed items are never counted as blocked", () => {
     const s = blockedSummary([item({ number: 1, state: "closed", blockedBy: [R(2)] }), item({ number: 2 })]);
     expect(s.blockedCount).toBe(0);
