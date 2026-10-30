@@ -42,7 +42,7 @@ The pending transfer's TigerBeetle `timeout` is `refund_window + posting_grace`,
 
 1. A scheduler sweep finds grants in PendingHold whose window ended at least `posting_grace/2` ago and which have **no** adverse attestation (§3) recorded against their fingerprint or grantee.
 2. For each, the service creates the post-pending transfer (phase two) referencing the pending transfer id. Grants move to **Active**; the grant record stores `posted_transfer_id` and `active_since`.
-3. The sweep is idempotent: posting an already-posted or already-voided pending transfer is a ledger error the sweep records and moves past — the at-most-once resolution makes a double-post impossible, so a crashed sweep is retried whole.
+3. The sweep is idempotent and **resolves, never skips**: on encountering a grant still in PendingHold whose pending transfer the ledger says is already resolved, the sweep reads the ledger outcome and completes the matching grant-state update — posted → **Active** (recording `posted_transfer_id`); voided → the §1.4/§1.3-step-4 path for the recorded cause. A crash between the ledger post and the grant-record update therefore heals on the next sweep instead of stranding spendable funds behind a PendingHold label (which would route a later refund down the void-only path and lose the posted value). The at-most-once resolution makes a double-post impossible, so a crashed sweep is retried whole.
 4. Fail-safe: if the sweep never runs and the `timeout` fires, TigerBeetle voids the pending transfer. The grant is **not** silently lost: the void is an auditable ledger event, and the service re-issues the grant as a directly posted transfer after re-checking the attestation log for the full window + horizon-to-date. Re-issuance after a lapsed window is within policy precisely because the window has lapsed; the re-issue references the voided transfer id in the new grant record version.
 
 ### 1.4 Void flow (adverse event inside the window)
@@ -55,8 +55,8 @@ The pending transfer's TigerBeetle `timeout` is `refund_window + posting_grace`,
 
 ### 2.1 Hash construction
 
-- Canonical form of a key: strip all whitespace and separator characters (`-`, space), uppercase ASCII. Per-storefront key formats that need different canonicalisation register their rule in the source configuration; the rule version is part of the hash input so a rule change does not silently re-map old keys.
-- Fingerprint: `SHA-256("id-grant-key-v1" || 0x00 || storefront_id || 0x00 || canonical_rule_version || 0x00 || canonical_key)`, hex-encoded.
+- Canonical form of a key: strip all whitespace and separator characters (`-`, space), uppercase ASCII. **This canonicalisation is frozen for the life of a storefront family**: it is the uniqueness identity of a key, so anything that changed it would mint a second identity for an already-granted or already-revoked key and reopen the farming loop. Per-storefront rules in the source configuration are therefore *validation only* (accepted character sets, length, check digits — they may reject a presentation, they may never change its canonical form). If a storefront's real key format ever changes so the frozen canonicalisation no longer fits, that is a new storefront namespace, and namespaces belonging to one storefront form a **storefront family**: the uniqueness (§2.2) and publisher-revocation (§2.4) checks always run across the whole family, so a key granted or revoked under an old namespace is still recognised under the new one.
+- Fingerprint: `SHA-256("id-grant-key-v1" || 0x00 || storefront_id || 0x00 || canonical_key)`, hex-encoded. Deliberately no rule version in the hash — see above.
 - The raw key exists only in the registration request's memory. It is never stored, never logged, and never appears in an error message or attestation. Logs may carry the first 12 hex characters of a fingerprint for correlation.
 
 ### 2.2 Storage and the one-grant rule
@@ -77,16 +77,27 @@ Enforcement is the primary key, not an application check: grant creation (§2.3)
 ### 2.3 Registration flow (Presented → PendingHold / Rejected)
 
 1. Client presents a key + storefront to the currency service, authenticated as the registering ID.
-2. Service canonicalises and hashes (§2.1), discards the raw key.
-3. Service checks the publisher-revocation index (§2.4): a fingerprint already revoked by its publisher is **Rejected** before any grant exists.
-4. Transaction: insert `grant_keys` row (conflict → **Rejected**, §2.2) + insert grant record {grant_id, fingerprint, grantee_id, currency, amount, source, `refund_window` snapshot, `revocation_policy` snapshot (§5.1), state = PendingHold} + create the TigerBeetle pending transfer (§1.1) with the ledger transfer id stored on the grant record. If the ledger call fails, the transaction rolls back — a grant record without its pending transfer must not exist.
-5. The grant amount and currency come from the source configuration for (storefront, product) — never from the request.
+2. **Verification before anything is recorded.** The service validates the key against the storefront's authoritative channel (e.g. the storefront's key/product API) while it still holds the raw key: the key must be real, must not already be consumed in a way the storefront forbids, and the call must return the **product attribution** the grant amount is selected from. A string that merely looks like a key earns nothing — without this step any authenticated caller could present arbitrary distinct strings and harvest grants no refund attestation would ever claw back. A storefront with no authoritative verification channel cannot be enabled as a grant source; that is a source-eligibility rule, not a per-grant judgement. Only after verification succeeds does the service canonicalise and hash (§2.1) and discard the raw key.
+3. Service checks the publisher-revocation index (§2.4) across the storefront family: a fingerprint already revoked by its publisher is **Rejected** before any grant exists.
+4. **Intent-first creation (§2.5)** — the registry database and TigerBeetle are two systems and share no transaction, so creation is a durable-intent protocol, not a rollback: (a) in one database transaction, insert the `grant_keys` row (conflict → **Rejected**, §2.2) and the grant record {grant_id, fingerprint, grantee_id, currency, amount from the verified product attribution, source, `refund_window` snapshot, `revocation_policy` snapshot (§5.1), state = Presented} with a **deterministic TigerBeetle transfer id derived from the grant_id**; (b) create the pending transfer (§1.1) under that id — creating an already-existing transfer id is an idempotent no-op in the ledger, so a lost response is simply retried; (c) on ledger confirmation, advance the grant to PendingHold. A reconciler (§2.5) resolves any grant stranded between steps.
+5. The grant amount and currency come from the source configuration for (storefront, product as returned by step 2's verification) — never from the request.
 
 ### 2.4 Publisher-revocation batch intake
 
 - Publishers revoke key batches (e.g. a stolen batch, abuse case 4). Intake format: a signed JSON document `{publisher_id, storefront_id, batch_id, issued_at, fingerprints: [...]}`, where fingerprints are computed with the public §2.1 algorithm so **the publisher never sends raw keys**. Signature: the publisher's registered key for that storefront namespace.
 - Intake is idempotent on `(publisher_id, batch_id)`: a replayed batch is recorded and changes nothing twice.
 - Effect per fingerprint: `key_state = revoked_by_publisher`; then by grant state — no grant yet → future presentations Rejected (§2.3 step 3); grant in PendingHold → void (§1.4); grant Active → for-cause clawback (§4). The batch document itself is stored as the attestation evidence (§3).
+
+### 2.5 Ledger atomicity: intent-first, transfer-second, confirm-third
+
+Every flow in this spec that pairs a control-plane record with a ledger transfer (grant creation §2.3, post/void §1, clawback §4.2) follows the same protocol, because no database rollback can undo a TigerBeetle transfer whose response was lost:
+
+1. **Intent:** write the control-plane record first, in its pre-ledger state, carrying a deterministic ledger transfer id derived from the record's own id (grant_id, debt_id, clawback id). Retrying the intent write is safe — the id is the identity.
+2. **Transfer:** issue the ledger call under that id. Ledger creation with an existing id returns the existing transfer instead of duplicating it, so a lost or timed-out response is retried, not compensated.
+3. **Confirm:** advance the control-plane record to its post-ledger state.
+4. **Reconcile:** a standing reconciler scans records stuck in a pre-ledger state past a freshness bound, queries the ledger by transfer id, and drives each to the confirm step (transfer exists) or back to a clean retry/abandon decision (it does not, and the paired attestation check is re-run first). No record may sit in a pre-ledger state silently; the scan's backlog is an operator-visible metric.
+
+The clawback/debt pair (§4.2 step 5) uses the same shape with the roles ordered for safety: the debt record (intent, with the clawback transfer id) is written **before** the compensating transfer is issued, so value can never move without the obligation already recorded; the confirm step marks both from the ledger outcome, and a partial outcome is the normal confirm, not an exception.
 
 ## 3. External-event attestation records
 
@@ -133,7 +144,7 @@ The grant record carries `amount_outstanding`: initially the grant amount; decre
 2. The service computes `clawback_due = amount_outstanding` and `available = grantee's current balance of the currency across their accounts`.
 3. **Partial clawback is the normal case, not an exception:** the service posts a compensating transfer of `min(clawback_due, available)` from the grantee to the issuer's clawback account (posted transfers are immutable, #2040 — a clawback is a new transfer, never an edit). Third-party holders are never a clawback source.
 4. If the full due amount moved: grant → **Revoked**, `clawed_amount` recorded.
-5. If less moved (including zero): grant → **Shortfall**; the remainder becomes a debt record (§4.3) in the same transaction as the partial transfer, so "we clawed what existed" and "the rest is owed" can never diverge.
+5. If less moved (including zero): grant → **Shortfall**; the remainder becomes a debt record (§4.3) written as durable intent before the transfer under the §2.5 protocol, so "we clawed what existed" and "the rest is owed" can never diverge.
 
 ### 4.3 Debt records
 
@@ -151,8 +162,8 @@ The grant record carries `amount_outstanding`: initially the grant amount; decre
 
 - **Offset against future value:** any future grant issuance or service payout to the grantee in the same currency is applied to the oldest open debt first (FIFO across debts): the issuance/payout transfer is split — offset portion to the issuer's clawback account with an offset record referencing both the debt and the transfer, remainder (if any) delivered normally. Offsets decrement `amount_outstanding` atomically with the transfer.
 - **Suspension effects** while any debt is open: the grantee cannot register new grants (§2.3 refuses with the open debt id named), and grant-derived redemptions for that ID are refused at the `accept_payment` layer. Ordinary holding and transfer of unrelated value is unaffected — suspension is a grant-system consequence, not a general account freeze (there is no freeze primitive, #2040, and this spec does not invent one).
-- **Settlement:** `amount_outstanding` reaching zero via offsets (or a direct repayment transfer referencing the debt) moves the debt to `settled`, the grant to **Settled**, and lifts suspension.
-- **Write-off:** the issuer may write off a debt (the sympathetic-case valve of abuse case 4) by a signed write-off record `{debt_id, amount, reason, issuer_signature}`. The debt moves to `written_off`, the grant to **Settled**, suspension lifts, and the loss is permanently visible as the issuer's signed act — a write-off is never a silent deletion. Debt expiry, if any, is an open parameter (OP-4), not a default.
+- **Settlement:** `amount_outstanding` reaching zero via offsets (or a direct repayment transfer referencing the debt) moves the debt to `settled` and the grant to **Settled**. Suspension is a function of *all* the grantee's debts, recomputed at this moment: it lifts **only if the grantee has no remaining open debt** — settling one of several debts changes nothing about suspension while a larger one stands.
+- **Write-off:** the issuer may write off a debt (the sympathetic-case valve of abuse case 4) by a signed write-off record `{debt_id, amount, reason, issuer_signature}`. The debt moves to `written_off`, the grant to **Settled**, the same all-debts suspension recompute as settlement applies, and the loss is permanently visible as the issuer's signed act — a write-off is never a silent deletion. Debt expiry, if any, is an open parameter (OP-4), not a default.
 
 ## 5. `revocation_policy` enforcement
 
@@ -172,7 +183,7 @@ A refusal is a recorded, signed service response naming the policy value and the
 
 ### 5.3 Issuer-discretion revocation: notice + grace flow
 
-1. The issuer publishes a **revocation notice object** `{notice_id, scope: grant_id | currency, cause, published_at, effective_at, issuer_signature}` to the service's public revocation registry. `effective_at - published_at` is the grace window (OP-5); a notice with a shorter window is refused at intake.
+1. The issuer submits a **revocation notice object** `{notice_id, scope: grant_id | currency, cause, effective_at, issuer_signature}` to the service's public revocation registry. The registry stamps `registered_at` — the service's own first-publication timestamp — at intake; the issuer's timestamps are informational only, because a signed `published_at` proves what the issuer wrote, not when holders could first see it. Intake requires `effective_at >= registered_at + grace window (OP-5)` and recomputes nothing from issuer-supplied times; a notice asking for an earlier effect is refused at intake. Grace is therefore measured from when the warning actually became public.
 2. During grace, affected grants stay Active and fully usable — holders can spend, transfer, or exit; the notice is the warning, and usability during grace is what makes it a warning rather than a seizure with a timestamp.
 3. A holder may file a dispute record referencing the notice; a dispute does not block execution (the definition promised the issuer this power) but is permanently attached to the notice — abusive revocations carry their objections with them.
 4. At `effective_at`, the §4 choreography runs per grant in scope, with the notice id standing in for the attestation id in the debt record's cause field.
@@ -190,15 +201,15 @@ Every state and transition in the #2042 diagram, and the spec mechanism that imp
 |---|---|
 | **Presented** | §2.3 registration in flight: key canonicalised + hashed, grant record not yet committed |
 | Presented → **Rejected**: fingerprint already granted / key revoked by publisher | §2.2 primary-key conflict; §2.3 step 3 publisher-revocation index check |
-| Presented → **PendingHold**: key verified, grant issued as pending hold | §2.3 step 4 (registry insert + grant record + TigerBeetle pending transfer, one transaction) + §1.1 |
+| Presented → **PendingHold**: key verified, grant issued as pending hold | §2.3 step 2 (authoritative storefront verification + product attribution), then §2.3 step 4 / §2.5 intent-first creation of the TigerBeetle pending transfer + §1.1 |
 | PendingHold → **Active**: refund window lapses, hold posts | §1.3 post flow (scheduler sweep; timeout-void re-issuance fail-safe) |
 | PendingHold → **Revoked**: refund / chargeback / publisher revocation in window | §1.4 void flow on a §3 attestation (incl. §2.4 batches) |
 | Active → **Spent**: tokens consumed for services (terminal per amount) | §4.1: `amount_outstanding` attributed consumption via `accept_payment` redemptions; the grant is Spent when its outstanding figure reaches zero by consumption. (A grant is an amount, not a coin: partial consumption is a figure change, full consumption is the terminal state.) |
 | Active → **ClawbackPending**: refund / chargeback / for-cause revocation notice | §4.2 step 1 (§3 attestation, or §5.3 notice at `effective_at`) — subject to the §5.2 policy check |
 | ClawbackPending → **Revoked**: clawback of unspent balance succeeds | §4.2 steps 2–4 (compensating transfer of the full outstanding figure) |
-| ClawbackPending → **Shortfall**: balance already spent — partial clawback + debt record | §4.2 step 5 + §4.3 debt record creation in the same transaction |
+| ClawbackPending → **Shortfall**: balance already spent — partial clawback + debt record | §4.2 step 5 + §4.3 debt record creation via the §2.5 intent-first protocol |
 | Shortfall → **Settled**: debt offset against future grants/earnings, or written off by issuer | §4.3 offset rules, settlement, and signed write-off |
-| Active → **Expired**: grant terms expire unspent (if the currency definition says grants expire) | Definition-carried grant expiry: at the expiry time the service posts a compensating transfer of the remaining outstanding figure to the issuer sink account named in the currency definition and zeroes the figure. (If the definition declares no expiry, this transition does not exist for that currency.) A grant still in PendingHold at its expiry voids instead — it was never spendable. |
+| Active → **Expired**: grant terms expire unspent (if the currency definition says grants expire) | Definition-carried grant expiry: at the expiry time the service posts a compensating transfer of `min(amount_outstanding, grantee's available balance)` to the issuer sink account named in the currency definition and zeroes the figure. A shortfall here is **not** a debt and triggers no suspension: transfers out were a permitted use of an Active grant, expiry was a term the grantee accepted, and no restitution obligation arises — the unrecovered remainder is recorded on the grant record as `expiry_shortfall` (the issuer's visible, by-terms loss) and the grant still reaches Expired terminally. Third-party holders are never an expiry source, exactly as in §4. (If the definition declares no expiry, this transition does not exist for that currency.) A grant still in PendingHold at its expiry voids instead — it was never spendable. |
 | **Revoked** → terminal, **Spent** → terminal | No outgoing transitions are implemented; attestations arriving against terminal grants are recorded as no-ops (§3.2) |
 
 ## 8. Abuse-case trace (#2042 cases 1–6)
