@@ -932,6 +932,15 @@ status:  proposed
 effort:  medium
 ```
 
+*Correction, 2026-10-30: the re-export proposed here is still the
+open part — but "remote daemon" itself is no longer unbuilt. Since
+#1967 the daemon can embed a Tailscale node (tsnet,
+`internal/daemon/transport_tsnet.go`) and be reached by its tailnet
+identity, and the settings registry ships the client half
+(`daemon.endpoint`, `daemon.address`). What remains proposal is the
+code-mode MCP server / OpenAPI endpoint re-export above, not remote
+reachability as such.*
+
 Distinct from importing or emitting OpenAPI: this makes mcpx itself something
 other tools connect *to*.
 
