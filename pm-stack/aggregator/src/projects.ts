@@ -34,7 +34,7 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
           databaseId
           type
           content {
-            ... on Issue { number title state url repository { nameWithOwner } updatedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 10) { nodes { number url repository { nameWithOwner } } } blocking(first: 10) { nodes { number url repository { nameWithOwner } } } }
+            ... on Issue { number title state url repository { nameWithOwner } updatedAt author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
             ... on PullRequest { number title state url repository { nameWithOwner } updatedAt author { login } isDraft }
             ... on DraftIssue { title }
           }

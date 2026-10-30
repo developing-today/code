@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import type { OrchestrationSection } from "../src/model.ts";
-import { derivedProjectState, parseProjectItems, poolItemToGhItem, projectDisagreement, resolveEpicRefs } from "../src/projects.ts";
+import { derivedProjectState, parseProjectItems, poolItemToGhItem, projectDisagreement, PROJECT_QUERY, resolveEpicRefs } from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
 
@@ -315,6 +315,13 @@ const GQL_EDGES = {
 };
 
 describe("collector graph edges (#2399 contract)", () => {
+  test("dependency connections request the supported maximum (50), not a truncating 10", () => {
+    // Codex P2 on PR #2744: first: 10 silently dropped dependency edges
+    // past ten; GitHub supports up to 50 per relationship type.
+    expect(PROJECT_QUERY).toContain("blockedBy(first: 50)");
+    expect(PROJECT_QUERY).toContain("blocking(first: 50)");
+  });
+
   test("parses parent, blocked-by, and blocks refs; drops incomplete edge nodes", () => {
     const pool = parseProjectItems(GQL_EDGES);
     expect(pool.length).toBe(6);
