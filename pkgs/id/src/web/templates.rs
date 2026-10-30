@@ -164,7 +164,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
          value=\"{}\" />",
         search_value
     );
-    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" /> show auto/archive</label>");
+    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" aria-label=\"Show auto and archive files\" /> show auto/archive</label>");
     let _ = write!(
         html,
         "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",
@@ -204,8 +204,8 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
         html.push_str("<span class=\"font-bold\" id=\"bulk-count\">0 selected</span>");
         html.push_str("<input type=\"text\" id=\"bulk-tag-key\" aria-label=\"Bulk tag key\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"key\" />");
         html.push_str("<input type=\"text\" id=\"bulk-tag-value\" aria-label=\"Bulk tag value\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"value (optional)\" />");
-        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
-        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono text-base-content/50\" onclick=\"window.idApp?.bulkClearSelection?.()\">clear</button>");
+        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" aria-label=\"Add bulk tag\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
+        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono text-base-content/50\" aria-label=\"Clear file selection\" onclick=\"window.idApp?.bulkClearSelection?.()\">clear</button>");
         html.push_str("</div>");
 
         html.push_str("<ul class=\"list-none m-0 p-0\">");
@@ -259,11 +259,13 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
                 let key_esc = html_escape(key);
                 match value {
                     Some(v) => {
-                        let truncated = if v.len() > crate::tags::TAG_DISPLAY_MAX_BYTES {
-                            format!("{}…", &v[..crate::tags::TAG_DISPLAY_MAX_BYTES])
-                        } else {
-                            v.clone()
-                        };
+                        // Truncate on a char boundary: a raw &v[..256] slice
+                        // panics when byte 256 splits a multi-byte character
+                        // (#815). The CLI's helper already handles this.
+                        let truncated = crate::commands::tag::truncate_on_char_boundary(
+                            v,
+                            crate::tags::TAG_DISPLAY_MAX_BYTES,
+                        );
                         let val_esc = html_escape(&truncated);
                         let _ = write!(
                             tag_pills,
@@ -334,7 +336,8 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
     }
 
     // Pagination controls
-    let total_pages = (page.total + page.per_page - 1) / page.per_page.max(1);
+    let per_page = page.per_page.max(1);
+    let total_pages = page.total.saturating_add(per_page.saturating_sub(1)) / per_page;
     if total_pages > 1 {
         let search_param = page
             .search
@@ -345,8 +348,25 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
         html.push_str("<div class=\"flex items-center justify-between px-3 py-2 border-t border-base-300 text-xs\">");
 
         // Info text
-        let start = (page.page - 1) * page.per_page + 1;
-        let end = (start + page.files.len()).saturating_sub(1);
+        // Display arithmetic must be saturating (#1472): paginate() echoes
+        // the requested page unclamped, so page can be usize::MAX here.
+        // An out-of-range page has no files; pin its range to 0-0 so the
+        // rendered range never inverts and never exceeds the total.
+        let (start, end) = if page.files.is_empty() {
+            (0, 0)
+        } else {
+            let start = page
+                .page
+                .saturating_sub(1)
+                .saturating_mul(page.per_page)
+                .saturating_add(1)
+                .min(page.total);
+            let end = start
+                .saturating_add(page.files.len())
+                .saturating_sub(1)
+                .min(page.total);
+            (start, end)
+        };
         let _ = write!(
             html,
             "<span class=\"text-base-content/50\">{}-{} of {}</span>",
@@ -435,10 +455,10 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
         "            <span class=\"editor-status\" id=\"editor-status\">connecting...</span>\n",
     );
     // Save button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" aria-label=\"Save document\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
     // Download dropdown
     html.push_str("            <span class=\"relative\" id=\"download-dropdown\">\n");
-    html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\">dl</button>\n");
+    html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\" aria-label=\"Download\">dl</button>\n");
     html.push_str("                <span class=\"dropdown-menu\" id=\"download-menu\">\n");
     html.push_str(
         "                    <button class=\"px-3 py-1 text-xs hover:bg-base-300 cursor-pointer text-left whitespace-nowrap\" data-dl-format=\"raw\">raw</button>\n",
@@ -452,9 +472,9 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("                </span>\n");
     html.push_str("            </span>\n");
     // Rename button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
     // Copy button
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     html.push_str("            <a href=\"/files\" data-nav>files</a>\n");
     html.push_str("            <a href=\"/peers\" data-nav>peers</a>\n");
     html.push_str("            <a href=\"/settings\" data-nav>settings</a>\n");
@@ -621,8 +641,8 @@ pub fn render_media_viewer(doc_id: &str, name: &str, media_type: MediaType) -> S
     html.push_str("\">\n");
     html.push_str("        <a href=\"/\" data-nav class=\"text-muted\">&larr; back to files</a>\n");
     html.push_str("        <span class=\"viewer-btns flex items-center gap-2\">\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
         "            <a href=\"{}\" download=\"{}\" class=\"btn btn-primary btn-xs font-mono\">Download</a>\n",
@@ -671,8 +691,8 @@ pub fn render_binary_viewer(doc_id: &str, name: &str) -> String {
     html.push_str("\">\n");
     html.push_str("        <a href=\"/\" data-nav class=\"text-muted\">&larr; back to files</a>\n");
     html.push_str("        <span class=\"viewer-btns flex items-center gap-2\">\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
-    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"rename-btn\" title=\"Rename file\" aria-label=\"Rename file\" onclick=\"window.idApp?.renameFile?.()\">rename</button>\n");
+    html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"copy-btn\" title=\"Copy file\" aria-label=\"Copy file\" onclick=\"window.idApp?.copyFile?.()\">copy</button>\n");
     let _ = write!(
         html,
         "            <a href=\"{}\" download=\"{}\" class=\"btn btn-primary btn-xs font-mono\">Download</a>\n",
@@ -720,9 +740,9 @@ pub fn render_settings(node_id: &str) -> String {
     html.push_str("        <h3 class=\"mt-8\">Theme</h3>\n");
     html.push_str("        <p class=\"text-muted mb-4\">Choose your preferred visual theme.</p>\n");
     html.push_str("        <div class=\"flex gap-4\">\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"sneak\">Sneak</button>\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"arch\">Arch</button>\n");
-    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"mech\">Mech</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"sneak\" aria-label=\"Sneak theme\">Sneak</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"arch\" aria-label=\"Arch theme\">Arch</button>\n");
+    html.push_str("            <button class=\"theme-btn btn btn-sm btn-outline btn-primary\" data-theme=\"mech\" aria-label=\"Mech theme\">Mech</button>\n");
     html.push_str("        </div>\n");
     html.push_str("        \n");
     html.push_str("        <h3 class=\"mt-8\">Keyboard Shortcuts</h3>\n");
@@ -766,15 +786,15 @@ pub fn render_world_page(assets: &AssetUrls) -> String {
     <h2 class="font-bold">Join or invite</h2>
     <label class="form-control max-w-xl">
       <span class="label-text">Display name</span>
-      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest">
+      <input data-world-name class="input input-bordered" maxlength="48" autocomplete="nickname" value="guest" aria-label="Display name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">World <span class="opacity-60">(blank for the server's default)</span></span>
-      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*">
+      <input data-world-world class="input input-bordered font-mono" maxlength="64" autocomplete="off" placeholder="lobby" pattern="[a-z0-9_-]*" aria-label="World name">
     </label>
     <label class="form-control max-w-xl">
       <span class="label-text">Guest capability</span>
-      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability">
+      <input data-world-capability class="input input-bordered font-mono" type="password" autocomplete="off" placeholder="Paste an invite capability" aria-label="Guest capability">
     </label>
     <div class="flex flex-wrap gap-2">
       <button data-world-join class="btn btn-primary" type="button">Join world</button>
@@ -908,9 +928,27 @@ pub(super) fn html_escape(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// Largest timestamp `format_unix_timestamp` renders: 9999-12-31
+/// 23:59:59 UTC, the last instant with a 4-digit year.
+const MAX_FORMATTABLE_TS: u64 = 253_402_300_799;
+
 /// Format a unix timestamp as a short date string (YYYY-MM-DD HH:MM).
+///
+/// Out-of-range timestamps render as an empty string (the file list
+/// already omits the date span for empty output). Timestamps arrive
+/// from unvalidated tag names and file metadata — a value like
+/// `u64::MAX` (e.g. a file named `x.archive.18446744073709551615`) or a
+/// millisecond-scale value must never reach the conversion: the
+/// previous implementation looped year-by-year from 1970, so one huge
+/// value hung every file-list render (#934). The conversion itself is
+/// the closed-form civil-from-days algorithm (Howard Hinnant) —
+/// constant time for every accepted input.
 #[allow(clippy::cast_possible_truncation)]
 fn format_unix_timestamp(ts: u64) -> String {
+    if ts > MAX_FORMATTABLE_TS {
+        return String::new();
+    }
+
     // Simple UTC conversion without pulling in chrono
     let secs = ts;
     let mins = secs / 60;
@@ -920,51 +958,22 @@ fn format_unix_timestamp(ts: u64) -> String {
     let hour = hours % 24;
     let minute = mins % 60;
 
-    // Calculate year/month/day from days since epoch
-    let mut y: i64 = 1970;
-    #[allow(clippy::cast_possible_wrap)] // days since 1970 won't exceed i64::MAX
-    let mut remaining = days_total as i64;
+    // Civil date from days since epoch (Hinnant's algorithm). All
+    // values are non-negative here (ts is unsigned and range-checked),
+    // so plain truncating division applies throughout.
+    #[allow(clippy::cast_possible_wrap)] // days in range fit i64 easily
+    let z = days_total as i64 + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097; // day of era, [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // year of era, [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year, [0, 365]
+    let mp = (5 * doy + 2) / 153; // month index from March, [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if month <= 2 { y + 1 } else { y };
 
-    loop {
-        let days_in_year: i64 = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-            366
-        } else {
-            365
-        };
-        if remaining < days_in_year {
-            break;
-        }
-        remaining -= days_in_year;
-        y += 1;
-    }
-
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days: [i64; 12] = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut m = 0usize;
-    for (i, &md) in month_days.iter().enumerate() {
-        if remaining < md {
-            m = i;
-            break;
-        }
-        remaining -= md;
-    }
-    let day = remaining + 1;
-    let month = m + 1;
-
-    format!("{y:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }
 
 /// Format a file size in human-readable form.
@@ -999,6 +1008,33 @@ mod tests {
         assert_eq!(html_escape("<script>"), "&lt;script&gt;");
         assert_eq!(html_escape("a & b"), "a &amp; b");
         assert_eq!(html_escape("say \"hello\""), "say &quot;hello&quot;");
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_normal_values_unchanged() {
+        assert_eq!(format_unix_timestamp(0), "1970-01-01 00:00");
+        assert_eq!(format_unix_timestamp(951_782_400), "2000-02-29 00:00");
+        assert_eq!(format_unix_timestamp(1_727_740_800), "2024-10-01 00:00");
+        assert_eq!(format_unix_timestamp(1_727_744_160), "2024-10-01 00:56");
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_u64_max_is_empty() {
+        // Regression (#934): this value previously looped ~5.8e11 times
+        // (once per year from 1970) and hung the file-list render.
+        assert_eq!(format_unix_timestamp(u64::MAX), "");
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_millisecond_scale_is_empty() {
+        // A millisecond-scale value misread as seconds is out of range.
+        assert_eq!(format_unix_timestamp(1_727_740_800_000), "");
+    }
+
+    #[test]
+    fn test_format_unix_timestamp_year_9999_boundary() {
+        assert_eq!(format_unix_timestamp(253_402_300_799), "9999-12-31 23:59");
+        assert_eq!(format_unix_timestamp(253_402_300_800), "");
     }
 
     #[test]
@@ -1046,6 +1082,9 @@ mod tests {
         assert!(html.contains("data-world-view"));
         assert!(html.contains("href=\"/files\""));
         assert!(html.contains("ProseMirror collaborative editor/viewer"));
+        assert!(html.contains("aria-label=\"Display name\""));
+        assert!(html.contains("aria-label=\"World name\""));
+        assert!(html.contains("aria-label=\"Guest capability\""));
     }
 
     #[test]
@@ -1105,6 +1144,100 @@ mod tests {
     }
 
     #[test]
+    fn test_render_file_list_pagination_normal_page_display() {
+        // Normal paging renders exactly as before (#1472): page 2 at
+        // per_page 50 over 300 files shows 51-100 of 300.
+        let files: Vec<FileInfo> = (0..50)
+            .map(|i| FileInfo {
+                name: format!("f{i}.txt"),
+                display_name: None,
+                hash: "abc123def456".to_owned(),
+                size: 1024,
+                kind: FileKind::Primary,
+                parent_name: None,
+                timestamp: None,
+                created_at: None,
+                modified_at: None,
+                tags: vec![],
+                is_deleted: false,
+            })
+            .collect();
+        let page = FileListPage {
+            files,
+            total: 300,
+            page: 2,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(html.contains("51-100 of 300"), "html: {html}");
+    }
+
+    #[test]
+    fn test_render_file_list_pagination_overflow_page_50() {
+        // Regression (#1472): paginate() echoes page=usize::MAX unclamped;
+        // the display arithmetic used to panic (debug) / wrap (release).
+        let page = FileListPage {
+            files: vec![],
+            total: 300,
+            page: usize::MAX,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(html.contains("0-0 of 300"), "html: {html}");
+    }
+
+    #[test]
+    fn test_render_file_list_pagination_overflow_page_200() {
+        let page = FileListPage {
+            files: vec![],
+            total: 300,
+            page: usize::MAX,
+            per_page: 200,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(html.contains("0-0 of 300"), "html: {html}");
+    }
+
+    #[test]
+    fn test_render_file_list_tag_value_straddling_truncation_boundary() {
+        // Regression (#815): a tag value longer than TAG_DISPLAY_MAX_BYTES
+        // whose byte-256 offset splits a multi-byte character used to panic
+        // on &v[..256]. 'é' here occupies bytes 255..257.
+        let value = format!("{}é{}", "a".repeat(255), "tail-tail-tail");
+        assert!(value.len() > crate::tags::TAG_DISPLAY_MAX_BYTES);
+        let files = vec![FileInfo {
+            name: "tagged.txt".to_owned(),
+            display_name: None,
+            hash: "abc123def456".to_owned(),
+            size: 1024,
+            kind: FileKind::Primary,
+            parent_name: None,
+            timestamp: None,
+            created_at: None,
+            modified_at: None,
+            tags: vec![("note".to_owned(), Some(value))],
+            is_deleted: false,
+        }];
+        let page = FileListPage {
+            total: files.len(),
+            files,
+            page: 1,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list(&page);
+        // Truncated on the char boundary before 'é', with the ellipsis.
+        assert!(html.contains(&format!("note: {}…", "a".repeat(255))));
+    }
+
+    #[test]
     fn test_render_peers_empty() {
         let html = render_peers(&[]);
         assert!(html.contains("No peers discovered yet"));
@@ -1138,6 +1271,56 @@ mod tests {
     // ========================================================================
     // Editor page rename/copy button tests
     // ========================================================================
+
+    #[test]
+    fn test_render_editor_action_buttons_have_aria_labels() {
+        let html = render_editor("abc123", "test.md", "<p>hello</p>", "testhash123");
+        assert!(
+            html.contains("aria-label=\"Save document\""),
+            "save button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "copy button should have aria-label"
+        );
+    }
+
+    #[test]
+    fn test_render_file_list_bulk_action_buttons_have_aria_labels() {
+        let page = FileListPage {
+            total: 1,
+            files: vec![FileInfo {
+                name: "test.txt".to_owned(),
+                display_name: None,
+                hash: "abc123def456".to_owned(),
+                size: 1024,
+                kind: FileKind::Primary,
+                parent_name: None,
+                timestamp: None,
+                created_at: None,
+                modified_at: None,
+                tags: vec![],
+                is_deleted: false,
+            }],
+            page: 1,
+            per_page: 50,
+            search: None,
+            show_deleted: false,
+        };
+        let html = render_file_list_content(&page);
+        assert!(
+            html.contains("aria-label=\"Add bulk tag\""),
+            "bulk tag button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Clear file selection\""),
+            "clear selection button should have aria-label"
+        );
+    }
 
     #[test]
     fn test_render_editor_has_rename_button() {
@@ -1192,6 +1375,19 @@ mod tests {
     // ========================================================================
     // Media viewer rename/copy button tests
     // ========================================================================
+
+    #[test]
+    fn test_render_media_viewer_action_buttons_have_aria_labels() {
+        let html = render_media_viewer("abc123", "photo.jpg", MediaType::Image);
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "media viewer rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "media viewer copy button should have aria-label"
+        );
+    }
 
     #[test]
     fn test_render_media_viewer_has_rename_button() {
@@ -1293,6 +1489,19 @@ mod tests {
     // ========================================================================
     // Binary viewer rename/copy button tests
     // ========================================================================
+
+    #[test]
+    fn test_render_binary_viewer_action_buttons_have_aria_labels() {
+        let html = render_binary_viewer("abc123", "data.bin");
+        assert!(
+            html.contains("aria-label=\"Rename file\""),
+            "binary viewer rename button should have aria-label"
+        );
+        assert!(
+            html.contains("aria-label=\"Copy file\""),
+            "binary viewer copy button should have aria-label"
+        );
+    }
 
     #[test]
     fn test_render_binary_viewer_has_rename_button() {

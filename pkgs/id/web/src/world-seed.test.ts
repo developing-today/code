@@ -20,4 +20,14 @@ describe("parseWorldSeed", () => {
     expect(parseWorldSeed(String(Number.MAX_SAFE_INTEGER + 1))).toBeNull();
     expect(parseWorldSeed("abc")).toBeNull();
   });
+
+  it("rejects non-decimal numeric forms instead of reinterpreting them", () => {
+    // Number() coercion would silently turn each of these into a seed the
+    // admin never saw in the field (#832).
+    expect(parseWorldSeed("0x10")).toBeNull();
+    expect(parseWorldSeed("0b101")).toBeNull();
+    expect(parseWorldSeed("0o17")).toBeNull();
+    expect(parseWorldSeed("1e3")).toBeNull();
+    expect(parseWorldSeed("+5")).toBeNull();
+  });
 });

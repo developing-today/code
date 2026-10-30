@@ -373,6 +373,41 @@ mod cli_tests {
             assert!(output.status.success(), "Help failed for {cmd}");
         }
     }
+
+    /// `id world contract` prints the shell contract and checks a recorded
+    /// session against it (F13.1).
+    #[test]
+    fn test_world_contract_prints_and_checks_transcripts() {
+        let tmp = TempDir::new().unwrap();
+        let printed = run_cmd_success_stdout(&["world", "contract"], tmp.path());
+        let contract: serde_json::Value = serde_json::from_str(&printed).unwrap();
+        assert_eq!(contract["contract"], "id-shell");
+        assert_eq!(contract["version"], 1);
+
+        std::fs::write(
+            tmp.path().join("good.jsonl"),
+            concat!(
+                r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
+                "\n",
+                r#"{"from": "client", "frame": {"type": "input", "data_hex": "00"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let checked =
+            run_cmd_success_stdout(&["world", "contract", "--check", "good.jsonl"], tmp.path());
+        assert!(checked.contains("2 frames conform"), "{checked}");
+
+        std::fs::write(
+            tmp.path().join("bad.jsonl"),
+            r#"{"from": "client", "frame": {"type": "input", "data_hex": "00"}}"#,
+        )
+        .unwrap();
+        let output = run_cmd(&["world", "contract", "--check", "bad.jsonl"], tmp.path());
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("opening phase"), "{stderr}");
+    }
 }
 
 mod put_get_tests {
@@ -1796,6 +1831,242 @@ mod serve_tests {
             .unwrap();
         assert!(String::from_utf8_lossy(&forged.stdout).contains("join denied"));
 
+        server.stop();
+    }
+
+    /// `id world join --via ssh` plays the same session over an SSH exec
+    /// channel as over iroh (F13.2), trusting only the pinned host key.
+    #[cfg(feature = "ssh")]
+    #[test]
+    fn test_world_join_via_ssh_carries_the_frame_protocol() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("roc-counter/counter.wasm");
+        let ssh_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+            .to_string();
+        let mut server = ServerHandle::spawn_with_args(
+            server_dir.path(),
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-module",
+                module.to_str().unwrap(),
+                "--world-ssh-port",
+                &ssh_port,
+            ],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let pem = std::fs::read_to_string(server_dir.path().join(id::world_ssh::SSH_HOST_KEY_FILE))
+            .unwrap();
+        let key = russh::keys::PrivateKey::from_openssh(pem).unwrap();
+        let fingerprint = id::world_ssh::host_key_fingerprint(&key);
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .current_dir(client_dir.path())
+                .env("HOME", client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+        let invited = world(&[
+            "invite",
+            &node,
+            "--admin-token",
+            "adm",
+            "--name",
+            "ssh",
+            "--addr",
+            &addr,
+        ])
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+        let target = format!("127.0.0.1:{ssh_port}");
+
+        // Without a pinned key (and with an empty known_hosts) the host is refused.
+        let refused = world(&["join", &target, "--via", "ssh", "--capability", &capability])
+            .stdin(Stdio::null())
+            .output_within(PROCESS_TIMEOUT)
+            .unwrap();
+        assert!(!refused.status.success());
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains(&fingerprint), "{stderr}");
+
+        let mut joined = world(&[
+            "join",
+            &target,
+            "--via",
+            "ssh",
+            "--ssh-host-key",
+            &fingerprint,
+            "--capability",
+            &capability,
+            "--command-mode",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map(KillOnDrop)
+        .unwrap();
+        let mut stdin = joined.stdin.take().unwrap();
+        let mut lines = BufReader::new(joined.stdout.take().unwrap()).lines();
+        let first = lines.next().expect("snapshot line").unwrap();
+        assert!(first.contains("\"type\":\"snapshot\""), "{first}");
+        let view = lines.next().expect("view line").unwrap();
+        assert!(view.contains("count=0"), "{view}");
+        stdin.write_all(b"/input 696e63\n").unwrap();
+        let event = lines.next().expect("event line").unwrap();
+        assert!(event.contains("\"type\":\"event\""), "{event}");
+        let view = lines.next().expect("view line").unwrap();
+        assert!(view.contains("count=1"), "{view}");
+        stdin.write_all(b"/stats\n").unwrap();
+        let info = lines.next().expect("info line").unwrap();
+        assert!(info.contains("\"type\":\"module_info\""), "{info}");
+        stdin.write_all(b"/quit\n").unwrap();
+        drop(stdin);
+        assert!(joined.wait().unwrap().success());
+        server.stop();
+    }
+
+    /// F13.3: `id world ssh-tunnel` lets the SSH transport reach a world
+    /// whose SSH server is only spoken to through iroh.
+    #[cfg(feature = "ssh")]
+    #[test]
+    fn test_world_ssh_tunnel_carries_join_via_ssh() {
+        let server_dir = TempDir::new().unwrap();
+        let client_dir = TempDir::new().unwrap();
+        let module = examples_dir().join("roc-counter/counter.wasm");
+        let free_port = || {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        };
+        let ssh_port = free_port().to_string();
+        let mut server = ServerHandle::spawn_with_args(
+            server_dir.path(),
+            &[
+                "--world",
+                "--world-admin-token",
+                "adm",
+                "--world-module",
+                module.to_str().unwrap(),
+                "--world-ssh-port",
+                &ssh_port,
+            ],
+        );
+        let node = server.wait_ready();
+        let addr = lock_ipv4_addr(&server.lock_file_path());
+        let pem = std::fs::read_to_string(server_dir.path().join(id::world_ssh::SSH_HOST_KEY_FILE))
+            .unwrap();
+        let key = russh::keys::PrivateKey::from_openssh(pem).unwrap();
+        let fingerprint = id::world_ssh::host_key_fingerprint(&key);
+
+        let world = |args: &[&str]| {
+            let mut cmd = StdCommand::new(get_binary_path());
+            cmd.args(["world"])
+                .args(args)
+                .current_dir(client_dir.path())
+                .env("HOME", client_dir.path())
+                .env_remove("ID_WORLD_ADMIN_TOKEN")
+                .env_remove("ID_WORLD_CAPABILITY");
+            cmd
+        };
+        let invited = world(&[
+            "invite",
+            &node,
+            "--admin-token",
+            "adm",
+            "--name",
+            "tun",
+            "--addr",
+            &addr,
+        ])
+        .output_within(PROCESS_TIMEOUT)
+        .unwrap();
+        assert!(
+            invited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&invited.stderr)
+        );
+        let capability = String::from_utf8(invited.stdout).unwrap().trim().to_owned();
+
+        let listen = format!("127.0.0.1:{}", free_port());
+        let mut tunnel = world(&["ssh-tunnel", &node, "--addr", &addr, "--listen", &listen])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map(KillOnDrop)
+            .unwrap();
+
+        // Wait until the tunnel accepts, then join through it via SSH.
+        let target = listen.clone();
+        let joined_result = (|| -> Result<String, String> {
+            for _ in 0..50 {
+                let Ok(mut child) = world(&[
+                    "join",
+                    &target,
+                    "--via",
+                    "ssh",
+                    "--ssh-host-key",
+                    &fingerprint,
+                    "--capability",
+                    &capability,
+                    "--command-mode",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map(KillOnDrop) else {
+                    continue;
+                };
+                let mut stdin = child.stdin.take().unwrap();
+                let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+                let _ = stdin.write_all(b"/input 696e63\n");
+                let mut text = String::new();
+                for _ in 0..6 {
+                    match lines.next() {
+                        Some(Ok(line)) => {
+                            text.push_str(&line);
+                            text.push('\n');
+                            if line.contains("count=1") {
+                                break;
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+                let _ = stdin.write_all(b"/quit\n");
+                drop(stdin);
+                if text.contains("count=1") {
+                    let _ = child.wait();
+                    return Ok(text);
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err("tunnel never carried a join".to_owned())
+        })();
+        let text = joined_result.unwrap();
+        assert!(text.contains("\"type\":\"snapshot\""), "{text}");
+        tunnel.kill().unwrap();
         server.stop();
     }
 

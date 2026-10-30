@@ -1,0 +1,925 @@
+{
+  "schema": "mcpx-compendium/v1",
+  "source_root": "pkgs/mcpx/docs",
+  "levels": {
+    "1": "overview: the walk above the marker in docs/story.md (#157)",
+    "2": "guides: install, configure, plugin pages, reference (#146-#148)",
+    "3": "compendium: everything that is built, described in as much detail as wanted"
+  },
+  "rules": [
+    "each source file appears in the navigation exactly once",
+    "a chapter source is a file or a directory; a directory's README.md is its index",
+    "levels 1 and 2 link to or excerpt a chapter; they do not copy it",
+    "the source root is pkgs/mcpx/docs and files are rendered where they are (Approach C)"
+  ],
+  "chapters": [
+    {
+      "id": "features",
+      "order": 1,
+      "title": "Features",
+      "source": "docs/story.md"
+    },
+    {
+      "id": "designs",
+      "order": 2,
+      "title": "Designs",
+      "source": "docs/"
+    },
+    {
+      "id": "decision-records",
+      "order": 3,
+      "title": "Decision records",
+      "source": "docs/decisions/"
+    },
+    {
+      "id": "protocol",
+      "order": 4,
+      "title": "Protocol",
+      "source": "docs/protocol.md and docs/spec/"
+    },
+    {
+      "id": "build-and-packaging",
+      "order": 5,
+      "title": "Build and packaging",
+      "source": "docs/"
+    },
+    {
+      "id": "proposed",
+      "order": 6,
+      "title": "Proposed",
+      "source": "docs/proposals.md"
+    },
+    {
+      "id": "catalogue",
+      "order": 7,
+      "title": "Catalogue",
+      "source": "docs/catalogue/"
+    },
+    {
+      "id": "comparisons-and-history",
+      "order": 8,
+      "title": "Comparisons and history",
+      "source": "docs/compare/"
+    },
+    {
+      "id": "research-and-findings",
+      "order": 9,
+      "title": "Research and findings",
+      "source": "docs/audit/"
+    },
+    {
+      "id": "maintaining-these-docs",
+      "order": 10,
+      "title": "Maintaining these docs",
+      "source": "docs/"
+    },
+    {
+      "id": "document-history",
+      "order": 11,
+      "title": "Document history",
+      "source": "docs/archive.md"
+    }
+  ],
+  "entries": [
+    {
+      "path": "AGENTS.md",
+      "chapter": null,
+      "role": "included",
+      "lines": 120,
+      "note": "the agent instruction file, conventional at the module root; the book includes it, L2/agent twin #120"
+    },
+    {
+      "path": "ASSESSMENT.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 306,
+      "note": "lootbox audit, why Go, what was built (historical; keeps its text)"
+    },
+    {
+      "path": "daemon/README.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 35,
+      "note": "operational how-to for the systemd user unit; L2 install page"
+    },
+    {
+      "path": "docs/archive.md",
+      "chapter": "document-history",
+      "role": "chapter-source",
+      "lines": 21,
+      "note": "append-only, unordered home for retired entries and refactored-out text"
+    },
+    {
+      "path": "docs/audit/features.md",
+      "chapter": "research-and-findings",
+      "role": "chapter-source",
+      "lines": 162,
+      "note": "a per-area audit (#177 family): findings, not design"
+    },
+    {
+      "path": "docs/audit/spec.md",
+      "chapter": "research-and-findings",
+      "role": "chapter-source",
+      "lines": 64,
+      "note": "a per-area audit (#177 family): findings, not design"
+    },
+    {
+      "path": "docs/audit/surface.md",
+      "chapter": "research-and-findings",
+      "role": "chapter-source",
+      "lines": 130,
+      "note": "a per-area audit (#177 family): findings, not design"
+    },
+    {
+      "path": "docs/compare/conflicts.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 404,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/content-passthrough.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 170,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/input-required.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 191,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/matrix-code-mode.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 129,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/matrix-mcpx.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 93,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/matrix-opencode.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 189,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/matrix-revisions.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 249,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/README.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 222,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/auth.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 441,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/capabilities.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 568,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/code-mode.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 1183,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/completion.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 206,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/content-types.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 364,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/elicitation.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 462,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/errors.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 396,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/lifecycle-versioning.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 800,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/logging.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 205,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/meta.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 247,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/mrtr.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 392,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/notifications.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 371,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/pagination-caching.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 300,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/plugin-apis.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 674,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/process-model.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 453,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/progress-cancellation.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 317,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/prompts.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 161,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/resources.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 296,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/roots.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 122,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/sampling.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 220,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/tasks.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 478,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/tools.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 604,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/register/transports.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 840,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/stateless.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 255,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compare/what-a-server-should-be.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 164,
+      "note": "the comparisons and history chapter (#153); its own chapter definition lands with PR #2471"
+    },
+    {
+      "path": "docs/compendium.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 203,
+      "note": "this file: the compendium's own structure and mapping"
+    },
+    {
+      "path": "docs/configuration.md",
+      "chapter": null,
+      "role": "included",
+      "lines": 636,
+      "note": "reference (#144) and L2 (#146); the book links to it rather than duplicating it. internal/settings/docs_test.go reads it"
+    },
+    {
+      "path": "docs/consumer.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 271,
+      "note": "diagnostics, elicitation mcpx raises, recipes, POST /v1/intent"
+    },
+    {
+      "path": "docs/container.md",
+      "chapter": "build-and-packaging",
+      "role": "chapter-source",
+      "lines": 243,
+      "note": "what Containerfile builds and deliberately does not (#182)"
+    },
+    {
+      "path": "docs/decisions/0001-hook-vocabulary.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 384,
+      "note": "a decision record under the chapter index"
+    },
+    {
+      "path": "docs/decisions/0002-autonomy-dial.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 381,
+      "note": "a decision record under the chapter index"
+    },
+    {
+      "path": "docs/decisions/0003-declared-vs-enforced-capabilities.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 368,
+      "note": "a decision record under the chapter index"
+    },
+    {
+      "path": "docs/decisions/0004-scope-resolved-roots.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 274,
+      "note": "a decision record under the chapter index"
+    },
+    {
+      "path": "docs/decisions/README.md",
+      "chapter": "decision-records",
+      "role": "chapter-index",
+      "lines": 87,
+      "note": "the chapter index: what makes a record, statuses, numbering, template"
+    },
+    {
+      "path": "docs/declared-but-unread.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 264,
+      "note": "the settings audit and the guard tests (#171)"
+    },
+    {
+      "path": "docs/dependencies.md",
+      "chapter": "build-and-packaging",
+      "role": "chapter-source",
+      "lines": 107,
+      "note": "Go libs, external programs, network, Nix packaging"
+    },
+    {
+      "path": "docs/elicitation.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 778,
+      "note": "elicitation design: the record of why (#24)"
+    },
+    {
+      "path": "docs/environment.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 130,
+      "note": "the script environment: what mcpx tells a program it starts (#172)"
+    },
+    {
+      "path": "docs/exec.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 375,
+      "note": "exec, ExecOptions, output shapes, artifacts"
+    },
+    {
+      "path": "docs/git-discovery.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 262,
+      "note": "a decision record that lives outside docs/decisions/ by its own account; the chapter index links it"
+    },
+    {
+      "path": "docs/ideas.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 502,
+      "note": "raw unvetted intake; nothing here becomes a page. The proposed chapter publishes the index-of-issues version instead (open question 3)"
+    },
+    {
+      "path": "docs/in-name-only.md",
+      "chapter": "research-and-findings",
+      "role": "chapter-source",
+      "lines": 194,
+      "note": "the curated list of things that exist on paper and do little"
+    },
+    {
+      "path": "docs/landing.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 187,
+      "note": "a landing checklist, not a landing page: items A-J, guesses worth reviewing, not done and why"
+    },
+    {
+      "path": "docs/opencode-plugin.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 454,
+      "note": "the plugin, opencode v1 vs v2, per-part reference"
+    },
+    {
+      "path": "docs/parity.md",
+      "chapter": null,
+      "role": "included",
+      "lines": 227,
+      "note": "reference (#144) and L2 (#146); generated, and linked from the book"
+    },
+    {
+      "path": "docs/plugin-discovery.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 224,
+      "note": "finding the daemon without the binary"
+    },
+    {
+      "path": "docs/proposals.md",
+      "chapter": "proposed",
+      "role": "chapter-source",
+      "lines": 1395,
+      "note": "open designs, badged status proposed"
+    },
+    {
+      "path": "docs/protocol.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 835,
+      "note": "the design: every MCP revision, both directions, what is missing"
+    },
+    {
+      "path": "docs/release-runbook.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 173,
+      "note": "how story.md stays true, key-block rules"
+    },
+    {
+      "path": "docs/runtimes.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 171,
+      "note": "script runtimes, permission profiles and presets"
+    },
+    {
+      "path": "docs/schema-validation.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 46,
+      "note": "internal/schemaval: dialect policy and division of labour with internal/mcpspec"
+    },
+    {
+      "path": "docs/spec/client.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 211,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/spec/client-obligations.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 364,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/spec/conformance-matrix.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 2575,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/spec/conformance.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 77,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/spec/era-probe.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 141,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/spec/identity.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 81,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/spec/messages.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 187,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/spec/official-suite.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 295,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/spec/README.md",
+      "chapter": "protocol",
+      "role": "chapter-index",
+      "lines": 48,
+      "note": "the chapter index for the protocol records under protocol.md"
+    },
+    {
+      "path": "docs/spec/requirements.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 872,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/spec/revision-conflicts.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 483,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/spec/server-obligations.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 546,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/spec/transport.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 170,
+      "note": "a protocol record under the chapter index"
+    },
+    {
+      "path": "docs/story.md",
+      "chapter": "features",
+      "role": "chapter-source",
+      "lines": 2918,
+      "note": "chapter source in part: the feature list below <!-- table-of-contents-marker -->, split at build time at section IDs (#151); the walk above the marker is the L1 overview (#157)"
+    },
+    {
+      "path": "docs/work-strategies.md",
+      "chapter": "research-and-findings",
+      "role": "chapter-source",
+      "lines": 11,
+      "note": "lessons learned while building mcpx: verification and diagnostics traps"
+    },
+    {
+      "path": "internal/mcpspec/schema/README.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 12,
+      "note": "provenance note for vendored MCP schemas; it documents a tree, not a design"
+    },
+    {
+      "path": "OPENCODE-V2.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 262,
+      "note": "opencode v2 code mode vs mcpx, with its 2026-09-29 correction block (historical)"
+    },
+    {
+      "path": "plugin/opencode/README.md",
+      "chapter": null,
+      "role": "included",
+      "lines": 379,
+      "note": "plugin install: L2 (#148) and the agent twin (#120)"
+    },
+    {
+      "path": "plugin/opencode/skills/mcpx-agy/examples/README.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 15,
+      "note": "skill text shipped inside the plugin and rendered as L2 pages (#148); the book does not restate it"
+    },
+    {
+      "path": "plugin/opencode/skills/mcpx-agy/SKILL.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 76,
+      "note": "skill text shipped inside the plugin and rendered as L2 pages (#148); the book does not restate it"
+    },
+    {
+      "path": "plugin/opencode/skills/mcpx-basics/examples/README.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 28,
+      "note": "skill text shipped inside the plugin and rendered as L2 pages (#148); the book does not restate it"
+    },
+    {
+      "path": "plugin/opencode/skills/mcpx-basics/getting-started.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 104,
+      "note": "skill text shipped inside the plugin and rendered as L2 pages (#148); the book does not restate it"
+    },
+    {
+      "path": "plugin/opencode/skills/mcpx-basics/SKILL.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 75,
+      "note": "skill text shipped inside the plugin and rendered as L2 pages (#148); the book does not restate it"
+    },
+    {
+      "path": "plugin/opencode/skills/mcpx-browser/SKILL.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 74,
+      "note": "skill text shipped inside the plugin and rendered as L2 pages (#148); the book does not restate it"
+    },
+    {
+      "path": "plugin/opencode/skills/mcpx-claude/SKILL.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 72,
+      "note": "skill text shipped inside the plugin and rendered as L2 pages (#148); the book does not restate it"
+    },
+    {
+      "path": "plugin/opencode/skills/mcpx-codex/SKILL.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 82,
+      "note": "skill text shipped inside the plugin and rendered as L2 pages (#148); the book does not restate it"
+    },
+    {
+      "path": "plugin/opencode/skills/mcpx-daemon/SKILL.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 99,
+      "note": "skill text shipped inside the plugin and rendered as L2 pages (#148); the book does not restate it"
+    },
+    {
+      "path": "plugin/opencode/skills/mcpx-observability/SKILL.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 55,
+      "note": "skill text shipped inside the plugin and rendered as L2 pages (#148); the book does not restate it"
+    },
+    {
+      "path": "plugin/opencode/skills/mcpx-opencode2/SKILL.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 101,
+      "note": "skill text shipped inside the plugin and rendered as L2 pages (#148); the book does not restate it"
+    },
+    {
+      "path": "README.md",
+      "chapter": "features",
+      "role": "symlink",
+      "lines": 2918,
+      "note": "symlink to docs/story.md (git mode 120000). Not a second source: the book renders the target once, and the runbook check `test -L README.md` stays green"
+    },
+    {
+      "path": "TODO.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 5,
+      "note": "a five-line scratch list, not a chapter"
+    },
+    {
+      "path": "docs/overview.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 109,
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/install.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 68,
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/quick-start.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 57,
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/now-what.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 30,
+      "note": "level-1 site page (#1878): content for the docs site, rendered by the generator chosen in #1939 \u2014 not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/binary.md",
+      "chapter": "build-and-packaging",
+      "role": "chapter-source",
+      "lines": 114,
+      "note": "the binary: what it is, how it is built and shipped"
+    },
+    {
+      "path": "docs/cli.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 191,
+      "note": "the command-line surface: commands, flags, and output shapes"
+    },
+    {
+      "path": "docs/compare/chapter.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 147,
+      "note": "the comparison chapter's own framing: what is compared and why"
+    },
+    {
+      "path": "docs/compare/history.md",
+      "chapter": "comparisons-and-history",
+      "role": "chapter-source",
+      "lines": 215,
+      "note": "how the comparison register reached its current state"
+    },
+    {
+      "path": "docs/examples.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 148,
+      "note": "worked examples of recipes and calls, companion to the design pages"
+    },
+    {
+      "path": "docs/faq.md",
+      "chapter": null,
+      "role": "included",
+      "lines": 85,
+      "note": "questions users actually ask; the book links to it rather than excerpting it"
+    },
+    {
+      "path": "docs/http-api.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 234,
+      "note": "the daemon's /v1 HTTP API: endpoints, requests, responses"
+    },
+    {
+      "path": "docs/interfaces.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 187,
+      "note": "the interfaces a program or client codes against"
+    },
+    {
+      "path": "docs/level-2-page-map.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 152,
+      "note": "the map of level-2 guide pages (#146-#148): which page covers what"
+    },
+    {
+      "path": "docs/mcp.md",
+      "chapter": "protocol",
+      "role": "chapter-source",
+      "lines": 217,
+      "note": "MCP as mcpx speaks it: the protocol surface in one page"
+    },
+    {
+      "path": "docs/opencode-plugin-v2.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 161,
+      "note": "the opencode v2 plugin: verified API facts and implementation map; successor to opencode-plugin.md"
+    },
+    {
+      "path": "docs/plugins.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 335,
+      "note": "plugins: what they are, how they are written and loaded"
+    },
+    {
+      "path": "docs/scripts.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 155,
+      "note": "scripts: the unit of work mcpx runs, their shape and lifecycle"
+    },
+    {
+      "path": "docs/decisions/0005-release-pipeline.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 150,
+      "note": "a decision record under the chapter index"
+    },
+    {
+      "path": "docs/home-example.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 40,
+      "note": "home-page example for the docs site: runnable example content, not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/home-example/README.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 57,
+      "note": "the home-page example component's own readme; part of the example bundle, not a compendium (level-3) chapter"
+    },
+    {
+      "path": "docs/remote.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 132,
+      "note": "reaching a daemon on another machine: transports, addressing, trust"
+    },
+    {
+      "path": "docs/catalogue/README.md",
+      "chapter": "catalogue",
+      "role": "chapter-index",
+      "lines": 22,
+      "note": "the chapter index: what the catalogue holds and why; the section pages are seeded by the follow-up task"
+    },
+    {
+      "path": "docs/decisions/0006-ttl-touch-on-read.md",
+      "chapter": "decision-records",
+      "role": "chapter-source",
+      "lines": 107,
+      "note": "a decision record under the chapter index"
+    }
+  ]
+}

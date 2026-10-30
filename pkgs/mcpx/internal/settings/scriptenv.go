@@ -34,6 +34,14 @@ const (
 	// SetByPlugin is the opencode plugin, into the environment of every
 	// shell command the editor runs.
 	SetByPlugin Setter = "plugin"
+	// SetByHooks is the declared-hook runner (internal/hooks), into the
+	// environment of every hook process it starts for an event.
+	SetByHooks Setter = "hooks"
+	// SetByPluginLoader is the plugin loader (#1870), into the environment
+	// of every plugin process it hands the pool: the back-channel a plugin
+	// uses to call /v1. Not SetByPlugin -- that is the opencode plugin, a
+	// consumer of mcpx, where this is mcpx loading a plugin of its own.
+	SetByPluginLoader Setter = "plugin-loader"
 )
 
 // Describe is the setter as a reader of the documentation knows it.
@@ -49,6 +57,10 @@ func (s Setter) Describe() string {
 		return "the runner, for every script"
 	case SetByPlugin:
 		return "the opencode plugin"
+	case SetByPluginLoader:
+		return "the plugin loader, for a discovered plugin"
+	case SetByHooks:
+		return "the declared-hook runner, for a hook it runs"
 	}
 	return string(s)
 }
@@ -87,7 +99,7 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:  "MCPX_SESSION_ID",
-			SetBy: []Setter{SetByCLI, SetByExec, SetByConsumer, SetByPlugin},
+			SetBy: []Setter{SetByCLI, SetByExec, SetByConsumer, SetByPlugin, SetByPluginLoader},
 			When: "the CLI passes through the value it was given, which may be " +
 				"empty; the plugin sets it at every plugin.env level",
 			Meaning: "the session the host assigned. Unlike MCPX_SESSION it " +
@@ -122,6 +134,52 @@ func ScriptEnv() []EnvVar {
 				"asks one exits 75 with the question instead of waiting for it to expire",
 			ReadBy: client + ", sent as X-Mcpx-Input",
 		},
+		// ---- the event a hook is running for ----
+		{
+			Name:    "MCPX_HOOK_NAME",
+			SetBy:   []Setter{SetByHooks},
+			Meaning: "the declared name of the hook being run",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_PHASE",
+			SetBy:   []Setter{SetByHooks},
+			Meaning: "the hook's phase; always observe for config-declared hooks",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_EVENT_KIND",
+			SetBy:   []Setter{SetByHooks},
+			Meaning: "the kind of the event the hook is running for; the full event is JSON on stdin",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_EVENT_SEQ",
+			SetBy:   []Setter{SetByHooks},
+			Meaning: "the event's sequence number on the daemon's bus",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_EVENT_SERVER",
+			SetBy:   []Setter{SetByHooks},
+			When:    "empty when the event names no server",
+			Meaning: "the server the event is about",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_EVENT_SESSION",
+			SetBy:   []Setter{SetByHooks},
+			When:    "empty when the event belongs to no session",
+			Meaning: "the session the event belongs to",
+			ReadBy:  "the hook itself",
+		},
+		{
+			Name:    "MCPX_HOOK_EVENT_URI",
+			SetBy:   []Setter{SetByHooks},
+			When:    "empty when the event names no resource",
+			Meaning: "the resource URI the event is about",
+			ReadBy:  "the hook itself",
+		},
 		// ---- reaching the daemon ----
 		{
 			Name:    "MCPX_ENDPOINT",
@@ -131,7 +189,7 @@ func ScriptEnv() []EnvVar {
 		},
 		{
 			Name:  "MCPX_SOCKET",
-			SetBy: []Setter{SetByCLI, SetByExec},
+			SetBy: []Setter{SetByCLI, SetByExec, SetByPluginLoader},
 			When:  "empty when the daemon is remote, since its socket is not reachable from here",
 			Meaning: "the daemon's unix socket, which is faster than the endpoint. " +
 				"Also where a daemon binds and a client dials, for anyone who sets it by hand",
@@ -181,6 +239,12 @@ func ScriptEnv() []EnvVar {
 			SetBy:   []Setter{SetByCLI},
 			Meaning: "the directories searched for named scripts, nearest first, colon-separated",
 			ReadBy:  client + " (paths.scriptDirs)",
+		},
+		{
+			Name:    "MCPX_API_DECLARATION_SHA256",
+			SetBy:   []Setter{SetByCLI},
+			Meaning: "the fingerprint of a declared API's declaration, set on the child a declared API launches: PoolID hashes the environment, so editing the declaration replaces the pool instead of keeping a child started for the old one",
+			ReadBy:  "the pool, as a pool identity input (api serve: PoolID hashes the server environment)",
 		},
 		// ---- how the script runs ----
 		{

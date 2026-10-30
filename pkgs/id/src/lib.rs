@@ -181,6 +181,7 @@ pub mod envelope_net;
 #[cfg(feature = "world")]
 pub mod envelope_outbox;
 pub mod event_store;
+pub mod event_sync;
 pub mod fileops;
 pub mod frames;
 pub mod groups;
@@ -205,6 +206,8 @@ pub mod search;
 pub mod seitan;
 #[cfg(feature = "world")]
 pub mod server_config;
+#[cfg(feature = "world")]
+pub mod shell_contract;
 pub mod store;
 pub mod store_traits;
 pub mod sync_method;
@@ -223,11 +226,16 @@ pub mod world_caps;
 #[cfg(feature = "world")]
 pub mod world_compile;
 #[cfg(feature = "world")]
+pub mod world_doctor;
+#[cfg(feature = "world")]
 pub mod world_fixture;
 #[cfg(feature = "world")]
 pub mod world_hub;
 #[cfg(feature = "world")]
 pub mod world_limits;
+pub(crate) mod world_line;
+#[cfg(feature = "world")]
+pub mod world_manifest;
 #[cfg(feature = "world")]
 pub mod world_native;
 #[cfg(feature = "world")]

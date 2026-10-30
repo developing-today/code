@@ -17,11 +17,12 @@ Phase 2 (2026-10-24) added three layers, each in its own subdirectory
 with the same deploy shape (SOPS → mode-600 env → compose/unit →
 health gate):
 
-| Layer    | Piece           | Version / pin                                                    | Reach                                                                | Deployment definition |
-| -------- | --------------- | ---------------------------------------------------------------- | -------------------------------------------------------------------- | --------------------- |
-| Dispatch | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `127.0.0.1:6056` only                                | `ready-for-agent/`    |
-| Planning | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + tailnet `100.99.113.103:7777`; no tunnel hostname | `pad/`                |
-| Tables   | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + tailnet `100.99.113.103:8484`; no tunnel hostname | `grist/`              |
+| Layer     | Piece           | Version / pin                                                    | Reach                                                                                 | Deployment definition |
+| --------- | --------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------- |
+| Dispatch  | ready-for-agent | npm `ready-for-agent@1.1.0` (no container image exists upstream) | UI + GraphQL on `6056`, all interfaces (loopback + tailnet + LAN)                     | `ready-for-agent/`    |
+| Planning  | Pad             | `ghcr.io/perpetualsoftware/pad:0.18.1`, pinned by digest         | `127.0.0.1:7777` + tailnet `amd-6.raptor-pumpkinseed.ts.net:7777`; no tunnel hostname | `pad/`                |
+| Tables    | Grist           | `gristlabs/grist-oss:v1.7.21`, pinned by digest                  | `127.0.0.1:8484` + tailnet `amd-6.raptor-pumpkinseed.ts.net:8484`; no tunnel hostname | `grist/`              |
+| Dashboard | Aggregator      | this repo (Bun app, user unit `pm-aggregator`)                   | `127.0.0.1:4870` + tailnet `amd-6.raptor-pumpkinseed.ts.net:4870`; no public route    | `aggregator/`         |
 
 ready-for-agent runs as a systemd **user unit** (like `pm-tunnel`)
 because upstream ships only an npm package; Pad and Grist run as
@@ -138,11 +139,22 @@ one-time browser step because GitHub offers no API for it:
    `./deploy.sh` on the host.
 4. Install the app on the repositories to sync (GitHub → org settings →
    GitHub Apps → Install App; Phase 1: `developing-today/code` only).
+   Adding a repository to an installation cannot be done with the
+   app's own credentials — the REST endpoint needs an org owner's (or,
+   for a personal account, the account owner's) GitHub session, so
+   this step stays a browser step.
 5. In Kaneo: create/open the project → Settings → Integrations →
-   GitHub → connect `developing-today/code`, then **Import issues**.
+   GitHub → connect the repository, then **Import issues**.
    (API equivalents: `POST /api/github-integration/verify`,
    `POST /api/github-integration/project/{projectId}`,
-   `POST /api/github-integration/import-issues`.)
+   `POST /api/github-integration/import-issues`.) The projects, their
+   repositories, and their installations are registered in
+   [`kaneo-projects.json`](kaneo-projects.json); once the app is
+   installed on a repository, `./connect-repo.sh connect <slug>`
+   performs verify → connect → import (resuming until done) and
+   prints the GitHub open-issue count next to the Kaneo task, issue
+   link, and not-in-Done counts. `./connect-repo.sh status` reports
+   the same for every project without changing anything.
 
 What syncs (verified against Kaneo v2.47.0): issues ↔ tasks, comments
 (create-only; edits/deletes do not sync), open/close both ways,
@@ -289,6 +301,8 @@ pm-stack/
 ├── .env.example               # configuration shape (no real values)
 ├── deploy.sh                  # SOPS -> .env/tunnel.env, compose up, health gate
 ├── github-app-manifest.json   # one-time GitHub App registration
+├── kaneo-projects.json        # projects <-> repositories <-> installations
+├── connect-repo.sh            # status | connect <slug>: verify, link, import
 ├── systemd/
 │   └── pm-tunnel.service      # Cloudflare Tunnel connector (user unit)
 ├── pad/                       # Phase 2 planning layer (Pad 0.18.1)

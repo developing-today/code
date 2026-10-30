@@ -26,7 +26,8 @@
   },
   "daemon": {
     "reapInterval": "30s",
-    "saveInterval": "5m"
+    "saveInterval": "5m",
+    "tsnetUpTimeout": "30s"
   },
   "secrets": {
     "requestRetention": "10m"
@@ -40,23 +41,80 @@
   },
   "script": {
     "permissions": "all",
-    "runtimeOrder": ["deno", "bun", "node"],
+    "runtimeOrder": [
+      "deno",
+      "bun",
+      "node"
+    ],
     "profiles": {
-      "all": { "deno": ["--allow-all"], "bun": [], "node": [] },
-      "none": { "deno": ["--allow-all"], "bun": [], "node": [] },
-      "off": { "deno": ["--allow-all"], "bun": [], "node": [] },
-      "unsandboxed": { "deno": ["--allow-all"], "bun": [], "node": [] },
-      "net": { "deno": ["--allow-net", "--allow-env"] },
-      "read": { "deno": ["--allow-read", "--allow-env"] },
+      "all": {
+        "deno": [
+          "--allow-all"
+        ],
+        "bun": [],
+        "node": []
+      },
+      "none": {
+        "deno": [
+          "--allow-all"
+        ],
+        "bun": [],
+        "node": []
+      },
+      "off": {
+        "deno": [
+          "--allow-all"
+        ],
+        "bun": [],
+        "node": []
+      },
+      "unsandboxed": {
+        "deno": [
+          "--allow-all"
+        ],
+        "bun": [],
+        "node": []
+      },
+      "net": {
+        "deno": [
+          "--allow-net",
+          "--allow-env"
+        ]
+      },
+      "read": {
+        "deno": [
+          "--allow-read",
+          "--allow-env"
+        ]
+      },
       "readnet": {
-        "deno": ["--allow-read", "--allow-net", "--allow-env"],
-        "node": ["--permission", "--allow-fs-read=*"]
+        "deno": [
+          "--allow-read",
+          "--allow-net",
+          "--allow-env"
+        ],
+        "node": [
+          "--permission",
+          "--allow-fs-read=*"
+        ]
       },
       "read-net": {
-        "deno": ["--allow-read", "--allow-net", "--allow-env"],
-        "node": ["--permission", "--allow-fs-read=*"]
+        "deno": [
+          "--allow-read",
+          "--allow-net",
+          "--allow-env"
+        ],
+        "node": [
+          "--permission",
+          "--allow-fs-read=*"
+        ]
       },
-      "strict": { "deno": ["--allow-net=127.0.0.1", "--allow-env"] }
+      "strict": {
+        "deno": [
+          "--allow-net=127.0.0.1",
+          "--allow-env"
+        ]
+      }
     },
     "captureConsole": true,
     "typecheckTimeout": "60s"
@@ -90,9 +148,12 @@
   },
   "elicit": {
     "ttl": "120s",
+    "maxAge": "30m",
     "pollInterval": "250ms",
     "handlerTimeout": "5m",
-    "inputRounds": 8
+    "inputRounds": 8,
+    "retentionMaxAge": "720h",
+    "retentionMaxTerminalRows": 1000
   },
   "proto": {
     "native": true,
@@ -113,7 +174,9 @@
       "127.0.0.1",
       "::1"
     ],
-    "allowedOrigins": []
+    "allowedOrigins": [],
+    "sessionMetaKeys": ["dev.mcpx/session", "ai.opencode/sessionID"],
+    "sshWaitDelay": "3s"
   },
   "consumer": {
     "disambiguate": "never",
@@ -144,6 +207,11 @@
     "output": "text",
     "remoteOutput": "structured",
     "delivery": "reference"
+  },
+  "cache": {
+    "maxBytes": "1GiB",
+    "maxAge": "720h",
+    "leaseStaleAge": "1h"
   },
   "artifacts": {
     "ttl": "24h",
@@ -264,5 +332,8 @@
   "embeddings": {
     "remoteTimeout": "10s",
     "searchTimeout": "2s"
+  },
+  "hooks": {
+    "timeout": "2s"
   }
 }

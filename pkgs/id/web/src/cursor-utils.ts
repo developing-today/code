@@ -64,7 +64,18 @@ export function getStrobeDurationMs(opacity: number): number {
  * Uses relative luminance calculation.
  */
 export function isLightColor(color: string): boolean {
-  const hex = color.replace("#", "");
+  let hex = color.replace("#", "");
+  // CSS shorthand hex (#fff) doubles each digit; without expansion the
+  // slices below misalign and the last component parses as NaN (#846).
+  if (/^[0-9a-fA-F]{3}$/.test(hex)) {
+    hex = hex
+      .split("")
+      .map((digit) => digit + digit)
+      .join("");
+  }
+  // Anything that is not exactly six hex digits is not a color we can
+  // judge; treat it as dark rather than letting a NaN luminance decide.
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return false;
   const r = parseInt(hex.slice(0, 2), 16);
   const g = parseInt(hex.slice(2, 4), 16);
   const b = parseInt(hex.slice(4, 6), 16);

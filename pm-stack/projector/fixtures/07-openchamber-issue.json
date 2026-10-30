@@ -1,0 +1,21 @@
+{
+  "action": "opened",
+  "number": 66,
+  "issue": {
+    "number": 66,
+    "title": "OpenChamber category classifier: tighten auto-tag rules",
+    "state": "open",
+    "state_reason": null,
+    "html_url": "https://github.com/developing-today/openchamber/issues/66",
+    "url": "https://api.github.com/repos/developing-today/openchamber/issues/66",
+    "user": { "login": "dezren39" },
+    "labels": [{ "name": "enhancement" }],
+    "assignees": [],
+    "created_at": "2026-10-25T08:30:00Z",
+    "updated_at": "2026-10-25T08:30:00Z",
+    "closed_at": null,
+    "body": "Cross-repo link fixture."
+  },
+  "repository": { "full_name": "developing-today/openchamber", "name": "openchamber" },
+  "sender": { "login": "dezren39" }
+}

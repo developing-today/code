@@ -23,6 +23,10 @@
 // ERAMCP_DISCOVER_DELAY delays the discover answer (a slow-starting server).
 // ERAMCP_SUPPORTED overrides the versions a modern server supports
 // (comma-separated); a discover asking for another gets -32022.
+// ERAMCP_LIST_DELAY delays tools/list answers (a slow catalogue read).
+// ERAMCP_TTL_MS, when set, is declared as ttlMs on tools/list results
+// (may be 0 or negative); ERAMCP_CACHE_SCOPE likewise as cacheScope.
+// Both exist for the #1602 pool-cache tests.
 package main
 
 import (
@@ -30,6 +34,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -157,13 +162,27 @@ func handle(f frame) {
 		ok(f.ID, map[string]any{})
 		return
 	case "tools/list":
-		ok(f.ID, map[string]any{"tools": []any{map[string]any{
+		if d := os.Getenv("ERAMCP_LIST_DELAY"); d != "" {
+			if dur, err := time.ParseDuration(d); err == nil {
+				time.Sleep(dur)
+			}
+		}
+		res := map[string]any{"tools": []any{map[string]any{
 			"name": "hello", "description": "says hello",
 			"inputSchema": map[string]any{"type": "object"},
 		}, map[string]any{
 			"name": "ask", "description": "asks a question, the 2026-07-28 way",
 			"inputSchema": map[string]any{"type": "object"},
-		}}})
+		}}}
+		if v := os.Getenv("ERAMCP_TTL_MS"); v != "" {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				res["ttlMs"] = n
+			}
+		}
+		if v := os.Getenv("ERAMCP_CACHE_SCOPE"); v != "" {
+			res["cacheScope"] = v
+		}
+		ok(f.ID, res)
 		return
 	case "tools/call":
 		var call struct {

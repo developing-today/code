@@ -2,7 +2,9 @@
 
 Status: **approved shape (Drew, 2026-10-24); Phase 1 complete
 (PR #752); Phase 2 complete 2026-10-24 — dispatch, planning, and
-table layers live; aggregator UI scoped, not yet built.**
+table layers live; connecting the remaining repos to Kaneo is in
+progress (projects created, app installs owner-gated — see the
+connect-repos as-built); aggregator UI scoped, not yet built.**
 Deployment lives in [`pm-stack/`](../../pm-stack/) in this repository.
 
 ## Request and intent
@@ -176,9 +178,10 @@ the sketch they diverged from.
   layer, seeded from this record; Grist as the table layer, seeded
   with a real roadmap; the Kaneo registration-posture fix (see the
   Phase 1 correction below).
-- **Phase 2 in the original sketch (still outstanding)**: connect
-  the remaining repos (opencode, openchamber, nix) as their own
-  Kaneo projects.
+- **Phase 2 in the original sketch (in progress)**: connect the
+  remaining repos (opencode, openchamber, nix) as their own Kaneo
+  projects — projects created 2026-10-25; the app installs are
+  owner-gated (see the connect-repos as-built at the end).
 - **Phase 3 in the original sketch**: Pad as the planning layer,
   linked from issues. (Shipped inside Phase 2.)
 - **Phase 4 in the original sketch**: roadmap/register tables
@@ -474,3 +477,44 @@ projector + link registry whose keys are repo-qualified issue/PR
 references per item and a comment-activity projection keyed by
 them. That is the next push, after the remaining repos are
 connected to Kaneo and the Kaneo fork (decided above) begins.
+
+## Connect-repos as-built (2026-10-25)
+
+Connecting the remaining repos (branch `pm/connect-repos`):
+
+- **Projects created** in workspace "Developing Today", mirroring
+  `code` (same icon; the default columns To Do / In Progress /
+  In Review / Done, verified identical): `opencode`
+  (`f16a7r9g54df44z055dirvr3`), `openchamber`
+  (`z5qb6tmgo5idx7o8bnv7rqyv`), `nix`
+  (`kslqc1uhul68zaepdpcpsdml`). The registry is
+  `pm-stack/kaneo-projects.json`; `pm-stack/connect-repo.sh` does
+  `status` (installation coverage + counts, read-only) and
+  `connect <slug>` (verify → connect → import until done → counts).
+- **Installs are owner-gated; no API route exists.** Verified live:
+  installation 174792676 still covers `developing-today/code` only.
+  `PUT /user/installations/{id}/repositories/{repo_id}` as `dezren39`
+  (an org admin) returns 403 "You do not have permission to modify
+  this app on developing-today. Please contact an Organization
+  Owner." — the endpoint needs an org owner's session; the app's own
+  JWT cannot add repositories, no endpoint creates an installation,
+  and the app is private (`"public": false` in the manifest), so the
+  personal-account install for `dezren39/nix` is an owner browser
+  step too (it also needs the app made installable beyond the org,
+  or a second app). Kaneo's own verify agrees: for both new repos it
+  returns "Repository access could not be verified. GitHub repository
+  admin permission and an installed Kaneo App are required".
+  Remaining owner steps are recorded in the session's final report.
+- **Not done yet, by that gate:** the integration links, the
+  one-time imports, and the throwaway-issue sync proofs for the
+  three repos. Each is one `./connect-repo.sh connect <slug>` run
+  once its install lands.
+- Verified along the way (2026-10-25): the app JWT shows
+  installation 174792676 covering `developing-today/code` only and
+  no installation on the other three repos; GitHub open issues
+  (excluding PRs) are code 139, opencode 27, openchamber 53,
+  nix 184, while Kaneo holds 127 tasks and 127 issue links for
+  `code` and 0 tasks — with a null GitHub integration — for each
+  new project. The `code` gap is issues opened since the Phase 1
+  import; imports update existing tasks, so a re-import closes it
+  (not re-run here — not needed for the connect-repos step).

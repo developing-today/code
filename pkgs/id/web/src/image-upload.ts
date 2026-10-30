@@ -53,6 +53,26 @@ export function mimeToExtension(mime: string): string {
   return map[mime] ?? "bin";
 }
 
+/**
+ * The image files from a paste/drop that will actually be uploaded:
+ * allowed type and within MAX_IMAGE_SIZE. Oversized files are skipped
+ * with a warning. Handlers must run this BEFORE claiming the event:
+ * when it returns empty, the paste/drop is not ours to claim, and
+ * default handling (including any other clipboard content) must
+ * still run (#1321).
+ */
+function uploadableImages(files: FileList): File[] {
+  const accepted: File[] = [];
+  for (const file of Array.from(files).filter(isImageFile)) {
+    if (file.size > MAX_IMAGE_SIZE) {
+      console.warn(`[image-upload] File too large: ${file.name} (${file.size} bytes, max ${MAX_IMAGE_SIZE})`);
+      continue;
+    }
+    accepted.push(file);
+  }
+  return accepted;
+}
+
 /** Generate a filename for a pasted image (no original name). */
 export function generatePasteFilename(mimeType: string): string {
   const ext = mimeToExtension(mimeType);
@@ -134,6 +154,7 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
         if (action) {
           if (action.type === "add" && action.pos != null) {
             const widget = Decoration.widget(action.pos, createPlaceholderWidget, {
+              key: `placeholder-${action.id}`,
               id: action.id,
             });
             mapped = mapped.add(tr.doc, [widget]);
@@ -158,16 +179,12 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
         const files = event.clipboardData?.files;
         if (!files || files.length === 0) return false;
 
-        const imageFiles = Array.from(files).filter(isImageFile);
-        if (imageFiles.length === 0) return false;
+        const accepted = uploadableImages(files);
+        if (accepted.length === 0) return false;
 
         event.preventDefault();
 
-        for (const file of imageFiles) {
-          if (file.size > MAX_IMAGE_SIZE) {
-            console.warn(`[image-upload] File too large: ${file.name} (${file.size} bytes, max ${MAX_IMAGE_SIZE})`);
-            continue;
-          }
+        for (const file of accepted) {
           handleImageUpload(view, file, view.state.selection.from);
         }
 
@@ -178,8 +195,8 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
         const files = event.dataTransfer?.files;
         if (!files || files.length === 0) return false;
 
-        const imageFiles = Array.from(files).filter(isImageFile);
-        if (imageFiles.length === 0) return false;
+        const accepted = uploadableImages(files);
+        if (accepted.length === 0) return false;
 
         event.preventDefault();
 
@@ -188,11 +205,7 @@ export function createImageUploadPlugin(schema: Schema): Plugin | null {
         const pos = view.posAtCoords(coords);
         const insertPos = pos ? pos.pos : view.state.selection.from;
 
-        for (const file of imageFiles) {
-          if (file.size > MAX_IMAGE_SIZE) {
-            console.warn(`[image-upload] File too large: ${file.name} (${file.size} bytes, max ${MAX_IMAGE_SIZE})`);
-            continue;
-          }
+        for (const file of accepted) {
           handleImageUpload(view, file, insertPos);
         }
 

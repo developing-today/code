@@ -1,0 +1,25 @@
+{
+  "action": "submitted",
+  "pull_request": {
+    "number": 763,
+    "title": "Add the PM-stack design record to doc/README.md",
+    "state": "open",
+    "html_url": "https://github.com/developing-today/code/pull/763",
+    "url": "https://api.github.com/repos/developing-today/code/pulls/763",
+    "user": { "login": "developing-today[bot]" },
+    "labels": [],
+    "created_at": "2026-10-25T08:10:00Z",
+    "updated_at": "2026-10-25T08:15:00Z"
+  },
+  "review": {
+    "id": 10001,
+    "state": "approved",
+    "body": "One-line change, matches the trial intent.",
+    "user": { "login": "dezren39" },
+    "submitted_at": "2026-10-25T08:15:00Z",
+    "commit_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "html_url": "https://github.com/developing-today/code/pull/763#pullrequestreview-10001"
+  },
+  "repository": { "full_name": "developing-today/code", "name": "code" },
+  "sender": { "login": "dezren39" }
+}

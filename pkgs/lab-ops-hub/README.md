@@ -146,3 +146,30 @@ wrangler), plain `npm run deploy` with the Dockerfile form works too;
 - The Worker falls back to its in-Worker crawler on any container error
   and reports `container_error` in the response, so the API never
   hard-fails regardless.
+
+## Containers: FIXED (2026-10-25)
+
+The five-day container start failure (2026-10-20 → 25) is resolved;
+`/api/crawl` is container-served again (verified in D1: rows with
+source='container' plus container_run usage events). Two stacked causes,
+isolated with Cloudflare's official hello-world image
+(github.com/cloudflare/hello-world-container-image) in a clean-room
+Worker (pkgs/cf-container-hello):
+
+1. **Image shape.** The v3 image (relative `Cmd`, no PATH env, no shell)
+   is rejected by the current start path — it failed 3/3 even inside a
+   fresh container application, while the official image started
+   instantly on both the default and `lite` instance types. Fixed by
+   the :v5 image (see container-image.nix header).
+2. **Wedged application.** The container application created on
+   2026-10-20 (during the incident window) never starts again, even with
+   the fixed image. The binding therefore uses a new class,
+   `CrawlerContainerV2`, whose application was created fresh; it started
+   on the first attempt. The legacy class stays exported (API error
+   10064 otherwise) and its orphaned application is left in place,
+   unused.
+
+Also unblocked at the same time: the `API_TOKEN` Worker secret (pending
+since #441) was generated, filed in Bitwarden Secrets Manager as
+`cloudflare.lab-ops-hub-api-token`, and set — so the merged #441 auth
+gate is live for the first time.

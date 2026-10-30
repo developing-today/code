@@ -63,3 +63,52 @@ func TestRedactKeepsTheSurroundingContextOfAPartialMatch(t *testing.T) {
 		t.Errorf("the elision should be visible: %q", got)
 	}
 }
+
+func TestRedactElidesFullJWTAndReconciledKeywords(t *testing.T) {
+	// Regression for #1710: three leak shapes survived Redact.
+	// (1) A JWT match ended at the second dot, leaving the signature
+	// segment verbatim. (2) The KEY=VALUE keyword list had drifted from
+	// sensitiveName, so SESSION=/COOKIE= and friends passed through.
+	// (3) URL userinfo passwords were not matched at all.
+	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c"
+	cases := []struct {
+		name, value string
+		leaks       string // must not appear in the output
+	}{
+		{"MCPX_ANYTHING", jwt, "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c"},
+		{"MCPX_SCRIPT_ENV", "SESSION=abc123sessionvalue", "abc123sessionvalue"},
+		{"MCPX_SCRIPT_ENV", "SESSION_ID=abc123sessionvalue", "abc123sessionvalue"},
+		{"MCPX_SCRIPT_ENV", "COOKIE=abc123cookievalue", "abc123cookievalue"},
+		{"MCPX_SCRIPT_ENV", "PWD=abc123pwdvalue", "abc123pwdvalue"},
+		{"MCPX_SCRIPT_ENV", "SIGNATURE=abc123sigvalue", "abc123sigvalue"},
+		{"MCPX_SCRIPT_ENV", "PRIVATE=abc123privatevalue", "abc123privatevalue"},
+		{"MCPX_SCRIPT_ENV", "AUTH=abc123authvalue", "abc123authvalue"},
+		{"MCPX_ANYTHING", "https://deploy:s3cr3tpw@example.com:8443/path", "s3cr3tpw"},
+	}
+	for _, c := range cases {
+		got := logging.Redact(c.name, c.value)
+		if strings.Contains(got, c.leaks) {
+			t.Errorf("%s=%q leaked %q through as %q", c.name, c.value, c.leaks, got)
+		}
+	}
+}
+
+func TestRedactURLUserinfoKeepsTheRestOfTheURL(t *testing.T) {
+	got := logging.Redact("MCPX_ANYTHING", "https://deploy:s3cr3tpw@example.com:8443/path")
+	want := "https://deploy:<elided>@example.com:8443/path"
+	if got != want {
+		t.Errorf("userinfo URL should elide only the password: got %q, want %q", got, want)
+	}
+}
+
+func TestRedactKeepsCredentialFreeURLs(t *testing.T) {
+	for _, value := range []string{
+		"https://example.com:8443/path?q=1",
+		"https://user@example.com/path",
+		"http://127.0.0.1:54501",
+	} {
+		if got := logging.Redact("MCPX_ENDPOINT", value); got != value {
+			t.Errorf("credential-free URL %q should have been kept, got %q", value, got)
+		}
+	}
+}

@@ -11,9 +11,19 @@
 #   - listed but no longer defined by the flake    -> stale entry
 #
 # The exclusion list below is the ONLY place it lives: the `default`
-# aggregate (it re-runs the listed set in one derivation) and the heavy
-# checks that run nightly in id-e2e-nightly.yml, which also runs the
-# full `nix flake check` as a safety net.
+# aggregate (it re-runs the listed set in one derivation), the heavy
+# checks that run nightly in id-e2e-nightly.yml (which also runs the
+# full `nix flake check` as a safety net), and the aggregate test
+# recipes `test`, `test-web` and `test-int` — on PRs their content is
+# covered by composition instead: test-unit + test-shard-0/1/2/3 +
+# test-web-unit + test-web-typecheck run every test they run (#869).
+# The aggregate `crash-gate` is likewise covered by composition on
+# PRs: crash-gate-sampled/-sweep/-control/-ingest partition its tests
+# by name filter (#551). They still run in the nightly full flake check.
+# That partition is a checked invariant, not just prose:
+# check-crash-gate-coverage.sh runs in the same guard job and fails,
+# naming the test, when an #[ignore]d crash test matches none of the
+# split filters (#1635).
 #
 # Usage: check-id-pr-checks.sh [list-file]
 # For tests, ID_FLAKE_CHECKS_FILE names a file with one flake check
@@ -30,6 +40,10 @@ excluded=(
   nixos-e2e
   nixos-playwright-e2e
   nixos-integration
+  test
+  test-web
+  test-int
+  crash-gate
 )
 
 if [[ -n ${ID_FLAKE_CHECKS_FILE:-} ]]; then

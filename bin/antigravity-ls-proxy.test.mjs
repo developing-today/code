@@ -34,6 +34,8 @@ let lsServer;
 let proxyChild;
 let proxyPort;
 let capturedModel;
+let capturedPrompt;
+let stubResponse = 'stub answer';
 
 const startStubLs = async () => {
   lsServer = http.createServer((req, res) => {
@@ -44,8 +46,12 @@ const startStubLs = async () => {
       if (req.url.endsWith('/GetAvailableModels')) {
         res.end(JSON.stringify({ response: { models: {} } }));
       } else if (req.url.endsWith('/GetModelResponse')) {
-        try { capturedModel = JSON.parse(body).model; } catch { capturedModel = null; }
-        res.end(JSON.stringify({ response: 'stub answer' }));
+        try {
+          const parsed = JSON.parse(body);
+          capturedModel = parsed.model;
+          capturedPrompt = parsed.prompt;
+        } catch { capturedModel = null; capturedPrompt = null; }
+        res.end(JSON.stringify({ response: stubResponse }));
       } else {
         // Heartbeat and anything else: a bare 200 is all the proxy checks.
         res.end('{}');
@@ -92,6 +98,7 @@ after(() => {
 
 const chat = async (payload) => {
   capturedModel = undefined;
+  capturedPrompt = undefined;
   const res = await fetch(`http://127.0.0.1:${proxyPort}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -102,6 +109,19 @@ const chat = async (payload) => {
   });
   return res;
 };
+
+const echoTools = [{
+  type: 'function',
+  function: {
+    name: 'run_echo',
+    description: 'echo a word',
+    parameters: {
+      type: 'object',
+      properties: { word: { type: 'string' }, count: { type: 'number' } },
+      required: ['word']
+    }
+  }
+}];
 
 test("effort 'default' falls back to the family default enum, not the string 'medium'", async () => {
   const res = await chat({ model: 'gemini-3.8-flash', reasoning_effort: 'default' });
@@ -131,4 +151,88 @@ test('an unknown model is still refused with 400', async () => {
   const res = await chat({ model: 'no-such-model-xyz' });
   assert.equal(res.status, 400);
   assert.equal(capturedModel, undefined);
+});
+
+// --- Tool-call translation (#865) -------------------------------------------
+// The language server returns plain text; the proxy must lift the tool
+// calls models spell in that text into structured OpenAI tool_calls, or
+// tool-driven clients (OpenCode) execute nothing.
+
+test('the formatted prompt carries the tool-calling contract', async () => {
+  stubResponse = 'ok';
+  const res = await chat({ model: 'gemini-3.8-flash', tools: echoTools });
+  assert.equal(res.status, 200);
+  assert.match(capturedPrompt, /\[Tool Calling\]/);
+  assert.match(capturedPrompt, /```tool_call/);
+});
+
+test('a canonical tool_call fence becomes structured tool_calls', async () => {
+  stubResponse = '```tool_call\n{"name": "run_echo", "arguments": {"word": "banana", "count": 2}}\n```';
+  const res = await chat({ model: 'gemini-3.8-flash', tools: echoTools });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  const choice = body.choices[0];
+  assert.equal(choice.finish_reason, 'tool_calls');
+  assert.equal(choice.message.content, null);
+  assert.equal(choice.message.tool_calls.length, 1);
+  const call = choice.message.tool_calls[0];
+  assert.equal(call.type, 'function');
+  assert.equal(call.function.name, 'run_echo');
+  assert.deepEqual(JSON.parse(call.function.arguments), { word: 'banana', count: 2 });
+  assert.ok(call.id.startsWith('call_'));
+});
+
+test('a Claude-style invoke block becomes tool_calls and prose survives', async () => {
+  stubResponse = 'Let me run that.\n\n<function_calls>\n<invoke name="run_echo">\n<parameter name="word">banana</parameter>\n<parameter name="count">3</parameter>\n</invoke>\n</function_calls>';
+  const res = await chat({ model: 'gemini-3.8-flash', tools: echoTools });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  const choice = body.choices[0];
+  assert.equal(choice.finish_reason, 'tool_calls');
+  assert.equal(choice.message.content, 'Let me run that.');
+  assert.equal(choice.message.tool_calls.length, 1);
+  assert.deepEqual(JSON.parse(choice.message.tool_calls[0].function.arguments), { word: 'banana', count: 3 });
+});
+
+test('a Gemini-style json fence becomes tool_calls', async () => {
+  stubResponse = '```json\n{ "name": "run_echo", "arguments": { "word": "banana" } }\n```';
+  const res = await chat({ model: 'gemini-3.8-flash', tools: echoTools });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.choices[0].finish_reason, 'tool_calls');
+  assert.equal(body.choices[0].message.tool_calls[0].function.name, 'run_echo');
+});
+
+test('a block naming an unoffered tool is left as text', async () => {
+  stubResponse = '```tool_call\n{"name": "rm_rf", "arguments": {}}\n```';
+  const res = await chat({ model: 'gemini-3.8-flash', tools: echoTools });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.choices[0].finish_reason, 'stop');
+  assert.equal(body.choices[0].message.tool_calls, undefined);
+  assert.match(body.choices[0].message.content, /rm_rf/);
+});
+
+test('no tools in the request means no extraction', async () => {
+  stubResponse = '```tool_call\n{"name": "run_echo", "arguments": {"word": "banana"}}\n```';
+  const res = await chat({ model: 'gemini-3.8-flash' });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.choices[0].finish_reason, 'stop');
+  assert.equal(body.choices[0].message.tool_calls, undefined);
+});
+
+test('streaming emits a tool_calls delta and a tool_calls finish', async () => {
+  stubResponse = '```tool_call\n{"name": "run_echo", "arguments": {"word": "banana"}}\n```';
+  const res = await chat({ model: 'gemini-3.8-flash', tools: echoTools, stream: true });
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  const chunks = text.split('\n')
+    .filter(l => l.startsWith('data: ') && !l.includes('[DONE]'))
+    .map(l => JSON.parse(l.slice('data: '.length)));
+  const toolChunks = chunks.filter(c => c.choices[0]?.delta?.tool_calls);
+  assert.equal(toolChunks.length, 1);
+  assert.equal(toolChunks[0].choices[0].delta.tool_calls[0].function.name, 'run_echo');
+  const finish = chunks[chunks.length - 1];
+  assert.equal(finish.choices[0].finish_reason, 'tool_calls');
 });

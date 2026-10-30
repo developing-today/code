@@ -38,7 +38,7 @@ in
     cargoLock = {
       lockFile = ./Cargo.lock;
       outputHashes = {
-        "p2panda-core-0.7.1" = "sha256-t1FDJkQ6B43clPF0lD36I+Uxav0YbqJ2e/UwWUoI6fk=";
+        "p2panda-core-0.7.1" = "sha256-yq+ySfo14ucU1BWOUdJM0n7/FL3+Ria3Z+MxMHFa4Ls=";
       };
     };
 

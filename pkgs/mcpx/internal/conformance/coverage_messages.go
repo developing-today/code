@@ -1,6 +1,13 @@
 package conformance
 
 // Messages, errors, _meta, JSON Schema.
+//
+// Note: a JSON Schema validator mechanism now exists in the binary —
+// internal/schemaval (2020-12 core, dialect policy, offline-only refs;
+// see docs/schema-validation.md). The json-schema-* requirement rows
+// below still describe protocol-frame behaviour (internal/mcpspec,
+// test-only); schemaval row closures land with the schemaval phases
+// that wire it into list/call paths.
 func init() {
 	register(
 		SReq("conformance.TestMessagesServer",
@@ -102,6 +109,21 @@ func init() {
 			"tools-schema-default-2020-12",
 			"json-schema-no-network-ref",
 		),
+		S("json-schema-support-2020-12", "mcpclient.TestCallToolRejectsInvalidArgumentsBeforeTheTransport@all"),
+		S("json-schema-validate-per-dialect-and-error-on-unsupported", "mcpclient.TestListToolsExcludesUncompilableSchemasWithWarning@all", "schemaval.TestUnsupportedDialect@all", "schemaval.TestDeclaredDialectsCompile@all"),
+		C("json-schema-validate-per-dialect-and-error-on-unsupported", "mcpclient.TestListToolsExcludesUncompilableSchemasWithWarning@all", "schemaval.TestUnsupportedDialect@all", "schemaval.TestDeclaredDialectsCompile@all"),
+		S("json-schema-reject-unresolved-ref", "mcpclient.TestListToolsExcludesUncompilableSchemasWithWarning@all", "schemaval.TestUnresolvedInternalRef@all", "schemaval.TestRemoteRefMakesNoRequests@all"),
+		// json-schema-document-dialects is met by docs/schema-validation.md
+		// ("Dialect policy" table); the tests below pin the documented set.
+		S("json-schema-document-dialects", "schemaval.TestDeclaredDialectsCompile@all", "schemaval.TestUnsupportedDialect@all"),
+		C("json-schema-document-dialects", "schemaval.TestDeclaredDialectsCompile@all", "schemaval.TestUnsupportedDialect@all"),
+		// json-schema-bound-composition-cost is met by schemaval's 1 MiB
+		// schema-document cap (MaxSchemaBytes), which bounds the total
+		// subschema count a document can carry; no separate depth or
+		// per-validation time bound exists yet.
+		S("json-schema-bound-composition-cost", "schemaval.TestSchemaTooLarge@all"),
+		C("json-schema-bound-composition-cost", "schemaval.TestSchemaTooLarge@all"),
+		C("json-schema-reject-unresolved-ref", "mcpclient.TestListToolsExcludesUncompilableSchemasWithWarning@all", "schemaval.TestUnresolvedInternalRef@all", "schemaval.TestRemoteRefMakesNoRequests@all"),
 	)
 	registerGaps(
 		Gap{ID: "errors-local-errors-not-mistaken-for-peer", Side: Server, Issue: "#206",
@@ -110,19 +132,5 @@ func init() {
 			Why: "mcpx answers methods whatever was negotiated (accept liberally, revisions.go); the schema guidance asks for -32601"},
 		Gap{ID: "mrtr-missing-capability-error-32021", Side: Server, Issue: "#257",
 			Why: "through the gateway (mcpx_call) a call that needs input from a client that declared none goes to the broker instead of failing with -32021; the specification contradicts itself here (docs/spec/revision-conflicts.md). In pass-through mode the client's declaration is relayed and the upstream's -32021 returned (mcpserver.TestAPassThroughUpstreamsMissingCapabilityIsRelayed)"},
-		Gap{ID: "json-schema-support-2020-12", Side: Server, Issue: "#254",
-			Why: "mcpx never validates arguments against a tool's inputSchema; schemas pass through"},
-		Gap{ID: "json-schema-validate-per-dialect-and-error-on-unsupported", Side: Server, Issue: "#254",
-			Why: "no validator in the binary, so an unsupported $schema is forwarded, not refused"},
-		Gap{ID: "json-schema-validate-per-dialect-and-error-on-unsupported", Side: Client, Issue: "#254",
-			Why: "no validator in the binary, so an unsupported $schema is accepted"},
-		Gap{ID: "json-schema-reject-unresolved-ref", Side: Server, Issue: "#254",
-			Why: "an unresolvable $ref is rendered permissively (codegen) rather than rejected"},
-		Gap{ID: "json-schema-reject-unresolved-ref", Side: Client, Issue: "#254",
-			Why: "an unresolvable $ref is rendered permissively (codegen) rather than rejected"},
-		Gap{ID: "json-schema-document-dialects", Side: Server, Issue: "#254",
-			Why: "no document states which dialects mcpx supports"},
-		Gap{ID: "json-schema-document-dialects", Side: Client, Issue: "#254",
-			Why: "no document states which dialects mcpx supports"},
 	)
 }

@@ -33,8 +33,8 @@ pub use history::{HistoryMode, HistoryModeError};
 pub use ordering::{Envelope, Orderer, OrdererError};
 pub use roster::Roster;
 pub use scheme::{
-    DATASCHEME, RECOVERY_STEPS, Received, Recovery, SCHEME_V1, SchemeError, Session, key_bundle,
-    key_of, negotiate, new_keys, registry,
+    DATASCHEME, MAX_HELD_BYTES, MAX_HELD_MESSAGES, RECOVERY_STEPS, Received, Recovery, SCHEME_V1,
+    SchemeError, Session, StalledDelivery, key_bundle, key_of, negotiate, new_keys, registry,
 };
 
 #[cfg(test)]

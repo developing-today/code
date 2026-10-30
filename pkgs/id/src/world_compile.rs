@@ -13,7 +13,7 @@
 //! world platform declares none), and the cache lives inside the job
 //! directory so concurrent jobs cannot interfere.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -155,7 +155,12 @@ pub fn validate_spec(spec: &CompileSpec) -> Result<()> {
         "the first file must be main.roc"
     );
     let mut total = 0usize;
+    let mut seen = std::collections::HashSet::new();
     for (name, content) in &spec.files {
+        ensure!(
+            seen.insert(name.as_str()),
+            "file name {name:?} appears more than once in the compile request"
+        );
         ensure!(
             !name.is_empty()
                 && name.len() <= 64
@@ -498,8 +503,13 @@ fn rewrite_platform_path(main: &str) -> Result<String> {
 }
 
 fn sanitize_file_name(name: &str) -> Result<String> {
+    // The name must be exactly one normal path component: no parent
+    // references, no separators, no root. (Splitting on '.' cannot
+    // detect ".." — its parts are maximal non-dot runs and never
+    // contain a dot.)
+    let mut components = Path::new(name).components();
     ensure!(
-        name.split('.').all(|part| part != "." && part != ".."),
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none(),
         "file name {name:?} must stay inside the job directory"
     );
     Ok(name.to_owned())
@@ -540,6 +550,37 @@ fn apply_rlimits() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Locate the Roc compiler binary for world builds: `$ID_ROC_BIN`, then the
+/// pinned nightly the platform's ABI bindings were generated with, then a
+/// `roc` on `PATH` that answers `roc version`.
+///
+/// The exact nightly matters: a different one produces a different module
+/// layout (found the hard way). `id world doctor` and the compile path agree
+/// on the toolchain by both going through this function.
+pub fn locate_roc() -> Result<String> {
+    if let Ok(path) = std::env::var("ID_ROC_BIN") {
+        return Ok(path);
+    }
+    let tag = "nightly-2026-10-04-130536d";
+    let version = tag.trim_start_matches("nightly-");
+    for home in [
+        std::env::var("HOME").unwrap_or_default(),
+        "/home/user".to_owned(),
+    ] {
+        let path = format!(
+            "{home}/.local/share/plaza-tools/roc/{tag}/roc_nightly-linux_x86_64-{version}/roc"
+        );
+        if Path::new(&path).is_file() {
+            return Ok(path);
+        }
+    }
+    let output = std::process::Command::new("roc").arg("version").output();
+    match output {
+        Ok(output) if output.status.success() => Ok("roc".to_owned()),
+        _ => bail!("no roc binary"),
+    }
+}
+
 #[cfg(all(test, feature = "sandbox"))]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -561,6 +602,7 @@ mod tests {
         validate_spec(&spec(vec![("main.roc", "app [x] {}")])).unwrap();
         assert!(validate_spec(&spec(vec![("lib.roc", "x")])).is_err());
         assert!(validate_spec(&spec(vec![("main.roc", "x"), ("../evil.roc", "y")])).is_err());
+
         assert!(validate_spec(&spec(vec![("main.roc", "x"), (".hidden", "y")])).is_err());
         let too_big = spec(vec![("main.roc", &"x".repeat(MAX_COMPILE_FILE_BYTES + 1))]);
         assert!(validate_spec(&too_big).is_err());
@@ -569,6 +611,56 @@ mod tests {
             many.push((Box::leak(format!("f{i}.roc").into_boxed_str()), "y"));
         }
         assert!(validate_spec(&spec(many)).is_err());
+    }
+
+    #[test]
+    fn sanitize_file_name_refuses_traversal() {
+        for name in [
+            "..",
+            ".",
+            "",
+            "../evil.roc",
+            "../../evil.roc",
+            "a/../../evil.roc",
+            "sub/Foo.roc",
+            "/etc/passwd",
+        ] {
+            assert!(
+                sanitize_file_name(name).is_err(),
+                "sanitize_file_name({name:?}) must refuse"
+            );
+        }
+        for name in ["main.roc", "Helper.roc", "a..b.roc", "foo-bar_baz.roc"] {
+            assert_eq!(sanitize_file_name(name).unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn duplicate_file_names_are_refused() {
+        // A duplicated helper: staging writes both to the same job path, so
+        // the first would be silently overwritten — and digest_sources would
+        // still hash it into the recorded provenance.
+        let duplicate = spec(vec![
+            ("main.roc", "app"),
+            ("Helper.roc", "first"),
+            ("Helper.roc", "second"),
+        ]);
+        let error = validate_spec(&duplicate).unwrap_err().to_string();
+        assert!(error.contains("Helper.roc"), "{error}");
+        assert!(error.contains("more than once"), "{error}");
+
+        // A duplicated main.roc: files[0] satisfies the main.roc rule, but
+        // the main.roc read back from the job directory would be the second.
+        let duplicate_main = spec(vec![
+            ("main.roc", "app"),
+            ("Helper.roc", "helper"),
+            ("main.roc", "other"),
+        ]);
+        assert!(validate_spec(&duplicate_main).is_err());
+
+        // Control: unique names still validate.
+        let unique = spec(vec![("main.roc", "app"), ("Helper.roc", "helper")]);
+        assert!(validate_spec(&unique).is_ok());
     }
 
     #[test]
@@ -1224,27 +1316,7 @@ restore = |text| match U64.from_str(text) {
     /// The roc the platform's ABI bindings were generated with; a different
     /// nightly produces a different module layout (found the hard way).
     fn which_roc() -> Result<String> {
-        if let Ok(path) = std::env::var("ID_ROC_BIN") {
-            return Ok(path);
-        }
-        let tag = "nightly-2026-10-04-130536d";
-        let version = tag.trim_start_matches("nightly-");
-        for home in [
-            std::env::var("HOME").unwrap_or_default(),
-            "/home/user".to_owned(),
-        ] {
-            let path = format!(
-                "{home}/.local/share/plaza-tools/roc/{tag}/roc_nightly-linux_x86_64-{version}/roc"
-            );
-            if Path::new(&path).is_file() {
-                return Ok(path);
-            }
-        }
-        let output = std::process::Command::new("roc").arg("version").output();
-        match output {
-            Ok(output) if output.status.success() => Ok("roc".to_owned()),
-            _ => bail!("no roc binary"),
-        }
+        crate::world_compile::locate_roc()
     }
 
     /// The first candidate that is a complete world platform. The built

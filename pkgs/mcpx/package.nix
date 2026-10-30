@@ -10,6 +10,10 @@
   bun,
   bun-bin ? bun,
   nodejs,
+  # python3 is ambient for module:python hooks (the runner looks it up on
+  # PATH, falling back to uv); the check suite runs a real python hook, so
+  # the sandbox needs the interpreter the laptop already has.
+  python3,
   # git is the fallback for the `repo` and `worktree` scopes: mcpx reads .git
   # itself and only asks git about layouts it does not vouch for
   # (docs/git-discovery.md). Kept on the wrapper's PATH so those still
@@ -18,9 +22,17 @@
   makeBinaryWrapper,
   installShellFiles,
 }:
+let
+  # The mcpx version, written once here (#1895): the derivation attribute
+  # below and the ldflags build stamp both take this binding, because the
+  # argument to buildGo127Module is a non-recursive attribute set and its
+  # own attributes are not in scope for interpolation inside it.
+  # internal/buildcheck keeps cmd/mcpx/main.go default in agreement.
+  version = "0.1.0";
+in
 buildGo127Module {
   pname = "mcpx";
-  version = "0.1.0";
+  inherit version;
 
   src = lib.cleanSourceWith {
     src = ./.;
@@ -50,7 +62,7 @@ buildGo127Module {
   #
   # Everything else -- the MCP client, the process pools, the JSON Schema to
   # TypeScript compiler, the CLI -- is standard library.
-  vendorHash = "sha256-akA2jS8EwkJufn5OtK3DeYHyu2qlWq4SKDhYMEmi/eU=";
+  vendorHash = "sha256-B962TunDKasBWH+RXqvjwRRkKwUC1MtDkBEwFkWlhxA=";
 
   subPackages = [ "cmd/mcpx" ];
 
@@ -71,10 +83,14 @@ buildGo127Module {
     export GOFLAGS="$GOFLAGS -buildvcs=false"
   '';
 
+  # The version is written once, above, and interpolated here, so the build
+  # stamp cannot silently disagree with `package.nix`'s version. The default in
+  # cmd/mcpx/main.go is the third site and is kept honest by
+  # internal/buildcheck's version agreement test (#1895).
   ldflags = [
     "-s"
     "-w"
-    "-X main.version=0.1.0"
+    "-X main.version=${version}"
   ];
 
   nativeBuildInputs = [
@@ -101,6 +117,7 @@ buildGo127Module {
     deno
     bun-bin
     nodejs
+    python3
     git
   ];
   checkPhase =

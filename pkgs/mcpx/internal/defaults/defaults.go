@@ -47,8 +47,9 @@ type Defaults struct {
 		Trace    bool     `json:"trace"`
 	} `json:"logging"`
 	Daemon struct {
-		ReapInterval string `json:"reapInterval"`
-		SaveInterval string `json:"saveInterval"`
+		ReapInterval   string `json:"reapInterval"`
+		SaveInterval   string `json:"saveInterval"`
+		TSNetUpTimeout string `json:"tsnetUpTimeout"`
 	} `json:"daemon"`
 	Secrets struct {
 		RequestRetention string `json:"requestRetention"`
@@ -88,9 +89,17 @@ type Defaults struct {
 	// Elicit governs questions a server asks back.
 	Elicit struct {
 		TTL            string `json:"ttl"`
+		MaxAge         string `json:"maxAge"`
 		PollInterval   string `json:"pollInterval"`
 		HandlerTimeout string `json:"handlerTimeout"`
 		InputRounds    int    `json:"inputRounds"`
+		// Retention bounds for terminal elicitation rows (#1677): a
+		// question that has been answered or has expired is kept for
+		// RetentionMaxAge and at most RetentionMaxTerminalRows of them
+		// are kept; the broker prunes on open. Pending rows are live
+		// state and are never pruned.
+		RetentionMaxAge          string `json:"retentionMaxAge"`
+		RetentionMaxTerminalRows int    `json:"retentionMaxTerminalRows"`
 	} `json:"elicit"`
 	// Proto governs how mcpx speaks the protocol to its own clients: which
 	// era mechanisms it offers, and how long it will hold a call open while
@@ -109,11 +118,18 @@ type Defaults struct {
 	// Transport governs how mcpx's own MCP server behaves on the wire, as
 	// opposed to what it says: keep-alives, shutdown, who may connect.
 	Transport struct {
-		SSEKeepAlive   string   `json:"sseKeepAlive"`
-		StdioDrain     string   `json:"stdioDrain"`
-		LoopbackHosts  []string `json:"loopbackHosts"`
-		AllowedOrigins []string `json:"allowedOrigins"`
+		SSEKeepAlive    string   `json:"sseKeepAlive"`
+		StdioDrain      string   `json:"stdioDrain"`
+		SSHWaitDelay    string   `json:"sshWaitDelay"`
+		LoopbackHosts   []string `json:"loopbackHosts"`
+		AllowedOrigins  []string `json:"allowedOrigins"`
+		SessionMetaKeys []string `json:"sessionMetaKeys"`
 	} `json:"transport"`
+
+	// Hooks governs the daemon's hook runner fallbacks.
+	Hooks struct {
+		Timeout string `json:"timeout"`
+	} `json:"hooks"`
 
 	// CLI governs how the command line renders what it did not write a
 	// formatter for: the commands generated from the /v1 operation table.
@@ -169,6 +185,14 @@ type Defaults struct {
 		RemoteOutput string `json:"remoteOutput"`
 		Delivery     string `json:"delivery"`
 	} `json:"exec"`
+	// Cache governs the one content-addressed cache mechanism (#1908):
+	// the byte and age bounds every kind is evicted against, and how old
+	// a lease may be before the process holding it is presumed dead.
+	Cache struct {
+		MaxBytes      string `json:"maxBytes"`
+		MaxAge        string `json:"maxAge"`
+		LeaseStaleAge string `json:"leaseStaleAge"`
+	} `json:"cache"`
 	// Artifacts governs the outbox: files a script produced, held for a
 	// caller to fetch rather than printed into its context.
 	Artifacts struct {
@@ -475,8 +499,11 @@ var (
 	LogIncludes = builtin.Logging.Include
 	LogTrace    = builtin.Logging.Trace
 
-	ReapInterval           = mustDur(builtin.Daemon.ReapInterval, "daemon.reapInterval")
-	SaveInterval           = mustDur(builtin.Daemon.SaveInterval, "daemon.saveInterval")
+	ReapInterval = mustDur(builtin.Daemon.ReapInterval, "daemon.reapInterval")
+	SaveInterval = mustDur(builtin.Daemon.SaveInterval, "daemon.saveInterval")
+	// TSNetUpTimeout bounds how long a tsnet node may take to authenticate
+	// and reach Running before its listener is believed.
+	TSNetUpTimeout         = mustDur(builtin.Daemon.TSNetUpTimeout, "daemon.tsnetUpTimeout")
 	SecretRequestRetention = mustDur(builtin.Secrets.RequestRetention, "secrets.requestRetention")
 
 	ShutdownGrace        = mustDur(builtin.Plumbing.ShutdownGrace, "plumbing.shutdownGrace")
@@ -512,9 +539,20 @@ var (
 	// waiting longer only makes a dead daemon slower to report.
 	ResolveDialTimeout = mustDur(builtin.Resolve.DialTimeout, "resolve.dialTimeout")
 
-	ElicitTTL            = mustDur(builtin.Elicit.TTL, "elicit.ttl")
+	ElicitTTL = mustDur(builtin.Elicit.TTL, "elicit.ttl")
+	// ElicitMaxAge is the absolute ceiling on a question's life under the
+	// touch-on-read convention (docs/decisions/0006-ttl-touch-on-read.md):
+	// renewal by use can never push a deadline past creation plus this.
+	ElicitMaxAge         = mustDur(builtin.Elicit.MaxAge, "elicit.maxAge")
 	ElicitPollInterval   = mustDur(builtin.Elicit.PollInterval, "elicit.pollInterval")
 	ElicitHandlerTimeout = mustDur(builtin.Elicit.HandlerTimeout, "elicit.handlerTimeout")
+	// ElicitRetentionMaxAge is how long a terminal (answered or expired)
+	// question is kept in the broker store before an open prunes it
+	// (#1677, design #1675 Phase 2: the recorded 30 days).
+	ElicitRetentionMaxAge = mustDur(builtin.Elicit.RetentionMaxAge, "elicit.retentionMaxAge")
+	// ElicitRetentionMaxTerminalRows caps how many terminal questions
+	// the broker store keeps, oldest first out (#1677).
+	ElicitRetentionMaxTerminalRows = builtin.Elicit.RetentionMaxTerminalRows
 	// InputRounds bounds how many times one 2026-07-28 request may come back
 	// input_required. A server that keeps asking is broken or adversarial,
 	// and without a bound the client would answer it forever.
@@ -575,11 +613,20 @@ var (
 	// requests already in flight after its input closes, before it cancels
 	// them and exits.
 	TransportStdioDrain = mustDur(builtin.Transport.StdioDrain, "transport.stdioDrain")
+	// TransportSSHWaitDelay bounds how long Cmd.Wait may spend draining an
+	// ssh transport's stderr after ssh itself has exited or been killed.
+	TransportSSHWaitDelay = mustDur(builtin.Transport.SSHWaitDelay, "transport.sshWaitDelay")
+	// HooksTimeout is the fallback hook timeout Parse applies when a caller
+	// passes none; the daemon normally passes the hooks.timeout setting.
+	HooksTimeout = mustDur(builtin.Hooks.Timeout, "hooks.timeout")
 	// TransportLoopbackHosts are the Origin hosts a browser page on this
 	// machine presents; any port, http or https.
 	TransportLoopbackHosts = builtin.Transport.LoopbackHosts
 	// TransportAllowedOrigins are further Origins allowed to reach /mcp.
 	TransportAllowedOrigins = builtin.Transport.AllowedOrigins
+	// TransportSessionMetaKeys are the _meta keys, in order, that a client
+	// may name its own session with; the first present key wins.
+	TransportSessionMetaKeys = builtin.Transport.SessionMetaKeys
 
 	CatalogBudget = builtin.Catalog.Budget
 
@@ -632,7 +679,18 @@ var (
 	// beside itself. They are visible in the user's directory.
 	ExecEntries      = builtin.Exec.Entries
 	ExecRemoteOutput = builtin.Exec.RemoteOutput
-	ExecDelivery     = builtin.Exec.Delivery
+
+	// CacheMaxBytes bounds the total size of one cache kind. Entries
+	// differ by five orders of magnitude (a flake resolution is bytes, a
+	// prepared dependency tree is hundreds of megabytes), so the shared
+	// bound is in bytes, never in entry count alone.
+	CacheMaxBytes = mustBytes(builtin.Cache.MaxBytes, "cache.maxBytes")
+	// CacheMaxAge bounds how long an unused cache entry is kept.
+	CacheMaxAge = mustDur(builtin.Cache.MaxAge, "cache.maxAge")
+	// CacheLeaseStaleAge is how old an entry's lease may be before the
+	// process holding it is presumed dead and the entry may be evicted.
+	CacheLeaseStaleAge = mustDur(builtin.Cache.LeaseStaleAge, "cache.leaseStaleAge")
+	ExecDelivery       = builtin.Exec.Delivery
 
 	ArtifactTTL = mustDur(builtin.Artifacts.TTL, "artifacts.ttl")
 	// ArtifactMaxBytes is the ceiling for one artifact. A screenshot is

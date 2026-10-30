@@ -65,6 +65,7 @@ use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
 
 use super::client::create_local_client_endpoint;
 use super::serve::get_serve_info;
+use super::text::plain_field;
 
 /// Options for the peers command.
 #[derive(Debug)]
@@ -113,6 +114,11 @@ pub struct PeersOptions {
 /// ```text
 /// <node_id>\t<name>\t<blob_count>\t<timestamp>
 /// ```
+///
+/// Peer names arrive over unsigned gossip and are stored and served verbatim,
+/// so the printer is where row structure is protected: a name containing a
+/// tab, CR, LF or other structure-breaking character is quoted and escaped by
+/// [`plain_field`] instead of shifting a column or forging a row (#1613).
 pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()> {
     let mut all_peers: HashMap<EndpointId, PeerAnnouncement> = HashMap::new();
 
@@ -188,15 +194,29 @@ pub async fn cmd_peers(node: Option<String>, options: PeersOptions) -> Result<()
         let mut peers: Vec<_> = all_peers.into_values().collect();
         peers.sort_by_key(|a| a.node_id.to_string());
         for peer in peers {
-            let name = peer.name.as_deref().unwrap_or("-");
-            println!(
-                "{}\t{}\t{}\t{}",
-                peer.node_id, name, peer.blob_count, peer.timestamp_secs
-            );
+            println!("{}", format_peer_row(&peer));
         }
     }
 
     Ok(())
+}
+
+/// One peer as the four tab-separated fields of the `id peers` row:
+/// `<node_id>\t<name>\t<blob_count>\t<timestamp>`.
+///
+/// The name comes from an unsigned gossip announcement and is stored and
+/// served verbatim, so it is rendered through [`plain_field`]: a name holding
+/// a tab, CR, LF or other structure-breaking character is quoted and escaped
+/// instead of shifting columns or forging a row (#1613).
+pub(crate) fn format_peer_row(peer: &PeerAnnouncement) -> String {
+    let name = peer
+        .name
+        .as_deref()
+        .map_or_else(|| "-".to_owned(), plain_field);
+    format!(
+        "{}\t{}\t{}\t{}",
+        peer.node_id, name, peer.blob_count, peer.timestamp_secs
+    )
 }
 
 /// Queries the local serve instance for its peer list via RPC.
@@ -446,6 +466,108 @@ async fn discover_via_gossip(options: &PeersOptions) -> Result<Vec<PeerAnnouncem
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::discovery::PeerDiscovery;
+    use iroh_base::SecretKey;
+
+    fn announcement(byte: u8, name: Option<&str>) -> PeerAnnouncement {
+        PeerAnnouncement {
+            node_id: SecretKey::from_bytes(&[byte; 32]).public(),
+            name: name.map(ToOwned::to_owned),
+            blob_count: 7,
+            timestamp_secs: 1_700_000_000,
+        }
+    }
+
+    fn fields(row: &str) -> Vec<&str> {
+        row.split('\t').collect()
+    }
+
+    fn assert_one_row_four_fields(row: &str) {
+        assert!(!row.contains('\n'), "row must be one line: {row:?}");
+        assert!(!row.contains('\r'), "row must be one line: {row:?}");
+        assert_eq!(fields(row).len(), 4, "row must have four fields: {row:?}");
+    }
+
+    #[test]
+    fn test_peer_row_control_character_names_stay_one_row() {
+        for name in ["a\nb", "a\rb", "a\tb", "a\r\nb", "\n", "\u{0}", "x\nforged\trow\t0"] {
+            let row = format_peer_row(&announcement(1, Some(name)));
+            assert_one_row_four_fields(&row);
+            assert!(
+                !row.contains(name),
+                "the raw name must not reach the row: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_peer_row_ordinary_names_display_unchanged() {
+        for name in ["my-server", "my server", "naïve-✦", "サーバー"] {
+            let row = format_peer_row(&announcement(1, Some(name)));
+            assert_eq!(fields(&row)[1], name, "ordinary name must be unchanged");
+        }
+    }
+
+    #[test]
+    fn test_peer_row_without_a_name_prints_a_dash() {
+        let row = format_peer_row(&announcement(1, None));
+        assert_eq!(fields(&row)[1], "-");
+    }
+
+    /// Ingest -> `ListPeers` -> both printers, for names a gossip announcement
+    /// can carry verbatim (#1613).
+    #[test]
+    fn test_forged_names_through_ingest_and_list_peers_cannot_forge_rows() {
+        let discovery = PeerDiscovery::new();
+        let names = [
+            Some("forged\nname\twith\ttabs"),
+            Some("carriage\rreturn"),
+            Some("plain-peer"),
+            Some("naïve peer"),
+        ];
+        for (index, name) in names.iter().enumerate() {
+            let announced = announcement(u8::try_from(index + 1).unwrap(), *name);
+            // Gossip ingest: postcard on the wire, then stored verbatim.
+            let wire = postcard::to_allocvec(&announced).unwrap();
+            discovery.update(postcard::from_bytes(&wire).unwrap());
+        }
+
+        // ListPeers serving, as protocol.rs builds it from the peer table.
+        let served = MetaResponse::ListPeers {
+            peers: discovery
+                .peers()
+                .into_iter()
+                .map(|info| info.announcement)
+                .collect(),
+        };
+        // The client reads it off the wire.
+        let wire = postcard::to_allocvec(&served).unwrap();
+        let MetaResponse::ListPeers { peers } = postcard::from_bytes(&wire).unwrap() else {
+            panic!("expected ListPeers");
+        };
+
+        assert_eq!(peers.len(), names.len());
+        // Stored and served values stay verbatim; only the printers escape.
+        for name in names.into_iter().flatten() {
+            assert!(
+                peers.iter().any(|peer| peer.name.as_deref() == Some(name)),
+                "announcement for {name:?} must be served verbatim"
+            );
+        }
+
+        let now = 1_700_000_120;
+        let mut rows: Vec<String> = peers.iter().map(format_peer_row).collect();
+        rows.extend(
+            peers
+                .iter()
+                .map(|peer| crate::commands::repl::format_peer_line(peer, now)),
+        );
+
+        assert_eq!(rows.len(), names.len() * 2, "one row per peer per printer");
+        for row in &rows {
+            assert_one_row_four_fields(row);
+        }
+    }
 
     #[test]
     fn test_peers_options_defaults() {

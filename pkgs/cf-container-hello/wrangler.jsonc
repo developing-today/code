@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cf-container-hello",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "containers": [
+    {
+      "class_name": "HelloContainer",
+      "image": "registry.cloudflare.com/234b866b99ce2b142d7963d8d139cbfa/hello-world:v1",
+      "max_instances": 2
+    },
+    {
+      "class_name": "CrawlerProbe",
+      "image": "registry.cloudflare.com/234b866b99ce2b142d7963d8d139cbfa/lab-ops-hub-crawlercontainer:v5",
+      "max_instances": 1
+    },
+    {
+      "class_name": "HelloLite",
+      "image": "registry.cloudflare.com/234b866b99ce2b142d7963d8d139cbfa/hello-world:v1",
+      "instance_type": "lite",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "HelloContainer", "name": "HELLO_CONTAINER" },
+      { "class_name": "CrawlerProbe", "name": "CRAWLER_PROBE" },
+      { "class_name": "HelloLite", "name": "HELLO_LITE" }
+    ]
+  },
+  "migrations": [
+    { "new_sqlite_classes": ["HelloContainer"], "tag": "v1" },
+    { "new_sqlite_classes": ["CrawlerProbe", "HelloLite"], "tag": "v2" }
+  ]
+}

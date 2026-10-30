@@ -76,6 +76,7 @@ F11.10 should land before F11.12, because that task touches the code the split m
 1. Relay kit (#238): settled on `main` by #249 with a vendored copy and a drift test, not a move. The move into `pkgs/id/deploy/relay/` was approved but is not needed now.
 2. Seeds and chat (F11.11): seeds secret, join-only participants do not see chat, an explicit `history` scope opts in. Approved.
 3. Firefox E2E (#229, F11.2): not yet decided. It remains the last red check once the sync tests are fixed.
+4. SSH input modes: raw keystrokes by default, `cmd:` line mode as the explicit login-time entry, other variations later. Username grammar is `world-name` / `explore:` / `cmd:`. See the [decision record](../../doc/2026-10-24T20-18-37Z_decision_ssh_input_modes/2026-10-24T20-18-37Z_decision_ssh_input_modes.md) and the SSH command-grammar task (#546).
 
 ## Out of scope
 

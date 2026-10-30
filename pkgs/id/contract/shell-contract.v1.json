@@ -1,0 +1,391 @@
+{
+  "contract": "id-shell",
+  "version": 1,
+  "revision": 3,
+  "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. A new frame kind waits for the journal format work (F11.12, #227).",
+  "max_frame_bytes": 1048576,
+  "routing_fields": ["world"],
+  "transports": {
+    "iroh": {
+      "alpn": "/id-world/1",
+      "envelope": "u32be-length-prefix",
+      "session": "one bidirectional QUIC stream"
+    },
+    "websocket": {
+      "path": "/ws/world",
+      "envelope": "text-message",
+      "session": "one WebSocket connection"
+    },
+    "ssh-exec": {
+      "command": "id-world/1",
+      "envelope": "u32be-length-prefix",
+      "session": "one SSH session channel running the exec command"
+    }
+  },
+  "phases": {
+    "opening": "The session's first frame. It may carry the `world` routing field; absent means the host's default world.",
+    "query": "After an opening query frame: further query frames, or a join.",
+    "install": "After install_begin was answered with upload_ready: chunks, then install_end.",
+    "joined": "From the frame after a join. A shell may send joined-phase frames (such as its first resize) before the snapshot arrives; the host reads them once the join is answered. Every frame keeps the session joined."
+  },
+  "classes": {
+    "event": "Becomes one committed world event: journaled, replayed, and delivered to sessions through the client projection.",
+    "ephemeral": "Connection-local presentation context. Never journaled and never seen by other sessions.",
+    "query": "Read-only. Never journaled and never changes the world.",
+    "control": "Session lifecycle. The frame itself is never journaled.",
+    "admin": "Authority-bearing configuration. Needs the admin secret or a signed moderator request, and may write a journal entry.",
+    "delegation": "Mints a narrower capability from the session's own. It may write a journal entry; it never widens authority."
+  },
+  "client_frames": {
+    "join": {
+      "class": "control",
+      "phases": ["opening", "query"],
+      "opens": "joined",
+      "fields": {
+        "capability": { "type": "string", "max_bytes": 256 },
+        "after": "u64?"
+      }
+    },
+    "info": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": { "capability": "string" }
+    },
+    "metrics": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": { "capability": "string" }
+    },
+    "records": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": {
+        "capability": "string",
+        "prefix": "string?",
+        "after": "string?"
+      }
+    },
+    "records_ticket": {
+      "class": "query",
+      "phases": ["opening", "query", "joined"],
+      "opens": "query",
+      "fields": { "capability": "string" }
+    },
+    "download_module": {
+      "class": "query",
+      "phases": ["opening", "query"],
+      "opens": "query",
+      "fields": { "capability": "string", "module_hash": "string" }
+    },
+    "download_module_admin": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "module_hash": "string" }
+    },
+    "caps": {
+      "class": "query",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "capability": "string" }
+    },
+    "execution_profile_info": {
+      "class": "query",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string?", "capability": "string?" }
+    },
+    "invite": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {
+        "admin_token": "string",
+        "display_name": "string",
+        "expires_in_secs": "u64?",
+        "uses": "u32?",
+        "role": {
+          "type": "string",
+          "optional": true,
+          "enum": ["spectator", "observer", "player", "guest", "delegator", "builder", "moderator"]
+        }
+      }
+    },
+    "list_worlds": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string" }
+    },
+    "create_world": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string" }
+    },
+    "set_isolation": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {
+        "isolation": { "type": "string", "enum": ["isolated", "unisolated"] },
+        "admin_token": "string?",
+        "signed": "object?"
+      }
+    },
+    "set_cross_world_write": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "enabled": "bool", "admin_token": "string?", "signed": "object?" }
+    },
+    "force_cross_world_write": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": { "admin_token": "string" }
+    },
+    "set_file_scope": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {
+        "scope": { "type": "string", "enum": ["confined", "unrestricted"] },
+        "write_override": "bool?",
+        "admin_token": "string?",
+        "signed": "object?"
+      }
+    },
+    "compile": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "closed",
+      "fields": {
+        "admin_token": "string",
+        "files": "array",
+        "seed": "u64?",
+        "native": { "type": "bool", "optional": true, "nullable": false }
+      }
+    },
+    "update_caps": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "grant": "string[]", "revoke": "string[]" }
+    },
+    "set_caps_ceiling": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "ceiling": "string[]" }
+    },
+    "set_execution_profile": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "profile": "object" }
+    },
+    "set_schedule": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "id": "string", "at_ms": "u64" }
+    },
+    "cancel_schedule": {
+      "class": "admin",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string", "id": "string" }
+    },
+    "world_state": {
+      "class": "query",
+      "phases": ["opening", "joined"],
+      "opens": "closed",
+      "fields": { "admin_token": "string?", "capability": "string?" }
+    },
+    "install_begin": {
+      "class": "admin",
+      "phases": ["opening"],
+      "opens": "install",
+      "fields": {
+        "admin_token": "string",
+        "total_bytes": { "type": "u64", "min": 1, "max": 16777216 },
+        "module_hash": "string?",
+        "seed": "u64"
+      }
+    },
+    "install_chunk": {
+      "class": "control",
+      "phases": ["install"],
+      "fields": { "offset": "u64", "data_hex": { "type": "hex", "max_bytes": 12288 } }
+    },
+    "install_end": {
+      "class": "control",
+      "phases": ["install"],
+      "fields": {}
+    },
+    "chat": {
+      "class": "event",
+      "phases": ["joined"],
+      "fields": { "text": "string" }
+    },
+    "input": {
+      "class": "event",
+      "phases": ["joined"],
+      "fields": { "data_hex": "hex" }
+    },
+    "paste": {
+      "class": "event",
+      "phases": ["joined"],
+      "fields": { "text": { "type": "string", "max_bytes": 4096 } }
+    },
+    "resize": {
+      "class": "ephemeral",
+      "phases": ["joined"],
+      "fields": {
+        "width": { "type": "u16", "min": 1, "max": 500 },
+        "height": { "type": "u16", "min": 1, "max": 200 }
+      }
+    },
+    "attenuate": {
+      "class": "delegation",
+      "phases": ["joined"],
+      "forbidden_keys": ["uses"],
+      "fields": { "name": "string", "scopes": "string[]", "expires_at": "u64?" }
+    },
+    "delegate_to_friend": {
+      "class": "delegation",
+      "phases": ["joined"],
+      "forbidden_keys": ["uses"],
+      "fields": {
+        "friend": "string",
+        "name": "string",
+        "scopes": "string[]",
+        "expires_at": "u64?"
+      }
+    }
+  },
+  "server_frames": {
+    "snapshot": {
+      "class": "durable",
+      "fields": { "snapshot": "object" }
+    },
+    "event": {
+      "class": "durable",
+      "fields": { "event": "object" }
+    },
+    "view": {
+      "class": "ephemeral",
+      "fields": { "sequence": "u64", "data": "string", "surface": "object?" }
+    },
+    "program_changed": {
+      "class": "reply",
+      "fields": { "module_hash": "string", "sequence": "u64" }
+    },
+    "module_info": {
+      "class": "reply",
+      "fields": {
+        "world_id": "string",
+        "active_module_hash": "string?",
+        "active_module_provenance": "object?",
+        "current_sequence": "u64"
+      }
+    },
+    "metrics": {
+      "class": "reply",
+      "fields": { "metrics": "object" }
+    },
+    "records": {
+      "class": "reply",
+      "fields": { "sequence": "u64", "records": "object", "next_after": "string?" }
+    },
+    "records_ticket": {
+      "class": "reply",
+      "fields": { "ticket": "string" }
+    },
+    "module_begin": {
+      "class": "reply",
+      "fields": { "module_hash": "string", "total_bytes": "u64" }
+    },
+    "module_chunk": {
+      "class": "reply",
+      "fields": { "offset": "u64", "data_hex": "hex" }
+    },
+    "module_end": {
+      "class": "reply",
+      "fields": { "module_hash": "string" }
+    },
+    "invite": {
+      "class": "reply",
+      "fields": { "capability": "string", "participant_id": "u64", "display_name": "string" }
+    },
+    "worlds": {
+      "class": "reply",
+      "fields": { "default": "string", "worlds": "array" }
+    },
+    "world_created": {
+      "class": "reply",
+      "fields": { "world": "string", "created": "bool" }
+    },
+    "isolation": {
+      "class": "reply",
+      "fields": { "world": "string", "isolation": "string" }
+    },
+    "policy": {
+      "class": "reply",
+      "fields": { "world": "string", "policy": "object" }
+    },
+    "caps": {
+      "class": "reply",
+      "fields": { "report": "object" }
+    },
+    "caps_ceiling": {
+      "class": "reply",
+      "fields": { "report": "object", "message": "string" }
+    },
+    "execution_profile": {
+      "class": "reply",
+      "fields": { "update": "object", "message": "string" }
+    },
+    "schedules": {
+      "class": "reply",
+      "fields": { "schedules": "object" }
+    },
+    "world_state": {
+      "class": "reply",
+      "fields": { "seed": "u64?", "schedules": "object" }
+    },
+    "compiled": {
+      "class": "reply",
+      "fields": { "module_hash": "string", "sequence": "u64", "diagnostics": "string" }
+    },
+    "upload_ready": {
+      "class": "reply",
+      "fields": { "chunk_bytes": "u64" }
+    },
+    "module_installed": {
+      "class": "reply",
+      "fields": { "module_hash": "string", "sequence": "u64" }
+    },
+    "error": {
+      "class": "reply",
+      "fields": { "message": "string" }
+    }
+  },
+  "projection": {
+    "description": "Every server frame is built from the one client projection (F11.11). A program seed never reaches a session: any `seed` key in a server frame must be 0.",
+    "redacted_keys": ["seed"]
+  },
+  "features": {
+    "surface": "A view frame may carry a typed `surface` (the portable screen document). A shell that does not understand it renders `data`."
+  },
+  "reserved": {
+    "presentation_tiers": "In-band terminal tier detection and negotiation (F13.4). Needs a new frame kind, so it waits for F11.12.",
+    "focus": "A focus frame for typed input (F13.4/F13.5). Not in version 1.",
+    "kitty_keyboard": "Kitty keyboard protocol key events (F13.5).",
+    "client_providers": "Client-side capability requests and replies (F13.7). Gated on F12.4 and F12.6."
+  }
+}
