@@ -1,6 +1,7 @@
 package deps_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -244,5 +245,64 @@ func TestConfigLayerManifestErrorIsNotSwallowed(t *testing.T) {
 	c := cfg(t, deps.SourceConfig, t.TempDir())
 	if _, err := deps.Resolve(c, t.TempDir()); err == nil {
 		t.Fatal("a malformed configuration manifest must fail resolution, not resolve empty")
+	}
+}
+
+// TestAPinInsideTheManifestRangeIsNotAConflict is the Codex finding on
+// PR #2589 (config.go): the conflict check compared strings, so a manifest
+// declaring "^1.3.0" contradicted an explicit left-pad@1.3.0 it allows.
+func TestAPinInsideTheManifestRangeIsNotAConflict(t *testing.T) {
+	project := t.TempDir()
+	write(t, project, "package.json", `{"dependencies":{"left-pad":"^1.3.0","tilde":"~2.0.0","floor":">=1.0.0"}}`)
+	for _, spec := range []string{"left-pad@1.9.4", "tilde@2.0.7", "floor@3.1.0"} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(set.Conflicts) != 0 {
+			t.Errorf("%s satisfies the manifest range and must not conflict: %+v", spec, set.Conflicts)
+		}
+	}
+	// And a pin outside the range still contradicts it.
+	c := cfg(t, deps.SourceCWD, project)
+	c.Packages = []string{"left-pad@2.0.0"}
+	set, err := deps.Resolve(c, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Conflicts) != 1 {
+		t.Errorf("left-pad@2.0.0 against ^1.3.0 must conflict, got %+v", set.Conflicts)
+	}
+}
+
+// TestAnExplicitlyNamedManifestThatIsMissingFails is the Codex finding on
+// PR #2589 (chain.go): discovery tolerates finding nothing, but a manifest
+// the caller named by path must not vanish silently.
+func TestAnExplicitlyNamedManifestThatIsMissingFails(t *testing.T) {
+	c := cfg(t, deps.SourceCWD, t.TempDir())
+	c.Manifest = filepath.Join(t.TempDir(), "no-such-package.json")
+	c.Packages = []string{"foo@1.0.0"}
+	if _, err := deps.Resolve(c, ""); !errors.Is(err, deps.ErrNoManifest) {
+		t.Fatalf("a named-but-missing manifest must fail with ErrNoManifest, got %v", err)
+	}
+}
+
+// TestConfigLayerConflictsAreReported extends the conflict rule to the
+// configuration directory's manifest: its declarations are a manifest too.
+func TestConfigLayerConflictsAreReported(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	write(t, filepath.Join(configDir, "mcpx"), "package.json", `{"dependencies":{"left-pad":"1.3.0"}}`)
+
+	c := cfg(t, deps.SourceConfig, t.TempDir())
+	c.Packages = []string{"left-pad@2.0.0"}
+	set, err := deps.Resolve(c, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Conflicts) != 1 || set.Conflicts[0].Name != "left-pad" {
+		t.Fatalf("want the config-layer conflict reported, got %+v", set.Conflicts)
 	}
 }

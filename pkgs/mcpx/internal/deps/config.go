@@ -18,6 +18,8 @@ package deps
 
 import (
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/dezren39/mcpx/internal/searchpath"
 	"github.com/dezren39/mcpx/internal/settings"
@@ -157,6 +159,13 @@ func Conflicts(packages []string, want map[string]string) []Conflict {
 		if !ok || have == spec.Version {
 			continue
 		}
+		// A manifest declares ranges, not just pins: "^1.3.0" is a
+		// claim that 1.3.0 satisfies, and reporting it as a conflict
+		// would reject a run the manifest itself allows. Only a pin
+		// the declared range does not satisfy contradicts it.
+		if satisfiesRange(have, spec.Version) {
+			continue
+		}
 		out = append(out, Conflict{
 			Name:     spec.Name,
 			Explicit: spec.Version,
@@ -164,4 +173,109 @@ func Conflicts(packages []string, want map[string]string) []Conflict {
 		})
 	}
 	return out
+}
+
+// satisfiesRange reports whether version satisfies the manifest's declared
+// requirement, for the range forms a package.json actually uses: an exact
+// pin, ^, ~, >=, >, <=, <, *, and space-separated conjunctions of them.
+// Anything it cannot parse — a dist-tag like "latest", a URL, a file: path —
+// is not a range it understands, and it answers false so the caller falls
+// back to the textual comparison (a contradiction is reported, never waved
+// through on a guess).
+func satisfiesRange(requirement, version string) bool {
+	want, wok := parseVersion(version)
+	if !wok {
+		return false
+	}
+	tokens := strings.Fields(strings.TrimSpace(requirement))
+	if len(tokens) == 0 {
+		return false
+	}
+	for _, tok := range tokens {
+		if !satisfiesToken(tok, want) {
+			return false
+		}
+	}
+	return true
+}
+
+func satisfiesToken(tok string, v [3]int) bool {
+	if tok == "*" || strings.EqualFold(tok, "x") || tok == "" {
+		return true
+	}
+	op := ""
+	rest := tok
+	for _, p := range []string{">=", "<=", "^", "~", ">", "<", "="} {
+		if strings.HasPrefix(rest, p) {
+			op, rest = p, strings.TrimPrefix(rest, p)
+			break
+		}
+	}
+	base, ok := parseVersion(rest)
+	if !ok {
+		return false
+	}
+	cmp := compareVersion(v, base)
+	switch op {
+	case "", "=":
+		return cmp == 0
+	case ">":
+		return cmp > 0
+	case ">=":
+		return cmp >= 0
+	case "<":
+		return cmp < 0
+	case "<=":
+		return cmp <= 0
+	case "~":
+		return cmp >= 0 && v[0] == base[0] && v[1] == base[1]
+	case "^":
+		if cmp < 0 {
+			return false
+		}
+		// Standard caret semantics: the left-most non-zero component
+		// of the base is the one that may not change.
+		if base[0] > 0 {
+			return v[0] == base[0]
+		}
+		if base[1] > 0 {
+			return v[0] == 0 && v[1] == base[1]
+		}
+		return v[0] == 0 && v[1] == 0 && v[2] == base[2]
+	}
+	return false
+}
+
+// parseVersion reads a plain dotted version ("1.3", "v1.3.0", "1.3.0-beta")
+// into its numeric components; a range or tag is not a version.
+func parseVersion(s string) ([3]int, bool) {
+	var out [3]int
+	s = strings.TrimSpace(strings.TrimPrefix(s, "v"))
+	if i := strings.IndexAny(s, "-+"); i >= 0 {
+		s = s[:i]
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) > 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+func compareVersion(a, b [3]int) int {
+	for i := 0; i < 3; i++ {
+		if a[i] != b[i] {
+			if a[i] < b[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
 }

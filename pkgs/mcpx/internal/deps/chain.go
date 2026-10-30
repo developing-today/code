@@ -342,7 +342,12 @@ func Resolve(cfg Config, startDir string) (Set, error) {
 		m, err := Find(cfg, startDir)
 		if err == nil {
 			manifest = m
-		} else if !errors.Is(err, ErrNoManifest) {
+		} else if !errors.Is(err, ErrNoManifest) || cfg.Manifest != "" {
+			// An absent manifest found by discovery is an absent
+			// layer; an absent manifest the caller NAMED
+			// (deps.manifest) is a resolution failure — a typo
+			// must not silently discard the declaration the
+			// caller selected.
 			return Set{}, err
 		}
 	}
@@ -365,6 +370,12 @@ func Resolve(cfg Config, startDir string) (Set, error) {
 				return Set{}, err
 			}
 			if m != nil {
+				// The config layer's declarations contradict an
+				// explicit pin exactly the way the project's
+				// do; report those conflicts too, or the
+				// payload would carry the pin past a manifest
+				// that disagrees with it.
+				set.Conflicts = append(set.Conflicts, Conflicts(cfg.Packages, m.Packages)...)
 				for _, name := range sortedKeys(m.Packages) {
 					add(Package{Name: name, Version: m.Packages[name], From: "config"})
 				}
