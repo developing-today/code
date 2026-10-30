@@ -35,10 +35,6 @@ import (
 // remote mcpx somewhere else is named with ?bin=.
 const SSHDefaultBin = "mcpx"
 
-// sshWaitDelay bounds Cmd.Wait's stderr draining after ssh exits or is
-// killed; see DialContext.
-const sshWaitDelay = 3 * time.Second
-
 // SSHProxyCommand is the subcommand run on the remote host: it connects
 // its stdin/stdout to that host's daemon socket. It is a public command
 // (mcpx stdio-proxy) rather than a hidden one: it appears in the ssh
@@ -247,7 +243,7 @@ func (d *SSHDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, err
 	// it open long after ssh itself is gone, and an unbounded Wait
 	// would make Close (called synchronously by net/http on cancel)
 	// block for that child's whole lifetime.
-	cmd.WaitDelay = sshWaitDelay
+	cmd.WaitDelay = defaults.TransportSSHWaitDelay
 	inR, inW, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("ssh %s: %w", d.Endpoint.Target(), err)

@@ -468,10 +468,10 @@ func Ops() []Op {
 		},
 		{
 			Name: "batch", Method: "POST", Path: "/v1/batch",
-			Command: "batch",
-			Summary: "Execute multiple tool calls in a single turn",
+			Command:     "batch",
+			Summary:     "Execute multiple tool calls in a single turn",
 			Description: "Executes multiple calls sequentially or in parallel, returning all results in a single response.",
-			CoveredBy: "mcpx_batch", Mutating: true,
+			CoveredBy:   "mcpx_batch", Mutating: true,
 			Params: append([]Param{
 				{Name: "calls", In: InBody, Type: "array", Required: true, Desc: "list of tool calls to execute",
 					Schema: `{"type":"array","items":{"type":"object","properties":{"server":{"type":"string"},"tool":{"type":"string"},"args":{"type":"object"}},"required":["tool"]}}`},
@@ -585,34 +585,40 @@ func Ops() []Op {
 		},
 		{
 			Name: "daemon_restart", Method: "POST", Path: "/v1/daemon/restart",
-			Command: "restart",
-			Summary: "Restart the mcpx daemon",
+			Command:     "restart",
+			Summary:     "Restart the mcpx daemon",
 			Description: "Gracefully reloads or restarts the mcpx daemon process itself.",
-			Admin: true, Mutating: true, Destructive: true,
+			Admin:       true, Mutating: true, Destructive: true,
 		},
 		{
 			Name: "dashboard", Method: "GET", Path: "/v1/dashboard",
-			Command: "dashboard",
-			Text:    true,
-			Summary: "Live web dashboard HTML",
+			Command:     "dashboard",
+			Text:        true,
+			Summary:     "Live web dashboard HTML",
 			Description: "Single-page dashboard application displaying active pools and token economics telemetry.",
 		},
 		{
+			Name: "dashboard_asset", Method: "GET", Path: "/v1/dashboard/",
+			Text:        true,
+			Summary:     "Dashboard static assets",
+			Description: "Static assets (styles and scripts) served under the dashboard page.",
+		},
+		{
 			Name: "metrics_tokens", Method: "GET", Path: "/v1/metrics/tokens",
-			Summary: "Token economics telemetry summary",
+			Summary:     "Token economics telemetry summary",
 			Description: "Aggregated stats on prompt turns, baseline tool schema tokens, injected tokens, and tokens saved.",
 		},
 		{
 			Name: "metrics_tools", Method: "GET", Path: "/v1/metrics/tools",
-			Summary: "Tool call telemetry, error rates, correlations and timelines",
+			Summary:     "Tool call telemetry, error rates, correlations and timelines",
 			Description: "Aggregated stats on tool call volume, error rates, error shapes, correlated tool pairs, and usage over time.",
 		},
 		{
 			Name: "chat_completions", Method: "POST", Path: "/v1/chat/completions",
-			Command: "proxy",
-			Summary: "OpenAI-compatible LLM chat completions endpoint",
+			Command:     "proxy",
+			Summary:     "OpenAI-compatible LLM chat completions endpoint",
 			Description: "Proxies chat completions requests while dynamically injecting semantically discovered tools.",
-			Mutating: true,
+			Mutating:    true,
 			Params: []Param{
 				{Name: "model", In: InBody, Type: "string", Desc: "the model ID"},
 				{Name: "messages", In: InBody, Type: "array", Required: true, Desc: "the list of chat messages",
@@ -621,10 +627,10 @@ func Ops() []Op {
 		},
 		{
 			Name: "embeddings", Method: "POST", Path: "/v1/embeddings",
-			Command: "embeddings",
-			Summary: "Compute vector embeddings for text",
+			Command:     "embeddings",
+			Summary:     "Compute vector embeddings for text",
 			Description: "OpenAI-compatible vector embedding endpoint using pure-Go, WASM, or remote engines.",
-			Mutating: true,
+			Mutating:    true,
 			Params: []Param{
 				{Name: "input", In: InBody, Type: "string", Required: true, Desc: "input text string or array of strings"},
 				{Name: "model", In: InBody, Type: "string", Desc: "the model ID"},
@@ -632,16 +638,16 @@ func Ops() []Op {
 		},
 		{
 			Name: "embeddings_export", Method: "GET", Path: "/v1/embeddings/export",
-			Command: "embeddings export",
-			Summary: "Export cached vector embeddings",
+			Command:     "embeddings export",
+			Summary:     "Export cached vector embeddings",
 			Description: "Exports all computed and indexed tool vector embeddings as JSON.",
 		},
 		{
 			Name: "embeddings_import", Method: "POST", Path: "/v1/embeddings/import",
-			Command: "embeddings import",
-			Summary: "Import pre-computed vector embeddings",
+			Command:     "embeddings import",
+			Summary:     "Import pre-computed vector embeddings",
 			Description: "Imports pre-computed tool vector embeddings from JSON payload.",
-			Mutating: true,
+			Mutating:    true,
 			Params: []Param{
 				{Name: "content", In: InBody, Type: "string", Required: true, Raw: true,
 					Desc: "the JSON payload, sent as the whole request body"},
@@ -649,10 +655,10 @@ func Ops() []Op {
 		},
 		{
 			Name: "feedback", Method: "POST", Path: "/v1/feedback",
-			Command: "feedback",
-			Summary: "Submit quality feedback for a trace",
+			Command:     "feedback",
+			Summary:     "Submit quality feedback for a trace",
 			Description: "Attaches a score and feedback notes to an interaction trace ID for adaptive routing.",
-			Mutating: true,
+			Mutating:    true,
 			Params: []Param{
 				{Name: "traceId", In: InBody, Type: "string", Required: true, Desc: "the interaction trace ID"},
 				{Name: "score", In: InBody, Type: "number", Required: true, Desc: "primary score between 0.0 (bad) and 1.0 (good)"},
@@ -664,8 +670,8 @@ func Ops() []Op {
 		},
 		{
 			Name: "interactions_list", Method: "GET", Path: "/v1/interactions",
-			Command: "interactions",
-			Summary: "List and filter past interaction traces",
+			Command:     "interactions",
+			Summary:     "List and filter past interaction traces",
 			Description: "Returns history of inputs, outputs, tools used, and recorded feedback scores.",
 			Params: []Param{
 				{Name: "q", In: InQuery, Type: "string", Desc: "search text across inputs, outputs, and feedback notes"},
@@ -676,8 +682,8 @@ func Ops() []Op {
 		},
 		{
 			Name: "interactions_get", Method: "GET", Path: "/v1/interactions/{id}",
-			Command: "interactions show",
-			Summary: "Inspect a specific interaction trace",
+			Command:     "interactions show",
+			Summary:     "Inspect a specific interaction trace",
 			Description: "Returns full details of an interaction by its trace ID.",
 			Params: []Param{
 				{Name: "id", In: InPath, Type: "string", Required: true, Desc: "the interaction trace ID"},
