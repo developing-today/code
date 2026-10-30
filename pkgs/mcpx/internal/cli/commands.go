@@ -68,6 +68,11 @@ type App struct {
 	// Used by the MCP server, which must return what a script produced
 	// rather than write it to a stream the host is parsing as protocol.
 	stdoutOverride interface{ Write([]byte) (int, error) }
+	// environ is the environment Run was invoked with, recorded at the
+	// entrypoint for stage 2 of #1980 (threading it through ResolvePaths,
+	// settings.Environ and the plumbing source). Nil when the App was
+	// built directly; Environ() then falls back to os.Environ().
+	environ Env
 	settingsState
 }
 
