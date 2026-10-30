@@ -79,6 +79,15 @@
   // 2026-10-25. Per the switchboard rule this flip is the whole job;
   // its full definition stays in the provider block, and deleting
   // the line re-enables it if the direct door is ever wanted.
+  // 2026-10-30 (Drew, direct order): "meta" joins the list below.
+  // The direct api.meta.ai door is dead by Meta's design — the plan
+  // API key returns 403 client_attestation_denied from any
+  // non-Muse-Code client and the OAuth token 401s (see the note at
+  // the "muse" provider). The routes no longer seat meta/* leaves
+  // (#2635 moved them to muse/* via muse-proxy, the working door).
+  // Per the switchboard rule the full definition stays in the
+  // provider block; deleting this line re-enables it if Meta ever
+  // serves this client again.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -98,7 +107,8 @@
     "design-code",
     "open-design",
     "deepseek",
-    "claude-code"
+    "claude-code",
+    "meta"
   ],
   // Default was "claude-code/claude-haiku-5-5" until the 2026-10-27 Claude
   // pause (see the header note). Workhorse is the fleet's standard tier and
