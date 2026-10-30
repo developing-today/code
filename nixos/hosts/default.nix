@@ -117,6 +117,7 @@ in
       # see the file for the one-time on-machine credential setup.
       ./amd-krdp.nix
       ./amd-ipv4-preference.nix
+      ./amd-openclaw-secrets.nix
     ];
   };
   # amd-server = host {
