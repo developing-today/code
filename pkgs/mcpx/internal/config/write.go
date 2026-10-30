@@ -218,35 +218,50 @@ func RemoveServer(path, name string) (bool, error) {
 // whether the file uses the bare-array shape. A missing file reads as an
 // empty object-shaped document: the first live add creates it.
 func adapterEntries(path string) (entries []any, bare bool, err error) {
+	entries, bare, _, err = adapterDocument(path)
+	return entries, bare, err
+}
+
+// adapterDocument is adapterEntries plus the file's whole object, for the
+// object shape. A declaration file may be a combined document: the loaders
+// accept files that also carry configuration or API declarations
+// (settings/file.go recognises those sections), so an edit that rewrote
+// the file as only its adapters list would permanently delete the
+// sibling sections (Codex review, PR #2565). Writers keep the document
+// and replace only its adapters field.
+func adapterDocument(path string) (entries []any, bare bool, doc map[string]any, err error) {
 	b, rerr := os.ReadFile(path)
 	if rerr != nil {
 		if os.IsNotExist(rerr) {
-			return nil, false, nil
+			return nil, false, nil, nil
 		}
-		return nil, false, rerr
+		return nil, false, nil, rerr
 	}
 	trimmed := strings.TrimSpace(string(StripJSONC(b)))
 	if strings.HasPrefix(trimmed, "[") {
 		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
-			return nil, false, fmt.Errorf("%s is not a valid adapter file: %w", path, err)
+			return nil, false, nil, fmt.Errorf("%s is not a valid adapter file: %w", path, err)
 		}
-		return entries, true, nil
+		return entries, true, nil, nil
 	}
-	var doc map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &doc); err != nil {
-		return nil, false, fmt.Errorf("%s is not a valid adapter file: %w", path, err)
+		return nil, false, nil, fmt.Errorf("%s is not a valid adapter file: %w", path, err)
 	}
 	list, _ := doc["adapters"].([]any)
-	return list, false, nil
+	return list, false, doc, nil
 }
 
-func writeAdapterEntries(path string, entries []any, bare bool) error {
+func writeAdapterEntries(path string, entries []any, bare bool, doc map[string]any) error {
 	var out []byte
 	var err error
 	if bare {
 		out, err = json.MarshalIndent(entries, "", "  ")
 	} else {
-		out, err = json.MarshalIndent(map[string]any{"adapters": entries}, "", "  ")
+		if doc == nil {
+			doc = map[string]any{}
+		}
+		doc["adapters"] = entries
+		out, err = json.MarshalIndent(doc, "", "  ")
 	}
 	if err != nil {
 		return err
@@ -279,7 +294,7 @@ func AddAdapterEntry(path string, entry map[string]any, replace bool) error {
 	if name == "" {
 		return errors.New("an adapter declaration needs a name")
 	}
-	entries, bare, err := adapterEntries(path)
+	entries, bare, doc, err := adapterDocument(path)
 	if err != nil {
 		return err
 	}
@@ -290,22 +305,22 @@ func AddAdapterEntry(path string, entry map[string]any, replace bool) error {
 					path, name)
 			}
 			entries[i] = entry
-			return writeAdapterEntries(path, entries, bare)
+			return writeAdapterEntries(path, entries, bare, doc)
 		}
 	}
-	return writeAdapterEntries(path, append(entries, entry), bare)
+	return writeAdapterEntries(path, append(entries, entry), bare, doc)
 }
 
 // RemoveAdapterEntry drops the declaration named name from the file at
 // path, reporting whether it was there.
 func RemoveAdapterEntry(path, name string) (bool, error) {
-	entries, bare, err := adapterEntries(path)
+	entries, bare, doc, err := adapterDocument(path)
 	if err != nil {
 		return false, err
 	}
 	for i, e := range entries {
 		if adapterEntryName(e) == name {
-			return true, writeAdapterEntries(path, append(entries[:i], entries[i+1:]...), bare)
+			return true, writeAdapterEntries(path, append(entries[:i], entries[i+1:]...), bare, doc)
 		}
 	}
 	return false, nil

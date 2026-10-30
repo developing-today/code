@@ -881,6 +881,24 @@ func (s *Server) handleAdaptersAdd(w http.ResponseWriter, r *http.Request) {
 		}
 		path = existing
 	}
+	// The name must not collide with a server namespace that is not this
+	// adapter: augmentAdapters refuses to load an adapter whose name a
+	// configured server already owns, so persisting one would return 500
+	// on the reload while leaving a declaration that breaks every later
+	// reload and daemon start (Codex review, PR #2565). Adapter-generated
+	// servers carry the declaration fingerprint in their environment;
+	// one of those under this name is this adapter itself (a replace),
+	// anything else -- a configured server, an API -- is a collision.
+	if cfg := s.currentConfig(); cfg != nil {
+		if srv, clash := cfg.MCPServers[req.Spec.Name]; clash && srv != nil {
+			if _, isAdapter := srv.Env["MCPX_ADAPTER_DECLARATION_SHA256"]; !isAdapter {
+				writeErr(w, http.StatusConflict, fmt.Errorf(
+					"%q is already the name of a configured server; pick another adapter name",
+					req.Spec.Name))
+				return
+			}
+		}
+	}
 	if err := config.AddAdapterEntry(path, entry, req.Replace); err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return

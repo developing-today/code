@@ -116,3 +116,26 @@ func TestConcurrentAdapterAddsAllLand(t *testing.T) {
 		}
 	}
 }
+
+// A name a configured server already owns must be refused BEFORE anything
+// is persisted: augmentAdapters rejects such an adapter at load, so
+// writing it would return 500 on reload while leaving a declaration that
+// breaks every later reload and start (Codex review, PR #2565).
+func TestAdapterAddRefusesServerNamespaceCollision(t *testing.T) {
+	s, _ := setupPersist(t, []byte(`{"mcpServers":{"clash":{"command":"/bin/true"}}}`), false)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "adapters.json")
+	if err := os.WriteFile(file, []byte(`{"adapters":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.set.SetRuntime("paths.adapters", file); err != nil {
+		t.Fatal(err)
+	}
+	rec := postAdapter(t, s, `{"name":"clash","command":"/bin/false","tools":[{"name":"run"}]}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if got := readFile(t, file); strings.Contains(got, "clash") {
+		t.Fatalf("the colliding declaration was persisted: %s", got)
+	}
+}

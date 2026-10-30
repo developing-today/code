@@ -60,3 +60,39 @@ func TestAdapterEntriesKeepBareArrayShape(t *testing.T) {
 		t.Fatalf("file after remove is wrong:\n%s", b)
 	}
 }
+
+// TestAdapterEditsPreserveSiblingSections: a declaration file may be a
+// combined document carrying configuration sections beside its adapters.
+// Adding or removing an adapter must update only the adapters field, never
+// rewrite the whole document and delete the siblings (Codex review,
+// PR #2565).
+func TestAdapterEditsPreserveSiblingSections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "combined.json")
+	doc := `{"mcpServers":{"srv":{"command":"x"}},"paths":{"adapters":["a.json"]},` +
+		`"adapters":[{"name":"old","command":"old"}]}`
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddAdapterEntry(path, map[string]any{"name": "new", "command": "new"}, false); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	for _, want := range []string{`"mcpServers"`, `"srv"`, `"paths"`, `"old"`, `"new"`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("add lost %s:\n%s", want, b)
+		}
+	}
+	removed, err := RemoveAdapterEntry(path, "old")
+	if err != nil || !removed {
+		t.Fatalf("RemoveAdapterEntry = %v, %v", removed, err)
+	}
+	b, _ = os.ReadFile(path)
+	for _, want := range []string{`"mcpServers"`, `"srv"`, `"paths"`, `"new"`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("remove lost %s:\n%s", want, b)
+		}
+	}
+	if strings.Contains(string(b), `"old"`) {
+		t.Fatalf("remove left the entry behind:\n%s", b)
+	}
+}
