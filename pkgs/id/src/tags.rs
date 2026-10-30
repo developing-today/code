@@ -1450,7 +1450,9 @@ pub enum SearchTerm {
 
 /// Parse a search query string into structured [`SearchTerm`]s.
 ///
-/// Terms are space-separated (respecting quoted strings). Each term follows:
+/// Terms are whitespace-separated (respecting quoted strings): any
+/// `char::is_whitespace` char — space, tab, newline, NBSP, … — separates
+/// terms outside quotes. Each term follows:
 ///
 /// - `"quoted text"` → Literal search across subject/key/value
 /// - `key:` → Filter by key name
@@ -1470,29 +1472,44 @@ pub fn parse_search_query(input: &str) -> Vec<SearchTerm> {
         return terms;
     }
 
+    // Byte index into `input`. It only ever advances by whole chars, so it
+    // always rests on a char boundary and slicing stays valid even when a
+    // separator is a multi-byte whitespace char such as NBSP (U+00A0). The
+    // loops below guard on `i < input.len()`, so `chars().next()` is always
+    // `Some` there; the let-else form keeps that invariant panic-free.
     let mut i = 0;
-    let bytes = input.as_bytes();
 
-    while i < bytes.len() {
-        // Skip whitespace
-        while i < bytes.len() && bytes[i] == b' ' {
-            i += 1;
+    while i < input.len() {
+        // Skip whitespace: any `char::is_whitespace` char separates terms,
+        // not only the ASCII space.
+        while i < input.len() {
+            let Some(ch) = input[i..].chars().next() else {
+                break;
+            };
+            if !ch.is_whitespace() {
+                break;
+            }
+            i += ch.len_utf8();
         }
-        if i >= bytes.len() {
+        if i >= input.len() {
             break;
         }
 
-        // Extract one term (may contain quoted parts and colons)
+        // Extract one term (may contain quoted parts and colons). Whitespace
+        // inside quotes is part of the term, as spaces already were.
         let start = i;
         let mut in_quotes = false;
-        while i < bytes.len() {
-            if bytes[i] == b'"' {
+        while i < input.len() {
+            let Some(ch) = input[i..].chars().next() else {
+                break;
+            };
+            if ch == '"' {
                 in_quotes = !in_quotes;
                 i += 1;
-            } else if bytes[i] == b' ' && !in_quotes {
+            } else if ch.is_whitespace() && !in_quotes {
                 break;
             } else {
-                i += 1;
+                i += ch.len_utf8();
             }
         }
 
@@ -2480,6 +2497,46 @@ mod tests {
                 SearchTerm::ValueOnly("high".to_owned()),
                 SearchTerm::BareWord("priority".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn test_parse_search_general_whitespace_separators() {
+        // Tab, LF, CRLF and NBSP separate terms exactly like a space;
+        // before the fix they fused the terms into one unmatchable term.
+        let expected = vec![
+            SearchTerm::KeyValue("name".to_owned(), "foo".to_owned()),
+            SearchTerm::BareWord("bar".to_owned()),
+            SearchTerm::KeyOnly("baz".to_owned()),
+        ];
+        for sep in [" ", "\t", "\n", "\r\n", "\u{00A0}"] {
+            let query = format!("name:foo{sep}bar{sep}baz:");
+            assert_eq!(parse_search_query(&query), expected, "separator {sep:?}");
+        }
+    }
+
+    #[test]
+    fn test_parse_search_tab_after_colon() {
+        // `name:` + tab + `priority` is KeyOnly + BareWord, exactly as the
+        // space form parses — not one fused KeyValue with a tab inside.
+        let terms = parse_search_query("name:\tpriority");
+        assert_eq!(
+            terms,
+            vec![
+                SearchTerm::KeyOnly("name".to_owned()),
+                SearchTerm::BareWord("priority".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_search_quoted_whitespace_preserved() {
+        // Whitespace inside quotes stays part of the term: a quoted tab or
+        // newline is literal text, not a separator.
+        let terms = parse_search_query("\"hello\tworld\nagain\"");
+        assert_eq!(
+            terms,
+            vec![SearchTerm::Literal("hello\tworld\nagain".to_owned())]
         );
     }
 

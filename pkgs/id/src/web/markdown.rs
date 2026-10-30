@@ -110,8 +110,275 @@ fn commonmark_options() -> Options<'static> {
 pub fn markdown_to_prosemirror(markdown: &str) -> Value {
     let arena = Arena::new();
     let options = commonmark_options();
-    let root = parse_document(&arena, markdown, &options);
-    convert_node(root, &[])
+    // #1423: comrak (per CommonMark) cannot parse a link destination
+    // that contains a line ending, even in <...> angle form, so a
+    // newline destination never becomes a link at all — the text is
+    // left literal and the href is lost on reopen. Protect newlines
+    // inside angle-form destinations with a collision-safe token
+    // before parsing (the parse-side mirror of the save direction's
+    // placeholder substitution in `substitute_spaced_destinations`)
+    // and restore them in the converted href/src attrs afterwards.
+    let (protected, newline_token) = protect_newline_destinations(markdown);
+    // #1424: comrak's table extension splits rows on unescaped pipes
+    // before inline parsing, so a pipe inside a code span in a table
+    // cell ends the cell early. Escape those pipes in table rows
+    // before parsing; comrak then forms the code mark with the literal
+    // pipe, and its renderer already emits the same `\|` spelling for
+    // code spans in table cells on save, so the directions are
+    // symmetric with no save-side mirror needed.
+    let protected = escape_table_code_span_pipes(&protected);
+    let root = parse_document(&arena, &protected, &options);
+    let mut doc = convert_node(root, &[]);
+    if let Some(token) = newline_token {
+        restore_attr_newlines(&mut doc, &token);
+    }
+    doc
+}
+
+/// Replace each newline inside an angle-form link/image destination
+/// (`](<...>)` inline, `]: <...>` reference definition) with a token
+/// comrak keeps verbatim in the parsed URL, returning the protected
+/// source and the token used (`None` when no destination needed
+/// protection). Fenced code blocks are skipped — a destination-shaped
+/// string inside a fence is literal text, not a link. A candidate
+/// destination that hits a blank line or another `<` before its
+/// closing `>` is not a destination and is left alone.
+fn protect_newline_destinations(markdown: &str) -> (String, Option<String>) {
+    if !markdown.contains('\n') {
+        return (markdown.to_string(), None);
+    }
+    let mut token = String::from("idweb-newline-0-token");
+    let mut counter = 0;
+    while markdown.contains(&token) {
+        counter += 1;
+        token = format!("idweb-newline-{counter}-token");
+    }
+    let bytes = markdown.as_bytes();
+    let fence = "`".repeat(3);
+    let tilde_fence = "~".repeat(3);
+    let mut out = String::with_capacity(markdown.len());
+    let mut i = 0;
+    let mut in_fence = false;
+    let mut protected_any = false;
+    while i < bytes.len() {
+        // Fence tracking is line-based: a line whose first non-space
+        // characters (up to 3 spaces) are ``` or ~~~ toggles fence state.
+        if i == 0 || bytes[i - 1] == b'\n' {
+            let mut j = i;
+            while j < bytes.len() && bytes[j] == b' ' && j - i < 3 {
+                j += 1;
+            }
+            if markdown[j..].starts_with(&fence) || markdown[j..].starts_with(&tilde_fence) {
+                in_fence = !in_fence;
+            }
+        }
+        if !in_fence && (markdown[i..].starts_with("](<") || markdown[i..].starts_with("]: <")) {
+            let lt = if markdown[i..].starts_with("](<") {
+                i + 2
+            } else {
+                i + 3
+            };
+            // Find the closing '>' before any blank line or nested '<'.
+            let mut end = None;
+            let mut k = lt + 1;
+            while k < bytes.len() {
+                match bytes[k] {
+                    b'>' => {
+                        end = Some(k);
+                        break;
+                    }
+                    b'<' => break,
+                    b'\n' if k + 1 < bytes.len() && bytes[k + 1] == b'\n' => break,
+                    _ => k += 1,
+                }
+            }
+            if let Some(gt) = end {
+                let dest = &markdown[lt + 1..gt];
+                if dest.contains('\n') {
+                    out.push_str(&markdown[i..=lt]);
+                    out.push_str(&dest.replace('\n', &token));
+                    i = gt;
+                    protected_any = true;
+                    continue;
+                }
+            }
+        }
+        let Some(ch) = markdown[i..].chars().next() else {
+            break;
+        };
+        let ch_len = ch.len_utf8();
+        out.push_str(&markdown[i..i + ch_len]);
+        i += ch_len;
+    }
+    if protected_any {
+        (out, Some(token))
+    } else {
+        (markdown.to_string(), None)
+    }
+}
+
+/// Whether `line` is a GFM table delimiter row (`| --- | :---: |`,
+/// `--- | ---`, …): optional outer pipes, every cell a run of dashes
+/// with an optional alignment colon on each side. The line must contain
+/// a pipe — a bare `---` is a setext underline or thematic break, and
+/// every table comrak itself renders carries pipes in its delimiter
+/// row.
+fn is_table_delimiter_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    if !trimmed.contains('-') || !trimmed.contains('|') {
+        return false;
+    }
+    let body = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let body = body.strip_suffix('|').unwrap_or(body);
+    if body.trim().is_empty() {
+        return false;
+    }
+    body.split('|').all(|cell| {
+        let cell = cell.trim();
+        let cell = cell.strip_prefix(':').unwrap_or(cell);
+        let cell = cell.strip_suffix(':').unwrap_or(cell);
+        !cell.is_empty() && cell.bytes().all(|b| b == b'-')
+    })
+}
+
+/// Whether the byte at `i` is backslash-escaped: preceded by an odd
+/// number of backslashes.
+fn byte_is_escaped(bytes: &[u8], i: usize) -> bool {
+    let mut backslashes = 0;
+    let mut j = i;
+    while j > 0 && bytes[j - 1] == b'\\' {
+        backslashes += 1;
+        j -= 1;
+    }
+    backslashes % 2 == 1
+}
+
+/// Escape every unescaped pipe inside a code span on a single line
+/// (#1424). A code span opens at an unescaped backtick run and closes
+/// at the next run of exactly the same length on the same line; an
+/// unmatched run is literal text and is left alone, as is everything
+/// outside code spans (plain-text pipes are the row syntax itself).
+fn escape_code_span_pipes_in_line(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len() + 8);
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' && !byte_is_escaped(bytes, i) {
+            let mut run = 0;
+            while i + run < bytes.len() && bytes[i + run] == b'`' {
+                run += 1;
+            }
+            // Find the closing run of exactly `run` backticks.
+            let mut close = None;
+            let mut j = i + run;
+            while j < bytes.len() {
+                if bytes[j] == b'`' {
+                    let mut r = 0;
+                    while j + r < bytes.len() && bytes[j + r] == b'`' {
+                        r += 1;
+                    }
+                    if r == run {
+                        close = Some((j, j + r));
+                        break;
+                    }
+                    j += r;
+                } else {
+                    j += 1;
+                }
+            }
+            if let Some((close_start, close_end)) = close {
+                out.push_str(&line[i..i + run]);
+                let mut backslashes = 0usize;
+                for ch in line[i + run..close_start].chars() {
+                    if ch == '|' && backslashes % 2 == 0 {
+                        out.push('\\');
+                    }
+                    if ch == '\\' {
+                        backslashes += 1;
+                    } else {
+                        backslashes = 0;
+                    }
+                    out.push(ch);
+                }
+                out.push_str(&line[close_start..close_end]);
+                i = close_end;
+                continue;
+            }
+            out.push_str(&line[i..i + run]);
+            i += run;
+            continue;
+        }
+        let ch_len = line[i..].chars().next().unwrap().len_utf8();
+        out.push_str(&line[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
+/// Escape pipes inside code spans in the rows of every table in
+/// `markdown` (#1424): the header row (identified by the delimiter row
+/// that follows it), and the body rows that follow the delimiter row
+/// up to the next blank line. Lines outside tables are returned
+/// untouched — outside a table `\|` inside a code span is literal
+/// text, not an escape, so escaping there would corrupt the span.
+fn escape_table_code_span_pipes(markdown: &str) -> String {
+    if !markdown.contains('`') || !markdown.contains('|') {
+        return markdown.to_string();
+    }
+    let lines: Vec<&str> = markdown.split_inclusive('\n').collect();
+    let mut out = String::with_capacity(markdown.len() + 16);
+    let mut in_table = false;
+    for (idx, raw) in lines.iter().enumerate() {
+        let line = raw.strip_suffix('\n').unwrap_or(raw);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let ending = &raw[line.len()..];
+        if is_table_delimiter_row(line) {
+            in_table = true;
+            out.push_str(raw);
+            continue;
+        }
+        if in_table && line.trim().is_empty() {
+            in_table = false;
+        }
+        let header_row = lines
+            .get(idx + 1)
+            .is_some_and(|next| is_table_delimiter_row(next));
+        if in_table || header_row {
+            out.push_str(&escape_code_span_pipes_in_line(line));
+            out.push_str(ending);
+        } else {
+            out.push_str(raw);
+        }
+    }
+    out
+}
+
+/// Restore protected newlines in the converted document: the token
+/// only ever stands inside a link `href` or image `src` attr (the
+/// parse produced it from a destination), so only those string attrs
+/// are rewritten — literal text that happens to contain the token
+/// string is untouched.
+fn restore_attr_newlines(value: &mut Value, token: &str) {
+    match value {
+        Value::Object(map) => {
+            for (key, val) in map.iter_mut() {
+                if (key == "href" || key == "src")
+                    && let Value::String(text) = val
+                    && text.contains(token)
+                {
+                    *text = text.replace(token, "\n");
+                } else {
+                    restore_attr_newlines(val, token);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                restore_attr_newlines(item, token);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Active marks being applied to inline content.
@@ -218,59 +485,17 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
             json!({"type": "horizontal_rule"})
         }
 
-        NodeValue::List(list) => {
-            // Check if this is a task list by looking at children
-            let is_task_list = node
-                .children()
+        NodeValue::List(_) => {
+            // #1370: a mixed task/plain list converts to several sibling
+            // lists (see convert_list_runs); block parents splice them in
+            // via collect_block_children. A direct call gets the first
+            // run - the remaining call sites are the document root and
+            // list-item collection, where a list is always reached
+            // through its parent's block children instead.
+            convert_list_runs(node)
+                .into_iter()
                 .next()
-                .is_some_and(|child| matches!(child.data.borrow().value, NodeValue::TaskItem(_)));
-
-            if is_task_list {
-                let content = collect_list_items(node);
-                // #1036: carry `tight` like bullet_list/ordered_list, or
-                // loose task items fuse on save. #997: an ordered task
-                // list also carries its start in `attrs.order`, mirroring
-                // `ordered_list` below, or the ordering is lost on save.
-                match list.list_type {
-                    ListType::Ordered => {
-                        json!({
-                            "type": "task_list",
-                            "attrs": {"order": list.start, "tight": list.tight},
-                            "content": content
-                        })
-                    }
-                    ListType::Bullet => {
-                        json!({
-                            "type": "task_list",
-                            "attrs": {"tight": list.tight},
-                            "content": content
-                        })
-                    }
-                }
-            } else {
-                let content = collect_list_items(node);
-                let tight = list.tight;
-
-                match list.list_type {
-                    ListType::Ordered => {
-                        json!({
-                            "type": "ordered_list",
-                            "attrs": {
-                                "order": list.start,
-                                "tight": tight
-                            },
-                            "content": content
-                        })
-                    }
-                    ListType::Bullet => {
-                        json!({
-                            "type": "bullet_list",
-                            "attrs": {"tight": tight},
-                            "content": content
-                        })
-                    }
-                }
-            }
+                .unwrap_or(Value::Null)
         }
 
         NodeValue::Item(_) => {
@@ -390,10 +615,25 @@ fn convert_node<'a>(node: &'a AstNode<'a>, active_marks: &[Mark]) -> Value {
                 }
             }
 
-            json!({
+            // #1407: emphasis/strong/strikethrough wrapping an image
+            // ride on the image node as a `marks` array (the text-node
+            // shape) — like the link above, the editor schema cannot
+            // wrap an image node in a mark, so the marks travel on the
+            // node and the save direction re-wraps (see the image case
+            // in json_to_ast). The link stays in linkHref (#880).
+            let wrap_marks: Vec<Value> = active_marks
+                .iter()
+                .filter(|m| matches!(m.mark_type, "em" | "strong" | "strikethrough"))
+                .map(|m| json!({"type": m.mark_type}))
+                .collect();
+            let mut image_node = json!({
                 "type": "image",
                 "attrs": attrs
-            })
+            });
+            if !wrap_marks.is_empty() {
+                image_node["marks"] = json!(wrap_marks);
+            }
+            image_node
         }
 
         // Unsupported nodes - pass through as best we can
@@ -623,9 +863,104 @@ fn text_node_with_marks(text: &str, marks: &[Mark]) -> Value {
 
 /// Collect block-level children of a node.
 fn collect_block_children<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
-    node.children()
-        .map(|child| convert_node(child, &[]))
-        .filter(|v| !v.is_null())
+    let children: Vec<&AstNode<'a>> = node.children().collect();
+    let mut out = Vec::new();
+    for (idx, child) in children.iter().enumerate() {
+        // #1370: comrak's renderer separates adjacent lists with
+        // <!-- end list --> comments, and the split sibling lists this
+        // change emits are adjacent by construction - so on reparse the
+        // separator comes back as an HtmlBlock between the lists. It is
+        // a separator, not content: drop it when a neighbouring sibling
+        // is a list. An authored <!-- end list --> comment NOT next to
+        // a list still converts exactly as before (an htmlBlock
+        // code_block, #982).
+        if is_end_list_separator(child)
+            && ((idx > 0 && matches!(children[idx - 1].data.borrow().value, NodeValue::List(_)))
+                || children
+                    .get(idx + 1)
+                    .is_some_and(|c| matches!(c.data.borrow().value, NodeValue::List(_))))
+        {
+            continue;
+        }
+        if matches!(child.data.borrow().value, NodeValue::List(_)) {
+            // #1370: a list converts to one or more sibling lists.
+            out.extend(convert_list_runs(child));
+        } else {
+            let converted = convert_node(child, &[]);
+            if !converted.is_null() {
+                out.push(converted);
+            }
+        }
+    }
+    out
+}
+
+/// True for the HtmlBlock comrak's renderer emits between adjacent
+/// lists (see collect_block_children).
+fn is_end_list_separator<'a>(node: &'a AstNode<'a>) -> bool {
+    match &node.data.borrow().value {
+        NodeValue::HtmlBlock(html) => html.literal.trim() == "<!-- end list -->",
+        _ => false,
+    }
+}
+
+/// Convert a comrak list node to one or more ProseMirror list nodes.
+///
+/// A pure list converts exactly as before (#997/#1036 attrs carried from
+/// the source list). #1370: a list mixing task items with plain items
+/// used to take its type from the first child only and convert the rest
+/// by their own kind, producing a `task_list` holding a `list_item` (or
+/// a plain list holding a `task_list_item`) - a shape the save-side
+/// placement validation and the editor schema both forbid, so the
+/// document could not be saved at all. Instead, group the items into
+/// runs of one kind and emit one sibling list per run, in source order.
+/// Ordered runs carry an `order` start offset by the items before them
+/// so numbering renders unchanged; `tight` is carried from the source
+/// list to every run. Placement validation and the editor schema are
+/// untouched: every emitted list is pure.
+fn convert_list_runs<'a>(node: &'a AstNode<'a>) -> Vec<Value> {
+    let (list_type, start, tight) = match &node.data.borrow().value {
+        NodeValue::List(list) => (list.list_type, list.start, list.tight),
+        _ => return Vec::new(),
+    };
+    // (is_task, items before this run, converted items)
+    let mut runs: Vec<(bool, usize, Vec<Value>)> = Vec::new();
+    let mut seen = 0usize;
+    for child in node.children() {
+        let is_task = matches!(child.data.borrow().value, NodeValue::TaskItem(_));
+        let item = convert_node(child, &[]);
+        if item.is_null() {
+            continue;
+        }
+        match runs.last_mut() {
+            Some((kind, _, items)) if *kind == is_task => items.push(item),
+            _ => runs.push((is_task, seen, vec![item])),
+        }
+        seen += 1;
+    }
+    runs.into_iter()
+        .map(|(is_task, offset, content)| match (is_task, list_type) {
+            (true, ListType::Ordered) => json!({
+                "type": "task_list",
+                "attrs": {"order": start + offset, "tight": tight},
+                "content": content
+            }),
+            (true, ListType::Bullet) => json!({
+                "type": "task_list",
+                "attrs": {"tight": tight},
+                "content": content
+            }),
+            (false, ListType::Ordered) => json!({
+                "type": "ordered_list",
+                "attrs": {"order": start + offset, "tight": tight},
+                "content": content
+            }),
+            (false, ListType::Bullet) => json!({
+                "type": "bullet_list",
+                "attrs": {"tight": tight},
+                "content": content
+            }),
+        })
         .collect()
 }
 
@@ -1213,9 +1548,12 @@ pub fn prosemirror_to_markdown(doc: &Value) -> Result<String, ConversionError> {
     // #1019: comrak's renderer percent-encodes a space in a link/image
     // destination (`my notes.md` -> `my%20notes.md`) instead of emitting
     // the <...> angle form, silently breaking relative file links and
-    // mutating the PM href on reparse. The renderer has no angle-form
-    // option, so swap each spaced destination for a unique placeholder
-    // before rendering and restore it as <raw destination> afterwards.
+    // mutating the PM href on reparse. #1423: the same mangling hits the
+    // other whitespace characters — a tab is encoded to %09 and a newline
+    // destroys the link outright (`% `). The renderer has no angle-form
+    // option, so swap each whitespace-carrying destination for a unique
+    // placeholder before rendering and restore it as <raw destination>
+    // afterwards.
     let substitutions = substitute_spaced_destinations(root);
     let mut output = String::new();
     format_commonmark(root, &commonmark_options(), &mut output)?;
@@ -1430,11 +1768,15 @@ fn hoist_delimiter_edge_spaces<'a>(arena: &'a Arena<'a>, root: &'a AstNode<'a>) 
     }
 }
 
-/// Replace every link/image destination containing a space with a
-/// unique placeholder token, returning (placeholder, raw destination)
-/// pairs for restoration after rendering (#1019). The token is a valid
-/// bare destination (no spaces or characters comrak encodes), so the
-/// renderer emits it verbatim exactly where the destination belongs.
+/// Replace every link/image destination containing whitespace (space,
+/// tab, newline, …) with a unique placeholder token, returning
+/// (placeholder, raw destination) pairs for restoration after rendering
+/// (#1019, #1423). The token is a valid bare destination (no whitespace
+/// or characters comrak encodes), so the renderer emits it verbatim
+/// exactly where the destination belongs. Reference-style links flow
+/// through here too: comrak resolves a reference definition into the
+/// referencing link's `url`, and the PM model stores that href directly,
+/// so no separate definition path exists in this codec.
 fn substitute_spaced_destinations<'a>(root: &'a AstNode<'a>) -> Vec<(String, String)> {
     let mut substitutions: Vec<(String, String)> = Vec::new();
     let mut stack: Vec<&AstNode<'a>> = vec![root];
@@ -1445,7 +1787,7 @@ fn substitute_spaced_destinations<'a>(root: &'a AstNode<'a>) -> Vec<(String, Str
             NodeValue::Link(link) | NodeValue::Image(link) => &mut link.url,
             _ => continue,
         };
-        if !url.contains(' ') {
+        if !url.contains(char::is_whitespace) {
             continue;
         }
         if let Some(index) = substitutions
@@ -1935,6 +2277,33 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         }
     }
 
+    // #1044: GFM has no headerless-table representation — comrak emits
+    // the delimiter row only when a row is marked as the header row, and
+    // without one the saved table reparses as a plain paragraph, silently
+    // destroying the table. The editor schema permits rows made only of
+    // table_cell, so when no row is a header row, promote the first row:
+    // a faithful rendering preserving every cell's content, and a one-time
+    // normalization (reparse yields table_header cells in row 0, so the
+    // next save is byte-identical). The table's alignments (#881) are
+    // stored on the table node and apply to the promoted row unchanged.
+    if node_type == "table" {
+        let mut first_row: Option<&AstNode<'a>> = None;
+        let mut has_header_row = false;
+        for child in ast_node.children() {
+            if let NodeValue::TableRow(is_header) = &child.data.borrow().value {
+                if first_row.is_none() {
+                    first_row = Some(child);
+                }
+                if *is_header {
+                    has_header_row = true;
+                }
+            }
+        }
+        if !has_header_row && let Some(row) = first_row {
+            row.data.borrow_mut().value = NodeValue::TableRow(true);
+        }
+    }
+
     // Special case: image needs alt text as child (but NOT for HtmlInline, i.e. sized images)
     // #1417: the stored alt is markdown form (see convert_node's Image
     // arm) - re-parse it into inline nodes so emphasis/strong/code-span
@@ -1951,21 +2320,53 @@ fn json_to_ast<'a>(arena: &'a Arena<'a>, json: &Value) -> Result<&'a AstNode<'a>
         }
     }
 
-    // #880: an image carrying linkHref (a linked image, see convert_node)
-    // is wrapped in a Link node so save emits [![alt](src)](href).
-    if node_type == "image"
-        && matches!(ast_node.data.borrow().value, NodeValue::Image(_))
-        && let Some(link_href) = json["attrs"]["linkHref"].as_str()
-        && !link_href.is_empty()
-    {
-        let link_node = arena.alloc(AstNode::from(NodeValue::Link(Box::new(
-            comrak::nodes::NodeLink {
-                url: link_href.to_owned(),
-                title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
-            },
-        ))));
-        link_node.append(ast_node);
-        return Ok(link_node);
+    // #880 + #1407: an image carrying linkHref (a linked image, see
+    // convert_node) and/or a `marks` array (emphasis/strong/
+    // strikethrough wrapping the image) is wrapped in the
+    // corresponding mark chain so save emits [![alt](src)](href),
+    // *![alt](src)*, or both combined. Wrappers use the canonical
+    // nesting order (#944) — the order create_marked_text applies —
+    // and the returned chain goes through append_inline_child's mark
+    // merging (#968), so a marked image inside a marked text span
+    // rejoins the span instead of fragmenting it.
+    if node_type == "image" && matches!(ast_node.data.borrow().value, NodeValue::Image(_)) {
+        let mut wrappers: Vec<(u8, NodeValue)> = Vec::new();
+        if let Some(link_href) = json["attrs"]["linkHref"].as_str()
+            && !link_href.is_empty()
+        {
+            wrappers.push((
+                mark_nesting_rank("link"),
+                NodeValue::Link(Box::new(comrak::nodes::NodeLink {
+                    url: link_href.to_owned(),
+                    title: json["attrs"]["linkTitle"].as_str().unwrap_or("").to_owned(),
+                })),
+            ));
+        }
+        if let Some(marks) = json["marks"].as_array() {
+            for mark in marks {
+                let mark_type = mark["type"].as_str().unwrap_or("");
+                let wrapper = match mark_type {
+                    "em" => NodeValue::Emph,
+                    "strong" => NodeValue::Strong,
+                    "strikethrough" => NodeValue::Strikethrough,
+                    _ => continue,
+                };
+                if !wrappers.iter().any(|(_, w)| same_mark_wrapper(w, &wrapper)) {
+                    wrappers.push((mark_nesting_rank(mark_type), wrapper));
+                }
+            }
+        }
+        if !wrappers.is_empty() {
+            wrappers.sort_by_key(|(rank, _)| *rank);
+            // build_mark_chain consumes innermost-first; the sorted
+            // list above is outermost-first (canonical rank order).
+            let chain: Vec<NodeValue> = wrappers
+                .into_iter()
+                .map(|(_, wrapper)| wrapper)
+                .rev()
+                .collect();
+            return Ok(build_mark_chain(arena, ast_node, &chain, 0));
+        }
     }
 
     Ok(ast_node)
@@ -3132,6 +3533,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_tab_and_newline_destinations_roundtrip_in_angle_form() {
+        // #1423: the #1019 protection only triggered on a literal space,
+        // so a tab destination was percent-encoded to %09 on save and a
+        // newline destination was mangled to `% `, destroying the link.
+        // Both must now save in <...> angle form byte-identically, for
+        // links and images alike.
+        for original in [
+            "[notes](<a\tb.md>)\n",
+            "![a](<a\tb.png>)\n",
+            "[notes](<a\nb.md>)\n",
+            "![a](<a\nb.png>)\n",
+        ] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, original, "angle form retained for {original:?}");
+            assert_eq!(first, second, "fixpoint for {original:?}");
+            assert!(!first.contains("%09"), "no tab encoding: {first:?}");
+        }
+        // The PM href/src survive unmutated, tab and newline alike.
+        let doc = markdown_to_prosemirror("[notes](<a\tb.md>)\n");
+        assert_eq!(
+            doc["content"][0]["content"][0]["marks"][0]["attrs"]["href"], "a\tb.md",
+            "PM href unmutated (tab)"
+        );
+        let doc = markdown_to_prosemirror("![a](<a\nb.png>)\n");
+        assert_eq!(
+            doc["content"][0]["content"][0]["attrs"]["src"], "a\nb.png",
+            "PM src unmutated (newline)"
+        );
+    }
+
+    #[test]
+    fn test_tab_and_newline_editor_href_and_reference_definition() {
+        // #1423, save direction alone: an editor-created PM link whose
+        // href carries a tab or newline saves in angle form and reparses
+        // to the identical href.
+        for href in ["a\tb.md", "a\nb.md"] {
+            let pm = json!({
+                "type": "doc",
+                "content": [{
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": "t",
+                        "marks": [{"type": "link", "attrs": {"href": href}}]
+                    }]
+                }]
+            });
+            let md = prosemirror_to_markdown(&pm).expect("converts");
+            assert_eq!(md, format!("[t](<{href}>)\n"), "angle form for {href:?}");
+            let back = markdown_to_prosemirror(&md);
+            assert_eq!(
+                back["content"][0]["content"][0]["marks"][0]["attrs"]["href"], href,
+                "href identical after round trip for {href:?}"
+            );
+        }
+
+        // #1423, reference definitions: a reference-style link's
+        // destination is resolved into the link href at parse time, so it
+        // takes the same placeholder path — the tab destination must
+        // survive the save unencoded and reach a fixpoint.
+        let (first, second) = two_saves("[notes][r]\n\n[r]: <a\tb.md>\n");
+        assert!(
+            first.contains("<a\tb.md>"),
+            "tab destination kept: {first:?}"
+        );
+        assert!(!first.contains("%09"), "no tab encoding: {first:?}");
+        assert_eq!(first, second, "fixpoint");
+        let doc = markdown_to_prosemirror(&first);
+        assert_eq!(
+            doc["content"][0]["content"][0]["marks"][0]["attrs"]["href"], "a\tb.md",
+            "PM href unmutated (reference definition)"
+        );
+    }
+
     fn test_footnote_roundtrip_fixpoint() {
         // #945: a footnote reference + definition round-trip open->save
         // intact — emitted as [^label] syntax, never backslash-escaped,
@@ -3522,6 +3998,94 @@ mod tests {
     }
 
     #[test]
+    fn test_mixed_task_plain_list_splits_at_parse() {
+        // #1370: a list mixing checkbox and plain items must split into
+        // pure sibling lists at parse - one mixed list is a shape the
+        // placement validation and the editor schema both forbid, which
+        // made such documents unsavable.
+        let doc = markdown_to_prosemirror("- [ ] a\n- plain\n- [x] b\n");
+        let content = doc["content"].as_array().unwrap();
+        let types: Vec<&str> = content
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(types, ["task_list", "bullet_list", "task_list"]);
+        assert_eq!(content[0]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(content[1]["content"][0]["type"], "list_item");
+        assert_eq!(content[2]["content"][0]["attrs"]["checked"], true);
+
+        // Plain-first order splits the other way.
+        let doc = markdown_to_prosemirror("- plain\n- [ ] a\n");
+        let content = doc["content"].as_array().unwrap();
+        let types: Vec<&str> = content
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(types, ["bullet_list", "task_list"]);
+
+        // The split document saves (no MisplacedNode) and the save is a
+        // fixpoint: reparsing it splits identically.
+        for original in ["- [ ] a\n- plain\n- [x] b\n", "- plain\n- [ ] a\n"] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original)
+            );
+        }
+    }
+
+    #[test]
+    fn test_mixed_ordered_list_splits_with_order_offsets() {
+        // #1370: ordered split runs carry order offsets so the rendered
+        // numbering is unchanged.
+        let doc = markdown_to_prosemirror("1. [ ] a\n2. plain\n3. [x] b\n");
+        let content = doc["content"].as_array().unwrap();
+        let types: Vec<&str> = content
+            .iter()
+            .map(|n| n["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(types, ["task_list", "ordered_list", "task_list"]);
+        assert_eq!(content[0]["attrs"]["order"], 1);
+        assert_eq!(content[1]["attrs"]["order"], 2);
+        assert_eq!(content[2]["attrs"]["order"], 3);
+
+        let doc = markdown_to_prosemirror("4. plain\n5. [ ] a\n");
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "ordered_list");
+        assert_eq!(content[0]["attrs"]["order"], 4);
+        assert_eq!(content[1]["type"], "task_list");
+        assert_eq!(content[1]["attrs"]["order"], 5);
+
+        for original in ["1. [ ] a\n2. plain\n3. [x] b\n", "4. plain\n5. [ ] a\n"] {
+            let (first, second) = two_saves(original);
+            assert_eq!(first, second, "no fixpoint for {original:?}");
+            assert_eq!(
+                markdown_to_prosemirror(&first),
+                markdown_to_prosemirror(original)
+            );
+        }
+    }
+
+    #[test]
+    fn test_authored_end_list_comment_away_from_lists_survives() {
+        // #1370 follow-up: collect_block_children drops the renderer's
+        // <!-- end list --> separator only when it sits next to a list.
+        // The same comment authored away from any list is content like
+        // any other HTML block (#982) and must still convert.
+        let doc = markdown_to_prosemirror(
+            "<!-- end list -->
+
+Some text
+",
+        );
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "code_block");
+        assert_eq!(content[0]["attrs"]["htmlBlock"], true);
+        assert_eq!(content[1]["type"], "paragraph");
+    }
+
+    #[test]
     fn test_ordered_task_list_roundtrips() {
         // #997: an ordered task list must keep its ordering and start on
         // save instead of being rewritten as a bullet task list.
@@ -3790,6 +4354,98 @@ mod tests {
     }
 
     #[test]
+    fn test_table_code_span_pipe_body_cell() {
+        // #1424: a pipe inside a code span in a body cell must not
+        // split the cell: one cell, code mark intact, literal pipe.
+        let md = "| Command | Note |\n| --- | --- |\n| run `a|b` now | c |\n";
+        let doc = markdown_to_prosemirror(md);
+        let rows = doc["content"][0]["content"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        let cells = rows[1]["content"].as_array().unwrap();
+        assert_eq!(cells.len(), 2, "no phantom column: {doc}");
+        let inline = cells[0]["content"][0]["content"].as_array().unwrap();
+        let code = inline
+            .iter()
+            .find(|n| n["marks"][0]["type"] == "code")
+            .expect("code mark survives");
+        assert_eq!(code["text"], "a|b");
+        // Save emits the escaped spelling comrak's renderer produces
+        // for code in table cells, and the round trip is a fixpoint.
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert!(saved.contains("`a\\|b`"), "escaped on save: {saved}");
+        let back = markdown_to_prosemirror(&saved);
+        assert_eq!(back, doc, "reparse of saved form is stable");
+        assert_eq!(prosemirror_to_markdown(&back).unwrap(), saved);
+    }
+
+    #[test]
+    fn test_table_code_span_pipe_header_cell() {
+        // #1424: the same protection applies to the header row.
+        let md = "| `x|y` | H2 |\n| --- | --- |\n| A | B |\n";
+        let doc = markdown_to_prosemirror(md);
+        let rows = doc["content"][0]["content"].as_array().unwrap();
+        let header = rows[0]["content"].as_array().unwrap();
+        assert_eq!(header.len(), 2, "header not split: {doc}");
+        let code = &header[0]["content"][0]["content"][0];
+        assert_eq!(code["text"], "x|y");
+        assert_eq!(code["marks"][0]["type"], "code");
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(markdown_to_prosemirror(&saved), doc);
+    }
+
+    #[test]
+    fn test_table_code_span_pipe_only_content() {
+        // #1424: a code span with a pipe as a cell's only content.
+        let md = "| H1 | H2 |\n| --- | --- |\n| `a|b` | c |\n";
+        let doc = markdown_to_prosemirror(md);
+        let rows = doc["content"][0]["content"].as_array().unwrap();
+        let cells = rows[1]["content"].as_array().unwrap();
+        assert_eq!(cells.len(), 2, "no phantom column: {doc}");
+        let inline = cells[0]["content"][0]["content"].as_array().unwrap();
+        assert_eq!(inline.len(), 1);
+        assert_eq!(inline[0]["text"], "a|b");
+        assert_eq!(inline[0]["marks"][0]["type"], "code");
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(markdown_to_prosemirror(&saved), doc);
+    }
+
+    #[test]
+    fn test_table_code_span_pipe_one_column_no_drop() {
+        // #1424: under a 1-column header the fragment after the pipe
+        // was dropped entirely; the whole code span now survives in
+        // the single cell.
+        let md = "| `h|x` |\n| --- |\n| `a|b` |\n";
+        let doc = markdown_to_prosemirror(md);
+        let rows = doc["content"][0]["content"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        let header = rows[0]["content"].as_array().unwrap();
+        assert_eq!(header.len(), 1);
+        assert_eq!(header[0]["content"][0]["content"][0]["text"], "h|x");
+        let cells = rows[1]["content"].as_array().unwrap();
+        assert_eq!(cells.len(), 1, "single column: {doc}");
+        let code = &cells[0]["content"][0]["content"][0];
+        assert_eq!(code["text"], "a|b", "no fragment dropped: {doc}");
+        assert_eq!(code["marks"][0]["type"], "code");
+        let saved = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(markdown_to_prosemirror(&saved), doc);
+    }
+
+    #[test]
+    fn test_code_span_pipe_outside_table_untouched() {
+        // #1424 guard: outside a table a pipe in a code span needs no
+        // escape, and the preprocessing must not add one (a `\|`
+        // there would be literal backslash text in the span).
+        let md = "Run `a|b` here.\n";
+        let doc = markdown_to_prosemirror(md);
+        let inline = doc["content"][0]["content"].as_array().unwrap();
+        let code = inline
+            .iter()
+            .find(|n| n["marks"][0]["type"] == "code")
+            .expect("code mark present");
+        assert_eq!(code["text"], "a|b");
+    }
+
+    #[test]
     fn test_pm_to_md_table() {
         // Test the PM JSON → markdown direction specifically.
         // This exercises the NodeTable metadata (num_columns, alignments)
@@ -3828,6 +4484,62 @@ mod tests {
         let doc = markdown_to_prosemirror(&md);
         let content = doc["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "table");
+    }
+
+    #[test]
+    fn test_pm_to_md_table_without_header_row_is_promoted() {
+        // #1044: a PM table whose rows are all table_cell (schema-legal)
+        // must save as a table: the first row is promoted to a header
+        // row so comrak emits the GFM delimiter row, instead of the
+        // table degrading to a plain paragraph on save.
+        let cell = |text: &str| json!({"type": "table_cell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]});
+        let pm_json = json!({
+            "type": "doc",
+            "content": [{
+                "type": "table",
+                "content": [
+                    {"type": "table_row", "content": [cell("a"), cell("b")]},
+                    {"type": "table_row", "content": [cell("c"), cell("d")]}
+                ]
+            }]
+        });
+
+        let md = prosemirror_to_markdown(&pm_json).unwrap();
+        assert_eq!(md, "| a | b |\n| --- | --- |\n| c | d |\n");
+
+        // The saved output reparses as a table whose first row is a
+        // header row, and a second save is byte-identical (fixpoint).
+        let doc = markdown_to_prosemirror(&md);
+        let content = doc["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "table");
+        let rows = content[0]["content"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["content"][0]["type"], "table_header");
+        assert_eq!(rows[1]["content"][0]["type"], "table_cell");
+        let md2 = prosemirror_to_markdown(&doc).unwrap();
+        assert_eq!(md2, md);
+    }
+
+    #[test]
+    fn test_pm_to_md_single_row_table_without_header_is_promoted() {
+        // #1044: single-row headerless table — the only row is promoted.
+        let pm_json = json!({
+            "type": "doc",
+            "content": [{
+                "type": "table",
+                "content": [
+                    {"type": "table_row", "content": [
+                        {"type": "table_cell", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "only"}]}]}
+                    ]}
+                ]
+            }]
+        });
+
+        let md = prosemirror_to_markdown(&pm_json).unwrap();
+        assert_eq!(md, "| only |\n| --- |\n");
+        let doc = markdown_to_prosemirror(&md);
+        assert_eq!(doc["content"][0]["type"], "table");
+        assert_eq!(prosemirror_to_markdown(&doc).unwrap(), md);
     }
 
     #[test]
@@ -4037,6 +4749,71 @@ mod tests {
         let md = prosemirror_to_markdown(&doc).expect("converts");
         assert!(md.contains("![alt](img.png)"), "plain image: {md}");
         assert!(md.contains("[text](https://x.test)"), "plain link: {md}");
+    }
+
+    #[test]
+    fn test_marked_image_roundtrip_keeps_marks() {
+        // #1407: emphasis/strong/strikethrough wrapping an image ride
+        // on the image node as a `marks` array and are re-emitted as
+        // the wrapping mark on save.
+        for (md_src, mark) in [
+            ("*![alt](img.png)*\n", "em"),
+            ("**![alt](img.png)**\n", "strong"),
+            ("~~![alt](img.png)~~\n", "strikethrough"),
+        ] {
+            let doc = markdown_to_prosemirror(md_src);
+            let img = &doc["content"][0]["content"][0];
+            assert_eq!(img["type"], "image", "parse: {md_src}");
+            assert_eq!(img["marks"][0]["type"], mark, "parse marks: {md_src}");
+            let md = prosemirror_to_markdown(&doc).expect("converts");
+            assert!(md.contains(md_src.trim()), "roundtrip: {md_src} -> {md}");
+            // Fixpoint: the emitted form re-parses to the same marks.
+            let back = markdown_to_prosemirror(&md);
+            assert_eq!(
+                back["content"][0]["content"][0]["marks"][0]["type"], mark,
+                "fixpoint: {md_src}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_marked_linked_image_roundtrip() {
+        // #1407 + #880 combined: *[![alt](src)](href)* keeps both the
+        // link (linkHref) and the wrapping emphasis (marks).
+        let doc = markdown_to_prosemirror("*[![alt](img.png)](https://example.com)*\n");
+        let img = &doc["content"][0]["content"][0];
+        assert_eq!(img["attrs"]["linkHref"], "https://example.com");
+        assert_eq!(img["marks"][0]["type"], "em");
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        // Canonical nesting (#944) puts the link outermost, so the
+        // emitted spelling wraps the emphasis inside the link text;
+        // it re-parses to the same node (fixpoint asserted below).
+        assert!(
+            md.contains("[*![alt](img.png)*](https://example.com)"),
+            "combined roundtrip: {md}"
+        );
+        let back = markdown_to_prosemirror(&md);
+        let back_img = &back["content"][0]["content"][0];
+        assert_eq!(back_img["attrs"]["linkHref"], "https://example.com");
+        assert_eq!(back_img["marks"][0]["type"], "em");
+    }
+
+    #[test]
+    fn test_mixed_marked_span_with_image_roundtrips_as_one_span() {
+        // #1407: a marked span mixing text and an image must save as
+        // ONE span — no fragmentation, no &#32; boundary entities.
+        let doc = markdown_to_prosemirror("*text ![alt](img.png) tail*\n");
+        let content = doc["content"][0]["content"].as_array().expect("inline");
+        assert_eq!(content.len(), 3, "text + image + text: {doc}");
+        assert_eq!(content[1]["marks"][0]["type"], "em");
+        let md = prosemirror_to_markdown(&doc).expect("converts");
+        assert!(md.contains("*text ![alt](img.png) tail*"), "one span: {md}");
+        assert!(!md.contains("&#32;"), "no entity leak: {md}");
+        // Fixpoint: the emitted form re-parses to the same shape.
+        let back = markdown_to_prosemirror(&md);
+        let back_content = back["content"][0]["content"].as_array().expect("inline");
+        assert_eq!(back_content.len(), 3, "fixpoint shape: {back}");
+        assert_eq!(back_content[1]["marks"][0]["type"], "em");
     }
 
     #[test]

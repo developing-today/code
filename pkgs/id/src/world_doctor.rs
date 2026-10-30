@@ -199,7 +199,7 @@ pub fn check_toolchain(inputs: &DoctorInputs) -> Finding {
     };
     // A configured binary must exist. A bare name resolves through PATH.
     let exists = if roc_bin.contains('/') {
-        std::path::Path::new(roc_bin).is_file()
+        Path::new(roc_bin).is_file()
     } else {
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
             .map(|dir| dir.join(roc_bin))
@@ -375,17 +375,17 @@ pub fn validate_journal_file(path: &Path) -> Result<(usize, u32)> {
                 version: created_version,
             } => {
                 anyhow::ensure!(
-                    index == 0,
+                    entries == 0,
                     "entry {} is `Created`, but it is not the first entry",
                     index + 1
                 );
                 anyhow::ensure!(
-                    *created_version <= MAX_JOURNAL_VERSION,
-                    "journal format version {created_version} is newer than this binary supports ({MAX_JOURNAL_VERSION})"
+                    (JOURNAL_VERSION..=MAX_JOURNAL_VERSION).contains(created_version),
+                    "journal format version {created_version} is not one this binary supports ({JOURNAL_VERSION}..={MAX_JOURNAL_VERSION})"
                 );
                 version = Some(*created_version);
             }
-            _ if index == 0 => {
+            _ if entries == 0 => {
                 anyhow::bail!("the first entry is not `Created`");
             }
             _ => {}
@@ -540,6 +540,39 @@ mod tests {
             "version": MAX_JOURNAL_VERSION + 1,
         });
         std::fs::write(&path, format!("{future}\n")).unwrap();
+        assert!(validate_journal_file(&path).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_journal_version_zero_and_blank_lines_match_restore() {
+        // #1598: restore (world/core.rs) requires version 1..=MAX and reads
+        // the first *parsed* entry (world_store skips blank lines); doctor
+        // must agree on both.
+        let dir = std::env::temp_dir().join(format!("id-doctor-1598-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("journal.jsonl");
+        let created = |version: u32| {
+            serde_json::json!({
+                "entry": "created",
+                "world_id": "w",
+                "version": version,
+            })
+        };
+
+        // Version 0 is below JOURNAL_VERSION: refused, like restore.
+        std::fs::write(&path, format!("{}\n", created(0))).unwrap();
+        assert!(validate_journal_file(&path).is_err());
+
+        // A leading blank line does not move the header: still valid.
+        std::fs::write(&path, format!("\n{}\n", created(JOURNAL_VERSION))).unwrap();
+        let (entries, version) = validate_journal_file(&path).unwrap();
+        assert_eq!((entries, version), (1, JOURNAL_VERSION));
+
+        // A leading blank line does not hide a missing header either.
+        let bad = serde_json::json!({"entry": "caps_granted", "granted": []});
+        std::fs::write(&path, format!("\n{bad}\n")).unwrap();
         assert!(validate_journal_file(&path).is_err());
 
         std::fs::remove_dir_all(&dir).ok();

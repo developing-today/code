@@ -198,6 +198,56 @@ describe("richSchema code_block attrs (#1436)", () => {
   });
 });
 
+// ============================================================================
+// #1469: bullet_list / ordered_list tight attrs round-trip (codec mirror)
+// ============================================================================
+
+describe("richSchema list tight attrs (#1469)", () => {
+  const item = (text: string) => ({
+    type: "list_item",
+    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+  });
+
+  it("declares tight on bullet_list, preserving the inherited spec", () => {
+    const spec = richSchema.nodes.bullet_list.spec;
+    expect(spec.attrs?.tight).toEqual({ default: true });
+    // Inherited prosemirror-schema-list fields are preserved.
+    expect(spec.content).toBe("list_item+");
+    expect(spec.group).toBe("block");
+    expect(spec.parseDOM).toEqual([{ tag: "ul" }]);
+  });
+
+  it("declares tight and order on ordered_list, preserving the inherited spec", () => {
+    const spec = richSchema.nodes.ordered_list.spec;
+    expect(spec.attrs?.tight).toEqual({ default: true });
+    expect(spec.attrs?.order).toEqual({ default: 1, validate: "number" });
+    // Inherited prosemirror-schema-list fields are preserved.
+    expect(spec.content).toBe("list_item+");
+    expect(spec.group).toBe("block");
+    expect(spec.parseDOM?.[0].tag).toBe("ol");
+  });
+
+  it.each([true, false])("preserves bullet_list tight=%s through fromJSON -> toJSON", (tight) => {
+    const json = {
+      type: "doc",
+      content: [{ type: "bullet_list", attrs: { tight }, content: [item("a"), item("b")] }],
+    };
+    const out = richSchema.nodeFromJSON(json).toJSON();
+    expect(out.content[0].attrs).toEqual({ tight });
+    expect(out.content[0].content).toEqual([item("a"), item("b")]);
+  });
+
+  it.each([true, false])("preserves ordered_list {order: 3, tight: %s} through fromJSON -> toJSON", (tight) => {
+    const json = {
+      type: "doc",
+      content: [{ type: "ordered_list", attrs: { order: 3, tight }, content: [item("a"), item("b")] }],
+    };
+    const out = richSchema.nodeFromJSON(json).toJSON();
+    expect(out.content[0].attrs).toEqual({ order: 3, tight });
+    expect(out.content[0].content).toEqual([item("a"), item("b")]);
+  });
+});
+
 describe("rawSchema", () => {
   it("has doc node type", () => {
     expect(rawSchema.nodes.doc).toBeDefined();

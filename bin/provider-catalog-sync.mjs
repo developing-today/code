@@ -24,8 +24,10 @@
 //              enumerate degrades to a per-provider note, never a failed run.
 //   --apply    additionally write validated additions into the config file
 //              (catalog-only edits, sibling-mirrored entry shapes), print a
-//              PR body draft, and with --open-pr also commit, push the
-//              current branch, and open the PR via gh.
+//              PR body draft, and with --open-pr also commit on a dedicated
+//              chore/catalog-sync-<date> branch (created or reused for the
+//              day, never the default branch), push it with the upstream
+//              set, and open the PR from that branch via gh.
 //
 // This is the PR-based successor to bin/sync-models.mjs, which rewrites the
 // deployed config in place (and auto-removes). Per Drew's policy the catalog
@@ -629,6 +631,59 @@ export function assertCatalogOnly(before, after, added) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// --open-pr branch contract (issue #1754). --open-pr exists to open a PR, so
+// it must never commit on or push the repository default branch: the sync
+// commits land on a dedicated chore/catalog-sync-<date> branch (the same UTC
+// date the commit message carries), created before the commit — or checked
+// out when it already exists, so a same-day rerun updates that day's PR.
+// ---------------------------------------------------------------------------
+export function catalogSyncBranch(date) {
+  return `chore/catalog-sync-${date}`;
+}
+
+// Defence in depth: after the branch step the checked-out branch must not
+// still be the default branch. Throws (aborting before any commit) when it
+// is — a silent commit on the default branch is exactly the #1754 failure.
+export function assertNotDefaultBranch(currentBranch, defaultBranch) {
+  if (currentBranch === defaultBranch) {
+    throw new Error(
+      `--open-pr refuses to commit on the default branch (${defaultBranch}): ` +
+        'the catalog-sync branch step did not move the checkout — aborting before any commit',
+    );
+  }
+}
+
+// The full git/gh command plan for --open-pr, as data, so tests can pin the
+// contract (branch step BEFORE the commit, --set-upstream push of the
+// dedicated branch, gh pr create --head) without executing anything.
+// Step 0 is the branch step; main() runs it, then asserts the checkout is
+// off the default branch, then runs the remaining steps.
+export function openPrCommands({ branch, branchExists, date, bodyFile }) {
+  return [
+    branchExists ? ['git', 'checkout', branch] : ['git', 'checkout', '-b', branch],
+    ['git', 'add', '.opencode/opencode.jsonc'],
+    [
+      'git',
+      'commit',
+      '-m',
+      `chore(opencode): catalog sync ${date} — add validated provider models (#1297)`,
+    ],
+    ['git', 'push', '--set-upstream', 'origin', branch],
+    [
+      'gh',
+      'pr',
+      'create',
+      '--title',
+      `chore(opencode): catalog sync ${date} (#1297)`,
+      '--body-file',
+      bodyFile,
+      '--head',
+      branch,
+    ],
+  ];
+}
+
 async function main(argv) {
   const args = new Set(argv);
   const opt = (name, dflt) => {
@@ -669,15 +724,25 @@ async function main(argv) {
     const date = new Date().toISOString().slice(0, 10);
     const bodyFile = path.join(fs.mkdtempSync(path.join('/tmp', 'catalog-sync-')), 'pr-body.md');
     fs.writeFileSync(bodyFile, body);
-    const git = (...a) => execFileSync('git', a, { cwd: repoDir, stdio: 'inherit' });
-    git('add', '.opencode/opencode.jsonc');
-    git('commit', '-m', `chore(opencode): catalog sync ${date} — add validated provider models (#1297)`);
-    git('push');
-    execFileSync(
-      'gh',
-      ['pr', 'create', '--title', `chore(opencode): catalog sync ${date} (#1297)`, '--body-file', bodyFile],
-      { cwd: repoDir, stdio: 'inherit' },
-    );
+    const run = (cmd) => execFileSync(cmd[0], cmd.slice(1), { cwd: repoDir, stdio: 'inherit' });
+    const gitCapture = (...a) => execFileSync('git', a, { cwd: repoDir, encoding: 'utf8' }).trim();
+    const branch = catalogSyncBranch(date);
+    let branchExists = false;
+    try {
+      gitCapture('rev-parse', '--verify', '--quiet', `refs/heads/${branch}`);
+      branchExists = true;
+    } catch {}
+    let defaultBranch = 'main';
+    try {
+      defaultBranch = gitCapture('symbolic-ref', '--short', 'refs/remotes/origin/HEAD').replace(
+        /^origin\//,
+        '',
+      );
+    } catch {}
+    const commands = openPrCommands({ branch, branchExists, date, bodyFile });
+    run(commands[0]); // branch step: create or reuse chore/catalog-sync-<date>
+    assertNotDefaultBranch(gitCapture('branch', '--show-current'), defaultBranch);
+    for (const cmd of commands.slice(1)) run(cmd);
   }
   return 0;
 }

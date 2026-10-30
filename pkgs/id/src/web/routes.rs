@@ -22,7 +22,7 @@ use super::templates::{
     render_file_list_content, render_main_page_wrapper, render_media_viewer, render_page,
     render_peers, render_settings,
 };
-use crate::fileops::{FileOpError, FileOps};
+use crate::fileops::{FileOpError, FileOps, free_archive_name};
 
 /// Default number of files per page.
 const DEFAULT_PER_PAGE: usize = 50;
@@ -1451,6 +1451,50 @@ fn image_too_large_response() -> Response {
 ///
 /// Accepts a single file field, validates the MIME type against allowed
 /// image types, stores the blob, creates a named tag, and sets metadata.
+/// The hash `name` currently points at, if the name is taken (#1549).
+async fn upload_name_owner(
+    store: &iroh_blobs::api::Store,
+    name: &str,
+) -> Result<Option<iroh_blobs::Hash>, String> {
+    store
+        .tags()
+        .get(name)
+        .await
+        .map(|info| info.map(|tag| tag.hash))
+        .map_err(|err| err.to_string())
+}
+
+/// Choose the stored name for an upload of `hash` intended as
+/// `intended` (#1549): the intended name itself when it is free or
+/// already names this exact blob (an idempotent re-upload of identical
+/// bytes keeps its name), otherwise `stem-N.ext` with the smallest
+/// N >= 1 that is free or already names this blob — so a later upload
+/// never silently un-names an earlier, different image.
+async fn uniquify_upload_name(
+    store: &iroh_blobs::api::Store,
+    intended: &str,
+    hash: iroh_blobs::Hash,
+) -> Result<String, String> {
+    match upload_name_owner(store, intended).await? {
+        None => return Ok(intended.to_owned()),
+        Some(owner) if owner == hash => return Ok(intended.to_owned()),
+        Some(_) => {}
+    }
+    let (stem, ext) = match intended.rfind('.') {
+        Some(dot) if dot > 0 => (&intended[..dot], &intended[dot..]),
+        _ => (intended, ""),
+    };
+    for n in 1.. {
+        let candidate = format!("{stem}-{n}{ext}");
+        match upload_name_owner(store, &candidate).await? {
+            None => return Ok(candidate),
+            Some(owner) if owner == hash => return Ok(candidate),
+            Some(_) => {}
+        }
+    }
+    unreachable!("the counter always finds a free name")
+}
+
 async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart) -> Response {
     // Read the first field from the multipart body
     let field = match multipart.next_field().await {
@@ -1547,6 +1591,25 @@ async fn upload_handler(State(state): State<AppState>, mut multipart: Multipart)
     };
     let hash = outcome.hash;
     let hash_str = hash.to_string();
+
+    // #1549: resolve the stored name before tagging anything. The
+    // intended name is kept when free or already naming this blob; a
+    // name owned by a different blob is uniquified (stem-N.ext), and
+    // the nameless paste-{ts} fallback passes through the same
+    // uniquifier, so two uploads can never land on the same stored
+    // name. The tag, the filename-keyed metadata, and the response
+    // below all use the stored name.
+    let filename = match uniquify_upload_name(&state.store, &filename, hash).await {
+        Ok(name) => name,
+        Err(err) => {
+            tracing::error!("[routes] Failed to resolve upload name: {}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to resolve file name",
+            )
+                .into_response();
+        }
+    };
 
     // Set named tag
     let tag = iroh_blobs::api::Tag::from(filename.clone());
@@ -2172,7 +2235,12 @@ async fn archive_original_tag(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let archive_name = format!("{name}.archive.{timestamp}");
+    // Bump past an existing archive tag so two archives within the same
+    // second never overwrite each other (#1612).
+    let Ok(archive_name) = free_archive_name(store, name, timestamp).await else {
+        tracing::error!("[routes] Failed to find a free archive tag for {}", name);
+        return None;
+    };
     let archive_tag = iroh_blobs::api::Tag::from(archive_name.clone());
 
     match store.tags().set(archive_tag, expected).await {
@@ -2445,6 +2513,137 @@ mod upload_router_tests {
         let status = response.status();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    async fn list_images(router: Router) -> Vec<serde_json::Value> {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/images")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn multipart_body_noname(content_type: &str, file_bytes: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"\r\n\
+                 Content-Type: {content_type}\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(file_bytes);
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        body
+    }
+
+    // #1549: a second upload under the same filename with different
+    // bytes must not silently un-name the first: the second is stored
+    // uniquified, both stay listed and resolvable, and the first name
+    // still resolves to the first hash. Re-uploading identical bytes
+    // under the same name is idempotent.
+    #[tokio::test]
+    async fn upload_same_name_different_bytes_uniquifies_second() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let (status, first) = upload(
+            router.clone(),
+            multipart_body_named("image.png", "image/png", b"first-bytes"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {first}");
+        assert!(first.contains("\"name\":\"image.png\""), "body: {first}");
+        let first_hash = uploaded_hash(&first);
+
+        let (status, second) = upload(
+            router.clone(),
+            multipart_body_named("image.png", "image/png", b"second-bytes"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {second}");
+        assert!(
+            second.contains("\"name\":\"image-1.png\""),
+            "second upload stored uniquified: {second}"
+        );
+        assert!(second.contains("filename=image-1.png"), "body: {second}");
+        let second_hash = uploaded_hash(&second);
+        assert_ne!(first_hash, second_hash);
+
+        let (status, again) = upload(
+            router.clone(),
+            multipart_body_named("image.png", "image/png", b"first-bytes"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {again}");
+        assert!(
+            again.contains("\"name\":\"image.png\""),
+            "identical re-upload keeps the plain name: {again}"
+        );
+        assert_eq!(uploaded_hash(&again), first_hash);
+
+        let images = list_images(router.clone()).await;
+        let by_name = |name: &str| {
+            images
+                .iter()
+                .find(|entry| entry["name"] == name)
+                .unwrap_or_else(|| panic!("{name} listed in {images:?}"))
+        };
+        assert_eq!(by_name("image.png")["hash"], first_hash);
+        assert_eq!(by_name("image-1.png")["hash"], second_hash);
+
+        let (_, _, bytes) = get_blob(router.clone(), &format!("/blob/{first_hash}")).await;
+        assert_eq!(bytes, b"first-bytes");
+        let (_, _, bytes) = get_blob(router, &format!("/blob/{second_hash}")).await;
+        assert_eq!(bytes, b"second-bytes");
+    }
+
+    // #1549: the nameless paste-{secs} fallback passes through the
+    // same uniquifier, so two nameless uploads in the same second can
+    // never land on the same stored name.
+    #[tokio::test]
+    async fn upload_nameless_uploads_never_share_a_stored_name() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let (status, first) = upload(
+            router.clone(),
+            multipart_body_noname("image/png", b"nameless-one"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {first}");
+        let (status, second) = upload(
+            router.clone(),
+            multipart_body_noname("image/png", b"nameless-two"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {second}");
+        let name_of = |body: &str| {
+            serde_json::from_str::<serde_json::Value>(body).unwrap()["name"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let (first_name, second_name) = (name_of(&first), name_of(&second));
+        assert!(first_name.starts_with("paste-"), "first: {first_name}");
+        assert_ne!(
+            first_name, second_name,
+            "nameless uploads must not share a stored name"
+        );
+        let images = list_images(router).await;
+        let hash_of = |name: &str| {
+            images
+                .iter()
+                .find(|entry| entry["name"] == name)
+                .map(|entry| entry["hash"].as_str().unwrap().to_owned())
+                .unwrap_or_else(|| panic!("{name} listed in {images:?}"))
+        };
+        assert_eq!(hash_of(&first_name), uploaded_hash(&first));
+        assert_eq!(hash_of(&second_name), uploaded_hash(&second));
     }
 
     // #751: a body over UPLOAD_BODY_LIMIT must surface as the clear 413,
@@ -3176,7 +3375,7 @@ mod tests {
         );
         // …while the router-wide limit for the other routes stays at 10 MiB.
         assert_eq!(DEFAULT_BODY_LIMIT, 10 * 1024 * 1024);
-        assert!(UPLOAD_BODY_LIMIT > DEFAULT_BODY_LIMIT);
+        const { assert!(UPLOAD_BODY_LIMIT > DEFAULT_BODY_LIMIT) };
     }
 
     #[test]

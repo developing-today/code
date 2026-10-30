@@ -9,6 +9,9 @@ import {
   makeEntry,
   applyAdditions,
   assertCatalogOnly,
+  catalogSyncBranch,
+  assertNotDefaultBranch,
+  openPrCommands,
 } from './provider-catalog-sync.mjs';
 
 const FIXTURE = `{
@@ -147,4 +150,41 @@ test('applyAdditions + assertCatalogOnly: only catalog entries change', () => {
   // guard actually bites when non-catalog content moves
   const tampered = text.replace('"groq"', '"groq", "meta"');
   assert.throws(() => assertCatalogOnly(FIXTURE, tampered, added), /catalog-only guard/);
+});
+
+test('catalogSyncBranch is the dated dedicated branch', () => {
+  assert.equal(catalogSyncBranch('2026-10-28'), 'chore/catalog-sync-2026-10-28');
+});
+
+test('openPrCommands: branch step precedes commit, push sets upstream, gh gets --head', () => {
+  const branch = 'chore/catalog-sync-2026-10-28';
+  const cmds = openPrCommands({
+    branch,
+    branchExists: false,
+    date: '2026-10-28',
+    bodyFile: '/tmp/x/pr-body.md',
+  });
+  assert.deepEqual(cmds[0], ['git', 'checkout', '-b', branch]);
+  const step = (name) => cmds.findIndex((c) => c[1] === name);
+  assert.ok(step('checkout') < step('commit'), 'branch step precedes the commit');
+  const push = cmds.find((c) => c[0] === 'git' && c[1] === 'push');
+  assert.deepEqual(push, ['git', 'push', '--set-upstream', 'origin', branch]);
+  const gh = cmds.find((c) => c[0] === 'gh');
+  assert.equal(gh[gh.indexOf('--head') + 1], branch);
+});
+
+test('openPrCommands: same-day rerun checks out the existing branch', () => {
+  const branch = 'chore/catalog-sync-2026-10-28';
+  const cmds = openPrCommands({
+    branch,
+    branchExists: true,
+    date: '2026-10-28',
+    bodyFile: '/tmp/x/pr-body.md',
+  });
+  assert.deepEqual(cmds[0], ['git', 'checkout', branch]);
+});
+
+test('assertNotDefaultBranch aborts on the default branch, passes elsewhere', () => {
+  assert.throws(() => assertNotDefaultBranch('main', 'main'), /default branch \(main\)/);
+  assert.doesNotThrow(() => assertNotDefaultBranch('chore/catalog-sync-2026-10-28', 'main'));
 });

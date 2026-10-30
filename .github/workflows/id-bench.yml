@@ -1,0 +1,96 @@
+# Benchmark regression reporting for pkgs/id — F11.8 slice 3 (#1513).
+#
+# Runs the four slice-1 benchmarks (world_bench) and diffs their medians
+# against the committed slice-2 baselines in pkgs/id/benches/baseline.txt,
+# using .github/scripts/id-bench-compare.sh. The report lands in the job
+# summary and as a run artifact.
+#
+# Main tier only (Phase 2, #1781): benchmarks no longer run on PRs.
+#
+# NON-BLOCKING BY DESIGN: this workflow is separate from the required
+# "nix flake check" gate in id-check.yml, the bench step is
+# continue-on-error, and the compare script always exits 0. A regression
+# flag informs the PR — it never fails a required check. Baselines were
+# taken on the fleet laptop (see pkgs/id/benches/BASELINES.md); shared
+# CI runners are a different machine class, so flags are a prompt to
+# investigate, not a verdict.
+
+name: id bench
+
+# CI tier policy: see .github/ci-policy.md
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/id/**"
+      - ".github/workflows/id-bench.yml"
+      - ".github/scripts/id-bench-compare.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Same concurrency shape as id-check.yml: push-to-main runs are keyed by
+# run_id so every merged tree gets its own completed run; PR runs share
+# a per-ref group so a new push supersedes the stale run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: "full (main tier): benchmark regression report"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      # Same store cache as the PR gate, so the bench build starts warm
+      # (#288).
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        with:
+          # FlakeHub Cache off (#2120): no id-token is granted and the
+          # developing-today org is not registered, so the action's
+          # opportunistic FlakeHub enable hard-failed jobs on an auth
+          # error. The GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
+
+      # Full-size workloads, exactly as the baselines were taken
+      # (BASELINES.md): --quick numbers are smoke sizes and are never
+      # comparable to the committed baselines.
+      - name: Run benchmarks
+        id: bench
+        continue-on-error: true
+        working-directory: pkgs/id
+        run: |
+          nix develop --command just bench 2>&1 | tee "$GITHUB_WORKSPACE/bench-output.txt"
+
+      - name: Compare against committed baselines
+        if: always()
+        run: |
+          if [ "${{ steps.bench.outcome }}" != "success" ]; then
+            {
+              echo "## Benchmark regression report"
+              echo
+              echo "⚠️ The benchmark run did not complete (step outcome: ${{ steps.bench.outcome }}), so there are no results to compare. This report is non-blocking; see the run log."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          .github/scripts/id-bench-compare.sh bench-output.txt pkgs/id/benches/baseline.txt | tee bench-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bench-output
+          path: |
+            bench-output.txt
+            bench-report.md
+          if-no-files-found: ignore

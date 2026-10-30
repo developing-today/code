@@ -399,6 +399,38 @@ describe("proposal identity + expiry (#1293)", () => {
     });
     expect(checkActionAgainstItem(approve, item, later)).toContain("expired");
   });
+
+  /** An item whose proposal draft time and delegation updatedAt diverge (#1623). */
+  function divergentItem(proposalAt: string, updatedAt: string): TierItem {
+    const raw = extendedRaw();
+    (raw.delegation as Record<string, unknown>).updatedAt = updatedAt;
+    ((raw.delegation as Record<string, unknown>).proposal as Record<string, unknown>).at = proposalAt;
+    return sanitizeTierItemExtensions(raw as unknown as TierItem);
+  }
+
+  test("expiry is clocked from proposal.at, not delegation updatedAt (#1623)", () => {
+    const now = Date.parse("2026-10-30T04:00:00.000Z");
+
+    // Proposal drafted 74h ago; delegation churned 1h ago. The proposal is
+    // expired, and approving it (with the live identity triple) is refused.
+    const churned = divergentItem("2026-10-27T02:00:00.000Z", "2026-10-30T03:00:00.000Z");
+    expect(proposalExpired(churned.delegation, now)).toBe(true);
+    const approveStale = actionInput({
+      verb: "approve-proposal",
+      payload: { proposalRunId: "orch-2026-10-27T02:00:00Z", proposalUpdatedAt: "2026-10-30T03:00:00.000Z" },
+    });
+    expect(checkActionAgainstItem(approveStale, churned, now)).toContain("expired");
+
+    // Proposal drafted 1h ago on an old delegation record. Not expired, and
+    // approving it passes the expiry gate.
+    const fresh = divergentItem("2026-10-30T03:00:00.000Z", "2026-10-27T02:00:00.000Z");
+    expect(proposalExpired(fresh.delegation, now)).toBe(false);
+    const approveFresh = actionInput({
+      verb: "approve-proposal",
+      payload: { proposalRunId: "orch-2026-10-27T02:00:00Z", proposalUpdatedAt: "2026-10-27T02:00:00.000Z" },
+    });
+    expect(checkActionAgainstItem(approveFresh, fresh, now)).toBeNull();
+  });
 });
 
 describe("actions boundary additions (#1290)", () => {

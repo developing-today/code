@@ -1463,7 +1463,7 @@ class ColdStore:
             "x-amz-date": amz_date,
         }
 
-    def _s3_request(self, method, bucket, key=None, query=None):
+    def _s3_request(self, method, bucket, key=None, query=None, curl_fallback=True):
         """One signed S3 request; returns (status, headers, body).
 
         Transport failures — the response truncated mid-body
@@ -1477,9 +1477,24 @@ class ColdStore:
         retry is safe; the retry lives only in this S3 layer, never in
         http_request itself. The request is re-signed per attempt
         (SigV4 timestamps go stale; a fresh signature costs nothing).
-        If every attempt fails at the transport level, raise a
-        ColdStoreError naming the operation and bucket instead of
-        leaking a raw http.client traceback.
+
+        If every urllib attempt fails at the transport level and the
+        method is GET, make exactly ONE curl attempt for the same URL
+        (_s3_request_via_curl) before giving up: on a hostile-proxy
+        night every urllib retry can truncate at a different offset
+        (seen live 2026-10-28, when backup-supabase died at its LIST),
+        while curl is immune. The curl response returns through the
+        same (status, headers, body) shape, so callers' status
+        handling (_s3_check) sees an HTTP error from curl exactly as
+        it would from urllib. Non-GET methods get no fallback.
+        s3_get_object passes curl_fallback=False: object downloads
+        keep their dedicated byte-count-verified fallback
+        (_s3_get_via_curl) instead of this unverified one.
+
+        If every attempt fails, raise a ColdStoreError naming the
+        operation and bucket instead of leaking a raw http.client
+        traceback; when the curl fallback was attempted and also
+        failed, the message says so.
         """
         path = "/" + urllib.parse.quote(bucket, safe="")
         if key is not None:
@@ -1505,10 +1520,30 @@ class ColdStore:
                     )
                     if delay > 0:
                         time.sleep(delay)
+        if method == "GET" and curl_fallback:
+            try:
+                return self._s3_request_via_curl(url)
+            except ColdStoreError as curl_problem:
+                raise ColdStoreError(
+                    f"S3 {what} failed after {S3_TRANSPORT_ATTEMPTS} attempts: "
+                    f"transport error ({type(problem).__name__}: {problem}); "
+                    f"curl fallback also failed: {curl_problem}"
+                ) from None
         raise ColdStoreError(
             f"S3 {what} failed after {S3_TRANSPORT_ATTEMPTS} attempts: "
             f"transport error ({type(problem).__name__}: {problem})"
         )
+
+    def _s3_request_via_curl(self, url: str):
+        """One curl attempt at a GET-class _s3_request URL, in the
+        same (status, headers, body) shape a urllib response has, so
+        the caller's _s3_check treats an HTTP error status from curl
+        exactly as it would from urllib. Headers are not captured
+        (the GET-class callers — listings — read none); errors are
+        the _curl_fetch_status ColdStoreErrors, already scrubbed."""
+        access, secret = self._r2_credentials()
+        status, body = self._curl_fetch_status(url, access, secret)
+        return status, {}, body
 
     @staticmethod
     def _s3_check(status: int, body: bytes, what: str) -> None:
@@ -1555,7 +1590,12 @@ class ColdStore:
         problem = "no attempt made"
         for _attempt in range(S3_GET_ATTEMPTS):
             try:
-                status, headers, resp = self._s3_request("GET", bucket, key=key)
+                # curl_fallback=False: downloads keep the dedicated
+                # byte-count-verified curl fallback below rather than
+                # _s3_request's unverified GET fallback.
+                status, headers, resp = self._s3_request(
+                    "GET", bucket, key=key, curl_fallback=False
+                )
             except (http.client.HTTPException, ColdStoreError) as e:
                 problem = str(e)
                 continue
@@ -1611,34 +1651,30 @@ class ColdStore:
             )
         return body
 
-    def _curl_fetch(self, url: str, access: str, secret: str) -> bytes:
-        """GET `url` with curl, which does its own SigV4 signing
-        (--aws-sigv4) and reads the proxy from the environment itself.
-        Credentials travel in a curl config fed on stdin (--config -),
-        never in argv — the local process list must not see them (the
-        --user argv form was issue #983, the pattern #948/#970 removed
-        from push-fleet-feed.sh) — and never on disk. They are scrubbed
-        from every error this raises, and nothing here is logged.
-        """
-        argv = [
-            self.curl,
-            "-sS",
-            "--fail",
-            "--aws-sigv4",
-            "aws:amz:auto:s3",
-            "--config",
-            "-",
-            url,
-        ]
-        config = (
+    @staticmethod
+    def _curl_config(access: str, secret: str) -> bytes:
+        """The curl config carrying the credentials, fed to curl on
+        stdin (--config -) by every curl call below: credentials
+        never travel in argv — the local process list must not see
+        them (the --user argv form was issue #983, the pattern
+        #948/#970 removed from push-fleet-feed.sh) — and never on
+        disk. They are scrubbed from every error the curl layer
+        raises, and nothing in it is logged."""
+        return (
             'user = "'
             + f"{access}:{secret}".replace("\\", "\\\\").replace('"', '\\"')
             + '"\n'
         ).encode()
+
+    def _curl_spawn(self, argv: list, access: str, secret: str):
+        """Run curl once (it does its own SigV4 signing via
+        --aws-sigv4 and reads the proxy from the environment itself).
+        A missing binary or a timeout is a ColdStoreError here; the
+        exit code is the caller's to interpret."""
         try:
-            proc = subprocess.run(
+            return subprocess.run(
                 argv,
-                input=config,
+                input=self._curl_config(access, secret),
                 capture_output=True,
                 timeout=S3_CURL_TIMEOUT_SECONDS,
             )
@@ -1651,15 +1687,71 @@ class ColdStore:
             raise ColdStoreError(
                 f"curl fallback timed out after {S3_CURL_TIMEOUT_SECONDS}s"
             ) from None
+
+    @staticmethod
+    def _curl_failure(proc, access: str, secret: str) -> ColdStoreError:
+        detail = _scrub_secrets(
+            proc.stderr.decode("utf-8", "replace").strip()[:200], access, secret
+        )
+        return ColdStoreError(
+            f"curl fallback failed (exit {proc.returncode}): "
+            f"{detail or 'no error output'}"
+        )
+
+    def _curl_fetch(self, url: str, access: str, secret: str) -> bytes:
+        """GET `url` with curl and return the body; --fail makes any
+        HTTP error status a curl failure, so a return is always a
+        2xx body. Used by the object-download fallback, whose caller
+        byte-count-verifies the result."""
+        argv = [
+            self.curl,
+            "-sS",
+            "--fail",
+            "--aws-sigv4",
+            "aws:amz:auto:s3",
+            "--config",
+            "-",
+            url,
+        ]
+        proc = self._curl_spawn(argv, access, secret)
         if proc.returncode != 0:
-            detail = _scrub_secrets(
-                proc.stderr.decode("utf-8", "replace").strip()[:200], access, secret
-            )
-            raise ColdStoreError(
-                f"curl fallback failed (exit {proc.returncode}): "
-                f"{detail or 'no error output'}"
-            )
+            raise self._curl_failure(proc, access, secret)
         return proc.stdout
+
+    # Appended to curl's stdout by --write-out so _curl_fetch_status
+    # can split body from status unambiguously, whatever the body
+    # itself ends with.
+    _CURL_STATUS_TRAILER = "\n<<<coldstore-http-status:"
+
+    def _curl_fetch_status(self, url: str, access: str, secret: str):
+        """GET `url` with curl and return (status, body). No --fail:
+        an HTTP error status is a normal result here, so the caller
+        (_s3_request, via _s3_request_via_curl) can run it through
+        the same _s3_check handling as a urllib response. A curl
+        transport failure (nonzero exit — e.g. exit 18 when even curl
+        gets a truncated transfer) raises like _curl_fetch."""
+        argv = [
+            self.curl,
+            "-sS",
+            "--aws-sigv4",
+            "aws:amz:auto:s3",
+            "--config",
+            "-",
+            "--write-out",
+            self._CURL_STATUS_TRAILER + "%{http_code}>>>",
+            url,
+        ]
+        proc = self._curl_spawn(argv, access, secret)
+        if proc.returncode != 0:
+            raise self._curl_failure(proc, access, secret)
+        body, marker, tail = proc.stdout.rpartition(self._CURL_STATUS_TRAILER.encode())
+        status_text = tail.decode("ascii", "replace")
+        if not marker or not re.fullmatch(r"\d{3}>>>", status_text):
+            raise ColdStoreError(
+                "curl fallback returned an unparseable response "
+                "(no HTTP status trailer)"
+            )
+        return int(status_text[:3]), body
 
     def s3_delete_object(self, bucket: str, key: str) -> None:
         status, _h, resp = self._s3_request("DELETE", bucket, key=key)

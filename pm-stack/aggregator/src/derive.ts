@@ -62,7 +62,22 @@ export interface Lane {
 }
 
 const QUARTER = /^Q([1-4])\s+(\d{4})$/i;
-const DATE = /^(\d{4})-(\d{2})-\d{2}/;
+const DATE = /^(\d{4})-(\d{2})-(\d{2})/;
+
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+/**
+ * True when year/month/day form a real calendar date. The DATE/YMD
+ * regexes check digit shape only, so month 00/13, day 00, Feb 30 and
+ * Apr 31 all pass them; this rejects those (a JS Date would silently
+ * roll them into a neighbouring month instead of failing).
+ */
+export function isCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1) return false;
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const maxDay = month === 2 && leap ? 29 : DAYS_IN_MONTH[month - 1];
+  return day <= maxDay;
+}
 
 /**
  * Maps a Horizon cell to its timeline lane. Dates fold into their quarter;
@@ -73,7 +88,8 @@ export function laneFor(horizon: string): Lane {
   const q = QUARTER.exec(h);
   if (q) return quarterLane(Number(q[2]), Number(q[1]));
   const d = DATE.exec(h);
-  if (d) return quarterLane(Number(d[1]), Math.floor((Number(d[2]) - 1) / 3) + 1);
+  if (d && isCalendarDate(Number(d[1]), Number(d[2]), Number(d[3])))
+    return quarterLane(Number(d[1]), Math.floor((Number(d[2]) - 1) / 3) + 1);
   if (/^ongoing$/i.test(h)) return { key: "ongoing", label: "Ongoing", order: 1e6 };
   if (h === "" || /^unscheduled$/i.test(h)) {
     return { key: "unscheduled", label: "Unscheduled", order: 1e6 + 2 };
@@ -355,6 +371,10 @@ export interface TierSourceInfo {
 export interface AttentionView {
   drew: TieredEntry[];
   orchestrator: TieredEntry[];
+  /** The deduped #1148 watchdog items merged into orchestratorExtra,
+   *  exposed separately so JSON surfaces can publish the derived
+   *  queue items without re-deriving them. */
+  watchdog: TierItem[];
   /** #899 tier items that are not live sessions (decisions, tasks, gaps). */
   drewExtra: TierItem[];
   orchestratorExtra: TierItem[];
@@ -372,6 +392,7 @@ export function buildAttention(
   section?: OrchestrationSection | null,
   now = Date.now(),
   diagnosis?: SectionDiagnosis,
+  watchdogItems: TierItem[] = [],
 ): AttentionView {
   // The tier source's state (#1139): the caller's diagnosis when it
   // has one (the live source tracks it in Source.diagnostics()); else
@@ -422,11 +443,25 @@ export function buildAttention(
       const sid = tierItemSessionId(item);
       return !(sid && knownIds.has(sid));
     });
+  // #1148: watchdog items are aggregator-derived NEEDS ORCHESTRATOR
+  // cards, merged alongside the orchestrator-published extras. They
+  // are never session items, so they skip the extras() session
+  // filtering; dedupe is by stable watchdog id, and a published item
+  // with the same id (there cannot be one today) would win.
+  const publishedExtra = extras(section?.tiers.needsOrchestrator);
+  const publishedIds = new Set(publishedExtra.map((i) => i.id));
+  const seenWatchdog = new Set<string>();
+  const watchdogExtra = watchdogItems.filter((i) => {
+    if (publishedIds.has(i.id) || seenWatchdog.has(i.id)) return false;
+    seenWatchdog.add(i.id);
+    return true;
+  });
   return {
     drew: all.filter((e) => e.tier === "needs-drew"),
     orchestrator: all.filter((e) => e.tier === "needs-orchestrator"),
+    watchdog: watchdogExtra,
     drewExtra: extras(section?.tiers.needsDrew),
-    orchestratorExtra: extras(section?.tiers.needsOrchestrator),
+    orchestratorExtra: [...publishedExtra, ...watchdogExtra],
     all,
     expiredCount: expired.length,
     tierSource,
@@ -497,12 +532,19 @@ const MONTH_NAMES = [
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export function ymdLabel(ymd: string): string {
+  const m = YMD.exec(ymd.trim());
+  // Defensive: an impossible date is echoed verbatim instead of
+  // throwing on MONTH_NAMES[NaN] or rolling over into the next month.
+  if (!m || !isCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) return ymd;
   const d = new Date(`${ymd}T12:00:00Z`);
   return `${DAY_NAMES[d.getUTCDay()]} ${MONTH_NAMES[d.getUTCMonth()].slice(0, 3)} ${d.getUTCDate()}`;
 }
 
 export function monthLabel(ym: string): string {
   const [y, m] = ym.split("-").map(Number);
+  // Defensive: an out-of-range month is echoed verbatim instead of
+  // rendering the literal "undefined" as a lane label.
+  if (!Number.isInteger(m) || m < 1 || m > 12) return ym;
   return `${MONTH_NAMES[m - 1]} ${y}`;
 }
 
@@ -513,7 +555,8 @@ export type RoadmapGrain = "quarter" | "month" | "week" | "3d" | "today";
 /** The row's calendar date when its Horizon is an ISO date, else null. */
 export function rowDate(row: RoadmapRow): string | null {
   const m = YMD.exec(row.horizon.trim());
-  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+  if (!m || !isCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) return null;
+  return `${m[1]}-${m[2]}-${m[3]}`;
 }
 
 export interface DayLane {

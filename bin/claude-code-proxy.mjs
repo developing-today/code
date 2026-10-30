@@ -66,6 +66,61 @@ const MODELS = [
 ];
 const DEFAULT_MODEL = 'claude-haiku-5-5';
 
+// --- Model list sourcing (live-model rule, 2026-10-28 — DOCUMENTED
+// EXCEPTION) ---------------------------------------------------------------
+// This provider has NO live catalog to pull:
+//   * the Claude Code CLI exposes no list command (its subcommands are
+//     agents/auth/doctor/mcp/plugin/...; --model takes an alias or a full
+//     name but nothing enumerates the account's models), and
+//   * Anthropic's GET /v1/models rejects this account's Claude Code OAuth
+//     token with 403 oauth_not_allowed_for_organization (verified live
+//     2026-10-28, with and without the oauth beta header). The API-key
+//     route would be pay-as-you-go billing, which this proxy deliberately
+//     never uses (it strips ANTHROPIC_API_KEY from child env — plan only).
+// Closest truthful refresh: the served list is the verified floor above
+// UNION every model id found in the CLI's own recent session records
+// (~/.claude/projects/**/*.jsonl message.model fields) — ids the CLI has
+// provably served under this account. Rescanned on a 60s TTL; a model
+// appears after its first real use and never from an unverified catalog.
+const PROJECTS_DIR = process.env.CLAUDE_CODE_PROXY_PROJECTS_DIR || path.join(os.homedir(), '.claude', 'projects');
+const OBSERVED_TTL_MS = 60 * 1000;
+let observedCache = { at: 0, ids: [] };
+const getObservedModelIds = () => {
+  if (Date.now() - observedCache.at < OBSERVED_TTL_MS) return observedCache.ids;
+  const found = new Set();
+  try {
+    const files = [];
+    for (const entry of fs.readdirSync(PROJECTS_DIR, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+      const full = path.join(entry.parentPath || entry.path, entry.name);
+      try { files.push({ full, mtime: fs.statSync(full).mtimeMs }); } catch {}
+    }
+    files.sort((a, b) => b.mtime - a.mtime);
+    for (const { full } of files.slice(0, 60)) {
+      try {
+        const fd = fs.openSync(full, 'r');
+        const buf = Buffer.alloc(1024 * 1024);
+        const n = fs.readSync(fd, buf, 0, buf.length, 0);
+        fs.closeSync(fd);
+        for (const m of buf.toString('utf8', 0, n).matchAll(/"model"\s*:\s*"(claude-[a-z0-9][a-z0-9.-]*)"/g)) {
+          found.add(m[1]);
+        }
+      } catch {}
+    }
+  } catch {}
+  observedCache = { at: Date.now(), ids: [...found].sort() };
+  return observedCache.ids;
+};
+
+const getServedModels = () => {
+  const data = MODELS.map(m => ({ id: m.id, name: m.name }));
+  const known = new Set(data.map(m => m.id));
+  for (const id of getObservedModelIds()) {
+    if (!known.has(id)) data.push({ id, name: `${id} (Claude Code, observed)` });
+  }
+  return data;
+};
+
 const findClaudeBinary = () => {
   const candidates = [
     process.env.CLAUDE_CODE_BIN,
@@ -643,7 +698,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       object: 'list',
-      data: MODELS.map(m => ({ id: m.id, object: 'model', created: now, owned_by: 'anthropic-claude-code' }))
+      data: getServedModels().map(m => ({ id: m.id, object: 'model', created: now, owned_by: 'anthropic-claude-code' }))
     }, null, 2));
     return;
   }

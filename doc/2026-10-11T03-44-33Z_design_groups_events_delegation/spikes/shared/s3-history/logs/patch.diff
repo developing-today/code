@@ -4,7 +4,7 @@ diff -ru /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2pand
 @@ -18,9 +18,6 @@
  all-features = true
  rustdoc-args = ["--cfg", "docsrs"]
- 
+
 -[lints]
 -workspace = true
 -
@@ -47,17 +47,17 @@ diff -ru /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2pand
 +            y.dgm =
 +                DGM::add(y.dgm, sender, added, seq).map_err(|err| DcgkaError::DgmOperation(err))?;
 +        }
- 
+
          if added == y.my_id {
              let Some(DirectMessage {
 @@ -312,7 +316,7 @@
                  return Err(DcgkaError::NotOurDirectMessage(y.my_id, recipient));
              }
- 
+
 -            return Self::process_welcome(y, sender, ciphertext, history);
 +            return Self::process_welcome(y, sender, seq, ciphertext, history);
          }
- 
+
          Ok((y, GroupSecretOutput::None))
 @@ -323,10 +327,14 @@
      fn process_welcome(
@@ -71,7 +71,7 @@ diff -ru /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2pand
 +        // The welcome's history predates this add, so the joiner applies the add itself.
 +        y.dgm =
 +            DGM::add(y.dgm, sender, y.my_id, seq).map_err(|err| DcgkaError::DgmOperation(err))?;
- 
+
          let (y_i, bundle) = {
              let (y_i, plaintext) = Self::decrypt_from(y, &sender, ciphertext)?;
 diff -ru /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2panda-encryption/src/data_scheme/group.rs patched/p2panda-encryption/src/data_scheme/group.rs
@@ -80,7 +80,7 @@ diff -ru /home/user/.cargo/git/checkouts/p2panda-de6556ee3f16c1a4/3e84cac/p2pand
 @@ -130,6 +130,31 @@
          Self::process_local(y, pre, None)
      }
- 
+
 +    /// Adds new member to group, welcoming them with no earlier secrets.
 +    ///
 +    /// `add` mints no secret, and its welcome carries the adder's whole bundle. This welcome

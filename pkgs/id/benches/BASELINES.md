@@ -70,3 +70,21 @@ per-participant chat rate limit (50 messages per 10 s window,
 across four senders (25 rounds each), which stays under the burst
 cap while measuring the same delivery path. No production code
 changed.
+
+## CI regression reporting (slice 3, #1513)
+
+The `id bench` workflow (`.github/workflows/id-bench.yml`) runs the
+four benchmarks at full size on PRs touching `pkgs/id/**` and on
+pushes to main, then diffs the medians against `baseline.txt` with
+`.github/scripts/id-bench-compare.sh`. Any benchmark more than 20%
+slower than baseline is named, with its percentage, in the job
+summary and the uploaded `bench-output` artifact.
+
+The reporting is deliberately non-blocking: it is a separate workflow
+from the required `nix flake check` gate, and the compare script
+always exits 0. The threshold is adjustable via the
+`BENCH_REGRESSION_THRESHOLD_PCT` environment variable in the compare
+step. Remember the caveat above: baselines were taken on the laptop
+above, CI runners are a different machine class — a flag is a prompt
+to investigate (ideally by re-running on the reference machine), not
+proof of a regression.

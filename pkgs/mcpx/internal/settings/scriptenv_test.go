@@ -15,11 +15,13 @@ import (
 // anywhere else is written by a part of mcpx the contract does not know
 // about, and fails the test until it is named.
 var setterSources = map[settings.Setter]string{
-	settings.SetByCLI:      "internal/cli/",
-	settings.SetByExec:     "internal/execsvc/",
-	settings.SetByConsumer: "internal/daemon/",
-	settings.SetByRunner:   "internal/runner/",
-	settings.SetByPlugin:   "plugin/opencode/",
+	settings.SetByCLI:          "internal/cli/",
+	settings.SetByExec:         "internal/execsvc/",
+	settings.SetByConsumer:     "internal/daemon/",
+	settings.SetByRunner:       "internal/runner/",
+	settings.SetByPlugin:       "plugin/opencode/",
+	settings.SetByPluginLoader: "internal/plugin/",
+	settings.SetByHooks:        "internal/hooks/",
 }
 
 func setterOf(file string) (settings.Setter, bool) {

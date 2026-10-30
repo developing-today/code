@@ -2,12 +2,15 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -103,7 +106,7 @@ type leaseState struct {
 
 // cacheFile is the persisted schema cache.
 type cacheFile struct {
-	Version    int                     `json:"version"`
+	Version    string                  `json:"version"`
 	ConfigHash string                  `json:"configHash"`
 	SavedAt    time.Time               `json:"savedAt"`
 	Servers    map[string]*cachedEntry `json:"servers"`
@@ -119,13 +122,58 @@ type cachedEntry struct {
 	Prompts      []mcpclient.Prompt `json:"prompts"`
 	Instructions string             `json:"instructions,omitempty"`
 	FetchedAt    time.Time          `json:"fetchedAt"`
+	// Deadline and Scope are the catalogue's freshness and visibility
+	// as fetched (#1603). Deadline is absolute — a TTL would let a
+	// restart extend freshness — and Scope is the cacheScope wire
+	// value ("private" or "public"; empty means public). SaveCache
+	// never writes a private entry and loadCache never seeds one; the
+	// fields exist so a public entry round-trips its deadline/scope.
+	Deadline time.Time `json:"deadline,omitempty"`
+	Scope    string    `json:"scope,omitempty"`
 }
 
-// cacheVersion is bumped whenever a cached entry gains a field. Adding one
-// parses cleanly against an old file and leaves it empty, which presented as
-// the destructive-call policy silently never firing: the annotations were
-// there upstream and absent from the cache nobody had reason to invalidate.
-const cacheVersion = 5
+// cacheVersion identifies the shape of the cached types. It used to be a
+// hand-bumped integer: adding a field to a cached entry parses cleanly
+// against an old file and leaves the field empty, which presented as the
+// destructive-call policy silently never firing — the annotations were
+// there upstream and absent from the cache nobody had reason to
+// invalidate. The version is now derived from the cached types themselves
+// (cacheShapeVersion), so a file written by a differently-shaped build
+// fails the version check in loadCache and is ignored — invalidated, never
+// silently served with empty fields.
+var cacheVersion = cacheShapeVersion()
+
+// cacheShapeVersion hashes the JSON shape of cachedEntry and every struct
+// type reachable from it: type names, field JSON names and field types.
+// Adding, removing, renaming or retyping a field anywhere in that graph
+// changes the version.
+func cacheShapeVersion() string {
+	var b strings.Builder
+	seen := map[reflect.Type]bool{}
+	var walk func(t reflect.Type)
+	walk = func(t reflect.Type) {
+		for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice ||
+			t.Kind() == reflect.Array || t.Kind() == reflect.Map {
+			if t.Kind() == reflect.Map {
+				walk(t.Key())
+			}
+			t = t.Elem()
+		}
+		if t.Kind() != reflect.Struct || seen[t] {
+			return
+		}
+		seen[t] = true
+		fmt.Fprintf(&b, "struct %s.%s\n", t.PkgPath(), t.Name())
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			fmt.Fprintf(&b, "  %s %s %s\n", f.Tag.Get("json"), f.Name, f.Type.String())
+			walk(f.Type)
+		}
+	}
+	walk(reflect.TypeOf(cachedEntry{}))
+	sum := sha256.Sum256([]byte(b.String()))
+	return "shape-" + hex.EncodeToString(sum[:])[:16]
+}
 
 // NewRegistry builds pools from config and seeds them from the disk cache.
 func NewRegistry(cfg *config.Config, paths Paths, logf func(string, ...any)) (*Registry, error) {
@@ -257,8 +305,14 @@ func (r *Registry) loadCache() {
 		return
 	}
 	for name, e := range cf.Servers {
+		// #1603: a private entry is never seeded, even from a foreign
+		// or hand-written file — SaveCache does not write them, so one
+		// present on disk did not come from this daemon's own save.
+		if e.Scope == "private" {
+			continue
+		}
 		if p, ok := r.pools[name]; ok {
-			p.SetSchemas(e.Tools, e.Resources, e.Prompts, e.Instructions, e.FetchedAt)
+			p.SetSchemas(e.Tools, e.Resources, e.Prompts, e.Instructions, e.FetchedAt, e.Deadline, false)
 		}
 	}
 	r.logf("loaded schema cache for %d servers", len(cf.Servers))
@@ -269,13 +323,20 @@ func (r *Registry) SaveCache() error {
 	cf := cacheFile{Version: cacheVersion, ConfigHash: r.hash, SavedAt: time.Now(), Servers: map[string]*cachedEntry{}}
 	r.mu.RLock()
 	for name, p := range r.pools {
-		tools, res, prompts, at := p.CachedAll()
+		tools, res, prompts, at, deadline, private := p.CachedAll()
 		if at.IsZero() {
+			continue
+		}
+		// #1603: a private catalogue never touches disk — it was
+		// fetched under one caller's authority and must not be served
+		// to every caller of a restarted daemon.
+		if private {
 			continue
 		}
 		cf.Servers[name] = &cachedEntry{
 			Tools: tools, Resources: res, Prompts: prompts,
 			Instructions: p.Instructions(), FetchedAt: at,
+			Deadline: deadline, Scope: "public",
 		}
 	}
 	r.mu.RUnlock()

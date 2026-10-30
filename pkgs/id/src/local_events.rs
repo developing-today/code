@@ -5,9 +5,11 @@
 //! [`EventStore::ingest`], the path sync uses. The store checks the signature and applies the event.
 //! So these events are signed, unlike the group log's (P6.7a), which trusts the caller's name.
 //!
-//! The store stands in for sync. The CLI opens one store directory, named by `--event-store`, and
-//! nodes on one machine that share the directory see each other's events, as they share the group
-//! log. Nothing here moves events between machines.
+//! The CLI opens one store directory, named by `--event-store`, and nodes on one machine that
+//! share the directory see each other's events, as they share the group log. Between machines,
+//! `id serve` moves the events: it shares this store with the `/id-range-sync/1` range-sync sessions
+//! in [`crate::event_sync`], so a revision one node signs into its store is in the sync set the
+//! next session carries to a peer (#792).
 //!
 //! The reads walk every applied event, which is fine for the CLI and is not an index. The document
 //! and tag rules are the ones in [`crate::documents`] and [`crate::tag_claims`].
@@ -19,11 +21,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use p2panda_core::{Hash, SigningKey};
 
-use crate::chain::{ChainExt, Event, sign};
+use crate::chain::{ChainExt, Event, MAX_AFTER, sign};
 use crate::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
 use crate::event_store::{EventStore, Ingest};
 use crate::search::{Hit, ValueMatch, search_store};
-use crate::tag_claims::{CLEAR_KIND, Claim, SET_KIND, TagOp, check_op};
+use crate::tag_claims::{CLEAR_KIND, Claim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, check_op};
 use crate::waiting::{AuthorKey, WaitingLimits};
 
 /// The directory the event store lives in, under the data directory, unless `--event-store` names
@@ -155,6 +157,34 @@ impl LocalEvents {
         Ok(Self { store, key })
     }
 
+    /// Runs one range-sync session over `conn` against this node's store: the session
+    /// [`crate::event_store::sync::sync_over`] drives, with this store as its sync set.
+    /// `initiator` is the side that dialed. Every event that arrives is decided by the
+    /// store's own ingest, so a tampered or unsigned event is refused, never applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the peer breaks the protocol, the session passes `deadline`,
+    /// `gate` refuses the peer, or the store fails.
+    pub async fn sync_session(
+        &mut self,
+        conn: &iroh::endpoint::Connection,
+        initiator: bool,
+        deadline: std::time::Duration,
+        gate: &crate::pull_policy::PullGate,
+    ) -> Result<crate::event_store::sync::Outcome> {
+        crate::event_store::sync::sync_over(
+            &mut self.store,
+            conn,
+            initiator,
+            crate::event_store::range::Params::default(),
+            now_ms(),
+            deadline,
+            gate,
+        )
+        .await
+    }
+
     /// The account the node's events are signed as.
     #[must_use]
     pub fn author(&self) -> AuthorKey {
@@ -178,7 +208,7 @@ impl LocalEvents {
         for (name, value) in tags {
             check_tag(name, value.as_deref())?;
         }
-        let id = self.record(DOCUMENT_KIND, None, Some(document.clone()), None)?;
+        let id = self.record(DOCUMENT_KIND, None, Some(document.clone()), None, &[])?;
         let mut claims = Vec::with_capacity(tags.len());
         for (name, value) in tags {
             claims.push(self.set_tag(id, name, value.as_deref())?);
@@ -201,28 +231,99 @@ impl LocalEvents {
             name: name.to_owned(),
             value: value.map(str::to_owned),
         };
-        self.record(SET_KIND, Some(op), None, None)
+        self.record(SET_KIND, Some(op), None, None, &[])
     }
 
-    /// Clears every live claim named `name` on `subject`, whoever set it. It returns how many it
-    /// cleared, and the clear's event ID. Nothing to clear is an error.
+    /// Clears every live claim named `name` on `subject`, whoever set it. Nothing to clear is an
+    /// error.
+    ///
+    /// One `tag.clear` event names at most [`MAX_CLEAR_CLAIMS`] claims, so a name with more live
+    /// claims than that is cleared by several events, in the order [`EventStore::tag_claims`]
+    /// returns the claims. The returned count is the total cleared across all of those events,
+    /// and the returned ID is the final event's — the one whose recording completes the clear.
+    ///
+    /// The events are append-only: if recording one of them fails, the ones already recorded
+    /// stay, the error is returned, and calling this again clears what is left.
+    ///
+    /// A claim is removed only when it sits in the clear's causal past, so each sub-clear
+    /// names the current head of every author whose claims it names as a required head of
+    /// its `after` frontier (see [`LocalEvents::bounded_after`]). When the claims span more
+    /// authors than the frontier cap ([`MAX_AFTER`]) or more claims than one clear may name
+    /// ([`MAX_CLEAR_CLAIMS`]), the clear is split: several `tag.clear` events are recorded,
+    /// partitioning the claims by author into groups that fit both caps, in author order.
+    /// The returned count is the total across all sub-clears, and the returned event ID is
+    /// the last sub-clear's -- the one after which every named claim is cleared.
     ///
     /// # Errors
     ///
-    /// Fails if no live claim matches, or the store cannot record the event.
+    /// Fails if no live claim matches, or the store cannot record an event.
     pub fn clear_tag(&mut self, subject: Hash, name: &str) -> Result<(usize, Hash)> {
-        let claims: Vec<Hash> = self
+        let claims: Vec<Claim> = self
             .store
             .tag_claims()?
             .into_iter()
             .filter(|claim| claim.subject == subject && claim.name == name)
-            .map(|claim| claim.id)
             .collect();
         if claims.is_empty() {
             bail!("no live claim on {} is named {name}", subject.to_hex());
         }
         let count = claims.len();
-        let event = self.record(CLEAR_KIND, Some(TagOp::Clear { claims }), None, None)?;
+        // The current head of each author, for the required tier of each sub-clear.
+        let heads: HashMap<AuthorKey, Hash> = self
+            .frontier()?
+            .into_iter()
+            .map(|head| (head.author, head.event))
+            .collect();
+        // Partition the claims by author into groups fitting both caps, in author order.
+        let mut by_author: HashMap<AuthorKey, Vec<Claim>> = HashMap::new();
+        for claim in claims {
+            by_author.entry(claim.author).or_default().push(claim);
+        }
+        let mut authors: Vec<AuthorKey> = by_author.keys().copied().collect();
+        authors.sort_unstable();
+        let mut groups: Vec<Vec<Claim>> = Vec::new();
+        let mut group: Vec<Claim> = Vec::new();
+        let mut group_authors = 0usize;
+        for author in authors {
+            let authored = by_author.remove(&author).unwrap_or_default();
+            // One author alone can hold more claims than a single clear may
+            // name (#1720), so pack each author's claims in cap-sized segments.
+            for segment in authored.chunks(MAX_CLEAR_CLAIMS) {
+                if !group.is_empty()
+                    && (group_authors == MAX_AFTER
+                        || group.len() + segment.len() > MAX_CLEAR_CLAIMS)
+                {
+                    groups.push(std::mem::take(&mut group));
+                    group_authors = 0;
+                }
+                group_authors += 1;
+                group.extend(segment.iter().cloned());
+            }
+        }
+        if !group.is_empty() {
+            groups.push(group);
+        }
+        let mut last = None;
+        for group in groups {
+            let mut required: Vec<Hash> = Vec::new();
+            let mut seen: HashSet<AuthorKey> = HashSet::new();
+            for claim in &group {
+                if seen.insert(claim.author) {
+                    if let Some(head) = heads.get(&claim.author) {
+                        required.push(*head);
+                    }
+                }
+            }
+            let ids: Vec<Hash> = group.iter().map(|claim| claim.id).collect();
+            last = Some(self.record(
+                CLEAR_KIND,
+                Some(TagOp::Clear { claims: ids }),
+                None,
+                None,
+                &required,
+            )?);
+        }
+        let event = last.context("a clear with claims records at least one event")?;
         Ok((count, event))
     }
 
@@ -350,17 +451,61 @@ impl LocalEvents {
             .collect())
     }
 
-    /// Signs one event with the node's key, after every other author's head, and ingests it. The
-    /// store must apply it, or the call fails.
+    /// The `after` frontier for a new event: a dependency frontier, not an author census
+    /// (#1736). `after` is capped at [`MAX_AFTER`] hashes by the wire format, and events naming
+    /// more are refused by every existing node, so the frontier must fit the cap no matter how
+    /// many authors the store holds.
+    ///
+    /// When every other author's head fits (the common case), all of them are named, in
+    /// frontier order, exactly as before. Past the cap, the frontier is built in two tiers:
+    /// first the `required` heads -- for a `tag.clear`, the current head of each author of a
+    /// named claim, because a claim is removed only when it sits in the clear's causal past,
+    /// which the author's head in `after` guarantees through that author's backlink chain --
+    /// then the remaining slots fill with the other authors' heads in frontier order.
+    /// Heads past the cap are simply not named: the events they head stay in the store, and
+    /// naming a head is about causal past, not about membership, so a later event loses
+    /// nothing but the claim of having seen them.
+    fn bounded_after(&self, required: &[Hash]) -> Result<Vec<Hash>> {
+        let heads = self.other_heads()?;
+        if heads.len() <= MAX_AFTER {
+            return Ok(heads);
+        }
+        let current: HashSet<Hash> = heads.iter().copied().collect();
+        let mut after: Vec<Hash> = Vec::with_capacity(MAX_AFTER);
+        let mut named: HashSet<Hash> = HashSet::new();
+        for head in required {
+            if after.len() == MAX_AFTER {
+                break;
+            }
+            if current.contains(head) && named.insert(*head) {
+                after.push(*head);
+            }
+        }
+        for head in heads {
+            if after.len() == MAX_AFTER {
+                break;
+            }
+            if named.insert(head) {
+                after.push(head);
+            }
+        }
+        Ok(after)
+    }
+
+    /// Signs one event with the node's key, after a bounded frontier of the other authors'
+    /// heads (see [`LocalEvents::bounded_after`]), and ingests it. `required` names heads the
+    /// frontier must include when it is capped; other kinds than `tag.clear` require none.
+    /// The store must apply it, or the call fails.
     fn record(
         &mut self,
         kind: &str,
         tag: Option<TagOp>,
         document: Option<DocumentRef>,
         removes: Option<Hash>,
+        required: &[Hash],
     ) -> Result<Hash> {
         let author = self.author();
-        let after = self.other_heads()?;
+        let after = self.bounded_after(required)?;
         let chain = self.store.chain(&author)?.unwrap_or_default();
         let ext = ChainExt {
             kind: kind.to_owned(),
@@ -487,6 +632,60 @@ mod tests {
         Hash::from_bytes([byte; 32])
     }
 
+    fn key(byte: u8) -> SigningKey {
+        SigningKey::from_bytes(&[byte; 32])
+    }
+
+    /// Opens a one-shot node for foreign author `byte` in the shared store
+    /// and has it set one claim named `name` on `subject`.
+    fn foreign_claim(dir: &Path, byte: u8, subject: Hash, name: &str) {
+        let mut events = LocalEvents::open(dir, key(byte)).unwrap();
+        events.set_tag(subject, name, Some("x")).unwrap();
+    }
+
+    #[test]
+    fn test_record_still_works_with_more_authors_than_the_after_cap() {
+        // Regression for #1736: with 33+ other authors in the store, the
+        // uncapped frontier made every record() fail validation, so the
+        // node could never write again.
+        for foreign in [33u8, 100] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let subject = id(200);
+            for byte in 1..=foreign {
+                foreign_claim(dir.path(), byte, subject, "topic");
+            }
+            let mut events = LocalEvents::open(dir.path(), key(0)).unwrap();
+            let published = events.publish("text/plain", b"hello", &[]).unwrap();
+            events.set_tag(published.id, "topic", Some("mine")).unwrap();
+            let (cleared, _) = events.clear_tag(published.id, "topic").unwrap();
+            assert_eq!(cleared, 1);
+        }
+    }
+
+    #[test]
+    fn test_clear_spanning_more_authors_than_the_cap_clears_exactly_its_claims() {
+        // Regression for #1736: 40 authors hold a claim named "topic" on the
+        // subject -- more distinct authors than MAX_AFTER, so the clear must
+        // split by author. Exactly those claims are removed: a claim with a
+        // different name on the same subject, and a same-name claim on a
+        // different subject, both survive.
+        let dir = tempfile::TempDir::new().unwrap();
+        let subject = id(201);
+        let other_subject = id(202);
+        for byte in 1..=40u8 {
+            foreign_claim(dir.path(), byte, subject, "topic");
+        }
+        foreign_claim(dir.path(), 1, subject, "other");
+        foreign_claim(dir.path(), 2, other_subject, "topic");
+        let mut events = LocalEvents::open(dir.path(), key(0)).unwrap();
+        let (cleared, _) = events.clear_tag(subject, "topic").unwrap();
+        assert_eq!(cleared, 40);
+        let remaining = events.tags_on(subject).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].name, "other");
+        assert_eq!(events.tags_on(other_subject).unwrap().len(), 1);
+    }
+
     #[test]
     fn test_causal_order_puts_every_event_after_its_parents() {
         // 1 and 2 are roots. 3 names 1, and 4 names 3 and 2. 5 names nothing it did not see.
@@ -512,5 +711,102 @@ mod tests {
         assert!(check_tag("topic", Some("plans")).is_ok());
         assert!(check_tag("", None).is_err());
         assert!(check_tag("e\u{301}", None).is_err());
+    }
+
+    fn open_events() -> (tempfile::TempDir, LocalEvents) {
+        let dir = tempfile::tempdir().unwrap();
+        let events = LocalEvents::open(dir.path(), SigningKey::from_bytes(&[7; 32])).unwrap();
+        (dir, events)
+    }
+
+    fn publish_subject(events: &mut LocalEvents) -> Hash {
+        events.publish("text/plain", b"hello", &[]).unwrap().id
+    }
+
+    fn set_claims(events: &mut LocalEvents, subject: Hash, name: &str, count: usize) {
+        for i in 0..count {
+            events.set_tag(subject, name, Some(&i.to_string())).unwrap();
+        }
+    }
+
+    fn clear_chunks(events: &LocalEvents, subject: Hash) -> Vec<(Hash, usize)> {
+        events
+            .events_on(subject)
+            .unwrap()
+            .into_iter()
+            .filter_map(|entry| match entry {
+                Entry::Clear { id, claims, .. } => Some((id, claims.len())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_clear_tag_chunks_a_clear_over_the_claim_cap() {
+        // Regression for #1720: a name with more live claims than one tag.clear
+        // may name (MAX_CLEAR_CLAIMS) could never be cleared at all.
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        let other_subject = publish_subject(&mut events);
+        set_claims(&mut events, subject, "topic", MAX_CLEAR_CLAIMS + 1);
+        events.set_tag(subject, "keep", None).unwrap();
+        events.set_tag(other_subject, "topic", None).unwrap();
+
+        let (count, event) = events.clear_tag(subject, "topic").unwrap();
+
+        assert_eq!(count, MAX_CLEAR_CLAIMS + 1);
+        let chunks = clear_chunks(&events, subject);
+        assert_eq!(
+            chunks.iter().map(|(_, size)| *size).collect::<Vec<_>>(),
+            vec![MAX_CLEAR_CLAIMS, 1]
+        );
+        // The returned ID is the final chunk's, the one that completes the clear.
+        assert_eq!(chunks.last().unwrap().0, event);
+        assert!(
+            events
+                .tags_on(subject)
+                .unwrap()
+                .iter()
+                .all(|claim| claim.name != "topic")
+        );
+        // Other names, and the same name on other subjects, are untouched.
+        assert_eq!(events.tags_on(subject).unwrap().len(), 1);
+        assert_eq!(events.tags_on(other_subject).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_clear_tag_chunks_600_claims_into_three_events() {
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        set_claims(&mut events, subject, "topic", 600);
+
+        let (count, event) = events.clear_tag(subject, "topic").unwrap();
+
+        assert_eq!(count, 600);
+        let chunks = clear_chunks(&events, subject);
+        assert_eq!(
+            chunks.iter().map(|(_, size)| *size).collect::<Vec<_>>(),
+            vec![
+                MAX_CLEAR_CLAIMS,
+                MAX_CLEAR_CLAIMS,
+                600 - 2 * MAX_CLEAR_CLAIMS
+            ]
+        );
+        assert_eq!(chunks.last().unwrap().0, event);
+        assert!(events.tags_on(subject).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_clear_tag_at_or_under_the_cap_records_one_event() {
+        let (_dir, mut events) = open_events();
+        let subject = publish_subject(&mut events);
+        set_claims(&mut events, subject, "topic", 3);
+
+        let (count, event) = events.clear_tag(subject, "topic").unwrap();
+
+        assert_eq!(count, 3);
+        assert_eq!(clear_chunks(&events, subject), vec![(event, 3)]);
+        // Nothing left to clear is still an error.
+        assert!(events.clear_tag(subject, "topic").is_err());
     }
 }

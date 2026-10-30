@@ -70,6 +70,50 @@ export const richSchema = new Schema({
         htmlBlock: { default: null },
       },
     })
+    .update("bullet_list", {
+      // Inherited prosemirror-schema-list fields, preserved unchanged:
+      content: "list_item+",
+      group: "block",
+      parseDOM: [{ tag: "ul" }],
+      toDOM() {
+        return ["ul", 0];
+      },
+      // #1469: mirror the markdown codec's bullet_list tight attr into
+      // the editor schema, following the #1036 task_list mirror. The
+      // Rust codec (markdown.rs) emits attrs {tight} for bullet lists
+      // and on save reads attrs.tight (missing -> false/loose). Without
+      // it declared here, Node.fromJSON drops tight on editor load and
+      // every tight bullet list saves as a loose list.
+      attrs: {
+        tight: { default: true },
+      },
+    })
+    .update("ordered_list", {
+      // Inherited prosemirror-schema-list fields, preserved unchanged:
+      content: "list_item+",
+      group: "block",
+      parseDOM: [
+        {
+          tag: "ol",
+          getAttrs(dom) {
+            const el = dom as HTMLElement;
+            return { order: el.hasAttribute("start") ? Number(el.getAttribute("start")) : 1 };
+          },
+        },
+      ],
+      toDOM(node) {
+        return node.attrs.order === 1 ? ["ol", 0] : ["ol", { start: node.attrs.order }, 0];
+      },
+      // #1469: mirror the markdown codec's ordered_list tight attr,
+      // keeping the inherited order attr (default and validation)
+      // unchanged. The codec emits attrs {order, tight} and on save
+      // reads attrs.tight (missing -> false/loose); undeclared, tight
+      // was dropped on editor load and tight ordered lists saved loose.
+      attrs: {
+        order: { default: 1, validate: "number" },
+        tight: { default: true },
+      },
+    })
     .update("image", {
       inline: true,
       group: "inline",

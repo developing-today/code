@@ -11,8 +11,9 @@
 //! sync sessions check the gate before any event is sent. A refused peer gets no event, and the
 //! refusal is clean. An open gate never reads membership.
 //!
-//! This is a config setting, not a protocol rule. The policy belongs with the world's policy, but
-//! `id serve` does not read it yet, and no session builds a gate from config. Blobs are not
+//! This is a config setting, not a protocol rule. The policy belongs with the world's policy. The
+//! server config's `[policy]` table parses it ([`crate::server_config::ServerConfig::pull_policy`]),
+//! but `id serve` does not read it yet, and no session builds a gate from config. Blobs are not
 //! governed here. The blob gate ([`crate::blob_gate`]) still requires membership to fetch, whatever
 //! this policy says. Authorized pull is advisory: it stops an honest server from serving a
 //! non-member. It does not stop re-serving, recall copies, or hide metadata.

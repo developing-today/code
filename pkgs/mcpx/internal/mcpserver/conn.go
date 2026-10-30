@@ -226,15 +226,28 @@ func (p Peer) Declared(name string) bool {
 //
 // Three gates, and all three are needed. The revision has to define
 // elicitation at all -- 2025-03-26 does not. The client has to have declared
-// it. And url mode has to be separately declared, because it arrived in
-// 2025-11-25 and a client that knows only form mode receives a request with
-// no `requestedSchema` and no way to render it.
+// it. And each mode has to be separately declared from 2025-11-25, when the
+// declaration gained sub-keys: url mode because it arrived then and a client
+// that knows only form mode receives a request with no `requestedSchema` and
+// no way to render it, and form mode because a client that declared only
+// url never agreed to a form -- {} remains the form-only declaration, and
+// below 2025-11-25 presence of the capability is the form declaration.
 func (p Peer) CanElicit(mode string) bool {
 	if !AtLeast(p.Version, "2025-06-18") || !p.Declared("elicitation") {
 		return false
 	}
 	if mode != "url" {
-		return true
+		if !AtLeast(p.Version, "2025-11-25") {
+			return true
+		}
+		var e struct {
+			Form json.RawMessage `json:"form"`
+			URL  json.RawMessage `json:"url"`
+		}
+		if json.Unmarshal(p.Caps["elicitation"], &e) != nil {
+			return false
+		}
+		return len(e.Form) > 0 || len(e.URL) == 0
 	}
 	if !AtLeast(p.Version, "2025-11-25") {
 		return false
@@ -250,6 +263,50 @@ func (p Peer) CanElicit(mode string) bool {
 
 // CanSample reports whether mcpx may ask this client for a model completion.
 func (p Peer) CanSample() bool { return p.Declared("sampling") }
+
+// samplingSub reports whether the client's sampling declaration carries the
+// named sub-capability ("tools" or "context"), parsing the declaration once
+// per call. A malformed declaration reads as undeclared, mirroring the url
+// branch of CanElicit: a declaration mcpx cannot parse grants nothing
+// beyond the parent capability itself.
+func (p Peer) samplingSub(name string) bool {
+	var s struct {
+		Tools   json.RawMessage `json:"tools"`
+		Context json.RawMessage `json:"context"`
+	}
+	if json.Unmarshal(p.Caps["sampling"], &s) != nil {
+		return false
+	}
+	switch name {
+	case "tools":
+		return len(s.Tools) > 0
+	case "context":
+		return len(s.Context) > 0
+	}
+	return false
+}
+
+// CanSampleTools reports whether the client declared sampling.tools, so a
+// sampling question carrying tools may be relayed to it.
+func (p Peer) CanSampleTools() bool { return p.samplingSub("tools") }
+
+// CanSampleContext reports whether the client declared sampling.context, so
+// a sampling question's includeContext may be relayed to it unchanged.
+func (p Peer) CanSampleContext() bool { return p.samplingSub("context") }
+
+// carriesSamplingTools reports whether a sampling question's params carry
+// tools: a `tools` array or a `toolChoice` key. Presence is what matters --
+// an empty tools array still asks the client to run a tool loop it may
+// never have declared.
+func (q Question) carriesSamplingTools() bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(q.Params, &m) != nil {
+		return false
+	}
+	_, tools := m["tools"]
+	_, choice := m["toolChoice"]
+	return tools || choice
+}
 
 // AnswersInline reports whether this client can answer a question raised
 // mid-call, by either mechanism.
@@ -450,7 +507,12 @@ func (q Question) Sendable(p Peer) bool {
 	case "elicitation/create":
 		return p.CanElicit(q.Mode)
 	case "sampling/createMessage":
-		return p.CanSample()
+		// A tools-carrying question goes only to a client that declared
+		// sampling.tools. It is refused whole, never stripped and
+		// degraded: the upstream asked for a tool loop, and a plain
+		// completion is not the answer to that question. Unsendable
+		// questions stay with the broker via sendableTo.
+		return p.CanSample() && !(q.carriesSamplingTools() && !p.CanSampleTools())
 	case "roots/list":
 		return p.Declared("roots")
 	}
@@ -502,6 +564,14 @@ func (q Question) paramsFor(p Peer) (json.RawMessage, error) {
 				}
 			}
 		}
+	}
+	if q.Method == "sampling/createMessage" && !p.CanSampleContext() {
+		// includeContext asks the client to fold its conversation
+		// context into the completion; only a client that declared
+		// sampling.context may be asked for it. Dropping the field
+		// leaves a plain question the client did declare it can
+		// answer.
+		delete(m, "includeContext")
 	}
 	return json.Marshal(m)
 }
