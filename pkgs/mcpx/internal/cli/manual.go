@@ -234,6 +234,12 @@ func handCommands() []Command {
 		{
 			Name: "status", Group: "daemon",
 			Summary: "show the daemon, its servers and their instances",
+			Detail: "Status never starts a daemon. Unlike the commands that use " +
+				"one, it only reports: with no daemon running it prints " +
+				"\"daemon: not running\" (or {\"running\": false} as JSON) and exits. " +
+				"That is a decision, not an oversight (#1866) — a status check " +
+				"must be safe to poll. Start a daemon with a command that " +
+				"needs one, or `mcpx serve`.",
 		},
 		{
 			Name: "daemons", Group: "daemon",

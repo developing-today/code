@@ -425,9 +425,17 @@ type Info struct {
 	Socket     string `json:"socket"`
 	Endpoint   string `json:"endpoint"`
 	ConfigPath string `json:"configPath"`
-	ConfigHash string `json:"configHash"`
-	Version    string `json:"version"`
-	StartedAt  string `json:"startedAt"`
+	// SchemaHash is the digest of the server definitions
+	// (Registry.ConfigHash, from HashConfig) that invalidates the schema
+	// cache. It is NOT the daemon key — the two digests shared the name
+	// configHash until #1866, and readers coded around the collision.
+	SchemaHash string `json:"schemaHash"`
+	// DaemonKey is the config file-set fingerprint (FingerprintConfig)
+	// that names this daemon's socket and info file — the value
+	// /v1/resolve returns as its configHash.
+	DaemonKey string `json:"daemonKey"`
+	Version   string `json:"version"`
+	StartedAt string `json:"startedAt"`
 }
 
 // WriteInfo publishes the daemon record atomically.
