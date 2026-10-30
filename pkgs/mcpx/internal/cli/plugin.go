@@ -126,9 +126,9 @@ func (a *App) augmentAPIs(cfg *config.Config) error {
 			// declaration (baseUrl, headers, spec, filters) and
 			// reloading then replaces this API's pool instead of
 			// silently keeping the child that was started for the old
-			// declaration (Codex review, PR #2514). Adapters have the
-			// same shape of staleness via their files; that is #2118
-			// follow-up material, not hidden here.
+			// declaration (Codex review, PR #2514). Adapters carry
+			// the same fingerprint for the same reason since #2118
+			// (augmentAdapters, MCPX_ADAPTER_DECLARATION_SHA256).
 			Env:  map[string]string{"MCPX_API_DECLARATION_SHA256": apiDeclarationFingerprint(s)},
 			Mcpx: &config.Extras{Description: s.Description},
 		}
