@@ -1010,6 +1010,19 @@ func (p *Pool) Instructions() string {
 	return p.instructions
 }
 
+// SchemaExpired reports whether the cached catalogue has passed the
+// freshness deadline a modern upstream set for it (#1602). A cache
+// with no deadline (legacy upstream, or none fetched yet) never
+// expires. Callers that must not decide from stale data — the write
+// policy gate (#1979) classifying a call by its annotations — check
+// this and refresh first; RefreshSchemas returns a refresh error
+// rather than serving the stale catalogue, so they can fail closed.
+func (p *Pool) SchemaExpired() bool {
+	p.schemaMu.RLock()
+	defer p.schemaMu.RUnlock()
+	return !p.schemaAt.IsZero() && !p.schemaDeadline.IsZero() && !time.Now().Before(p.schemaDeadline)
+}
+
 // CachedSchemas returns whatever is cached without triggering a fetch.
 func (p *Pool) CachedSchemas() ([]mcpclient.Tool, []mcpclient.Resource, time.Time) {
 	p.schemaMu.RLock()

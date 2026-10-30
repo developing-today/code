@@ -78,13 +78,26 @@ const CatalogHistoryFile = "catalog-history.json"
 // diagnostic that says what changed.
 func (s *Server) initConsumer() {
 	st := &consumerState{policy: defaultConsumerPolicy()}
-	var sources []string
-	if s.cfg != nil {
-		sources = s.cfg.Sources
+	// The daemon's already-resolved settings are the authority: they
+	// carry the command-line flags (--policy-write and friends), which
+	// a fresh settings.Resolve over the config sources would silently
+	// drop, leaving the gate reading file/environment values the
+	// operator explicitly overrode. Resolve from sources only when
+	// the server was built without a set.
+	set := s.set
+	if set == nil {
+		var sources []string
+		if s.cfg != nil {
+			sources = s.cfg.Sources
+		}
+		resolved, err := settings.Resolve(sources)
+		if err != nil {
+			s.logger.Printf("consumer policy: %v; using defaults", err)
+		} else {
+			set = resolved
+		}
 	}
-	if set, err := settings.Resolve(sources); err != nil {
-		s.logger.Printf("consumer policy: %v; using defaults", err)
-	} else {
+	if set != nil {
 		st.policy = consumerPolicyFrom(set)
 		st.dirs = recipeDirs(set.String("paths.scripts"))
 	}
@@ -482,10 +495,17 @@ func (e ErrWriteDenied) Error() string {
 // has asked, and elicit.confirmDestructive's floor is then satisfied;
 // under allow confirmDestructive still runs, which is how the floor
 // reaches a destructive call the policy let through.
-func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, tool string, cc config.CallContext, args any) (bool, error) {
+func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (bool, error) {
 	mode := r.consumer.WritePolicy
-	if cfg := p.Config(); cfg != nil && cfg.WritePolicy != "" {
-		mode = cfg.WritePolicy
+	// The requested server's VIEW carries the override, never the
+	// pool's creating config: pools are shared between aliases, so
+	// p.Config() holds only the configuration that happened to create
+	// the pool — an alias configured deny could inherit another
+	// alias's allow, and a Reload that changes a view's writePolicy
+	// (pools are preserved across reloads; views are rebuilt) would
+	// never reach the gate.
+	if view, ok := r.View(server); ok && view.WritePolicy != "" {
+		mode = view.WritePolicy
 	}
 	if mode == "" {
 		// Unconfigured (zero-value policy in tests): allow, with no
@@ -509,8 +529,16 @@ func (r *Registry) applyWritePolicy(ctx context.Context, p *pool.Pool, tool stri
 	// confirmDestructive fetches them: from the cache, or read now --
 	// failing closed if they cannot be read, because deciding from an
 	// empty list would let a write through unasked.
+	// Freshness matters as much as presence: an expired cache (a
+	// modern upstream's ttlMs deadline, or a disk seed past its
+	// deadline) can carry annotations the tool no longer has — a
+	// cached read-only hint on a now-writable tool would sail past
+	// ask and deny alike. Refresh first, failing closed on error:
+	// RefreshSchemas returns the error instead of serving the stale
+	// catalogue, and deciding from stale annotations is exactly the
+	// fail-open this gate exists to prevent.
 	all, _, at := p.CachedSchemas()
-	if at.IsZero() {
+	if at.IsZero() || p.SchemaExpired() {
 		fresh, _, err := p.RefreshSchemas(ctx)
 		if err != nil {
 			return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,

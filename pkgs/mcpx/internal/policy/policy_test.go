@@ -32,6 +32,18 @@ func TestClassifyUsesTheSpecDefaults(t *testing.T) {
 	}
 }
 
+// Malformed annotations must not leak a partial decode (Codex P2 on
+// PR #2829): json.Unmarshal populates the fields it can before
+// failing, so {"readOnlyHint":true,"destructiveHint":"invalid"} would
+// otherwise classify as read-only and bypass ask/deny. Unreadable
+// annotations get the conservative defaults instead.
+func TestClassifyDiscardsPartiallyDecodedAnnotations(t *testing.T) {
+	c := Classify(json.RawMessage(`{"readOnlyHint":true,"destructiveHint":"invalid"}`))
+	if c.ReadOnly || !c.Write || !c.Destructive {
+		t.Errorf("Classify(malformed) = %+v, want the defaults: a possibly destructive write", c)
+	}
+}
+
 func TestCanonicalArgsSortsKeys(t *testing.T) {
 	got := CanonicalArgs(map[string]any{"b": 1, "a": 2})
 	if got != `{"a":2,"b":1}` {

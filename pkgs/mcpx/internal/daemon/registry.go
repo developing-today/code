@@ -1106,7 +1106,7 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 	// Two policies sit between resolving the instance and using it, and both
 	// are off unless somebody turned them on. See internal/daemon/consumer.go.
 	key = r.disambiguate(ctx, p, cc, key)
-	asked, err := r.applyWritePolicy(ctx, p, tool, cc, args)
+	asked, err := r.applyWritePolicy(ctx, p, server, tool, cc, args)
 	if err != nil {
 		return "", err
 	}

@@ -81,10 +81,17 @@ func Classify(annotations json.RawMessage) Classification {
 		Destructive *bool `json:"destructiveHint"`
 	}
 	if len(annotations) > 0 {
-		// An unmarshal error leaves doc zero, which is the defaults
-		// reading below; there is nothing better to do with annotations
-		// that cannot be parsed.
-		_ = json.Unmarshal(annotations, &doc)
+		// An unmarshal error does NOT leave doc zero: Unmarshal
+		// populates the fields it could decode before failing, so a
+		// malformed object like {"readOnlyHint":true,
+		// "destructiveHint":"invalid"} would otherwise be read as
+		// read-only from the partial decode. Discard the partial
+		// result wholesale: unreadable annotations say nothing, and
+		// the defaults below (a possibly destructive write) stand.
+		if err := json.Unmarshal(annotations, &doc); err != nil {
+			doc.ReadOnly = nil
+			doc.Destructive = nil
+		}
 	}
 	c := Classification{}
 	if doc.ReadOnly != nil && *doc.ReadOnly {

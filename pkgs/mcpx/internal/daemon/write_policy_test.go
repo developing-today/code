@@ -36,12 +36,22 @@ func writePolicyRegistry(mode string) *Registry {
 	return &Registry{consumer: ConsumerPolicy{WritePolicy: mode}}
 }
 
+// writePolicyRegistryWithView is a registry whose per-name view for
+// "demo" carries its own writePolicy override.
+func writePolicyRegistryWithView(mode, viewPolicy string) *Registry {
+	r := writePolicyRegistry(mode)
+	r.views = map[string]*config.Resolved{
+		"demo": {Namespace: "demo", WritePolicy: viewPolicy},
+	}
+	return r
+}
+
 // (a) Deny refuses a write tool -- an unannotated tool, which the
 // specification's defaults read as a possibly destructive write.
 func TestWritePolicyDenyRefusesAWriteTool(t *testing.T) {
 	r := writePolicyRegistry("deny")
 	p := writePolicyPool(t, "", ``)
-	asked, err := r.applyWritePolicy(context.Background(), p, "wipe", config.CallContext{}, map[string]any{"id": 1})
+	asked, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, map[string]any{"id": 1})
 	if asked {
 		t.Error("a denied call must not report it asked")
 	}
@@ -59,7 +69,7 @@ func TestWritePolicyDenyRefusesAWriteTool(t *testing.T) {
 func TestWritePolicyAllowPassesAWriteToolWithoutBroker(t *testing.T) {
 	r := writePolicyRegistry("allow")
 	p := writePolicyPool(t, "", ``)
-	asked, err := r.applyWritePolicy(context.Background(), p, "wipe", config.CallContext{}, map[string]any{"id": 1})
+	asked, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, map[string]any{"id": 1})
 	if err != nil {
 		t.Fatalf("applyWritePolicy = %v, want nil", err)
 	}
@@ -74,7 +84,7 @@ func TestWritePolicyAllowPassesAWriteToolWithoutBroker(t *testing.T) {
 func TestWritePolicyAskWithNoBrokerRefuses(t *testing.T) {
 	r := writePolicyRegistry("ask")
 	p := writePolicyPool(t, "", ``)
-	asked, err := r.applyWritePolicy(context.Background(), p, "wipe", config.CallContext{}, map[string]any{"id": 1})
+	asked, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, map[string]any{"id": 1})
 	if asked {
 		t.Error("an unanswered ask must not report it asked")
 	}
@@ -88,9 +98,9 @@ func TestWritePolicyAskWithNoBrokerRefuses(t *testing.T) {
 // directions: deny on the server refuses under a daemon-wide allow,
 // and allow on the server passes under a daemon-wide deny.
 func TestWritePolicyPerServerOverrideBeatsDaemonMode(t *testing.T) {
-	r := writePolicyRegistry("allow")
-	p := writePolicyPool(t, "deny", ``)
-	if _, err := r.applyWritePolicy(context.Background(), p, "wipe", config.CallContext{}, nil); err == nil {
+	r := writePolicyRegistryWithView("allow", "deny")
+	p := writePolicyPool(t, "", ``)
+	if _, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, nil); err == nil {
 		t.Error("server deny under daemon allow: want a refusal, got nil")
 	} else {
 		var denied ErrWriteDenied
@@ -99,11 +109,28 @@ func TestWritePolicyPerServerOverrideBeatsDaemonMode(t *testing.T) {
 		}
 	}
 
-	r = writePolicyRegistry("deny")
-	p = writePolicyPool(t, "allow", ``)
-	asked, err := r.applyWritePolicy(context.Background(), p, "wipe", config.CallContext{}, nil)
+	r = writePolicyRegistryWithView("deny", "allow")
+	p = writePolicyPool(t, "", ``)
+	asked, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, nil)
 	if err != nil || asked {
 		t.Errorf("server allow under daemon deny: asked=%v err=%v, want a pass", asked, err)
+	}
+}
+
+// The override is read from the requested server's view, not the
+// pool's creating config (Codex P1 on PR #2829): aliases share one
+// pool, so a pool created from an allow config must still honour a
+// deny on the alias the call actually requested.
+func TestWritePolicyViewOverrideBeatsPoolConfig(t *testing.T) {
+	r := writePolicyRegistryWithView("ask", "deny")
+	p := writePolicyPool(t, "allow", ``)
+	if _, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, nil); err == nil {
+		t.Error("view deny over pool-config allow: want a refusal, got nil")
+	} else {
+		var denied ErrWriteDenied
+		if !errors.As(err, &denied) {
+			t.Errorf("view deny over pool-config allow: got %v, want ErrWriteDenied", err)
+		}
 	}
 }
 
@@ -111,7 +138,7 @@ func TestWritePolicyPerServerOverrideBeatsDaemonMode(t *testing.T) {
 func TestWritePolicyDenyPassesAReadOnlyTool(t *testing.T) {
 	r := writePolicyRegistry("deny")
 	p := writePolicyPool(t, "", `{"readOnlyHint":true}`)
-	asked, err := r.applyWritePolicy(context.Background(), p, "wipe", config.CallContext{}, nil)
+	asked, err := r.applyWritePolicy(context.Background(), p, "demo", "wipe", config.CallContext{}, nil)
 	if err != nil || asked {
 		t.Errorf("read-only under deny: asked=%v err=%v, want a pass", asked, err)
 	}
