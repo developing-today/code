@@ -112,15 +112,8 @@ export const dedentCommand: Command = (state, dispatch) => {
     let tr = state.tr;
     let offset = 0;
 
-    // For single cursor, only handle current line
-    const linesToDedent =
-      from === to
-        ? lineStarts.filter(
-            (ls) =>
-              ls <= from &&
-              (lineStarts.indexOf(ls) === lineStarts.length - 1 || lineStarts[lineStarts.indexOf(ls) + 1] > from),
-          )
-        : selectedLineStarts(lineStarts, from, to);
+    // Handle selected lines (for single cursor, selectedLineStarts returns just the current line)
+    const linesToDedent = selectedLineStarts(lineStarts, from, to);
 
     for (const lineStart of linesToDedent) {
       const adjustedPos = lineStart + offset;
