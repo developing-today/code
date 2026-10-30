@@ -306,3 +306,58 @@ func TestConfigLayerConflictsAreReported(t *testing.T) {
 		t.Fatalf("want the config-layer conflict reported, got %+v", set.Conflicts)
 	}
 }
+
+// TestConfigLayerConflictMaskedByProjectIsIgnored is the Codex finding on
+// PR #2589 (chain.go): with deps.source=config, the project manifest
+// supplies "shared" (2.0.0) and the explicit pin matches it; the config
+// layer's overridden 9.9.9 declaration must not be reported as a
+// conflict, or depsOptions rejects a run that matches the winning
+// project declaration. (TestChainPrecedence's fixture, asserting the
+// conflicts it previously never looked at.)
+func TestConfigLayerConflictMaskedByProjectIsIgnored(t *testing.T) {
+	project := t.TempDir()
+	write(t, project, "package.json", `{"dependencies":{"shared":"2.0.0"}}`)
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	write(t, filepath.Join(configDir, "mcpx"), "package.json", `{"dependencies":{"shared":"9.9.9"}}`)
+
+	c := cfg(t, deps.SourceConfig, project)
+	c.Packages = []string{"shared@2.0.0"}
+	set, err := deps.Resolve(c, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Conflicts) != 0 {
+		t.Errorf("pin matching the project manifest must not conflict with the overridden config entry: %+v", set.Conflicts)
+	}
+}
+
+// TestPrereleasePinsConflict is the Codex finding on PR #2589
+// (config.go): prerelease identifiers are part of the version. A
+// prerelease of the pinned release is not the pin, and a range without
+// a prerelease comparator does not admit prereleases of other tuples.
+func TestPrereleasePinsConflict(t *testing.T) {
+	project := t.TempDir()
+	write(t, project, "package.json", `{"dependencies":{"foo":"1.3.0","bar":"^1.3.0","baz":"^1.3.0-beta.1"}}`)
+	for _, tc := range []struct {
+		spec     string
+		conflict bool
+	}{
+		{"foo@1.3.0-beta.1", true},  // a prerelease is not the 1.3.0 pin
+		{"foo@1.3.0", false},        // the pin itself
+		{"bar@1.4.0-beta.1", true},  // ^1.3.0 has no prerelease comparator
+		{"bar@1.4.0", false},        // an ordinary in-range release
+		{"baz@1.3.0-beta.2", false}, // same tuple, prerelease comparator present
+		{"baz@1.3.0-alpha", true},   // below the range's prerelease floor
+	} {
+		c := cfg(t, deps.SourceCWD, project)
+		c.Packages = []string{tc.spec}
+		set, err := deps.Resolve(c, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(set.Conflicts) != 0; got != tc.conflict {
+			t.Errorf("%s: conflict = %v, want %v (conflicts: %+v)", tc.spec, got, tc.conflict, set.Conflicts)
+		}
+	}
+}

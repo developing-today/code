@@ -374,8 +374,23 @@ func Resolve(cfg Config, startDir string) (Set, error) {
 				// explicit pin exactly the way the project's
 				// do; report those conflicts too, or the
 				// payload would carry the pin past a manifest
-				// that disagrees with it.
-				set.Conflicts = append(set.Conflicts, Conflicts(cfg.Packages, m.Packages)...)
+				// that disagrees with it. But only for packages
+				// the project manifest does not already supply:
+				// there the config entry is overridden before
+				// it can contradict anything, and reporting it
+				// would reject a pin that matches the winning
+				// project declaration (Codex review, PR #2589).
+				configWant := m.Packages
+				if manifest != nil {
+					filtered := make(map[string]string, len(m.Packages))
+					for name, v := range m.Packages {
+						if _, supplied := manifest.Packages[name]; !supplied {
+							filtered[name] = v
+						}
+					}
+					configWant = filtered
+				}
+				set.Conflicts = append(set.Conflicts, Conflicts(cfg.Packages, configWant)...)
 				for _, name := range sortedKeys(m.Packages) {
 					add(Package{Name: name, Version: m.Packages[name], From: "config"})
 				}

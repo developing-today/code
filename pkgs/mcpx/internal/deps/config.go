@@ -183,13 +183,34 @@ func Conflicts(packages []string, want map[string]string) []Conflict {
 // back to the textual comparison (a contradiction is reported, never waved
 // through on a guess).
 func satisfiesRange(requirement, version string) bool {
-	want, wok := parseVersion(version)
+	want, wok := parseSemver(version)
 	if !wok {
 		return false
 	}
 	tokens := strings.Fields(strings.TrimSpace(requirement))
 	if len(tokens) == 0 {
 		return false
+	}
+	if want.pre != "" {
+		// npm's prerelease rule: a prerelease version satisfies a
+		// range only when some comparator in it names the same
+		// release tuple WITH a prerelease — ^1.3.0 does not admit
+		// 1.4.0-beta.1, and a plain 1.3.0 pin does not admit
+		// 1.3.0-beta.1. Stripping the suffix instead (the old
+		// parse) made a prerelease indistinguishable from its
+		// release, so contradictory pins waved through (Codex
+		// review, PR #2589).
+		admitted := false
+		for _, tok := range tokens {
+			_, rest := splitToken(tok)
+			if base, ok := parseSemver(rest); ok && base.nums == want.nums && base.pre != "" {
+				admitted = true
+				break
+			}
+		}
+		if !admitted {
+			return false
+		}
 	}
 	for _, tok := range tokens {
 		if !satisfiesToken(tok, want) {
@@ -199,23 +220,27 @@ func satisfiesRange(requirement, version string) bool {
 	return true
 }
 
-func satisfiesToken(tok string, v [3]int) bool {
+// splitToken separates a range token's comparison operator from its
+// version part (">=1.3.0" -> ">=", "1.3.0"; a bare version has none).
+func splitToken(tok string) (string, string) {
+	for _, p := range []string{">=", "<=", "^", "~", ">", "<", "="} {
+		if strings.HasPrefix(tok, p) {
+			return p, strings.TrimPrefix(tok, p)
+		}
+	}
+	return "", tok
+}
+
+func satisfiesToken(tok string, v semver) bool {
 	if tok == "*" || strings.EqualFold(tok, "x") || tok == "" {
 		return true
 	}
-	op := ""
-	rest := tok
-	for _, p := range []string{">=", "<=", "^", "~", ">", "<", "="} {
-		if strings.HasPrefix(rest, p) {
-			op, rest = p, strings.TrimPrefix(rest, p)
-			break
-		}
-	}
-	base, ok := parseVersion(rest)
+	op, rest := splitToken(tok)
+	base, ok := parseSemver(rest)
 	if !ok {
 		return false
 	}
-	cmp := compareVersion(v, base)
+	cmp := compareSemver(v, base)
 	switch op {
 	case "", "=":
 		return cmp == 0
@@ -228,31 +253,50 @@ func satisfiesToken(tok string, v [3]int) bool {
 	case "<=":
 		return cmp <= 0
 	case "~":
-		return cmp >= 0 && v[0] == base[0] && v[1] == base[1]
+		return cmp >= 0 && v.nums[0] == base.nums[0] && v.nums[1] == base.nums[1]
 	case "^":
 		if cmp < 0 {
 			return false
 		}
 		// Standard caret semantics: the left-most non-zero component
 		// of the base is the one that may not change.
-		if base[0] > 0 {
-			return v[0] == base[0]
+		if base.nums[0] > 0 {
+			return v.nums[0] == base.nums[0]
 		}
-		if base[1] > 0 {
-			return v[0] == 0 && v[1] == base[1]
+		if base.nums[1] > 0 {
+			return v.nums[0] == 0 && v.nums[1] == base.nums[1]
 		}
-		return v[0] == 0 && v[1] == 0 && v[2] == base[2]
+		return v.nums[0] == 0 && v.nums[1] == 0 && v.nums[2] == base.nums[2]
 	}
 	return false
 }
 
-// parseVersion reads a plain dotted version ("1.3", "v1.3.0", "1.3.0-beta")
-// into its numeric components; a range or tag is not a version.
-func parseVersion(s string) ([3]int, bool) {
-	var out [3]int
+// semver is a parsed version: the numeric release tuple plus the
+// prerelease identifiers, preserved rather than stripped — a
+// prerelease is a DIFFERENT version from its release (1.3.0-beta.1
+// precedes 1.3.0), and conflict checking that cannot see the
+// difference cannot report the contradiction. Build metadata (+...)
+// is not part of precedence and is dropped.
+type semver struct {
+	nums [3]int
+	pre  string
+}
+
+// parseSemver reads a plain dotted version ("1.3", "v1.3.0",
+// "1.3.0-beta.1") into its release tuple and prerelease; a range or
+// tag is not a version.
+func parseSemver(s string) (semver, bool) {
+	var out semver
 	s = strings.TrimSpace(strings.TrimPrefix(s, "v"))
-	if i := strings.IndexAny(s, "-+"); i >= 0 {
+	if i := strings.Index(s, "+"); i >= 0 {
 		s = s[:i]
+	}
+	if i := strings.Index(s, "-"); i >= 0 {
+		out.pre = s[i+1:]
+		s = s[:i]
+		if out.pre == "" {
+			return out, false
+		}
 	}
 	parts := strings.Split(s, ".")
 	if len(parts) > 3 {
@@ -261,21 +305,66 @@ func parseVersion(s string) ([3]int, bool) {
 	for i, p := range parts {
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 0 {
-			return out, false
+			return semver{}, false
 		}
-		out[i] = n
+		out.nums[i] = n
 	}
 	return out, true
 }
 
-func compareVersion(a, b [3]int) int {
+func compareSemver(a, b semver) int {
 	for i := 0; i < 3; i++ {
-		if a[i] != b[i] {
-			if a[i] < b[i] {
+		if a.nums[i] != b.nums[i] {
+			if a.nums[i] < b.nums[i] {
 				return -1
 			}
 			return 1
 		}
+	}
+	switch {
+	case a.pre == b.pre:
+		return 0
+	case a.pre == "":
+		return 1 // a release follows its own prereleases
+	case b.pre == "":
+		return -1
+	}
+	return comparePrerelease(a.pre, b.pre)
+}
+
+// comparePrerelease orders two prerelease strings by semver's rules:
+// dot-separated identifiers compare numerically when both are numeric
+// (and numeric identifiers rank below alphanumeric ones), lexically
+// otherwise; a shorter list that is a prefix of a longer one is lower.
+func comparePrerelease(a, b string) int {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		if as[i] == bs[i] {
+			continue
+		}
+		an, aerr := strconv.Atoi(as[i])
+		bn, berr := strconv.Atoi(bs[i])
+		switch {
+		case aerr == nil && berr == nil:
+			if an < bn {
+				return -1
+			}
+			return 1
+		case aerr == nil:
+			return -1
+		case berr == nil:
+			return 1
+		case as[i] < bs[i]:
+			return -1
+		default:
+			return 1
+		}
+	}
+	switch {
+	case len(as) < len(bs):
+		return -1
+	case len(as) > len(bs):
+		return 1
 	}
 	return 0
 }
