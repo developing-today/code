@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/dezren39/mcpx/internal/progspec"
 )
 
 // StdioTransport runs an MCP server as a child process and speaks
@@ -83,7 +84,20 @@ func NewStdio(opts StdioOptions) (*StdioTransport, error) {
 	if opts.Command == "" {
 		return nil, errors.New("stdio transport: empty command")
 	}
-	cmd := exec.Command(opts.Command, opts.Args...)
+	// A nix: program spec resolves once, here at spawn, to the store
+	// path that actually runs (progspec, #1921): the child is the built
+	// program, never a nix process. A plain command passes through
+	// untouched, exactly as before. A resolution failure names the spec
+	// and refuses the launch rather than falling back to PATH.
+	command := opts.Command
+	if progspec.IsNix(command) {
+		resolved, err := progspec.ResolvePath(context.Background(), command)
+		if err != nil {
+			return nil, fmt.Errorf("stdio transport: %w", err)
+		}
+		command = resolved
+	}
+	cmd := exec.Command(command, opts.Args...)
 	cmd.Dir = opts.Cwd
 
 	env := []string{}

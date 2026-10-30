@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/dezren39/mcpx/internal/defaults"
+	"github.com/dezren39/mcpx/internal/progspec"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,8 +123,16 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 		// A server whose command is not installed is the single most common
 		// cause of "mcpx does not work", and it is invisible until a call.
 		var missing []string
+		var nixSpecs int
 		for _, s := range servers {
 			if s.Command == "" {
+				continue
+			}
+			if progspec.IsNix(s.Command) {
+				// Resolved by nix at launch (progspec, #1921); a PATH
+				// lookup would report it missing even on a machine
+				// where it runs fine, and doctor does not build.
+				nixSpecs++
 				continue
 			}
 			if _, err := exec.LookPath(s.Command); err != nil {
@@ -134,8 +143,11 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 			add(check{"server commands", "fail", strings.Join(missing, "; "),
 				"install them, or remove those servers from the configuration"})
 		} else if len(servers) > 0 {
-			add(check{"server commands", "ok",
-				fmt.Sprintf("all %d runnable", len(servers)), ""})
+			detail := fmt.Sprintf("all %d runnable", len(servers))
+			if nixSpecs > 0 {
+				detail += fmt.Sprintf("; %d via nix: program specs, resolved to store paths at launch", nixSpecs)
+			}
+			add(check{"server commands", "ok", detail, ""})
 		}
 	}
 

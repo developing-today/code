@@ -365,6 +365,26 @@ func (s Server) ToInstall(preferLocal bool) (*Install, error) {
 	}
 
 	for _, p := range s.Packages {
+		if strings.EqualFold(p.RegistryType, "nix") {
+			// A nix package installs as a program spec, not a runner
+			// command (#1921): the spawn path resolves it once with
+			// nix build --print-out-paths and runs the store path
+			// directly, so there is no runner row for it in Runtimes.
+			// The identifier is a flake ref with an attribute
+			// (github:owner/repo#tool), a bare ref (its default
+			// package), or a bare attribute name on nixpkgs.
+			spec := "nix:" + p.Identifier
+			if !strings.ContainsAny(p.Identifier, "#/:") {
+				spec = "nix:nixpkgs#" + p.Identifier
+			}
+			return &Install{
+				Namespace: ns,
+				Command:   spec,
+				Env:       map[string]string{},
+				How: "nix package " + p.Identifier + " via program spec " + spec +
+					" (resolves once to a store path at launch)",
+			}, nil
+		}
 		rt, ok := Runtimes[strings.ToLower(p.RegistryType)]
 		if !ok {
 			continue

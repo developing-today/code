@@ -174,3 +174,25 @@ func TestTheDefaultIsTheOfficialRegistry(t *testing.T) {
 		t.Errorf("got %q", c.BaseURL)
 	}
 }
+
+func TestToInstallNixPackageBecomesAProgramSpec(t *testing.T) {
+	// A nix package is not run by a launcher command: the install's
+	// command is the nix: program spec the spawn path resolves once to
+	// a store path (#1921). A bare attribute name means nixpkgs.
+	for _, tc := range []struct{ identifier, want string }{
+		{"github:owner/repo#tool", "nix:github:owner/repo#tool"},
+		{"github:owner/repo", "nix:github:owner/repo"},
+		{"hello", "nix:nixpkgs#hello"},
+	} {
+		s := registry.Server{Name: "a/b", Packages: []registry.Package{
+			{RegistryType: "nix", Identifier: tc.identifier},
+		}}
+		in, err := s.ToInstall(true)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.identifier, err)
+		}
+		if in.Command != tc.want {
+			t.Errorf("%s: Command = %q, want %q", tc.identifier, in.Command, tc.want)
+		}
+	}
+}
