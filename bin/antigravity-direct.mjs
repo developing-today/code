@@ -270,18 +270,172 @@ const resolveModelAndEffort = (requestedModel, requestedEffort) => {
 // OpenAI -> Cloud Code v1internal translation
 // ---------------------------------------------------------------------------
 
-const convertSchema = (schema) => {
-  if (Array.isArray(schema)) return schema.map(convertSchema);
-  if (schema && typeof schema === 'object') {
+// ---------------------------------------------------------------------------
+// Tool schema conversion: client JSON Schema -> the v1internal proto Schema
+// (google.cloud.aiplatform.master.Schema). The proto parser rejects any
+// field name it does not know with a hard 400 ("Unknown name ... Cannot
+// find field"), and client tool schemas are full JSON Schema (usually
+// zod/MCP-generated), so they must be reduced to the proto's vocabulary
+// before going upstream. The rule set follows the fork's established
+// Gemini schema normalizer (opencode packages/ai/src/protocols/utils/
+// gemini-json-schema.ts + tool-schema.ts: rewrite only what the upstream
+// rejects, filter `required` to declared properties, translate exclusive
+// bounds, cut unsafe $ref loops, object root), tightened to the field
+// allowlist probed against this endpoint 2026-10-30 (code#2825):
+//   accepted: type format title description nullable default enum example
+//     items prefixItems minItems maxItems minProperties maxProperties
+//     properties propertyOrdering required minLength maxLength pattern
+//     minimum maximum anyOf oneOf allOf not
+//   rejected (dropped or translated below): $schema $id $ref $defs const
+//     exclusiveMinimum exclusiveMaximum multipleOf additionalProperties
+//     additionalItems unevaluatedItems unevaluatedProperties contains
+//     minContains uniqueItems dependentRequired dependentSchemas
+//     patternProperties if then else readOnly writeOnly deprecated examples
+// Structural rejects probed the same day: array `type` (collapse it;
+// "null" becomes nullable), tuple `items` (becomes prefixItems), boolean
+// schemas (become {}), `required` naming an undeclared property, and
+// `properties` on a node whose type is not OBJECT.
+// ---------------------------------------------------------------------------
+
+const SCHEMA_FIELDS = new Set([
+  'type', 'format', 'title', 'description', 'nullable', 'default', 'enum',
+  'example', 'items', 'prefixItems', 'minItems', 'maxItems', 'minProperties',
+  'maxProperties', 'properties', 'propertyOrdering', 'required', 'minLength',
+  'maxLength', 'pattern', 'minimum', 'maximum', 'anyOf', 'oneOf', 'allOf',
+  'not'
+]);
+// Keys whose values are data, not schemas — never recurse into them.
+const SCHEMA_VALUE_KEYS = new Set(['enum', 'default', 'example']);
+// Keys whose values are maps of subschemas.
+const SCHEMA_MAP_KEYS = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas', 'dependencies']);
+
+const isSchemaRecord = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+
+// Inline local $refs (#, #/$defs/<name>, #/definitions/<name>, any local
+// JSON pointer). The proto has no $ref, so every reference must be inlined
+// or cut. A ref whose target is already being expanded on this path (a
+// loop), an unresolvable ref, or a non-local ref is cut to an
+// unconstrained schema ({}) — the same cut gemini-json-schema.ts applies
+// to loops Gemini cannot represent. Keys sibling to $ref win over the
+// referenced schema (JSON Schema 2020-12 semantics).
+const resolveSchemaRefs = (root) => {
+  const lookup = (ref) => {
+    if (ref === '#') return root;
+    if (!ref.startsWith('#/')) return undefined;
+    let cur = root;
+    for (const rawSeg of ref.slice(2).split('/')) {
+      const seg = rawSeg.replace(/~1/g, '/').replace(/~0/g, '~');
+      if ((!isSchemaRecord(cur) && !Array.isArray(cur)) || cur[seg] === undefined) return undefined;
+      cur = cur[seg];
+    }
+    return cur;
+  };
+  const walkSchema = (node, chain) => {
+    if (Array.isArray(node)) return node.map(v => walkSchema(v, chain));
+    if (!isSchemaRecord(node)) return node;
+    if (typeof node.$ref === 'string') {
+      const { $ref, ...siblings } = node;
+      const target = $ref.startsWith('#') ? lookup($ref) : undefined;
+      const merged = (target === undefined || chain.includes($ref) || chain.length >= 10)
+        ? {} : { ...walkSchema(target, [...chain, $ref]) };
+      for (const [k, v] of Object.entries(siblings)) merged[k] = walkSchema(v, chain);
+      return merged;
+    }
     const out = {};
-    for (const [k, v] of Object.entries(schema)) {
-      if (k === 'type' && typeof v === 'string') out[k] = v.toUpperCase();
-      else if (k === 'additionalProperties') continue;
-      else out[k] = convertSchema(v);
+    for (const [k, v] of Object.entries(node)) {
+      if (SCHEMA_VALUE_KEYS.has(k)) { out[k] = v; continue; }
+      if (SCHEMA_MAP_KEYS.has(k) && isSchemaRecord(v)) {
+        const sub = {};
+        for (const [name, s] of Object.entries(v)) sub[name] = walkSchema(s, chain);
+        out[k] = sub;
+        continue;
+      }
+      out[k] = walkSchema(v, chain);
     }
     return out;
+  };
+  return walkSchema(root, []);
+};
+
+const convertSchemaNode = (node) => {
+  // Boolean schemas and stray values become an unconstrained object schema.
+  if (!isSchemaRecord(node)) return {};
+  const out = {};
+  // Exclusive bounds: the proto has none — fold them into the inclusive
+  // bound. A numeric (draft-06+) exclusive value becomes the bound when no
+  // inclusive one is present; a boolean (draft-04) flag simply drops,
+  // keeping its sibling bound.
+  let minimum = node.minimum;
+  let maximum = node.maximum;
+  if (typeof node.exclusiveMinimum === 'number' && minimum === undefined) minimum = node.exclusiveMinimum;
+  if (typeof node.exclusiveMaximum === 'number' && maximum === undefined) maximum = node.exclusiveMaximum;
+  // Tuple `items` becomes prefixItems (proto `items` is a single schema).
+  // Upstream validation requires `items` to be present whenever
+  // prefixItems is ("properties[t].items: missing field", probed
+  // 2026-10-30), so a converted tuple also gets an unconstrained items —
+  // which matches draft-07 semantics (elements past the tuple are free
+  // unless additionalItems says otherwise; additionalItems is dropped).
+  let items = node.items;
+  let prefixItems = node.prefixItems;
+  if (Array.isArray(items)) {
+    if (items.length && prefixItems === undefined) prefixItems = items;
+    items = undefined;
   }
-  return schema;
+  if (prefixItems !== undefined && items === undefined) items = {};
+  for (const [k, v] of Object.entries(node)) {
+    if (!SCHEMA_FIELDS.has(k)) continue; // unknown to the proto -> drop
+    if (SCHEMA_VALUE_KEYS.has(k)) { out[k] = v; continue; }
+    if (k === 'properties') {
+      if (isSchemaRecord(v)) {
+        const props = {};
+        for (const [name, sub] of Object.entries(v)) props[name] = convertSchemaNode(sub);
+        out.properties = props;
+      }
+      continue;
+    }
+    if (k === 'anyOf' || k === 'oneOf' || k === 'allOf') {
+      if (Array.isArray(v)) out[k] = v.map(convertSchemaNode);
+      continue;
+    }
+    if (k === 'not') { out.not = convertSchemaNode(v); continue; }
+    if (k === 'type' || k === 'required' || k === 'minimum' || k === 'maximum' || k === 'items' || k === 'prefixItems') continue; // handled outside the loop
+    out[k] = v; // scalar constraint fields: format, title, pattern, ...
+  }
+  if (minimum !== undefined) out.minimum = minimum;
+  if (maximum !== undefined) out.maximum = maximum;
+  if (items !== undefined) out.items = convertSchemaNode(items);
+  if (prefixItems !== undefined) out.prefixItems = (Array.isArray(prefixItems) ? prefixItems : [prefixItems]).map(convertSchemaNode);
+  // Type: uppercase it; collapse an array of types ("null" -> nullable,
+  // first concrete type wins); infer OBJECT when properties are present
+  // (the proto allows properties only for OBJECT).
+  let nullable = node.nullable === true;
+  if (Array.isArray(node.type)) {
+    const types = node.type.filter(t => typeof t === 'string');
+    if (types.includes('null')) nullable = true;
+    const concrete = types.filter(t => t !== 'null');
+    if (concrete.length) out.type = concrete[0].toUpperCase();
+  } else if (typeof node.type === 'string') {
+    out.type = node.type.toUpperCase();
+  }
+  if (nullable) out.nullable = true;
+  if (out.type === undefined && out.properties) out.type = 'OBJECT';
+  // `required` may only name declared properties — the proto validates it
+  // ("property is not defined"); with no properties there is nothing it
+  // may name.
+  if (Array.isArray(node.required)) {
+    const declared = out.properties ? new Set(Object.keys(out.properties)) : new Set();
+    const req = node.required.filter(n => typeof n === 'string' && declared.has(n));
+    if (req.length) out.required = req;
+  }
+  return out;
+};
+
+const convertSchema = (schema) => {
+  const converted = convertSchemaNode(resolveSchemaRefs(isSchemaRecord(schema) ? schema : {}));
+  // The parameters root must declare OBJECT (tool-schema.ts's objectRoot:
+  // providers reject a tool schema whose root does not declare it).
+  if (converted.type === undefined) converted.type = 'OBJECT';
+  return converted;
 };
 
 const textOf = (content) => {
@@ -326,7 +480,12 @@ const buildV1Request = (body) => {
         for (const tc of msg.tool_calls) {
           if (tc.id && tc.function && tc.function.name) toolNameById.set(tc.id, tc.function.name);
           let args = {};
-          try { args = JSON.parse((tc.function && tc.function.arguments) || '{}'); } catch {}
+          try {
+            const parsedArgs = JSON.parse((tc.function && tc.function.arguments) || '{}');
+            // functionCall.args is a proto Struct too: only a JSON object
+            // may be sent (same code#2825 shape rule as functionResponse).
+            if (parsedArgs && typeof parsedArgs === 'object' && !Array.isArray(parsedArgs)) args = parsedArgs;
+          } catch {}
           const part = { functionCall: { name: tc.function && tc.function.name, args } };
           const sig = lookupSignature(tc.id);
           if (sig) part.thoughtSignature = sig;
@@ -337,9 +496,16 @@ const buildV1Request = (body) => {
     } else if (msg.role === 'tool') {
       const name = msg.name || toolNameById.get(msg.tool_call_id) || 'tool';
       let result = textOf(msg.content) || (typeof msg.content === 'string' ? msg.content : '');
+      // functionResponse.response is a proto Struct: it must be a JSON
+      // object. A tool result that parses to an array or a scalar (a
+      // list-shaped tool output is common) is wrapped, never sent raw —
+      // a raw array 400s upstream ("Proto field is not repeating, cannot
+      // start list", code#2825).
       let response;
-      try { const parsed = JSON.parse(result); response = parsed && typeof parsed === 'object' ? parsed : { result }; }
-      catch { response = { result }; }
+      try {
+        const parsed = JSON.parse(result);
+        response = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : { result: parsed };
+      } catch { response = { result }; }
       contents.push({ role: 'user', parts: [{ functionResponse: { name, response } }] });
     }
   }
