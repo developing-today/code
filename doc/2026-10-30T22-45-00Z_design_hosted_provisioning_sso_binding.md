@@ -88,6 +88,15 @@ Rules:
 - The record is valid only with **both** signatures: the key's (proof of
   possession at ceremony time) and the service's (attestation that the
   ceremony ran against an authenticated session for `sub`).
+- `service_attestation` covers every field of the record except itself —
+  including `status` — so the service **regenerates it on every mutation
+  of the record**: entering `rebind_pending` (§4.2), a cancellation
+  returning the binding to `active` (§4.3), and the publication that marks
+  it `superseded` (§4.4). A stored attestation therefore always verifies
+  against the record as it currently stands; in particular an export
+  taken during a delayed-rebind wait (§6.1) passes the mandatory
+  attestation check in §6.2. Verifiers never accept a record whose
+  attestation does not match its current fields.
 - The complete `challenge_transcript` is persisted **in the record**, not
   only in the service's challenge store: the signed message in §3.2 is
   reconstructed from `challenge_id`, `sub`, `iroh_id`, `nonce`, and
@@ -201,7 +210,8 @@ account takeover into an ID takeover — #2045).
 2. Service creates a rebind request:
    `{rebind_id, binding_id, sub, old_iroh_id, new_iroh_id, requested_at,
    effective_at = requested_at + waiting_period, status: pending}` and sets
-   the binding's `status` to `rebind_pending`.
+   the binding's `status` to `rebind_pending` (regenerating
+   `service_attestation` over the mutated record, §1.2).
 3. During the wait: the **old key keeps full control**; the new key has
    none; the account's data and DO are untouched. The pending binding
    continues to reserve the account (§1.2): any fresh binding ceremony
@@ -303,15 +313,21 @@ Behaviour at a ceiling is specified here and is not tier-dependent:
 - **Storage cap reached:** the store goes **read-only** and every session
   surfaces the export prompt (§6). Writes are refused with a named
   `storage_cap` error. Data is never deleted, truncated, or silently
-  dropped to fit.
+  dropped to fit. **One write class remains permitted at the cap:**
+  explicit user-confirmed deletes, together with their reference-
+  accounting updates (§5.3). A delete only ever lowers the current-usage
+  gauges, and it is the recovery path below — refusing it would trap a
+  capped user permanently (export alone lowers neither gauge). Deletes
+  are never *required* to recover: raising the tier also works.
 - **Request ceiling reached:** requests are refused (`429`, `Retry-After`)
   with the same export prompt on the client surfaces. Reads needed to
   *perform an export* are exempt from the ceiling — leaving must always be
   possible.
 - **Recovery:** raising the tier (or freeing space by export + explicit
-  user-confirmed delete — which lowers the current-usage gauges in §5.3)
-  returns the store to read-write automatically at the next request; no
-  support action is part of the mechanism.
+  user-confirmed delete — permitted at the cap per the exception above,
+  and lowering the current-usage gauges in §5.3) returns the store to
+  read-write automatically at the next request; no support action is
+  part of the mechanism.
 
 ### 5.5 Ephemeral containers
 
