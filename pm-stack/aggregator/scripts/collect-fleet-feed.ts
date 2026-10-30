@@ -117,8 +117,7 @@ const launchRecordsPath = process.env.CLAUDE_LAUNCH_RECORDS_PATH ?? join(HIDDEN,
 const quotaRegistryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
 const snapshotOutboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
 const chargesExportPath = process.env.CHARGES_EXPORT_PATH ?? join(HOME, "atlas/charges-export/latest.json");
-const chargesSurfacedStatePath =
-  process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
+const chargesSurfacedStatePath = process.env.CHARGES_SURFACED_STATE_PATH ?? join(HIDDEN, "charges-surfaced-state.json");
 const opencodeConfigPath = process.env.AA_OPENCODE_CONFIG_PATH ?? join(PKG, "..", "..", ".opencode", "opencode.jsonc");
 const serverUrl = process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096";
 const passwordFile =
@@ -608,7 +607,10 @@ async function main(): Promise<void> {
   await writeFile(outPath, JSON.stringify(feed, null, 2));
   if (pendingSurfacedKeys) {
     await writeFile(chargesSurfacedStatePath, JSON.stringify({ surfacedKeys: pendingSurfacedKeys }, null, 2)).catch(
-      (err) => console.error("collector: could not persist charges surfaced state (" + err + "); unmatched charges may re-surface"),
+      (err) =>
+        console.error(
+          "collector: could not persist charges surfaced state (" + err + "); unmatched charges may re-surface",
+        ),
     );
     console.log(
       "collector: charges auto-match - " +

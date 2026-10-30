@@ -45,8 +45,7 @@ const quotaViewPath =
     "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
   );
 const registryPath = process.env.QUOTA_REGISTRY_PATH ?? join(HIDDEN, "provider-quota-registry.md");
-const providerUsagePath =
-  process.env.PROVIDER_USAGE_SNAPSHOT_PATH ?? join(HIDDEN, "provider-usage-snapshot.json");
+const providerUsagePath = process.env.PROVIDER_USAGE_SNAPSHOT_PATH ?? join(HIDDEN, "provider-usage-snapshot.json");
 const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? join(HIDDEN, "usage-snapshot-outbox.jsonl");
 
 async function main(): Promise<void> {
