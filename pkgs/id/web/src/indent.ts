@@ -139,9 +139,8 @@ export const dedentCommand: Command = (state, dispatch) => {
     let tr = state.tr;
     let offset = 0;
 
-    // ⚡ Bolt optimization: Avoid O(N^2) filter + indexOf loop for single cursor
-    const linesToDedent =
-      from === to ? selectedLineStarts(lineStarts, from, to) : selectedLineStarts(lineStarts, from, to);
+    // Handle selected lines (for single cursor, selectedLineStarts returns just the current line)
+    const linesToDedent = selectedLineStarts(lineStarts, from, to);
 
     for (const lineStart of linesToDedent) {
       const adjustedPos = lineStart + offset;
