@@ -2268,13 +2268,29 @@ type scriptShape struct {
 // inlineSource splices prefix and suffix lines around a snippet. A snippet is
 // generated wholesale, so prefix lines share its scope and can declare
 // bindings the snippet uses.
+//
+// A snippet's own shebang goes first, ahead of the prefix. Dispatch reads the
+// first line to decide the interpreter (#2167), and a shell prefix line in
+// front of it hid the shebang: `mcpx exec --prefix 'echo before' $'#!/bin/sh\necho hello'`
+// then went to the JavaScript harness instead of sh (#2611 review). The
+// shebang is still the program's own first line; the prefix runs after it,
+// which is the order the interpreter would have imposed anyway.
 func (sh scriptShape) inlineSource(args []string) string {
 	var body strings.Builder
+	var rest strings.Builder
+	rest.WriteString(strings.Join(args, " "))
+	if first := rest.String(); strings.HasPrefix(first, "#!") {
+		line, tail, _ := strings.Cut(first, "\n")
+		body.WriteString(line)
+		body.WriteString("\n")
+		rest.Reset()
+		rest.WriteString(tail)
+	}
 	for _, line := range sh.prefix {
 		body.WriteString(line)
 		body.WriteString("\n")
 	}
-	body.WriteString(strings.Join(args, " "))
+	body.WriteString(rest.String())
 	for _, line := range sh.suffix {
 		body.WriteString("\n")
 		body.WriteString(line)

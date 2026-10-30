@@ -323,6 +323,23 @@ func TestSplitCommandLine(t *testing.T) {
 	if _, err := SplitCommandLine(`"unterminated`); err == nil {
 		t.Error("unterminated quote: want an error")
 	}
+	// Inside double quotes a backslash is literal unless it precedes one
+	// of the characters the shell still escapes there: awk needs "\t" to
+	// arrive as a backslash and a t, not as a tab or as a bare t (#2611
+	// review).
+	got, err = SplitCommandLine(`awk -v FS="\t" -f`)
+	if err != nil || len(got) != 4 || got[2] != `FS=\t` {
+		t.Errorf("double-quoted backslash: %v, %v; want FS=\\t", got, err)
+	}
+	got, err = SplitCommandLine(`sh -c "printf \"<%s>\" x"`)
+	if err != nil || len(got) != 3 || got[2] != `printf "<%s>" x` {
+		t.Errorf("escaped quote in double quotes: %v, %v", got, err)
+	}
+	// Outside quotes a backslash escapes the next character as before.
+	got, err = SplitCommandLine(`awk -v FS=\t -f`)
+	if err != nil || got[2] != "FS=t" {
+		t.Errorf("unquoted escape: %v, %v", got, err)
+	}
 }
 
 func TestResolveCwdPolicies(t *testing.T) {

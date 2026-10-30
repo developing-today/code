@@ -494,8 +494,20 @@ func SplitCommandLine(s string) ([]string, error) {
 			word.WriteByte(c)
 			escaped = false
 			started = true
-		case c == '\\' && quoted != '\'':
+		case c == '\\' && quoted == 0:
 			escaped = true
+		case c == '\\' && quoted == '"':
+			// Inside double quotes the shell keeps a backslash literal
+			// unless it precedes one of the characters it still escapes
+			// ($ ` " \ and newline). Consuming every backslash turned
+			// `awk -v FS="\t" -f` into `FS=t`, splitting on the letter t
+			// (#2611 review).
+			if i+1 < len(s) && strings.ContainsRune("$`\"\\\n", rune(s[i+1])) {
+				escaped = true
+			} else {
+				word.WriteByte(c)
+				started = true
+			}
 		case quoted != 0:
 			if c == quoted {
 				quoted = 0
