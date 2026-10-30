@@ -2200,8 +2200,8 @@
       "server": "applies"
     },
     "notes": {
-      "client": "no",
-      "server": "no"
+      "client": "yes: documented in docs/schema-validation.md (Dialect policy table)",
+      "server": "yes: documented in docs/schema-validation.md (Dialect policy table)"
     }
   },
   {
@@ -2312,12 +2312,12 @@
     "url": "https://modelcontextprotocol.io/specification/2026-07-28/basic/index#composition-keyword-resource-use",
     "quote": "\"Implementations **SHOULD** apply reasonable bounds, such as a maximum schema depth, a cap on the total number of subschemas, or a per-validation time budget\"",
     "applicability": {
-      "client": "n/a:catalogue marks it n/a",
-      "server": "n/a:no validator"
+      "client": "applies",
+      "server": "applies"
     },
     "notes": {
-      "client": "n/a",
-      "server": "n/a (no validator)"
+      "client": "yes: schemaval bounds schema documents at 1 MiB (MaxSchemaBytes)",
+      "server": "yes: schemaval bounds schema documents at 1 MiB (MaxSchemaBytes)"
     }
   },
   {

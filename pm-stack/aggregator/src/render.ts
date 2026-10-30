@@ -20,6 +20,7 @@ import {
   timeline as buildTimeline,
   windowPercent,
 } from "./derive.ts";
+import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import { latestInFamily, newClientToken, type DashAction } from "./actions.ts";
 import { applyBoardDonePolicy } from "./board-policy.ts";
 import { cardState, pendingVerb, type CardState } from "./card-state.ts";
@@ -77,10 +78,11 @@ import {
   countedEstimate,
   refUrl,
 } from "./model.ts";
-import { PAGES } from "./pages.ts";
+import { PAGES, groupedPages, manifestRouteFor, pageByRoute } from "./pages.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { type AuthorIdentity } from "./registry.ts";
 
 export function esc(s: unknown): string {
@@ -106,9 +108,14 @@ const CSS = `
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: #0e1117; color: #e6edf3; }
-nav { display: flex; gap: 4px; padding: 10px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-nav a { color: #58a6ff; text-decoration: none; padding: 6px 10px; border-radius: 6px; white-space: nowrap; }
+nav { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 8px 16px; border-bottom: 1px solid #30363d; background: #161b22; position: sticky; top: 0; }
+.navgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; }
+.navgroup + .navgroup { border-left: 1px solid #30363d; padding-left: 12px; }
+.navlabel { color: #8b949e; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-right: 4px; }
+nav a { color: #58a6ff; text-decoration: none; padding: 5px 9px; border-radius: 6px; white-space: nowrap; }
 nav a.active, nav a:hover { background: #21262d; }
+nav a.active { background: #1f6feb33; color: #fff; box-shadow: inset 0 -2px 0 #1f6feb; }
+.navgroup[data-current="true"] .navlabel { color: #58a6ff; }
 main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 80px; }
 h1 { font-size: 18px; } h2 { font-size: 15px; }
 a { color: #58a6ff; }
@@ -274,7 +281,10 @@ body.xp-plan .xpl-costcol { display: none; }
 @media (max-width: 720px) {
   body { font-size: 13.5px; }
   main { padding: 12px 10px 60px; }
-  nav { padding: 8px 10px; }
+  nav { padding: 7px 10px; gap: 2px 8px; }
+  .navgroup + .navgroup { padding-left: 8px; }
+  .navlabel { font-size: 10px; margin-right: 2px; }
+  nav a { padding: 5px 7px; }
   h1 { font-size: 16px; }
   .board { grid-template-columns: 1fr; }
   .pool { grid-template-columns: 1fr; }
@@ -465,6 +475,31 @@ export function freshnessChips(detail: ProvenanceDetail, keys: (keyof Provenance
   return `<div class="chips fresh" aria-label="Source freshness">${chips}</div>`;
 }
 
+/**
+ * The grouped nav links (#1135): one labelled section per PAGE_GROUP, in
+ * bar order, marking the active page's section. /pages itself stays out
+ * of the bar (it is the full manifest) but is in the dropdown.
+ */
+export function navLinks(active: string, activeGroup?: string): string {
+  // A sub-route (/program/<id>, /quota/service/<id>) marks the page that
+  // reaches it, so the bar always shows where you are (#1135).
+  const activeRoute = manifestRouteFor(active) ?? active;
+  const groupOfActive = activeGroup ?? pageByRoute(activeRoute)?.group;
+  return groupedPages()
+    .filter((g) => g.pages.some((p) => p.id !== "pages"))
+    .map(({ group, pages }) => {
+      const anchors = pages
+        .filter((p) => p.id !== "pages")
+        .map((p) =>
+          `<a href="${p.route}"${p.route === activeRoute ? ' class="active" aria-current="page"' : ""}>${esc(p.title)}</a>`,
+        )
+        .join("");
+      const current = group.id === groupOfActive ? ' data-current="true"' : "";
+      return `<span class="navgroup"${current}><span class="navlabel">${esc(group.title)}</span>${anchors}</span>`;
+    })
+    .join("");
+}
+
 function layout(
   title: string,
   body: string,
@@ -475,10 +510,10 @@ function layout(
 ): string {
   // Nav + the page dropdown both render from the manifest (#906 §1):
   // registering a page in src/pages.ts is the only step that puts it
-  // in either.
-  const links = PAGES.filter((p) => p.id !== "pages")
-    .map((p) => `<a href="${p.route}"${p.route === active ? ' class="active"' : ""}>${esc(p.title)}</a>`)
-    .join("");
+  // in either. The bar groups its links by section (#1135) so ten pages
+  // wrap onto a second row at phone width instead of scrolling
+  // sideways, and the page's own section stays marked.
+  const links = navLinks(active);
   const options = PAGES.map(
     (p) =>
       `<option value="${p.route}"${p.route === active ? " selected" : ""}>${esc(p.title)} — ${esc(p.blurb)}</option>`,
@@ -1533,7 +1568,17 @@ export function renderRoadmap(
   grain: RoadmapGrain = "quarter",
   counts?: Map<string, number>,
   detail?: ProvenanceDetail,
+  reconciliation?: RoadmapReconciliation,
 ): string {
+  // #1144: when the Grist rows and the Project's Kind=Epic pool items
+  // disagree, say so on the page itself — drift the reader can see,
+  // with the full lists published in /api/roadmap.json.
+  const driftFlag =
+    reconciliation?.availability === "unavailable"
+      ? `<div class="flag">Roadmap reconciliation unavailable: ${esc(reconciliation.unavailableReason ?? "a roadmap source could not be read")} — no drift is asserted when a source read failed (#1144).</div>`
+      : reconciliation && reconciliation.drift > 0
+        ? `<div class="flag">Roadmap drift: ${reconciliation.unmatchedRows.length} Grist row${reconciliation.unmatchedRows.length === 1 ? "" : "s"} with no matching Project epic · ${reconciliation.unmatchedEpics.length} Project epic${reconciliation.unmatchedEpics.length === 1 ? "" : "s"} with no roadmap row (#1144 — the two roadmap sources disagree; both lists are in <a href="/api/roadmap.json">/api/roadmap.json</a>).</div>`
+        : "";
   const chips = GRAINS.map(
     ([g, label]) => `<a href="/roadmap?h=${g}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
   ).join("");
@@ -1561,7 +1606,7 @@ export function renderRoadmap(
   }
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${body}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain.</p><div class="chips">${chips}</div>${driftFlag}${body}`,
     provenance,
     "/roadmap",
     "",
@@ -1677,6 +1722,7 @@ const SOURCE_CLASS_LABELS: Record<string, string> = {
 export function fmtMetricValue(v: number | null, unit: string): string {
   if (v == null) return "not measured";
   if (unit === "usd") return `$${v.toFixed(2)}`;
+  if (unit === "cny") return `¥${v.toFixed(2)}`;
   if (unit === "gb") return `${v} GB`;
   if (unit === "pct") return `${v}%`;
   return v.toLocaleString();
@@ -1716,9 +1762,25 @@ function attentionStripHtml(usage: UsageView): string {
   return `<h2>Needs attention</h2>${rows}`;
 }
 
+/**
+ * The DeepSeek PAYG reserve's balance, from the snapshot store (#1052):
+ * the newest unit "cny" record. Shown in ¥ with its own measured-at —
+ * the yuan figure as read, never converted to dollars.
+ */
+function paygBalanceHtml(usage: UsageView): string {
+  const recs = (usage.history["deepseek:api"] ?? []).filter(
+    (r) => r.unit === "cny" && typeof r.value === "number",
+  );
+  if (!recs.length) return "";
+  const last = recs[recs.length - 1];
+  return `<div><strong>DeepSeek PAYG reserve balance</strong>: <strong>¥${(last.value as number).toFixed(2)}</strong><br><span class="muted">reserve only — never a routine route · measured ${esc(last.ts.slice(0, 10))} · ${esc(last.observedBy)}</span></div>`;
+}
+
 function paygCardHtml(usage: UsageView): string {
+  const balance = paygBalanceHtml(usage);
+  const balanceBlock = balance ? `<div>${balance}</div>` : "";
   if (!usage.payg.length) {
-    return `<div class="card"><div><strong>PAYG dollars</strong><br><span class="muted">pay-as-you-go agent spend</span></div><div class="muted">No metered spill recorded in local records.</div></div>`;
+    return `<div class="card"><div><strong>PAYG dollars</strong><br><span class="muted">pay-as-you-go agent spend</span></div><div class="muted">No metered spill recorded in local records.</div>${balanceBlock}</div>`;
   }
   const lines = usage.payg
     .map((l: PaygLine) => {
@@ -1732,7 +1794,7 @@ function paygCardHtml(usage: UsageView): string {
     })
     .join("");
   const total = usage.payg.reduce((sum, l) => sum + (l.unbilledUsd ?? 0), 0);
-  return `<div class="card"><div><strong>PAYG dollars</strong><br><span class="muted">metered spill, counted per Decision 004 — estimates at 1.2 × high</span><br><span class="badge ${total > 5 ? "near" : "healthy"}">$${total.toFixed(2)} projected unbilled</span></div><div>${lines}</div></div>`;
+  return `<div class="card"><div><strong>PAYG dollars</strong><br><span class="muted">metered spill, counted per Decision 004 — estimates at 1.2 × high</span><br><span class="badge ${total > 5 ? "near" : "healthy"}">$${total.toFixed(2)} projected unbilled</span></div><div>${lines}${balanceBlock}</div></div>`;
 }
 
 function serviceCardHtml(svc: SaasService, history: SnapshotRecord[]): string {
@@ -4720,7 +4782,7 @@ ${degraded}${modeNote}
 <h2>Item resolution coverage</h2>
 <div class="card">${coverageLine}</div>
 <h2>Dashboard comments</h2>
-<div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 \u2014 a pending count that never drains means the triage/poster loop is not running)</div>
+<div class="card"><strong>${view.comments.pendingMessages} message${view.comments.pendingMessages === 1 ? "" : "s"} awaiting triage</strong> · <strong>${view.comments.pendingGithub} GitHub comment${view.comments.pendingGithub === 1 ? "" : "s"} awaiting posting</strong> · ${view.comments.total} comment${view.comments.total === 1 ? "" : "s"} in the store (#1145 — a pending count that never drains means the triage/poster loop is not running)</div>
 <h2>Source facets</h2>
 ${facets}
 <h2>Pages</h2>
@@ -4772,14 +4834,30 @@ export function renderProjects(
   } = {},
 ): string {
   const areas = [...new Set(pool.map((p) => p.area).filter((a): a is string => Boolean(a)))].sort();
-  const area = opts.area && areas.includes(opts.area) ? opts.area : null;
-  const shown = area ? pool.filter((p) => p.area === area) : pool;
+  // #1143: Area-unset items get an explicit "(unset)" bucket, mirroring
+  // the /program index banner — without it they are silently mixed into
+  // "all" with no count and no way to view them as the gap they are.
+  const UNSET_AREA = "(unset)";
+  const unsetCount = pool.filter((p) => !p.area).length;
+  const area =
+    opts.area === UNSET_AREA && unsetCount > 0
+      ? UNSET_AREA
+      : opts.area && areas.includes(opts.area)
+        ? opts.area
+        : null;
+  const shown =
+    area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
   const chips = [
     `<a href="/projects"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
     ...areas.map(
       (a) =>
         `<a href="/projects?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
     ),
+    ...(unsetCount > 0
+      ? [
+          `<a href="/projects?area=${encodeURIComponent(UNSET_AREA)}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
+        ]
+      : []),
   ].join("");
   if (!pool.length) {
     return layout(
@@ -4789,6 +4867,14 @@ export function renderProjects(
       "/projects",
     );
   }
+  const areaWeights = areas
+    .map((a) => {
+      const items = pool.filter((p) => p.area === a);
+      const w = summarizeWeights(items);
+      return `<div class="card"><strong>${esc(a)}</strong> — ${esc(weightedLine(w))}<br><span class="muted">${esc(handsLine(w))}</span></div>`;
+    })
+    .join("");
+  const shownWeights = summarizeWeights(shown);
   const cards = shown
     .map((p) => {
       const derived = derivedProjectState(p, opts.orchestration);
@@ -4817,6 +4903,9 @@ export function renderProjects(
   const body = `<h1>Projects — GitHub Project pool</h1>
 <p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
+${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="/projects?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
+<p class="muted">Weighted progress (effort xs=1 · s=4 · m=12 · l=40, #1108): <strong>${esc(weightedLine(shownWeights))}</strong><br>${esc(handsLine(shownWeights))}</p>
+${area ? "" : `<h2>Per-Area weighted progress</h2>${areaWeights}`}
 <p class="muted">Live services: ${serviceHomeLinks().map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`).join(" · ")}</p>
 ${cards || '<p class="muted">No items in this area.</p>'}`;
   return layout(
@@ -4885,7 +4974,7 @@ function projectCard(s: ProjectSummary): string {
   const poolLine =
     s.poolArea === null
       ? `<span class="muted">No dedicated Project Area yet.</span>`
-      : `<strong><a href="/projects?area=${encodeURIComponent(s.poolArea)}">${s.poolTotal} pool items</a></strong> <span class="muted">(${esc(s.poolArea)})</span>${s.poolTotal ? `<br><span class="muted">By status — ${countList(s.poolByStatus)}</span>` : ""}`;
+      : `<strong><a href="/projects?area=${encodeURIComponent(s.poolArea)}">${s.poolTotal} pool items</a></strong> <span class="muted">(${esc(s.poolArea)})</span>${s.poolTotal ? `<br><span class="muted">Weighted — ${esc(weightedLine(s.weights))}</span><br><span class="muted">${esc(handsLine(s.weights))}</span><br><span class="muted">By status — ${countList(s.poolByStatus)}</span>` : ""}`;
   const roadmapLine =
     s.roadmapArea === null
       ? `<span class="muted">No Grist roadmap area yet.</span>`
@@ -4998,7 +5087,19 @@ export function renderProgramProject(
       detail.poolItems.length > POOL_ITEM_CAP
         ? `<p class="muted">Showing ${POOL_ITEM_CAP} of ${detail.poolItems.length} — the full set is on <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects</a>.</p>`
         : "";
-    poolHtml = `<p class="muted"><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${cards}${more}`;
+    const allW = summarizeWeights(detail.poolItems);
+    const epics = detail.poolItems.filter((p) => p.kind === "Epic");
+    const epicW = summarizeWeights(epics);
+    const epicRows = epics
+      .map((p) => {
+        const w = effortWeight(p.labels);
+        return `<div class="card"><strong>${esc(p.title)}</strong><br><span class="muted">weight: ${w === null ? "unsized" : w} · issue ${esc(p.state)}${p.status ? ` · status: ${esc(p.status)}` : ""} · <a href="${esc(p.issueUrl)}">${esc(p.repo)}#${p.number}</a></span></div>`;
+      })
+      .join("");
+    const epicHtml = epics.length
+      ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
+      : "";
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${cards}${more}`;
   }
 
   let roadmapHtml: string;

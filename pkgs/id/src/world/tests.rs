@@ -2495,6 +2495,61 @@ mod tests {
         );
         assert_eq!(actor.view_failures, 1, "only the one trap is counted");
     }
+
+    #[derive(Default)]
+    struct OversizedLayout;
+
+    impl WorldProgram for OversizedLayout {
+        fn view(&mut self, _viewer: &Participant) -> Result<Option<String>> {
+            Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": 10, "height": 10, "cells": []}).to_string()))
+        }
+
+        fn layout(
+            &mut self,
+            _viewer: &Participant,
+            width: u16,
+            _height: u16,
+        ) -> Result<Option<String>> {
+            if width > 100 {
+                // Return an artificially huge response exceeding 8192 bytes
+                let pad = "x".repeat(9000);
+                Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": 120, "height": 50, "cells": [], "pad": pad}).to_string()))
+            } else {
+                Ok(Some(serde_json::json!({"kind": "screen", "version": 1, "width": width, "height": 10, "cells": []}).to_string()))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oversized_layout_degrades_to_a_view_fallback_and_recovers() {
+        let mut core = WorldCore::new("oversized", WorldLimits::default()).unwrap();
+        let (_, token) = join(&mut core, "ann");
+        let mut actor = WorldActor::for_test(core, Box::new(OversizedLayout::default()), None);
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::ViewAt {
+                token: token.clone(),
+                width: 120,
+                height: 50,
+                reply,
+            })
+            .await;
+
+        let first = rx.await.unwrap();
+        assert!(
+            matches!(&first, Ok(Some(text)) if text.contains("\"width\":10")),
+            "the oversized layout falls back to the cropped default view: {first:?}"
+        );
+        assert!(
+            actor.program_healthy,
+            "an oversized layout must not poison the world"
+        );
+        assert_eq!(
+            actor.view_failures, 1,
+            "the fallback triggers a view failure count"
+        );
+    }
 }
 
 #[cfg(test)]

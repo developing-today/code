@@ -164,7 +164,7 @@ pub fn render_file_list(page: &FileListPage) -> String {
          value=\"{}\" />",
         search_value
     );
-    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" /> show auto/archive</label>");
+    html.push_str("<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-auto\" class=\"checkbox checkbox-xs\" aria-label=\"Show auto and archive files\" /> show auto/archive</label>");
     let _ = write!(
         html,
         "<label class=\"flex items-center gap-1 text-xs whitespace-nowrap cursor-pointer\"><input type=\"checkbox\" id=\"show-deleted\" name=\"show_deleted\" value=\"true\"          class=\"checkbox checkbox-xs\"{} /> show deleted</label>",

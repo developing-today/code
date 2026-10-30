@@ -123,7 +123,9 @@ function openGotoLine(view: EditorView): void {
             dialogInput?.select();
             return;
           }
-          const tr = activeView.state.tr.setSelection(TextSelection.create(activeView.state.doc, pos));
+          const tr = activeView.state.tr.setSelection(
+            TextSelection.create(activeView.state.doc, pos),
+          );
           activeView.dispatch(tr);
           activeView.focus();
           // Scroll the cursor into view

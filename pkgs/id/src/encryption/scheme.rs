@@ -101,6 +101,17 @@ pub enum Received {
     Withheld(Hash),
 }
 
+/// A message that cannot be delivered yet because a message it names has not been delivered
+/// (#187): the waiting message, and the named messages it still lacks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StalledDelivery {
+    /// The message that waits in the orderer.
+    pub message: Hash,
+    /// The messages `message` names that are not delivered yet, in the order the orderer
+    /// recorded them.
+    pub missing: Vec<Hash>,
+}
+
 /// What the recovery procedure (N8) did. The CLI prints [`RECOVERY_STEPS`] next to it.
 #[derive(Clone, Debug)]
 pub struct Recovery {
@@ -294,6 +305,27 @@ impl Session {
     pub fn members(&self) -> Result<BTreeSet<Key>, SchemeError> {
         let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
         roster_of(y)
+    }
+
+    /// The messages stalled in delivery: each message the orderer holds because a message it
+    /// names has not been delivered, with the names it still lacks (#187). Entries are sorted
+    /// by message ID; the result is empty when nothing waits, and empty before the group is
+    /// created or joined on this device.
+    ///
+    /// This is the pre-join stall [`Session::request_history`] cannot see: a joiner missing
+    /// control messages from before its join waits here, not in the secret-held set. The
+    /// session carries no timer and drops nothing that waits, so the caller polls this surface
+    /// and drives the existing answer paths — a welcome, a history request, a re-sync — until
+    /// the missing messages arrive; the stall then drains on its own and this returns empty
+    /// again.
+    pub fn stalled_delivery(&self) -> Vec<StalledDelivery> {
+        self.state.as_ref().map_or_else(Vec::new, |y| {
+            y.orderer
+                .waiting()
+                .into_iter()
+                .map(|(message, missing)| StalledDelivery { message, missing })
+                .collect()
+        })
     }
 
     /// Creates the group with the members `view` lists, as the group fold gives them. This device
