@@ -138,6 +138,7 @@
     "disambiguate": "never",
     "disambiguateDefault": "new",
     "confirmDestructive": false,
+    "writePolicy": "ask",
     "askTimeout": "45s",
     "diagnosePreflight": true,
     "historyPerTool": 8,

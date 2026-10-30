@@ -10,6 +10,7 @@ import (
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpheaders"
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // The reserved _meta keys a 2026-07-28 request carries.
@@ -129,7 +130,7 @@ func (c *Client) elicitModeDeclared(mode string) bool {
 	case "", "form":
 		return true
 	case "url":
-		return h != nil && (c.Era == EraModern || c.Negotiated >= "2025-11-25")
+		return h != nil && (c.Era == EraModern || spec.AtOrAfter("2025-11-25")(c.Negotiated))
 	}
 	return false
 }
@@ -268,7 +269,7 @@ func CallerVersionFrom(ctx context.Context) string {
 // 2026-07-28 -- one that has a session a server can send requests on.
 func CallerLegacy(ctx context.Context) bool {
 	v := CallerVersionFrom(ctx)
-	return v != "" && v < "2026-07-28"
+	return spec.Before("2026-07-28")(v)
 }
 
 // ErrNotRelayed is a handler declining a request it could not pass on, so

@@ -408,11 +408,11 @@ func (r *Registry) Warm(ctx context.Context, force bool) map[string]error {
 
 // NamespaceInfo is one row of `mcpx ls`.
 type NamespaceInfo struct {
-	Namespace       string   `json:"namespace"`
-	Server          string   `json:"server"`
-	Tools           int      `json:"tools"`
-	Resources       int      `json:"resources"`
-	Description     string   `json:"description,omitempty"`
+	Namespace   string `json:"namespace"`
+	Server      string `json:"server"`
+	Tools       int    `json:"tools"`
+	Resources   int    `json:"resources"`
+	Description string `json:"description,omitempty"`
 	// Tags are the server's search vocabulary (#1923), surfaced so
 	// `mcpx ls` readers can see what a namespace answers to.
 	Tags            []string `json:"tags,omitempty"`
@@ -1009,7 +1009,12 @@ func failureStatus(err error) int {
 	var unknown UnknownServer
 	var hidden HiddenTool
 	var secret SecretRequired
+	var denied ErrWriteDenied
 	switch {
+	case errors.As(err, &denied):
+		// The write policy refused the call: a permission answer, not
+		// a bad request and not an upstream failure.
+		return http.StatusForbidden
 	case errors.As(err, &secret):
 		// A conflict with the state of the daemon, not a fault in the request
 		// and not a failure of the server: it can succeed once a value exists.
@@ -1066,7 +1071,7 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 	if !ok {
 		return nil, UnknownServer{Name: server}
 	}
-	key, err := r.resolveAndGuard(ctx, p, server, tool, cc)
+	key, err := r.resolveAndGuard(ctx, p, server, tool, cc, args)
 	if err != nil {
 		return nil, err
 	}
@@ -1082,7 +1087,7 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 // consumer policies. Every path that calls a tool goes through it: the ask
 // path once skipped both, so a destructive-tool guard was off for exactly the
 // clients that declared they could answer it.
-func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext) (string, error) {
+func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, tool string, cc config.CallContext, args any) (string, error) {
 	// The view, not the pool: aliases share one pool and filter differently.
 	if view, ok := r.View(server); ok {
 		// Before the child is touched: a server waiting for a secret is not
@@ -1101,8 +1106,17 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 	// Two policies sit between resolving the instance and using it, and both
 	// are off unless somebody turned them on. See internal/daemon/consumer.go.
 	key = r.disambiguate(ctx, p, cc, key)
-	if err := r.confirmDestructive(ctx, p, tool, cc); err != nil {
+	asked, err := r.applyWritePolicy(ctx, p, server, tool, cc, args)
+	if err != nil {
 		return "", err
+	}
+	if !asked {
+		// Not asked by the write policy: the destructive floor still
+		// gets its say. Under ask the policy already asked once, and
+		// asking twice about one call would be noise, not consent.
+		if err := r.confirmDestructive(ctx, p, tool, cc); err != nil {
+			return "", err
+		}
 	}
 	return key, nil
 }

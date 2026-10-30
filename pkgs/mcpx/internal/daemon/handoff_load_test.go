@@ -17,6 +17,7 @@ import (
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
+	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
@@ -40,12 +41,25 @@ func handoffPaths(t *testing.T) Paths {
 }
 
 func handoffOptions(paths Paths, cfg *config.Config, version string) Options {
-	return Options{
+	opts := Options{
 		Config:  cfg,
 		Paths:   paths,
 		Version: version,
 		Logger:  log.New(io.Discard, "", 0),
 	}
+	// These tests are about handover mechanics, not the write policy:
+	// their raw clients cannot answer questions, and the fake server's
+	// unannotated tools are writes, so the policy's default ask would
+	// park every call on the broker until its timeout and the drain
+	// would never finish (#1979's gate working as designed, in a test
+	// that is not about it). Run the lifecycle daemons with the policy
+	// in allow, as a pre-#1979 daemon behaved.
+	if sch, err := settings.New(settings.Registry()); err == nil {
+		opts.Settings = settings.NewSet(sch).WithOverrides(map[string]string{
+			"policy.write": "allow",
+		}, "test")
+	}
+	return opts
 }
 
 // cliStyleClient talks to the socket the way the CLI does: one transport,

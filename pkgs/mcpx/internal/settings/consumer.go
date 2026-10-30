@@ -79,6 +79,28 @@ func consumerSettings() []Setting {
 				"answer waits out the deadline before the call proceeds.",
 		},
 		{
+			Path: "policy.write", Scope: ScopeDaemon, Kind: KindEnum, Default: defaults.WritePolicy,
+			Enum: []string{"ask", "allow", "deny"},
+			Name: "Write policy",
+			Short: "what to do before a call that may write: ask for confirmation, " +
+				"allow it, or deny it",
+			Long: "The write policy gate (#1979) sits on every tool call, between " +
+				"resolving an instance and using it. A call is a write when its tool " +
+				"is not annotated readOnlyHint true, with the specification's " +
+				"defaults, and a per-server writePolicy in that server's mcpx block " +
+				"overrides this daemon-wide mode for that server alone. Ask raises " +
+				"a confirmation showing the exact tool and its canonical arguments, " +
+				"and a caller that cannot answer is refused rather than waited out " +
+				"silently; allow lets writes proceed with no confirmation from the " +
+				"policy; deny refuses them. elicit.confirmDestructive is a floor, " +
+				"not an alternative: a destructive call asks even under allow, and " +
+				"the floor never weakens a deny. This is an operator consent gate, " +
+				"not the autonomy dial (docs/decisions/0002-autonomy-dial.md): the " +
+				"dial bounds what mcpx does on its own, this bounds what a caller " +
+				"may do to the outside world through it, and neither clamps the " +
+				"other.",
+		},
+		{
 			Path: "elicit.askTimeout", Scope: ScopeDaemon, Kind: KindDuration, Default: defaults.AskTimeout.String(),
 			Name:  "Question deadline",
 			Short: "how long mcpx waits for an answer to a question it raised itself",

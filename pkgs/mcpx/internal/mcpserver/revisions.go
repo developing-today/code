@@ -3,6 +3,8 @@ package mcpserver
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/spec"
 )
 
 // Oldest is the earliest revision mcpx serves.
@@ -31,17 +33,13 @@ const Oldest = "2024-11-05"
 // only revision that could have sent it.
 const Headerless = "2025-03-26"
 
-// AtLeast compares revisions.
-//
-// Lexical comparison is correct because every revision is a date in
-// ISO order, and that is not an accident of the naming -- the specification
-// orders them this way on purpose. A test pins it so a future revision that
-// breaks the assumption fails loudly rather than sorting wrong.
+// AtLeast compares revisions, delegating to spec.AtOrAfter (#2211): the
+// one predicate vocabulary lives in internal/spec, whose package comment
+// prescribes asking the predicates rather than comparing date strings in
+// place. Semantics are identical -- revisions are ISO dates, so lexical
+// order is revision order, and the empty revision never satisfies a floor.
 func AtLeast(version, floor string) bool {
-	if version == "" {
-		return false
-	}
-	return version >= floor
+	return spec.AtOrAfter(floor)(version)
 }
 
 // Feature is something a revision either defines or does not.

@@ -214,6 +214,45 @@ parameter, GitHub's `GITHUB_READ_ONLY` -- which keeps the tool from ever
 reaching mcpx. Those are each server's own convention; this one works for any
 server.
 
+## Write policy (`policy.write`)
+
+A tool call is a **write** when its tool is not annotated `readOnlyHint`
+true, read with the specification's defaults: an unannotated tool may
+write, and may be destructive. The daemon-wide setting `policy.write`
+(default `ask`) gates every such call, between resolving an instance
+and using it:
+
+| mode | what happens to a write call |
+| --- | --- |
+| `ask` | a confirmation is raised showing the exact call -- the tool and its arguments in canonical (key-sorted) JSON -- and the call proceeds only if somebody answers true |
+| `allow` | the call proceeds with no confirmation from the policy |
+| `deny` | the call is refused, with an error naming the tool, the mode, and the settings that can change it |
+
+A server's own `writePolicy` in its `mcpx` block overrides the daemon
+mode for that server alone:
+
+```json
+{ "mcpServers": { "datadog": { "command": "...", "mcpx": { "writePolicy": "deny" } } } }
+```
+
+Under `ask`, a caller that cannot answer questions is **refused**, not
+waited out and not let through: the error says the policy is ask, that
+there is no question broker to answer it, and that setting
+`policy.write` to `allow` (or `deny`) is the escape. An unanswered or
+refused confirmation refuses the call too.
+
+`elicit.confirmDestructive` is a **floor** on top of this, not an
+alternative to it: with it on, a destructive call asks even under
+`allow` -- raised by the destructive confirmation itself, with its
+annotation-trust rules unchanged -- and the floor never weakens a
+`deny`. Under `ask` the policy has already asked once, so no call is
+asked about twice.
+
+This gate is an operator consent gate, not the autonomy dial
+(`docs/decisions/0002-autonomy-dial.md`): the dial bounds what mcpx
+does on its own, the write policy bounds what a caller may do to the
+outside world through it, and neither clamps the other.
+
 ## Every setting
 
 Everything between the markers below is generated from `settings.Registry()` by
@@ -493,6 +532,12 @@ and a switch to turn the report off would have kept it quiet.
 | `plumbing.sourceProbePaths` | bool | `true` | client | no | `--plumbing-source-probe-paths` | `MCPX_PLUMBING_SOURCE_PROBE_PATHS` | *(plumbing)* treat a source argument that names an existing file as a file |
 | `plumbing.strictUnknownKeys` | bool | `false` | client | no | `--plumbing-strict-unknown-keys` | `MCPX_PLUMBING_STRICT_UNKNOWN_KEYS` | *(plumbing)* fail on a configuration key no setting claims |
 | `plumbing.validatePaths` | bool | `true` | client | no | `--plumbing-validate-paths` | `MCPX_PLUMBING_VALIDATE_PATHS` | *(plumbing)* resolve and verify every referenced path before doing any work |
+
+### policy
+
+| setting | kind | default | scope | hot | flag | variable | governs |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `policy.write` | enum | `ask` | daemon | no | `--policy-write` | `MCPX_POLICY_WRITE` | what to do before a call that may write: ask for confirmation, allow it, or deny it |
 
 ### pool
 

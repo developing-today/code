@@ -472,7 +472,7 @@ func (c *Client) finishLegacy(ctx context.Context, ir initResult) error {
 		return fmt.Errorf("initialized notification: %w", err)
 	}
 	// The standalone GET stream arrived with Streamable HTTP (2025-03-26).
-	if h, ok := c.t.(interface{ listen() }); ok && ir.ProtocolVersion >= "2025-03-26" {
+	if h, ok := c.t.(interface{ listen() }); ok && spec.AtOrAfter("2025-03-26")(ir.ProtocolVersion) {
 		h.listen()
 	}
 	return nil
