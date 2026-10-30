@@ -2051,6 +2051,10 @@ func (a *App) CmdCatalog(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Print(text)
+	// Recipe tools are not namespaces, so the catalog above cannot show
+	// them; report their own budget and anything the cap or a collision
+	// kept out.
+	a.printRecipeToolState(ctx, c)
 	return nil
 }
 

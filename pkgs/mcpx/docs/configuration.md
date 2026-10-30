@@ -647,3 +647,29 @@ and a switch to turn the report off would have kept it quiet.
 | `upstream.protocol` | enum | `prefer-discover` | daemon | no | `--upstream-protocol` | `MCPX_UPSTREAM_PROTOCOL` | which request to send first to a server that names no protocol of its own; one of prefer-discover (also modern, prefer-modern, prefer-stateless, prefer-newest), prefer-initialize (also legacy, prefer-legacy, prefer-session, prefer-oldest), force-discover (also force-modern, force-stateless), force-initialize (also force-legacy, force-session), follow |
 
 <!-- END GENERATED -->
+
+## Adapter declarations
+
+An entry in a `paths.adapters` file names a program and the subcommands worth
+exposing. `command` is normally a binary on `PATH`; `runtime` makes it a
+script instead, and resolves the interpreter for you:
+
+```jsonc
+{ "adapters": [{
+  "name": "reports", "command": "./tools/report.py", "runtime": "py",
+  "tools": [{ "name": "daily", "params": [{ "name": "day", "required": true }] }]
+}] }
+```
+
+`runtime` is `bash`, `js`, `ts` or `py`. bash resolves `bash` (then `sh`), py
+resolves `python3` (then `python`), and js/ts use the same deno/bun/node order
+`script.runtimeOrder` chooses for `mcpx exec`. This is a separate resolver on
+purpose: `script.runtime` names the runtime mcpx itself executes generated
+scripts on, not the one a declaration asks for. A relative `command` resolves
+against the declaration's `dir`, then `PATH`. Without `runtime`, nothing
+changes: `command` is looked up on `PATH` and exec'd directly. `mcpx adapter
+check` reports a missing interpreter or script.
+
+`mcpx catalog` also ends with the recipe tools in `tools/list`: how many are
+exposed against the recipe budget, and which recipes were kept out by a name
+collision or the cap.
