@@ -414,6 +414,19 @@ describe("detectLanguage", () => {
       expect(detectLanguage("")).toBeUndefined();
     });
 
+    it("returns undefined for prototype-member extensions (#2787)", () => {
+      // Plain-object lookups on EXT_TO_LANG matched inherited
+      // Object.prototype members: these returned a function / object
+      // instead of a language string.
+      expect(detectLanguage("notes.constructor")).toBeUndefined();
+      expect(detectLanguage("notes.__proto__")).toBeUndefined();
+    });
+
+    it("returns undefined for prototype-member filenames (#2787)", () => {
+      expect(detectLanguage("constructor")).toBeUndefined();
+      expect(detectLanguage("__proto__")).toBeUndefined();
+    });
+
     it("is case-insensitive for extensions", () => {
       expect(detectLanguage("App.JS")).toBe("javascript");
       expect(detectLanguage("style.CSS")).toBe("css");
