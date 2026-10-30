@@ -199,7 +199,7 @@ pub fn check_toolchain(inputs: &DoctorInputs) -> Finding {
     };
     // A configured binary must exist. A bare name resolves through PATH.
     let exists = if roc_bin.contains('/') {
-        std::path::Path::new(roc_bin).is_file()
+        Path::new(roc_bin).is_file()
     } else {
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
             .map(|dir| dir.join(roc_bin))
@@ -435,7 +435,14 @@ mod tests {
         let _ = std::fs::create_dir_all(dir.join("targets/wasm32"));
         let _ = std::fs::write(dir.join("platform.roc"), "platform");
         let _ = std::fs::write(dir.join("targets/wasm32/host.wasm"), "wasm");
-        let roc = crate::world_compile::locate_roc().ok();
+        let roc_path = dir.join("roc");
+        let _ = std::fs::write(&roc_path, "roc binary");
+        #[cfg(unix)]
+        let _ = std::fs::set_permissions(
+            &roc_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        );
+        let roc = Some(roc_path.to_string_lossy().into_owned());
         let roc_resolved = roc
             .clone()
             .map(Ok)

@@ -51,7 +51,7 @@ mod tests;
 mod types;
 
 pub(crate) use types::{
-    CAPS_CEILING_NOTICE, ClientFrame, CompileFile, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
+    CAPS_CEILING_NOTICE, ClientFrame, MAX_ADMIN_TOKEN_BYTES, MAX_CAPABILITY_BYTES,
     MAX_CONCURRENT_MODULE_UPLOADS, ServerFrame, invite_bounds,
 };
 pub use types::{
@@ -2189,9 +2189,12 @@ async fn handle_client_frame<I: SessionIo>(
                 )
                 .await;
             }
+            let clamped_width = usize::from(width).min(crate::world_presentation::MAX_SCREEN_WIDTH);
+            let clamped_height =
+                usize::from(height).min(crate::world_presentation::MAX_SCREEN_HEIGHT);
             *viewport = Some(Viewport {
-                width: usize::from(width),
-                height: usize::from(height),
+                width: clamped_width,
+                height: clamped_height,
             });
             return send_view(service.frame_meter(), world, io, token, sequence, *viewport).await;
         }

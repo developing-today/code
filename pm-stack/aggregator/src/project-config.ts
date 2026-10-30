@@ -14,6 +14,7 @@
 import type { GhItem, ProjectPoolItem, RefKey, RoadmapRow } from "./model.ts";
 import { refUrl } from "./model.ts";
 import { PROGRAM, TRACKED_REFS, type ProgramEntry, type TrackedIssue } from "./program.ts";
+import { summarizeWeights, type WeightSummary } from "./weights.ts";
 
 export interface ProjectHomeDoc {
   repo: string;
@@ -737,6 +738,8 @@ export interface ProjectSummary {
   /** Pool items in this project's Area; 0 when poolArea is null. */
   poolTotal: number;
   poolByStatus: Count[];
+  /** Complexity-weighted progress over the Area's pool items (#1108 slice 1). */
+  weights: WeightSummary;
   /** Grist rows in this project's roadmapArea; 0 when null. */
   roadmapRows: number;
   homeDoc: ProjectHomeDoc | null;
@@ -757,6 +760,7 @@ export function buildProjectSummary(
     roadmapArea: config.roadmapArea,
     poolTotal: mine.length,
     poolByStatus: counts(mine.map((p) => p.status)),
+    weights: summarizeWeights(mine),
     roadmapRows: config.roadmapArea === null ? 0 : rows.filter((r) => r.area === config.roadmapArea).length,
     homeDoc: config.homeDoc ?? null,
   };

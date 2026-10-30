@@ -123,6 +123,15 @@ type Extras struct {
 	// Profiles names the groups this server belongs to. `mcpx --profile web`
 	// selects by them.
 	Profiles []string `json:"profiles,omitempty"`
+	// Tags are search vocabulary for this server (#1923): words a caller
+	// would use that the tool names do not contain. Every tool on the
+	// server inherits them; ToolTags adds per-tool words on top. A tag
+	// match ranks between a name prefix and a name substring in search,
+	// and `mcpx search --tag <tag>` filters on them exactly.
+	Tags []string `json:"tags,omitempty"`
+	// ToolTags maps a tool name to its own tags, for the common case: one
+	// tool the server named badly, on a server that is otherwise fine.
+	ToolTags map[string][]string `json:"toolTags,omitempty"`
 	// Default says whether this server is included when no profile is
 	// requested. Nil means inherit; the built-in default is true.
 	Default *bool `json:"default,omitempty"`
@@ -366,6 +375,8 @@ type Resolved struct {
 	Tools           ToolPatterns
 	ExcludeTools    ToolPatterns
 	Profiles        []string
+	Tags            []string
+	ToolTags        map[string][]string
 	Default         bool
 	RequiresSecrets []string
 	RequiresServers []string
@@ -654,6 +665,8 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		Tools:           allow,
 		ExcludeTools:    deny,
 		Profiles:        append(append([]string{}, d.Profiles...), ex.Profiles...),
+		Tags:            append(append([]string{}, d.Tags...), ex.Tags...),
+		ToolTags:        mergeToolTags(d.ToolTags, ex.ToolTags),
 		Default:         boolOr(ex.Default, d.Default, true),
 		RequiresSecrets: ex.RequiresSecrets,
 		RequiresServers: ex.RequiresServers,
@@ -882,9 +895,35 @@ func mergeExtras(near, far Extras) Extras {
 	if len(near.Preconditions) == 0 {
 		near.Preconditions = far.Preconditions
 	}
+	if len(near.Tags) == 0 {
+		near.Tags = far.Tags
+	}
+	if len(near.ToolTags) == 0 {
+		near.ToolTags = far.ToolTags
+	}
 	// Appending is the point of the field, across files as within one.
 	near.ExtraIncludeTools = concat(far.ExtraIncludeTools, near.ExtraIncludeTools)
 	return near
+}
+
+// mergeToolTags overlays near (the server's own) per-tool tags on far
+// (pool defaults): a tool named in both keeps the near list, matching how
+// the scalar Extras fields resolve.
+func mergeToolTags(far, near map[string][]string) map[string][]string {
+	if len(far) == 0 {
+		return near
+	}
+	if len(near) == 0 {
+		return far
+	}
+	out := make(map[string][]string, len(far)+len(near))
+	for k, v := range far {
+		out[k] = v
+	}
+	for k, v := range near {
+		out[k] = v
+	}
+	return out
 }
 
 func originsOf(c *Config, path string) map[string]string {

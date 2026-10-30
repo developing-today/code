@@ -319,6 +319,7 @@ and a switch to turn the report off would have kept it quiet.
 | `daemon.socketProbeTimeout` | duration | `500ms` | daemon | no | `--daemon-socket-probe-timeout` | `MCPX_DAEMON_SOCKET_PROBE_TIMEOUT` | *(plumbing)* how long a socket left by a crashed daemon is given to answer |
 | `daemon.takeoverTimeout` | duration | `15s` | daemon | no | `--daemon-takeover-timeout` | `MCPX_DAEMON_TAKEOVER_TIMEOUT` | *(plumbing)* how long a handoff may take, and how long the old daemon waits for its successor to hang up |
 | `daemon.tsnet.hostname` | string | *(empty)* | daemon | no | `--daemon-tsnet-hostname` | `MCPX_DAEMON_TSNET_HOSTNAME` | also serve the daemon on a tailnet, under this name |
+| `daemon.tsnetUpTimeout` | duration | `30s` | daemon | no | `--daemon-tsnet-up-timeout` | `MCPX_DAEMON_TSNET_UP_TIMEOUT` | *(plumbing)* how long a node may take to authenticate |
 | `daemon.ui` | bool | `true` | daemon | yes | `--daemon-ui`, `--ui` | `MCPX_DAEMON_UI` | serve the dashboard page at /dashboard |
 | `daemon.uiDir` | string | *(empty)* | daemon | yes | `--daemon-ui-dir`, `--ui-dir` | `MCPX_DAEMON_UI_DIR` | serve your own pages instead of the embedded dashboard |
 | `daemon.warm` | bool | `true` | daemon | no | `--daemon-warm`, `--warm` | `MCPX_DAEMON_WARM` | read every server's schemas in the background at startup |
@@ -346,7 +347,9 @@ and a switch to turn the report off would have kept it quiet.
 | `elicit.confirmDestructive` | bool | `false` | daemon | no | `--elicit-confirm-destructive` | `MCPX_ELICIT_CONFIRM_DESTRUCTIVE` | ask before a call to a tool that may be destructive |
 | `elicit.disambiguate` | enum | `never` | daemon | no | `--elicit-disambiguate` | `MCPX_ELICIT_DISAMBIGUATE` | ask which instance of a stateful server to use when several are live and the script did not choose |
 | `elicit.disambiguateDefault` | enum | `new` | daemon | no | `--elicit-disambiguate-default` | `MCPX_ELICIT_DISAMBIGUATE_DEFAULT` | which instance is used when nobody answers in time: the one the scope would have chosen, or the most recently used |
+| `elicit.maxAge` | duration | `30m` | daemon | no | `--elicit-max-age` | `MCPX_ELICIT_MAX_AGE` | the absolute ceiling on a question's life, however often it is read |
 | `elicit.pendingLimit` | int | `100` | daemon | yes | `--elicit-pending-limit` | `MCPX_ELICIT_PENDING_LIMIT` | *(plumbing)* how many unanswered questions one listing returns |
+| `elicit.ttl` | duration | `120s` | daemon | no | `--elicit-ttl` | `MCPX_ELICIT_TTL` | how long a question waits for an answer, renewed by use |
 
 ### embeddings
 

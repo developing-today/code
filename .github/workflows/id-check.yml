@@ -50,13 +50,6 @@ on:
       - ".github/scripts/id-pr-checks.txt"
       - ".github/scripts/check-id-pr-checks.sh"
       - ".github/scripts/check-crash-gate-coverage.sh"
-  pull_request:
-    paths:
-      - "pkgs/id/**"
-      - ".github/workflows/id-check.yml"
-      - ".github/scripts/id-pr-checks.txt"
-      - ".github/scripts/check-id-pr-checks.sh"
-      - ".github/scripts/check-crash-gate-coverage.sh"
   schedule:
     # Nightly backstop for the full flake check (main tier, #1781).
     - cron: "41 8 * * *"
