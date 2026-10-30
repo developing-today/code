@@ -83,7 +83,7 @@ jobs:
   # truth: adding a check to id-pr-checks.txt adds a parallel job.
   guard:
     name: guard PR check list
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       checks: ${{ steps.list.outputs.checks }}
@@ -126,7 +126,7 @@ jobs:
   check_each:
     name: nix flake check (${{ matrix.check }})
     needs: guard
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -163,7 +163,7 @@ jobs:
     name: nix flake check
     needs: check_each
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require every PR check job to succeed
@@ -185,7 +185,7 @@ jobs:
   full-flake-check:
     name: nix flake check (full, main tier)
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
