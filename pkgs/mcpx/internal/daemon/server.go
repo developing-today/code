@@ -215,6 +215,9 @@ func NewServer(opts Options) (*Server, error) {
 		}
 		opts.Settings = settings.NewSet(sch)
 	}
+	if err := ValidateBearerToken(opts.Settings); err != nil {
+		return nil, err
+	}
 	// logging.trace, which is MCPX_TRACE. It was read here by name, so a
 	// configuration file or `mcpx daemon --logging-trace` could not turn it on.
 	if opts.Settings.Bool("logging.trace") {
@@ -431,7 +434,7 @@ func (s *Server) startHTTP() {
 	mux := http.NewServeMux()
 	s.routes(mux)
 	srv := &http.Server{
-		Handler:           s.refuseBrowserPages(s.trackActivity(mux)),
+		Handler:           s.refuseBrowserPages(s.requireBearer(s.trackActivity(mux))),
 		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout"),
 		ConnState:         s.observeConn,
 	}
@@ -503,7 +506,7 @@ func (s *Server) ServeInline(ctx context.Context, socket string) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.routes(mux)
-	return s.refuseBrowserPages(mux)
+	return s.refuseBrowserPages(s.requireBearer(mux))
 }
 
 // InProcessHandler returns Handler with the daemon's lifetime tied to

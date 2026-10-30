@@ -119,6 +119,17 @@ func callHeader(set *settings.Set) string {
 	return string(b)
 }
 
+// authorize attaches the configured daemon bearer token to a request
+// (#1975): the same transport.bearerToken setting the daemon checks,
+// resolved from this client's own settings (environment or config), so
+// a caller and its daemon agree by construction. Unset, no header --
+// the request is byte-for-byte what it was before the setting existed.
+func (c *Client) authorize(req *http.Request) {
+	if tok := daemon.BearerToken(c.set); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+}
+
 // NewClient builds a socket-backed API client.
 func NewClient(paths daemon.Paths, configPath string) *Client {
 	return NewClientAt(paths, configPath, "")
@@ -372,6 +383,7 @@ func (c *Client) open(ctx context.Context, method, path string, body []byte, con
 	if v := mcpclient.CallerVersionFrom(ctx); v != "" {
 		req.Header.Set(daemon.CallerVersionHeader, v)
 	}
+	c.authorize(req)
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		if isDialErr(err) {
@@ -1117,6 +1129,7 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 			return err
 		}
 		req.Header.Set("Accept", "text/event-stream")
+		c.authorize(req)
 		// No timeout on a stream; the context bounds it instead. The
 		// client's ordinary timeout would cut a healthy stream off.
 		streamClient := &http.Client{Transport: c.hc.Transport}
