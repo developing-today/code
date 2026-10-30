@@ -1591,7 +1591,11 @@ func (a *App) stopAll(ctx context.Context) error {
 		info := listing.info
 		p := listing.paths
 		p.Socket = info.Socket
-		c := NewClient(p, info.ConfigPath)
+		// Explicit unix:// endpoint: this client targets *that recorded
+		// daemon*, so MCPX_SOCKET (which names the caller's own daemon,
+		// #1886 step 6) must not override it — NewClient's ClientSocket
+		// resolution would probe/shut only the override daemon.
+		c := NewClientAt(p, info.ConfigPath, "unix://"+info.Socket)
 		if !c.Ping(ctx) {
 			continue
 		}
@@ -1650,7 +1654,11 @@ func (a *App) CmdDaemons(ctx context.Context, args []string) error {
 		info := listing.info
 		p := listing.paths
 		p.Socket = info.Socket
-		c := NewClient(p, info.ConfigPath)
+		// Explicit unix:// endpoint: this client targets *that recorded
+		// daemon*, so MCPX_SOCKET (which names the caller's own daemon,
+		// #1886 step 6) must not override it — NewClient's ClientSocket
+		// resolution would probe/shut only the override daemon.
+		c := NewClientAt(p, info.ConfigPath, "unix://"+info.Socket)
 		rows = append(rows, row{
 			PID: info.PID, Config: info.ConfigPath,
 			Running: c.Ping(ctx), Started: info.StartedAt,

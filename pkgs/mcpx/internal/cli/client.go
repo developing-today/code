@@ -55,6 +55,15 @@ type Client struct {
 	// hint, and a daemon whose state path was too long for sun_path
 	// bound somewhere else and wrote the real path in its record.
 	dialSocket string
+	// resolveSocket marks a client built for its own daemon with no
+	// explicit endpoint: both its transport and Socket() re-resolve
+	// through ClientSocket at use time, so a replacement daemon
+	// EnsureDaemon spawns on a different socket is followed, not just
+	// dialled (Codex round 2 on PR #2561). Explicit unix:// endpoints
+	// leave it false — that target was chosen by the caller (e.g. a
+	// record-targeted client in stop --all) and must not be overridden
+	// by MCPX_SOCKET or a later record.
+	resolveSocket bool
 	// set is this process's resolved configuration.
 	set *settings.Set
 	// callSettings is the JSON header carrying whatever call-scoped settings
@@ -135,6 +144,7 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 
 	if c.endpoint == "" {
 		c.dialSocket = paths.ClientSocket()
+		c.resolveSocket = true
 		c.hc = &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
@@ -279,6 +289,16 @@ func (c *Client) Socket() string {
 	}
 	if c.endpoint != "" {
 		return ""
+	}
+	if c.resolveSocket {
+		// Re-resolve, like the transport does at dial time: a stale
+		// record may have named a dead daemon whose replacement bound
+		// a different socket, and commands.go exports this value as
+		// MCPX_SOCKET for scripts — a cached construction-time path
+		// would send them to the dead socket (Codex round 2, #2561).
+		if s := c.paths.ClientSocket(); s != "" {
+			return s
+		}
 	}
 	if c.dialSocket != "" {
 		return c.dialSocket
