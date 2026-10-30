@@ -16,12 +16,7 @@
     "maxLines": 200000,
     "maxAge": "24h",
     "keep": 8,
-    "include": [
-      "host",
-      "user",
-      "process",
-      "version"
-    ],
+    "include": ["host", "user", "process", "version"],
     "trace": false
   },
   "daemon": {
@@ -41,79 +36,44 @@
   },
   "script": {
     "permissions": "all",
-    "runtimeOrder": [
-      "deno",
-      "bun",
-      "node"
-    ],
+    "runtimeOrder": ["deno", "bun", "node"],
     "profiles": {
       "all": {
-        "deno": [
-          "--allow-all"
-        ],
+        "deno": ["--allow-all"],
         "bun": [],
         "node": []
       },
       "none": {
-        "deno": [
-          "--allow-all"
-        ],
+        "deno": ["--allow-all"],
         "bun": [],
         "node": []
       },
       "off": {
-        "deno": [
-          "--allow-all"
-        ],
+        "deno": ["--allow-all"],
         "bun": [],
         "node": []
       },
       "unsandboxed": {
-        "deno": [
-          "--allow-all"
-        ],
+        "deno": ["--allow-all"],
         "bun": [],
         "node": []
       },
       "net": {
-        "deno": [
-          "--allow-net",
-          "--allow-env"
-        ]
+        "deno": ["--allow-net", "--allow-env"]
       },
       "read": {
-        "deno": [
-          "--allow-read",
-          "--allow-env"
-        ]
+        "deno": ["--allow-read", "--allow-env"]
       },
       "readnet": {
-        "deno": [
-          "--allow-read",
-          "--allow-net",
-          "--allow-env"
-        ],
-        "node": [
-          "--permission",
-          "--allow-fs-read=*"
-        ]
+        "deno": ["--allow-read", "--allow-net", "--allow-env"],
+        "node": ["--permission", "--allow-fs-read=*"]
       },
       "read-net": {
-        "deno": [
-          "--allow-read",
-          "--allow-net",
-          "--allow-env"
-        ],
-        "node": [
-          "--permission",
-          "--allow-fs-read=*"
-        ]
+        "deno": ["--allow-read", "--allow-net", "--allow-env"],
+        "node": ["--permission", "--allow-fs-read=*"]
       },
       "strict": {
-        "deno": [
-          "--allow-net=127.0.0.1",
-          "--allow-env"
-        ]
+        "deno": ["--allow-net=127.0.0.1", "--allow-env"]
       }
     },
     "captureConsole": true,
@@ -169,11 +129,7 @@
   "transport": {
     "sseKeepAlive": "15s",
     "stdioDrain": "30s",
-    "loopbackHosts": [
-      "localhost",
-      "127.0.0.1",
-      "::1"
-    ],
+    "loopbackHosts": ["localhost", "127.0.0.1", "::1"],
     "allowedOrigins": [],
     "sessionMetaKeys": ["dev.mcpx/session", "ai.opencode/sessionID"],
     "sshWaitDelay": "3s"
@@ -244,10 +200,7 @@
   },
   "autostart": {
     "bin": "",
-    "args": [
-      "daemon",
-      "--detached"
-    ],
+    "args": ["daemon", "--detached"],
     "idleExit": "4h",
     "connectTimeout": "20s",
     "pollInterval": "50ms",

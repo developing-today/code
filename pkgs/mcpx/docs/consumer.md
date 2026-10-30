@@ -14,7 +14,7 @@ what was deliberately not built.
 
 The most valuable thing here needs no model at all, and that was the central
 finding of the issue. mcpx already knows every tool's input schema. What it
-did not know was what those schemas *used to be* — `internal/codegen` could
+did not know was what those schemas _used to be_ — `internal/codegen` could
 fingerprint a catalog and diff two of them, but nothing ever stored one, so
 every diff was against nothing and the question "when did this change" had no
 answer anywhere in the program.
@@ -68,10 +68,7 @@ to every surface. The server's error stays first and whole; the rendered
 diagnostic follows it, and `/v1/call` carries the same finding as data:
 
 ```json
-{"error": "mcp error -32602: Invalid params\ndemo.create_issue: the call was rejected and repo is required but was not sent (schema changed 2026-09-30: `repo` was added and is required)\n  minimum:    await demo.create_issue({ repo: \"\", ... })",
- "diagnostics": [{"kind": "invalid-params", "tool": "demo.create_issue", "field": "repo",
-   "changed": {"when": "2026-09-30T…", "kind": "argument-added", "what": "`repo` was added and is required"},
-   "fix": "await demo.create_issue({ repo: \"\", ... })", "fatal": true}]}
+{ "error": "mcp error -32602: Invalid params\ndemo.create_issue: the call was rejected and repo is required but was not sent (schema changed 2026-09-30: `repo` was added and is required)\n  minimum:    await demo.create_issue({ repo: \"\", ... })", "diagnostics": [{ "kind": "invalid-params", "tool": "demo.create_issue", "field": "repo", "changed": { "when": "2026-09-30T…", "kind": "argument-added", "what": "`repo` was added and is required" }, "fix": "await demo.create_issue({ repo: \"\", ... })", "fatal": true }] }
 ```
 
 So `mcpx call` prints it, `mcpx --json call` puts the document on stdout, a
@@ -107,7 +104,7 @@ resolving an instance and using it.
 the answer is genuinely open: the server is exclusive, so its instances are
 distinct things rather than copies; several are live; and the caller's own
 scope key names none of them. When the caller already has an instance, the
-scope key *is* the answer and a question would be theatre. The form is an enum
+scope key _is_ the answer and a question would be theatre. The form is an enum
 of the live keys plus "new", each with what it is doing — holders, calls,
 idle time, pid — because a choice without that is not a choice.
 
