@@ -114,14 +114,17 @@ type Specifier struct {
 	Version string
 }
 
-// Parse splits a name@version specifier. A scope-at-version (@scope/pkg@1.2.3)
-// keeps its scope: only the last @ separates a version.
+// Parse splits a name@version specifier.
+//
+// The separator is the first @ that is not the leading one, not the last: a
+// scope is written @scope/pkg, so the leading @ belongs to the name, and a
+// version may itself contain one (npm:@scope/x@2.0). Splitting on the last @
+// would read that version as "2.0" and leave the alias in the name.
 func Parse(s string) Specifier {
-	for i := len(s) - 1; i > 0; i-- {
-		if s[i] != '@' {
-			continue
+	for i := 1; i < len(s); i++ {
+		if s[i] == '@' {
+			return Specifier{Name: s[:i], Version: s[i+1:]}
 		}
-		return Specifier{Name: s[:i], Version: s[i+1:]}
 	}
 	return Specifier{Name: s}
 }
