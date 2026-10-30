@@ -9,13 +9,6 @@
         "CODEX_CONNECTORS_MODE": "compact"
       }
     },
-    "codedb": {
-      "command": "/home/user/bin/codedb",
-      "args": ["mcp"],
-      "env": {
-        "CODEDB_NO_TELEMETRY": "1"
-      }
-    },
     "fff": {
       "command": "/home/user/.local/bin/fff-mcp",
       "args": []
@@ -89,6 +82,15 @@
     "fff-worktree": {
       "command": "/home/user/.local/bin/fff-mcp",
       "args": ["/home/user/.local/share/opencode/worktree"]
+    }
+  },
+  "disabledMcpServers": {
+    "codedb": {
+      "command": "/home/user/bin/codedb",
+      "args": ["mcp"],
+      "env": {
+        "CODEDB_NO_TELEMETRY": "1"
+      }
     }
   },
   "repair": {

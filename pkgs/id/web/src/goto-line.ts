@@ -72,6 +72,8 @@ function getLineStartPos(view: EditorView, targetLine: number): number | null {
 function createDialog(container: HTMLElement): HTMLElement {
   const dialog = document.createElement("div");
   dialog.className = "goto-line-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-label", "Go to line");
   dialog.innerHTML = `
     <label class="goto-line-label" for="goto-line-input">Go to Line:</label>
     <input type="number" min="1" class="goto-line-input" id="goto-line-input" placeholder="Line #" autocomplete="off" />
@@ -110,16 +112,20 @@ function openGotoLine(view: EditorView): void {
           // the user can correct it; the cursor does not move.
           const raw = (dialogInput?.value ?? "").trim();
           const line = Number(raw);
-          const lineCount = activeView ? getLineCount(activeView) : 0;
+          // ⚡ Bolt optimization: compute line starts once instead of traversing doc twice
+          const lineStarts = activeView ? getLineStarts(activeView) : [];
+          const lineCount = Math.max(1, lineStarts.length);
           const pos =
             activeView && raw !== "" && Number.isInteger(line) && line >= 1 && line <= lineCount
-              ? getLineStartPos(activeView, line)
+              ? (lineStarts[line - 1] ?? null)
               : null;
           if (pos === null || !activeView) {
             dialogInput?.select();
             return;
           }
-          const tr = activeView.state.tr.setSelection(TextSelection.create(activeView.state.doc, pos));
+          const tr = activeView.state.tr.setSelection(
+            TextSelection.create(activeView.state.doc, pos),
+          );
           activeView.dispatch(tr);
           activeView.focus();
           // Scroll the cursor into view

@@ -71,7 +71,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dnsSectionFromRegister } from "../src/dns.ts";
-import { aaAbsent, aaSectionFromSupabase, type AaRawPayload } from "../src/aa.ts";
+import { disabledProvidersFromConfig, aaAbsent, aaSectionFromSupabase, type AaRawPayload } from "../src/aa.ts";
 import { normalizeOrchestrationSection, orchestrationSectionProblem, type FleetFeed } from "../src/feed.ts";
 import type {
   AaFeedSection,
@@ -387,7 +387,18 @@ async function main(): Promise<void> {
   let quotaViewText = "";
   try {
     quotaViewText = await readFile(quotaViewPath, "utf8");
-    pools = extractQuotaPools(quotaViewText, now);
+    // #1114: enforce the deployed config's disabled_providers at pool
+    // assembly. The config read mirrors the AA section's; an unreadable
+    // config leaves the set empty (fail soft, pools unfiltered).
+    let disabledProviderIds: ReadonlySet<string> = new Set();
+    try {
+      disabledProviderIds = disabledProvidersFromConfig(await readFile(opencodeConfigPath, "utf8"));
+    } catch {
+      console.error("collector: opencode.jsonc unreadable; quota disabled_providers filter inactive this run");
+    }
+    pools = extractQuotaPools(quotaViewText, now, disabledProviderIds, (poolId, providerId) =>
+      console.error(`collector: quota pool ${poolId} filtered — provider ${providerId} is in disabled_providers (#1114)`),
+    );
   } catch (err) {
     console.error(`collector: quota view unreadable (${err}); emitting no pools`);
   }
