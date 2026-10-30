@@ -218,6 +218,39 @@ def e2e_tests_mentioning(mcpx, names):
     return [name for name, _ in selected]
 
 
+def embedded_owners(mcpx, rel):
+    """Map changed non-.go files to the packages that embed them.
+
+    A change to an embedded input (a schema JSON, a Wasm fixture) is a
+    code change for the package whose //go:embed directive covers it,
+    even though no .go file moved: that package's tests validate the
+    embedded bytes. Directory embeds cover everything under the named
+    directory; glob patterns are matched with fnmatch."""
+    import fnmatch
+    owners = set()
+    non_go = [p for p in rel if not p.endswith(".go")]
+    if not non_go:
+        return owners
+    for dirpath, _dirs, files in os.walk(mcpx):
+        for fn in files:
+            if not fn.endswith(".go"):
+                continue
+            full = os.path.join(dirpath, fn)
+            pkg_dir = os.path.relpath(dirpath, mcpx)
+            try:
+                text = open(full, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            for m in re.finditer(r"^//go:embed\s+(.+)$", text, re.M):
+                for pat in m.group(1).split():
+                    base = pat if pkg_dir == "." else pkg_dir + "/" + pat
+                    for cand in non_go:
+                        if (cand == base or cand.startswith(base + "/")
+                                or fnmatch.fnmatch(cand, base)):
+                            owners.add(pkg_dir)
+    return owners
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--base", default="origin/main",
@@ -250,6 +283,12 @@ def main():
     # The module-root package (agentdocs.go and friends) has dirname "";
     # normalize it to "." rather than dropping the package entirely.
     pkgs = sorted({os.path.dirname(p) or "." for p in all_go_files})
+    # Embedded inputs count as changes to their owning package: editing
+    # an embedded schema or fixture must select that package's tests,
+    # not fall through as a documentation-only change.
+    embed_owners = embedded_owners(mcpx, rel)
+    if embed_owners:
+        pkgs = sorted(set(pkgs) | embed_owners)
     unit_pkgs = [p for p in pkgs if p != "internal/e2e"]
 
     def pkg_arg(p):
@@ -261,6 +300,10 @@ def main():
         commands.append(("T0", f"gofmt -l {files}"))
     for p in unit_pkgs:
         commands.append(("T0", f"(cd pkgs/mcpx && go vet {pkg_arg(p)})"))
+
+    if embed_owners:
+        notes.append("T1: embedded input(s) changed — owning package(s) "
+                     "selected: " + ", ".join(sorted(embed_owners)))
 
     # T1 — unit tests of edited packages.
     for p in unit_pkgs:
@@ -340,8 +383,18 @@ def main():
             text = open(os.path.join(mcpx, p), encoding="utf-8", errors="replace").read()
             all_names |= set(re.findall(r"^func (Test\w+)\(", text, re.M))
         e2e_selected |= all_names
-    ordered = sample + [t for t in ranked if t not in sample]
-    ordered += [t for t in sorted(e2e_selected) if t not in sample and t not in ranked]
+    # Registry e2e guards are reserved their slots alongside the
+    # harness sample, BEFORE ranked matches spend the budget: when a
+    # registry edit matches more tests than the budget holds, the
+    # guards are the tests that must not be truncated away.
+    guards = []
+    for a in sorted(areas):
+        for g in E2E_GUARDS.get(a, []):
+            if g not in guards:
+                guards.append(g)
+    reserved = sample + [g for g in guards if g not in sample]
+    ordered = reserved + [t for t in ranked if t not in reserved]
+    ordered += [t for t in sorted(e2e_selected) if t not in reserved and t not in ranked]
     truncated = len(ordered) > T2_BUDGET
     e2e_selected = ordered[:T2_BUDGET]
     if e2e_selected:
