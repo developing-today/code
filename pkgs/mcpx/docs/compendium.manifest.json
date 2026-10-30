@@ -670,6 +670,13 @@
       "note": "the per-package test inventory the policy page points at (#1960 deliverable 1); was merged without a manifest entry, which this PR repairs"
     },
     {
+      "path": "docs/testing/feature-inventory.md",
+      "chapter": "maintaining-these-docs",
+      "role": "chapter-source",
+      "lines": 200,
+      "note": "the feature-to-integration-test inventory for #1978, enumerated from the registries on main; was merged without a manifest entry, which this PR repairs"
+    },
+    {
       "path": "internal/AGENTS.md",
       "chapter": null,
       "role": "included",
