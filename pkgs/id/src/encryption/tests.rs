@@ -20,6 +20,7 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseResult;
 
 use super::history::{HISTORY_WAIT, HistoryAnswer, HistoryError, ask_member};
+use super::ordering::MAX_PARENTS;
 use super::welcome::{CHUNK_HEADER_BYTES, Reassembly, WelcomeError, split};
 use super::*;
 use crate::groups::{
@@ -193,6 +194,13 @@ impl Cast {
             .expect("create")
     }
 
+    /// The only message a change returns, when it needed no merge. A change that needed a merge
+    /// returns the merges too, and a test that expects them reads the session directly (P4.7).
+    fn alone(mut messages: Vec<Envelope>) -> Envelope {
+        assert_eq!(messages.len(), 1, "the change needed no merge");
+        messages.pop().expect("a message")
+    }
+
     fn add(&mut self, by: u8, who: u8) -> Envelope {
         let view = self.log(
             by,
@@ -201,11 +209,13 @@ impl Cast {
                 role: Role::Admin,
             }),
         );
-        self.sessions
+        let messages = self
+            .sessions
             .get_mut(&id(by))
             .expect("session")
             .add(&view, id(who), &self.rng)
-            .expect("add")
+            .expect("add");
+        Self::alone(messages)
     }
 
     fn remove(&mut self, by: u8, who: u8) -> Envelope {
@@ -216,11 +226,13 @@ impl Cast {
                 successor: None,
             }),
         );
-        self.sessions
+        let messages = self
+            .sessions
             .get_mut(&id(by))
             .expect("session")
             .remove(&view, id(who), &self.rng)
-            .expect("remove")
+            .expect("remove");
+        Self::alone(messages)
     }
 
     /// An add that welcomes the joiner with the secrets `mode` allows.
@@ -232,11 +244,13 @@ impl Cast {
                 role: Role::Admin,
             }),
         );
-        self.sessions
+        let messages = self
+            .sessions
             .get_mut(&id(by))
             .expect("session")
             .add_with_history(&view, id(who), mode, &self.rng)
-            .expect("add_with_history")
+            .expect("add_with_history");
+        Self::alone(messages)
     }
 
     /// A join through `add_from_join`: the add, then the immediate update.
@@ -256,19 +270,23 @@ impl Cast {
     }
 
     fn update(&mut self, by: u8) -> Envelope {
-        self.sessions
+        let messages = self
+            .sessions
             .get_mut(&id(by))
             .expect("session")
             .update(&self.rng)
-            .expect("update")
+            .expect("update");
+        Self::alone(messages)
     }
 
     fn send(&mut self, by: u8, message: &str) -> Envelope {
-        self.sessions
+        let messages = self
+            .sessions
             .get_mut(&id(by))
             .expect("session")
             .send(message.as_bytes(), &self.rng)
-            .expect("send")
+            .expect("send");
+        Self::alone(messages)
     }
 
     /// Hands `message` to each of `to`, in order, and returns what each one read.
@@ -1139,7 +1157,9 @@ fn test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read() {
     let fresh = cast.reinstall(3);
     cast.sessions.insert(id(3), fresh);
     cast.deliver(&create, &[3]);
-    cast.deliver(&recovery.removal, &[2, 3]);
+    for message in &recovery.removal {
+        cast.deliver(message, &[2, 3]);
+    }
     cast.deliver(&recovery.readd[0], &[2, 3]);
     cast.deliver(&recovery.readd[1], &[2, 3]);
     assert!(
@@ -1297,7 +1317,9 @@ fn test_fork_recovery_removes_the_forked_key_and_reenrols_a_new_one() {
 
     // The new key takes the removal and the welcome, in delivery order.
     cast.deliver(&create, &[4]);
-    cast.deliver(&recovery.removal, &[2, 4]);
+    for message in &recovery.removal {
+        cast.deliver(message, &[2, 4]);
+    }
     cast.deliver(&recovery.readd[0], &[2, 4]);
     cast.deliver(&recovery.readd[1], &[2, 4]);
     assert!(cast.session(4).is_welcomed(), "the new key is welcomed");
@@ -1907,9 +1929,11 @@ proptest! {
 fn concurrent_add(cast: &mut Cast, by: u8, who: u8, members: &[u8]) -> Envelope {
     let members: BTreeSet<Key> = members.iter().map(|seed| id(*seed)).collect();
     let rng = Rng::default();
-    cast.session_mut(by)
+    let messages = cast
+        .session_mut(by)
         .add(&view_of(&members), id(who), &rng)
-        .expect("concurrent add")
+        .expect("concurrent add");
+    Cast::alone(messages)
 }
 
 #[test]
@@ -2003,8 +2027,8 @@ fn test_an_author_names_its_own_latest_even_when_a_later_message_covers_it() {
 }
 
 /// A group of 33 members. Members 2 to 33 each update from the create, so no update names another.
-/// Member 1 has heard the first `heard` of them. Returns the group and the create.
-fn concurrent_updates(heard: usize) -> (Cast, Envelope) {
+/// Member 1 has heard the first `heard` of them. Returns the group, the create and every update.
+fn concurrent_updates(heard: usize) -> (Cast, Envelope, Vec<Envelope>) {
     let seeds: Vec<u8> = (1..=33).collect();
     let mut cast = Cast::new(&seeds);
     let create = cast.create(1, &seeds);
@@ -2014,12 +2038,12 @@ fn concurrent_updates(heard: usize) -> (Cast, Envelope) {
     for update in updates.iter().take(heard) {
         cast.deliver(update, &[1]);
     }
-    (cast, create)
+    (cast, create, updates)
 }
 
 #[test]
 fn test_a_message_may_name_32_parents() {
-    let (mut cast, create) = concurrent_updates(31);
+    let (mut cast, create, _) = concurrent_updates(31);
     // The 31 updates member 1 has heard are its heads, and its own create is named too.
     let message = cast.update(1);
     assert_eq!(message.parents().len(), 32, "the cap is 32, and it is met");
@@ -2030,34 +2054,111 @@ fn test_a_message_may_name_32_parents() {
 }
 
 #[test]
-fn test_a_message_naming_33_parents_is_refused_and_the_state_is_kept() {
-    let (mut cast, _) = concurrent_updates(32);
-    let epoch = cast.epoch(1);
-    let members = cast.members_of(1);
+fn test_a_group_above_32_heads_merges_and_publishes_again() {
+    // Everyone hears all 32 concurrent updates, so the storm's heads are 32 updates. Member 1 never
+    // updated, so its own create is still named too: 33 parents, one above the cap (P4.7).
+    let (mut cast, create, updates) = concurrent_updates(32);
+    for (author, update) in (2..=33u8).zip(&updates) {
+        let rest: Vec<u8> = (1..=33).filter(|seed| *seed != author).collect();
+        cast.deliver(update, &rest);
+    }
+    let epoch = cast.epoch_set(1);
+    let roster = cast.members_of(1);
     let rng = Rng::default();
 
-    let update = cast.session_mut(1).update(&rng);
-    assert!(
-        matches!(
-            update,
-            Err(SchemeError::TooManyParents { count: 33, cap: 32 })
-        ),
-        "{update:?}"
-    );
-    let send = cast.session_mut(1).send(b"refused", &rng);
-    assert!(
-        matches!(
-            send,
-            Err(SchemeError::TooManyParents { count: 33, cap: 32 })
-        ),
-        "{send:?}"
-    );
+    // A publish above the cap merges first: an update naming 32 of the 33 parents, own latest kept.
+    let published = cast
+        .session_mut(1)
+        .update(&rng)
+        .expect("a merge, then the update");
+    assert_eq!(published.len(), 2, "one merge and the requested update");
+    let (merge, update) = (&published[0], &published[1]);
     assert_eq!(
-        cast.epoch(1),
-        epoch,
-        "the refused change left the epoch as it was"
+        merge.parents().len(),
+        MAX_PARENTS,
+        "the merge names the cap and no more"
     );
-    assert_eq!(cast.members_of(1), members, "and the roster");
+    assert!(
+        merge.parents().contains(&create.id()),
+        "the merge still names the author's own latest"
+    );
+    // The one head the merge left is named by the update that follows, so the merge dropped nothing
+    // from the causal past: the group ends with every parent named by the merge or the update.
+    let leftover: Vec<Hash> = updates
+        .iter()
+        .map(Envelope::id)
+        .filter(|id| !merge.parents().contains(id))
+        .collect();
+    assert_eq!(leftover.len(), 1, "32 of the 33 heads were merged");
+    assert!(
+        update.parents().contains(&leftover[0]) && update.parents().contains(&merge.id()),
+        "the update names the left head and the merge"
+    );
+    assert!(
+        update.parents().len() <= MAX_PARENTS,
+        "the update fits the cap"
+    );
+
+    // The group takes the merge and then the update, and every member ends on the same roster and
+    // the same epochs, so the group published again rather than staying deadlocked.
+    for member in &published {
+        let rest: Vec<u8> = (2..=33).collect();
+        cast.deliver(member, &rest);
+    }
+    for who in 1..=33 {
+        assert_eq!(cast.members_of(who), roster, "member {who} roster");
+        assert_eq!(
+            cast.epoch_set(who),
+            cast.epoch_set(1),
+            "member {who} epochs"
+        );
+    }
+    assert!(
+        cast.epoch_set(1).len() > epoch.len(),
+        "the merge rotated the epoch"
+    );
+
+    // And the group publishes application messages again.
+    let message = cast.send(1, "after the merge");
+    for read in cast.deliver(&message, &(2..=33).collect::<Vec<u8>>()) {
+        assert_eq!(read, vec![text("after the merge")]);
+    }
+}
+
+#[test]
+fn test_a_refused_change_above_the_cap_loses_no_merge() {
+    // Everyone hears all 32 concurrent updates, so member 1 sits on 33 parents, one above the
+    // cap: its next publish has to merge first (P4.7).
+    let (mut cast, _create, updates) = concurrent_updates(32);
+    for (author, update) in (2..=33u8).zip(&updates) {
+        let rest: Vec<u8> = (1..=33).filter(|seed| *seed != author).collect();
+        cast.deliver(update, &rest);
+    }
+    let rng = Rng::default();
+
+    // A removal whose view names no scheme is refused by the policy check. The refusal must
+    // come before any merge: a merge absorbed by the session but never broadcast would leave
+    // the group waiting on a parent it never received.
+    let mut view = cast.view();
+    view.members.remove(&id(33));
+    view.policy = Policy::default();
+    let result = cast.session_mut(1).remove(&view, id(33), &rng);
+    assert!(matches!(result, Err(SchemeError::NoScheme)), "{result:?}");
+
+    // The merge is still member 1's to publish: its next update returns the merge and then the
+    // update, the group takes both, and it publishes application messages again.
+    let published = cast
+        .session_mut(1)
+        .update(&rng)
+        .expect("a merge, then the update");
+    assert_eq!(published.len(), 2, "the refusal lost no merge");
+    for member in &published {
+        cast.deliver(member, &(2..=33).collect::<Vec<u8>>());
+    }
+    let message = cast.send(1, "after the refused change");
+    for read in cast.deliver(&message, &(2..=33).collect::<Vec<u8>>()) {
+        assert_eq!(read, vec![text("after the refused change")]);
+    }
 }
 
 /// A seeded shuffle, so a proptest case replays one delivery order.
@@ -2494,7 +2595,7 @@ fn measure_update_cost(members: usize, updates: usize) -> UpdateCost {
     let mut sent = Vec::with_capacity(updates);
     let started = Instant::now();
     for _ in 0..updates {
-        sent.push(session.update(&rng).expect("update"));
+        sent.extend(session.update(&rng).expect("update"));
     }
     let count = f64::from(u32::try_from(updates).expect("a few updates"));
     let update_ms = started.elapsed().as_secs_f64() * 1_000.0 / count;

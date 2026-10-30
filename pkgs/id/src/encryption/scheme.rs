@@ -104,8 +104,9 @@ pub enum Received {
 /// What the recovery procedure (N8) did. The CLI prints [`RECOVERY_STEPS`] next to it.
 #[derive(Clone, Debug)]
 pub struct Recovery {
-    /// The removal. It rotates the epoch, so the device no longer holds the new secrets.
-    pub removal: Envelope,
+    /// The removal, after any merge updates the heads needed first. It rotates the epoch, so the
+    /// device no longer holds the new secrets.
+    pub removal: Vec<Envelope>,
     /// The re-add: the welcome and the immediate update, in delivery order (P4.3).
     pub readd: Vec<Envelope>,
     /// The epoch before the procedure.
@@ -311,7 +312,7 @@ impl Session {
         view: &GroupView,
         added: Key,
         rng: &Rng,
-    ) -> Result<Envelope, SchemeError> {
+    ) -> Result<Vec<Envelope>, SchemeError> {
         self.add_with_history(view, added, HistoryMode::Full, rng)
     }
 
@@ -320,36 +321,45 @@ impl Session {
     ///
     /// The bundle is cut here, before `Dcgka::add`, so the crate never sees a secret outside the
     /// window. The joiner then holds exactly the window and refuses older messages.
+    ///
+    /// Returns every message to broadcast: any merge updates first, then the add (P4.7).
     pub fn add_with_history(
         &mut self,
         view: &GroupView,
         added: Key,
         mode: HistoryMode,
         rng: &Rng,
-    ) -> Result<Envelope, SchemeError> {
+    ) -> Result<Vec<Envelope>, SchemeError> {
         self.ensure_welcomed()?;
         if !view.members.contains_key(&added) {
             return Err(SchemeError::NotInModel(short(added)));
         }
         let added_key = member_of(added)?;
+        // The policy is checked before the merge, not only inside the change step: a refusal after
+        // the merge would drop merge envelopes the session has already absorbed, and a later
+        // publish would name a merge nobody received (P4.7).
+        self.check_policy(view)?;
+        let mut messages = self.merge_heads(rng)?;
         // The bundle is cut from the state before the change takes it, so the welcome carries the
         // window the mode allows and the roster check still runs on the fold's view.
         let bundle = {
             let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
             mode.welcome_bundle(&y.secrets)
         };
-        self.change(view, |mut y| {
+        messages.push(self.change(view, |mut y| {
             let (dcgka, output) = Dcgka::add(y.dcgka, added_key, &bundle, rng)?;
             y.dcgka = dcgka;
             publish(y, output)
-        })
+        })?);
+        Ok(messages)
     }
 
     /// Adds `added` by a join: a welcome that carries no earlier secret, then an immediate update.
     ///
     /// The joiner learns nothing the group had before the add, so it cannot read messages sent
     /// before its join. The update gives the group a secret the joiner does learn, and it must be
-    /// delivered too. Returns the add and the update, in the order they are delivered.
+    /// delivered too. Returns the add and the update, in the order they are delivered, after any
+    /// merge updates the heads needed first (P4.7).
     pub fn add_from_join(
         &mut self,
         view: &GroupView,
@@ -361,31 +371,46 @@ impl Session {
             return Err(SchemeError::NotInModel(short(added)));
         }
         let added_key = member_of(added)?;
-        let add = self.change(view, |y| EncryptionGroup::add_from_join(y, added_key, rng))?;
-        let update = self.change(view, |y| EncryptionGroup::update(y, rng))?;
-        Ok(vec![add, update])
+        // The policy is checked before the merge, not only inside the change step: a refusal after
+        // the merge would drop merge envelopes the session has already absorbed, and a later
+        // publish would name a merge nobody received (P4.7).
+        self.check_policy(view)?;
+        let mut messages = self.merge_heads(rng)?;
+        messages.push(self.change(view, |y| EncryptionGroup::add_from_join(y, added_key, rng))?);
+        messages.push(self.change(view, |y| EncryptionGroup::update(y, rng))?);
+        Ok(messages)
     }
 
     /// Removes `removed`, which `view` must no longer list. The removal rotates the epoch.
+    ///
+    /// Returns every message to broadcast: any merge updates first, then the removal (P4.7).
     pub fn remove(
         &mut self,
         view: &GroupView,
         removed: Key,
         rng: &Rng,
-    ) -> Result<Envelope, SchemeError> {
+    ) -> Result<Vec<Envelope>, SchemeError> {
         self.ensure_welcomed()?;
         if view.members.contains_key(&removed) {
             return Err(SchemeError::StillInModel(short(removed)));
         }
         let removed_key = member_of(removed)?;
-        self.change(view, |y| EncryptionGroup::remove(y, removed_key, rng))
+        // The policy is checked before the merge, for the reason the add paths give (P4.7).
+        self.check_policy(view)?;
+        let mut messages = self.merge_heads(rng)?;
+        messages.push(self.change(view, |y| EncryptionGroup::remove(y, removed_key, rng))?);
+        Ok(messages)
     }
 
     /// Rotates the epoch by giving every current member a new secret.
-    pub fn update(&mut self, rng: &Rng) -> Result<Envelope, SchemeError> {
+    ///
+    /// Returns every message to broadcast: the merge updates the heads needed first, if any, then
+    /// the update itself (P4.7).
+    pub fn update(&mut self, rng: &Rng) -> Result<Vec<Envelope>, SchemeError> {
         self.ensure_welcomed()?;
-        self.ensure_parents_fit()?;
-        self.step(|y| EncryptionGroup::update(y, rng))
+        let mut messages = self.merge_heads(rng)?;
+        messages.push(self.step(|y| EncryptionGroup::update(y, rng))?);
+        Ok(messages)
     }
 
     /// Recovers a device whose key is suspect: removes `removed`, then adds `added` back by a join.
@@ -417,10 +442,14 @@ impl Session {
     }
 
     /// Encrypts `plaintext` under the current epoch.
-    pub fn send(&mut self, plaintext: &[u8], rng: &Rng) -> Result<Envelope, SchemeError> {
+    ///
+    /// Returns every message to broadcast, in order: the merge updates the heads needed first, if
+    /// any, then the application message (P4.7).
+    pub fn send(&mut self, plaintext: &[u8], rng: &Rng) -> Result<Vec<Envelope>, SchemeError> {
         self.ensure_welcomed()?;
-        self.ensure_parents_fit()?;
-        self.step(|y| EncryptionGroup::send(y, plaintext, rng))
+        let mut messages = self.merge_heads(rng)?;
+        messages.push(self.step(|y| EncryptionGroup::send(y, plaintext, rng))?);
+        Ok(messages)
     }
 
     /// Handles a message from the group.
@@ -611,9 +640,34 @@ impl Session {
             .collect())
     }
 
-    /// Refuses a publish that would name more than [`MAX_PARENTS`] parents (P4.7). It runs before the
-    /// crate call, since a call that fails inside the orderer consumes the state and poisons the
-    /// session. Nothing is dropped from the parents: the change is refused.
+    /// Publishes the merge updates the heads need before a change can name them all (P4.7).
+    ///
+    /// A merge is an update that names up to [`MAX_PARENTS`] heads, so the heads it leaves stay
+    /// heads and the parent count falls by at least 31. A count above the cap therefore comes down
+    /// in a bounded number of merges, and the change that follows names at most the cap. Nothing is
+    /// merged while the device is not welcomed, since there is no head to merge, and nothing is
+    /// merged when the heads already fit.
+    ///
+    /// The returned messages must reach the group before the change that follows: the change names
+    /// the last merge as its author's latest, so a member that lacks it cannot deliver the change.
+    fn merge_heads(&mut self, rng: &Rng) -> Result<Vec<Envelope>, SchemeError> {
+        let mut merged = Vec::new();
+        loop {
+            let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
+            if !y.is_welcomed || y.orderer.parent_count() <= MAX_PARENTS {
+                return Ok(merged);
+            }
+            let message = self.step(|mut y| {
+                y.orderer.begin_merge();
+                EncryptionGroup::update(y, rng)
+            })?;
+            merged.push(message);
+        }
+    }
+
+    /// Refuses a change whose parents still exceed [`MAX_PARENTS`] after the merges (P4.7). It runs
+    /// before the crate call, since a call that fails inside the orderer consumes the state and
+    /// poisons the session. Nothing is dropped from the parents: the change is refused.
     fn ensure_parents_fit(&self) -> Result<(), SchemeError> {
         let y = self.state.as_ref().ok_or(SchemeError::Poisoned)?;
         let count = y.orderer.parent_count();
