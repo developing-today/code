@@ -1052,7 +1052,12 @@ in
   # the link and reloads OpenChamber, which hands its OpenCode over in place.
   home.activation.openchamberDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
     state="''${XDG_STATE_HOME:-$HOME/.local/state}/openchamber/deployed"
-    key='${deployKey "openchamber" [ openchamberStart openchamberUnitStart ]}'
+    key='${
+      deployKey "openchamber" [
+        openchamberStart
+        openchamberUnitStart
+      ]
+    }'
     link="$HOME/.local/state/openchamber/bin/opencode"
     target="${inputs.opencode.packages.${system}.opencode}/bin/opencode"
     previous="$(readlink "$link" 2>/dev/null || true)"
