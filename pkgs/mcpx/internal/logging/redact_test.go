@@ -112,3 +112,29 @@ func TestRedactKeepsCredentialFreeURLs(t *testing.T) {
 		}
 	}
 }
+
+func TestRedactKeywordPairURLValues(t *testing.T) {
+	// Regression for #2463: the keyword-pair alternative matches a
+	// whole KEY=VALUE token before the URL userinfo alternative can
+	// run, so a URL carried under an AUTH_/TOKEN_ name went through
+	// the userinfo reconstruction and came out mangled — the port
+	// printed as an elided password, a fabricated "@", and the
+	// host/port/path dropped.
+	cases := []struct{ name, value, want string }{
+		// Credential-free ported URL under a keyword: kept readable,
+		// byte for byte.
+		{"MCPX_SCRIPT_ENV", "AUTH_URL=https://auth.example.com:8443/callback", "AUTH_URL=https://auth.example.com:8443/callback"},
+		// Userinfo without a password carries no credential either.
+		{"MCPX_SCRIPT_ENV", "AUTH_URL=https://user@example.com/path", "AUTH_URL=https://user@example.com/path"},
+		// Userinfo URL under a keyword: only the password is elided;
+		// scheme, user, host, port and path all survive.
+		{"MCPX_SCRIPT_ENV", "TOKEN_URL=https://deploy:s3cr3tpw@example.com:8443/path", "TOKEN_URL=https://deploy:<elided>@example.com:8443/path"},
+		// The pair sits in surrounding context, which survives too.
+		{"MCPX_SCRIPT_ENV", "DEBUG=1 AUTH_URL=https://auth.example.com:8443/callback", "DEBUG=1 AUTH_URL=https://auth.example.com:8443/callback"},
+	}
+	for _, c := range cases {
+		if got := logging.Redact(c.name, c.value); got != c.want {
+			t.Errorf("%s=%q: got %q, want %q", c.name, c.value, got, c.want)
+		}
+	}
+}

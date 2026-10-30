@@ -211,11 +211,15 @@ func Redact(name, value string) string {
 		return value
 	}
 	return sensitiveValue.ReplaceAllStringFunc(value, func(m string) string {
-		// URL userinfo match: keep scheme://user:, elide only the password.
+		// A match containing a URL is decided by its shape (#2463):
+		// the userinfo alternative matches a bare scheme://user:pw@
+		// prefix, but the keyword-pair alternative matches a whole
+		// KEY=VALUE token whose value happens to be a URL. Running
+		// the userinfo reconstruction on the pair shape truncated
+		// the URL at its port colon and fabricated an "@".
 		if i := strings.Index(m, "://"); i >= 0 {
-			rest := m[i+3:]
-			if colon := strings.Index(rest, ":"); colon >= 0 {
-				return m[:i+3] + rest[:colon+1] + "<elided>@"
+			if out, ok := redactURLMatch(m, i); ok {
+				return out
 			}
 		}
 		// Keep the part that identifies what was elided, drop the secret.
@@ -227,6 +231,52 @@ func Redact(name, value string) string {
 		}
 		return "<elided>"
 	})
+}
+
+// redactURLMatch handles a sensitiveValue match that contains a
+// URL; i is the index of "://" in m. The URL decides the outcome: a
+// credential-free URL is kept verbatim (readable context, nothing to
+// elide), and a URL whose userinfo carries a password elides only
+// the password, keeping scheme, user, host, port and path. A pair
+// prefix (KEY= / KEY:) or bearer lead-in in front of the URL is
+// preserved either way. ok is false when m holds no well-formed
+// scheme, leaving the generic pair/token handling to decide.
+func redactURLMatch(m string, i int) (string, bool) {
+	// The scheme starts where the run of scheme characters before
+	// "://" begins; anything before that is not part of the URL.
+	start := i
+	for start > 0 && isSchemeChar(m[start-1]) {
+		start--
+	}
+	if start == i || !isASCIILetter(m[start]) {
+		return "", false
+	}
+	prefix, url := m[:start], m[start:]
+	rest := url[i-start+3:]
+	authority, remainder := rest, ""
+	if slash := strings.Index(rest, "/"); slash >= 0 {
+		authority, remainder = rest[:slash], rest[slash:]
+	}
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		// No userinfo: nothing in this URL is a credential.
+		return m, true
+	}
+	userinfo := authority[:at]
+	colon := strings.Index(userinfo, ":")
+	if colon < 0 {
+		// Userinfo without a password carries no credential.
+		return m, true
+	}
+	return prefix + url[:i-start+3] + userinfo[:colon+1] + "<elided>@" + authority[at+1:] + remainder, true
+}
+
+func isSchemeChar(c byte) bool {
+	return isASCIILetter(c) || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.'
+}
+
+func isASCIILetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // HarnessIDs reads MCPX_TRACE_IDS.
